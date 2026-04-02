@@ -22,6 +22,8 @@ SELECT cron.schedule(
 
 -- Purge rows older than 90 days (warm → cold tier)
 -- CASCADE handles execution_steps automatically
+-- ⚠️  DO NOT ACTIVATE until export to Google Sheets (or equivalent) is wired up.
+--     Until then, disable this job: SELECT cron.unschedule('purge-old-executions');
 SELECT cron.schedule(
   'purge-old-executions',
   '30 3 * * *',

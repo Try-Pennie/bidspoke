@@ -30,6 +30,7 @@
 - [ ] Configure Supabase Auth with Google SSO
 - [ ] Set up table partitioning on workflow_executions and execution_steps (by month on started_at)
 - [ ] Create pg_cron job for log retention (14-day compaction, 90-day purge) — PRD Section 10.4
+  - ⚠️ **Before enabling the 90-day purge:** set up export to Google Sheets (or similar) so warm-tier rows are archived before deletion. Purge job is deployed but should only be activated once export is wired up.
 - [ ] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)
 - [ ] **Test:** pg_cron compaction on seeded test data
 
