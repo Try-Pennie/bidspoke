@@ -64,9 +64,9 @@
 - [ ] **Test:** All CRUD endpoints with auth (valid JWT, invalid JWT, wrong org)
 
 ### 1.4 Circuit Breakers — Upstream Services
-- [ ] Implement Durable Object for circuit breaker state (closed/open/half-open) — PRD Section 2.5.2
+- [x] Implement Durable Object for circuit breaker state (closed/open/half-open) — PRD Section 2.5.2
 - [ ] Wire circuit breakers for Equifax, Salesforce, Eligibility Scout
-- [ ] Implement circuit breaker API endpoints (status, manual reset)
+- [x] Implement circuit breaker API endpoints (status, manual reset)
 - [ ] **Test:** Trip circuit breaker with repeated failures, verify open state rejects, half-open recovery
 
 ### 1.5 Node Types — Phase 1

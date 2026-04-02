@@ -5,6 +5,7 @@ import { jwtAuth } from '../../middleware/jwt-auth'
 import workflows from './workflows'
 import executions from './executions'
 import env from './env'
+import circuit from './circuit'
 
 type Variables = AuthVariables
 
@@ -16,6 +17,7 @@ api.use('*', jwtAuth)
 api.route('/workflows', workflows)
 api.route('/executions', executions)
 api.route('/env', env)
+api.route('/circuit', circuit)
 
 // Stubs for Phase 2
 api.all('/partners/*', (c) => c.json({ error: 'not implemented (Phase 2)' }, 501))
