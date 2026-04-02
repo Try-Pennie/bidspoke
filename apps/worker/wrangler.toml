@@ -37,8 +37,10 @@ namespace = "bidspoke-code-nodes"
 # Public vars
 [vars]
 SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-known/jwks.json"
+PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_score" to enable
 
 # Secrets (set via `wrangler secret put`):
 #   SUPABASE_URL
 #   SUPABASE_SECRET_KEY
 #   SUPABASE_PUBLISHABLE_KEY
+#   API_KEY_MAP  — JSON: { "key": "source_name", ... }

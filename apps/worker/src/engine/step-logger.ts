@@ -1,0 +1,75 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { StepStatus, ErrorType } from '../types'
+import { redactPii, parsePiiFields } from './pii-redactor'
+
+export interface StepLogEntry {
+  execution_id: string
+  execution_started_at: string
+  step_namespace: string
+  step_type: string
+  status: StepStatus
+  input: unknown
+  output: unknown
+  error_message?: string
+  error_type?: ErrorType
+  retries_used: number
+  started_at: string
+  completed_at: string
+  duration_ms: number
+  step_order: number
+  parallel_group_id?: string
+}
+
+export async function writeStepLog(
+  supabase: SupabaseClient,
+  entry: StepLogEntry,
+  piiFieldsRaw: string
+): Promise<void> {
+  const piiFields = parsePiiFields(piiFieldsRaw)
+  const row = {
+    ...entry,
+    input: redactPii(entry.input, piiFields),
+    output: redactPii(entry.output, piiFields),
+  }
+  await supabase.from('execution_steps').insert(row)
+}
+
+export async function createExecutionRecord(
+  supabase: SupabaseClient,
+  record: {
+    id: string
+    workflow_id: string
+    workflow_version_id: string
+    parent_execution_id?: string
+    source: string
+    trigger_payload: unknown
+    trace_id: string
+    started_at: string
+    is_test: boolean
+  }
+): Promise<void> {
+  await supabase.from('workflow_executions').insert({
+    ...record,
+    status: 'running',
+    trigger_type: 'http_webhook',
+  })
+}
+
+export async function updateExecutionRecord(
+  supabase: SupabaseClient,
+  id: string,
+  started_at: string,
+  update: {
+    status: string
+    completed_at: string
+    duration_ms: number
+    response_body?: unknown
+    error_message?: string
+  }
+): Promise<void> {
+  await supabase
+    .from('workflow_executions')
+    .update(update)
+    .eq('id', id)
+    .eq('started_at', started_at)
+}
