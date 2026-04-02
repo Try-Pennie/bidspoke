@@ -90,6 +90,7 @@
 - [x] Implement version history UI (browse, preview, restore)
 - [x] Implement environment variables management UI
 - [x] Implement secrets management UI (Cloudflare sync)
+- [ ] Add production Cloudflare Pages URL to Supabase Auth → URL Configuration → Redirect URLs
 - [ ] **Test:** Create workflow on canvas → save → execute via webhook → verify execution logs
 
 ### 1.7 Slack Integration
