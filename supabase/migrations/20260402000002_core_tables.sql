@@ -128,17 +128,18 @@ CREATE TABLE execution_steps (
 ) PARTITION BY RANGE (started_at);
 
 -- ============================================================
--- Create monthly partitions (2026-01 through 2027-06)
+-- Create monthly partitions: current month + 5 months ahead
+-- (90-day retention = 3 months max live data; 5 months gives safe runway)
 -- ============================================================
 
 DO $$
 DECLARE
-  start_month DATE := '2026-01-01';
+  start_month DATE := date_trunc('month', now());
   end_month   DATE;
   i           INTEGER;
   suffix      TEXT;
 BEGIN
-  FOR i IN 0..17 LOOP
+  FOR i IN 0..5 LOOP
     end_month := start_month + INTERVAL '1 month';
     suffix    := TO_CHAR(start_month, 'YYYY_MM');
 
