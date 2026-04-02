@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "WebFetch(domain:blog.cloudflare.com)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)"
+    ]
+  }
+}
