@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import api from './routes/api/index'
 
@@ -35,6 +36,19 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>()
+
+app.use(
+  '*',
+  cors({
+    origin: (origin) => {
+      const allowed = ['http://localhost:3000', 'https://bidspoke.pages.dev']
+      return allowed.includes(origin) ? origin : null
+    },
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+    credentials: true,
+  })
+)
 
 app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
 

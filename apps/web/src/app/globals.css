@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* React Flow — override default z-index so our panels sit above it */
+.react-flow__panel {
+  z-index: 10;
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded border border-gray-200 px-2.5 py-1.5 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-200;
+  }
+}

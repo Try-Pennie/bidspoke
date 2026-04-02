@@ -79,17 +79,17 @@
 - [ ] **Test:** Conditional edge evaluation (AND/OR groups, all operator types)
 
 ### 1.6 Frontend — Canvas Editor
-- [ ] Set up Next.js on Cloudflare Pages
-- [ ] Implement React Flow canvas with node palette sidebar
-- [ ] Implement node drag-and-drop, edge connections, zoom/pan/minimap
-- [ ] Implement node config panel (right sidebar, per-node-type forms)
-- [ ] Implement rule builder UI for Filter/Branch nodes (field, operator, value dropdowns)
+- [x] Set up Next.js on Cloudflare Pages
+- [x] Implement React Flow canvas with node palette sidebar
+- [x] Implement node drag-and-drop, edge connections, zoom/pan/minimap
+- [x] Implement node config panel (right sidebar, per-node-type forms)
+- [x] Implement rule builder UI for Filter/Branch nodes (field, operator, value dropdowns)
 - [ ] Implement data reference autocomplete (steps.*, trigger.*, env.*)
-- [ ] Implement undo/redo
-- [ ] Implement save (creates version snapshot, invalidates KV)
-- [ ] Implement version history UI (browse, preview, restore)
-- [ ] Implement environment variables management UI
-- [ ] Implement secrets management UI (Cloudflare sync)
+- [x] Implement undo/redo
+- [x] Implement save (creates version snapshot, invalidates KV)
+- [x] Implement version history UI (browse, preview, restore)
+- [x] Implement environment variables management UI
+- [x] Implement secrets management UI (Cloudflare sync)
 - [ ] **Test:** Create workflow on canvas → save → execute via webhook → verify execution logs
 
 ### 1.7 Slack Integration

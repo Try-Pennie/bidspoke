@@ -1,0 +1,211 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import { api } from '@/lib/api'
+import NavLayout from '@/components/NavLayout'
+import type { EnvVar } from '@/types/workflow'
+import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
+
+type NewVar = { key: string; value: string; is_secret: boolean }
+
+export default function EnvPage() {
+  const [vars, setVars] = useState<EnvVar[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [newVar, setNewVar] = useState<NewVar>({ key: '', value: '', is_secret: false })
+  const [creating, setCreating] = useState(false)
+  const [revealed, setRevealed] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    api.env.list()
+      .then(setVars)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault()
+    if (!newVar.key) return
+    setCreating(true)
+    try {
+      const created = await api.env.create(newVar)
+      setVars((vs) => [...vs, created])
+      setNewVar({ key: '', value: '', is_secret: false })
+      setShowForm(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function handleDelete(id: string, key: string) {
+    if (!confirm(`Delete "${key}"?`)) return
+    try {
+      await api.env.delete(id)
+      setVars((vs) => vs.filter((v) => v.id !== id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed')
+    }
+  }
+
+  return (
+    <NavLayout>
+      <div className="p-8">
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold text-gray-900">Environment Variables</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
+            </p>
+          </div>
+          <button
+            onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            <Plus className="h-4 w-4" />
+            Add Variable
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        {/* Add form */}
+        {showForm && (
+          <form
+            onSubmit={handleCreate}
+            className="mb-6 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+          >
+            <h2 className="mb-4 text-sm font-semibold text-gray-800">New Variable</h2>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
+                <input
+                  className="input w-full font-mono"
+                  placeholder="MY_API_KEY"
+                  value={newVar.key}
+                  onChange={(e) => setNewVar({ ...newVar, key: e.target.value.toUpperCase().replace(/\s/g, '_') })}
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
+                <input
+                  type={newVar.is_secret ? 'password' : 'text'}
+                  className="input w-full"
+                  placeholder="value"
+                  value={newVar.value}
+                  onChange={(e) => setNewVar({ ...newVar, value: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="is_secret"
+                checked={newVar.is_secret}
+                onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
+                className="rounded border-gray-300 text-blue-600"
+              />
+              <label htmlFor="is_secret" className="text-xs text-gray-600">
+                Secret — value encrypted and synced to Cloudflare Worker
+              </label>
+            </div>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="submit"
+                disabled={creating}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {creating ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+
+        {loading ? (
+          <div className="text-sm text-gray-500">Loading…</div>
+        ) : vars.length === 0 ? (
+          <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center text-sm text-gray-500">
+            No variables yet.
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Key</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Value</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Type</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Updated</th>
+                  <th className="w-16 px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {vars.map((v) => (
+                  <tr key={v.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-gray-900">{v.key}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                      {v.is_secret ? (
+                        <div className="flex items-center gap-1.5">
+                          <span>{revealed.has(v.id) ? '(secret — cannot reveal server-side)' : '••••••••'}</span>
+                          <button
+                            onClick={() =>
+                              setRevealed((s) => {
+                                const next = new Set(s)
+                                if (next.has(v.id)) next.delete(v.id)
+                                else next.add(v.id)
+                                return next
+                              })
+                            }
+                            className="text-gray-300 hover:text-gray-500"
+                          >
+                            {revealed.has(v.id) ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      ) : (
+                        v.value ?? '—'
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          v.is_secret ? 'bg-orange-50 text-orange-700' : 'bg-gray-100 text-gray-600'
+                        }`}
+                      >
+                        {v.is_secret ? 'Secret' : 'Plain'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500">
+                      {new Date(v.updated_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleDelete(v.id, v.key)}
+                        className="rounded p-1.5 text-gray-300 hover:bg-red-50 hover:text-red-500"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </NavLayout>
+  )
+}
