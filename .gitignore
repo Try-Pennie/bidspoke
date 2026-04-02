@@ -20,6 +20,9 @@ dist/
 # OS
 .DS_Store
 
+# Claude Code
+.claude/
+
 # Editor
 .vscode/
 .idea/
