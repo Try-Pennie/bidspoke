@@ -7,14 +7,14 @@
 
 ## 0. Project Setup
 
-- [ ] Initialize repo and push to GitHub
-- [ ] Set up monorepo structure (frontend + worker)
-- [ ] Configure Cloudflare Workers project (wrangler.toml, including Dynamic Worker Loader binding)
-- [ ] Configure Cloudflare Pages project (Next.js)
-- [ ] Set up Supabase project (database, auth, RLS)
-- [ ] Configure GitHub Actions for CI/CD (lint, type-check, deploy)
-- [ ] Set up local dev environment (wrangler dev, Supabase local)
-- [ ] Create CLAUDE.md with project conventions
+- [x] Initialize repo and push to GitHub
+- [x] Set up monorepo structure (frontend + worker)
+- [x] Configure Cloudflare Workers project (wrangler.toml, including Dynamic Worker Loader binding)
+- [x] Configure Cloudflare Pages project (Next.js)
+- [x] Set up Supabase project (database, auth, RLS)
+- [x] Configure GitHub Actions for CI/CD (lint, type-check, deploy)
+- [x] Set up local dev environment (wrangler dev, Supabase local)
+- [x] Create CLAUDE.md with project conventions
 
 ---
 
