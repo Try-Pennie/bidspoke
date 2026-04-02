@@ -6,7 +6,7 @@ export class CircuitBreakerObject implements DurableObject {
     this.state = state
   }
 
-  async fetch(request: Request): Promise<Response> {
+  async fetch(_request: Request): Promise<Response> {
     // TODO: Phase 1.4
     return new Response('not implemented', { status: 501 })
   }
