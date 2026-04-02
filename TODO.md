@@ -56,11 +56,11 @@
 - [ ] **Test:** Error classification (transient retried, permanent not retried, business rejection logged)
 
 ### 1.3 Cloudflare Workers — REST API
-- [ ] Implement JWT auth middleware (Supabase JWT validation)
-- [ ] Workflow CRUD endpoints (GET/POST/PUT/DELETE /api/workflows)
-- [ ] Version history endpoints (list versions, get version, restore version)
-- [ ] Execution history endpoints (list, detail, resume, replay)
-- [ ] Environment variables & secrets endpoints (CRUD, Cloudflare secret sync)
+- [x] Implement JWT auth middleware (Supabase JWT validation)
+- [x] Workflow CRUD endpoints (GET/POST/PUT/DELETE /api/workflows)
+- [x] Version history endpoints (list versions, get version, restore version)
+- [x] Execution history endpoints (list, detail, resume, replay)
+- [x] Environment variables & secrets endpoints (CRUD, Cloudflare secret sync)
 - [ ] **Test:** All CRUD endpoints with auth (valid JWT, invalid JWT, wrong org)
 
 ### 1.4 Circuit Breakers — Upstream Services
