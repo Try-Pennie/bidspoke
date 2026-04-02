@@ -2,17 +2,18 @@ name = "bidspoke-worker"
 main = "src/index.ts"
 compatibility_date = "2024-05-24"
 compatibility_flags = ["nodejs_compat"]
+account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
 # Workers KV — workflow definition cache + idempotency
 [[kv_namespaces]]
 binding = "WORKFLOW_CACHE"
-id = "REPLACE_WITH_KV_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+id = "14d18007ddf642f6a5298c8a4a482ebd"
+preview_id = "d1541f6fb5424cb0baab17bdf64293d6"
 
 [[kv_namespaces]]
 binding = "IDEMPOTENCY"
-id = "REPLACE_WITH_KV_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+id = "741da5a97205465eb7f12437f24a2dd2"
+preview_id = "6f19293c62f84fedb5d0d418fcd5c6ef"
 
 # Durable Objects — daily caps + circuit breakers
 [[durable_objects.bindings]]
