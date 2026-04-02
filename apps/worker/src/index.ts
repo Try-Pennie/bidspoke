@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import webhooks from './routes/webhooks'
+import api from './routes/api/index'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
@@ -24,6 +25,10 @@ export interface Env {
 
   // PII redaction — comma-separated field patterns, empty = disabled (PRD 12.4)
   PII_REDACTION_FIELDS: string
+
+  // Cloudflare API — for syncing secrets (PRD 12.3)
+  CLOUDFLARE_API_TOKEN: string
+  CLOUDFLARE_ACCOUNT_ID: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -33,7 +38,7 @@ app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
 // Webhook execution endpoint — authenticated via X-API-Key (PRD 12.2)
 app.route('/webhooks', webhooks)
 
-// REST API — Phase 1.3
-app.all('/api/*', (c) => c.json({ error: 'not implemented' }, 501))
+// REST API — JWT authenticated
+app.route('/api', api)
 
 export default app

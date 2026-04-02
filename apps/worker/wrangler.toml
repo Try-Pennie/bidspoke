@@ -43,4 +43,6 @@ PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_
 #   SUPABASE_URL
 #   SUPABASE_SECRET_KEY
 #   SUPABASE_PUBLISHABLE_KEY
-#   API_KEY_MAP  — JSON: { "key": "source_name", ... }
+#   API_KEY_MAP            — JSON: { "key": "source_name", ... }
+#   CLOUDFLARE_API_TOKEN   — for syncing Worker secrets via CF API
+#   CLOUDFLARE_ACCOUNT_ID  — Pennie account: 3e7f907a9c19e51417873e2cce4fbc5c
