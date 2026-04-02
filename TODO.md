@@ -36,20 +36,20 @@
   - ⚠️ **Before enabling the 90-day purge:** set up export to Google Sheets (or similar) so warm-tier rows are archived before deletion. Purge job is deployed but should only be activated once export is wired up.
 
 ### 1.2 Cloudflare Workers — Execution Engine
-- [ ] Scaffold Worker project with wrangler
-- [ ] Implement webhook endpoint: `POST /webhooks/:workflow_id`
-- [ ] Implement API key authentication (X-API-Key header → source identification) — PRD Section 12.2
-- [ ] Implement idempotency check (KV placeholder + cached response) — PRD Section 2.9
-- [ ] Implement workflow definition loader (Supabase → KV cache, version-pinned) — PRD Section 2.6
-- [ ] Implement sequential step execution engine (walk graph, execute nodes in order)
-- [ ] Implement step logging (input/output to Supabase via waitUntil()) — PRD Section 2.4
-- [ ] Implement PII redaction mechanism (global blocklist, write-time scrub, ships disabled) — PRD Section 12.4
-- [ ] Implement resume execution (resume_from_execution_id, skip completed steps, parallel resume for incomplete children) — PRD Section 2.4
-- [ ] Implement error classification (transient/permanent/business rejection) — PRD Section 11.1
-- [ ] Implement per-step retry logic (configurable retries, backoff, timeout) — PRD Section 2.4
-- [ ] Implement per-step on_error / fallback_node — PRD Section 11.3
+- [x] Scaffold Worker project with wrangler
+- [x] Implement webhook endpoint: `POST /webhooks/:workflow_id`
+- [x] Implement API key authentication (X-API-Key header → source identification) — PRD Section 12.2
+- [x] Implement idempotency check (KV placeholder + cached response) — PRD Section 2.9
+- [x] Implement workflow definition loader (Supabase → KV cache, version-pinned) — PRD Section 2.6
+- [x] Implement sequential step execution engine (walk graph, execute nodes in order)
+- [x] Implement step logging (input/output to Supabase via waitUntil()) — PRD Section 2.4
+- [x] Implement PII redaction mechanism (global blocklist, write-time scrub, ships disabled) — PRD Section 12.4
+- [x] Implement resume execution (resume_from_execution_id, skip completed steps, parallel resume for incomplete children) — PRD Section 2.4
+- [x] Implement error classification (transient/permanent/business rejection) — PRD Section 11.1
+- [x] Implement per-step retry logic (configurable retries, backoff, timeout) — PRD Section 2.4
+- [x] Implement per-step on_error / fallback_node — PRD Section 11.3
 - [ ] Implement audit log writes for all mutations — PRD Section 3.1
-- [ ] Set up Cloudflare Worker secrets for API keys and credentials
+- [ ] Set up Cloudflare Worker secrets for API keys and credentials (API_KEY_MAP)
 - [ ] **Test:** End-to-end webhook → authenticate → load definition → execute steps → log → respond
 - [ ] **Test:** Idempotency (duplicate request returns cached response, race condition returns 409)
 - [ ] **Test:** Resume execution (fail mid-workflow, resume, verify skipped steps and fresh execution)
