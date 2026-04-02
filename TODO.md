@@ -24,12 +24,12 @@
 ## Phase 1: Foundation
 
 ### 1.1 Database & Auth
-- [ ] Create Supabase tables: organizations, users, workflows, workflow_versions, workflow_executions, execution_steps, environment_variables, service_connections, audit_log
-- [ ] Add all columns per PRD Section 3 (including slug, source, updated_by, updated_by_email, parallel_group_id, etc.)
-- [ ] Set up RLS policies (organization_id scoping on all tables)
+- [x] Create Supabase tables: organizations, users, workflows, workflow_versions, workflow_executions, execution_steps, environment_variables, service_connections, audit_log
+- [x] Add all columns per PRD Section 3 (including slug, source, updated_by, updated_by_email, parallel_group_id, etc.)
+- [x] Set up RLS policies (organization_id scoping on all tables)
 - [ ] Configure Supabase Auth with Google SSO
-- [ ] Set up table partitioning on workflow_executions and execution_steps (by month on started_at)
-- [ ] Create pg_cron job for log retention (14-day compaction, 90-day purge) — PRD Section 10.4
+- [x] Set up table partitioning on workflow_executions and execution_steps (by month on started_at)
+- [x] Create pg_cron job for log retention (14-day compaction, 90-day purge) — PRD Section 10.4
   - ⚠️ **Before enabling the 90-day purge:** set up export to Google Sheets (or similar) so warm-tier rows are archived before deletion. Purge job is deployed but should only be activated once export is wired up.
 - [ ] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)
 - [ ] **Test:** pg_cron compaction on seeded test data
