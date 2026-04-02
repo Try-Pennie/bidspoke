@@ -33,7 +33,7 @@ export const api = {
     get: (id: string) => req<Workflow>(`/api/workflows/${id}`),
     create: (name: string) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name }) }),
-    save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string }) =>
+    save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
       req<Workflow>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
     test: (id: string, payload: unknown) =>
@@ -70,5 +70,22 @@ export const api = {
     status: (name: string) => req<unknown>(`/api/circuit/${name}/status`),
     reset: (name: string) =>
       req<{ ok: boolean }>(`/api/circuit/${name}/reset`, { method: 'POST' }),
+  },
+
+  integrations: {
+    getSlack: () => req<{
+      connected: boolean
+      workspace_name?: string | null
+      default_channel?: string | null
+      updated_at?: string
+      updated_by_email?: string | null
+    }>('/api/integrations/slack'),
+    saveSlack: (data: { bot_token: string; default_channel: string; workspace_name?: string }) =>
+      req<{ ok: boolean }>('/api/integrations/slack', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    deleteSlack: () =>
+      req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
 }

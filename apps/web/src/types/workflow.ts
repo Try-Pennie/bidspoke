@@ -67,6 +67,7 @@ export interface Workflow {
   description?: string | null
   is_active: boolean
   definition: WorkflowDef
+  slack_channel?: string | null
   created_at: string
   updated_at: string
   updated_by_email?: string | null

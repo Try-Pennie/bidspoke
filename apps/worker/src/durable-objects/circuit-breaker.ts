@@ -118,7 +118,7 @@ export class CircuitBreakerObject implements DurableObject {
       data.probingInFlight = false
       data.consecutiveCooldowns = 0
       await this.save(data)
-      // TODO Phase 1.7: send Slack recovery alert
+      // Slack recovery alert is sent by the caller (Phase 2 Partner Bid node) when it sees state transition
       console.log(`[circuit-breaker] Circuit closed (probe succeeded)`)
     }
 
@@ -147,7 +147,7 @@ export class CircuitBreakerObject implements DurableObject {
       data.probingInFlight = false
       data.consecutiveCooldowns++
       await this.save(data)
-      // TODO Phase 1.7: send Slack alert
+      // Slack alert sent by caller when tripped === true (Phase 2 Partner Bid node)
       console.log(`[circuit-breaker] Circuit reopened after failed probe (cooldown #${data.consecutiveCooldowns})`)
       return json({ ok: true, state: 'open', tripped: true })
     }
@@ -163,7 +163,7 @@ export class CircuitBreakerObject implements DurableObject {
       data.openedAt = now
       data.consecutiveCooldowns = 0
       await this.save(data)
-      // TODO Phase 1.7: send Slack alert
+      // Slack alert sent by caller when tripped === true (Phase 2 Partner Bid node)
       console.log(`[circuit-breaker] Circuit opened (${data.errorTimestamps.length} errors in window)`)
       return json({ ok: true, state: 'open', tripped: true })
     }

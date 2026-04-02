@@ -8,6 +8,7 @@ import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { withRetry } from './retry'
 import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
+import { sendFailureAlert } from '../lib/slack'
 import type { Env } from '../index'
 import type {
   ExecutionContext,
@@ -15,6 +16,17 @@ import type {
   StepStatus,
   ErrorType,
 } from '../types'
+
+// Carries step context through the throw so the alert can report which step failed
+class StepFailureError extends Error {
+  constructor(
+    message: string,
+    public readonly stepNamespace: string,
+    public readonly errorType: ErrorType
+  ) {
+    super(message)
+  }
+}
 
 export interface ExecuteOptions {
   workflowId: string
@@ -42,11 +54,8 @@ export async function executeWorkflow(
   const traceId = generateTraceId()
 
   // Load workflow definition (KV-cached)
-  const { definition, workflow_version_id } = await loadWorkflowDefinition(
-    workflowId,
-    env.WORKFLOW_CACHE,
-    supabase
-  )
+  const { definition, workflow_version_id, workflow_name, org_id, slack_channel } =
+    await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase)
 
   // Resolve idempotency key
   const idempotencyConfig = definition.trigger.config.idempotency
@@ -114,12 +123,18 @@ export async function executeWorkflow(
   let response: unknown = null
   let executionStatus = 'completed'
   let errorMessage: string | undefined
+  let failedStep: string | undefined
+  let failedErrorType: ErrorType = null
 
   try {
     response = await walkGraph(ctx, definition, executionId, startedAt, supabase, env)
   } catch (err) {
     executionStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
+    if (err instanceof StepFailureError) {
+      failedStep = err.stepNamespace
+      failedErrorType = err.errorType
+    }
     response = { error: errorMessage, trace_id: traceId }
   }
 
@@ -136,6 +151,22 @@ export async function executeWorkflow(
       error_message: errorMessage,
     })
   )
+
+  // Send Slack alert on failure (skip business rejections and test runs)
+  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null) {
+    executionCtx.waitUntil(
+      sendFailureAlert(supabase, org_id, slack_channel, {
+        workflow_id: workflowId,
+        workflow_name,
+        execution_id: executionId,
+        trace_id: traceId,
+        step_namespace: failedStep,
+        error_message: errorMessage ?? 'Unknown error',
+        error_type: failedErrorType,
+        timestamp: completedAt,
+      }).catch((e) => console.error('[slack] alert failed:', e))
+    )
+  }
 
   // Cache idempotency result
   if (idempotencyKey) {
@@ -213,7 +244,7 @@ async function walkGraph(
         stepStatus = 'failed'
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
         await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
-        throw err
+        throw new StepFailureError(errorMessage, node.namespace, errorType)
       }
     }
 

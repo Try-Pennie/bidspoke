@@ -113,6 +113,9 @@ export interface StepExecutionResult {
 export interface LoadedWorkflow {
   definition: WorkflowDefinition
   workflow_version_id: string
+  workflow_name: string
+  org_id: string
+  slack_channel: string | null
 }
 
 export interface IdempotencyState {

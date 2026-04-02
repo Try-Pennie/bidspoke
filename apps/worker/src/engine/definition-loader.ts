@@ -7,6 +7,9 @@ const cacheKey = (workflowId: string) => `workflow-def-${workflowId}`
 interface CachedDefinition {
   definition: WorkflowDefinition
   workflow_version_id: string
+  workflow_name: string
+  org_id: string
+  slack_channel: string | null
 }
 
 export async function loadWorkflowDefinition(
@@ -25,6 +28,9 @@ export async function loadWorkflowDefinition(
     .from('workflows')
     .select(`
       id,
+      name,
+      organization_id,
+      slack_channel,
       definition,
       is_active,
       workflow_versions (id, version_number)
@@ -48,6 +54,9 @@ export async function loadWorkflowDefinition(
   const result: LoadedWorkflow = {
     definition: data.definition as WorkflowDefinition,
     workflow_version_id,
+    workflow_name: data.name as string,
+    org_id: data.organization_id as string,
+    slack_channel: (data.slack_channel as string | null) ?? null,
   }
 
   // Cache for ~60s — KV is eventually consistent, small propagation window is acceptable (PRD 2.6)

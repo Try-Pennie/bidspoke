@@ -28,7 +28,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import { api } from '@/lib/api'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 // Defined outside component to prevent re-render on each render
@@ -123,6 +123,8 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
 
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -255,7 +257,11 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
     setSavedOk(false)
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
-      await api.workflows.save(workflow.id, { name, definition })
+      await api.workflows.save(workflow.id, {
+        name,
+        definition,
+        slack_channel: slackChannel || null,
+      })
       setIsDirty(false)
       setSavedOk(true)
       setTimeout(() => setSavedOk(false), 2500)
@@ -306,6 +312,14 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
           </button>
 
           <button
+            onClick={() => setShowSettings((s) => !s)}
+            className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showSettings ? 'bg-gray-100 text-gray-600' : ''}`}
+            title="Workflow settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+
+          <button
             onClick={() => router.push(`/workflows/${workflow.id}/versions`)}
             className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
           >
@@ -332,6 +346,19 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
         <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
           <AlertCircle className="h-3.5 w-3.5" />
           {saveError}
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="flex items-center gap-4 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs">
+          <span className="font-medium text-gray-500">Slack channel override</span>
+          <input
+            className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+            placeholder="#alerts (leave empty to use org default)"
+            value={slackChannel}
+            onChange={(e) => { setSlackChannel(e.target.value); setIsDirty(true) }}
+          />
+          <span className="text-gray-400">Overrides the default channel for this workflow&#39;s alerts.</span>
         </div>
       )}
 

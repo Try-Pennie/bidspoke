@@ -75,7 +75,7 @@ workflows.put('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string }>()
+  const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null }>()
 
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
@@ -121,6 +121,7 @@ workflows.put('/:id', async (c) => {
   if (body.name !== undefined) updates.name = body.name
   if (body.description !== undefined) updates.description = body.description
   if (body.definition !== undefined) updates.definition = body.definition
+  if (body.slack_channel !== undefined) updates.slack_channel = body.slack_channel
 
   const { data: updated, error: updateError } = await supabase
     .from('workflows')
