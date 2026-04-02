@@ -7,9 +7,11 @@
     "build:web": "pnpm --filter web build",
     "build:worker": "pnpm --filter worker build",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "husky": "^9.1.7",
     "typescript": "^5.4.5"
   },
   "engines": {
