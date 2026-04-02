@@ -181,7 +181,7 @@ async function walkGraph(
 
     try {
       const result = await withRetry(
-        () => executeNode(node, ctx),
+        () => executeNode(node, ctx, env),
         retryConfig,
         (err) => {
           if (err instanceof Response) return classifyHttpError(err.status)
@@ -225,9 +225,22 @@ async function walkGraph(
       return output
     }
 
-    // Follow the first matching outgoing edge
+    // Follow the appropriate outgoing edge.
+    // Filter/branch nodes signal their chosen output via output._route which
+    // maps to edge source_handle. Fall through to condition evaluation otherwise.
     const edges = outgoingEdges(node.id, definition.edges)
-    const nextEdge = edges.find((e) => evaluateEdge(e, ctx))
+    let nextEdge: import('../types').EdgeDefinition | undefined
+
+    if ((node.type === 'filter' || node.type === 'branch') &&
+        output !== null && typeof output === 'object') {
+      const route = (output as Record<string, unknown>)._route as string | undefined
+      if (route) nextEdge = edges.find((e) => e.source_handle === route)
+    }
+
+    if (!nextEdge) {
+      nextEdge = edges.find((e) => evaluateEdge(e, ctx))
+    }
+
     current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
     stepOrder++
   }

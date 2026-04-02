@@ -29,6 +29,9 @@ export interface Env {
   // Cloudflare API — for syncing secrets (PRD 12.3)
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
+
+  // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
+  DYNAMIC_WORKER_LOADER: DispatchNamespace
 }
 
 const app = new Hono<{ Bindings: Env }>()

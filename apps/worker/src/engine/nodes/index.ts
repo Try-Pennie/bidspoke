@@ -1,24 +1,26 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
-
-// Node implementations are added in Phase 1.5.
-// Each node type receives the node definition and current execution context,
-// and returns its output (or throws on error).
+import type { Env } from '../../index'
+import { executeFilterNode } from './filter'
+import { executeBranchNode } from './branch'
+import { executeResponseNode } from './response'
+import { executeCodeNode } from './code'
 
 export async function executeNode(
   node: NodeDefinition,
-  ctx: ExecutionContext
+  ctx: ExecutionContext,
+  env: Env
 ): Promise<StepExecutionResult> {
   switch (node.type) {
-    case 'code':
-      throw new Error('Code node not yet implemented (Phase 1.5)')
     case 'filter':
-      throw new Error('Filter node not yet implemented (Phase 1.5)')
+      return executeFilterNode(node, ctx)
     case 'branch':
-      throw new Error('Branch node not yet implemented (Phase 1.5)')
+      return executeBranchNode(node, ctx)
     case 'response':
-      throw new Error('Response node not yet implemented (Phase 1.5)')
+      return executeResponseNode(node, ctx)
     case 'exit':
-      return executeExitNode(node, ctx)
+      return executeExitNode(node)
+    case 'code':
+      return executeCodeNode(node, ctx, env)
     case 'parallel':
       throw new Error('Parallel node not yet implemented (Phase 2.2)')
     case 'partner_bid':
@@ -34,10 +36,7 @@ export async function executeNode(
   }
 }
 
-function executeExitNode(
-  node: NodeDefinition,
-  _ctx: ExecutionContext
-): StepExecutionResult {
+function executeExitNode(node: NodeDefinition): StepExecutionResult {
   return {
     output: (node.config.response as unknown) ?? null,
   }

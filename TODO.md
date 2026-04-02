@@ -70,11 +70,11 @@
 - [ ] **Test:** Trip circuit breaker with repeated failures, verify open state rejects, half-open recovery
 
 ### 1.5 Node Types — Phase 1
-- [ ] Code node via Dynamic Workers (Monaco editor, sandboxed V8 isolate, controlled outbound proxy) — PRD Section 5.4
-- [ ] Filter node (two-output pass/exit gate, rule builder) — PRD Section 5.1
-- [ ] Branch node (N conditional outputs, else edge) — PRD Section 5.1
-- [ ] Response node (status code, headers, body template) — PRD Section 5.6
-- [ ] Exit node (early termination with optional response)
+- [x] Code node via Dynamic Workers (Monaco editor, sandboxed V8 isolate, controlled outbound proxy) — PRD Section 5.4
+- [x] Filter node (two-output pass/exit gate, rule builder) — PRD Section 5.1
+- [x] Branch node (N conditional outputs, else edge) — PRD Section 5.1
+- [x] Response node (status code, headers, body template) — PRD Section 5.6
+- [x] Exit node (early termination with optional response)
 - [ ] **Test:** Each node type in isolation with sample payloads
 - [ ] **Test:** Conditional edge evaluation (AND/OR groups, all operator types)
 

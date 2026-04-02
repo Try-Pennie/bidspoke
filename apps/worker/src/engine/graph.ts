@@ -24,7 +24,7 @@ export function evaluateEdge(edge: EdgeDefinition, ctx: ExecutionContext): boole
   return evaluateConditionGroups(edge.condition.groups, edge.condition.logic, ctx)
 }
 
-function evaluateConditionGroups(
+export function evaluateConditionGroups(
   groups: ConditionGroup[],
   logic: 'AND' | 'OR',
   ctx: ExecutionContext
