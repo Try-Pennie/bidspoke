@@ -21,7 +21,7 @@ CREATE TABLE users (
 );
 
 -- Helper: returns the calling user's org ID — used in RLS policies
-CREATE OR REPLACE FUNCTION auth.user_org_id()
+CREATE OR REPLACE FUNCTION public.user_org_id()
 RETURNS UUID
 LANGUAGE SQL
 SECURITY DEFINER
