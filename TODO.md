@@ -13,8 +13,11 @@
 - [x] Configure Cloudflare Pages project (Next.js)
 - [x] Set up Supabase project (database, auth, RLS)
 - [x] Configure GitHub Actions for CI/CD (lint, type-check, deploy)
+- [x] Verify CI passes on GitHub (fixed ESLint config, Node 24, pre-commit/pre-push hooks)
 - [x] Set up local dev environment (wrangler dev, Supabase local)
 - [x] Create CLAUDE.md with project conventions
+
+> **Future:** Add automated unit + integration tests to CI as test coverage grows (Vitest for worker, Playwright for web)
 
 ---
 
