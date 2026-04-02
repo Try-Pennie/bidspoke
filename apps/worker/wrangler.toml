@@ -34,7 +34,11 @@ name = "DYNAMIC_WORKER_LOADER"
 type = "dynamic_dispatch"
 namespace = "bidspoke-code-nodes"
 
+# Public vars
+[vars]
+SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-known/jwks.json"
+
 # Secrets (set via `wrangler secret put`):
 #   SUPABASE_URL
-#   SUPABASE_SERVICE_ROLE_KEY
-#   SUPABASE_JWT_SECRET
+#   SUPABASE_SECRET_KEY
+#   SUPABASE_PUBLISHABLE_KEY

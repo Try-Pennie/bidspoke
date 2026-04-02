@@ -9,8 +9,9 @@ export interface Env {
   DAILY_CAP: DurableObjectNamespace
   CIRCUIT_BREAKER: DurableObjectNamespace
   SUPABASE_URL: string
-  SUPABASE_SERVICE_ROLE_KEY: string
-  SUPABASE_JWT_SECRET: string
+  SUPABASE_SECRET_KEY: string
+  SUPABASE_PUBLISHABLE_KEY: string
+  SUPABASE_JWKS_URL: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
