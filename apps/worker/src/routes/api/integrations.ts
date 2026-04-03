@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
+import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
 
@@ -31,7 +32,7 @@ integrations.post('/slack', async (c) => {
   }
 
   // Upsert — one Slack connection per org
-  const { error } = await supabase
+  const { data: upserted, error } = await supabase
     .from('service_connections')
     .upsert(
       {
@@ -45,8 +46,18 @@ integrations.post('/slack', async (c) => {
       },
       { onConflict: 'organization_id,service_type' }
     )
+    .select('id, created_at, updated_at')
+    .single()
 
   if (error) return c.json({ error: error.message }, 500)
+
+  const isNew = upserted.created_at === upserted.updated_at
+  await writeAuditLog(supabase, orgId, 'service_connection', upserted.id, isNew ? 'created' : 'updated', userId, {
+    service_type: 'slack',
+    workspace_name: config.workspace_name,
+    default_channel: config.default_channel,
+  })
+
   return c.json({ ok: true })
 })
 
@@ -75,8 +86,15 @@ integrations.get('/slack', async (c) => {
 })
 
 integrations.delete('/slack', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
+
+  const { data: existing } = await supabase
+    .from('service_connections')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('service_type', 'slack')
+    .maybeSingle()
 
   const { error } = await supabase
     .from('service_connections')
@@ -85,6 +103,11 @@ integrations.delete('/slack', async (c) => {
     .eq('service_type', 'slack')
 
   if (error) return c.json({ error: error.message }, 500)
+
+  if (existing) {
+    await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'deleted', userId, { service_type: 'slack' })
+  }
+
   return c.json({ ok: true })
 })
 

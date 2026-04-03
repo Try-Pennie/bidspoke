@@ -6,6 +6,8 @@ import { Hono } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
+import { createSupabaseClient } from '../../lib/supabase'
+import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
 
@@ -19,9 +21,14 @@ circuit.get('/:name/status', async (c) => {
 })
 
 circuit.post('/:name/reset', async (c) => {
+  const { orgId, userId } = c.get('user')
   const name = c.req.param('name')
   const cb = new CircuitBreakerClient(c.env, name)
   await cb.reset()
+
+  const supabase = createSupabaseClient(c.env)
+  await writeAuditLog(supabase, orgId, 'circuit_breaker', crypto.randomUUID(), 'circuit_force_closed', userId, { name })
+
   return c.json({ ok: true, state: 'closed' })
 })
 
