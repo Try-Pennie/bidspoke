@@ -72,6 +72,17 @@ export const api = {
       req<{ ok: boolean }>(`/api/circuit/${name}/reset`, { method: 'POST' }),
   },
 
+  sources: {
+    list: () => req<{ name: string; key_previews: string[] }[]>('/api/sources'),
+    create: (name: string) =>
+      req<{ name: string; api_key: string }>('/api/sources', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }),
+    delete: (name: string) =>
+      req<{ ok: boolean }>(`/api/sources/${name}`, { method: 'DELETE' }),
+  },
+
   integrations: {
     getSlack: () => req<{
       connected: boolean
