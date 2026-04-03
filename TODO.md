@@ -48,8 +48,8 @@
 - [x] Implement error classification (transient/permanent/business rejection) — PRD Section 11.1
 - [x] Implement per-step retry logic (configurable retries, backoff, timeout) — PRD Section 2.4
 - [x] Implement per-step on_error / fallback_node — PRD Section 11.3
-- [ ] Implement audit log writes for all mutations — PRD Section 3.1
-- [ ] Set up Cloudflare Worker secrets for API keys and credentials (API_KEY_MAP)
+- [x] Implement audit log writes for all mutations — PRD Section 3.1
+- [x] Set up Cloudflare Worker secrets for API keys and credentials (API_KEY_MAP)
 - [ ] **Test:** End-to-end webhook → authenticate → load definition → execute steps → log → respond
 - [ ] **Test:** Idempotency (duplicate request returns cached response, race condition returns 409)
 - [ ] **Test:** Resume execution (fail mid-workflow, resume, verify skipped steps and fresh execution)
