@@ -12,6 +12,7 @@
     "pages:deploy": "npx wrangler pages deploy .vercel/output/static"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",
     "@xyflow/react": "^12.10.2",
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.12.0",
+    "@types/dagre": "^0.7.54",
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.2",
     "@types/react-dom": "^18.3.0",

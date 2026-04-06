@@ -30,6 +30,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
+import { layoutWorkflow } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil } from 'lucide-react'
@@ -70,14 +71,15 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
-function defToNodes(nodes: NodeDef[]): Node[] {
-  const workflowNodes = nodes.map((n, i) => ({
+function defToNodes(nodes: NodeDef[], edges: EdgeDef[]): Node[] {
+  const workflowNodes = nodes.map((n) => ({
     id: n.id,
     type: n.type,
-    position: n.position ?? { x: 250, y: 160 + i * 160 },
+    position: { x: 0, y: 0 }, // overridden by layoutWorkflow
     data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
-  return [TRIGGER_NODE, ...workflowNodes]
+  const allNodes = [TRIGGER_NODE, ...workflowNodes]
+  return layoutWorkflow(allNodes, defToEdges(edges))
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -139,12 +141,11 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
   const router = useRouter()
   const { screenToFlowPosition } = useReactFlow()
 
+  const initEdges = defToEdges(workflow.definition?.edges ?? [])
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    defToNodes(workflow.definition?.nodes ?? [])
+    defToNodes(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? [])
   )
-  const [edges, setEdges, onEdgesChange] = useEdgesState(
-    defToEdges(workflow.definition?.edges ?? [])
-  )
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
   const [name, setName] = useState(workflow.name)
   const [isDirty, setIsDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -239,10 +240,12 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
   const onConnect: OnConnect = useCallback(
     (connection: Connection) => {
       snapshot()
-      setEdges((es) => addEdge({ ...connection, id: uid() }, es))
+      const newEdges = addEdge({ ...connection, id: uid() }, edges)
+      setEdges(newEdges)
+      setNodes((ns) => layoutWorkflow(ns, newEdges))
       setIsDirty(true)
     },
-    [snapshot, setEdges]
+    [snapshot, edges, setEdges, setNodes]
   )
 
   // ── Drag-drop from palette ──────────────────────────────────────────────────
@@ -262,21 +265,23 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
       e.preventDefault()
       const type = e.dataTransfer.getData('nodeType') as NodeType
       if (!type) return
-      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       const namespace = defaultNamespace(type, nodeNamespaces)
       snapshot()
-      setNodes((ns) => [
-        ...ns,
-        {
-          id: uid(),
-          type,
-          position,
-          data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
-        },
-      ])
+      setNodes((ns) => {
+        const newNodes = [
+          ...ns,
+          {
+            id: uid(),
+            type,
+            position: { x: 0, y: 0 }, // dagre will position it
+            data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+          },
+        ]
+        return layoutWorkflow(newNodes, edges)
+      })
       setIsDirty(true)
     },
-    [screenToFlowPosition, nodeNamespaces, snapshot, setNodes]
+    [nodeNamespaces, snapshot, setNodes, edges]
   )
 
   // ── Node update / delete ────────────────────────────────────────────────────
@@ -296,12 +301,14 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
   const handleNodeDelete = useCallback(
     (id: string) => {
       snapshot()
-      setNodes((ns) => ns.filter((n) => n.id !== id))
-      setEdges((es) => es.filter((e) => e.source !== id && e.target !== id))
+      const newEdges = edges.filter((e) => e.source !== id && e.target !== id)
+      const newNodes = nodes.filter((n) => n.id !== id)
+      setEdges(newEdges)
+      setNodes(layoutWorkflow(newNodes, newEdges))
       setSelectedNodeId(null)
       setIsDirty(true)
     },
-    [snapshot, setNodes, setEdges]
+    [snapshot, nodes, edges, setNodes, setEdges]
   )
 
   // ── Save ────────────────────────────────────────────────────────────────────
@@ -331,8 +338,9 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
 
   function handleImport(result: ImportResult) {
     snapshot()
-    setNodes(defToNodes(result.def.nodes))
-    setEdges(defToEdges(result.def.edges))
+    const importedEdges = defToEdges(result.def.edges)
+    setEdges(importedEdges)
+    setNodes(defToNodes(result.def.nodes, result.def.edges))
     setName(result.name)
     setIsDirty(true)
     setShowImport(false)
@@ -509,13 +517,20 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
             }}
             onEdgesChange={(changes) => {
               onEdgesChange(changes)
-              if (changes.some((c) => c.type === 'remove')) setIsDirty(true)
+              if (changes.some((c) => c.type === 'remove')) {
+                setIsDirty(true)
+                const removedIds = new Set(
+                  changes.filter((c) => c.type === 'remove').map((c) => c.id)
+                )
+                const remaining = edges.filter((e) => !removedIds.has(e.id))
+                setNodes((ns) => layoutWorkflow(ns, remaining))
+              }
             }}
             onConnect={onConnect}
             onNodeClick={(_, node) => { if (node.id !== 'trigger') setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
-            nodesDraggable={mode === 'edit'}
+            nodesDraggable={false}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
             fitView
