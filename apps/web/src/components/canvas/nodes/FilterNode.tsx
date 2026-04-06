@@ -2,18 +2,20 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup } from '@/types/workflow'
 import { Filter } from 'lucide-react'
+import { getExecutionClasses, ExecutionBadge } from './execution-status'
 
 export function FilterNode({ data, selected }: NodeProps) {
-  const { namespace, config } = data as unknown as CanvasNodeData
+  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
   const rules = config.rules as { groups?: ConditionGroup[] } | undefined
   const ruleCount = rules?.groups?.flatMap((g) => g.conditions).length ?? 0
 
   return (
     <div
-      className={`w-52 rounded-lg border-l-4 border-l-blue-500 border-t border-r border-b bg-white shadow-sm ${
+      className={`relative w-52 rounded-lg border-l-4 border-l-blue-500 border-t border-r border-b bg-white shadow-sm ${
         selected ? 'border-t-blue-300 border-r-blue-300 border-b-blue-300 ring-2 ring-blue-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
-      }`}
+      } ${getExecutionClasses(executionStep)}`}
     >
+      <ExecutionBadge exec={executionStep} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">

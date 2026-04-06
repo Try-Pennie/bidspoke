@@ -2,16 +2,18 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { LogOut } from 'lucide-react'
+import { getExecutionClasses, ExecutionBadge } from './execution-status'
 
 export function ExitNode({ data, selected }: NodeProps) {
-  const { namespace } = data as unknown as CanvasNodeData
+  const { namespace, executionStep } = data as unknown as CanvasNodeData
 
   return (
     <div
-      className={`w-52 rounded-lg border-l-4 border-l-red-500 border-t border-r border-b bg-white shadow-sm ${
+      className={`relative w-52 rounded-lg border-l-4 border-l-red-500 border-t border-r border-b bg-white shadow-sm ${
         selected ? 'border-t-red-300 border-r-red-300 border-b-red-300 ring-2 ring-red-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
-      }`}
+      } ${getExecutionClasses(executionStep)}`}
     >
+      <ExecutionBadge exec={executionStep} />
       <Handle type="target" position={Position.Top} id="input" />
       {/* Terminal node — no source handle */}
 

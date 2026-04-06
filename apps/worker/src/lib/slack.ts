@@ -66,7 +66,7 @@ export async function sendFailureAlert(
   const channel = channelOverride || connection.default_channel
   const errorLabel = payload.error_type === 'transient' ? 'Transient' : 'Permanent'
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
-  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}/executions/${payload.execution_id}`
+  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}`
 
   const blocks = [
     {

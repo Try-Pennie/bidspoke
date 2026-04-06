@@ -102,9 +102,22 @@ export interface EnvVar {
   updated_by_email?: string | null
 }
 
+// Execution step data injected into node.data during replay mode
+export interface ExecutionStep {
+  status: 'completed' | 'failed' | 'skipped' | 'running' | 'failed_with_fallback'
+  input: unknown
+  output: unknown
+  error_message: string | null
+  error_type: string | null
+  duration_ms: number
+  retries_used: number
+}
+
 // What we store in React Flow node.data
 export interface CanvasNodeData {
   namespace: string
   config: Record<string, unknown>
   variables: Record<string, string>
+  // undefined = normal edit mode; null = replay mode but step not reached; object = step ran
+  executionStep?: ExecutionStep | null
 }

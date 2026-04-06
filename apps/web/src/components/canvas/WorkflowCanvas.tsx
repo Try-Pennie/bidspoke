@@ -31,8 +31,10 @@ import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X } from 'lucide-react'
 import { useRouter } from 'next/navigation'
+import ExecutionStepPanel from './ExecutionStepPanel'
+import type { ExecutionStep } from '@/types/workflow'
 
 // Defined outside component to prevent re-render on each render
 const nodeTypes: NodeTypes = {
@@ -121,7 +123,11 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow }: { workflow: Workflow }) {
+function CanvasInner({ workflow, executionId, executionSteps }: {
+  workflow: Workflow
+  executionId?: string
+  executionSteps?: Record<string, ExecutionStep>
+}) {
   const router = useRouter()
   const { screenToFlowPosition } = useReactFlow()
 
@@ -156,6 +162,19 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
   useEffect(() => {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
+
+  // Inject execution step data into node.data when in replay mode
+  useEffect(() => {
+    if (!executionSteps) return
+    setNodes((ns) =>
+      ns.map((n) => {
+        if (n.id === 'trigger') return n
+        const ns_ = (n.data as unknown as CanvasNodeData).namespace
+        const step = executionSteps[ns_] ?? null
+        return { ...n, data: { ...(n.data as object), executionStep: step } }
+      })
+    )
+  }, [executionSteps, setNodes])
 
   const refs = [
     'trigger.payload',
@@ -389,6 +408,23 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
         </div>
       </header>
 
+      {executionId && (
+        <div className="flex items-center justify-between bg-indigo-50 px-4 py-1.5 text-xs border-b border-indigo-100">
+          <div className="flex items-center gap-2 text-indigo-700">
+            <Eye className="h-3.5 w-3.5" />
+            <span className="font-medium">Execution replay</span>
+            <span className="font-mono text-indigo-400">{executionId}</span>
+          </div>
+          <button
+            onClick={() => router.push(`/workflows/${workflow.id}`)}
+            className="flex items-center gap-1 text-indigo-500 hover:text-indigo-700"
+          >
+            <X className="h-3.5 w-3.5" />
+            Exit replay
+          </button>
+        </div>
+      )}
+
       {saveError && (
         <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
           <AlertCircle className="h-3.5 w-3.5" />
@@ -411,7 +447,7 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
 
       {/* Canvas area */}
       <div className="flex flex-1 overflow-hidden">
-        <NodePalette onDragStart={onDragStart} />
+        {!executionId && <NodePalette onDragStart={onDragStart} />}
 
         <div className="flex-1" onDrop={onDrop} onDragOver={onDragOver}>
           <ReactFlow
@@ -452,14 +488,21 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
         </div>
 
         {selectedNode && (
-          <ConfigPanel
-            node={selectedNode}
-            onUpdate={handleNodeUpdate}
-            onDelete={handleNodeDelete}
-            onClose={() => setSelectedNodeId(null)}
-            nodeNamespaces={nodeNamespaces}
-            refs={refs}
-          />
+          executionId ? (
+            <ExecutionStepPanel
+              node={selectedNode}
+              onClose={() => setSelectedNodeId(null)}
+            />
+          ) : (
+            <ConfigPanel
+              node={selectedNode}
+              onUpdate={handleNodeUpdate}
+              onDelete={handleNodeDelete}
+              onClose={() => setSelectedNodeId(null)}
+              nodeNamespaces={nodeNamespaces}
+              refs={refs}
+            />
+          )
         )}
       </div>
 
@@ -475,10 +518,18 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
 
 // ── Public export: wraps with ReactFlowProvider ───────────────────────────────
 
-export default function WorkflowCanvas({ workflow }: { workflow: Workflow }) {
+export default function WorkflowCanvas({
+  workflow,
+  executionId,
+  executionSteps,
+}: {
+  workflow: Workflow
+  executionId?: string
+  executionSteps?: Record<string, ExecutionStep>
+}) {
   return (
     <ReactFlowProvider>
-      <CanvasInner workflow={workflow} />
+      <CanvasInner workflow={workflow} executionId={executionId} executionSteps={executionSteps} />
     </ReactFlowProvider>
   )
 }
