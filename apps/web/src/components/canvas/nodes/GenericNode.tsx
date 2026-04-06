@@ -2,10 +2,11 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Box } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle } from './execution-status'
+import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
   const { namespace, executionStep } = data as unknown as CanvasNodeData
+  const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
@@ -25,6 +26,9 @@ export function GenericNode({ data, selected, type }: NodeProps) {
       </div>
       <div className="px-3 py-2">
         <p className="truncate text-sm font-medium text-gray-800">{namespace}</p>
+        {outputPreview && (
+          <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
+        )}
       </div>
     </div>
   )

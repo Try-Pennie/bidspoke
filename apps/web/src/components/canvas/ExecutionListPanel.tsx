@@ -51,9 +51,18 @@ interface Props {
   refreshSignal?: number  // increment to trigger a refresh
 }
 
+type StatusFilter = 'all' | 'failed' | 'completed'
+
+const FILTER_TABS: { key: StatusFilter; label: string }[] = [
+  { key: 'all',       label: 'All'       },
+  { key: 'failed',    label: 'Failed'    },
+  { key: 'completed', label: 'Completed' },
+]
+
 export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState<StatusFilter>('all')
 
   function load() {
     setLoading(true)
@@ -67,9 +76,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   useEffect(() => { load() }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (refreshSignal) load() }, [refreshSignal]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const filtered = filter === 'all' ? executions : executions.filter((e) => e.status === filter)
+
   // Group by date
   const groups: { label: string; items: ExecRow[] }[] = []
-  for (const exec of executions) {
+  for (const exec of filtered) {
     const label = getDateLabel(exec.started_at)
     const existing = groups.find((g) => g.label === label)
     if (existing) existing.items.push(exec)
@@ -88,12 +99,29 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
           <RefreshCw className="h-3 w-3" />
         </button>
       </div>
+      <div className="flex border-b border-gray-100">
+        {FILTER_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setFilter(tab.key)}
+            className={`flex-1 py-1.5 text-xs transition-colors ${
+              filter === tab.key
+                ? 'border-b-2 border-indigo-500 font-semibold text-indigo-600'
+                : 'text-gray-400 hover:text-gray-600'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <p className="px-3 py-4 text-xs text-gray-400">Loading…</p>
-        ) : executions.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-gray-400">No executions yet.</p>
+        ) : filtered.length === 0 ? (
+          <p className="px-3 py-4 text-xs text-gray-400">
+            {filter === 'all' ? 'No executions yet.' : `No ${filter} executions.`}
+          </p>
         ) : (
           groups.map(({ label, items }) => (
             <div key={label}>

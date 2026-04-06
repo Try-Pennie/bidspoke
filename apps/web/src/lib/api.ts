@@ -36,6 +36,11 @@ export const api = {
     save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
       req<Workflow>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
+    setActive: (id: string, is_active: boolean) =>
+      req<{ id: string; is_active: boolean }>(`/api/workflows/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active }),
+      }),
     test: (id: string, payload: unknown) =>
       req<unknown>(`/api/workflows/${id}/test`, {
         method: 'POST',
@@ -67,6 +72,13 @@ export const api = {
   },
 
   executions: {
+    listRecent: () =>
+      req<Array<{
+        id: string
+        workflow_id: string
+        status: string
+        started_at: string
+      }>>('/api/executions'),
     list: (workflowId: string) =>
       req<Array<{
         id: string

@@ -6,11 +6,21 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, Play, Trash2 } from 'lucide-react'
+import { Plus, Trash2, Power } from 'lucide-react'
+
+// Last execution status per workflow_id
+type HealthMap = Record<string, 'completed' | 'failed' | 'running'>
+
+const HEALTH_DOT: Record<string, string> = {
+  completed: 'bg-green-400',
+  failed:    'bg-red-500',
+  running:   'bg-amber-400 animate-pulse',
+}
 
 export default function WorkflowsPage() {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
+  const [health, setHealth] = useState<HealthMap>({})
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -20,6 +30,19 @@ export default function WorkflowsPage() {
       .then(setWorkflows)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
+
+    // Fetch recent executions across all workflows to build health map
+    api.executions.listRecent()
+      .then((execs) => {
+        const map: HealthMap = {}
+        for (const e of execs) {
+          if (!map[e.workflow_id]) {
+            map[e.workflow_id] = e.status as HealthMap[string]
+          }
+        }
+        setHealth(map)
+      })
+      .catch(() => {})
   }, [])
 
   async function handleCreate() {
@@ -40,6 +63,18 @@ export default function WorkflowsPage() {
       setWorkflows((ws) => ws.filter((w) => w.id !== id))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Delete failed')
+    }
+  }
+
+  async function handleToggleActive(wf: WorkflowSummary) {
+    const next = !wf.is_active
+    // Optimistic update
+    setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: next } : w))
+    try {
+      await api.workflows.setActive(wf.id, next)
+    } catch {
+      // Revert on failure
+      setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: wf.is_active } : w))
     }
   }
 
@@ -82,50 +117,59 @@ export default function WorkflowsPage() {
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Last run</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">Active</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">By</th>
-                  <th className="w-20 px-4 py-3" />
+                  <th className="w-16 px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {workflows.map((wf) => (
-                  <tr key={wf.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3">
-                      <Link
-                        href={`/workflows/${wf.id}`}
-                        className="font-medium text-gray-900 hover:text-blue-600"
-                      >
-                        {wf.name}
-                      </Link>
-                      {wf.description && (
-                        <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                          wf.is_active
-                            ? 'bg-green-50 text-green-700'
-                            : 'bg-gray-100 text-gray-600'
-                        }`}
-                      >
-                        {wf.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {new Date(wf.updated_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-gray-500">{wf.updated_by_email ?? '—'}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
+                {workflows.map((wf) => {
+                  const lastRunStatus = health[wf.id]
+                  return (
+                    <tr key={wf.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3">
                         <Link
                           href={`/workflows/${wf.id}`}
-                          className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                          title="Edit"
+                          className="font-medium text-gray-900 hover:text-blue-600"
                         >
-                          <Play className="h-3.5 w-3.5" />
+                          {wf.name}
                         </Link>
+                        {wf.description && (
+                          <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {lastRunStatus ? (
+                          <span className="flex items-center gap-1.5">
+                            <span className={`h-2 w-2 rounded-full ${HEALTH_DOT[lastRunStatus] ?? 'bg-gray-300'}`} />
+                            <span className="text-xs capitalize text-gray-500">{lastRunStatus}</span>
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-300">No runs</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => handleToggleActive(wf)}
+                          title={wf.is_active ? 'Click to deactivate' : 'Click to activate'}
+                          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
+                            wf.is_active ? 'bg-green-500' : 'bg-gray-200'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                              wf.is_active ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                          />
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {new Date(wf.updated_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500">{wf.updated_by_email ?? '—'}</td>
+                      <td className="px-4 py-3">
                         <button
                           onClick={() => handleDelete(wf.id, wf.name)}
                           className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
@@ -133,10 +177,10 @@ export default function WorkflowsPage() {
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

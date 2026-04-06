@@ -23,3 +23,21 @@ export function getExecutionStyle(exec: ExecutionStep | null | undefined): CSSPr
     default:                     return {}
   }
 }
+
+/** Returns a one-line output preview for a completed step, e.g. "status: 200" */
+export function getOutputPreview(exec: ExecutionStep | null | undefined): string | null {
+  if (!exec || exec.status !== 'completed') return null
+  const out = exec.output
+  if (out === null || out === undefined) return null
+  if (typeof out === 'string') return out.slice(0, 40)
+  if (typeof out === 'number' || typeof out === 'boolean') return String(out)
+  if (typeof out === 'object') {
+    const keys = Object.keys(out as object)
+    if (keys.length === 0) return null
+    const key = keys[0]
+    const val = (out as Record<string, unknown>)[key]
+    const valStr = typeof val === 'object' ? JSON.stringify(val) : String(val)
+    return `${key}: ${valStr.slice(0, 32)}`
+  }
+  return null
+}

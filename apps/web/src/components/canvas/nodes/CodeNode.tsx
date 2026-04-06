@@ -2,11 +2,12 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Code } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle } from './execution-status'
+import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function CodeNode({ data, selected }: NodeProps) {
   const { namespace, config, executionStep } = data as unknown as CanvasNodeData
   const workerName = config.worker_name as string | undefined
+  const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
@@ -27,6 +28,9 @@ export function CodeNode({ data, selected }: NodeProps) {
         <p className="mt-0.5 truncate text-xs text-gray-400">
           {workerName ?? 'No worker configured'}
         </p>
+        {outputPreview && (
+          <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
+        )}
       </div>
     </div>
   )

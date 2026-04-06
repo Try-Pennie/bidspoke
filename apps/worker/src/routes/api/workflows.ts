@@ -143,6 +143,43 @@ workflows.put('/:id', async (c) => {
   return c.json({ ...updated, version_id: version.id })
 })
 
+// PATCH /api/workflows/:id — lightweight field updates (is_active) without creating a version snapshot
+workflows.patch('/:id', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ is_active?: boolean }>()
+
+  const { error: fetchError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .single()
+
+  if (fetchError) return c.json({ error: 'Workflow not found' }, 404)
+
+  const updates: Record<string, unknown> = { updated_by: userId, updated_by_email: email }
+  if (body.is_active !== undefined) updates.is_active = body.is_active
+
+  const { data, error } = await supabase
+    .from('workflows')
+    .update(updates)
+    .eq('id', id)
+    .select('id, name, is_active, updated_at')
+    .single()
+
+  if (error) return c.json({ error: error.message }, 500)
+
+  await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+  await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
+    is_active: body.is_active,
+    changed_by_name: email,
+  })
+
+  return c.json(data)
+})
+
 // DELETE /api/workflows/:id
 workflows.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')

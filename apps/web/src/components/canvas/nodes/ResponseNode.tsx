@@ -2,11 +2,12 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle } from './execution-status'
+import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ResponseNode({ data, selected }: NodeProps) {
   const { namespace, config, executionStep } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
+  const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
@@ -25,6 +26,9 @@ export function ResponseNode({ data, selected }: NodeProps) {
       <div className="px-3 py-2">
         <p className="truncate text-sm font-medium text-gray-800">{namespace}</p>
         <p className="mt-0.5 text-xs text-gray-400">HTTP {statusCode}</p>
+        {outputPreview && (
+          <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
+        )}
       </div>
     </div>
   )

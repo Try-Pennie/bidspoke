@@ -2,13 +2,14 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle } from './execution-status'
+import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 interface BranchEntry { label: string }
 
 export function BranchNode({ data, selected }: NodeProps) {
   const { namespace, config, executionStep } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
+  const outputPreview = getOutputPreview(executionStep)
 
   // All handles: one per branch label + else
   const handles = [...branches.map((b) => b.label), 'else']
@@ -32,6 +33,9 @@ export function BranchNode({ data, selected }: NodeProps) {
         <p className="mt-0.5 text-xs text-gray-400">
           {branches.length === 0 ? 'No branches' : `${branches.length} branch${branches.length !== 1 ? 'es' : ''} + else`}
         </p>
+        {outputPreview && (
+          <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
+        )}
       </div>
       <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
         {handles.map((label) => (
