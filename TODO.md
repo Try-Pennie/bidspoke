@@ -61,7 +61,7 @@
 - [x] Version history endpoints (list versions, get version, restore version)
 - [x] Execution history endpoints (list, detail, resume, replay)
 - [x] Environment variables & secrets endpoints (CRUD, Cloudflare secret sync)
-- [ ] **Test:** All CRUD endpoints with auth (valid JWT, invalid JWT, wrong org)
+- [x] **Test:** All CRUD endpoints with auth (valid JWT, invalid JWT, wrong org)
 
 ### 1.4 Circuit Breakers — Upstream Services
 - [x] Implement Durable Object for circuit breaker state (closed/open/half-open) — PRD Section 2.5.2
