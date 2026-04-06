@@ -1,10 +1,10 @@
 'use client'
 
 import type { Node } from '@xyflow/react'
-import type { CanvasNodeData, ConditionGroup, NodeType } from '@/types/workflow'
+import type { CanvasNodeData, ConditionGroup, NodeType, ExecutionStep } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle } from 'lucide-react'
 
 interface Props {
   node: Node
@@ -16,8 +16,9 @@ interface Props {
 }
 
 export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNamespaces, refs = [] }: Props) {
-  const data = node.data as unknown as CanvasNodeData
+  const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
+  const exec = data.executionStep
 
   function updateConfig(patch: Record<string, unknown>) {
     onUpdate(node.id, { config: { ...data.config, ...patch } })
@@ -47,6 +48,25 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
           </button>
         </div>
       </div>
+
+      {/* Execution result banner */}
+      {exec && exec.status === 'failed' && (
+        <div className="border-b border-red-100 bg-red-50 px-4 py-2.5">
+          <div className="flex items-center gap-1.5 text-xs font-medium text-red-600">
+            <XCircle className="h-3.5 w-3.5 flex-shrink-0" />
+            Failed{exec.error_type ? ` · ${exec.error_type}` : ''}
+          </div>
+          {exec.error_message && (
+            <p className="mt-1 font-mono text-xs text-red-700">{exec.error_message}</p>
+          )}
+        </div>
+      )}
+      {exec && exec.status === 'completed' && (
+        <div className="flex items-center gap-1.5 border-b border-green-100 bg-green-50 px-4 py-2 text-xs font-medium text-green-700">
+          <CheckCircle className="h-3.5 w-3.5" />
+          Completed
+        </div>
+      )}
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
