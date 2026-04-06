@@ -75,8 +75,8 @@
 - [x] Branch node (N conditional outputs, else edge) — PRD Section 5.1
 - [x] Response node (status code, headers, body template) — PRD Section 5.6
 - [x] Exit node (early termination with optional response)
-- [ ] **Test:** Each node type in isolation with sample payloads
-- [ ] **Test:** Conditional edge evaluation (AND/OR groups, all operator types)
+- [x] **Test:** Each node type in isolation with sample payloads
+- [x] **Test:** Conditional edge evaluation (AND/OR groups, all operator types)
 
 ### 1.6 Frontend — Canvas Editor
 - [x] Set up Next.js on Cloudflare Pages

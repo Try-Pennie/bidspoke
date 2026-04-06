@@ -1,0 +1,118 @@
+import { describe, it, expect } from 'vitest'
+import { executeResponseNode } from '../response'
+import type { ExecutionContext, NodeDefinition } from '../../../types'
+
+function ctx(overrides: { payload?: unknown; steps?: Record<string, unknown>; env?: Record<string, string> } = {}): ExecutionContext {
+  return {
+    trigger: { payload: overrides.payload ?? {}, source: 'test', workflow_id: 'wf', trace_id: 'trace' },
+    steps: Object.fromEntries(
+      Object.entries(overrides.steps ?? {}).map(([k, v]) => [k, { output: v, status: 'completed' as const }])
+    ),
+    env: overrides.env ?? {},
+  }
+}
+
+function node(config: NodeDefinition['config']): NodeDefinition {
+  return { id: 'n1', namespace: 'response_step', type: 'response', config }
+}
+
+describe('executeResponseNode', () => {
+  describe('defaults', () => {
+    it('returns status 200 with empty headers and null body by default', () => {
+      const result = executeResponseNode(node({}), ctx())
+      expect(result.output).toEqual({ status_code: 200, headers: {}, body: null })
+    })
+  })
+
+  describe('static config', () => {
+    it('uses configured status code', () => {
+      const result = executeResponseNode(node({ status_code: 201 }), ctx())
+      expect((result.output as { status_code: number }).status_code).toBe(201)
+    })
+
+    it('uses configured headers', () => {
+      const result = executeResponseNode(node({ headers: { 'X-Custom': 'value' } }), ctx())
+      expect((result.output as { headers: Record<string, string> }).headers).toEqual({ 'X-Custom': 'value' })
+    })
+
+    it('passes through a static body object', () => {
+      const result = executeResponseNode(node({ body: { accepted: true, code: 42 } }), ctx())
+      expect((result.output as { body: unknown }).body).toEqual({ accepted: true, code: 42 })
+    })
+
+    it('passes through a static string body', () => {
+      const result = executeResponseNode(node({ body: 'OK' }), ctx())
+      expect((result.output as { body: unknown }).body).toBe('OK')
+    })
+  })
+
+  describe('template resolution in body', () => {
+    it('resolves {{trigger.payload.*}} references', () => {
+      const result = executeResponseNode(
+        node({ body: { name: '{{trigger.payload.name}}' } }),
+        ctx({ payload: { name: 'Alice' } })
+      )
+      expect((result.output as { body: { name: string } }).body.name).toBe('Alice')
+    })
+
+    it('resolves {{steps.namespace.*}} references', () => {
+      const result = executeResponseNode(
+        node({ body: { score: '{{steps.credit.score}}' } }),
+        ctx({ steps: { credit: { score: 720 } } })
+      )
+      expect((result.output as { body: { score: unknown } }).body.score).toBe(720)
+    })
+
+    it('resolves {{env.KEY}} references', () => {
+      const result = executeResponseNode(
+        node({ body: { partner: '{{env.PARTNER_NAME}}' } }),
+        ctx({ env: { PARTNER_NAME: 'Tripoint' } })
+      )
+      expect((result.output as { body: { partner: string } }).body.partner).toBe('Tripoint')
+    })
+
+    it('resolves inline interpolation within a string', () => {
+      const result = executeResponseNode(
+        node({ body: { message: 'Hello {{trigger.payload.name}}, your score is {{steps.credit.score}}.' } }),
+        ctx({ payload: { name: 'Bob' }, steps: { credit: { score: 680 } } })
+      )
+      expect((result.output as { body: { message: string } }).body.message).toBe('Hello Bob, your score is 680.')
+    })
+
+    it('resolves templates recursively in nested objects', () => {
+      const result = executeResponseNode(
+        node({ body: { offer: { amount: '{{steps.bid.amount}}', currency: 'USD' } } }),
+        ctx({ steps: { bid: { amount: 5000 } } })
+      )
+      expect((result.output as { body: { offer: { amount: unknown } } }).body.offer.amount).toBe(5000)
+    })
+
+    it('resolves templates in arrays', () => {
+      const result = executeResponseNode(
+        node({ body: ['{{trigger.payload.a}}', '{{trigger.payload.b}}'] }),
+        ctx({ payload: { a: 1, b: 2 } })
+      )
+      expect((result.output as { body: unknown[] }).body).toEqual([1, 2])
+    })
+
+    it('returns undefined (empty string in interpolation) for missing references', () => {
+      const result = executeResponseNode(
+        node({ body: { val: '{{steps.missing.output.x}}' } }),
+        ctx()
+      )
+      // Single expression with missing ref → resolves to undefined
+      expect((result.output as { body: { val: unknown } }).body.val).toBeUndefined()
+    })
+
+    it('passes through non-string primitives unchanged', () => {
+      const result = executeResponseNode(
+        node({ body: { count: 42, active: true, nothing: null } }),
+        ctx()
+      )
+      const body = (result.output as { body: Record<string, unknown> }).body
+      expect(body.count).toBe(42)
+      expect(body.active).toBe(true)
+      expect(body.nothing).toBeNull()
+    })
+  })
+})
