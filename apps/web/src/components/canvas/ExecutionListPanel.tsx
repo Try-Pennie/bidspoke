@@ -159,7 +159,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                   >
                     <div className="flex items-center gap-1.5">
                       <Icon className={`h-3 w-3 flex-shrink-0 ${cfg.color}`} />
-                      <span className="text-xs font-medium capitalize text-gray-700">
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
                         {exec.source}
                       </span>
                       {exec.duration_ms !== null && (
