@@ -97,7 +97,7 @@
 - [x] Implement Slack OAuth connection (org-level)
 - [x] Implement failure alert notifications
 - [x] Per-workflow channel overrides
-- [ ] **Test:** Trigger a failing workflow, verify Slack alert with trace_id (deferred — needs Slack bot token configured)
+- [x] **Test:** Trigger a failing workflow, verify Slack alert (trace_id removed from alert; direct link sufficient)
 
 ### 1.8 Pipedream Import
 - [x] Implement JSON parser for Pipedream workflow export
@@ -150,11 +150,11 @@
 - [ ] **Test:** Alert fires on failure, suppressed when configured off
 
 ### 2.4 Test Runner
-- [ ] Implement test execution mode (same engine, flagged as test) — PRD Section 6.5
-- [ ] Implement step-by-step execution view in UI
+- [x] Implement test execution mode (same engine, flagged as test) — PRD Section 6.5 (TestRunPanel + isTest flag)
+- [x] Implement step-by-step execution view in UI (execution overlay on canvas, ExecutionStepPanel)
 - [ ] Implement saved test payloads
-- [ ] Implement replay from start and resume from failure
-- [ ] **Test:** Run test payload through workflow, verify step-by-step results visible in UI
+- [x] Implement replay from start and resume from failure (Replay button in execution banner)
+- [x] **Test:** Run test payload through workflow, verify step-by-step results visible in UI
 
 ### 2.5 Observability
 - [ ] Implement structured JSON logging (trace_id, workflow_id, step info, event types) — PRD Section 10.3
