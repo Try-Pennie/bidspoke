@@ -133,8 +133,10 @@ export default function IntegrationsPage() {
           </div>
         )}
 
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
+
         {/* Slack card */}
-        <div className="max-w-xl rounded-xl border border-gray-200 bg-white p-6">
+        <div className="rounded-xl border border-gray-200 bg-white p-6">
           <div className="mb-5 flex items-center justify-between">
             <div className="flex items-center gap-3">
               {/* Slack logo */}
@@ -267,6 +269,8 @@ export default function IntegrationsPage() {
             </form>
           )}
         </div>
+
+        </div> {/* end grid */}
       </div>
     </NavLayout>
   )
