@@ -14,16 +14,34 @@ executions.get('/', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const { workflow_id, status, source, from, to } = c.req.query()
 
+  // Resolve the set of workflow IDs this org owns (optionally scoped to one)
+  let workflowIds: string[]
+  if (workflow_id) {
+    // Verify this workflow belongs to the org
+    const { data: wf } = await supabase
+      .from('workflows')
+      .select('id')
+      .eq('id', workflow_id)
+      .eq('organization_id', orgId)
+      .single()
+    if (!wf) return c.json({ error: 'Workflow not found' }, 404)
+    workflowIds = [wf.id]
+  } else {
+    const { data: wfs } = await supabase
+      .from('workflows')
+      .select('id')
+      .eq('organization_id', orgId)
+    workflowIds = (wfs ?? []).map((w) => w.id)
+    if (workflowIds.length === 0) return c.json([])
+  }
+
   let query = supabase
     .from('workflow_executions')
-    .select('id, workflow_id, status, source, trace_id, started_at, completed_at, duration_ms, error_message, is_test')
-    .in('workflow_id',
-      supabase.from('workflows').select('id').eq('organization_id', orgId) as unknown as string[]
-    )
+    .select('id, workflow_id, status, source, started_at, duration_ms, error_message')
+    .in('workflow_id', workflowIds)
     .order('started_at', { ascending: false })
     .limit(100)
 
-  if (workflow_id) query = query.eq('workflow_id', workflow_id)
   if (status) query = query.eq('status', status)
   if (source) query = query.eq('source', source)
   if (from) query = query.gte('started_at', from)
