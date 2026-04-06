@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar } from '@/types/workflow'
@@ -16,6 +16,8 @@ export default function EnvPage() {
   const [newVar, setNewVar] = useState<NewVar>({ key: '', value: '', is_secret: false })
   const [creating, setCreating] = useState(false)
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     api.env.list()
@@ -40,8 +42,20 @@ export default function EnvPage() {
     }
   }
 
-  async function handleDelete(id: string, key: string) {
-    if (!confirm(`Delete "${key}"?`)) return
+  function requestDelete(id: string) {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(id)
+    deleteTimerRef.current = setTimeout(() => setConfirmingDelete(null), 4000)
+  }
+
+  function cancelDelete() {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(null)
+  }
+
+  async function handleDelete(id: string) {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(null)
     try {
       await api.env.delete(id)
       setVars((vs) => vs.filter((v) => v.id !== id))
@@ -192,12 +206,27 @@ export default function EnvPage() {
                       {new Date(v.updated_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => handleDelete(v.id, v.key)}
-                        className="rounded p-1.5 text-gray-300 hover:bg-red-50 hover:text-red-500"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {confirmingDelete === v.id ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleDelete(v.id)}
+                            className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                          >
+                            Delete
+                          </button>
+                          <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => requestDelete(v.id)}
+                          className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                          title="Delete variable"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

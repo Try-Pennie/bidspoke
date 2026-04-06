@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Copy, Trash2, Plus, Key, Check, Eye, EyeOff } from 'lucide-react'
@@ -24,6 +24,8 @@ export default function SourcesPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null)
+  const revokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function load() {
     try {
@@ -55,8 +57,20 @@ export default function SourcesPage() {
     }
   }
 
+  function requestRevoke(name: string) {
+    if (revokeTimerRef.current) clearTimeout(revokeTimerRef.current)
+    setConfirmingRevoke(name)
+    revokeTimerRef.current = setTimeout(() => setConfirmingRevoke(null), 4000)
+  }
+
+  function cancelRevoke() {
+    if (revokeTimerRef.current) clearTimeout(revokeTimerRef.current)
+    setConfirmingRevoke(null)
+  }
+
   async function handleDelete(name: string) {
-    if (!confirm(`Revoke all API keys for "${name}"? Any callers using these keys will immediately get 401s.`)) return
+    if (revokeTimerRef.current) clearTimeout(revokeTimerRef.current)
+    setConfirmingRevoke(null)
     setDeleting(name)
     setError(null)
     try {
@@ -155,14 +169,29 @@ export default function SourcesPage() {
                 <div key={source.name} className="rounded-xl border border-gray-200 bg-white p-4">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="font-mono text-sm font-semibold text-gray-900">{source.name}</p>
-                    <button
-                      onClick={() => handleDelete(source.name)}
-                      disabled={deleting === source.name}
-                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      {deleting === source.name ? 'Revoking…' : 'Revoke'}
-                    </button>
+                    {confirmingRevoke === source.name ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleDelete(source.name)}
+                          disabled={deleting === source.name}
+                          className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                        >
+                          {deleting === source.name ? 'Revoking…' : 'Revoke'}
+                        </button>
+                        <button onClick={cancelRevoke} className="text-xs text-gray-400 hover:text-gray-600">
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => requestRevoke(source.name)}
+                        disabled={deleting === source.name}
+                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        Revoke
+                      </button>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">

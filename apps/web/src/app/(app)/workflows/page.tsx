@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
@@ -24,6 +24,8 @@ export default function WorkflowsPage() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     api.workflows.list()
@@ -56,8 +58,20 @@ export default function WorkflowsPage() {
     }
   }
 
-  async function handleDelete(id: string, name: string) {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return
+  function requestDelete(id: string) {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(id)
+    deleteTimerRef.current = setTimeout(() => setConfirmingDelete(null), 4000)
+  }
+
+  function cancelDelete() {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(null)
+  }
+
+  async function handleDelete(id: string) {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
+    setConfirmingDelete(null)
     try {
       await api.workflows.delete(id)
       setWorkflows((ws) => ws.filter((w) => w.id !== id))
@@ -170,13 +184,27 @@ export default function WorkflowsPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-500">{wf.updated_by_email ?? '—'}</td>
                       <td className="px-4 py-3">
-                        <button
-                          onClick={() => handleDelete(wf.id, wf.name)}
-                          className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
-                          title="Delete"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        {confirmingDelete === wf.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleDelete(wf.id)}
+                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                            >
+                              Delete
+                            </button>
+                            <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => requestDelete(wf.id)}
+                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                            title="Delete workflow"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </td>
                     </tr>
                   )

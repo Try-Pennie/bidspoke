@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { CheckCircle, Unlink, Loader2 } from 'lucide-react'
@@ -25,6 +25,8 @@ export default function IntegrationsPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
+  const disconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
@@ -91,8 +93,20 @@ export default function IntegrationsPage() {
     }
   }
 
+  function requestDisconnect() {
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current)
+    setConfirmingDisconnect(true)
+    disconnectTimerRef.current = setTimeout(() => setConfirmingDisconnect(false), 4000)
+  }
+
+  function cancelDisconnect() {
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current)
+    setConfirmingDisconnect(false)
+  }
+
   async function handleDisconnect() {
-    if (!confirm('Disconnect Slack? Failure alerts will stop immediately.')) return
+    if (disconnectTimerRef.current) clearTimeout(disconnectTimerRef.current)
+    setConfirmingDisconnect(false)
     setDisconnecting(true)
     setError(null)
     try {
@@ -164,14 +178,30 @@ export default function IntegrationsPage() {
                 Alerts fire on transient + permanent errors. Business rejections never alert.
                 Override channel per-workflow in the canvas editor.
               </p>
-              <button
-                onClick={handleDisconnect}
-                disabled={disconnecting}
-                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-              >
-                <Unlink className="h-4 w-4" />
-                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-              </button>
+              {confirmingDisconnect ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleDisconnect}
+                    disabled={disconnecting}
+                    className="flex items-center gap-1.5 rounded-lg bg-red-500 px-3 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                  >
+                    <Unlink className="h-4 w-4" />
+                    {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </button>
+                  <button onClick={cancelDisconnect} className="text-sm text-gray-400 hover:text-gray-600">
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={requestDisconnect}
+                  disabled={disconnecting}
+                  className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                >
+                  <Unlink className="h-4 w-4" />
+                  Disconnect
+                </button>
+              )}
             </div>
           ) : (
             <form onSubmit={handleSave} className="space-y-4">
