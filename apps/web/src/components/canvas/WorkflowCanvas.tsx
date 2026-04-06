@@ -32,9 +32,10 @@ import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
+import ExecutionListPanel from './ExecutionListPanel'
 import type { ExecutionStep } from '@/types/workflow'
 
 // Defined outside component to prevent re-render on each render
@@ -154,6 +155,7 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
   const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
+  const [mode, setMode] = useState<'edit' | 'view'>(() => (executionId ? 'view' : 'edit'))
 
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -354,26 +356,55 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
             value={name}
             onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
           />
-          {isDirty && <span className="text-xs text-amber-500">Unsaved</span>}
+          {isDirty && mode === 'edit' && <span className="text-xs text-amber-500">Unsaved</span>}
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={undo}
-            disabled={history.length === 0}
-            className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
-            title="Undo (⌘Z)"
-          >
-            <Undo2 className="h-4 w-4" />
-          </button>
-          <button
-            onClick={redo}
-            disabled={future.length === 0}
-            className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
-            title="Redo (⌘⇧Z)"
-          >
-            <Redo2 className="h-4 w-4" />
-          </button>
+          {/* Edit / View toggle */}
+          <div className="flex overflow-hidden rounded border border-gray-200 text-xs">
+            <button
+              onClick={() => {
+                if (executionId) router.push(`/workflows/${workflow.id}`)
+                setMode('edit')
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
+                mode === 'edit' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
+              }`}
+            >
+              <Pencil className="h-3 w-3" />
+              Edit
+            </button>
+            <button
+              onClick={() => setMode('view')}
+              className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
+                mode === 'view' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
+              }`}
+            >
+              <Eye className="h-3 w-3" />
+              View
+            </button>
+          </div>
+
+          {mode === 'edit' && (
+            <>
+              <button
+                onClick={undo}
+                disabled={history.length === 0}
+                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
+                title="Undo (⌘Z)"
+              >
+                <Undo2 className="h-4 w-4" />
+              </button>
+              <button
+                onClick={redo}
+                disabled={future.length === 0}
+                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
+                title="Redo (⌘⇧Z)"
+              >
+                <Redo2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
 
           <button
             onClick={() => setShowSettings((s) => !s)}
@@ -383,14 +414,16 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
             <Settings className="h-4 w-4" />
           </button>
 
-          <button
-            onClick={() => setShowImport(true)}
-            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-            title="Import from Pipedream"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            Import
-          </button>
+          {mode === 'edit' && (
+            <button
+              onClick={() => setShowImport(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+              title="Import from Pipedream"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Import
+            </button>
+          )}
 
           <button
             onClick={() => router.push(`/workflows/${workflow.id}/versions`)}
@@ -400,34 +433,36 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
             History
           </button>
 
-          <button
-            onClick={handleSave}
-            disabled={saving || !isDirty}
-            className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-          >
-            {savedOk ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save'}
-          </button>
+          {mode === 'edit' && (
+            <button
+              onClick={handleSave}
+              disabled={saving || !isDirty}
+              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {savedOk ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save'}
+            </button>
+          )}
         </div>
       </header>
 
-      {executionId && (
-        <div className="flex items-center justify-between bg-indigo-50 px-4 py-1.5 text-xs border-b border-indigo-100">
+      {mode === 'view' && executionId && (
+        <div className="flex items-center justify-between border-b border-indigo-100 bg-indigo-50 px-4 py-1.5 text-xs">
           <div className="flex items-center gap-2 text-indigo-700">
             <Eye className="h-3.5 w-3.5" />
-            <span className="font-medium">Execution replay</span>
-            <span className="font-mono text-indigo-400">{executionId}</span>
+            <span className="font-medium">Viewing execution</span>
+            <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
           </div>
           <button
             onClick={() => router.push(`/workflows/${workflow.id}`)}
             className="flex items-center gap-1 text-indigo-500 hover:text-indigo-700"
           >
             <X className="h-3.5 w-3.5" />
-            Exit replay
+            Clear
           </button>
         </div>
       )}
@@ -454,9 +489,17 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
 
       {/* Canvas area */}
       <div className="flex flex-1 overflow-hidden">
-        {!executionId && <NodePalette onDragStart={onDragStart} />}
+        {mode === 'edit' ? (
+          <NodePalette onDragStart={onDragStart} />
+        ) : (
+          <ExecutionListPanel
+            workflowId={workflow.id}
+            selectedId={executionId}
+            onSelect={(id) => router.push(`/workflows/${workflow.id}?execution=${id}`)}
+          />
+        )}
 
-        <div className="flex-1" onDrop={onDrop} onDragOver={onDragOver}>
+        <div className="flex-1" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -472,9 +515,11 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
             onNodeClick={(_, node) => { if (node.id !== 'trigger') setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
+            nodesDraggable={mode === 'edit'}
+            nodesConnectable={mode === 'edit'}
+            deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
             fitView
             fitViewOptions={{ padding: 0.2 }}
-            deleteKeyCode="Backspace"
           >
             <Background color="#e5e7eb" gap={20} />
             <Controls />
@@ -494,22 +539,21 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
           </ReactFlow>
         </div>
 
-        {selectedNode && (
-          executionId ? (
-            <ExecutionStepPanel
-              node={selectedNode}
-              onClose={() => setSelectedNodeId(null)}
-            />
-          ) : (
-            <ConfigPanel
-              node={selectedNode}
-              onUpdate={handleNodeUpdate}
-              onDelete={handleNodeDelete}
-              onClose={() => setSelectedNodeId(null)}
-              nodeNamespaces={nodeNamespaces}
-              refs={refs}
-            />
-          )
+        {selectedNode && mode === 'edit' && (
+          <ConfigPanel
+            node={selectedNode}
+            onUpdate={handleNodeUpdate}
+            onDelete={handleNodeDelete}
+            onClose={() => setSelectedNodeId(null)}
+            nodeNamespaces={nodeNamespaces}
+            refs={refs}
+          />
+        )}
+        {selectedNode && mode === 'view' && executionId && (
+          <ExecutionStepPanel
+            node={selectedNode}
+            onClose={() => setSelectedNodeId(null)}
+          />
         )}
       </div>
 
