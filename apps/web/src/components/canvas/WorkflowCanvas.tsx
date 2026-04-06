@@ -426,7 +426,7 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
               if (changes.some((c) => c.type === 'remove')) setIsDirty(true)
             }}
             onConnect={onConnect}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+            onNodeClick={(_, node) => { if (node.id !== 'trigger') setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
             fitView
