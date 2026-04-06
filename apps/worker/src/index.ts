@@ -41,7 +41,7 @@ app.use(
   '*',
   cors({
     origin: (origin) => {
-      const allowed = ['http://localhost:3000', 'https://bidspoke.pages.dev']
+      const allowed = ['http://localhost:3000', 'https://bidspoke.pages.dev', 'https://bidspoke.trypennie.dev']
       return allowed.includes(origin) ? origin : null
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
