@@ -207,6 +207,28 @@ export async function walkGraph(
 
   while (current) {
     const node = current
+
+    // Resume: step was already completed in a prior execution — skip re-execution, reuse output
+    const priorStep = ctx.steps[node.namespace]
+    if (priorStep?.status === 'completed') {
+      const priorOutput = priorStep.output
+      lastOutput = priorOutput
+      if (node.type === 'exit' || node.type === 'response') return priorOutput
+      const resumeEdges = outgoingEdges(node.id, definition.edges)
+      let resumeNext: NodeDefinition | undefined
+      if ((node.type === 'filter' || node.type === 'branch') && priorOutput !== null && typeof priorOutput === 'object') {
+        const route = (priorOutput as Record<string, unknown>)._route as string | undefined
+        if (route) resumeNext = findNode(resumeEdges.find((e) => e.source_handle === route)?.target ?? '', definition.nodes)
+      }
+      if (!resumeNext) {
+        const nextEdge = resumeEdges.find((e) => evaluateEdge(e, ctx))
+        resumeNext = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+      }
+      current = resumeNext
+      stepOrder++
+      continue
+    }
+
     const stepStartedAt = new Date().toISOString()
     let stepStatus: StepStatus = 'running'
     let output: unknown = null

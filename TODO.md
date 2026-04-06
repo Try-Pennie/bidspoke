@@ -50,10 +50,10 @@
 - [x] Implement per-step on_error / fallback_node — PRD Section 11.3
 - [x] Implement audit log writes for all mutations — PRD Section 3.1
 - [x] Set up Cloudflare Worker secrets for API keys and credentials (API_KEY_MAP)
-- [ ] **Test:** End-to-end webhook → authenticate → load definition → execute steps → log → respond
-- [ ] **Test:** Idempotency (duplicate request returns cached response, race condition returns 409)
-- [ ] **Test:** Resume execution (fail mid-workflow, resume, verify skipped steps and fresh execution)
-- [ ] **Test:** Error classification (transient retried, permanent not retried, business rejection logged)
+- [x] **Test:** End-to-end webhook → authenticate → load definition → execute steps → log → respond
+- [x] **Test:** Idempotency (duplicate request returns cached response, race condition returns 409)
+- [x] **Test:** Resume execution (fail mid-workflow, resume, verify skipped steps and fresh execution)
+- [x] **Test:** Error classification (transient retried, permanent not retried, business rejection logged)
 
 ### 1.3 Cloudflare Workers — REST API
 - [x] Implement JWT auth middleware (Supabase JWT validation)
