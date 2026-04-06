@@ -29,10 +29,11 @@ tag = "v1"
 new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 
 # Dynamic Workers — code node sandboxing (PRD Section 5.4)
-[[unsafe.bindings]]
-name = "DYNAMIC_WORKER_LOADER"
-type = "dynamic_dispatch"
-namespace = "bidspoke-code-nodes"
+# TODO: requires Workers for Platforms (paid add-on) — enable when purchased
+# [[unsafe.bindings]]
+# name = "DYNAMIC_WORKER_LOADER"
+# type = "dynamic_dispatch"
+# namespace = "bidspoke-code-nodes"
 
 # Public vars
 [vars]

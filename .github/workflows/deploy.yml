@@ -57,6 +57,6 @@ jobs:
           NEXT_PUBLIC_WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
 
       - name: Deploy to Cloudflare Pages
-        run: pnpm --filter=web pages:deploy -- --project-name ${{ vars.CF_PAGES_PROJECT_NAME }}
+        run: pnpm --filter=worker exec wrangler pages deploy ${{ github.workspace }}/apps/web/.vercel/output/static --project-name ${{ vars.CF_PAGES_PROJECT_NAME }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
