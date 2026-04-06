@@ -1,4 +1,5 @@
 // Integrations management — Slack connection (Phase 1.7), others (Phase 3)
+// POST   /api/integrations/slack/resolve — validate token, return workspace name + channel list
 // POST   /api/integrations/slack        — save/update Slack connection
 // GET    /api/integrations/slack        — get current Slack connection (token masked)
 // DELETE /api/integrations/slack        — disconnect
@@ -12,6 +13,38 @@ import { writeAuditLog } from '../../lib/audit'
 type Variables = AuthVariables
 
 const integrations = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+integrations.post('/slack/resolve', async (c) => {
+  const body = await c.req.json<{ bot_token: string }>()
+  if (!body.bot_token) return c.json({ error: 'bot_token is required' }, 400)
+
+  const token = body.bot_token.trim()
+
+  const authRes = await fetch('https://slack.com/api/auth.test', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+  })
+  const authData = await authRes.json() as { ok: boolean; team?: string; error?: string }
+  if (!authData.ok) {
+    return c.json({ error: `Invalid token: ${authData.error ?? 'auth.test failed'}` }, 400)
+  }
+
+  const chanRes = await fetch(
+    'https://slack.com/api/conversations.list?types=public_channel&exclude_archived=true&limit=200',
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  const chanData = await chanRes.json() as {
+    ok: boolean
+    channels?: Array<{ id: string; name: string }>
+    error?: string
+  }
+
+  const channels = chanData.ok
+    ? (chanData.channels ?? []).map((ch) => ({ id: ch.id, name: ch.name })).sort((a, b) => a.name.localeCompare(b.name))
+    : []
+
+  return c.json({ workspace_name: authData.team ?? '', channels })
+})
 
 integrations.post('/slack', async (c) => {
   const { orgId, userId, email } = c.get('user')

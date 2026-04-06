@@ -84,6 +84,11 @@ export const api = {
   },
 
   integrations: {
+    resolveSlack: (bot_token: string) =>
+      req<{ workspace_name: string; channels: Array<{ id: string; name: string }> }>(
+        '/api/integrations/slack/resolve',
+        { method: 'POST', body: JSON.stringify({ bot_token }) }
+      ),
     getSlack: () => req<{
       connected: boolean
       workspace_name?: string | null

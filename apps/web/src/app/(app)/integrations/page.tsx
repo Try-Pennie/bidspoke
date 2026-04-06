@@ -1,9 +1,11 @@
 'use client'
 
+export const runtime = 'edge'
+
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { CheckCircle, Unlink } from 'lucide-react'
+import { CheckCircle, Unlink, Loader2 } from 'lucide-react'
 
 interface SlackStatus {
   connected: boolean
@@ -11,6 +13,11 @@ interface SlackStatus {
   default_channel?: string | null
   updated_at?: string
   updated_by_email?: string | null
+}
+
+interface ResolvedSlack {
+  workspace_name: string
+  channels: Array<{ id: string; name: string }>
 }
 
 export default function IntegrationsPage() {
@@ -21,7 +28,10 @@ export default function IntegrationsPage() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
-  const [form, setForm] = useState({ bot_token: '', default_channel: '', workspace_name: '' })
+  const [token, setToken] = useState('')
+  const [resolving, setResolving] = useState(false)
+  const [resolved, setResolved] = useState<ResolvedSlack | null>(null)
+  const [selectedChannel, setSelectedChannel] = useState('')
 
   useEffect(() => {
     api.integrations.getSlack()
@@ -30,17 +40,48 @@ export default function IntegrationsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  async function handleTokenBlur() {
+    const t = token.trim()
+    if (!t || !t.startsWith('xoxb-') || resolved) return
+    setResolving(true)
+    setError(null)
+    try {
+      const data = await api.integrations.resolveSlack(t)
+      setResolved(data)
+      setSelectedChannel(data.channels[0]?.id ?? '')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to validate token')
+    } finally {
+      setResolving(false)
+    }
+  }
+
+  function handleTokenChange(value: string) {
+    setToken(value)
+    if (resolved) {
+      setResolved(null)
+      setSelectedChannel('')
+    }
+  }
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.bot_token || !form.default_channel) return
+    if (!token || !selectedChannel || !resolved) return
     setSaving(true)
     setError(null)
     setSuccess(false)
+    const channel = resolved.channels.find((c) => c.id === selectedChannel)
     try {
-      await api.integrations.saveSlack(form)
+      await api.integrations.saveSlack({
+        bot_token: token.trim(),
+        default_channel: channel ? `#${channel.name}` : selectedChannel,
+        workspace_name: resolved.workspace_name,
+      })
       const status = await api.integrations.getSlack()
       setSlack(status)
-      setForm({ bot_token: '', default_channel: '', workspace_name: '' })
+      setToken('')
+      setResolved(null)
+      setSelectedChannel('')
       setSuccess(true)
       setTimeout(() => setSuccess(false), 3000)
     } catch (e) {
@@ -53,6 +94,7 @@ export default function IntegrationsPage() {
   async function handleDisconnect() {
     if (!confirm('Disconnect Slack? Failure alerts will stop immediately.')) return
     setDisconnecting(true)
+    setError(null)
     try {
       await api.integrations.deleteSlack()
       setSlack({ connected: false })
@@ -119,8 +161,8 @@ export default function IntegrationsPage() {
                 )}
               </div>
               <p className="text-xs text-gray-500">
-                Alert on: transient + permanent errors. Business rejections never alert.
-                Override channel per-workflow in the canvas editor settings.
+                Alerts fire on transient + permanent errors. Business rejections never alert.
+                Override channel per-workflow in the canvas editor.
               </p>
               <button
                 onClick={handleDisconnect}
@@ -134,54 +176,63 @@ export default function IntegrationsPage() {
           ) : (
             <form onSubmit={handleSave} className="space-y-4">
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">
-                  Bot token
-                </label>
-                <input
-                  type="password"
-                  className="input w-full font-mono"
-                  placeholder="xoxb-..."
-                  value={form.bot_token}
-                  onChange={(e) => setForm({ ...form, bot_token: e.target.value })}
-                  required
-                />
+                <label className="mb-1 block text-xs font-medium text-gray-600">Bot token</label>
+                <div className="relative">
+                  <input
+                    type="password"
+                    className="input w-full pr-10 font-mono"
+                    placeholder="xoxb-..."
+                    value={token}
+                    onChange={(e) => handleTokenChange(e.target.value)}
+                    onBlur={handleTokenBlur}
+                    required
+                  />
+                  {resolving && (
+                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-400" />
+                  )}
+                </div>
                 <p className="mt-1 text-xs text-gray-400">
-                  From your Slack App → OAuth & Permissions → Bot User OAuth Token.
-                  Requires <code className="rounded bg-gray-100 px-1">chat:write</code> scope.
+                  Slack App → OAuth & Permissions → Bot User OAuth Token.
+                  Requires <code className="rounded bg-gray-100 px-1">chat:write</code> and <code className="rounded bg-gray-100 px-1">channels:read</code> scopes.
                 </p>
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">
-                  Default alert channel
-                </label>
-                <input
-                  className="input w-full"
-                  placeholder="#alerts"
-                  value={form.default_channel}
-                  onChange={(e) => setForm({ ...form, default_channel: e.target.value })}
-                  required
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">
-                  Workspace name (optional)
-                </label>
-                <input
-                  className="input w-full"
-                  placeholder="My Company"
-                  value={form.workspace_name}
-                  onChange={(e) => setForm({ ...form, workspace_name: e.target.value })}
-                />
-              </div>
+
+              {resolved && (
+                <>
+                  <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
+                    Connected to <span className="font-medium">{resolved.workspace_name}</span>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-600">Default alert channel</label>
+                    {resolved.channels.length > 0 ? (
+                      <select
+                        className="input w-full"
+                        value={selectedChannel}
+                        onChange={(e) => setSelectedChannel(e.target.value)}
+                        required
+                      >
+                        {resolved.channels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-xs text-gray-500">No public channels found. Make sure the bot has <code className="rounded bg-gray-100 px-1">channels:read</code> scope.</p>
+                    )}
+                  </div>
+                </>
+              )}
+
               {success && (
                 <p className="text-sm text-green-600">Slack connected successfully.</p>
               )}
+
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || !resolved || !selectedChannel}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Connect Slack'}
+                {saving ? 'Connecting…' : 'Connect Slack'}
               </button>
             </form>
           )}
