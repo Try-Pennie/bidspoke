@@ -9,6 +9,7 @@ import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { withRetry } from './retry'
 import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
 import { sendFailureAlert } from '../lib/slack'
+import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
 import type { Env } from '../index'
 import type {
   ExecutionContext,
@@ -25,6 +26,14 @@ class StepFailureError extends Error {
     public readonly errorType: ErrorType
   ) {
     super(message)
+  }
+}
+
+// Thrown when a service circuit breaker is open — treated as transient
+class CircuitOpenError extends Error {
+  constructor(service: string, opensAt?: number) {
+    const when = opensAt ? ` (retries after ${new Date(opensAt).toISOString()})` : ''
+    super(`Service "${service}" circuit is open — request skipped${when}`)
   }
 }
 
@@ -210,7 +219,19 @@ async function walkGraph(
       timeout_ms: (node.config.timeout_ms as number) ?? 30000,
     }
 
+    // Circuit breaker — applies to nodes with config.service set (Integration nodes, PRD Section 2.5.2)
+    const serviceName = typeof node.config.service === 'string' ? node.config.service : null
+    const cbClient = serviceName ? new CircuitBreakerClient(env, serviceName) : null
+
     try {
+      // Check circuit before attempting the call
+      if (cbClient) {
+        const cbCheck = await cbClient.check()
+        if (!cbCheck.allowed) {
+          throw new CircuitOpenError(serviceName!, cbCheck.opens_at)
+        }
+      }
+
       const result = await withRetry(
         () => executeNode(node, ctx, env),
         retryConfig,
@@ -222,9 +243,27 @@ async function walkGraph(
       output = result.output
       stepStatus = 'completed'
       lastOutput = output
+
+      // Record success — closes half-open circuit if probing
+      if (cbClient) cbClient.recordSuccess().catch(() => {})
+
     } catch (err) {
+      // Classify error type — needed for CB recording and Slack alerting
+      if (err instanceof CircuitOpenError) {
+        errorType = 'transient'
+      } else if (err instanceof Response) {
+        errorType = classifyHttpError(err.status)
+      } else {
+        errorType = classifyTransportError(err)
+      }
+
+      // Only transient errors count toward the circuit breaker threshold (PRD Section 2.5.2)
+      // CircuitOpenError itself is not recorded — no request was attempted
+      if (cbClient && errorType === 'transient' && !(err instanceof CircuitOpenError)) {
+        cbClient.recordError().catch(() => {})
+      }
+
       errorMessage = err instanceof Error ? err.message : String(err)
-      errorType = 'permanent'
       const onError = node.config.on_error ?? 'fail'
 
       if (onError === 'skip') {
