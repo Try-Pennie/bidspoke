@@ -171,7 +171,7 @@ export async function executeWorkflow(
         error_message: errorMessage ?? 'Unknown error',
         error_type: failedErrorType,
         timestamp: completedAt,
-      }).catch((e) => console.error('[slack] alert failed:', e))
+      }, env.APP_URL).catch((e) => console.error('[slack] alert failed:', e))
     )
   }
 

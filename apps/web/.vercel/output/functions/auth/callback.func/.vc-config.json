@@ -1,0 +1,18 @@
+{
+  "runtime": "edge",
+  "name": "auth/callback",
+  "deploymentTarget": "v8-worker",
+  "entrypoint": "index.js",
+  "assets": [],
+  "framework": {
+    "slug": "nextjs",
+    "version": "14.2.35"
+  },
+  "environment": {
+    "__NEXT_BUILD_ID": "gEgdyqtP8FTgm5o6VcHYv",
+    "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY": "3vUWWh/sRMkqNnHY9IOiWguB6DqYf/OtIRQ3QTe4Od8=",
+    "__NEXT_PREVIEW_MODE_ID": "31168073d84287922aa4e559685c27d0",
+    "__NEXT_PREVIEW_MODE_ENCRYPTION_KEY": "0ed0779c58721ee347c0ea7c62bbb7223b7d65144e41967862895e37e4aed9de",
+    "__NEXT_PREVIEW_MODE_SIGNING_KEY": "d26199752ec2fb0dfdb8457c460b119dd81c42f13532c4cdde9034bbdde8668d"
+  }
+}

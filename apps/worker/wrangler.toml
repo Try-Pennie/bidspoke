@@ -39,6 +39,7 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 [vars]
 SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-known/jwks.json"
 PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_score" to enable
+APP_URL = "https://bidspoke.trypennie.dev"
 
 # Secrets (set via `wrangler secret put`):
 #   SUPABASE_URL

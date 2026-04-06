@@ -66,6 +66,37 @@ export const api = {
     delete: (id: string) => req<{ ok: boolean }>(`/api/env/${id}`, { method: 'DELETE' }),
   },
 
+  executions: {
+    get: (id: string) =>
+      req<{
+        id: string
+        workflow_id: string
+        status: string
+        source: string
+        trace_id: string
+        started_at: string
+        completed_at: string | null
+        duration_ms: number | null
+        error_message: string | null
+        trigger_payload: unknown
+        steps: Array<{
+          id: string
+          step_namespace: string
+          step_type: string
+          status: string
+          input: unknown
+          output: unknown
+          error_message: string | null
+          error_type: string | null
+          retries_used: number
+          started_at: string
+          completed_at: string
+          duration_ms: number
+          step_order: number
+        }>
+      }>(`/api/executions/${id}`),
+  },
+
   circuit: {
     status: (name: string) => req<unknown>(`/api/circuit/${name}/status`),
     reset: (name: string) =>

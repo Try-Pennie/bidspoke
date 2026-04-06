@@ -57,7 +57,8 @@ export async function sendFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: FailureAlertPayload
+  payload: FailureAlertPayload,
+  appUrl: string
 ): Promise<void> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return  // Slack not configured — silently skip
@@ -65,6 +66,7 @@ export async function sendFailureAlert(
   const channel = channelOverride || connection.default_channel
   const errorLabel = payload.error_type === 'transient' ? 'Transient' : 'Permanent'
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
+  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}/executions/${payload.execution_id}`
 
   const blocks = [
     {
@@ -75,7 +77,7 @@ export async function sendFailureAlert(
       type: 'section',
       fields: [
         { type: 'mrkdwn', text: `*Workflow:*\n${payload.workflow_name}` },
-        { type: 'mrkdwn', text: `*Step:*\n${stepText}` },
+        { type: 'mrkdwn', text: `*Failed step:*\n${stepText}` },
         { type: 'mrkdwn', text: `*Error type:*\n${errorLabel}` },
         { type: 'mrkdwn', text: `*Time:*\n${new Date(payload.timestamp).toUTCString()}` },
       ],
@@ -88,15 +90,25 @@ export async function sendFailureAlert(
       },
     },
     {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'View execution', emoji: true },
+          url: executionUrl,
+          style: 'danger',
+        },
+      ],
+    },
+    {
       type: 'context',
       elements: [
         { type: 'mrkdwn', text: `trace_id: \`${payload.trace_id}\`` },
-        { type: 'mrkdwn', text: `execution_id: \`${payload.execution_id}\`` },
       ],
     },
   ]
 
-  await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed: ${payload.error_message}`)
+  await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
 }
 
 export async function sendCircuitAlert(

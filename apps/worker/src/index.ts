@@ -27,6 +27,9 @@ export interface Env {
   // PII redaction — comma-separated field patterns, empty = disabled (PRD 12.4)
   PII_REDACTION_FIELDS: string
 
+  // Frontend URL — used for deep links in Slack alerts
+  APP_URL: string
+
   // Cloudflare API — for syncing secrets (PRD 12.3)
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string

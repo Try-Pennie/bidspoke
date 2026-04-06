@@ -97,7 +97,7 @@
 - [x] Implement Slack OAuth connection (org-level)
 - [x] Implement failure alert notifications
 - [x] Per-workflow channel overrides
-- [ ] **Test:** Trigger a failing workflow, verify Slack alert with trace_id
+- [ ] **Test:** Trigger a failing workflow, verify Slack alert with trace_id (deferred — needs Slack bot token configured)
 
 ### 1.8 Pipedream Import
 - [x] Implement JSON parser for Pipedream workflow export
