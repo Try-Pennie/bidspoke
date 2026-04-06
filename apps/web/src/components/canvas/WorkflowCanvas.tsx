@@ -34,7 +34,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
@@ -166,6 +166,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [refreshSignal, setRefreshSignal] = useState(0)
   const [showTest, setShowTest] = useState(false)
   const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
+  const [showOverflow, setShowOverflow] = useState(false)
+  const overflowRef = useRef<HTMLDivElement>(null)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -180,6 +182,17 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   useEffect(() => {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!showOverflow) return
+    function handler(e: MouseEvent) {
+      if (overflowRef.current && !overflowRef.current.contains(e.target as globalThis.Node)) {
+        setShowOverflow(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showOverflow])
 
   // Inject execution step data into node.data when an execution is active
   useEffect(() => {
@@ -454,14 +467,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </>
           )}
 
-          <button
-            onClick={() => setShowSettings((s) => !s)}
-            className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showSettings ? 'bg-gray-100 text-gray-600' : ''}`}
-            title="Workflow settings"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-
           {mode === 'edit' && (
             <button
               onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
@@ -477,24 +482,43 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </button>
           )}
 
-          {mode === 'edit' && (
+          {/* Overflow menu — Settings, Import, History */}
+          <div ref={overflowRef} className="relative">
             <button
-              onClick={() => setShowImport(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-              title="Import from Pipedream"
+              onClick={() => setShowOverflow((s) => !s)}
+              className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showOverflow ? 'bg-gray-100 text-gray-600' : ''}`}
+              title="More options"
             >
-              <Upload className="h-3.5 w-3.5" />
-              Import
+              <MoreHorizontal className="h-4 w-4" />
             </button>
-          )}
-
-          <button
-            onClick={() => router.push(`/workflows/${workflow.id}/versions`)}
-            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
-          >
-            <Clock className="h-3.5 w-3.5" />
-            History
-          </button>
+            {showOverflow && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                <button
+                  onClick={() => { setShowSettings((s) => !s); setShowOverflow(false) }}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'text-blue-600' : 'text-gray-700'}`}
+                >
+                  <Settings className="h-4 w-4 text-gray-400" />
+                  Settings
+                </button>
+                {mode === 'edit' && (
+                  <button
+                    onClick={() => { setShowImport(true); setShowOverflow(false) }}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <Upload className="h-4 w-4 text-gray-400" />
+                    Import from Pipedream
+                  </button>
+                )}
+                <button
+                  onClick={() => { router.push(`/workflows/${workflow.id}/versions`); setShowOverflow(false) }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <Clock className="h-4 w-4 text-gray-400" />
+                  Version history
+                </button>
+              </div>
+            )}
+          </div>
 
           {mode === 'edit' && (
             <button
