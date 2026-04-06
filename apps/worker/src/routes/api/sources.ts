@@ -57,7 +57,11 @@ sources.post('/', async (c) => {
   const apiKey = Array.from(keyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
   map[apiKey] = name
-  await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+  try {
+    await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+  } catch (err) {
+    return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
+  }
 
   const supabase = createSupabaseClient(c.env)
   await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'created', userId, {
