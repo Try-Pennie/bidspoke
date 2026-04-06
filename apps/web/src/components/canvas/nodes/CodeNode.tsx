@@ -13,8 +13,8 @@ export function CodeNode({ data, selected }: NodeProps) {
         selected ? 'border-t-amber-300 border-r-amber-300 border-b-amber-300 ring-2 ring-amber-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
       }`}
     >
-      <Handle type="target" position={Position.Left} id="input" />
-      <Handle type="source" position={Position.Right} id="output" />
+      <Handle type="target" position={Position.Top} id="input" />
+      <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
         <Code className="h-3.5 w-3.5 text-amber-500" />

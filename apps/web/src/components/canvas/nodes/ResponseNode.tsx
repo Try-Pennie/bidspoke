@@ -13,7 +13,7 @@ export function ResponseNode({ data, selected }: NodeProps) {
         selected ? 'border-t-green-300 border-r-green-300 border-b-green-300 ring-2 ring-green-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
       }`}
     >
-      <Handle type="target" position={Position.Left} id="input" />
+      <Handle type="target" position={Position.Top} id="input" />
       {/* Terminal node — no source handle */}
 
       <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">

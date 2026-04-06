@@ -14,7 +14,7 @@ export function FilterNode({ data, selected }: NodeProps) {
         selected ? 'border-t-blue-300 border-r-blue-300 border-b-blue-300 ring-2 ring-blue-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
       }`}
     >
-      <Handle type="target" position={Position.Left} id="input" />
+      <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
         <Filter className="h-3.5 w-3.5 text-blue-500" />
@@ -26,14 +26,14 @@ export function FilterNode({ data, selected }: NodeProps) {
           {ruleCount === 0 ? 'No rules' : `${ruleCount} rule${ruleCount !== 1 ? 's' : ''}`}
         </p>
       </div>
-      <div className="flex flex-col items-end gap-2 border-t border-gray-100 px-3 py-2 text-xs">
-        <span className="text-green-600">pass →</span>
-        <span className="text-red-500">exit →</span>
+      <div className="flex justify-between border-t border-gray-100 px-3 py-2 text-xs">
+        <span className="text-green-600">↓ pass</span>
+        <span className="text-red-500">↓ exit</span>
       </div>
 
-      {/* Two source handles — pass ~40%, exit ~80% of node height */}
-      <Handle type="source" position={Position.Right} id="pass" style={{ top: '55%' }} />
-      <Handle type="source" position={Position.Right} id="exit" style={{ top: '80%' }} />
+      {/* Two source handles at bottom — pass left, exit right */}
+      <Handle type="source" position={Position.Bottom} id="pass" style={{ left: '30%' }} />
+      <Handle type="source" position={Position.Bottom} id="exit" style={{ left: '70%' }} />
     </div>
   )
 }
