@@ -14,7 +14,6 @@ export interface FailureAlertPayload {
   workflow_id: string
   workflow_name: string
   execution_id: string
-  trace_id: string
   step_namespace?: string
   error_message: string
   error_type: ErrorType
@@ -98,12 +97,6 @@ export async function sendFailureAlert(
           url: executionUrl,
           style: 'danger',
         },
-      ],
-    },
-    {
-      type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `trace_id: \`${payload.trace_id}\`` },
       ],
     },
   ]

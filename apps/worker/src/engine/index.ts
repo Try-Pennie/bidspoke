@@ -166,7 +166,6 @@ export async function executeWorkflow(
         workflow_id: workflowId,
         workflow_name,
         execution_id: executionId,
-        trace_id: traceId,
         step_namespace: failedStep,
         error_message: errorMessage ?? 'Unknown error',
         error_type: failedErrorType,
