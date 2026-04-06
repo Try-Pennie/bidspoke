@@ -12,7 +12,7 @@ export function TriggerNode({ data }: NodeProps) {
   const authLabel = auth === 'api_key' ? 'API Key' : auth === 'none' ? 'None' : auth
 
   return (
-    <div className="relative w-52 rounded-lg border-l-4 border-l-indigo-500 border-t border-r border-b border-t-gray-200 border-r-gray-200 border-b-gray-200 bg-white shadow-sm">
+    <div className="relative w-52 rounded-lg border border-gray-200 bg-white shadow-sm">
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">

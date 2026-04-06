@@ -10,8 +10,8 @@ export function GenericNode({ data, selected, type }: NodeProps) {
 
   return (
     <div
-      className={`relative w-52 rounded-lg border-l-4 border-l-gray-400 border-t border-r border-b bg-white shadow-sm ${
-        selected ? 'border-t-gray-300 border-r-gray-300 border-b-gray-300 ring-2 ring-gray-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
+      className={`relative w-52 rounded-lg border bg-white shadow-sm ${
+        selected ? 'border-gray-400 ring-2 ring-gray-100' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >
