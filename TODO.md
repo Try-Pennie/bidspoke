@@ -100,10 +100,10 @@
 - [ ] **Test:** Trigger a failing workflow, verify Slack alert with trace_id
 
 ### 1.8 Pipedream Import
-- [ ] Implement JSON parser for Pipedream workflow export
-- [ ] Map Pipedream components to Bidspoke node types (code → code, filter → filter, _controlFlow → branch)
-- [ ] Auto-layout imported workflows on canvas
-- [ ] **Test:** Import each existing Pipedream workflow, verify node mapping and edge structure
+- [x] Implement JSON parser for Pipedream workflow export
+- [x] Map Pipedream components to Bidspoke node types (code → code, filter → filter, _controlFlow → branch)
+- [x] Auto-layout imported workflows on canvas
+- [x] **Test:** Import each existing Pipedream workflow, verify node mapping and edge structure
 
 ### 1.9 Phase 1 Integration Testing
 - [ ] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)

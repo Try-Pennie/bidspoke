@@ -26,9 +26,11 @@ import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
+import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings } from 'lucide-react'
+import type { ImportResult } from '@/lib/pipedream-import'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 
 // Defined outside component to prevent re-render on each render
@@ -125,6 +127,7 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
+  const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
 
   // Undo/redo
@@ -284,6 +287,17 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
     }
   }
 
+  // ── Import ──────────────────────────────────────────────────────────────────
+
+  function handleImport(result: ImportResult) {
+    snapshot()
+    setNodes(defToNodes(result.def.nodes))
+    setEdges(defToEdges(result.def.edges))
+    setName(result.name)
+    setIsDirty(true)
+    setShowImport(false)
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -329,6 +343,15 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
             title="Workflow settings"
           >
             <Settings className="h-4 w-4" />
+          </button>
+
+          <button
+            onClick={() => setShowImport(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            title="Import from Pipedream"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Import
           </button>
 
           <button
@@ -427,6 +450,13 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
           />
         )}
       </div>
+
+      {showImport && (
+        <ImportDialog
+          onImport={handleImport}
+          onClose={() => setShowImport(false)}
+        />
+      )}
     </div>
   )
 }

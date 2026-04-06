@@ -6,6 +6,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "pages:build": "npx @cloudflare/next-on-pages",
     "pages:deploy": "npx wrangler pages deploy .vercel/output/static"
@@ -29,6 +30,7 @@
     "eslint-config-next": "^14.2.3",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.2"
   }
 }
