@@ -193,7 +193,7 @@ export default function IntegrationsPage() {
                 </div>
                 <p className="mt-1 text-xs text-gray-400">
                   Slack App → OAuth & Permissions → Bot User OAuth Token.
-                  Requires <code className="rounded bg-gray-100 px-1">chat:write</code> and <code className="rounded bg-gray-100 px-1">channels:read</code> scopes.
+                  Requires <code className="rounded bg-gray-100 px-1">chat:write</code>, <code className="rounded bg-gray-100 px-1">channels:read</code>, and <code className="rounded bg-gray-100 px-1">groups:read</code> scopes.
                 </p>
               </div>
 

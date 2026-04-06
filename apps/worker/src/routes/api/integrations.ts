@@ -30,7 +30,7 @@ integrations.post('/slack/resolve', async (c) => {
   }
 
   const chanRes = await fetch(
-    'https://slack.com/api/conversations.list?types=public_channel&exclude_archived=true&limit=200',
+    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
     { headers: { Authorization: `Bearer ${token}` } }
   )
   const chanData = await chanRes.json() as {
