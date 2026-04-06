@@ -175,17 +175,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
 
-  // Inject execution step data into node.data when in replay mode
+  // Inject or clear execution step data depending on whether we're in replay mode
   useEffect(() => {
-    if (!executionSteps) return
-    setNodes((ns) =>
-      ns.map((n) => {
+    setNodes((ns) => {
+      if (!executionSteps) {
+        // Clear stale overlay when leaving replay mode
+        if (!ns.some((n) => (n.data as Record<string, unknown>).executionStep !== undefined)) return ns
+        return ns.map((n) => {
+          const { executionStep: _cleared, ...rest } = n.data as Record<string, unknown>
+          return { ...n, data: rest }
+        })
+      }
+      return ns.map((n) => {
         if (n.id === 'trigger') return n
-        const ns_ = (n.data as unknown as CanvasNodeData).namespace
-        const step = executionSteps[ns_] ?? null
+        const namespace = (n.data as unknown as CanvasNodeData).namespace
+        const step = executionSteps[namespace] ?? null
         return { ...n, data: { ...(n.data as object), executionStep: step } }
       })
-    )
+    })
   }, [executionSteps, setNodes])
 
   const refs = [
