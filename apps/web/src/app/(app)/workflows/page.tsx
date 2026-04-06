@@ -6,21 +6,11 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, Trash2, Power } from 'lucide-react'
-
-// Last execution status per workflow_id
-type HealthMap = Record<string, 'completed' | 'failed' | 'running'>
-
-const HEALTH_DOT: Record<string, string> = {
-  completed: 'bg-green-400',
-  failed:    'bg-red-500',
-  running:   'bg-amber-400 animate-pulse',
-}
+import { Plus, Trash2 } from 'lucide-react'
 
 export default function WorkflowsPage() {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
-  const [health, setHealth] = useState<HealthMap>({})
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -32,19 +22,6 @@ export default function WorkflowsPage() {
       .then(setWorkflows)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
-
-    // Fetch recent executions across all workflows to build health map
-    api.executions.listRecent()
-      .then((execs) => {
-        const map: HealthMap = {}
-        for (const e of execs) {
-          if (!map[e.workflow_id]) {
-            map[e.workflow_id] = e.status as HealthMap[string]
-          }
-        }
-        setHealth(map)
-      })
-      .catch(() => {})
   }, [])
 
   async function handleCreate() {
@@ -135,7 +112,6 @@ export default function WorkflowsPage() {
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Last run</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Active</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">By</th>
@@ -143,9 +119,7 @@ export default function WorkflowsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {workflows.map((wf) => {
-                  const lastRunStatus = health[wf.id]
-                  return (
+                {workflows.map((wf) => (
                     <tr key={wf.id} className="hover:bg-gray-50">
                       <td className="px-4 py-3">
                         <Link
@@ -156,16 +130,6 @@ export default function WorkflowsPage() {
                         </Link>
                         {wf.description && (
                           <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {lastRunStatus ? (
-                          <span className="flex items-center gap-1.5">
-                            <span className={`h-2 w-2 rounded-full ${HEALTH_DOT[lastRunStatus] ?? 'bg-gray-300'}`} />
-                            <span className="text-xs capitalize text-gray-500">{lastRunStatus}</span>
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-300">No runs</span>
                         )}
                       </td>
                       <td className="px-4 py-3">
@@ -211,8 +175,7 @@ export default function WorkflowsPage() {
                         )}
                       </td>
                     </tr>
-                  )
-                })}
+                ))}
               </tbody>
             </table>
           </div>
