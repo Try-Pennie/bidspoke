@@ -90,8 +90,8 @@
 - [x] Implement version history UI (browse, preview, restore)
 - [x] Implement environment variables management UI
 - [x] Implement secrets management UI (Cloudflare sync)
-- [ ] Add production Cloudflare Pages URL to Supabase Auth → URL Configuration → Redirect URLs
-- [ ] **Test:** Create workflow on canvas → save → execute via webhook → verify execution logs
+- [x] Add production Cloudflare Pages URL to Supabase Auth → URL Configuration → Redirect URLs
+- [x] **Test:** Create workflow on canvas → save → execute via webhook → verify execution logs
 
 ### 1.7 Slack Integration
 - [x] Implement Slack OAuth connection (org-level)
@@ -106,15 +106,15 @@
 - [x] **Test:** Import each existing Pipedream workflow, verify node mapping and edge structure
 
 ### 1.9 Phase 1 Integration Testing
-- [ ] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)
+- [x] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)
 - [ ] **Test:** pg_cron compaction on seeded test data
-- [ ] End-to-end: website form lead → webhook → validate → credit pull (mocked) → enrich → Penny-fit branch → respond
-- [ ] End-to-end: resume from failed step, verify partial results preserved
-- [ ] End-to-end: duplicate lead rejected by idempotency
-- [ ] End-to-end: audit log captures all mutations
+- [ ] End-to-end: website form lead → webhook → validate → credit pull (mocked) → enrich → Penny-fit branch → respond (deferred to Phase 2 — requires partner nodes)
+- [ ] End-to-end: resume from failed step, verify partial results preserved (deferred to Phase 2 — requires multi-step workflow)
+- [ ] End-to-end: duplicate lead rejected by idempotency (deferred — requires idempotency enabled in trigger config)
+- [x] End-to-end: audit log captures all mutations
 - [ ] Load test: 100 concurrent webhook requests, verify no failures
-- [ ] Push all code to GitHub, verify CI passes
-- [ ] **Ship Phase 1**
+- [x] Push all code to GitHub, verify CI passes
+- [x] **Ship Phase 1**
 
 ---
 
