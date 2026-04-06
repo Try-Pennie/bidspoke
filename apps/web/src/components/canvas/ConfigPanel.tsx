@@ -3,6 +3,7 @@
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, NodeType } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
+import TemplateTextarea from './TemplateTextarea'
 import { X, Trash2, Plus } from 'lucide-react'
 
 interface Props {
@@ -11,9 +12,10 @@ interface Props {
   onDelete: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
+  refs?: string[]
 }
 
-export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNamespaces }: Props) {
+export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNamespaces, refs = [] }: Props) {
   const data = node.data as unknown as CanvasNodeData
   const type = node.type as NodeType
 
@@ -59,11 +61,11 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
         </Field>
 
         {/* Type-specific config */}
-        {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} />}
-        {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} />}
+        {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'code' && <CodeConfig config={data.config} onChange={updateConfig} />}
-        {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} />}
-        {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} />}
+        {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
 
         {/* Common: retry + error handling */}
         <details>
@@ -128,9 +130,11 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
 function FilterConfig({
   config,
   onChange,
+  refs,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
 }) {
   const rules = (config.rules as { groups: ConditionGroup[]; logic: 'AND' | 'OR' } | undefined) ?? {
     groups: [{ conditions: [], logic: 'AND' as const }],
@@ -144,6 +148,7 @@ function FilterConfig({
         groups={rules.groups}
         logic={rules.logic}
         onChange={(groups, logic) => onChange({ rules: { groups, logic } })}
+        fieldSuggestions={refs}
       />
     </section>
   )
@@ -152,9 +157,11 @@ function FilterConfig({
 function BranchConfig({
   config,
   onChange,
+  refs,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
 }) {
   const branches = (config.branches as Array<{ label: string; condition: { groups: ConditionGroup[]; logic: 'AND' | 'OR' } }> | undefined) ?? []
 
@@ -198,6 +205,7 @@ function BranchConfig({
             groups={branch.condition.groups}
             logic={branch.condition.logic}
             onChange={(groups, logic) => updateBranch(i, { condition: { groups, logic } })}
+            fieldSuggestions={refs}
           />
         </div>
       ))}
@@ -238,10 +246,19 @@ function CodeConfig({
 function ResponseConfig({
   config,
   onChange,
+  refs,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
 }) {
+  const bodyStr =
+    config.body !== undefined
+      ? typeof config.body === 'string'
+        ? config.body
+        : JSON.stringify(config.body, null, 2)
+      : ''
+
   return (
     <section className="space-y-3">
       <Field label="Status code">
@@ -254,23 +271,18 @@ function ResponseConfig({
         />
       </Field>
       <Field label="Body (JSON or template)">
-        <textarea
+        <TemplateTextarea
           className="input min-h-[100px] resize-y font-mono text-xs"
-          placeholder={'{\n  "message": "{{steps.step1.output.value}}"\n}'}
-          value={
-            config.body !== undefined
-              ? typeof config.body === 'string'
-                ? config.body
-                : JSON.stringify(config.body, null, 2)
-              : ''
-          }
-          onChange={(e) => {
+          placeholder={'{\n  "message": "{{steps.step1.value}}"\n}'}
+          value={bodyStr}
+          onChange={(val) => {
             try {
-              onChange({ body: JSON.parse(e.target.value) })
+              onChange({ body: JSON.parse(val) })
             } catch {
-              onChange({ body: e.target.value })
+              onChange({ body: val })
             }
           }}
+          refs={refs}
         />
       </Field>
     </section>
@@ -280,29 +292,33 @@ function ResponseConfig({
 function ExitConfig({
   config,
   onChange,
+  refs,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
 }) {
+  const responseStr =
+    config.response !== undefined
+      ? typeof config.response === 'string'
+        ? config.response
+        : JSON.stringify(config.response, null, 2)
+      : ''
+
   return (
     <Field label="Response body (optional)">
-      <textarea
+      <TemplateTextarea
         className="input min-h-[80px] resize-y font-mono text-xs"
         placeholder="Optional response body"
-        value={
-          config.response !== undefined
-            ? typeof config.response === 'string'
-              ? config.response
-              : JSON.stringify(config.response, null, 2)
-            : ''
-        }
-        onChange={(e) => {
+        value={responseStr}
+        onChange={(val) => {
           try {
-            onChange({ response: JSON.parse(e.target.value) })
+            onChange({ response: JSON.parse(val) })
           } catch {
-            onChange({ response: e.target.value })
+            onChange({ response: val })
           }
         }}
+        refs={refs}
       />
     </Field>
   )

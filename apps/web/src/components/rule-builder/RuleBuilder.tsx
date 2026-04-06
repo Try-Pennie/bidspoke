@@ -2,6 +2,7 @@
 
 import type { ConditionGroup, EdgeCondition } from '@/types/workflow'
 import { Plus, Trash2 } from 'lucide-react'
+import FieldAutocomplete from './FieldAutocomplete'
 
 const OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
   { value: 'eq', label: '=' },
@@ -22,9 +23,10 @@ interface Props {
   groups: ConditionGroup[]
   logic: 'AND' | 'OR'
   onChange: (groups: ConditionGroup[], logic: 'AND' | 'OR') => void
+  fieldSuggestions?: string[]
 }
 
-export default function RuleBuilder({ groups, logic, onChange }: Props) {
+export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions = [] }: Props) {
   function addGroup() {
     onChange(
       [...groups, { conditions: [emptyCondition()], logic: 'AND' }],
@@ -108,11 +110,12 @@ export default function RuleBuilder({ groups, logic, onChange }: Props) {
           <div className="space-y-1.5">
             {group.conditions.map((cond, ci) => (
               <div key={ci} className="flex items-center gap-1.5">
-                <input
+                <FieldAutocomplete
                   className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
                   placeholder="field.path"
                   value={cond.field}
-                  onChange={(e) => updateCondition(gi, ci, { ...cond, field: e.target.value })}
+                  onChange={(val) => updateCondition(gi, ci, { ...cond, field: val })}
+                  suggestions={fieldSuggestions}
                 />
                 <select
                   className="rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"

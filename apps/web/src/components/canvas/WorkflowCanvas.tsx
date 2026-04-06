@@ -125,6 +125,7 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
+  const [envKeys, setEnvKeys] = useState<string[]>([])
 
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -136,6 +137,17 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
+
+  useEffect(() => {
+    api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
+  }, [])
+
+  const refs = [
+    'trigger.payload',
+    'trigger.source',
+    ...nodeNamespaces.map((ns) => `steps.${ns}`),
+    ...envKeys.map((k) => `env.${k}`),
+  ]
 
   // ── History helpers ─────────────────────────────────────────────────────────
 
@@ -411,6 +423,7 @@ function CanvasInner({ workflow }: { workflow: Workflow }) {
             onDelete={handleNodeDelete}
             onClose={() => setSelectedNodeId(null)}
             nodeNamespaces={nodeNamespaces}
+            refs={refs}
           />
         )}
       </div>
