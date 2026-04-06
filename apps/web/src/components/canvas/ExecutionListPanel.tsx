@@ -63,6 +63,16 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>('all')
+  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
+
+  function toggleError(id: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    setExpandedErrors((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
 
   function load() {
     setLoading(true)
@@ -153,8 +163,14 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     </div>
                     <p className="mt-0.5 text-xs text-gray-400">{formatTime(exec.started_at)}</p>
                     {exec.status === 'failed' && exec.error_message && (
-                      <p className="mt-0.5 truncate text-xs text-red-400">
-                        {exec.error_message.length > 60 ? exec.error_message.slice(0, 60) + '…' : exec.error_message}
+                      <p
+                        onClick={(e) => toggleError(exec.id, e)}
+                        className={`mt-0.5 text-xs text-red-400 hover:text-red-600 cursor-pointer ${
+                          expandedErrors.has(exec.id) ? 'whitespace-pre-wrap break-words' : 'truncate'
+                        }`}
+                        title={expandedErrors.has(exec.id) ? 'Click to collapse' : 'Click to expand'}
+                      >
+                        {exec.error_message}
                       </p>
                     )}
                   </button>
