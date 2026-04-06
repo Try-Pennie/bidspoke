@@ -1,8 +1,15 @@
 import type { NodeDefinition, EdgeDefinition, ExecutionContext, ConditionGroup } from '../types'
 
-// Find the entry node: the node with no incoming edges
+// Find the entry node: follow the trigger edge if present, otherwise find the node with no incoming edges from other nodes
 export function findEntryNode(nodes: NodeDefinition[], edges: EdgeDefinition[]): NodeDefinition {
-  const targets = new Set(edges.map((e) => e.target))
+  const triggerEdge = edges.find((e) => e.source === 'trigger')
+  if (triggerEdge) {
+    const entry = nodes.find((n) => n.id === triggerEdge.target)
+    if (entry) return entry
+  }
+  // Fallback for workflows without an explicit trigger edge
+  const nodeIds = new Set(nodes.map((n) => n.id))
+  const targets = new Set(edges.filter((e) => nodeIds.has(e.source)).map((e) => e.target))
   const entry = nodes.find((n) => !targets.has(n.id) && !n.parent)
   if (!entry) throw new Error('No entry node found in workflow graph')
   return entry
