@@ -67,9 +67,19 @@ export async function updateExecutionRecord(
     error_message?: string
   }
 ): Promise<void> {
-  await supabase
+  // Use started_at for partition pruning; fall back to id-only if no rows matched
+  const { data } = await supabase
     .from('workflow_executions')
     .update(update)
     .eq('id', id)
     .eq('started_at', started_at)
+    .select('id')
+
+  if (!data?.length) {
+    // Partition key mismatch — update without started_at filter
+    await supabase
+      .from('workflow_executions')
+      .update(update)
+      .eq('id', id)
+  }
 }
