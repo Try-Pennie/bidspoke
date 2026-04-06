@@ -24,6 +24,7 @@ import { BranchNode } from './nodes/BranchNode'
 import { CodeNode } from './nodes/CodeNode'
 import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
+import { TriggerNode } from './nodes/TriggerNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -35,11 +36,21 @@ import { useRouter } from 'next/navigation'
 
 // Defined outside component to prevent re-render on each render
 const nodeTypes: NodeTypes = {
+  trigger: TriggerNode,
   filter: FilterNode,
   branch: BranchNode,
   code: CodeNode,
   response: ResponseNode,
   exit: ExitNode,
+}
+
+const TRIGGER_NODE: Node = {
+  id: 'trigger',
+  type: 'trigger',
+  position: { x: 250, y: 0 },
+  data: {},
+  deletable: false,
+  selectable: false,
 }
 
 const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
@@ -50,12 +61,13 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
 function defToNodes(nodes: NodeDef[]): Node[] {
-  return nodes.map((n, i) => ({
+  const workflowNodes = nodes.map((n, i) => ({
     id: n.id,
     type: n.type,
-    position: n.position ?? { x: 100 + (i % 4) * 260, y: 80 + Math.floor(i / 4) * 160 },
+    position: n.position ?? { x: 250, y: 160 + i * 160 },
     data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
+  return [TRIGGER_NODE, ...workflowNodes]
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -75,7 +87,7 @@ function flowToDef(
 ): WorkflowDef {
   return {
     trigger,
-    nodes: nodes.map((n) => {
+    nodes: nodes.filter((n) => n.id !== 'trigger').map((n) => {
       const d = n.data as unknown as CanvasNodeData
       return {
         id: n.id,
