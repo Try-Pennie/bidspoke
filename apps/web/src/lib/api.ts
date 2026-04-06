@@ -73,7 +73,7 @@ export const api = {
   },
 
   sources: {
-    list: () => req<{ name: string; key_previews: string[] }[]>('/api/sources'),
+    list: () => req<{ name: string; api_key: string; created_at: string }[]>('/api/sources'),
     create: (name: string) =>
       req<{ name: string; api_key: string }>('/api/sources', {
         method: 'POST',

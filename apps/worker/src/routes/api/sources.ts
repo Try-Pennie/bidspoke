@@ -22,19 +22,17 @@ function parseKeyMap(raw: string): Record<string, string> {
   }
 }
 
-// GET /api/sources — return list of {name, key_preview} sorted by name
-sources.get('/', (c) => {
-  const map = parseKeyMap(c.env.API_KEY_MAP)
-  // Invert: source name → list of masked keys
-  const byName: Record<string, string[]> = {}
-  for (const [key, name] of Object.entries(map)) {
-    if (!byName[name]) byName[name] = []
-    byName[name].push(key.slice(0, 8) + '…')
-  }
-  const result = Object.entries(byName)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, key_previews]) => ({ name, key_previews }))
-  return c.json(result)
+// GET /api/sources — return list of {name, api_key} from Supabase
+sources.get('/', async (c) => {
+  const { orgId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('api_sources')
+    .select('name, api_key, created_at')
+    .eq('organization_id', orgId)
+    .order('name')
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data ?? [])
 })
 
 // POST /api/sources — body: { name: string }
@@ -64,12 +62,16 @@ sources.post('/', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
+  const { error: insertError } = await supabase
+    .from('api_sources')
+    .insert({ organization_id: orgId, name, api_key: apiKey })
+  if (insertError) return c.json({ error: insertError.message }, 500)
+
   await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'created', userId, {
     source_name: name,
     action: 'api_key_created',
   })
 
-  // Return the key once — it cannot be retrieved again
   return c.json({ name, api_key: apiKey }, 201)
 })
 
@@ -92,6 +94,8 @@ sources.delete('/:name', async (c) => {
   await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
 
   const supabase = createSupabaseClient(c.env)
+  await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
+
   await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'deleted', userId, {
     source_name: name,
     action: 'api_key_revoked',
