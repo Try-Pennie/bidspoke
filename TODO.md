@@ -67,7 +67,7 @@
 - [x] Implement Durable Object for circuit breaker state (closed/open/half-open) — PRD Section 2.5.2
 - [x] Wire circuit breakers for Equifax, Salesforce, Eligibility Scout
 - [x] Implement circuit breaker API endpoints (status, manual reset)
-- [ ] **Test:** Trip circuit breaker with repeated failures, verify open state rejects, half-open recovery
+- [x] **Test:** Trip circuit breaker with repeated failures, verify open state rejects, half-open recovery
 
 ### 1.5 Node Types — Phase 1
 - [x] Code node via Dynamic Workers (Monaco editor, sandboxed V8 isolate, controlled outbound proxy) — PRD Section 5.4

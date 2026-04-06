@@ -9,6 +9,13 @@
 
 ## 1. Overview
 
+### 1.0 Name
+
+**Bidspoke** is a portmanteau of two concepts:
+
+- **Bid + spoke** — the hub-and-spoke model, where inbound leads (the hub) fan out to multiple bidding partners (the spokes) in parallel
+- **Bespoke** — a custom-built, purpose-built system, as opposed to an off-the-shelf tool like Pipedream
+
 ### 1.1 What We're Building
 
 Bidspoke is a visual workflow builder and real-time execution engine for lead routing and partner bidding. The tool replaces Pipedream as the primary platform for Pennie's lead evaluation, enrichment, and distribution workflows.

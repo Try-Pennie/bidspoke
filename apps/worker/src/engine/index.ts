@@ -192,7 +192,8 @@ export async function executeWorkflow(
 }
 
 // Walk the graph from entry node to completion, executing each step
-async function walkGraph(
+// Exported for unit testing only — not part of the public API
+export async function walkGraph(
   ctx: ExecutionContext,
   definition: { nodes: NodeDefinition[]; edges: import('../types').EdgeDefinition[] },
   executionId: string,
