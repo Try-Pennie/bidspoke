@@ -105,20 +105,18 @@ export async function executeWorkflow(
   const executionId = crypto.randomUUID()
   const startedAt = new Date().toISOString()
 
-  // Create execution record
-  executionCtx.waitUntil(
-    createExecutionRecord(supabase, {
-      id: executionId,
-      workflow_id: workflowId,
-      workflow_version_id,
-      source,
-      trigger_payload: payload,
-      trace_id: traceId,
-      started_at: startedAt,
-      is_test: options.isTest ?? false,
-      parent_execution_id: options.resumeFromExecutionId,
-    })
-  )
+  // Create execution record — must be awaited before walkGraph so FK constraints on execution_steps are satisfied
+  await createExecutionRecord(supabase, {
+    id: executionId,
+    workflow_id: workflowId,
+    workflow_version_id,
+    source,
+    trigger_payload: payload,
+    trace_id: traceId,
+    started_at: startedAt,
+    is_test: options.isTest ?? false,
+    parent_execution_id: options.resumeFromExecutionId,
+  })
 
   // Build execution context
   const ctx = buildContext(payload, source, workflowId, traceId, envVars)
