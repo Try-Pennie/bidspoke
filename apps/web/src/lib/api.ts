@@ -104,6 +104,8 @@ export const api = {
           step_order: number
         }>
       }>(`/api/executions/${id}`),
+    replay: (id: string) =>
+      req<{ ok?: boolean; error?: string }>(`/api/executions/${id}/replay`, { method: 'POST' }),
   },
 
   circuit: {

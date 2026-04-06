@@ -33,7 +33,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
@@ -159,6 +159,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
   const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
+  const [replaying, setReplaying] = useState(false)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -463,13 +464,33 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
             <span className="font-medium">Viewing execution</span>
             <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
           </div>
-          <button
-            onClick={() => router.push(`/workflows/${workflow.id}`)}
-            className="flex items-center gap-1 text-indigo-500 hover:text-indigo-700"
-          >
-            <X className="h-3.5 w-3.5" />
-            Clear
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              disabled={replaying}
+              onClick={async () => {
+                setReplaying(true)
+                try {
+                  await api.executions.replay(executionId)
+                } finally {
+                  setReplaying(false)
+                }
+              }}
+              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+              title="Re-run with the same trigger payload"
+            >
+              {replaying
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <RotateCcw className="h-3.5 w-3.5" />}
+              Replay
+            </button>
+            <button
+              onClick={() => router.push(`/workflows/${workflow.id}`)}
+              className="flex items-center gap-1 text-indigo-400 hover:text-indigo-600"
+            >
+              <X className="h-3.5 w-3.5" />
+              Clear
+            </button>
+          </div>
         </div>
       )}
 
