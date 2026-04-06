@@ -156,7 +156,7 @@ async function postMessage(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${botToken}`,
     },
-    body: JSON.stringify({ channel, blocks, text }),
+    body: JSON.stringify({ channel, blocks, text, unfurl_links: false }),
   })
 
   if (!res.ok) {
