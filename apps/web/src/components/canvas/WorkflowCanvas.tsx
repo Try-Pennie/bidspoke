@@ -25,6 +25,7 @@ import { CodeNode } from './nodes/CodeNode'
 import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
 import { TriggerNode } from './nodes/TriggerNode'
+import { GenericNode } from './nodes/GenericNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -44,6 +45,12 @@ const nodeTypes: NodeTypes = {
   code: CodeNode,
   response: ResponseNode,
   exit: ExitNode,
+  // Phase 2 placeholders — render with GenericNode until implemented
+  integration: GenericNode,
+  partner_bid: GenericNode,
+  transform: GenericNode,
+  parallel: GenericNode,
+  bid_evaluation: GenericNode,
 }
 
 const TRIGGER_NODE: Node = {
