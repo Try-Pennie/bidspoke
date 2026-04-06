@@ -145,7 +145,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   executionPayload?: unknown
 }) {
   const router = useRouter()
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, fitView } = useReactFlow()
 
   const initEdges = defToEdges(workflow.definition?.edges ?? [])
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -405,12 +405,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   function handleImport(result: ImportResult) {
     snapshot()
-    const importedEdges = defToEdges(result.def.edges)
-    setEdges(importedEdges)
+    // Set nodes first so ReactFlow registers them before edges try to connect
     setNodes(defToNodes(result.def.nodes, result.def.edges, result.def.trigger))
+    setEdges(defToEdges(result.def.edges))
     setName(result.name)
     setIsDirty(true)
     setShowImport(false)
+    // Fit after the render cycle so the new graph is in view
+    requestAnimationFrame(() => fitView({ padding: 0.3, maxZoom: 0.75 }))
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -508,7 +510,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {showOverflow && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+              <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                 <button
                   onClick={() => { setShowSettings((s) => !s); setShowOverflow(false) }}
                   className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'font-medium text-gray-900' : 'text-gray-700'}`}
