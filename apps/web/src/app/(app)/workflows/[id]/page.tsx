@@ -16,6 +16,7 @@ function WorkflowEditorInner() {
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [executionSteps, setExecutionSteps] = useState<Record<string, ExecutionStep> | undefined>(undefined)
+  const [executionPayload, setExecutionPayload] = useState<unknown>(undefined)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -25,8 +26,9 @@ function WorkflowEditorInner() {
   }, [id])
 
   useEffect(() => {
-    if (!executionId) return
+    if (!executionId) { setExecutionSteps(undefined); setExecutionPayload(undefined); return }
     api.executions.get(executionId).then((exec) => {
+      setExecutionPayload(exec.trigger_payload)
       const map: Record<string, ExecutionStep> = {}
       for (const step of exec.steps) {
         map[step.step_namespace] = {
@@ -65,6 +67,7 @@ function WorkflowEditorInner() {
       mode={mode}
       executionId={executionId}
       executionSteps={executionSteps}
+      executionPayload={executionPayload}
     />
   )
 }

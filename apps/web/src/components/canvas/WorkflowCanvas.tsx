@@ -38,6 +38,7 @@ import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
+import TriggerConfigPanel from './TriggerConfigPanel'
 import type { ExecutionStep } from '@/types/workflow'
 
 // Defined outside component to prevent re-render on each render
@@ -63,7 +64,6 @@ function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
     position: { x: 0, y: 0 },
     data: { trigger },
     deletable: false,
-    selectable: false,
   }
 }
 
@@ -136,11 +136,12 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
+  executionPayload?: unknown
 }) {
   const router = useRouter()
   const { screenToFlowPosition } = useReactFlow()
@@ -163,6 +164,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
   const [replaying, setReplaying] = useState(false)
   const [refreshSignal, setRefreshSignal] = useState(0)
   const [showTest, setShowTest] = useState(false)
+  const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -518,6 +520,20 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
             <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
           </div>
           <div className="flex items-center gap-3">
+            {executionPayload !== undefined && (
+              <button
+                onClick={() => {
+                  setTestInitialPayload(JSON.stringify(executionPayload, null, 2))
+                  setShowTest(true)
+                  router.push(`/workflows/${workflow.id}?mode=edit`)
+                }}
+                className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
+                title="Load this payload into the test panel"
+              >
+                <FlaskConical className="h-3.5 w-3.5" />
+                Use as test
+              </button>
+            )}
             <button
               disabled={replaying}
               onClick={async () => {
@@ -601,7 +617,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
               }
             }}
             onConnect={onConnect}
-            onNodeClick={(_, node) => { if (node.id !== 'trigger') setSelectedNodeId(node.id) }}
+            onNodeClick={(_, node) => { setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
             nodesDraggable={false}
@@ -631,11 +647,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
         {mode === 'edit' && showTest && (
           <TestRunPanel
             workflowId={workflow.id}
-            onClose={() => setShowTest(false)}
+            onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
             onComplete={() => setRefreshSignal((s) => s + 1)}
+            initialPayload={testInitialPayload}
           />
         )}
-        {selectedNode && mode === 'edit' && !showTest && (
+        {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (
+          <TriggerConfigPanel
+            trigger={triggerRef.current}
+            onChange={(t) => { triggerRef.current = t; setIsDirty(true) }}
+            onClose={() => setSelectedNodeId(null)}
+          />
+        )}
+        {selectedNode && mode === 'edit' && !showTest && selectedNode.id !== 'trigger' && (
           <ConfigPanel
             node={selectedNode}
             onUpdate={handleNodeUpdate}
@@ -670,15 +694,23 @@ export default function WorkflowCanvas({
   mode,
   executionId,
   executionSteps,
+  executionPayload,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
+  executionPayload?: unknown
 }) {
   return (
     <ReactFlowProvider>
-      <CanvasInner workflow={workflow} mode={mode} executionId={executionId} executionSteps={executionSteps} />
+      <CanvasInner
+        workflow={workflow}
+        mode={mode}
+        executionId={executionId}
+        executionSteps={executionSteps}
+        executionPayload={executionPayload}
+      />
     </ReactFlowProvider>
   )
 }
