@@ -488,7 +488,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
               className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
                 showTest
-                  ? 'border-blue-300 bg-blue-50 text-blue-700'
+                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
                   : 'border-gray-200 text-gray-600 hover:bg-gray-50'
               }`}
               title="Run a test execution"
@@ -511,7 +511,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               <div className="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                 <button
                   onClick={() => { setShowSettings((s) => !s); setShowOverflow(false) }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'text-blue-600' : 'text-gray-700'}`}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'font-medium text-gray-900' : 'text-gray-700'}`}
                 >
                   <Settings className="h-4 w-4 text-gray-400" />
                   Settings

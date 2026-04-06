@@ -186,7 +186,7 @@ export default function WorkflowsPage() {
                           >
                             <input
                               autoFocus
-                              className="rounded border border-blue-300 px-2 py-0.5 text-sm font-medium text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                              className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
                               value={renameValue}
                               onChange={(e) => setRenameValue(e.target.value)}
                               onBlur={() => commitRename(wf.id)}
