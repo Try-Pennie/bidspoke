@@ -61,7 +61,7 @@ export default function VersionHistoryPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to editor
           </button>
-          <h1 className="text-xl font-semibold text-gray-900">Version History</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Version History</h1>
         </div>
 
         {error && (

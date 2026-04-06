@@ -84,7 +84,7 @@ export default function ExecutionDetailPage() {
             {/* Header */}
             <div className="flex items-start justify-between">
               <div>
-                <h1 className="text-xl font-semibold text-gray-900">Execution detail</h1>
+                <h1 className="text-2xl font-semibold text-gray-900">Execution detail</h1>
                 <p className="mt-1 font-mono text-xs text-gray-400">{execution.id}</p>
               </div>
               <StatusBadge status={execution.status} />
