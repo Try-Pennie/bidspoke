@@ -89,15 +89,11 @@ export async function sendFailureAlert(
       },
     },
     {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'View execution', emoji: true },
-          url: executionUrl,
-          style: 'danger',
-        },
-      ],
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `<${executionUrl}|View execution →>`,
+      },
     },
   ]
 
