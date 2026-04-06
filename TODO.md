@@ -65,7 +65,7 @@
 
 ### 1.4 Circuit Breakers — Upstream Services
 - [x] Implement Durable Object for circuit breaker state (closed/open/half-open) — PRD Section 2.5.2
-- [ ] Wire circuit breakers for Equifax, Salesforce, Eligibility Scout
+- [x] Wire circuit breakers for Equifax, Salesforce, Eligibility Scout
 - [x] Implement circuit breaker API endpoints (status, manual reset)
 - [ ] **Test:** Trip circuit breaker with repeated failures, verify open state rejects, half-open recovery
 
