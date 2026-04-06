@@ -2,14 +2,13 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
-import type { Workflow } from '@/types/workflow'
-import type { ExecutionStep } from '@/types/workflow'
+import type { Workflow, ExecutionStep } from '@/types/workflow'
 
-export default function WorkflowEditorPage() {
+function WorkflowEditorInner() {
   const { id } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
   const executionId = searchParams.get('execution') ?? undefined
@@ -40,7 +39,7 @@ export default function WorkflowEditorPage() {
         }
       }
       setExecutionSteps(map)
-    }).catch(() => {}) // non-fatal — canvas still shows without overlay
+    }).catch(() => {})
   }, [executionId])
 
   if (error) {
@@ -65,5 +64,17 @@ export default function WorkflowEditorPage() {
       executionId={executionId}
       executionSteps={executionSteps}
     />
+  )
+}
+
+export default function WorkflowEditorPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex h-screen items-center justify-center text-sm text-gray-400">
+        Loading…
+      </div>
+    }>
+      <WorkflowEditorInner />
+    </Suspense>
   )
 }
