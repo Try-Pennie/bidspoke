@@ -67,6 +67,15 @@ export const api = {
   },
 
   executions: {
+    list: (workflowId: string) =>
+      req<Array<{
+        id: string
+        status: string
+        source: string
+        started_at: string
+        duration_ms: number | null
+        error_message: string | null
+      }>>(`/api/executions?workflow_id=${workflowId}`),
     get: (id: string) =>
       req<{
         id: string
