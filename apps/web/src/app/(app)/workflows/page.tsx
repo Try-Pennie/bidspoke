@@ -163,14 +163,14 @@ export default function WorkflowsPage() {
             </button>
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+          <div className="rounded-xl border border-gray-200 bg-white">
             <table className="w-full text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
+                  <th className="rounded-tl-xl px-4 py-3 text-left font-medium text-gray-500">Name</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">By</th>
-                  <th className="w-12 px-4 py-3" />
+                  <th className="w-12 rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
