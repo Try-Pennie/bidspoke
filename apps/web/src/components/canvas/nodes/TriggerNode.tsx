@@ -1,17 +1,28 @@
 'use client'
 
 import { Handle, Position } from '@xyflow/react'
+import type { NodeProps } from '@xyflow/react'
 import { Zap } from 'lucide-react'
+import type { WorkflowDef } from '@/types/workflow'
 
-export function TriggerNode() {
+export function TriggerNode({ data }: NodeProps) {
+  const trigger = (data as unknown as { trigger?: WorkflowDef['trigger'] }).trigger
+  const method = (trigger?.config?.method as string | undefined) ?? 'POST'
+  const auth = (trigger?.config?.auth_method as string | undefined) ?? 'api_key'
+  const authLabel = auth === 'api_key' ? 'API Key' : auth === 'none' ? 'None' : auth
+
   return (
-    <div className="flex min-w-[160px] flex-col items-center rounded-lg border-2 border-indigo-500 bg-indigo-50 px-4 py-3 shadow-sm">
-      <div className="flex items-center gap-2 text-sm font-semibold text-indigo-700">
-        <Zap size={14} />
-        Webhook Trigger
+    <div className="relative w-52 rounded-lg border-l-4 border-l-indigo-500 border-t border-r border-b border-t-gray-200 border-r-gray-200 border-b-gray-200 bg-white shadow-sm">
+      <Handle type="source" position={Position.Bottom} id="output" />
+
+      <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
+        <Zap className="h-3.5 w-3.5 text-indigo-500" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Trigger</span>
       </div>
-      <p className="mt-0.5 text-xs text-indigo-400">POST · API Key</p>
-      <Handle type="source" position={Position.Bottom} className="!bg-indigo-500" />
+      <div className="px-3 py-2">
+        <p className="truncate text-sm font-medium text-gray-800">Webhook</p>
+        <p className="mt-0.5 text-xs text-gray-400">{method} · {authLabel}</p>
+      </div>
     </div>
   )
 }

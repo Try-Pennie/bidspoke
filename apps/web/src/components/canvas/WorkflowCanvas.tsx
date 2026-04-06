@@ -55,13 +55,15 @@ const nodeTypes: NodeTypes = {
   bid_evaluation: GenericNode,
 }
 
-const TRIGGER_NODE: Node = {
-  id: 'trigger',
-  type: 'trigger',
-  position: { x: 250, y: 0 },
-  data: {},
-  deletable: false,
-  selectable: false,
+function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
+  return {
+    id: 'trigger',
+    type: 'trigger',
+    position: { x: 0, y: 0 },
+    data: { trigger },
+    deletable: false,
+    selectable: false,
+  }
 }
 
 const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
@@ -71,14 +73,14 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
-function defToNodes(nodes: NodeDef[], edges: EdgeDef[]): Node[] {
+function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
   const workflowNodes = nodes.map((n) => ({
     id: n.id,
     type: n.type,
     position: { x: 0, y: 0 }, // overridden by layoutWorkflow
     data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
-  const allNodes = [TRIGGER_NODE, ...workflowNodes]
+  const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
   return layoutWorkflow(allNodes, defToEdges(edges))
 }
 
@@ -144,7 +146,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
 
   const initEdges = defToEdges(workflow.definition?.edges ?? [])
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    defToNodes(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? [])
+    defToNodes(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? [], workflow.definition?.trigger)
   )
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
   const [name, setName] = useState(workflow.name)
@@ -339,7 +341,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
     snapshot()
     const importedEdges = defToEdges(result.def.edges)
     setEdges(importedEdges)
-    setNodes(defToNodes(result.def.nodes, result.def.edges))
+    setNodes(defToNodes(result.def.nodes, result.def.edges, result.def.trigger))
     setName(result.name)
     setIsDirty(true)
     setShowImport(false)
