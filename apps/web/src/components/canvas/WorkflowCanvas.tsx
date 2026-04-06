@@ -5,6 +5,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   addEdge,
@@ -624,9 +625,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
             fitView
-            fitViewOptions={{ padding: 0.2 }}
+            fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
+            minZoom={0.2}
+            maxZoom={1.5}
           >
-            <Background color="#e5e7eb" gap={20} />
+            <Background variant={BackgroundVariant.Dots} color="#d1d5db" gap={20} size={1.5} />
             <Controls />
             <MiniMap
               nodeColor={(n) => {
