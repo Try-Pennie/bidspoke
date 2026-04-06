@@ -60,3 +60,4 @@ jobs:
         run: pnpm --filter=worker exec wrangler pages deploy ${{ github.workspace }}/apps/web/.vercel/output/static --project-name ${{ vars.CF_PAGES_PROJECT_NAME }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 3e7f907a9c19e51417873e2cce4fbc5c
