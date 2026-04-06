@@ -50,6 +50,11 @@ app.use(
   })
 )
 
+app.onError((err, c) => {
+  console.error(err)
+  return c.json({ error: err.message ?? 'Internal server error' }, 500)
+})
+
 app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
 
 // Webhook execution endpoint — authenticated via X-API-Key (PRD 12.2)
