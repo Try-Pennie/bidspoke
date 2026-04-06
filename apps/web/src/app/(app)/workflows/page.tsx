@@ -117,12 +117,16 @@ export default function WorkflowsPage() {
           <div className="text-sm text-gray-500">Loading…</div>
         ) : workflows.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-16 text-center">
-            <p className="text-sm text-gray-500">No workflows yet.</p>
+            <p className="text-sm font-medium text-gray-700">No workflows yet</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+              Workflows route incoming webhooks through a sequence of steps — filters, branches, and actions. Build one to start automating.
+            </p>
             <button
               onClick={handleCreate}
-              className="mt-3 text-sm font-medium text-blue-600 hover:underline"
+              disabled={creating}
+              className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
             >
-              Create your first workflow
+              {creating ? 'Creating…' : 'Create your first workflow'}
             </button>
           </div>
         ) : (

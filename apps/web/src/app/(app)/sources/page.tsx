@@ -160,8 +160,17 @@ export default function SourcesPage() {
             <p className="text-sm text-gray-400">Loading…</p>
           ) : sources.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
-              <Key className="mx-auto mb-2 h-6 w-6 text-gray-300" />
-              <p className="text-sm text-gray-500">No sources yet. Add one to get a webhook API key.</p>
+              <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
+              <p className="text-sm font-medium text-gray-700">No API sources yet</p>
+              <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+                Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow — and it shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
+              </p>
+              <button
+                onClick={() => setAdding(true)}
+                className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                Add your first source
+              </button>
             </div>
           ) : (
             <div className="space-y-3">

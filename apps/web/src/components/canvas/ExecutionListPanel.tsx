@@ -129,9 +129,16 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
         {loading ? (
           <p className="px-3 py-4 text-xs text-gray-400">Loading…</p>
         ) : filtered.length === 0 ? (
-          <p className="px-3 py-4 text-xs text-gray-400">
-            {filter === 'all' ? 'No executions yet.' : `No ${filter} executions.`}
-          </p>
+          <div className="px-3 py-6 text-center">
+            {filter === 'all' ? (
+              <>
+                <p className="text-xs font-medium text-gray-500">No executions yet</p>
+                <p className="mt-1 text-xs text-gray-400">Trigger the workflow via webhook or use the Test button to run it.</p>
+              </>
+            ) : (
+              <p className="text-xs text-gray-400">No {filter} executions.</p>
+            )}
+          </div>
         ) : (
           groups.map(({ label, items }) => (
             <div key={label}>

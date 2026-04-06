@@ -152,8 +152,17 @@ export default function EnvPage() {
         {loading ? (
           <div className="text-sm text-gray-500">Loading…</div>
         ) : vars.length === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center text-sm text-gray-500">
-            No variables yet.
+          <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center">
+            <p className="text-sm font-medium text-gray-700">No variables yet</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+              Environment variables let workflows reference API keys and config values without hardcoding them. Reference them in any step as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>.
+            </p>
+            <button
+              onClick={() => setShowForm(true)}
+              className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              Add your first variable
+            </button>
           </div>
         ) : (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
