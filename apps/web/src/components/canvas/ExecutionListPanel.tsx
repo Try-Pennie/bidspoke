@@ -48,9 +48,10 @@ interface Props {
   workflowId: string
   selectedId?: string
   onSelect: (id: string) => void
+  refreshSignal?: number  // increment to trigger a refresh
 }
 
-export default function ExecutionListPanel({ workflowId, selectedId, onSelect }: Props) {
+export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -64,6 +65,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect }:
   }
 
   useEffect(() => { load() }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (refreshSignal) load() }, [refreshSignal]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Group by date
   const groups: { label: string; items: ExecRow[] }[] = []
@@ -122,6 +124,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect }:
                       )}
                     </div>
                     <p className="mt-0.5 text-xs text-gray-400">{formatTime(exec.started_at)}</p>
+                    {exec.status === 'failed' && exec.error_message && (
+                      <p className="mt-0.5 truncate text-xs text-red-400">
+                        {exec.error_message.length > 60 ? exec.error_message.slice(0, 60) + '…' : exec.error_message}
+                      </p>
+                    )}
                   </button>
                 )
               })}

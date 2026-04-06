@@ -33,10 +33,11 @@ import { api } from '@/lib/api'
 import { layoutWorkflow } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2 } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
+import TestRunPanel from './TestRunPanel'
 import type { ExecutionStep } from '@/types/workflow'
 
 // Defined outside component to prevent re-render on each render
@@ -160,6 +161,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
   const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
   const [replaying, setReplaying] = useState(false)
+  const [refreshSignal, setRefreshSignal] = useState(0)
+  const [showTest, setShowTest] = useState(false)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -187,6 +190,41 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
       })
     )
   }, [executionSteps, setNodes])
+
+  // Color edges based on which nodes ran
+  useEffect(() => {
+    if (!executionSteps) {
+      setEdges((es) => es.map((e) => ({ ...e, animated: false, style: undefined })))
+      return
+    }
+    // Build nodeId → namespace map
+    const idToNs = new Map<string, string>()
+    for (const n of nodes) {
+      if (n.id !== 'trigger') {
+        idToNs.set(n.id, (n.data as unknown as CanvasNodeData).namespace)
+      }
+    }
+    setEdges((es) =>
+      es.map((edge) => {
+        const sourceNs = idToNs.get(edge.source)
+        const targetNs = idToNs.get(edge.target)
+        // Source ran = it's the trigger, or its step is non-null in executionSteps
+        const sourceRan =
+          edge.source === 'trigger' ||
+          (sourceNs !== undefined && executionSteps[sourceNs] != null)
+        // Target ran = its step is non-null
+        const targetRan = targetNs !== undefined && executionSteps[targetNs] != null
+        const active = sourceRan && targetRan
+        return {
+          ...edge,
+          animated: active,
+          style: active
+            ? { stroke: '#22c55e', strokeWidth: 2 }
+            : { stroke: '#d1d5db', strokeWidth: 1 },
+        }
+      })
+    )
+  }, [executionSteps]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const refs = [
     'trigger.payload',
@@ -423,6 +461,21 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
 
           {mode === 'edit' && (
             <button
+              onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                showTest
+                  ? 'border-blue-300 bg-blue-50 text-blue-700'
+                  : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+              }`}
+              title="Run a test execution"
+            >
+              <FlaskConical className="h-3.5 w-3.5" />
+              Test
+            </button>
+          )}
+
+          {mode === 'edit' && (
+            <button
               onClick={() => setShowImport(true)}
               className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
               title="Import from Pipedream"
@@ -471,6 +524,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
                 setReplaying(true)
                 try {
                   await api.executions.replay(executionId)
+                  setRefreshSignal((s) => s + 1)
                 } finally {
                   setReplaying(false)
                 }
@@ -523,6 +577,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
             workflowId={workflow.id}
             selectedId={executionId}
             onSelect={(id) => router.push(`/workflows/${workflow.id}?execution=${id}`)}
+            refreshSignal={refreshSignal}
           />
         )}
 
@@ -573,7 +628,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps }: {
           </ReactFlow>
         </div>
 
-        {selectedNode && mode === 'edit' && (
+        {mode === 'edit' && showTest && (
+          <TestRunPanel
+            workflowId={workflow.id}
+            onClose={() => setShowTest(false)}
+            onComplete={() => setRefreshSignal((s) => s + 1)}
+          />
+        )}
+        {selectedNode && mode === 'edit' && !showTest && (
           <ConfigPanel
             node={selectedNode}
             onUpdate={handleNodeUpdate}
