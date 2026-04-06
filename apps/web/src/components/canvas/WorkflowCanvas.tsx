@@ -183,6 +183,17 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
 
+  // Warn on browser close / refresh when there are unsaved changes
+  useEffect(() => {
+    if (!isDirty) return
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [isDirty])
+
   useEffect(() => {
     if (!showOverflow) return
     function handler(e: MouseEvent) {
@@ -410,7 +421,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.push('/workflows')}
+            onClick={() => {
+              if (isDirty && !window.confirm('You have unsaved changes. Leave without saving?')) return
+              router.push('/workflows')
+            }}
             className="text-xs text-gray-400 hover:text-gray-600"
           >
             ← Workflows
@@ -420,7 +434,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             value={name}
             onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
           />
-          {isDirty && mode === 'edit' && <span className="text-xs text-amber-500">Unsaved</span>}
         </div>
 
         <div className="flex items-center gap-2">
@@ -436,7 +449,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               Edit
             </button>
             <button
-              onClick={() => router.push(`/workflows/${workflow.id}`)}
+              onClick={() => {
+                if (isDirty && !window.confirm('You have unsaved changes. Switch to view without saving?')) return
+                router.push(`/workflows/${workflow.id}`)
+              }}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
                 mode === 'view' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
               }`}
@@ -524,7 +540,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <button
               onClick={handleSave}
               disabled={saving || !isDirty}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
+                saving    ? 'bg-blue-600' :
+                savedOk   ? 'bg-green-600 hover:bg-green-700' :
+                isDirty   ? 'bg-amber-500 hover:bg-amber-600' :
+                            'bg-gray-300 cursor-default'
+              }`}
             >
               {savedOk ? (
                 <Check className="h-3.5 w-3.5" />
