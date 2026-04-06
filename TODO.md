@@ -84,7 +84,7 @@
 - [x] Implement node drag-and-drop, edge connections, zoom/pan/minimap
 - [x] Implement node config panel (right sidebar, per-node-type forms)
 - [x] Implement rule builder UI for Filter/Branch nodes (field, operator, value dropdowns)
-- [ ] Implement data reference autocomplete (steps.*, trigger.*, env.*)
+- [x] Implement data reference autocomplete (steps.*, trigger.*, env.*)
 - [x] Implement undo/redo
 - [x] Implement save (creates version snapshot, invalidates KV)
 - [x] Implement version history UI (browse, preview, restore)
