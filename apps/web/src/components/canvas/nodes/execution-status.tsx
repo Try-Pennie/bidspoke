@@ -1,4 +1,4 @@
-import { CheckCircle, XCircle, SkipForward, Clock, RefreshCw } from 'lucide-react'
+import type { CSSProperties } from 'react'
 import type { ExecutionStep } from '@/types/workflow'
 
 export function getExecutionClasses(exec: ExecutionStep | null | undefined): string {
@@ -14,22 +14,12 @@ export function getExecutionClasses(exec: ExecutionStep | null | undefined): str
   }
 }
 
-const BADGE_CONFIG = {
-  completed:            { icon: CheckCircle,  cls: 'bg-green-500' },
-  failed:               { icon: XCircle,      cls: 'bg-red-500'   },
-  skipped:              { icon: SkipForward,  cls: 'bg-gray-400'  },
-  running:              { icon: Clock,        cls: 'bg-blue-500'  },
-  failed_with_fallback: { icon: RefreshCw,    cls: 'bg-yellow-500'},
-}
-
-export function ExecutionBadge({ exec }: { exec: ExecutionStep | null | undefined }) {
-  if (!exec) return null
-  const cfg = BADGE_CONFIG[exec.status as keyof typeof BADGE_CONFIG]
-  if (!cfg) return null
-  const Icon = cfg.icon
-  return (
-    <span className={`absolute -right-2 -top-2 z-10 flex h-5 w-5 items-center justify-center rounded-full text-white shadow ${cfg.cls}`}>
-      <Icon className="h-3 w-3" />
-    </span>
-  )
+export function getExecutionStyle(exec: ExecutionStep | null | undefined): CSSProperties {
+  if (!exec) return {}
+  switch (exec.status) {
+    case 'completed':            return { backgroundColor: '#f0fdf4' } // green-50
+    case 'failed':               return { backgroundColor: '#fef2f2' } // red-50
+    case 'failed_with_fallback': return { backgroundColor: '#fefce8' } // yellow-50
+    default:                     return {}
+  }
 }

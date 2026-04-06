@@ -2,7 +2,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Box } from 'lucide-react'
-import { getExecutionClasses, ExecutionBadge } from './execution-status'
+import { getExecutionClasses, getExecutionStyle } from './execution-status'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
   const { namespace, executionStep } = data as unknown as CanvasNodeData
@@ -12,8 +12,8 @@ export function GenericNode({ data, selected, type }: NodeProps) {
       className={`relative w-52 rounded-lg border-l-4 border-l-gray-400 border-t border-r border-b bg-white shadow-sm ${
         selected ? 'border-t-gray-300 border-r-gray-300 border-b-gray-300 ring-2 ring-gray-100' : 'border-t-gray-200 border-r-gray-200 border-b-gray-200'
       } ${getExecutionClasses(executionStep)}`}
+      style={getExecutionStyle(executionStep)}
     >
-      <ExecutionBadge exec={executionStep} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 
