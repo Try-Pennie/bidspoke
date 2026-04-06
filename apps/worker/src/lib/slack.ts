@@ -78,7 +78,7 @@ export async function sendFailureAlert(
         { type: 'mrkdwn', text: `*Workflow:*\n${payload.workflow_name}` },
         { type: 'mrkdwn', text: `*Failed step:*\n${stepText}` },
         { type: 'mrkdwn', text: `*Error type:*\n${errorLabel}` },
-        { type: 'mrkdwn', text: `*Time:*\n${new Date(payload.timestamp).toUTCString()}` },
+        { type: 'mrkdwn', text: `*Time:*\n${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
       ],
     },
     {
