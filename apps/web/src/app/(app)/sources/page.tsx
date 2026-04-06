@@ -5,7 +5,7 @@ export const runtime = 'edge'
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { Copy, Trash2, Plus, Key, Check } from 'lucide-react'
+import { Copy, Trash2, Plus, Key, Check, Eye, EyeOff } from 'lucide-react'
 
 interface Source {
   name: string
@@ -22,6 +22,7 @@ export default function SourcesPage() {
   const [newName, setNewName] = useState('')
   const [saving, setSaving] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
 
   async function load() {
@@ -165,8 +166,17 @@ export default function SourcesPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <code className="flex-1 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-                      {source.api_key}
+                      {revealedKey === source.api_key
+                        ? source.api_key
+                        : `${source.api_key.slice(0, 8)}${'•'.repeat(24)}`}
                     </code>
+                    <button
+                      onClick={() => setRevealedKey(revealedKey === source.api_key ? null : source.api_key)}
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                      title={revealedKey === source.api_key ? 'Hide' : 'Reveal'}
+                    >
+                      {revealedKey === source.api_key ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
                     <button
                       onClick={() => handleCopy(source.api_key)}
                       className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
