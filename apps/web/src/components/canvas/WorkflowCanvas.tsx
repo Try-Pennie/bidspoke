@@ -133,8 +133,9 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, executionId, executionSteps }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps }: {
   workflow: Workflow
+  mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
 }) {
@@ -156,8 +157,6 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
   const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
-  const [mode, setMode] = useState<'edit' | 'view'>(() => (executionId ? 'view' : 'edit'))
-
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -371,10 +370,7 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
           {/* Edit / View toggle */}
           <div className="flex overflow-hidden rounded border border-gray-200 text-xs">
             <button
-              onClick={() => {
-                if (executionId) router.push(`/workflows/${workflow.id}`)
-                setMode('edit')
-              }}
+              onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
                 mode === 'edit' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
               }`}
@@ -383,7 +379,7 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
               Edit
             </button>
             <button
-              onClick={() => setMode('view')}
+              onClick={() => router.push(`/workflows/${workflow.id}`)}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
                 mode === 'view' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
               }`}
@@ -586,16 +582,18 @@ function CanvasInner({ workflow, executionId, executionSteps }: {
 
 export default function WorkflowCanvas({
   workflow,
+  mode,
   executionId,
   executionSteps,
 }: {
   workflow: Workflow
+  mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
 }) {
   return (
     <ReactFlowProvider>
-      <CanvasInner workflow={workflow} executionId={executionId} executionSteps={executionSteps} />
+      <CanvasInner workflow={workflow} mode={mode} executionId={executionId} executionSteps={executionSteps} />
     </ReactFlowProvider>
   )
 }

@@ -12,6 +12,7 @@ function WorkflowEditorInner() {
   const { id } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
   const executionId = searchParams.get('execution') ?? undefined
+  const mode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [executionSteps, setExecutionSteps] = useState<Record<string, ExecutionStep> | undefined>(undefined)
@@ -61,6 +62,7 @@ function WorkflowEditorInner() {
   return (
     <WorkflowCanvas
       workflow={workflow}
+      mode={mode}
       executionId={executionId}
       executionSteps={executionSteps}
     />
