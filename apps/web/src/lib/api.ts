@@ -1,6 +1,32 @@
 import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar } from '@/types/workflow'
 
+export interface Partner {
+  id: string
+  organization_id: string
+  name: string
+  slug: string
+  api_endpoint: string | null
+  cf_secret_key: string | null
+  daily_cap: number | null
+  min_bid: number | null
+  bid_formula: string | null
+  dedup_endpoint: string | null
+  response_classification: unknown
+  alert_config: unknown
+  circuit_error_threshold: number
+  circuit_window_seconds: number
+  circuit_cooldown_seconds: number
+  circuit_enabled: boolean
+  is_active: boolean
+  priority: number
+  created_at: string
+  updated_at: string
+  updated_by_email: string | null
+}
+
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
+
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
 
 async function authHeaders(): Promise<HeadersInit> {
@@ -142,6 +168,19 @@ export const api = {
       }),
     delete: (name: string) =>
       req<{ ok: boolean }>(`/api/sources/${name}`, { method: 'DELETE' }),
+  },
+
+  partners: {
+    list: () => req<Partner[]>('/api/partners'),
+    get: (id: string) => req<Partner>(`/api/partners/${id}`),
+    create: (body: PartnerBody) =>
+      req<Partner>('/api/partners', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<PartnerBody>) =>
+      req<Partner>(`/api/partners/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
+    getCapCount: (id: string) =>
+      req<{ count: number; date: string }>(`/api/partners/${id}/cap-count`),
   },
 
   integrations: {

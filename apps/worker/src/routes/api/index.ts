@@ -8,6 +8,7 @@ import env from './env'
 import circuit from './circuit'
 import integrations from './integrations'
 import sources from './sources'
+import partners from './partners'
 
 type Variables = AuthVariables
 
@@ -22,9 +23,7 @@ api.route('/env', env)
 api.route('/circuit', circuit)
 api.route('/integrations', integrations)
 api.route('/sources', sources)
-
-// Stubs for Phase 2
-api.all('/partners/*', (c) => c.json({ error: 'not implemented (Phase 2)' }, 501))
+api.route('/partners', partners)
 api.all('/connections/*', (c) => c.json({ error: 'not implemented (Phase 3)' }, 501))
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')

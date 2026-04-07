@@ -4,10 +4,11 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users } from 'lucide-react'
 
 const NAV = [
   { href: '/workflows', label: 'Workflows', icon: GitBranch },
+  { href: '/partners', label: 'Partners', icon: Users },
   { href: '/env', label: 'Environment', icon: Settings },
   { href: '/sources', label: 'API Sources', icon: KeyRound },
   { href: '/integrations', label: 'Integrations', icon: Puzzle },
@@ -27,16 +28,16 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       {/* Sidebar */}
       <nav className="flex w-52 flex-col border-r border-gray-200 bg-white">
-        <div className="flex items-center gap-2 px-4 py-5">
+        <div className="flex items-center gap-2.5 px-4 py-5">
           <Image
             src="/icon-light.png"
             alt="Bidspoke"
-            width={22}
-            height={22}
+            width={26}
+            height={26}
             className="flex-shrink-0"
             style={{ mixBlendMode: 'multiply' }}
           />
-          <span className="text-[15px] font-semibold tracking-tight text-gray-900">Bidspoke</span>
+          <span className="text-lg font-bold tracking-tight text-gray-900">Bidspoke</span>
         </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
           {NAV.map(({ href, label, icon: Icon }) => {
