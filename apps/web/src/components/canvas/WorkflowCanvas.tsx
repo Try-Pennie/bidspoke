@@ -513,12 +513,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Edit mode indicator bar */}
-      {mode === 'edit' && (
-        <div className={`h-0.5 flex-shrink-0 transition-colors duration-300 ${isDirty ? 'bg-amber-400' : 'bg-blue-500'}`} />
-      )}
       {/* Top bar */}
-      <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
+      <header className={`flex h-12 flex-shrink-0 items-center justify-between border-b px-4 transition-colors ${
+        mode === 'edit' ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-white'
+      }`}>
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.push('/workflows')}
@@ -527,7 +525,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             ← Workflows
           </button>
           <input
-            className="rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 hover:bg-gray-50 focus:bg-gray-50 focus:ring-1 focus:ring-gray-200 px-2 py-1"
+            className={`rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-gray-200 ${
+              mode === 'edit' ? 'hover:bg-amber-100 focus:bg-amber-100' : 'hover:bg-gray-50 focus:bg-gray-50'
+            }`}
             value={name}
             onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
           />
@@ -539,7 +539,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <button
               onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
-                mode === 'edit' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
+                mode === 'edit' ? 'bg-amber-500 text-white' : 'bg-white text-gray-400 hover:bg-gray-50'
               }`}
             >
               <Pencil className="h-3 w-3" />
@@ -548,7 +548,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <button
               onClick={() => router.push(`/workflows/${workflow.id}`)}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
-                mode === 'view' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
+                mode === 'view' ? 'bg-gray-100 text-gray-800' : 'bg-white text-gray-400 hover:bg-gray-50'
               }`}
             >
               <Eye className="h-3 w-3" />
