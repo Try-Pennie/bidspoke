@@ -1,0 +1,95 @@
+import { Hono } from 'hono'
+import type { Env } from '../../index'
+import type { AuthVariables } from '../../middleware/jwt-auth'
+import { createSupabaseClient } from '../../lib/supabase'
+
+type Variables = AuthVariables
+
+const servicePresets = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+servicePresets.get('/', async (c) => {
+  const { orgId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('service_presets')
+    .select('id, name, slug, auth_type, base_url, created_at')
+    .eq('organization_id', orgId)
+    .order('name')
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data ?? [])
+})
+
+servicePresets.post('/', async (c) => {
+  const { orgId } = c.get('user')
+  const body = await c.req.json<{ name: string; slug: string; auth_type: string; base_url?: string }>()
+
+  if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
+  if (!body.slug?.trim()) return c.json({ error: 'slug is required' }, 400)
+  if (!['none', 'api_key', 'bearer', 'basic'].includes(body.auth_type)) {
+    return c.json({ error: 'invalid auth_type' }, 400)
+  }
+
+  const slug = body.slug.trim().toLowerCase().replace(/[^a-z0-9_]/g, '')
+
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('service_presets')
+    .insert({
+      organization_id: orgId,
+      name: body.name.trim(),
+      slug,
+      auth_type: body.auth_type,
+      base_url: body.base_url?.trim() || null,
+    })
+    .select('id, name, slug, auth_type, base_url, created_at')
+    .single()
+
+  if (error) {
+    if (error.code === '23505') return c.json({ error: `A service with slug "${slug}" already exists` }, 409)
+    return c.json({ error: error.message }, 500)
+  }
+  return c.json(data, 201)
+})
+
+servicePresets.put('/:id', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  const body = await c.req.json<{ name?: string; auth_type?: string; base_url?: string }>()
+
+  if (body.auth_type && !['none', 'api_key', 'bearer', 'basic'].includes(body.auth_type)) {
+    return c.json({ error: 'invalid auth_type' }, 400)
+  }
+
+  const patch: Record<string, unknown> = {}
+  if (body.name) patch.name = body.name.trim()
+  if (body.auth_type) patch.auth_type = body.auth_type
+  if ('base_url' in body) patch.base_url = body.base_url?.trim() || null
+
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('service_presets')
+    .update(patch)
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .select('id, name, slug, auth_type, base_url, created_at')
+    .single()
+
+  if (error) return c.json({ error: error.message }, 500)
+  if (!data) return c.json({ error: 'not found' }, 404)
+  return c.json(data)
+})
+
+servicePresets.delete('/:id', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  const supabase = createSupabaseClient(c.env)
+  const { error } = await supabase
+    .from('service_presets')
+    .delete()
+    .eq('id', id)
+    .eq('organization_id', orgId)
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json({ ok: true })
+})
+
+export default servicePresets

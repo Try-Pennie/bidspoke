@@ -1,12 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
 import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy } from 'lucide-react'
+import { api } from '@/lib/api'
+import type { ServicePreset } from '@/lib/api'
 
 interface Props {
   node: Node
@@ -648,18 +650,14 @@ function TransformConfig({
 
 // ── Integration node config ───────────────────────────────────────────────────
 
-const SERVICE_OPTIONS = [
+const BUILTIN_SERVICE_OPTIONS = [
   { value: 'custom', label: 'Custom' },
   { value: 'equifax', label: 'Equifax' },
-  { value: 'eligibility_scout', label: 'Eligibility Scout' },
-  { value: 'lendswift', label: 'LendSwift' },
   { value: 'salesforce', label: 'Salesforce' },
 ]
 
 const AUTH_PRESETS: Record<string, { authType: string }> = {
   equifax: { authType: 'basic' },
-  eligibility_scout: { authType: 'bearer' },
-  lendswift: { authType: 'bearer' },
   salesforce: { authType: 'bearer' },
   custom: { authType: 'none' },
 }
@@ -680,6 +678,16 @@ function IntegrationConfig({
   const headersMap = (config.headers as Record<string, string> | undefined) ?? {}
   const headerRows = Object.entries(headersMap)
 
+  const [userPresets, setUserPresets] = useState<ServicePreset[]>([])
+  useEffect(() => {
+    api.servicePresets.list().then(setUserPresets).catch(() => {})
+  }, [])
+
+  const allOptions = [
+    ...BUILTIN_SERVICE_OPTIONS,
+    ...userPresets.map((p) => ({ value: p.slug, label: p.name })),
+  ]
+
   const bodyStr =
     config.body !== undefined
       ? typeof config.body === 'string'
@@ -692,8 +700,12 @@ function IntegrationConfig({
   }
 
   function onServiceChange(svc: string) {
-    const preset = AUTH_PRESETS[svc] ?? AUTH_PRESETS.custom
-    onChange({ service: svc, auth: { ...auth, type: preset.authType } })
+    const userPreset = userPresets.find((p) => p.slug === svc)
+    const authType = userPreset ? userPreset.auth_type : (AUTH_PRESETS[svc]?.authType ?? 'none')
+    const label = allOptions.find((o) => o.value === svc)?.label ?? svc
+    const patch: Record<string, unknown> = { service: svc, service_label: label, auth: { ...auth, type: authType } }
+    if (userPreset?.base_url) patch.url = userPreset.base_url
+    onChange(patch)
   }
 
   function setHeaderValue(key: string, value: string) {
@@ -730,13 +742,25 @@ function IntegrationConfig({
             onChange={(e) => onServiceChange(e.target.value)}
             className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
           >
-            {SERVICE_OPTIONS.map((o) => (
+            {allOptions.map((o) => (
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
           <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
         </div>
       </Field>
+
+      {/* Custom service name */}
+      {service === 'custom' && (
+        <Field label="Service name">
+          <input
+            className="input w-full"
+            placeholder="My CRM"
+            value={(config.service_label as string | undefined) ?? ''}
+            onChange={(e) => onChange({ service_label: e.target.value })}
+          />
+        </Field>
+      )}
 
       {/* Method + URL */}
       <div className="flex gap-2 items-end">

@@ -4,9 +4,14 @@ export const runtime = 'edge'
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import type { ServicePreset } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { CheckCircle, Unlink, Loader2 } from 'lucide-react'
+import { CheckCircle, Unlink, Loader2, Plus, Trash2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
+
+function slugify(name: string) {
+  return name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+}
 
 interface SlackStatus {
   connected: boolean
@@ -36,11 +41,26 @@ export default function IntegrationsPage() {
   const [resolved, setResolved] = useState<ResolvedSlack | null>(null)
   const [selectedChannel, setSelectedChannel] = useState('')
 
+  // Service presets
+  const [presets, setPresets] = useState<ServicePreset[]>([])
+  const [presetsLoading, setPresetsLoading] = useState(true)
+  const [presetsError, setPresetsError] = useState<string | null>(null)
+  const [addingPreset, setAddingPreset] = useState(false)
+  const [newPreset, setNewPreset] = useState({ name: '', slug: '', auth_type: 'none', base_url: '' })
+  const [savingPreset, setSavingPreset] = useState(false)
+  const [deletingPreset, setDeletingPreset] = useState<string | null>(null)
+  const [confirmingDeletePreset, setConfirmingDeletePreset] = useState<string | null>(null)
+  const deletePresetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   useEffect(() => {
     api.integrations.getSlack()
       .then(setSlack)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
+    api.servicePresets.list()
+      .then(setPresets)
+      .catch((e) => setPresetsError(e.message))
+      .finally(() => setPresetsLoading(false))
   }, [])
 
   async function handleTokenBlur() {
@@ -117,6 +137,53 @@ export default function IntegrationsPage() {
       setError(e instanceof Error ? e.message : 'Disconnect failed')
     } finally {
       setDisconnecting(false)
+    }
+  }
+
+  async function handleAddPreset(e: React.FormEvent) {
+    e.preventDefault()
+    if (!newPreset.name.trim() || !newPreset.slug.trim()) return
+    setSavingPreset(true)
+    setPresetsError(null)
+    try {
+      const created = await api.servicePresets.create({
+        name: newPreset.name.trim(),
+        slug: newPreset.slug.trim(),
+        auth_type: newPreset.auth_type,
+        base_url: newPreset.base_url.trim() || undefined,
+      })
+      setPresets((ps) => [...ps, created])
+      setNewPreset({ name: '', slug: '', auth_type: 'none', base_url: '' })
+      setAddingPreset(false)
+    } catch (e) {
+      setPresetsError(e instanceof Error ? e.message : 'Failed to save')
+    } finally {
+      setSavingPreset(false)
+    }
+  }
+
+  function requestDeletePreset(id: string) {
+    if (deletePresetTimerRef.current) clearTimeout(deletePresetTimerRef.current)
+    setConfirmingDeletePreset(id)
+    deletePresetTimerRef.current = setTimeout(() => setConfirmingDeletePreset(null), 4000)
+  }
+
+  function cancelDeletePreset() {
+    if (deletePresetTimerRef.current) clearTimeout(deletePresetTimerRef.current)
+    setConfirmingDeletePreset(null)
+  }
+
+  async function handleDeletePreset(id: string) {
+    if (deletePresetTimerRef.current) clearTimeout(deletePresetTimerRef.current)
+    setConfirmingDeletePreset(null)
+    setDeletingPreset(id)
+    try {
+      await api.servicePresets.delete(id)
+      setPresets((ps) => ps.filter((p) => p.id !== id))
+    } catch (e) {
+      setPresetsError(e instanceof Error ? e.message : 'Delete failed')
+    } finally {
+      setDeletingPreset(null)
     }
   }
 
@@ -275,7 +342,186 @@ export default function IntegrationsPage() {
           )}
         </div>
 
-        </div> {/* end grid */}
+        </div> {/* end slack card wrapper */}
+
+        {/* HTTP Services */}
+        <div className="mt-10">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">HTTP Services</h2>
+              <p className="mt-0.5 text-sm text-gray-500">
+                Define reusable services that appear in the Integration node dropdown. Each preset pre-fills the auth type and optionally the base URL.
+              </p>
+            </div>
+            {!addingPreset && (
+              <button
+                onClick={() => setAddingPreset(true)}
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                <Plus className="h-4 w-4" />
+                Add service
+              </button>
+            )}
+          </div>
+
+          {presetsError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {presetsError}
+            </div>
+          )}
+
+          {addingPreset && (
+            <form
+              onSubmit={handleAddPreset}
+              className="mb-6 rounded-xl border border-gray-200 bg-white p-5"
+            >
+              <p className="mb-4 text-sm font-semibold text-gray-900">New service</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Display name</label>
+                  <input
+                    className="input w-full"
+                    placeholder="My CRM"
+                    value={newPreset.name}
+                    onChange={(e) => {
+                      const name = e.target.value
+                      setNewPreset((p) => ({
+                        ...p,
+                        name,
+                        slug: p.slug === slugify(p.name) ? slugify(name) : p.slug,
+                      }))
+                    }}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Slug (used in workflows)</label>
+                  <input
+                    className="input w-full font-mono"
+                    placeholder="my_crm"
+                    value={newPreset.slug}
+                    onChange={(e) => setNewPreset((p) => ({ ...p, slug: slugify(e.target.value) }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Default auth type</label>
+                  <select
+                    className="input w-full"
+                    value={newPreset.auth_type}
+                    onChange={(e) => setNewPreset((p) => ({ ...p, auth_type: e.target.value }))}
+                  >
+                    <option value="none">None</option>
+                    <option value="bearer">Bearer token</option>
+                    <option value="basic">Basic (username + password)</option>
+                    <option value="api_key">API key header</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Base URL <span className="font-normal text-gray-400">(optional)</span></label>
+                  <input
+                    className="input w-full font-mono"
+                    placeholder="https://api.mycrm.com"
+                    value={newPreset.base_url}
+                    onChange={(e) => setNewPreset((p) => ({ ...p, base_url: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={savingPreset}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {savingPreset ? 'Saving…' : 'Save service'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAddingPreset(false); setNewPreset({ name: '', slug: '', auth_type: 'none', base_url: '' }) }}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+
+          {presetsLoading ? (
+            <div className="space-y-2">
+              {[...Array(2)].map((_, i) => (
+                <div key={i} className="flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-4 py-3">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-4 w-20" />
+                </div>
+              ))}
+            </div>
+          ) : presets.length === 0 && !addingPreset ? (
+            <div className="rounded-xl border-2 border-dashed border-gray-200 py-10 text-center">
+              <p className="text-sm font-semibold text-gray-900">No services yet</p>
+              <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-400">
+                Add a service to make it available in the Integration node dropdown with pre-filled auth settings.
+              </p>
+              <button
+                onClick={() => setAddingPreset(true)}
+                className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Add your first service
+              </button>
+            </div>
+          ) : presets.length > 0 ? (
+            <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+              <table className="w-full text-sm">
+                <thead className="border-b border-gray-100 bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Slug</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Auth</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Base URL</th>
+                    <th className="w-16 px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {presets.map((p) => (
+                    <tr key={p.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
+                      <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-400">{p.base_url ?? '—'}</td>
+                      <td className="px-4 py-3">
+                        {confirmingDeletePreset === p.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleDeletePreset(p.id)}
+                              disabled={deletingPreset === p.id}
+                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                            >
+                              Delete
+                            </button>
+                            <button onClick={cancelDeletePreset} className="text-xs text-gray-400 hover:text-gray-600">
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => requestDeletePreset(p.id)}
+                            disabled={deletingPreset === p.id}
+                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
+                            title="Delete service"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+
       </div>
     </NavLayout>
   )

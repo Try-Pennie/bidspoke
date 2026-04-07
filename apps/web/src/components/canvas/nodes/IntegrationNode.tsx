@@ -4,10 +4,9 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { Plug } from 'lucide-react'
 import { getExecutionClasses, getExecutionStyle } from './execution-status'
 
+// Fallback labels for nodes saved before service_label was stored in config
 const SERVICE_LABELS: Record<string, string> = {
   equifax: 'Equifax',
-  eligibility_scout: 'Eligibility Scout',
-  lendswift: 'LendSwift',
   salesforce: 'Salesforce',
   custom: 'Webhook',
 }
@@ -17,7 +16,7 @@ export function IntegrationNode({ data, selected }: NodeProps) {
   const service = (config.service as string | undefined) ?? 'custom'
   const method = ((config.method as string | undefined) ?? 'POST').toUpperCase()
   const url = (config.url as string | undefined) ?? ''
-  const serviceLabel = SERVICE_LABELS[service] ?? service
+  const serviceLabel = (config.service_label as string | undefined) || SERVICE_LABELS[service] || service
 
   let statusBadge: string | null = null
   if (executionStep?.status === 'completed' && executionStep.output && typeof executionStep.output === 'object') {

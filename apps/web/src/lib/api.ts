@@ -27,6 +27,15 @@ export interface Partner {
 
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
 
+export interface ServicePreset {
+  id: string
+  name: string
+  slug: string
+  auth_type: string
+  base_url: string | null
+  created_at: string
+}
+
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
 
 async function authHeaders(): Promise<HeadersInit> {
@@ -209,6 +218,16 @@ export const api = {
     deleteSlack: () =>
       req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
+  servicePresets: {
+    list: () => req<ServicePreset[]>('/api/service-presets'),
+    create: (body: { name: string; slug: string; auth_type: string; base_url?: string }) =>
+      req<ServicePreset>('/api/service-presets', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: { name?: string; auth_type?: string; base_url?: string }) =>
+      req<ServicePreset>(`/api/service-presets/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/service-presets/${id}`, { method: 'DELETE' }),
+  },
+
   access: {
     list: () => req<{ email: string; added_by: string; added_at: string }[]>('/api/access'),
     add: (email: string) =>
