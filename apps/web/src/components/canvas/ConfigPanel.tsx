@@ -87,6 +87,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
         {type === 'code' && <CodeConfig config={data.config} onChange={updateConfig} />}
         {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
 
         {/* Common: retry + error handling */}
         <details>
@@ -413,6 +414,163 @@ function ExitConfig({
         refs={refs}
       />
     </Field>
+  )
+}
+
+function BidEvaluationConfig({
+  config,
+  onChange,
+  nodeNamespaces,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  nodeNamespaces: string[]
+}) {
+  const strategy = (config.strategy as string | undefined) ?? 'highest_bid'
+  const noWinnerBehavior = (config.no_winner_behavior as string | undefined) ?? 'exit'
+  const tiebreaker = (config.tiebreaker as string | undefined) ?? 'partner_priority'
+
+  return (
+    <section className="space-y-4">
+      {/* Parallel source */}
+      <Field label="Parallel node (source)">
+        <div className="relative">
+          <select
+            value={(config.parallel_source as string | undefined) ?? ''}
+            onChange={(e) => onChange({ parallel_source: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="">— select a node —</option>
+            {nodeNamespaces.map((ns) => (
+              <option key={ns} value={ns}>{ns}</option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+        <p className="mt-1 text-xs text-gray-400">Namespace of the Parallel node whose output to evaluate.</p>
+      </Field>
+
+      {/* Strategy */}
+      <Field label="Selection strategy">
+        <div className="relative">
+          <select
+            value={strategy}
+            onChange={(e) => onChange({ strategy: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="highest_bid">Highest bid</option>
+            <option value="weighted_score">Weighted score</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+
+      {/* Weighted score sliders */}
+      {strategy === 'weighted_score' && (
+        <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+          <p className="text-xs font-medium text-gray-500">Score = (bid × w₁) + (acceptance_rate × w₂) − (avg_ms × w₃)</p>
+          <WeightSlider
+            label="Bid amount weight (w₁)"
+            value={(config.weight_bid as number | undefined) ?? 1.0}
+            onChange={(v) => onChange({ weight_bid: v })}
+          />
+          <WeightSlider
+            label="Acceptance rate weight (w₂)"
+            value={(config.weight_acceptance as number | undefined) ?? 0.5}
+            onChange={(v) => onChange({ weight_acceptance: v })}
+          />
+          <WeightSlider
+            label="Speed weight (w₃)"
+            value={(config.weight_speed as number | undefined) ?? 0.1}
+            onChange={(v) => onChange({ weight_speed: v })}
+          />
+        </div>
+      )}
+
+      {/* Min bid threshold */}
+      <Field label="Minimum bid threshold ($)">
+        <input
+          type="number"
+          className="input"
+          placeholder="No minimum"
+          min={0}
+          step={0.01}
+          value={(config.min_bid_threshold as number | undefined) ?? ''}
+          onChange={(e) => onChange({ min_bid_threshold: e.target.value ? parseFloat(e.target.value) : null })}
+        />
+        <p className="mt-1 text-xs text-gray-400">Bids below this amount are excluded before evaluation.</p>
+      </Field>
+
+      {/* Tiebreaker */}
+      <Field label="Tiebreaker">
+        <div className="relative">
+          <select
+            value={tiebreaker}
+            onChange={(e) => onChange({ tiebreaker: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="partner_priority">Partner priority order</option>
+            <option value="fastest_response">Fastest response</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+
+      {/* Fallback partner */}
+      <Field label="Fallback partner (slug)">
+        <input
+          className="input"
+          placeholder="e.g. engine"
+          value={(config.fallback_partner as string | undefined) ?? ''}
+          onChange={(e) => onChange({ fallback_partner: e.target.value || null })}
+        />
+        <p className="mt-1 text-xs text-gray-400">Used when no bids qualify. Routes to winner handle.</p>
+      </Field>
+
+      {/* No-winner behavior */}
+      <Field label="No-winner behavior">
+        <div className="relative">
+          <select
+            value={noWinnerBehavior}
+            onChange={(e) => onChange({ no_winner_behavior: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="exit">Exit (route to no_winner handle)</option>
+            <option value="fail">Fail execution</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+        <p className="mt-1 text-xs text-gray-400">When no fallback is set and all bids fail evaluation.</p>
+      </Field>
+    </section>
+  )
+}
+
+function WeightSlider({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <label className="text-xs text-gray-500">{label}</label>
+        <span className="font-mono text-xs text-gray-600">{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range"
+        min={0}
+        max={2}
+        step={0.05}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        className="w-full accent-yellow-500"
+      />
+    </div>
   )
 }
 

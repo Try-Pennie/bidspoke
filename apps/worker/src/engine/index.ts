@@ -216,7 +216,7 @@ export async function walkGraph(
       if (node.type === 'exit' || node.type === 'response') return priorOutput
       const resumeEdges = outgoingEdges(node.id, definition.edges)
       let resumeNext: NodeDefinition | undefined
-      if ((node.type === 'filter' || node.type === 'branch') && priorOutput !== null && typeof priorOutput === 'object') {
+      if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') && priorOutput !== null && typeof priorOutput === 'object') {
         const route = (priorOutput as Record<string, unknown>)._route as string | undefined
         if (route) resumeNext = findNode(resumeEdges.find((e) => e.source_handle === route)?.target ?? '', definition.nodes)
       }
@@ -366,7 +366,7 @@ export async function walkGraph(
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
-    if ((node.type === 'filter' || node.type === 'branch') &&
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') &&
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)

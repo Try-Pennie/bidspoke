@@ -27,6 +27,7 @@ import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
 import { TriggerNode } from './nodes/TriggerNode'
 import { GenericNode } from './nodes/GenericNode'
+import { BidEvaluationNode } from './nodes/BidEvaluationNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -56,7 +57,7 @@ const nodeTypes: NodeTypes = {
   partner_bid: GenericNode,
   transform: GenericNode,
   parallel: GenericNode,
-  bid_evaluation: GenericNode,
+  bid_evaluation: BidEvaluationNode,
 }
 
 function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {

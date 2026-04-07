@@ -6,6 +6,7 @@ import { executeBranchNode } from './branch'
 import { executeResponseNode } from './response'
 import { executeCodeNode } from './code'
 import { executePartnerBidNode } from './partner-bid'
+import { executeBidEvaluationNode } from './bid-evaluation'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -36,7 +37,7 @@ export async function executeNode(
     case 'transform':
       throw new Error('Transform node not yet implemented (Phase 2.2)')
     case 'bid_evaluation':
-      throw new Error('Bid Evaluation node not yet implemented (Phase 2.2)')
+      return executeBidEvaluationNode(node, ctx, supabase)
     default:
       throw new Error(`Unknown node type: ${(node as NodeDefinition).type}`)
   }
