@@ -692,7 +692,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <button
               onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
-                mode === 'edit' ? 'bg-amber-500 text-white' : 'bg-white text-gray-400 hover:bg-gray-50'
+                mode === 'edit' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-400 hover:bg-gray-50'
               }`}
             >
               <Pencil className="h-3 w-3" />
