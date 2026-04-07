@@ -1,14 +1,17 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import type { Env } from '../../index'
 import { executeFilterNode } from './filter'
 import { executeBranchNode } from './branch'
 import { executeResponseNode } from './response'
 import { executeCodeNode } from './code'
+import { executePartnerBidNode } from './partner-bid'
 
 export async function executeNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  supabase?: SupabaseClient
 ): Promise<StepExecutionResult> {
   switch (node.type) {
     case 'filter':
@@ -21,10 +24,11 @@ export async function executeNode(
       return executeExitNode(node)
     case 'code':
       return executeCodeNode(node, ctx, env)
+    case 'partner_bid':
+      if (!supabase) throw new Error('Partner Bid node requires a Supabase client')
+      return executePartnerBidNode(node, ctx, env, supabase)
     case 'parallel':
       throw new Error('Parallel node not yet implemented (Phase 2.2)')
-    case 'partner_bid':
-      throw new Error('Partner Bid node not yet implemented (Phase 2.2)')
     case 'integration':
       throw new Error('Integration node not yet implemented (Phase 2.2)')
     case 'transform':

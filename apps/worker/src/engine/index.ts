@@ -253,7 +253,7 @@ export async function walkGraph(
       }
 
       const result = await withRetry(
-        () => executeNode(node, ctx, env),
+        () => executeNode(node, ctx, env, supabase),
         retryConfig,
         (err) => {
           if (err instanceof Response) return classifyHttpError(err.status)
