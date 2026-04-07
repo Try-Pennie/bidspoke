@@ -267,7 +267,7 @@ export default function IntegrationsPage() {
               <button
                 type="submit"
                 disabled={saving || !resolved || !selectedChannel}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               >
                 {saving ? 'Connecting…' : 'Connect Slack'}
               </button>

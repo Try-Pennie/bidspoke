@@ -121,7 +121,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
             <button
               onClick={handleParse}
               disabled={!json.trim()}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               <Upload className="h-3.5 w-3.5" />
               Parse
@@ -136,7 +136,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
               </button>
               <button
                 onClick={handleConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
               >
                 <CheckCircle2 className="h-3.5 w-3.5" />
                 Import to canvas

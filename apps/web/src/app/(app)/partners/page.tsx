@@ -79,7 +79,7 @@ export default function PartnersPage() {
             <h1 className="text-lg font-bold text-gray-900">Partners</h1>
             <button
               onClick={() => { setSelected(null); setCreating(true) }}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
             >
               <Plus className="h-3.5 w-3.5" />
               New
@@ -102,7 +102,7 @@ export default function PartnersPage() {
                 <p className="mt-1 text-xs text-gray-400">Partners are the lenders or buyers your workflows route leads to.</p>
                 <button
                   onClick={() => { setSelected(null); setCreating(true) }}
-                  className="mt-3 text-xs font-medium text-blue-600 hover:text-blue-700"
+                  className="mt-3 text-xs font-medium text-indigo-600 hover:text-indigo-700"
                 >
                   Add your first partner →
                 </button>

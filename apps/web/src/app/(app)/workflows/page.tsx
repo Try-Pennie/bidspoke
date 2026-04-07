@@ -135,7 +135,7 @@ export default function WorkflowsPage() {
           <button
             onClick={handleCreate}
             disabled={creating}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             <Plus className="h-4 w-4" />
             {creating ? 'Creating…' : 'New Workflow'}
@@ -177,7 +177,7 @@ export default function WorkflowsPage() {
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
               {creating ? 'Creating…' : 'Create your first workflow'}
             </button>
@@ -219,7 +219,7 @@ export default function WorkflowsPage() {
                         ) : (
                           <Link
                             href={`/workflows/${wf.id}`}
-                            className="font-medium text-gray-900 hover:text-blue-600"
+                            className="font-medium text-gray-900 hover:text-indigo-600"
                           >
                             {wf.name}
                           </Link>

@@ -174,7 +174,7 @@ export default function TestRunPanel({
         <div>
           <p className="mb-1.5 text-xs font-medium text-gray-500">Trigger payload (JSON)</p>
           <textarea
-            className="h-52 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-gray-200"
+            className="h-52 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200"
             value={payload}
             onChange={(e) => { setPayload(e.target.value); setParseError(null) }}
             spellCheck={false}
@@ -242,7 +242,7 @@ export default function TestRunPanel({
         <button
           onClick={run}
           disabled={running}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
         >
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
           {running ? 'Running…' : 'Run test'}

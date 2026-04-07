@@ -38,7 +38,7 @@ function Input({ value, onChange, placeholder, type = 'text', mono }: {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-200 ${mono ? 'font-mono' : ''}`}
+      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200 ${mono ? 'font-mono' : ''}`}
     />
   )
 }
@@ -279,7 +279,7 @@ export default function PartnerForm({
               onChange={(e) => setBidFormula(e.target.value)}
               placeholder="debt_amount * 0.65"
               rows={2}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-200"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200"
             />
           </Field>
         </Section>
@@ -354,7 +354,7 @@ export default function PartnerForm({
     { "status_code": 503, "body_field": "error", "contains": "account suspended" }
   ]
 }`}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-gray-900 placeholder-gray-300 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-200"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-gray-900 placeholder-gray-300 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200"
             />
             {responseClassificationError && (
               <p className="mt-1 text-xs text-red-600">{responseClassificationError}</p>
@@ -407,7 +407,7 @@ export default function PartnerForm({
           <button
             type="submit"
             disabled={saving || !name}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             {saving
               ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>

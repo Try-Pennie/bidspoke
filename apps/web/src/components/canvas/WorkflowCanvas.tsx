@@ -677,7 +677,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             ← Workflows
           </button>
           <input
-            className={`rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-gray-200 ${
+            className={`rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
               mode === 'edit' ? 'hover:bg-amber-100 focus:bg-amber-100' : 'hover:bg-gray-50 focus:bg-gray-50'
             }`}
             value={name}
@@ -787,7 +787,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClick={handleSave}
               disabled={saving || !isDirty}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
-                saving    ? 'bg-blue-600' :
+                saving    ? 'bg-indigo-600' :
                 savedOk   ? 'bg-green-600 hover:bg-green-700' :
                 isDirty   ? 'bg-amber-500 hover:bg-amber-600' :
                             'bg-gray-300 cursor-default'

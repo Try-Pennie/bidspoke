@@ -144,7 +144,7 @@ export default function SourcesPage() {
           {!adding && (
             <button
               onClick={() => setAdding(true)}
-              className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
             >
               <Plus className="h-4 w-4" />
               New source
@@ -178,7 +178,7 @@ export default function SourcesPage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                 >
                   {saving ? 'Generating…' : 'Generate key'}
                 </button>
@@ -223,7 +223,7 @@ export default function SourcesPage() {
                 </p>
                 <button
                   onClick={() => setAdding(true)}
-                  className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
                 >
                   Add your first source
                 </button>

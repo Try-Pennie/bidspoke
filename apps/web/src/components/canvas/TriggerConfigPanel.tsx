@@ -42,7 +42,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">HTTP method</label>
           <select
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
             value={cfg.method}
             onChange={(e) => update({ method: e.target.value })}
           >
@@ -57,7 +57,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Authentication</label>
           <select
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
             value={cfg.auth_method}
             onChange={(e) => update({ auth_method: e.target.value as 'api_key' })}
           >
@@ -75,7 +75,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
           <button
             onClick={() => update({ custom_response: !cfg.custom_response })}
             className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              cfg.custom_response ? 'bg-blue-600' : 'bg-gray-200'
+              cfg.custom_response ? 'bg-indigo-600' : 'bg-gray-200'
             }`}
           >
             <span
@@ -97,7 +97,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
               placeholder="Off"
               value={cfg.duration_alert_ms ?? ''}
               onChange={(e) => update({ duration_alert_ms: e.target.value ? Number(e.target.value) : undefined })}
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
             />
             <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
           </div>
@@ -119,7 +119,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
             <button
               onClick={() => updateIdempotency({ enabled: !idempotency.enabled })}
               className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                idempotency.enabled ? 'bg-blue-600' : 'bg-gray-200'
+                idempotency.enabled ? 'bg-indigo-600' : 'bg-gray-200'
               }`}
             >
               <span
@@ -157,7 +157,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
                   ))}
                   <div className="flex items-center gap-1">
                     <input
-                      className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                      className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-indigo-400 focus:outline-none"
                       placeholder="body.field_name"
                       value={newField}
                       onChange={(e) => setNewField(e.target.value)}
@@ -190,7 +190,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
                 <label className="mb-1 block text-xs font-medium text-gray-500">Remember for (seconds)</label>
                 <input
                   type="number"
-                  className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                  className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
                   value={idempotency.ttl_seconds ?? 86400}
                   min={60}
                   onChange={(e) => updateIdempotency({ ttl_seconds: Number(e.target.value) })}

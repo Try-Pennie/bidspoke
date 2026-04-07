@@ -78,7 +78,7 @@ export default function EnvPage() {
           </div>
           <button
             onClick={() => setShowForm(true)}
-            className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
           >
             <Plus className="h-4 w-4" />
             Add Variable
@@ -126,7 +126,7 @@ export default function EnvPage() {
                 id="is_secret"
                 checked={newVar.is_secret}
                 onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
-                className="rounded border-gray-300 text-blue-600"
+                className="rounded border-gray-300 text-indigo-600"
               />
               <label htmlFor="is_secret" className="text-xs text-gray-600">
                 Secret — value encrypted and synced to Cloudflare Worker
@@ -136,7 +136,7 @@ export default function EnvPage() {
               <button
                 type="submit"
                 disabled={creating}
-                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               >
                 {creating ? 'Saving…' : 'Save'}
               </button>
@@ -175,7 +175,7 @@ export default function EnvPage() {
             </p>
             <button
               onClick={() => setShowForm(true)}
-              className="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
             >
               Add your first variable
             </button>
