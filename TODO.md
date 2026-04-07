@@ -127,8 +127,8 @@
 - [x] Implement Durable Object for partner circuit breakers — PRD Section 2.5.2
 - [x] Implement partner management UI (CRUD, formula preview, enable/disable)
 - [x] Implement partner management API endpoints
-- [ ] **Test:** Cap enforcement (hit cap → partner skipped), cap reset at midnight UTC
-- [ ] **Test:** Partner circuit breaker (trip → open → half-open → recovery)
+- [x] **Test:** Cap enforcement (hit cap → partner skipped), cap reset at midnight UTC
+- [x] **Test:** Partner circuit breaker (trip → open → half-open → recovery)
 
 ### 2.2 Node Types — Phase 2
 - [x] Partner Bid node (circuit breaker check → cap check → dedup → API call → classify response → return bid) — PRD Section 5.3
