@@ -7,7 +7,7 @@ import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './exec
 interface BranchEntry { label: string }
 
 export function BranchNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
   const outputPreview = getOutputPreview(executionStep)
 
@@ -29,7 +29,8 @@ export function BranchNode({ data, selected }: NodeProps) {
         <span className="text-xs font-semibold uppercase tracking-wide text-purple-700">Branch</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         <p className="mt-0.5 text-xs text-gray-400">
           {branches.length === 0 ? 'No branches' : `${branches.length} branch${branches.length !== 1 ? 'es' : ''} + else`}
         </p>

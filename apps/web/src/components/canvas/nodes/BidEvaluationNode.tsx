@@ -11,7 +11,7 @@ interface BidEvaluationOutput {
 }
 
 export function BidEvaluationNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const strategy = (config.strategy as string | undefined) ?? 'highest_bid'
   const strategyLabel = strategy === 'weighted_score' ? 'weighted' : 'highest bid'
 
@@ -47,7 +47,8 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
       </div>
 
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         {winnerPreview ? (
           <p className={`mt-1 truncate rounded px-1.5 py-0.5 font-mono text-xs ${
             routeLabel === 'no_winner'

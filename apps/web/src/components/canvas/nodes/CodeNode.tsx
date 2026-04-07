@@ -5,7 +5,7 @@ import { Code } from 'lucide-react'
 import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function CodeNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const workerName = config.worker_name as string | undefined
   const outputPreview = getOutputPreview(executionStep)
 
@@ -24,7 +24,8 @@ export function CodeNode({ data, selected }: NodeProps) {
         <span className="font-mono text-xs font-bold tracking-wide text-amber-700">CODE</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         <p className="mt-0.5 truncate text-xs text-gray-400">
           {workerName ?? 'No worker configured'}
         </p>

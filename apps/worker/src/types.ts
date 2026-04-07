@@ -40,6 +40,7 @@ export interface TriggerConfig {
 export interface NodeDefinition {
   id: string
   namespace: string
+  label?: string
   type: NodeType
   position?: { x: number; y: number }
   config: NodeConfig

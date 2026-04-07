@@ -5,7 +5,7 @@ import { LogOut } from 'lucide-react'
 import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ExitNode({ data, selected }: NodeProps) {
-  const { namespace, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
@@ -23,7 +23,8 @@ export function ExitNode({ data, selected }: NodeProps) {
         <span className="text-xs font-semibold uppercase tracking-wide text-red-700">Exit</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         <p className="mt-0.5 text-xs text-gray-400">Early termination</p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>

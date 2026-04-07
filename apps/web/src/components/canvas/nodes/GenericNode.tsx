@@ -5,7 +5,7 @@ import { Box } from 'lucide-react'
 import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
-  const { namespace, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
@@ -25,7 +25,8 @@ export function GenericNode({ data, selected, type }: NodeProps) {
         </span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}

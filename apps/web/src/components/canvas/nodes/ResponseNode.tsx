@@ -5,7 +5,7 @@ import { ArrowRight } from 'lucide-react'
 import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ResponseNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
   const outputPreview = getOutputPreview(executionStep)
 
@@ -24,7 +24,8 @@ export function ResponseNode({ data, selected }: NodeProps) {
         <span className="text-xs font-semibold uppercase tracking-wide text-green-700">Response</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         <p className="mt-0.5 text-xs text-gray-400">HTTP {statusCode}</p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>

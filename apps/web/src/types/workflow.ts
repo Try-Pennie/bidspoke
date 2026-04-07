@@ -24,6 +24,7 @@ export interface ConditionGroup {
 export interface NodeDef {
   id: string
   namespace: string
+  label?: string
   type: NodeType
   position?: { x: number; y: number }
   config: Record<string, unknown>
@@ -125,6 +126,7 @@ export interface ExecutionStep {
 // What we store in React Flow node.data
 export interface CanvasNodeData {
   namespace: string
+  label?: string
   config: Record<string, unknown>
   variables: Record<string, string>
   // undefined = normal edit mode; null = replay mode but step not reached; object = step ran

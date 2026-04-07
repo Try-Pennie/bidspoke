@@ -10,7 +10,7 @@ interface TransformMapping {
 }
 
 export function TransformNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const mappings = (config.mappings as TransformMapping[] | undefined) ?? []
   const count = mappings.length
 
@@ -34,7 +34,8 @@ export function TransformNode({ data, selected }: NodeProps) {
       </div>
 
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         {count === 0 ? (
           <p className="mt-0.5 truncate text-xs text-gray-400">No mappings configured</p>
         ) : (

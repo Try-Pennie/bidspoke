@@ -13,7 +13,7 @@ const SERVICE_LABELS: Record<string, string> = {
 }
 
 export function IntegrationNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const service = (config.service as string | undefined) ?? 'custom'
   const method = ((config.method as string | undefined) ?? 'POST').toUpperCase()
   const url = (config.url as string | undefined) ?? ''
@@ -51,7 +51,8 @@ export function IntegrationNode({ data, selected }: NodeProps) {
       </div>
 
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         {statusBadge ? (
           <p className="mt-1 truncate rounded bg-teal-50 px-1.5 py-0.5 font-mono text-xs text-teal-700">
             HTTP {statusBadge}

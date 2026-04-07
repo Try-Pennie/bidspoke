@@ -11,7 +11,7 @@ const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
 }
 
 export function FilterNode({ data, selected }: NodeProps) {
-  const { namespace, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
   const condition = config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -43,7 +43,8 @@ export function FilterNode({ data, selected }: NodeProps) {
         </span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
         <p className="mt-0.5 truncate text-xs text-gray-400">
           {conditionSummary ?? 'No condition set'}
         </p>

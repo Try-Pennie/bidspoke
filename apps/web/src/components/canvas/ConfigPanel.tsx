@@ -32,7 +32,8 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{type}</p>
-          <p className="mt-0.5 text-sm font-semibold text-gray-900">{data.namespace}</p>
+          <p className="mt-0.5 text-sm font-semibold text-gray-900">{data.label || data.namespace}</p>
+          {data.label && <p className="font-mono text-xs text-gray-400">{data.namespace}</p>}
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -80,8 +81,18 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
 
+        {/* Display name */}
+        <Field label="Display name" hint="How this step appears on the canvas. Leave blank to use the step ID.">
+          <input
+            className="input"
+            placeholder={data.namespace}
+            value={data.label ?? ''}
+            onChange={(e) => onUpdate(node.id, { label: e.target.value || undefined })}
+          />
+        </Field>
+
         {/* Namespace */}
-        <Field label="Step name" hint="Unique identifier for this step. Used to reference its output in later steps — e.g. steps.credit_check.score">
+        <Field label="Step ID" hint="Unique identifier used to reference this step's output in later steps — e.g. steps.credit_check.score">
           <input
             className="input"
             value={data.namespace}
