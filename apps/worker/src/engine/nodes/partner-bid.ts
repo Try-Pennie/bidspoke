@@ -17,9 +17,16 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
+import {
+  classifyHttpError,
+  evaluateResponseClassification,
+  shouldSuppressAlert,
+} from '../error-classifier'
+import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -36,11 +43,28 @@ interface PartnerConfig {
   min_bid: number | null
   bid_formula: string | null
   dedup_endpoint: string | null
+  response_classification: ResponseClassificationConfig | null
+  alert_config: AlertConfig | null
   circuit_error_threshold: number
   circuit_window_seconds: number
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
   is_active: boolean
+}
+
+/**
+ * Thrown by the partner-bid node when a partner API call fails.
+ * Carries the pre-determined error classification and alert suppression flag
+ * so the engine doesn't need to re-classify or look up the partner config.
+ */
+export class PartnerApiError extends Error {
+  constructor(
+    message: string,
+    public readonly errorType: ErrorType,
+    public readonly suppressAlert: boolean
+  ) {
+    super(message)
+  }
 }
 
 type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected'
@@ -72,7 +96,7 @@ export async function executePartnerBidNode(
   // 1. Load partner config
   const { data: partner, error } = await supabase
     .from('partner_configs')
-    .select('id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, dedup_endpoint, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, circuit_enabled, is_active')
+    .select('id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, dedup_endpoint, response_classification, alert_config, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, circuit_enabled, is_active')
     .eq('id', config.partner_id)
     .single()
 
@@ -129,9 +153,23 @@ export async function executePartnerBidNode(
 
   try {
     if (p.api_endpoint) {
-      const { bid: apiBid, raw } = await callBidApi(p, ctx, env)
-      bid = apiBid
-      rawResponse = raw
+      const result = await callBidApi(p, ctx, env)
+      if (result.rejected) {
+        // Rejection signal matched — valid business outcome, not an error
+        return {
+          output: {
+            partner: p.slug,
+            bid: null,
+            accepted: false,
+            skipped: true,
+            skip_reason: 'rejected' as const,
+            raw_response: result.raw,
+            cap_count: capCount,
+          },
+        }
+      }
+      bid = result.bid
+      rawResponse = result.raw
     } else if (p.bid_formula) {
       bid = evaluateFormula(p.bid_formula, ctx)
     }
@@ -143,7 +181,20 @@ export async function executePartnerBidNode(
       window_seconds: p.circuit_window_seconds,
       cooldown_seconds: p.circuit_cooldown_seconds,
     }).catch(() => {})
-    throw err
+
+    // Determine error classification — check if err already carries it
+    let errorType: ErrorType
+    if (err instanceof PartnerApiError) {
+      throw err  // already classified + alert decision made
+    } else if (err instanceof Response) {
+      errorType = classifyHttpError(err.status)
+    } else {
+      errorType = 'transient'
+    }
+
+    const suppress = shouldSuppressAlert(p.alert_config, errorType)
+    const message = err instanceof Error ? err.message : String(err)
+    throw new PartnerApiError(message, errorType, suppress)
   }
 
   // 7. Minimum bid filter
@@ -188,7 +239,7 @@ async function callBidApi(
   partner: PartnerConfig,
   ctx: ExecutionContext,
   env: Env
-): Promise<{ bid: number | null; raw: unknown }> {
+): Promise<{ bid: number | null; raw: unknown; rejected?: boolean }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'X-Trace-Id': ctx.trigger.trace_id,
@@ -220,12 +271,38 @@ async function callBidApi(
 
   const raw = await res.json().catch(() => null)
 
-  if (!res.ok) {
-    const err = Object.assign(new Error(`Partner API returned ${res.status}`), { status: res.status })
-    throw err
+  // Collect response headers for signal evaluation
+  const resHeaders: Record<string, string> = {}
+  res.headers.forEach((v, k) => { resHeaders[k] = v })
+
+  // Apply per-partner classification overrides (§11.2)
+  if (partner.response_classification) {
+    const override = evaluateResponseClassification(
+      partner.response_classification,
+      res.status,
+      raw,
+      resHeaders
+    )
+    if (override === 'rejection') {
+      return { bid: null, raw, rejected: true }
+    }
+    if (override === 'transient' || override === 'permanent') {
+      // Override the default classification — throw PartnerApiError directly
+      const suppress = shouldSuppressAlert(partner.alert_config, override)
+      throw new PartnerApiError(
+        `Partner API returned ${res.status} (classified as ${override} by override)`,
+        override,
+        suppress
+      )
+    }
   }
 
-  // Extract bid amount — look for common response shapes
+  if (!res.ok) {
+    throw new Error(`Partner API returned ${res.status}`)
+  }
+
+  // Check rejection signals on successful responses too (e.g., 200 with {status: "rejected"})
+  // Already handled above via evaluateResponseClassification, but double-check extractBid
   const bid = extractBid(raw)
   return { bid, raw }
 }

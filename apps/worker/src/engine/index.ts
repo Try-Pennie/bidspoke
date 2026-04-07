@@ -8,6 +8,7 @@ import { executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult } from './nodes/parallel'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
+import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
 import { sendFailureAlert } from '../lib/slack'
@@ -25,7 +26,8 @@ class StepFailureError extends Error {
   constructor(
     message: string,
     public readonly stepNamespace: string,
-    public readonly errorType: ErrorType
+    public readonly errorType: ErrorType,
+    public readonly suppressAlert: boolean = false
   ) {
     super(message)
   }
@@ -135,6 +137,7 @@ export async function executeWorkflow(
   let errorMessage: string | undefined
   let failedStep: string | undefined
   let failedErrorType: ErrorType = null
+  let failedSuppressAlert = false
 
   try {
     response = await walkGraph(ctx, definition, executionId, startedAt, supabase, env)
@@ -144,6 +147,7 @@ export async function executeWorkflow(
     if (err instanceof StepFailureError) {
       failedStep = err.stepNamespace
       failedErrorType = err.errorType
+      failedSuppressAlert = err.suppressAlert
     }
     response = { error: errorMessage, trace_id: traceId }
   }
@@ -163,7 +167,7 @@ export async function executeWorkflow(
   )
 
   // Send Slack alert on failure (skip business rejections and test runs)
-  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null) {
+  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert) {
     executionCtx.waitUntil(
       sendFailureAlert(supabase, org_id, slack_channel, {
         workflow_id: workflowId,
@@ -314,7 +318,11 @@ export async function walkGraph(
 
     } catch (err) {
       // Classify error type — needed for CB recording and Slack alerting
-      if (err instanceof CircuitOpenError) {
+      let suppressAlert = false
+      if (err instanceof PartnerApiError) {
+        errorType = err.errorType
+        suppressAlert = err.suppressAlert
+      } else if (err instanceof CircuitOpenError) {
         errorType = 'transient'
       } else if (err instanceof Response) {
         errorType = classifyHttpError(err.status)
@@ -348,7 +356,7 @@ export async function walkGraph(
         stepStatus = 'failed'
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
         await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
-        throw new StepFailureError(errorMessage, node.namespace, errorType)
+        throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
     }
 

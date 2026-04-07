@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { classifyHttpError, classifyTransportError } from '../error-classifier'
+import {
+  classifyHttpError,
+  classifyTransportError,
+  evaluateResponseClassification,
+  shouldSuppressAlert,
+} from '../error-classifier'
+import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
+
+// ── classifyHttpError ─────────────────────────────────────────────────────────
 
 describe('classifyHttpError', () => {
   describe('transient (should retry)', () => {
@@ -31,5 +39,183 @@ describe('classifyTransportError', () => {
 
   it('unknown errors are transient', () => {
     expect(classifyTransportError('some string error')).toBe('transient')
+  })
+})
+
+// ── evaluateResponseClassification ───────────────────────────────────────────
+
+const noHeaders: Record<string, string> = {}
+
+describe('evaluateResponseClassification — rejection signals', () => {
+  it('matches field equals string', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'status', equals: 'rejected' }],
+    }
+    expect(evaluateResponseClassification(config, 200, { status: 'rejected' }, noHeaders)).toBe('rejection')
+  })
+
+  it('matches field equals boolean false', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'accepted', equals: false }],
+    }
+    expect(evaluateResponseClassification(config, 200, { accepted: false }, noHeaders)).toBe('rejection')
+  })
+
+  it('matches string "false" loosely equal to boolean false', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'accepted', equals: false }],
+    }
+    expect(evaluateResponseClassification(config, 200, { accepted: 'false' }, noHeaders)).toBe('rejection')
+  })
+
+  it('matches field contains substring', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'reason', contains: 'duplicate' }],
+    }
+    expect(evaluateResponseClassification(config, 200, { reason: 'duplicate lead' }, noHeaders)).toBe('rejection')
+  })
+
+  it('matches field present=true', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'error_code', present: true }],
+    }
+    expect(evaluateResponseClassification(config, 200, { error_code: 'ERR_001' }, noHeaders)).toBe('rejection')
+  })
+
+  it('matches field present=false (field absent)', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'bid', present: false }],
+    }
+    expect(evaluateResponseClassification(config, 200, { status: 'ok' }, noHeaders)).toBe('rejection')
+  })
+
+  it('does not match when value differs', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'status', equals: 'rejected' }],
+    }
+    expect(evaluateResponseClassification(config, 200, { status: 'accepted' }, noHeaders)).toBe(null)
+  })
+
+  it('does not match absent field against equals check', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'missing', equals: 'value' }],
+    }
+    expect(evaluateResponseClassification(config, 200, {}, noHeaders)).toBe(null)
+  })
+
+  it('returns null when no signals configured', () => {
+    const config: ResponseClassificationConfig = {}
+    expect(evaluateResponseClassification(config, 400, { error: 'bad' }, noHeaders)).toBe(null)
+  })
+})
+
+describe('evaluateResponseClassification — transient signals', () => {
+  it('matches status_code + body_field contains', () => {
+    const config: ResponseClassificationConfig = {
+      transient_signals: [
+        { status_code: 200, body_field: 'error', contains: 'service unavailable' },
+      ],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { error: 'service unavailable right now' }, noHeaders)
+    ).toBe('transient')
+  })
+
+  it('does not match when status code differs', () => {
+    const config: ResponseClassificationConfig = {
+      transient_signals: [{ status_code: 200, body_field: 'error', contains: 'unavailable' }],
+    }
+    expect(
+      evaluateResponseClassification(config, 503, { error: 'service unavailable' }, noHeaders)
+    ).toBe(null)
+  })
+
+  it('matches header present', () => {
+    const config: ResponseClassificationConfig = {
+      transient_signals: [{ status_code: 403, header: 'retry-after', present: true }],
+    }
+    expect(
+      evaluateResponseClassification(config, 403, {}, { 'retry-after': '30' })
+    ).toBe('transient')
+  })
+
+  it('does not match when header absent', () => {
+    const config: ResponseClassificationConfig = {
+      transient_signals: [{ status_code: 403, header: 'retry-after', present: true }],
+    }
+    expect(evaluateResponseClassification(config, 403, {}, noHeaders)).toBe(null)
+  })
+
+  it('matches on status code alone', () => {
+    const config: ResponseClassificationConfig = {
+      transient_signals: [{ status_code: 500 }],
+    }
+    expect(evaluateResponseClassification(config, 500, {}, noHeaders)).toBe('transient')
+  })
+})
+
+describe('evaluateResponseClassification — permanent signals', () => {
+  it('matches permanent override', () => {
+    const config: ResponseClassificationConfig = {
+      permanent_signals: [
+        { status_code: 503, body_field: 'error', contains: 'account suspended' },
+      ],
+    }
+    expect(
+      evaluateResponseClassification(config, 503, { error: 'account suspended' }, noHeaders)
+    ).toBe('permanent')
+  })
+})
+
+describe('evaluateResponseClassification — signal priority', () => {
+  it('rejection is checked before transient', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'status', equals: 'no' }],
+      transient_signals: [{ status_code: 200 }],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { status: 'no' }, noHeaders)
+    ).toBe('rejection')
+  })
+})
+
+// ── shouldSuppressAlert ───────────────────────────────────────────────────────
+
+describe('shouldSuppressAlert', () => {
+  it('returns false when no config (alert everything by default)', () => {
+    expect(shouldSuppressAlert(null, 'transient')).toBe(false)
+    expect(shouldSuppressAlert(undefined, 'permanent')).toBe(false)
+  })
+
+  it('returns false when alert is explicitly true', () => {
+    const config: AlertConfig = {
+      transient_errors: { alert: true },
+      permanent_errors: { alert: true },
+    }
+    expect(shouldSuppressAlert(config, 'transient')).toBe(false)
+    expect(shouldSuppressAlert(config, 'permanent')).toBe(false)
+  })
+
+  it('suppresses transient alerts when configured off', () => {
+    const config: AlertConfig = { transient_errors: { alert: false } }
+    expect(shouldSuppressAlert(config, 'transient')).toBe(true)
+  })
+
+  it('does not suppress permanent when only transient is off', () => {
+    const config: AlertConfig = { transient_errors: { alert: false } }
+    expect(shouldSuppressAlert(config, 'permanent')).toBe(false)
+  })
+
+  it('suppresses permanent alerts when configured off', () => {
+    const config: AlertConfig = { permanent_errors: { alert: false } }
+    expect(shouldSuppressAlert(config, 'permanent')).toBe(true)
+  })
+
+  it('returns false for null errorType regardless of config', () => {
+    const config: AlertConfig = {
+      transient_errors: { alert: false },
+      permanent_errors: { alert: false },
+    }
+    expect(shouldSuppressAlert(config, null)).toBe(false)
   })
 })

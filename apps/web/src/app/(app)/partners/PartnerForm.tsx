@@ -85,15 +85,41 @@ export default function PartnerForm({
   const [circuitWindow, setCircuitWindow] = useState(String(partner?.circuit_window_seconds ?? 60))
   const [circuitCooldown, setCircuitCooldown] = useState(String(partner?.circuit_cooldown_seconds ?? 300))
 
+  // Response classification
+  const [responseClassification, setResponseClassification] = useState(
+    partner?.response_classification
+      ? JSON.stringify(partner.response_classification, null, 2)
+      : ''
+  )
+  const [responseClassificationError, setResponseClassificationError] = useState<string | null>(null)
+
+  // Alert config
+  const defaultAlertConfig = partner?.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
+  const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
+  const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
+    setResponseClassificationError(null)
     setSaving(true)
+
+    // Parse response_classification JSON if provided
+    let parsedClassification: unknown = null
+    if (responseClassification.trim()) {
+      try {
+        parsedClassification = JSON.parse(responseClassification)
+      } catch {
+        setResponseClassificationError('Invalid JSON — check syntax and try again.')
+        setSaving(false)
+        return
+      }
+    }
 
     try {
       const body: PartnerBody = {
         name,
-        slug: partner ? undefined : slug, // slug is immutable after creation
+        slug: partner ? undefined : slug,
         api_endpoint: apiEndpoint || null,
         cf_secret_key: cfSecretKey || null,
         is_active: isActive,
@@ -106,6 +132,11 @@ export default function PartnerForm({
         circuit_error_threshold: parseInt(circuitThreshold) || 5,
         circuit_window_seconds: parseInt(circuitWindow) || 60,
         circuit_cooldown_seconds: parseInt(circuitCooldown) || 300,
+        response_classification: parsedClassification,
+        alert_config: {
+          transient_errors: { alert: alertTransient },
+          permanent_errors: { alert: alertPermanent },
+        },
       }
       await onSave(body, partner?.id)
     } catch (e) {
@@ -292,6 +323,84 @@ export default function PartnerForm({
               </Field>
             </div>
           )}
+        </Section>
+
+        <Section title="Response classification">
+          <p className="text-xs text-gray-400">
+            Override how this partner&apos;s responses are classified. Evaluated before default rules.
+            Leave blank to use defaults (HTTP status–based classification).
+          </p>
+          <Field
+            label="Signal overrides (JSON)"
+            hint={'Supported keys: rejection_signals, transient_signals, permanent_signals. Each signal is { field, equals?, contains?, present? } for body fields or { status_code?, body_field?, contains?, header?, present? } for status signals.'}
+          >
+            <textarea
+              value={responseClassification}
+              onChange={(e) => {
+                setResponseClassification(e.target.value)
+                setResponseClassificationError(null)
+              }}
+              rows={8}
+              placeholder={`{
+  "rejection_signals": [
+    { "field": "status", "equals": "rejected" },
+    { "field": "accepted", "equals": false }
+  ],
+  "transient_signals": [
+    { "status_code": 200, "body_field": "error", "contains": "service unavailable" },
+    { "status_code": 403, "header": "Retry-After", "present": true }
+  ],
+  "permanent_signals": [
+    { "status_code": 503, "body_field": "error", "contains": "account suspended" }
+  ]
+}`}
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-gray-900 placeholder-gray-300 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-gray-200"
+            />
+            {responseClassificationError && (
+              <p className="mt-1 text-xs text-red-600">{responseClassificationError}</p>
+            )}
+          </Field>
+        </Section>
+
+        <Section title="Alert configuration">
+          <p className="text-xs text-gray-400">
+            Default: alert on all errors. Turn off alert types that produce noise for this partner.
+            Business rejections never alert regardless.
+          </p>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
+                <p className="text-xs text-gray-400">Network failures, timeouts, 429, 502–504</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertTransient((v) => !v)}
+                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {alertTransient
+                  ? <><ToggleRight className="h-4 w-4 text-green-500" /> On</>
+                  : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Off</>
+                }
+              </button>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
+                <p className="text-xs text-gray-400">4xx errors, auth failures, bad responses</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAlertPermanent((v) => !v)}
+                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                {alertPermanent
+                  ? <><ToggleRight className="h-4 w-4 text-green-500" /> On</>
+                  : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Off</>
+                }
+              </button>
+            </div>
+          </div>
         </Section>
 
         <div className="flex items-center gap-3 border-t border-gray-100 pt-6">
