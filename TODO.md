@@ -134,7 +134,7 @@
 - [x] Partner Bid node (circuit breaker check → cap check → dedup → API call → classify response → return bid) — PRD Section 5.3
 - [x] Parallel node (Promise.allSettled, wait_for all/first, timeout with partial/fail) — PRD Section 5.2
 - [x] Bid Evaluation node (highest bid, weighted score, tiebreaker, fallback, no-winner behavior) — PRD Section 5.8
-- [ ] Integration node (service-aware field mapping, schema dropdowns) — PRD Section 5.5
+- [x] Integration node (service-aware field mapping, schema dropdowns) — PRD Section 5.5
 - [x] Transform node (two-column mapping, dot-path, expressions, array access) — PRD Section 5.7
 - [x] **Test:** Partner Bid node — formula-only bid (Tripoint) and API-returned bid
 - [x] **Test:** Parallel node — all children succeed, one fails (others continue), timeout partial results
@@ -159,7 +159,7 @@
 ### 2.5 Observability
 - [ ] Implement structured JSON logging (trace_id, workflow_id, step info, event types) — PRD Section 10.3
 - [ ] Implement observability dashboard (execution volume, duration, partner performance, circuit breaker status)
-- [ ] Implement X-Trace-Id propagation to outbound partner API calls
+- [x] Implement X-Trace-Id propagation to outbound partner API calls
 - [ ] **Test:** Trace a single lead end-to-end by trace_id across logs and execution_steps
 
 ### 2.6 Workflow Templates
@@ -198,7 +198,7 @@
 - [ ] **Test:** Dashboard shows accurate volume, duration, partner win rates
 
 ### 3.4 Cross-Workflow Copy/Paste
-- [ ] Implement copy/paste of nodes and node groups across workflows
+- [x] Implement copy/paste of nodes and node groups across workflows
 - [ ] **Test:** Copy a 3-node group from workflow A, paste into workflow B, verify independent copies
 
 ### 3.5 Long-Term Retention
