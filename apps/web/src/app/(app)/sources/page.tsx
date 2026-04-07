@@ -168,11 +168,11 @@ export default function SourcesPage() {
                   className="input w-full font-mono"
                   placeholder="wallet_owl"
                   value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  onChange={(e) => setNewName(e.target.value.toLowerCase().replace(/\s/g, '_'))}
                   autoFocus
                   required
                 />
-                <p className="mt-1 text-xs text-gray-400">Lowercase, underscores. Used as trigger.source in workflows.</p>
+                <p className="mt-1 text-xs text-gray-400">Lowercase letters, numbers, underscores. Used as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflows.</p>
               </div>
               <div className="flex gap-2">
                 <button
