@@ -63,12 +63,14 @@ export default function WorkflowsPage() {
   }
 
   async function handleToggleActive(wf: WorkflowSummary) {
+    setOpenMenuId(null)
     const next = !wf.is_active
     setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: next } : w))
     try {
       await api.workflows.setActive(wf.id, next)
-    } catch {
+    } catch (e) {
       setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: wf.is_active } : w))
+      setError(e instanceof Error ? e.message : 'Failed to update workflow')
     }
   }
 

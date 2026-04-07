@@ -707,7 +707,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               Edit
             </button>
             <button
-              onClick={() => router.push(`/workflows/${workflow.id}`)}
+              onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
                 mode === 'view' ? 'bg-gray-100 text-gray-800' : 'bg-white text-gray-400 hover:bg-gray-50'
               }`}
@@ -873,7 +873,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               Replay
             </button>
             <button
-              onClick={() => router.push(`/workflows/${workflow.id}`)}
+              onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
               className="flex items-center gap-1 text-indigo-400 hover:text-indigo-600"
             >
               <X className="h-3.5 w-3.5" />
