@@ -6,7 +6,7 @@ export type NodeType =
   | 'exit'
   | 'parallel'
   | 'partner_bid'
-  | 'integration'
+  | 'webhook'
   | 'transform'
   | 'bid_evaluation'
 

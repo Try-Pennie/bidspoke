@@ -63,9 +63,9 @@ const NODES: PaletteNode[] = [
     color: 'text-indigo-500',
   },
   {
-    type: 'integration',
-    label: 'Integration',
-    description: 'HTTP API call',
+    type: 'webhook',
+    label: 'Webhook',
+    description: 'Outgoing HTTP request',
     icon: Plug,
     color: 'text-teal-500',
   },

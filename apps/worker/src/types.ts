@@ -8,7 +8,7 @@ export type NodeType =
   | 'branch'
   | 'parallel'
   | 'partner_bid'
-  | 'integration'
+  | 'webhook'
   | 'transform'
   | 'bid_evaluation'
   | 'response'

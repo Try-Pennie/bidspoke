@@ -54,7 +54,7 @@ function makeNode(overrides: Partial<NodeDefinition>): NodeDefinition {
   return {
     id: 'n1',
     namespace: 'step1',
-    type: 'integration',
+    type: 'webhook',
     config: {},
     ...overrides,
   }

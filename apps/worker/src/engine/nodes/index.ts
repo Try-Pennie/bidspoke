@@ -34,7 +34,7 @@ export async function executeNode(
       // Parallel nodes are handled directly in walkGraph before reaching executeNode.
       // If this case is ever hit, it means a parallel node was called outside of walkGraph.
       throw new Error('Parallel node must be executed through walkGraph, not executeNode directly')
-    case 'integration':
+    case 'webhook':
       return executeIntegrationNode(node, ctx, env)
     case 'transform':
       return executeTransformNode(node, ctx)

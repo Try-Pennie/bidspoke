@@ -19,6 +19,13 @@
 - RLS is enforced at the DB level — don't replicate org scoping in application code
 - Secrets are injected via Cloudflare Worker secrets, never committed
 
+## Code Standards
+- Prefer TypeScript over JavaScript for all new code
+- Use straight quotes (`'` and `"`) in all string literals — never smart/curly quotes
+
+## Workflow Preferences
+- After completing a task that has an associated TODO or planning doc, always update that doc to reflect the completed work before moving on
+
 ## PRD reference
 See [PRD.md](./PRD.md) for full specs. Phase sections in PRD map to TODO.md phases.
 

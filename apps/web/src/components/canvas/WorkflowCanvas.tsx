@@ -55,7 +55,7 @@ const nodeTypes: NodeTypes = {
   response: ResponseNode,
   exit: ExitNode,
   // Phase 2 placeholders — render with GenericNode until implemented
-  integration: IntegrationNode,
+  webhook: IntegrationNode,
   partner_bid: GenericNode,
   transform: TransformNode,
   parallel: GenericNode,

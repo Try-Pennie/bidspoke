@@ -97,7 +97,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'integration' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
 
         {/* Common: retry + error handling */}
         <details>

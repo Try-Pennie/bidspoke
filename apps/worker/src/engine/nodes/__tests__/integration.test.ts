@@ -12,7 +12,7 @@ import type { Env } from '../../../index'
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeNode(config: Record<string, unknown>): NodeDefinition {
-  return { id: 'int_1', namespace: 'call_equifax', type: 'integration', config }
+  return { id: 'int_1', namespace: 'call_equifax', type: 'webhook', config }
 }
 
 function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<string, unknown> } = {}): ExecutionContext {

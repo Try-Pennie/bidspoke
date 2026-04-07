@@ -355,7 +355,7 @@ export function parsePipedreamExport(raw: string): ImportResult {
     const hasApp = apps.length > 0
     if (hasApp) {
       const appNames = apps.map((a) => a.name_slug ?? a.app ?? 'unknown').join(', ')
-      warnings.push(`Step "${namespace}" uses app integration(s): ${appNames}. Mapped to a code node — consider an Integration node when Phase 2 is ready.`)
+      warnings.push(`Step "${namespace}" uses app integration(s): ${appNames}. Mapped to a code node — consider a Webhook node when Phase 2 is ready.`)
     }
 
     if (!translatedCode) {
