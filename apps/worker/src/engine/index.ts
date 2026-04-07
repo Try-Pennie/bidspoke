@@ -46,6 +46,7 @@ export interface ExecuteOptions {
   idempotencyKeyHeader?: string
   resumeFromExecutionId?: string
   isTest?: boolean
+  executionId?: string
 }
 
 export interface ExecuteResult {
@@ -104,7 +105,7 @@ export async function executeWorkflow(
     if (row.value) envVars[row.key] = row.value
   }
 
-  const executionId = crypto.randomUUID()
+  const executionId = options.executionId ?? crypto.randomUUID()
   const startedAt = new Date().toISOString()
 
   // Create execution record — must be awaited before walkGraph so FK constraints on execution_steps are satisfied

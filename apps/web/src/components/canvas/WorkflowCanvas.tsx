@@ -173,6 +173,29 @@ function findDropSource(nodes: Node[], dropPos: { x: number; y: number }): Node 
   })
 }
 
+function findRunningNamespace(
+  nodes: Node[],
+  edges: Edge[],
+  liveSteps: Record<string, ExecutionStep>
+): string | null {
+  // Walk the graph from the trigger's successor
+  let currentId = edges.find((e) => e.source === 'trigger')?.target
+  while (currentId) {
+    const node = nodes.find((n) => n.id === currentId)
+    if (!node) break
+    const ns = (node.data as unknown as CanvasNodeData).namespace
+    const step = liveSteps[ns]
+    if (!step) return ns  // hasn't completed yet — probably running now
+    if (step.status !== 'completed') return null  // terminal, stop here
+    // Follow the edge the step took
+    const outEdges = edges.filter((e) => e.source === currentId)
+    const route = (step.output as Record<string, unknown> | null)?._route as string | undefined
+    const nextEdge = (route ? outEdges.find((e) => e.sourceHandle === route) : null) ?? outEdges[0]
+    currentId = nextEdge?.target
+  }
+  return null
+}
+
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
 function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload }: {
@@ -205,6 +228,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [showTest, setShowTest] = useState(false)
   const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
   const [showVersions, setShowVersions] = useState(false)
+  const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
+  const [testRunning, setTestRunning] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
   const overflowRef = useRef<HTMLDivElement>(null)
   // Undo/redo
@@ -256,6 +281,46 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       })
     )
   }, [executionSteps, setNodes])
+
+  const handleTestStart = useCallback((_execId: string) => {
+    setLiveSteps({})
+    setTestRunning(true)
+  }, [])
+
+  const handleLiveStep = useCallback((namespace: string, step: ExecutionStep) => {
+    setLiveSteps((prev) => ({ ...prev, [namespace]: step }))
+  }, [])
+
+  const handleTestEnd = useCallback(() => {
+    setTestRunning(false)
+  }, [])
+
+  // Apply live step data to nodes during a test run
+  useEffect(() => {
+    const hasLive = Object.keys(liveSteps).length > 0 || testRunning
+    if (!hasLive) return
+
+    // Infer which node is currently running by walking the graph
+    const runningNs = testRunning ? findRunningNamespace(nodes, edges, liveSteps) : null
+
+    setNodes((ns) =>
+      ns.map((n) => {
+        if (n.id === 'trigger') return n
+        const namespace = (n.data as unknown as CanvasNodeData).namespace
+        const step = liveSteps[namespace]
+
+        if (step) {
+          return { ...n, data: { ...(n.data as object), executionStep: step } }
+        }
+        if (namespace === runningNs) {
+          // Show as currently running
+          return { ...n, data: { ...(n.data as object), executionStep: { status: 'running' as const, input: null, output: null, error_message: null, error_type: null, duration_ms: 0, retries_used: 0 } } }
+        }
+        // Clear any previous execution step
+        return { ...n, data: { ...(n.data as object), executionStep: undefined } }
+      })
+    )
+  }, [liveSteps, testRunning]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Color edges based on which nodes ran
   useEffect(() => {
@@ -801,6 +866,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
             onComplete={() => setRefreshSignal((s) => s + 1)}
             initialPayload={testInitialPayload}
+            onTestStart={handleTestStart}
+            onLiveStep={handleLiveStep}
+            onTestEnd={handleTestEnd}
           />
         )}
         {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (

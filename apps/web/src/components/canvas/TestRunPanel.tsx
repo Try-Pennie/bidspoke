@@ -3,17 +3,22 @@
 import { useState } from 'react'
 import { api } from '@/lib/api'
 import { Play, X, CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import type { ExecutionStep } from '@/types/workflow'
 
 interface Props {
   workflowId: string
   onClose: () => void
   onComplete: () => void      // called after a successful run so the list auto-refreshes
   initialPayload?: string
+  onTestStart?: (executionId: string) => void
+  onLiveStep?: (namespace: string, step: ExecutionStep) => void
+  onTestEnd?: () => void
 }
 
 const DEFAULT_PAYLOAD = '{\n  \n}'
 
-export default function TestRunPanel({ workflowId, onClose, onComplete, initialPayload }: Props) {
+export default function TestRunPanel({ workflowId, onClose, onComplete, initialPayload, onTestStart, onLiveStep, onTestEnd }: Props) {
   const [payload, setPayload] = useState(initialPayload ?? DEFAULT_PAYLOAD)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; body: unknown } | null>(null)
@@ -28,10 +33,46 @@ export default function TestRunPanel({ workflowId, onClose, onComplete, initialP
       return
     }
     setParseError(null)
+
+    const execId = crypto.randomUUID()
+
+    // Subscribe to Realtime before sending request
+    const supabase = createClient()
+    const channel = supabase
+      .channel(`test-run-${execId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'execution_steps', filter: `execution_id=eq.${execId}` },
+        (payload) => {
+          const row = payload.new as {
+            step_namespace: string
+            status: string
+            output: unknown
+            input: unknown
+            error_message: string | null
+            error_type: string | null
+            duration_ms: number
+            retries_used: number
+          }
+          onLiveStep?.(row.step_namespace, {
+            status: row.status as ExecutionStep['status'],
+            output: row.output,
+            input: row.input,
+            error_message: row.error_message,
+            error_type: row.error_type,
+            duration_ms: row.duration_ms,
+            retries_used: row.retries_used,
+          })
+        }
+      )
+      .subscribe()
+
+    onTestStart?.(execId)
     setRunning(true)
     setResult(null)
+
     try {
-      const res = await api.workflows.test(workflowId, parsed)
+      const res = await api.workflows.test(workflowId, parsed, execId)
       setResult({ ok: true, body: res })
       onComplete()
     } catch (e) {
@@ -39,6 +80,8 @@ export default function TestRunPanel({ workflowId, onClose, onComplete, initialP
       onComplete() // still refresh — a failed run still creates an execution record
     } finally {
       setRunning(false)
+      onTestEnd?.()
+      await supabase.removeChannel(channel)
     }
   }
 
