@@ -95,7 +95,7 @@ export default function AccessPage() {
       <div className="p-8">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Access</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">Access</h1>
             <p className="mt-1 text-sm text-gray-500">
               Only these accounts can sign in. All addresses must be <span className="font-mono text-xs bg-gray-100 rounded px-1">@trypennie.com</span>.
             </p>

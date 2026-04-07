@@ -71,7 +71,7 @@ export default function EnvPage() {
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Environment Variables</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">Environment Variables</h1>
             <p className="mt-1 text-sm text-gray-500">
               Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
             </p>
@@ -95,7 +95,7 @@ export default function EnvPage() {
         {showForm && (
           <form
             onSubmit={handleCreate}
-            className="mb-6 rounded-xl border border-gray-200 bg-white p-4 shadow-sm"
+            className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
           >
             <h2 className="mb-4 text-base font-semibold text-gray-900">New Variable</h2>
             <div className="grid grid-cols-2 gap-4">

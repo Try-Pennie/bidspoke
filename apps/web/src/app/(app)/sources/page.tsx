@@ -135,7 +135,7 @@ export default function SourcesPage() {
       <div className="p-8">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">API Sources</h1>
+            <h1 className="text-3xl font-bold tracking-tight text-gray-900">API Sources</h1>
             <p className="mt-1 text-sm text-gray-500">
               Each source gets a unique API key passed in the <code className="rounded bg-gray-100 px-1 font-mono text-xs">X-API-Key</code> header.
               The source name is available as <code className="rounded bg-gray-100 px-1 font-mono text-xs">trigger.source</code> in workflows.
