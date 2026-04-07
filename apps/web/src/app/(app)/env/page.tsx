@@ -69,7 +69,7 @@ export default function EnvPage() {
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-gray-900">Environment Variables</h1>
+            <h1 className="text-2xl font-bold text-gray-900">Environment Variables</h1>
             <p className="mt-1 text-sm text-gray-500">
               Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
             </p>
@@ -169,10 +169,10 @@ export default function EnvPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Key</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Value</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Type</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">Updated</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Key</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Value</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Type</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Updated</th>
                   <th className="w-16 px-4 py-3" />
                 </tr>
               </thead>
