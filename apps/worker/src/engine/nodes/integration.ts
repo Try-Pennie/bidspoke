@@ -85,8 +85,11 @@ export async function executeIntegrationNode(
   const resolvedUrl = String(resolveValue(config.url, enrichedCtx) ?? '')
   if (!resolvedUrl) throw new Error('Integration node: url resolved to empty string')
 
-  // Build headers — start with Content-Type, merge config headers
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  // Build headers — start with Content-Type + trace ID, merge config headers
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Trace-Id': ctx.trigger.trace_id,
+  }
   if (config.headers) {
     const resolved = resolveValue(config.headers, enrichedCtx) as Record<string, unknown>
     for (const [k, v] of Object.entries(resolved)) {

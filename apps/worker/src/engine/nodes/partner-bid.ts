@@ -189,7 +189,10 @@ async function callBidApi(
   ctx: ExecutionContext,
   env: Env
 ): Promise<{ bid: number | null; raw: unknown }> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Trace-Id': ctx.trigger.trace_id,
+  }
 
   // Load partner auth secret if configured
   if (partner.cf_secret_key) {
@@ -249,7 +252,7 @@ async function checkDedup(
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Trace-Id': ctx.trigger.trace_id },
       body: JSON.stringify(ctx.trigger.payload),
     })
     if (!res.ok) return false
