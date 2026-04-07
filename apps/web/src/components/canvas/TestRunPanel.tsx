@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { api } from '@/lib/api'
-import { Play, X, CheckCircle, XCircle, Loader2, Save, Trash2, ChevronDown } from 'lucide-react'
+import { Play, X, XCircle, Loader2, Save, Trash2, ChevronDown } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import type { ExecutionStep, SavedTestPayload } from '@/types/workflow'
 
@@ -34,6 +34,7 @@ export default function TestRunPanel({
   const [payload, setPayload] = useState(initialPayload ?? DEFAULT_PAYLOAD)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; body: unknown } | null>(null)
+  const [resultKey, setResultKey] = useState(0)
   const [parseError, setParseError] = useState<string | null>(null)
 
   // Saved payloads
@@ -90,9 +91,11 @@ export default function TestRunPanel({
     try {
       const res = await api.workflows.test(workflowId, parsed, execId)
       setResult({ ok: true, body: res })
+      setResultKey((k) => k + 1)
       onComplete()
     } catch (e) {
       setResult({ ok: false, body: e instanceof Error ? e.message : String(e) })
+      setResultKey((k) => k + 1)
       onComplete()
     } finally {
       setRunning(false)
@@ -222,11 +225,25 @@ export default function TestRunPanel({
 
         {/* Result */}
         {result && (
-          <div className={`rounded-lg border p-3 ${result.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+          <div
+            key={resultKey}
+            className={`rounded-lg border p-3 ${result.ok ? 'border-green-200 bg-green-50 result-success' : 'border-red-200 bg-red-50'}`}
+          >
             <div className="mb-1.5 flex items-center gap-1.5">
-              {result.ok
-                ? <CheckCircle className="h-3.5 w-3.5 text-green-600" />
-                : <XCircle className="h-3.5 w-3.5 text-red-600" />}
+              {result.ok ? (
+                <svg viewBox="0 0 14 14" className="h-3.5 w-3.5 flex-shrink-0" fill="none">
+                  <path
+                    d="M2.5 7 L5.5 10 L11.5 4"
+                    stroke="#16a34a"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="check-path"
+                  />
+                </svg>
+              ) : (
+                <XCircle className="h-3.5 w-3.5 text-red-600" />
+              )}
               <span className={`text-xs font-medium ${result.ok ? 'text-green-700' : 'text-red-700'}`}>
                 {result.ok ? 'Completed' : 'Failed'}
               </span>
