@@ -163,9 +163,8 @@
 - [ ] **Test:** Trace a single lead end-to-end by trace_id across logs and execution_steps
 
 ### 2.6 Workflow Templates
-- [ ] Build outbound routing workflow template (validate → credit → enrich → Penny fit → parallel bids → pick winner → route → Salesforce → respond)
-- [ ] Build inbound bidding workflow template (validate → parse → Salesforce dedup → decision engine → bid math → respond)
-- [ ] **Test:** Each template end-to-end with realistic payloads
+- ~~Build outbound routing workflow template~~ — scratched, not needed
+- ~~Build inbound bidding workflow template~~ — scratched, not needed
 
 ### 2.7 Phase 2 Integration Testing
 - [ ] End-to-end outbound: lead → validate → credit pull → enrich → Penny-fit NO → parallel bids (Tripoint + M1) → highest bid wins → route → Salesforce → respond with offer
