@@ -8,6 +8,8 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowVersion } from '@/types/workflow'
 import { ArrowLeft, RotateCcw } from 'lucide-react'
+import { formatDatetime } from '@/lib/dates'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 export default function VersionHistoryPage() {
   const { id } = useParams<{ id: string }>()
@@ -71,7 +73,20 @@ export default function VersionHistoryPage() {
         )}
 
         {loading ? (
-          <div className="text-sm text-gray-500">Loading…</div>
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <table className="w-full">
+              <tbody className="divide-y divide-gray-100">
+                {[...Array(4)].map((_, i) => (
+                  <tr key={i}>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-8" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-48" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-36" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-7 w-16 rounded-lg" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : versions.length === 0 ? (
           <div className="text-sm text-gray-500">No versions saved yet.</div>
         ) : (
@@ -91,7 +106,7 @@ export default function VersionHistoryPage() {
                     <td className="px-4 py-3 font-medium text-gray-900">v{v.version_number}</td>
                     <td className="px-4 py-3 text-gray-500">{v.message ?? '—'}</td>
                     <td className="px-4 py-3 text-gray-500">
-                      {new Date(v.created_at).toLocaleString()}
+                      {formatDatetime(v.created_at)}
                     </td>
                     <td className="px-4 py-3">
                       {confirmingRestore === v.id ? (

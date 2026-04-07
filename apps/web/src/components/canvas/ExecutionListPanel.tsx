@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { CheckCircle, XCircle, Clock, RefreshCw, Loader2 } from 'lucide-react'
+import { getDateLabel, formatTime } from '@/lib/dates'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 type ExecRow = {
   id: string
@@ -11,25 +13,6 @@ type ExecRow = {
   started_at: string
   duration_ms: number | null
   error_message: string | null
-}
-
-function getDateLabel(dateStr: string): string {
-  const d = new Date(dateStr)
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const yestStart = new Date(todayStart.getTime() - 86_400_000)
-  const dStart = new Date(d.getFullYear(), d.getMonth(), d.getDate())
-  if (dStart.getTime() === todayStart.getTime()) return 'Today'
-  if (dStart.getTime() === yestStart.getTime()) return 'Yesterday'
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
-function formatTime(dateStr: string): string {
-  return new Date(dateStr).toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  })
 }
 
 function formatDuration(ms: number | null): string {
@@ -127,7 +110,18 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
       <div className="flex-1 overflow-y-auto">
         {loading ? (
-          <p className="px-3 py-4 text-xs text-gray-400">Loading…</p>
+          <div>
+            {[...Array(5)].map((_, i) => (
+              <div key={i} className="border-b border-gray-50 px-3 py-2.5">
+                <div className="flex items-center gap-1.5">
+                  <Skeleton className="h-3 w-3 rounded-full flex-shrink-0" />
+                  <Skeleton className="h-4 w-16 rounded" />
+                  <Skeleton className="ml-auto h-3 w-8" />
+                </div>
+                <Skeleton className="mt-1 h-3 w-12" />
+              </div>
+            ))}
+          </div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-6 text-center">
             {filter === 'all' ? (

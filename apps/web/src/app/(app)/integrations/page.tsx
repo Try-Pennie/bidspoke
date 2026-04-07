@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { CheckCircle, Unlink, Loader2 } from 'lucide-react'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 interface SlackStatus {
   connected: boolean
@@ -133,7 +134,7 @@ export default function IntegrationsPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="max-w-lg space-y-4">
 
         {/* Slack card */}
         <div className="rounded-xl border border-gray-200 bg-white p-6">
@@ -164,7 +165,11 @@ export default function IntegrationsPage() {
           </div>
 
           {loading ? (
-            <p className="text-sm text-gray-400">Loading…</p>
+            <div className="space-y-3">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-52" />
+              <Skeleton className="h-8 w-28 rounded-lg" />
+            </div>
           ) : slack?.connected ? (
             <div className="space-y-3">
               <div className="rounded-lg bg-gray-50 p-3 text-sm">

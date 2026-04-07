@@ -219,6 +219,35 @@
 
 ---
 
+## Test Coverage Backlog
+
+> Tests that need to be written before going live. Grouped by priority.
+> Existing coverage: 171 worker tests (Vitest) + 1 web lib test. No Playwright/E2E tests yet.
+
+### P0 — Must have before launch
+
+- [ ] **Exit node** — unit test in `engine/nodes/__tests__/exit.test.ts` (no response config, with response config, output passthrough)
+- [ ] **JWT auth middleware** — unit test in `middleware/__tests__/jwt-auth.test.ts` (missing header → 401, malformed token → 401, expired token → 401, user not in DB → 401, `user_metadata.full_name` extracted, `user_metadata.name` fallback, no name → null)
+- [ ] **Webhook route** — integration test in `routes/__tests__/webhooks.test.ts` (missing X-API-Key → 401, invalid key → 401, invalid JSON body → 400, inactive/unknown workflow → 404, valid request → 200 with trace ID, idempotent replay → `X-Idempotent-Replay: true` header)
+- [ ] **PII redactor** — unit test in `engine/__tests__/pii-redactor.test.ts` (empty fields = no-op, exact key match, wildcard `*.ssn`, nested objects, arrays, non-matching keys untouched)
+
+### P1 — High value, ship soon
+
+- [ ] **Slack alert payload** — unit test in `lib/__tests__/slack.test.ts` (blocks structure, `unfurl_links: false`, ET timezone with DST, `View execution →` link is markdown not button)
+- [ ] **Workflow CRUD routes** — tests in `routes/api/__tests__/workflows.test.ts` (PUT creates version snapshot + invalidates KV, PATCH toggles `is_active`, DELETE removes workflow, version restore creates new version with old definition, test runner endpoint executes engine)
+- [ ] **Execution routes** — tests in `routes/api/__tests__/executions.test.ts` (list scoped to org, get by ID, replay creates new execution)
+- [ ] **Sources routes** — tests in `routes/api/__tests__/sources.test.ts` (create generates API key, list returns org sources, delete removes key)
+
+### P2 — Nice to have
+
+- [ ] **Audit log** — smoke test in `lib/__tests__/audit.test.ts` (verify insert shape, no throw on Supabase error)
+- [ ] **Definition loader / KV cache** — tests in `engine/__tests__/definition-loader.test.ts` (cache hit skips Supabase, cache miss fetches and stores, invalidate removes key)
+- [ ] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
+- [ ] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
+- [ ] **Playwright E2E** — separate workstream; no tooling yet. Minimum viable suite: auth flow (Google SSO → redirect → canvas), create workflow → save → verify in list, trigger test run → see execution in list
+
+---
+
 ## Pre-Ship Checklist (run before each phase ships)
 
 - [ ] All tests pass (unit + integration + load)

@@ -7,6 +7,8 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
 import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check } from 'lucide-react'
+import { formatDate } from '@/lib/dates'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 export default function WorkflowsPage() {
   const router = useRouter()
@@ -147,7 +149,25 @@ export default function WorkflowsPage() {
         )}
 
         {loading ? (
-          <div className="text-sm text-gray-500">Loading…</div>
+          <div className="rounded-xl border border-gray-200 bg-white">
+            <table className="w-full">
+              <tbody className="divide-y divide-gray-100">
+                {[...Array(4)].map((_, i) => (
+                  <tr key={i}>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-5 w-14 rounded-full" />
+                      </div>
+                    </td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-20" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-6 w-6" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : workflows.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-16 text-center">
             <p className="text-sm font-medium text-gray-700">No workflows yet</p>
@@ -221,7 +241,7 @@ export default function WorkflowsPage() {
                     </td>
 
                     <td className="px-4 py-3 text-gray-500">
-                      {new Date(wf.updated_at).toLocaleDateString()}
+                      {formatDate(wf.updated_at)}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 

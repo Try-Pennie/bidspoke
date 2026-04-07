@@ -5,6 +5,8 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar } from '@/types/workflow'
 import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
+import { formatDate } from '@/lib/dates'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 type NewVar = { key: string; value: string; is_secret: boolean }
 
@@ -150,7 +152,21 @@ export default function EnvPage() {
         )}
 
         {loading ? (
-          <div className="text-sm text-gray-500">Loading…</div>
+          <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+            <table className="w-full">
+              <tbody className="divide-y divide-gray-100">
+                {[...Array(3)].map((_, i) => (
+                  <tr key={i}>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-32" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-48" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-5 w-12 rounded-full" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
+                    <td className="px-4 py-3"><Skeleton className="h-6 w-6" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : vars.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center">
             <p className="text-sm font-medium text-gray-700">No variables yet</p>
@@ -212,7 +228,7 @@ export default function EnvPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-gray-500">
-                      {new Date(v.updated_at).toLocaleDateString()}
+                      {formatDate(v.updated_at)}
                     </td>
                     <td className="px-4 py-3">
                       {confirmingDelete === v.id ? (

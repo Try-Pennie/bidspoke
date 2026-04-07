@@ -34,12 +34,13 @@ import { api } from '@/lib/api'
 import { layoutWorkflow } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
+import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 
 // Defined outside component to prevent re-render on each render
@@ -166,6 +167,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [refreshSignal, setRefreshSignal] = useState(0)
   const [showTest, setShowTest] = useState(false)
   const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
+  const [showVersions, setShowVersions] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
   const overflowRef = useRef<HTMLDivElement>(null)
   // Undo/redo
@@ -415,6 +417,26 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     requestAnimationFrame(() => fitView({ padding: 0.3, maxZoom: 0.75 }))
   }
 
+  // ── Version restore ─────────────────────────────────────────────────────────
+
+  async function handleVersionRestore(versionId: string) {
+    await api.versions.restore(workflow.id, versionId)
+    const updated = await api.workflows.get(workflow.id)
+    const newNodes = defToNodes(
+      updated.definition?.nodes ?? [],
+      updated.definition?.edges ?? [],
+      updated.definition?.trigger
+    )
+    const newEdges = defToEdges(updated.definition?.edges ?? [])
+    setNodes(newNodes)
+    setEdges(newEdges)
+    triggerRef.current = updated.definition?.trigger ?? DEFAULT_TRIGGER
+    setName(updated.name)
+    setIsDirty(false)
+    setShowVersions(false)
+    requestAnimationFrame(() => fitView({ padding: 0.3, maxZoom: 0.75 }))
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -427,16 +449,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => {
-              if (isDirty && !window.confirm('You have unsaved changes. Leave without saving?')) return
-              router.push('/workflows')
-            }}
+            onClick={() => router.push('/workflows')}
             className="text-xs text-gray-400 hover:text-gray-600"
           >
             ← Workflows
           </button>
           <input
-            className="rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 hover:bg-gray-50 focus:bg-gray-50 focus:ring-1 focus:ring-blue-300 px-2 py-1"
+            className="rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 hover:bg-gray-50 focus:bg-gray-50 focus:ring-1 focus:ring-gray-200 px-2 py-1"
             value={name}
             onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
           />
@@ -455,10 +474,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               Edit
             </button>
             <button
-              onClick={() => {
-                if (isDirty && !window.confirm('You have unsaved changes. Switch to view without saving?')) return
-                router.push(`/workflows/${workflow.id}`)
-              }}
+              onClick={() => router.push(`/workflows/${workflow.id}`)}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
                 mode === 'view' ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:bg-gray-50'
               }`}
@@ -532,8 +548,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   </button>
                 )}
                 <button
-                  onClick={() => { router.push(`/workflows/${workflow.id}/versions`); setShowOverflow(false) }}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => { setShowVersions((s) => !s); setShowOverflow(false) }}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showVersions ? 'font-medium text-gray-900' : 'text-gray-700'}`}
                 >
                   <Clock className="h-4 w-4 text-gray-400" />
                   Version history
@@ -572,6 +588,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.push(`/workflows/${workflow.id}/executions/${executionId}`)}
+              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
+              title="Open full execution report"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Full report
+            </button>
             {executionPayload !== undefined && (
               <button
                 onClick={() => {
@@ -727,6 +751,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <ExecutionStepPanel
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
+          />
+        )}
+        {showVersions && (
+          <VersionHistoryPanel
+            workflowId={workflow.id}
+            onClose={() => setShowVersions(false)}
+            onRestore={handleVersionRestore}
           />
         )}
       </div>

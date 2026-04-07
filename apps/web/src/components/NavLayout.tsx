@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { GitBranch, Settings, LogOut, Puzzle, KeyRound } from 'lucide-react'
@@ -27,7 +28,15 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
       {/* Sidebar */}
       <nav className="flex w-52 flex-col border-r border-gray-200 bg-white">
         <div className="flex items-center gap-2 px-4 py-5">
-          <span className="text-base font-semibold tracking-tight text-gray-900">Bidspoke</span>
+          <Image
+            src="/icon-light.png"
+            alt="Bidspoke"
+            width={22}
+            height={22}
+            className="flex-shrink-0"
+            style={{ mixBlendMode: 'multiply' }}
+          />
+          <span className="text-[15px] font-semibold tracking-tight text-gray-900">Bidspoke</span>
         </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
           {NAV.map(({ href, label, icon: Icon }) => {

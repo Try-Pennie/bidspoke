@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal } from 'lucide-react'
+import { Skeleton } from '@/components/ui/Skeleton'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'https://your-worker.workers.dev'
 
@@ -198,7 +199,21 @@ export default function SourcesPage() {
           {/* Left — sources list */}
           <div>
             {loading ? (
-              <p className="text-sm text-gray-400">Loading…</p>
+              <div className="space-y-3">
+                {[...Array(2)].map((_, i) => (
+                  <div key={i} className="rounded-xl border border-gray-200 bg-white p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <Skeleton className="h-4 w-28" />
+                      <Skeleton className="h-7 w-16 rounded-lg" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Skeleton className="h-9 flex-1 rounded-lg" />
+                      <Skeleton className="h-9 w-10 rounded-lg" />
+                      <Skeleton className="h-9 w-20 rounded-lg" />
+                    </div>
+                  </div>
+                ))}
+              </div>
             ) : sources.length === 0 ? (
               <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
