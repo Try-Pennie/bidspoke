@@ -226,10 +226,10 @@
 
 ### P0 — Must have before launch
 
-- [ ] **Exit node** — unit test in `engine/nodes/__tests__/exit.test.ts` (no response config, with response config, output passthrough)
-- [ ] **JWT auth middleware** — unit test in `middleware/__tests__/jwt-auth.test.ts` (missing header → 401, malformed token → 401, expired token → 401, user not in DB → 401, `user_metadata.full_name` extracted, `user_metadata.name` fallback, no name → null)
-- [ ] **Webhook route** — integration test in `routes/__tests__/webhooks.test.ts` (missing X-API-Key → 401, invalid key → 401, invalid JSON body → 400, inactive/unknown workflow → 404, valid request → 200 with trace ID, idempotent replay → `X-Idempotent-Replay: true` header)
-- [ ] **PII redactor** — unit test in `engine/__tests__/pii-redactor.test.ts` (empty fields = no-op, exact key match, wildcard `*.ssn`, nested objects, arrays, non-matching keys untouched)
+- [x] **Exit node** — unit test in `engine/nodes/__tests__/exit.test.ts` (no response config, with response config, output passthrough)
+- [x] **JWT auth middleware** — unit test in `middleware/__tests__/jwt-auth.test.ts` (missing header → 401, malformed token → 401, expired token → 401, user not in DB → 401, `user_metadata.full_name` extracted, `user_metadata.name` fallback, no name → null)
+- [x] **Webhook route** — integration test in `routes/__tests__/webhooks.test.ts` (missing X-API-Key → 401, invalid key → 401, invalid JSON body → 400, inactive/unknown workflow → 404, valid request → 200 with trace ID, idempotent replay → `X-Idempotent-Replay: true` header)
+- [x] **PII redactor** — unit test in `engine/__tests__/pii-redactor.test.ts` (empty fields = no-op, exact key match, wildcard `*.ssn`, nested objects, arrays, non-matching keys untouched)
 
 ### P1 — High value, ship soon
 
