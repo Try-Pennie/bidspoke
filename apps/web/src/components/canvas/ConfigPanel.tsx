@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
@@ -21,6 +22,8 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
+
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   function updateConfig(patch: Record<string, unknown>) {
     onUpdate(node.id, { config: { ...data.config, ...patch } })
@@ -111,11 +114,15 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
 
         {/* Common: retry + error handling */}
-        <details>
-          <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600">
+        <div>
+          <button
+            onClick={() => setShowAdvanced((s: boolean) => !s)}
+            className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+          >
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
             Advanced
-          </summary>
-          <div className="mt-3 space-y-3">
+          </button>
+          {showAdvanced && <div className="mt-3 space-y-3">
             <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
               <div className="flex items-center gap-2">
                 <input
@@ -164,8 +171,8 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
                 </select>
               </Field>
             )}
-          </div>
-        </details>
+          </div>}
+        </div>
       </div>
     </aside>
   )
