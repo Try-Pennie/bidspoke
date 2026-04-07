@@ -3,7 +3,7 @@ export const runtime = 'edge'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
-import { isAllowed } from '@/lib/auth-allowlist'
+import { isPermittedDomain } from '@/lib/auth-allowlist'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
@@ -30,10 +30,11 @@ export async function GET(request: Request) {
     )
     const { error } = await supabase.auth.exchangeCodeForSession(code)
     if (!error) {
-      // Allowlist check — redirect before the browser can load any app page.
-      // Session cleanup happens client-side on /access-denied.
+      // Fast domain reject — non-@trypennie.com accounts are blocked immediately.
+      // Per-email allowlist enforcement is handled by the middleware DB check on
+      // the first protected page load after this redirect.
       const { data: { user } } = await supabase.auth.getUser()
-      if (!isAllowed(user?.email)) {
+      if (!isPermittedDomain(user?.email)) {
         return NextResponse.redirect(`${origin}/access-denied`)
       }
       return NextResponse.redirect(`${origin}${next}`)

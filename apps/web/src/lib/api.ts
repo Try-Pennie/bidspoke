@@ -204,4 +204,11 @@ export const api = {
     deleteSlack: () =>
       req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
+  access: {
+    list: () => req<{ email: string; added_by: string; added_at: string }[]>('/api/access'),
+    add: (email: string) =>
+      req<{ email: string }>('/api/access', { method: 'POST', body: JSON.stringify({ email }) }),
+    remove: (email: string) =>
+      req<{ ok: boolean }>(`/api/access/${encodeURIComponent(email)}`, { method: 'DELETE' }),
+  },
 }

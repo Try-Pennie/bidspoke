@@ -9,6 +9,7 @@ import circuit from './circuit'
 import integrations from './integrations'
 import sources from './sources'
 import partners from './partners'
+import access from './access'
 
 type Variables = AuthVariables
 
@@ -24,6 +25,7 @@ api.route('/circuit', circuit)
 api.route('/integrations', integrations)
 api.route('/sources', sources)
 api.route('/partners', partners)
+api.route('/access', access)
 api.all('/connections/*', (c) => c.json({ error: 'not implemented (Phase 3)' }, 501))
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')

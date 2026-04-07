@@ -4,7 +4,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield } from 'lucide-react'
 
 const NAV = [
   { href: '/workflows', label: 'Workflows', icon: GitBranch },
@@ -12,6 +12,7 @@ const NAV = [
   { href: '/env', label: 'Environment', icon: Settings },
   { href: '/sources', label: 'API Sources', icon: KeyRound },
   { href: '/integrations', label: 'Integrations', icon: Puzzle },
+  { href: '/access', label: 'Access', icon: Shield },
 ]
 
 export default function NavLayout({ children }: { children: React.ReactNode }) {
