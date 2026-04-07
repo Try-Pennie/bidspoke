@@ -677,7 +677,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             ← Workflows
           </button>
           <input
-            className={`rounded border-0 bg-transparent text-sm font-semibold text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
+            className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
               mode === 'edit' ? 'hover:bg-amber-100 focus:bg-amber-100' : 'hover:bg-gray-50 focus:bg-gray-50'
             }`}
             value={name}

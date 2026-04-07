@@ -76,7 +76,7 @@ export default function PartnersPage() {
         {/* List */}
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
-            <h1 className="text-lg font-bold text-gray-900">Partners</h1>
+            <h1 className="text-xl font-bold tracking-tight text-gray-900">Partners</h1>
             <button
               onClick={() => { setSelected(null); setCreating(true) }}
               className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
@@ -98,7 +98,7 @@ export default function PartnersPage() {
               </div>
             ) : partners.length === 0 ? (
               <div className="p-6 text-center">
-                <p className="text-sm font-medium text-gray-700">No partners yet</p>
+                <p className="text-base font-semibold text-gray-900">No partners yet</p>
                 <p className="mt-1 text-xs text-gray-400">Partners are the lenders or buyers your workflows route leads to.</p>
                 <button
                   onClick={() => { setSelected(null); setCreating(true) }}

@@ -160,7 +160,7 @@ export default function SourcesPage() {
 
         {adding && (
           <div className="mb-6 max-w-md rounded-xl border border-gray-200 bg-white p-5">
-            <p className="mb-4 text-sm font-medium text-gray-700">New source</p>
+            <p className="mb-4 text-base font-semibold text-gray-900">New source</p>
             <form onSubmit={handleAdd} className="space-y-4">
               <div>
                 <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
@@ -217,7 +217,7 @@ export default function SourcesPage() {
             ) : sources.length === 0 ? (
               <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
-                <p className="text-sm font-medium text-gray-700">No API sources yet</p>
+                <p className="text-base font-semibold text-gray-900">No API sources yet</p>
                 <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
                   Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow — and it shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
                 </p>

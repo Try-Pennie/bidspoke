@@ -170,7 +170,7 @@ export default function WorkflowsPage() {
           </div>
         ) : workflows.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-16 text-center">
-            <p className="text-sm font-medium text-gray-700">No workflows yet</p>
+            <p className="text-base font-semibold text-gray-900">No workflows yet</p>
             <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
               Workflows route incoming webhooks through a sequence of steps — filters, branches, and actions. Build one to start automating.
             </p>
@@ -219,7 +219,7 @@ export default function WorkflowsPage() {
                         ) : (
                           <Link
                             href={`/workflows/${wf.id}`}
-                            className="font-medium text-gray-900 hover:text-indigo-600"
+                            className="font-semibold text-gray-900 hover:text-indigo-600"
                           >
                             {wf.name}
                           </Link>
