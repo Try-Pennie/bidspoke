@@ -2,7 +2,7 @@ import dagre from '@dagrejs/dagre'
 import type { Node, Edge } from '@xyflow/react'
 
 // All canvas nodes share this width (w-52 = 208px)
-const NODE_W = 208
+export const NODE_W = 208
 
 // Per-type heights (header + body rows)
 const NODE_H: Record<string, number> = {
@@ -15,7 +15,7 @@ const NODE_H: Record<string, number> = {
   default:       80,
 }
 
-function nodeHeight(type: string | undefined) {
+export function nodeHeight(type: string | undefined) {
   return NODE_H[type ?? 'default'] ?? NODE_H.default
 }
 

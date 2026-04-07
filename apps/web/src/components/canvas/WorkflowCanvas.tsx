@@ -31,7 +31,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
-import { layoutWorkflow } from '@/lib/layout'
+import { layoutWorkflow, NODE_W, nodeHeight } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
@@ -134,6 +134,43 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
   let i = 1
   while (existing.includes(`${base}_${i}`)) i++
   return `${base}_${i}`
+}
+
+// ── Auto-connect helpers ─────────────────────────────────────────────────────
+
+// The primary output handle to use when auto-connecting FROM an existing node.
+// Returns null for terminal nodes (nothing comes after them) and branch nodes
+// (ambiguous — the user should connect those manually).
+function primarySourceHandle(type: string): string | null {
+  if (type === 'response' || type === 'exit') return null
+  if (type === 'branch') return null  // N-way split — no sensible default
+  if (type === 'filter') return 'pass'
+  return 'output'
+}
+
+// Find the best candidate to auto-connect FROM given a drop position.
+// Returns the node whose bottom edge is highest above the drop point,
+// within a generous horizontal tolerance.
+function findDropSource(nodes: Node[], dropPos: { x: number; y: number }): Node | null {
+  const H_TOLERANCE = 160 // px — drop doesn't need to be pixel-perfect
+
+  const candidates = nodes.filter((n) => {
+    const nh = nodeHeight(n.type)
+    const centerX = n.position.x + NODE_W / 2
+    return (
+      dropPos.y > n.position.y + nh / 2 &&     // drop is below the node center
+      Math.abs(dropPos.x - centerX) <= NODE_W / 2 + H_TOLERANCE
+    )
+  })
+
+  if (candidates.length === 0) return null
+
+  // Among candidates, pick the one whose bottom edge is closest above the drop point
+  return candidates.reduce((best, n) => {
+    const nBottom = n.position.y + nodeHeight(n.type)
+    const bBottom = best.position.y + nodeHeight(best.type)
+    return nBottom > bBottom ? n : best
+  })
 }
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
@@ -337,21 +374,30 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (!type) return
       const namespace = defaultNamespace(type, nodeNamespaces)
       snapshot()
-      setNodes((ns) => {
-        const newNodes = [
-          ...ns,
-          {
-            id: uid(),
-            type,
-            position: { x: 0, y: 0 }, // dagre will position it
-            data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
-          },
-        ]
-        return layoutWorkflow(newNodes, edges)
-      })
+
+      const newId = uid()
+      const newNode = {
+        id: newId,
+        type,
+        position: { x: 0, y: 0 },
+        data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+      }
+
+      // Auto-connect: find the nearest node above the drop point and wire it up
+      const dropPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      const sourceNode = findDropSource(nodes, dropPos)
+      const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+
+      const newEdges =
+        sourceNode && sourceHandle
+          ? [...edges, { id: uid(), source: sourceNode.id, target: newId, sourceHandle }]
+          : edges
+
+      setEdges(newEdges)
+      setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
       setIsDirty(true)
     },
-    [nodeNamespaces, snapshot, setNodes, edges]
+    [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition]
   )
 
   // ── Node update / delete ────────────────────────────────────────────────────
