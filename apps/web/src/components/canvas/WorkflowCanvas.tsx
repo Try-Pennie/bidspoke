@@ -376,25 +376,32 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       snapshot()
 
       const newId = uid()
-      const newNode = {
-        id: newId,
-        type,
-        position: { x: 0, y: 0 },
-        data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
-      }
-
       // Auto-connect: find the nearest node above the drop point and wire it up
       const dropPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       const sourceNode = findDropSource(nodes, dropPos)
       const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+      const autoConnected = !!(sourceNode && sourceHandle)
 
-      const newEdges =
-        sourceNode && sourceHandle
-          ? [...edges, { id: uid(), source: sourceNode.id, target: newId, sourceHandle }]
-          : edges
+      const newNode = {
+        id: newId,
+        type,
+        // Connected nodes: let dagre position them in the flow.
+        // Disconnected nodes: place exactly where the user dropped — keeps them
+        // visually separate from the workflow so they don't look wired in.
+        position: autoConnected ? { x: 0, y: 0 } : dropPos,
+        data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+      }
+
+      const newEdges = autoConnected
+        ? [...edges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
+        : edges
 
       setEdges(newEdges)
-      setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
+      if (autoConnected) {
+        setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
+      } else {
+        setNodes((ns) => [...ns, newNode])
+      }
       setIsDirty(true)
     },
     [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition]
