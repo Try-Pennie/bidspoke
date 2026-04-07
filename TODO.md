@@ -233,10 +233,10 @@
 
 ### P1 — High value, ship soon
 
-- [ ] **Slack alert payload** — unit test in `lib/__tests__/slack.test.ts` (blocks structure, `unfurl_links: false`, ET timezone with DST, `View execution →` link is markdown not button)
-- [ ] **Workflow CRUD routes** — tests in `routes/api/__tests__/workflows.test.ts` (PUT creates version snapshot + invalidates KV, PATCH toggles `is_active`, DELETE removes workflow, version restore creates new version with old definition, test runner endpoint executes engine)
-- [ ] **Execution routes** — tests in `routes/api/__tests__/executions.test.ts` (list scoped to org, get by ID, replay creates new execution)
-- [ ] **Sources routes** — tests in `routes/api/__tests__/sources.test.ts` (create generates API key, list returns org sources, delete removes key)
+- [x] **Slack alert payload** — unit test in `lib/__tests__/slack.test.ts` (blocks structure, `unfurl_links: false`, ET timezone with DST, `View execution →` link is markdown not button)
+- [x] **Workflow CRUD routes** — tests in `routes/api/__tests__/workflows.test.ts` (PUT creates version snapshot + invalidates KV, PATCH toggles `is_active`, DELETE removes workflow, version restore creates new version with old definition, test runner endpoint executes engine)
+- [x] **Execution routes** — tests in `routes/api/__tests__/executions.test.ts` (list scoped to org, get by ID, replay creates new execution)
+- [x] **Sources routes** — tests in `routes/api/__tests__/sources.test.ts` (create generates API key, list returns org sources, delete removes key)
 
 ### P2 — Nice to have
 
