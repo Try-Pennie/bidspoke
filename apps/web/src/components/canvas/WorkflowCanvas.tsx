@@ -84,7 +84,7 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     id: n.id,
     type: n.type,
     position: { x: 0, y: 0 }, // overridden by layoutWorkflow
-    data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
+    data: { namespace: n.namespace, label: n.label, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
   return layoutWorkflow(allNodes, defToEdges(edges))
@@ -112,6 +112,7 @@ function flowToDef(
       return {
         id: n.id,
         namespace: d.namespace,
+        label: d.label || undefined,
         type: n.type as NodeType,
         position: n.position,
         config: d.config,
