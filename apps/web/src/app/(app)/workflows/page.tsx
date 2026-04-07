@@ -223,7 +223,7 @@ export default function WorkflowsPage() {
                     <td className="px-4 py-3 text-gray-500">
                       {new Date(wf.updated_at).toLocaleDateString()}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{wf.updated_by_email ?? '—'}</td>
+                    <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
                     {/* Actions column */}
                     <td className="px-4 py-3">

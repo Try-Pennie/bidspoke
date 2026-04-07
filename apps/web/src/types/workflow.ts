@@ -71,6 +71,7 @@ export interface Workflow {
   created_at: string
   updated_at: string
   updated_by_email?: string | null
+  updated_by_name?: string | null
 }
 
 export interface WorkflowSummary {
@@ -81,6 +82,7 @@ export interface WorkflowSummary {
   created_at: string
   updated_at: string
   updated_by_email?: string | null
+  updated_by_name?: string | null
 }
 
 export interface WorkflowVersion {

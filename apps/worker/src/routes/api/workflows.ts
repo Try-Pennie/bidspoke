@@ -17,7 +17,7 @@ workflows.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('workflows')
-    .select('id, name, description, is_active, created_at, updated_at, updated_by_email')
+    .select('id, name, description, is_active, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .order('updated_at', { ascending: false })
 
@@ -44,6 +44,7 @@ workflows.post('/', async (c) => {
       created_by: userId,
       updated_by: userId,
       updated_by_email: c.get('user').email,
+      updated_by_name: c.get('user').name,
     })
     .select()
     .single()
@@ -72,7 +73,7 @@ workflows.get('/:id', async (c) => {
 
 // PUT /api/workflows/:id — save definition, create version snapshot, invalidate KV cache
 workflows.put('/:id', async (c) => {
-  const { orgId, userId, email } = c.get('user')
+  const { orgId, userId, email, name } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null }>()
@@ -117,6 +118,7 @@ workflows.put('/:id', async (c) => {
   const updates: Record<string, unknown> = {
     updated_by: userId,
     updated_by_email: email,
+    updated_by_name: name,
   }
   if (body.name !== undefined) updates.name = body.name
   if (body.description !== undefined) updates.description = body.description
@@ -159,7 +161,7 @@ workflows.patch('/:id', async (c) => {
 
   if (fetchError) return c.json({ error: 'Workflow not found' }, 404)
 
-  const updates: Record<string, unknown> = { updated_by: userId, updated_by_email: email }
+  const updates: Record<string, unknown> = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
   if (body.is_active !== undefined) updates.is_active = body.is_active
 
   const { data, error } = await supabase
@@ -289,7 +291,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
 
   await supabase
     .from('workflows')
-    .update({ definition: version.definition, updated_by: userId, updated_by_email: email })
+    .update({ definition: version.definition, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
     .eq('id', id)
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)

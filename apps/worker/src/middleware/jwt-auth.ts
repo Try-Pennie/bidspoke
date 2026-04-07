@@ -7,6 +7,7 @@ export interface AuthUser {
   userId: string
   orgId: string
   email: string
+  name: string | null
 }
 
 export type AuthVariables = { user: AuthUser }
@@ -22,7 +23,7 @@ export async function jwtAuth(
 
   const token = authHeader.slice(7)
 
-  let payload: { sub: string; email?: string }
+  let payload: { sub: string; email?: string; user_metadata?: { full_name?: string; name?: string } }
   try {
     payload = await verifyJwt(token, c.env.SUPABASE_JWKS_URL)
   } catch (err) {
@@ -41,10 +42,13 @@ export async function jwtAuth(
     return c.json({ error: 'User not found' }, 401)
   }
 
+  const name = payload.user_metadata?.full_name ?? payload.user_metadata?.name ?? null
+
   c.set('user', {
     userId: user.id,
     orgId: user.organization_id,
     email: user.email,
+    name,
   })
 
   await next()
