@@ -9,7 +9,7 @@ const SERVICE_LABELS: Record<string, string> = {
   eligibility_scout: 'Eligibility Scout',
   lendswift: 'LendSwift',
   salesforce: 'Salesforce',
-  custom: 'Custom',
+  custom: 'Webhook',
 }
 
 export function IntegrationNode({ data, selected }: NodeProps) {

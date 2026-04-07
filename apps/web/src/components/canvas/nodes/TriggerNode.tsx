@@ -20,8 +20,8 @@ export function TriggerNode({ data }: NodeProps) {
         <span className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Trigger</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-medium text-gray-800">Webhook</p>
-        <p className="mt-0.5 text-xs text-gray-400">{method} · {authLabel}</p>
+        <p className="text-sm font-medium text-gray-800">{method}</p>
+        <p className="mt-0.5 text-xs text-gray-400">Auth: {authLabel}</p>
       </div>
     </div>
   )
