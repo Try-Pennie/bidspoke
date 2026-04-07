@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { X, Plus, Trash2 } from 'lucide-react'
+import { X, Plus, Trash2, HelpCircle } from 'lucide-react'
 import type { TriggerDef } from '@/types/workflow'
 
 interface Props {
@@ -89,7 +89,15 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
         {/* Idempotency */}
         <div className="rounded-lg border border-gray-200 p-3 space-y-3">
           <div className="flex items-center justify-between">
-            <p className="text-xs font-medium text-gray-700">Idempotency</p>
+            <div className="flex items-center gap-1.5">
+              <p className="text-xs font-medium text-gray-700">Idempotency</p>
+              <div className="group relative">
+                <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
+                <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+                  Prevents duplicate executions for the same lead. When enabled, identical requests return the cached response instead of running the workflow again. Configure which payload fields define &ldquo;same lead&rdquo; below.
+                </div>
+              </div>
+            </div>
             <button
               onClick={() => updateIdempotency({ enabled: !idempotency.enabled })}
               className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
