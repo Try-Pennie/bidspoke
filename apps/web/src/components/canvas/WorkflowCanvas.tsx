@@ -897,7 +897,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           />
         )}
 
-        <div className="flex-1" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
+        <div className="relative flex-1" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
+          {mode === 'edit' && nodes.length === 1 && !showTest && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-gray-200 bg-white/90 px-8 py-5 text-center shadow-sm backdrop-blur-[2px]">
+                <p className="text-sm font-medium text-gray-500">Drag a step from the left to start building</p>
+                <p className="text-xs text-gray-400">Filter · Branch · Webhook · Code · Transform</p>
+              </div>
+            </div>
+          )}
           <ReactFlow
             nodes={nodes}
             edges={edges}

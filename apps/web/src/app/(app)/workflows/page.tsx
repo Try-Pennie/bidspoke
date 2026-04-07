@@ -169,17 +169,33 @@ export default function WorkflowsPage() {
             </table>
           </div>
         ) : workflows.length === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-gray-200 py-16 text-center">
-            <p className="text-base font-semibold text-gray-900">No workflows yet</p>
-            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
-              Workflows route incoming webhooks through a sequence of steps — filters, branches, and actions. Build one to start automating.
+          <div className="flex flex-col items-center py-20 text-center">
+            {/* Mini workflow diagram */}
+            <svg width="100" height="122" viewBox="0 0 100 122" fill="none" aria-hidden="true" className="mb-8">
+              <rect x="10" y="0" width="80" height="26" rx="5" fill="#eef2ff" stroke="#a5b4fc" strokeWidth="1"/>
+              <text x="50" y="17" textAnchor="middle" fill="#4338ca" fontSize="8" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif" letterSpacing="1">TRIGGER</text>
+              <circle cx="50" cy="26" r="2.5" fill="#a5b4fc"/>
+              <line x1="50" y1="28.5" x2="50" y2="45.5" stroke="#e0e7ff" strokeWidth="1.5"/>
+              <circle cx="50" cy="48" r="2.5" fill="#93c5fd"/>
+              <rect x="10" y="50" width="80" height="26" rx="5" fill="#eff6ff" stroke="#93c5fd" strokeWidth="1"/>
+              <text x="50" y="67" textAnchor="middle" fill="#2563eb" fontSize="8" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif" letterSpacing="1">FILTER</text>
+              <circle cx="50" cy="76" r="2.5" fill="#93c5fd"/>
+              <line x1="50" y1="78.5" x2="50" y2="93.5" stroke="#d1fae5" strokeWidth="1.5"/>
+              <circle cx="50" cy="96" r="2.5" fill="#86efac"/>
+              <rect x="10" y="98" width="80" height="26" rx="5" fill="#f0fdf4" stroke="#86efac" strokeWidth="1"/>
+              <text x="50" y="115" textAnchor="middle" fill="#15803d" fontSize="8" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif" letterSpacing="1">RESPOND</text>
+            </svg>
+
+            <h2 className="text-xl font-bold tracking-tight text-gray-900">Build your first workflow</h2>
+            <p className="mx-auto mt-2 max-w-sm text-sm text-gray-400">
+              Connect a trigger to filters, decisions, and API calls — and automate what happens when a lead comes in.
             </p>
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="mt-6 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              {creating ? 'Creating…' : 'Create your first workflow'}
+              {creating ? 'Creating…' : 'New workflow'}
             </button>
           </div>
         ) : (
