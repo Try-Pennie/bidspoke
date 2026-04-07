@@ -342,6 +342,20 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     return () => window.removeEventListener('keydown', onKeyDown)
   })
 
+  // ── Connection validation ────────────────────────────────────────────────────
+
+  // The trigger node has a single output — it can only connect to one downstream node.
+  // All other nodes are unrestricted (filter/branch already split via separate handles).
+  const isValidConnection = useCallback(
+    (connection: { source: string | null; sourceHandle?: string | null }) => {
+      if (connection.source === 'trigger') {
+        return !edges.some((e) => e.source === 'trigger')
+      }
+      return true
+    },
+    [edges]
+  )
+
   // ── Connect ─────────────────────────────────────────────────────────────────
 
   const onConnect: OnConnect = useCallback(
@@ -380,7 +394,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const dropPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       const sourceNode = findDropSource(nodes, dropPos)
       const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
-      const autoConnected = !!(sourceNode && sourceHandle)
+      // Don't auto-connect if this source handle already has an outgoing edge
+      const handleAlreadyUsed = sourceNode
+        ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+        : false
+      const autoConnected = !!(sourceNode && sourceHandle && !handleAlreadyUsed)
 
       const newNode = {
         id: newId,
@@ -747,6 +765,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
+            isValidConnection={isValidConnection}
             onNodeClick={(_, node) => { setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
