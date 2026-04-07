@@ -34,7 +34,7 @@ export async function jwtAuth(
   const supabase = createSupabaseClient(c.env)
   const { data: user, error } = await supabase
     .from('users')
-    .select('id, organization_id, email')
+    .select('id, organization_id, email, display_name')
     .eq('id', payload.sub)
     .single()
 
@@ -42,7 +42,12 @@ export async function jwtAuth(
     return c.json({ error: 'User not found' }, 401)
   }
 
-  const name = payload.user_metadata?.full_name ?? payload.user_metadata?.name ?? null
+  // Prefer the most current name from the JWT (refreshed on every login from Google)
+  // Fall back to the stored display_name, but skip it if it looks like an email prefix
+  const jwtName = payload.user_metadata?.full_name ?? payload.user_metadata?.name ?? null
+  const storedName = user.display_name as string | null
+  const isEmailPrefix = storedName === user.email.split('@')[0]
+  const name = jwtName ?? (isEmailPrefix ? null : storedName) ?? null
 
   c.set('user', {
     userId: user.id,
