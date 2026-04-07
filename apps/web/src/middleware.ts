@@ -32,11 +32,10 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/auth') ||
     pathname.startsWith('/access-denied')
 
-  // Allowlist gate — two-step check to keep fast path fast:
-  //   1. Domain check (synchronous, free): must be @trypennie.com
-  //   2. DB lookup (async, PK): email must exist in user_allowlist table
-  // No signOut here — session cleanup happens client-side on /access-denied.
-  if (user) {
+  // Allowlist gate — only enforced on protected paths.
+  // Public paths (/login, /auth, /access-denied) are exempt so we don't
+  // create an infinite redirect loop when sending blocked users to /access-denied.
+  if (user && !isPublicPath) {
     const email = user.email ?? ''
     // Step 1: fast domain reject
     const domainOk = email.toLowerCase().endsWith('@trypennie.com')
