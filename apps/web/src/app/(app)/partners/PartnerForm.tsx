@@ -216,7 +216,7 @@ export default function PartnerForm({
           {isNew ? (
             <Field
               label="Slug"
-              hint="Lowercase, URL-safe. Used in Durable Object IDs and logs. Cannot be changed after creation."
+              hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
             >
               <Input value={slug} onChange={setSlug} placeholder="tripoint" mono />
             </Field>
@@ -248,8 +248,8 @@ export default function PartnerForm({
             <Input value={apiEndpoint} onChange={setApiEndpoint} placeholder="https://api.partner.com/bids" />
           </Field>
           <Field
-            label="Cloudflare secret key"
-            hint="Name of the Cloudflare Worker secret holding this partner's auth credentials."
+            label="Auth secret name"
+            hint="Name of the secret (stored in Cloudflare Workers) that holds this partner's API key. Enter the secret name, not the value itself — e.g. TRIPOINT_API_KEY."
           >
             <Input value={cfSecretKey} onChange={setCfSecretKey} placeholder="TRIPOINT_API_KEY" mono />
           </Field>
@@ -297,7 +297,7 @@ export default function PartnerForm({
               }
             </button>
             <p className="text-xs text-gray-400">
-              Automatically stops sending bids when the partner API has repeated failures.
+              Pauses bids to this partner after repeated failures, then retries automatically.
             </p>
           </div>
 
@@ -305,19 +305,19 @@ export default function PartnerForm({
             <div className="grid grid-cols-3 gap-4">
               <Field
                 label="Error threshold"
-                hint="Errors in window to trip."
+                hint="How many errors in the window before pausing."
               >
                 <Input value={circuitThreshold} onChange={setCircuitThreshold} type="number" placeholder="5" />
               </Field>
               <Field
                 label="Window (seconds)"
-                hint="Sliding window size."
+                hint="Time period to count errors in."
               >
                 <Input value={circuitWindow} onChange={setCircuitWindow} type="number" placeholder="60" />
               </Field>
               <Field
-                label="Cooldown (seconds)"
-                hint="Open before half-open."
+                label="Pause duration (seconds)"
+                hint="How long to wait before trying again."
               >
                 <Input value={circuitCooldown} onChange={setCircuitCooldown} type="number" placeholder="300" />
               </Field>

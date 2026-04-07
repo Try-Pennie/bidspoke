@@ -116,9 +116,9 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
             <>
               <div>
                 <label className="mb-1 block text-xs font-medium text-gray-500">
-                  Dedup key fields
-                  <span className="ml-1 font-normal text-gray-400">(dot-notation, e.g. body.bid_id)</span>
+                  Match on these fields
                 </label>
+                <p className="mb-1.5 text-xs text-gray-400">Requests with the same values for these fields count as the same lead. Leave empty to match on the entire payload.</p>
                 <div className="space-y-1">
                   {(idempotency.derive_from_fields ?? []).map((field, i) => (
                     <div key={i} className="flex items-center gap-1">
@@ -169,7 +169,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500">TTL (seconds)</label>
+                <label className="mb-1 block text-xs font-medium text-gray-500">Remember for (seconds)</label>
                 <input
                   type="number"
                   className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
@@ -177,6 +177,7 @@ export default function TriggerConfigPanel({ trigger, onChange, onClose }: Props
                   min={60}
                   onChange={(e) => updateIdempotency({ ttl_seconds: Number(e.target.value) })}
                 />
+                <p className="mt-1 text-xs text-gray-400">How long to cache the response. Default 86400 = 24 hours.</p>
               </div>
             </>
           )}
