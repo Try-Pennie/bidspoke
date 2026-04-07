@@ -3,6 +3,7 @@ export const runtime = 'edge'
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
+import { isAllowed } from '@/lib/auth-allowlist'
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
@@ -29,6 +30,12 @@ export async function GET(request: Request) {
     )
     const { error } = await supabase.auth.exchangeCodeForSession(code)
     if (!error) {
+      // Check allowlist — sign out immediately and block if not permitted
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!isAllowed(user?.email)) {
+        await supabase.auth.signOut()
+        return NextResponse.redirect(`${origin}/access-denied`)
+      }
       return NextResponse.redirect(`${origin}${next}`)
     }
   }

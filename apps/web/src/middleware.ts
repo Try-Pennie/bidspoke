@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
+import { isAllowed } from '@/lib/auth-allowlist'
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -27,7 +28,25 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
-  const isPublicPath = pathname.startsWith('/login') || pathname.startsWith('/auth')
+  const isPublicPath =
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/auth') ||
+    pathname.startsWith('/access-denied')
+
+  // Secondary gate: sign out and block any session that isn't on the allowlist.
+  // The primary gate is in /auth/callback, but this catches stale sessions or
+  // accounts removed from the list after they were already signed in.
+  if (user && !isAllowed(user.email)) {
+    await supabase.auth.signOut()
+    const url = request.nextUrl.clone()
+    url.pathname = '/access-denied'
+    const redirect = NextResponse.redirect(url)
+    // Copy cleared auth cookies so the browser drops the session
+    supabaseResponse.cookies.getAll().forEach(({ name, value, ...rest }) => {
+      redirect.cookies.set(name, value, rest)
+    })
+    return redirect
+  }
 
   if (!user && !isPublicPath) {
     const url = request.nextUrl.clone()
