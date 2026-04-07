@@ -671,10 +671,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.push('/workflows')}
-            className="text-xs text-gray-400 hover:text-gray-600"
+            className="text-sm text-gray-500 hover:text-gray-700"
           >
             ← Workflows
           </button>
+          <div className="h-5 w-px bg-gray-200" />
           <div className="group flex items-center gap-1">
             <input
               className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
@@ -691,7 +692,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Edit / View toggle */}
+          {/* Group: Mode */}
           <div className="flex overflow-hidden rounded border border-gray-200 text-xs">
             <button
               onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
@@ -713,6 +714,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </button>
           </div>
 
+          <div className="h-5 w-px bg-gray-200" />
+
+          {/* Group: History (edit only) */}
           {mode === 'edit' && (
             <>
               <button
@@ -731,9 +735,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               >
                 <Redo2 className="h-4 w-4" />
               </button>
+              <div className="h-5 w-px bg-gray-200" />
             </>
           )}
 
+          {/* Group: Utilities */}
           {mode === 'edit' && (
             <button
               onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
@@ -789,6 +795,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             )}
           </div>
 
+          {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
+
+          {/* Group: State */}
           {mode === 'edit' && (
             <button
               onClick={handleSave}
