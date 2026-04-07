@@ -142,12 +142,12 @@
 - [x] **Test:** Transform node — field rename, nested extraction, array [*] mapping, static values
 
 ### 2.3 Error Handling & Alerts
-- [ ] Implement three-category error classification with default rules — PRD Section 11.1
-- [ ] Implement per-partner signal overrides (response_classification JSONB) — PRD Section 11.2
-- [ ] Implement alert configuration (per-partner, per-workflow, severity filtering) — PRD Section 11.5
+- [x] Implement three-category error classification with default rules — PRD Section 11.1
+- [x] Implement per-partner signal overrides (response_classification JSONB) — PRD Section 11.2
+- [x] Implement alert configuration (per-partner, per-workflow, severity filtering) — PRD Section 11.5
 - [ ] Implement duration alerts (configurable per-workflow threshold)
-- [ ] **Test:** Override a signal classification, verify changed behavior
-- [ ] **Test:** Alert fires on failure, suppressed when configured off
+- [x] **Test:** Override a signal classification, verify changed behavior
+- [x] **Test:** Alert fires on failure, suppressed when configured off
 
 ### 2.4 Test Runner
 - [x] Implement test execution mode (same engine, flagged as test) — PRD Section 6.5 (TestRunPanel + isTest flag)
