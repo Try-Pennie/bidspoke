@@ -2,12 +2,12 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 interface BranchEntry { label: string }
 
 export function BranchNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
   const outputPreview = getOutputPreview(executionStep)
 
@@ -19,7 +19,7 @@ export function BranchNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-gray-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

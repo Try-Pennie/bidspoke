@@ -2,7 +2,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData, EdgeCondition } from '@/types/workflow'
 import { Filter } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
   eq: 'equals', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤',
@@ -11,7 +11,7 @@ const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
 }
 
 export function FilterNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
   const condition = config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -30,7 +30,7 @@ export function FilterNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-blue-400 ring-2 ring-blue-200' : 'border-gray-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

@@ -131,4 +131,6 @@ export interface CanvasNodeData {
   variables: Record<string, string>
   // undefined = normal edit mode; null = replay mode but step not reached; object = step ran
   executionStep?: ExecutionStep | null
+  // true = node is attached and missing required config; shown as amber ring in edit mode
+  hasError?: boolean
 }

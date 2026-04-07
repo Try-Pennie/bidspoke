@@ -24,6 +24,19 @@ export function getExecutionStyle(exec: ExecutionStep | null | undefined): CSSPr
   }
 }
 
+/**
+ * Use instead of getExecutionClasses when validation error state also applies.
+ * Execution state always takes precedence over validation indicators.
+ */
+export function getNodeClasses(
+  exec: ExecutionStep | null | undefined,
+  hasError?: boolean
+): string {
+  if (exec !== undefined) return getExecutionClasses(exec)
+  if (hasError) return 'ring-2 ring-amber-400 ring-offset-1'
+  return ''
+}
+
 /** Returns a one-line output preview for a completed step, e.g. "status: 200" */
 export function getOutputPreview(exec: ExecutionStep | null | undefined): string | null {
   if (!exec || exec.status !== 'completed') return null

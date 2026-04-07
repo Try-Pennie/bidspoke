@@ -7,6 +7,7 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
 import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check } from 'lucide-react'
+import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -65,6 +66,25 @@ export default function WorkflowsPage() {
   async function handleToggleActive(wf: WorkflowSummary) {
     setOpenMenuId(null)
     const next = !wf.is_active
+
+    // Before enabling, validate that all attached nodes are configured
+    if (next) {
+      try {
+        const full = await api.workflows.get(wf.id)
+        const errors = validateWorkflowDef(
+          full.definition?.nodes ?? [],
+          full.definition?.edges ?? []
+        )
+        if (errors.length > 0) {
+          const names = errors.map((e) => e.label || e.namespace).join(', ')
+          setError(`Can't activate "${wf.name}" — these nodes need to be configured: ${names}. Open the workflow to fix them.`)
+          return
+        }
+      } catch {
+        // If we can't fetch the definition, fall through and let the API attempt it
+      }
+    }
+
     setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: next } : w))
     try {
       await api.workflows.setActive(wf.id, next)

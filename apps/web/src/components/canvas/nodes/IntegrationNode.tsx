@@ -2,7 +2,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Plug } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle } from './execution-status'
+import { getNodeClasses, getExecutionStyle } from './execution-status'
 
 // Fallback labels for nodes saved before service_label was stored in config
 const SERVICE_LABELS: Record<string, string> = {
@@ -12,7 +12,7 @@ const SERVICE_LABELS: Record<string, string> = {
 }
 
 export function IntegrationNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
   const service = (config.service as string | undefined) ?? 'custom'
   const method = ((config.method as string | undefined) ?? 'POST').toUpperCase()
   const url = (config.url as string | undefined) ?? ''
@@ -34,7 +34,7 @@ export function IntegrationNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-teal-400 ring-2 ring-teal-200' : 'border-gray-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

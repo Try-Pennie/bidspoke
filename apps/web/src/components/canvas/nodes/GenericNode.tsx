@@ -2,17 +2,17 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Box } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
-  const { namespace, label, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-gray-400 ring-2 ring-gray-200' : 'border-gray-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

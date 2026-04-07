@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -37,7 +37,8 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, NODE_W, nodeHeight } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
+import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import ExecutionListPanel from './ExecutionListPanel'
@@ -262,6 +263,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
+
+  // Compute validation errors for all attached, unconfigured nodes (edit mode only)
+  const validationErrors: Map<string, ValidationError> = useMemo(
+    () => (mode === 'edit' ? validateWorkflow(nodes, edges) : new Map()),
+    [mode, nodes, edges]
+  )
+
+  // Inject hasError into node data so nodes can show the amber ring
+  useEffect(() => {
+    setNodes((ns) =>
+      ns.map((n) => {
+        const hasError = validationErrors.has(n.id)
+        const current = (n.data as unknown as CanvasNodeData).hasError
+        if (current === hasError) return n
+        return { ...n, data: { ...(n.data as object), hasError } }
+      })
+    )
+  }, [validationErrors, setNodes])
 
   useEffect(() => {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
@@ -609,6 +628,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // ── Save ────────────────────────────────────────────────────────────────────
 
   async function handleSave() {
+    // Block saving a live workflow that has unconfigured nodes
+    if (workflow.is_active && validationErrors.size > 0) {
+      const names = Array.from(validationErrors.values())
+        .map((e) => e.label || e.namespace)
+        .join(', ')
+      setSaveError(`Can't save a live workflow with unconfigured nodes: ${names}. Fix them or disable the workflow first.`)
+      return
+    }
     setSaving(true)
     setSaveError(null)
     setSavedOk(false)
@@ -799,6 +826,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           </div>
 
           {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
+
+          {/* Validation warning */}
+          {mode === 'edit' && validationErrors.size > 0 && (
+            <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-700">
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+              {validationErrors.size} node{validationErrors.size !== 1 ? 's' : ''} unconfigured
+            </div>
+          )}
 
           {/* Group: State */}
           {mode === 'edit' && (

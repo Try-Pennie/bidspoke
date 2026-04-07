@@ -2,17 +2,17 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { LogOut } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ExitNode({ data, selected }: NodeProps) {
-  const { namespace, label, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
       className={`relative w-52 rounded-lg border bg-red-50 shadow-sm ${
         selected ? 'border-red-400 ring-2 ring-red-200' : 'border-red-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

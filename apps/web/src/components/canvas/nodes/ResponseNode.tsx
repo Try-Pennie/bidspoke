@@ -2,10 +2,10 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
-import { getExecutionClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ResponseNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
   const outputPreview = getOutputPreview(executionStep)
 
@@ -13,7 +13,7 @@ export function ResponseNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-green-50 shadow-sm ${
         selected ? 'border-green-400 ring-2 ring-green-200' : 'border-green-200'
-      } ${getExecutionClasses(executionStep)}`}
+      } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />
