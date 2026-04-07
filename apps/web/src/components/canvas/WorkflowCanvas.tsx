@@ -677,13 +677,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           >
             ← Workflows
           </button>
-          <input
-            className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
-              mode === 'edit' ? 'hover:bg-amber-100 focus:bg-amber-100' : 'hover:bg-gray-50 focus:bg-gray-50'
-            }`}
-            value={name}
-            onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
-          />
+          <div className="group flex items-center gap-1">
+            <input
+              className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
+                mode === 'edit' ? 'hover:bg-gray-100/70 focus:bg-gray-100/70' : ''
+              }`}
+              value={name}
+              onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
+              readOnly={mode !== 'edit'}
+            />
+            {mode === 'edit' && (
+              <Pencil className="h-3 w-3 flex-shrink-0 text-gray-300 opacity-0 transition-opacity group-hover:opacity-100" />
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
