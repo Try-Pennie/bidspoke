@@ -11,7 +11,7 @@ import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
-import { sendFailureAlert } from '../lib/slack'
+import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
 import type { Env } from '../index'
 import type {
@@ -167,6 +167,20 @@ export async function executeWorkflow(
   )
 
   // Send Slack alert on failure (skip business rejections and test runs)
+  const durationAlertMs = definition.trigger.config.duration_alert_ms
+  if (!options.isTest && durationAlertMs && durationMs > durationAlertMs) {
+    executionCtx.waitUntil(
+      sendDurationAlert(supabase, org_id, slack_channel, {
+        workflow_id: workflowId,
+        workflow_name,
+        execution_id: executionId,
+        duration_ms: durationMs,
+        threshold_ms: durationAlertMs,
+        timestamp: completedAt,
+      }, env.APP_URL).catch((e) => console.error('[slack] duration alert failed:', e))
+    )
+  }
+
   if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert) {
     executionCtx.waitUntil(
       sendFailureAlert(supabase, org_id, slack_channel, {

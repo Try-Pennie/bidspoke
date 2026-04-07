@@ -100,6 +100,55 @@ export async function sendFailureAlert(
   await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
 }
 
+export async function sendDurationAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: {
+    workflow_id: string
+    workflow_name: string
+    execution_id: string
+    duration_ms: number
+    threshold_ms: number
+    timestamp: string
+  },
+  appUrl: string
+): Promise<void> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return
+
+  const channel = channelOverride || connection.default_channel
+  const seconds = (payload.duration_ms / 1000).toFixed(1)
+  const thresholdSeconds = (payload.threshold_ms / 1000).toFixed(0)
+  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}`
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: '🐢 Slow Execution', emoji: true },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Workflow:*\n${payload.workflow_name}` },
+        { type: 'mrkdwn', text: `*Duration:*\n${seconds}s (threshold: ${thresholdSeconds}s)` },
+        { type: 'mrkdwn', text: `*Time:*\n${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${executionUrl}|View execution →>` },
+    },
+  ]
+
+  await postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `Workflow "${payload.workflow_name}" took ${seconds}s (threshold: ${thresholdSeconds}s)`
+  )
+}
+
 export async function sendCircuitAlert(
   supabase: SupabaseClient,
   orgId: string,

@@ -79,6 +79,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ payload, execution_id: executionId }),
       }),
+    saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
+      req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
+        method: 'PATCH',
+        body: JSON.stringify({ test_payloads }),
+      }),
   },
 
   versions: {

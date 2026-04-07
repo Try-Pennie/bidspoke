@@ -33,6 +33,7 @@ export interface TriggerConfig {
       derive_from_fields?: string[]
       ttl_seconds?: number
     }
+    duration_alert_ms?: number
   }
 }
 

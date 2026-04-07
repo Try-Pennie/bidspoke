@@ -52,6 +52,7 @@ export interface TriggerDef {
       derive_from_fields?: string[]
       ttl_seconds?: number
     }
+    duration_alert_ms?: number
   }
 }
 
@@ -61,6 +62,11 @@ export interface WorkflowDef {
   trigger: TriggerDef
 }
 
+export interface SavedTestPayload {
+  name: string
+  payload: unknown
+}
+
 export interface Workflow {
   id: string
   name: string
@@ -68,6 +74,7 @@ export interface Workflow {
   is_active: boolean
   definition: WorkflowDef
   slack_channel?: string | null
+  test_payloads: SavedTestPayload[]
   created_at: string
   updated_at: string
   updated_by_email?: string | null

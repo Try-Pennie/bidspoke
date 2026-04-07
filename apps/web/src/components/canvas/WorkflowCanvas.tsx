@@ -230,6 +230,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [refreshSignal, setRefreshSignal] = useState(0)
   const [showTest, setShowTest] = useState(false)
   const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
+  const [savedPayloads, setSavedPayloads] = useState(workflow.test_payloads ?? [])
   const [showVersions, setShowVersions] = useState(false)
   const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
   const [testRunning, setTestRunning] = useState(false)
@@ -950,6 +951,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
             onComplete={() => setRefreshSignal((s) => s + 1)}
             initialPayload={testInitialPayload}
+            savedPayloads={savedPayloads}
+            onSavedPayloadsChange={setSavedPayloads}
             onTestStart={handleTestStart}
             onLiveStep={handleLiveStep}
             onTestEnd={handleTestEnd}

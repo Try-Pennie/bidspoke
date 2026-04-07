@@ -201,6 +201,29 @@ workflows.delete('/:id', async (c) => {
   return c.json({ ok: true })
 })
 
+// PATCH /api/workflows/:id/test-payloads — replace the saved test payload array
+workflows.patch('/:id/test-payloads', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ test_payloads: Array<{ name: string; payload: unknown }> }>()
+
+  if (!Array.isArray(body.test_payloads)) {
+    return c.json({ error: 'test_payloads must be an array' }, 400)
+  }
+
+  const { data, error } = await supabase
+    .from('workflows')
+    .update({ test_payloads: body.test_payloads })
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .select('test_payloads')
+    .single()
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data)
+})
+
 // GET /api/workflows/:id/versions
 workflows.get('/:id/versions', async (c) => {
   const { orgId } = c.get('user')
