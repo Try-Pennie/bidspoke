@@ -667,9 +667,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   return (
     <div className="flex h-screen flex-col">
       {/* Top bar */}
-      <header className={`flex h-12 flex-shrink-0 items-center justify-between border-b px-4 transition-colors ${
-        mode === 'edit' ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-white'
-      }`}>
+      <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.push('/workflows')}
