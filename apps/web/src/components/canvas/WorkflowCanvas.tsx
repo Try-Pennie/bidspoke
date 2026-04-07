@@ -219,6 +219,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
   const [name, setName] = useState(workflow.name)
   const [isDirty, setIsDirty] = useState(false)
+  const [triggerVersion, setTriggerVersion] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
@@ -1089,7 +1090,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (
           <TriggerConfigPanel
             trigger={triggerRef.current}
-            onChange={(t) => { triggerRef.current = t; setIsDirty(true) }}
+            onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
             onClose={() => setSelectedNodeId(null)}
           />
         )}
