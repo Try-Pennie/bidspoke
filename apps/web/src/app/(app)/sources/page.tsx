@@ -5,7 +5,7 @@ export const runtime = 'edge'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { Copy, Trash2, Plus, Key, Check, Eye, EyeOff, Terminal } from 'lucide-react'
+import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal } from 'lucide-react'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'https://your-worker.workers.dev'
 
@@ -244,7 +244,7 @@ export default function SourcesPage() {
                           disabled={deleting === source.name}
                           className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
                         >
-                          <Trash2 className="h-3.5 w-3.5" />
+                          <KeyRound className="h-3.5 w-3.5" />
                           Revoke
                         </button>
                       )}
