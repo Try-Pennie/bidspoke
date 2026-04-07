@@ -148,11 +148,12 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     key={exec.id}
                     onClick={() => onSelect(exec.id)}
                     className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
-                      isSelected ? 'border-l-2 border-l-indigo-400 bg-indigo-50' : ''
+                      isSelected ? 'border-l-2 border-l-indigo-400 bg-indigo-50' :
+                      exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
                     }`}
                   >
                     <div className="flex items-center gap-1.5">
-                      <Icon className={`h-3 w-3 flex-shrink-0 ${cfg.color}`} />
+                      <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${cfg.color}`} />
                       <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
                         {exec.source}
                       </span>
@@ -166,7 +167,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     {exec.status === 'failed' && exec.error_message && (
                       <p
                         onClick={(e) => toggleError(exec.id, e)}
-                        className={`mt-0.5 text-xs text-red-400 hover:text-red-600 cursor-pointer ${
+                        className={`mt-0.5 text-xs text-red-500 hover:text-red-700 cursor-pointer ${
                           expandedErrors.has(exec.id) ? 'whitespace-pre-wrap break-words' : 'truncate'
                         }`}
                         title={expandedErrors.has(exec.id) ? 'Click to collapse' : 'Click to expand'}
