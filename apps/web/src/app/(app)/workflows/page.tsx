@@ -203,9 +203,9 @@ export default function WorkflowsPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Name</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Last modified</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">By</th>
+                  <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Name</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Last modified</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">By</th>
                   <th className="w-12 rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
