@@ -12,7 +12,6 @@ const NAV = [
   { href: '/env', label: 'Environment', icon: Settings },
   { href: '/sources', label: 'API Sources', icon: KeyRound },
   { href: '/integrations', label: 'Integrations', icon: Puzzle },
-  { href: '/access', label: 'Access', icon: Shield },
 ]
 
 export default function NavLayout({ children }: { children: React.ReactNode }) {
@@ -59,7 +58,18 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
             )
           })}
         </div>
-        <div className="border-t border-gray-100 px-2 py-4">
+        <div className="border-t border-gray-100 px-2 py-4 space-y-0.5">
+          <Link
+            href="/access"
+            className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+              pathname === '/access'
+                ? 'bg-gray-100 text-gray-900'
+                : 'text-gray-400 hover:bg-gray-50 hover:text-gray-700'
+            }`}
+          >
+            <Shield className="h-4 w-4" />
+            Access
+          </Link>
           <button
             onClick={handleSignOut}
             className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-gray-400 transition-colors hover:bg-gray-50 hover:text-gray-700"
