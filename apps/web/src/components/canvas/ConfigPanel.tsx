@@ -1,10 +1,11 @@
 'use client'
 
 import type { Node } from '@xyflow/react'
-import type { CanvasNodeData, ConditionGroup, NodeType, ExecutionStep } from '@/types/workflow'
+import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
+import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown } from 'lucide-react'
 
 interface Props {
   node: Node
@@ -147,6 +148,21 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
 
 // ── Type-specific sections ────────────────────────────────────────────────────
 
+const FILTER_OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
+  { value: 'eq', label: 'equals' },
+  { value: 'neq', label: 'does not equal' },
+  { value: 'gt', label: 'greater than' },
+  { value: 'gte', label: 'greater than or equal' },
+  { value: 'lt', label: 'less than' },
+  { value: 'lte', label: 'less than or equal' },
+  { value: 'contains', label: 'contains' },
+  { value: 'not_contains', label: 'does not contain' },
+  { value: 'exists', label: 'exists' },
+  { value: 'not_exists', label: 'does not exist' },
+]
+
+const VALUE_LESS = new Set<EdgeCondition['operator']>(['exists', 'not_exists'])
+
 function FilterConfig({
   config,
   onChange,
@@ -156,21 +172,77 @@ function FilterConfig({
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
 }) {
-  const rules = (config.rules as { groups: ConditionGroup[]; logic: 'AND' | 'OR' } | undefined) ?? {
-    groups: [{ conditions: [], logic: 'AND' as const }],
-    logic: 'AND' as const,
+  const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
+  const condition = (config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined) ?? {}
+  const field = condition.field ?? ''
+  const operator = condition.operator ?? 'eq'
+  const value = condition.value as string | undefined ?? ''
+
+  function setCondition(patch: Partial<{ field: string; operator: EdgeCondition['operator']; value: unknown }>) {
+    onChange({ condition: { ...condition, ...patch } })
   }
 
   return (
-    <section>
-      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-gray-400">Rules</p>
-      <RuleBuilder
-        groups={rules.groups}
-        logic={rules.logic}
-        onChange={(groups, logic) => onChange({ rules: { groups, logic } })}
-        fieldSuggestions={refs}
-      />
-    </section>
+    <div className="space-y-5">
+      {/* Operation */}
+      <section>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Operation</p>
+        <div className="relative">
+          <select
+            value={operation}
+            onChange={(e) => onChange({ operation: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="continue_if">Continue if condition is met</option>
+            <option value="end_if">End if condition is met</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+        <p className="mt-1 text-xs text-gray-400">
+          {operation === 'continue_if'
+            ? 'Workflow continues on the pass path when the condition is true.'
+            : 'Workflow exits on the exit path when the condition is true.'}
+        </p>
+      </section>
+
+      {/* Condition */}
+      <section>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Condition</p>
+        <div className="space-y-2">
+          {/* Field */}
+          <FieldAutocomplete
+            value={field}
+            onChange={(v) => setCondition({ field: v })}
+            suggestions={refs}
+            placeholder="Field or reference…"
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-gray-400 focus:outline-none"
+          />
+          {/* Operator */}
+          <div className="relative">
+            <select
+              value={operator}
+              onChange={(e) => setCondition({ operator: e.target.value as EdgeCondition['operator'] })}
+              className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+            >
+              {FILTER_OPERATORS.map((op) => (
+                <option key={op.value} value={op.value}>{op.label}</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          </div>
+          {/* Value */}
+          {!VALUE_LESS.has(operator) && (
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setCondition({ value: e.target.value })}
+              placeholder="Value…"
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-gray-400 focus:outline-none"
+            />
+          )}
+        </div>
+      </section>
+    </div>
   )
 }
 
