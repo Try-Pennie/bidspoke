@@ -172,7 +172,7 @@ export default function EnvPage() {
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Key</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Value</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Type</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Updated</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Last updated</th>
                   <th className="w-16 px-4 py-3" />
                 </tr>
               </thead>
