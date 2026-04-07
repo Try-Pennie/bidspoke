@@ -12,7 +12,7 @@ export function CodeNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-amber-300 ring-2 ring-amber-100' : 'border-gray-200'
+        selected ? 'border-amber-400 ring-2 ring-amber-200' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >

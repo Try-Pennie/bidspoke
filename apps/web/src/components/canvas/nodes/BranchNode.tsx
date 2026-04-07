@@ -18,7 +18,7 @@ export function BranchNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-purple-300 ring-2 ring-purple-100' : 'border-gray-200'
+        selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >

@@ -11,7 +11,7 @@ export function ExitNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-red-50 shadow-sm ${
-        selected ? 'border-red-400 ring-2 ring-red-100' : 'border-red-200'
+        selected ? 'border-red-400 ring-2 ring-red-200' : 'border-red-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >

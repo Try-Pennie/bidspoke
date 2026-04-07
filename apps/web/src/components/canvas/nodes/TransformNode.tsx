@@ -17,7 +17,7 @@ export function TransformNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-orange-300 ring-2 ring-orange-100' : 'border-gray-200'
+        selected ? 'border-orange-400 ring-2 ring-orange-200' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >

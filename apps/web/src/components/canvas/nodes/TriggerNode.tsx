@@ -13,7 +13,7 @@ export function TriggerNode({ data, selected }: NodeProps) {
 
   return (
     <div className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-      selected ? 'border-indigo-300 ring-2 ring-indigo-100' : 'border-gray-200'
+      selected ? 'border-indigo-400 ring-2 ring-indigo-200' : 'border-gray-200'
     }`}>
       <Handle type="source" position={Position.Bottom} id="output" />
 

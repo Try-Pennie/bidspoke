@@ -32,7 +32,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-rose-300 ring-2 ring-rose-100' : 'border-gray-200'
+        selected ? 'border-rose-400 ring-2 ring-rose-200' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >
