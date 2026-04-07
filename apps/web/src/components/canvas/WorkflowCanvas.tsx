@@ -1036,6 +1036,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onNodeClick={(_, node) => { setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
+            proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
