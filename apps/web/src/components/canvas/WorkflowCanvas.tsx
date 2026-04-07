@@ -1060,6 +1060,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   transform:      '#f97316', // orange
                   webhook:        '#14b8a6', // teal
                   bid_evaluation: '#f43f5e', // rose
+                  partner_bid:    '#0ea5e9', // sky
+                  parallel:       '#64748b', // slate
                 }
                 return colorMap[n.type ?? ''] ?? '#9ca3af'
               }}
