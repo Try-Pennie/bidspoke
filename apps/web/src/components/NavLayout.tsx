@@ -4,9 +4,10 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield, LayoutDashboard } from 'lucide-react'
 
 const NAV = [
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/workflows', label: 'Workflows', icon: GitBranch },
   { href: '/partners', label: 'Partners', icon: Users },
   { href: '/env', label: 'Environment', icon: Settings },

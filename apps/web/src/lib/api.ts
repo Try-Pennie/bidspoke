@@ -27,6 +27,39 @@ export interface Partner {
 
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
 
+export interface StatsResponse {
+  window_days: number
+  summary: {
+    total: number
+    completed: number
+    failed: number
+    exited: number
+    avg_duration_ms: number | null
+    p95_duration_ms: number | null
+    success_rate: number
+  }
+  by_day: Array<{ date: string; completed: number; failed: number; exited: number; total: number }>
+  by_workflow: Array<{
+    workflow_id: string
+    name: string
+    total: number
+    completed: number
+    failed: number
+    exited: number
+    success_rate: number
+    avg_duration_ms: number | null
+  }>
+  recent_failures: Array<{
+    id: string
+    workflow_id: string
+    workflow_name: string
+    error_message: string | null
+    started_at: string
+    source: string | null
+    trace_id: string | null
+  }>
+}
+
 export interface ServicePreset {
   id: string
   name: string
@@ -218,6 +251,10 @@ export const api = {
     deleteSlack: () =>
       req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
+  stats: {
+    get: (window: 7 | 14 | 30 = 7) => req<StatsResponse>(`/api/stats?window=${window}`),
+  },
+
   servicePresets: {
     list: () => req<ServicePreset[]>('/api/service-presets'),
     create: (body: { name: string; slug: string; auth_type: string; base_url?: string }) =>
