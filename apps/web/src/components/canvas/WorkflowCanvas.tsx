@@ -79,18 +79,6 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
-// Mark connected nodes as non-draggable so the layout stays locked.
-// Isolated nodes (no edges touching them) remain freely draggable so the user
-// can position staging nodes or drag them into the flow to auto-connect.
-function applyDraggableFlags(nodes: Node[], edges: Edge[]): Node[] {
-  const connectedIds = new Set<string>()
-  for (const e of edges) {
-    connectedIds.add(e.source)
-    connectedIds.add(e.target)
-  }
-  return nodes.map((n) => ({ ...n, draggable: !connectedIds.has(n.id) }))
-}
-
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
   const workflowNodes = nodes.map((n) => ({
     id: n.id,
@@ -99,8 +87,7 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
-  const flowEdges = defToEdges(edges)
-  return applyDraggableFlags(layoutWorkflow(allNodes, flowEdges), flowEdges)
+  return layoutWorkflow(allNodes, defToEdges(edges))
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -486,7 +473,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       snapshot()
       const newEdges = addEdge({ ...connection, id: uid() }, edges)
       setEdges(newEdges)
-      setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, newEdges), newEdges))
+      setNodes((ns) => layoutWorkflow(ns, newEdges))
       setIsDirty(true)
     },
     [snapshot, edges, setEdges, setNodes]
@@ -541,7 +528,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       setEdges(newEdges)
       if (autoConnected) {
-        setNodes((ns) => applyDraggableFlags(layoutWorkflow([...ns, newNode], newEdges), newEdges))
+        setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
       } else {
         setNodes((ns) => [...ns, { ...newNode, draggable: true }])
       }
@@ -570,7 +557,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const newEdges = edges.filter((e) => e.source !== id && e.target !== id)
       const newNodes = nodes.filter((n) => n.id !== id)
       setEdges(newEdges)
-      setNodes(applyDraggableFlags(layoutWorkflow(newNodes, newEdges), newEdges))
+      setNodes(layoutWorkflow(newNodes, newEdges))
       setSelectedNodeId(null)
       setIsDirty(true)
     },
@@ -918,29 +905,93 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
 
-              // Slot-in: when an unconnected node finishes dragging near the workflow,
-              // auto-connect it (same logic as drop) and re-apply the locked layout.
               for (const change of changes) {
                 if (change.type !== 'position' || change.dragging !== false) continue
-                const isConnected = edges.some((e) => e.source === change.id || e.target === change.id)
-                if (isConnected) continue
+                // Don't let the trigger node be reordered
+                if (change.id === 'trigger') {
+                  setNodes((ns) => layoutWorkflow(ns, edges))
+                  continue
+                }
 
                 const node = nodes.find((n) => n.id === change.id)
                 if (!node) continue
                 const finalPos = (change as { position?: { x: number; y: number } }).position ?? node.position
-
                 const otherNodes = nodes.filter((n) => n.id !== change.id)
-                const sourceNode = findDropSource(otherNodes, finalPos)
-                const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
-                const handleUsed = sourceNode
-                  ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
-                  : false
+                const isConnected = edges.some((e) => e.source === change.id || e.target === change.id)
 
-                if (sourceNode && sourceHandle && !handleUsed) {
-                  const newEdge = { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }
-                  const newEdges = [...edges, newEdge]
+                if (!isConnected) {
+                  // SLOT-IN: isolated node dragged near the workflow → auto-connect
+                  const sourceNode = findDropSource(otherNodes, finalPos)
+                  const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+                  const handleUsed = sourceNode
+                    ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+                    : false
+
+                  if (sourceNode && sourceHandle && !handleUsed) {
+                    const newEdge = { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }
+                    const newEdges = [...edges, newEdge]
+                    setEdges(newEdges)
+                    setNodes((ns) => layoutWorkflow(ns, newEdges))
+                    setIsDirty(true)
+                  }
+                  // If no valid slot found, node stays where it was dropped (free-floating)
+                } else {
+                  // REORDER: connected node dragged to a new position in the flow
+                  const newSource = findDropSource(otherNodes, finalPos)
+                  const newSourceHandle = newSource ? primarySourceHandle(newSource.type ?? '') : null
+
+                  // No valid target, or target is the same node, or target can't have outgoing edges → snap back
+                  const inEdges = edges.filter((e) => e.target === change.id)
+                  const currentSourceId = inEdges.length === 1 ? inEdges[0].source : null
+
+                  if (!newSource || !newSourceHandle || newSource.id === currentSourceId) {
+                    setNodes((ns) => layoutWorkflow(ns, edges))
+                    continue
+                  }
+
+                  // The edge that newSource currently uses to connect to its successor
+                  const newSourceOutEdge = edges.find(
+                    (e) => e.source === newSource.id && e.sourceHandle === newSourceHandle
+                  )
+                  // newSource already connects to this node — nothing to do
+                  if (newSourceOutEdge?.target === change.id) {
+                    setNodes((ns) => layoutWorkflow(ns, edges))
+                    continue
+                  }
+
+                  // N's primary output edge (non-filter/branch nodes have a single 'output' handle)
+                  const primaryOut = edges.find(
+                    (e) => e.source === change.id && e.sourceHandle === 'output'
+                  )
+
+                  // Remove: N's in-edges, N's primary out-edge, newSource's out-edge
+                  const toRemove = new Set([
+                    ...inEdges.map((e) => e.id),
+                    ...(primaryOut ? [primaryOut.id] : []),
+                    ...(newSourceOutEdge ? [newSourceOutEdge.id] : []),
+                  ])
+                  let newEdges = edges.filter((e) => !toRemove.has(e.id))
+
+                  // Bridge the gap: connect N's old predecessor → N's old successor
+                  if (inEdges.length === 1 && primaryOut) {
+                    newEdges.push({
+                      id: uid(),
+                      source: inEdges[0].source,
+                      target: primaryOut.target,
+                      sourceHandle: inEdges[0].sourceHandle ?? 'output',
+                    })
+                  }
+
+                  // Insert N at new position: newSource → N
+                  newEdges.push({ id: uid(), source: newSource.id, target: change.id, sourceHandle: newSourceHandle })
+
+                  // N → newSource's old successor (if any)
+                  if (newSourceOutEdge) {
+                    newEdges.push({ id: uid(), source: change.id, target: newSourceOutEdge.target, sourceHandle: 'output' })
+                  }
+
                   setEdges(newEdges)
-                  setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, newEdges), newEdges))
+                  setNodes((ns) => layoutWorkflow(ns, newEdges))
                   setIsDirty(true)
                 }
               }
@@ -953,7 +1004,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   changes.filter((c) => c.type === 'remove').map((c) => c.id)
                 )
                 const remaining = edges.filter((e) => !removedIds.has(e.id))
-                setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, remaining), remaining))
+                setNodes((ns) => layoutWorkflow(ns, remaining))
               }
             }}
             onConnect={onConnect}
