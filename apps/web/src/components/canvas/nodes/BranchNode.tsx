@@ -24,12 +24,12 @@ export function BranchNode({ data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
-        <GitBranch className="h-3.5 w-3.5 text-purple-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-purple-600">Branch</span>
+      <div className="flex items-center gap-2 rounded-t-lg bg-purple-50 border-b border-purple-100 px-3 py-2">
+        <GitBranch className="h-4 w-4 text-purple-500" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-purple-700">Branch</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-medium text-gray-800">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
         <p className="mt-0.5 text-xs text-gray-400">
           {branches.length === 0 ? 'No branches' : `${branches.length} branch${branches.length !== 1 ? 'es' : ''} + else`}
         </p>

@@ -38,16 +38,16 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
-        <Trophy className="h-3.5 w-3.5 text-yellow-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-yellow-600">Bid Eval</span>
-        <span className="ml-auto rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+      <div className="flex items-center gap-2 rounded-t-lg bg-yellow-50 border-b border-yellow-100 px-3 py-2">
+        <Trophy className="h-4 w-4 text-yellow-500" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-yellow-700">Bid Eval</span>
+        <span className="ml-auto rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-600">
           {strategyLabel}
         </span>
       </div>
 
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-medium text-gray-800">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
         {winnerPreview ? (
           <p className={`mt-1 truncate rounded px-1.5 py-0.5 font-mono text-xs ${
             routeLabel === 'no_winner'

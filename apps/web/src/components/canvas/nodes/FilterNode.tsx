@@ -35,15 +35,15 @@ export function FilterNode({ data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div className="flex items-center gap-2 border-b border-gray-100 px-3 py-2">
-        <Filter className="h-3.5 w-3.5 text-blue-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-blue-600">Filter</span>
-        <span className="ml-auto rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+      <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">
+        <Filter className="h-4 w-4 text-blue-500" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-blue-700">Filter</span>
+        <span className="ml-auto rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-600">
           {operation === 'continue_if' ? 'continue if' : 'end if'}
         </span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-medium text-gray-800">{namespace}</p>
+        <p className="truncate text-sm font-semibold text-gray-900">{namespace}</p>
         <p className="mt-0.5 truncate text-xs text-gray-400">
           {conditionSummary ?? 'No condition set'}
         </p>
