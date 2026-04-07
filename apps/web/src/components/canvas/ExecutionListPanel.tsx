@@ -81,7 +81,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   }
 
   return (
-    <aside className="flex w-56 flex-col border-r border-gray-200 bg-white">
+    <aside className="flex w-64 flex-col border-r border-gray-200 bg-white">
       <div className="flex items-center justify-between border-b border-gray-100 px-3 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Executions</p>
         <button
