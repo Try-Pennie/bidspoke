@@ -238,6 +238,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
+  // Copy/paste clipboard — in-memory, holds one node's type + config
+  const [clipboard, setClipboard] = useState<{
+    type: NodeType
+    config: Record<string, unknown>
+    variables: Record<string, unknown>
+    position: { x: number; y: number }
+  } | null>(null)
 
   const triggerRef = useRef<WorkflowDef['trigger']>(
     workflow.definition?.trigger ?? DEFAULT_TRIGGER
@@ -405,6 +412,75 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
+
+      // Copy/paste — skip when focus is inside a text input or textarea
+      const focused = document.activeElement
+      const inInput = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
+      if (inInput) return
+
+      // Cmd+C — copy selected node (not the trigger)
+      if (meta && e.key === 'c' && selectedNodeId && selectedNodeId !== 'trigger') {
+        const node = nodes.find((n) => n.id === selectedNodeId)
+        if (node) {
+          const d = node.data as unknown as CanvasNodeData
+          setClipboard({
+            type: node.type as NodeType,
+            config: JSON.parse(JSON.stringify(d.config ?? {})),
+            variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+            position: node.position,
+          })
+        }
+      }
+
+      // Cmd+V — paste from clipboard
+      if (meta && e.key === 'v' && clipboard) {
+        e.preventDefault()
+        const ns = defaultNamespace(clipboard.type, nodeNamespaces)
+        const newId = uid()
+        snapshot()
+        setNodes((prev) => [
+          ...prev,
+          {
+            id: newId,
+            type: clipboard.type,
+            position: { x: clipboard.position.x + 40, y: clipboard.position.y + 40 },
+            data: {
+              namespace: ns,
+              config: JSON.parse(JSON.stringify(clipboard.config)),
+              variables: JSON.parse(JSON.stringify(clipboard.variables)),
+            } satisfies CanvasNodeData,
+          },
+        ])
+        setSelectedNodeId(newId)
+        setIsDirty(true)
+      }
+
+      // Cmd+D — duplicate selected node in place (no separate copy step needed)
+      if (meta && e.key === 'd' && selectedNodeId && selectedNodeId !== 'trigger') {
+        e.preventDefault()
+        const node = nodes.find((n) => n.id === selectedNodeId)
+        if (node) {
+          const d = node.data as unknown as CanvasNodeData
+          const ns = defaultNamespace(node.type as NodeType, nodeNamespaces)
+          const newId = uid()
+          snapshot()
+          setNodes((prev) => [
+            ...prev,
+            {
+              id: newId,
+              type: node.type as NodeType,
+              position: { x: node.position.x + 40, y: node.position.y + 40 },
+              data: {
+                namespace: ns,
+                config: JSON.parse(JSON.stringify(d.config ?? {})),
+                variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+              } satisfies CanvasNodeData,
+            },
+          ])
+          setSelectedNodeId(newId)
+          setIsDirty(true)
+        }
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
