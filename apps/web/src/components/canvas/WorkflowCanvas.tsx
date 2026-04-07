@@ -419,6 +419,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   return (
     <div className="flex h-screen flex-col">
+      {/* Edit mode indicator bar */}
+      {mode === 'edit' && (
+        <div className={`h-0.5 flex-shrink-0 transition-colors duration-300 ${isDirty ? 'bg-amber-400' : 'bg-blue-500'}`} />
+      )}
       {/* Top bar */}
       <header className="flex h-12 flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
         <div className="flex items-center gap-3">
