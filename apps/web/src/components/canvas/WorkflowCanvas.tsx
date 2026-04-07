@@ -1031,7 +1031,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             minZoom={0.2}
             maxZoom={1.5}
           >
-            <Background variant={BackgroundVariant.Dots} color="#d1d5db" gap={20} size={1.5} />
+            <Background variant={BackgroundVariant.Dots} color="#cbd5e1" gap={20} size={1.5} style={{ backgroundColor: '#f8fafc' }} />
             <Controls />
             <MiniMap
               nodeColor={(n) => {
