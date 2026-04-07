@@ -87,6 +87,7 @@
 - [x] Implement data reference autocomplete (steps.*, trigger.*, env.*)
 - [x] Implement undo/redo
 - [x] Implement save (creates version snapshot, invalidates KV)
+- [x] Workflow validation — unconfigured attached nodes show amber ring; save blocked for live workflows; Enable from list blocked if definition has unconfigured nodes
 - [x] Implement version history UI (browse, preview, restore)
 - [x] Implement environment variables management UI
 - [x] Implement secrets management UI (Cloudflare sync)
@@ -243,7 +244,7 @@
 - [ ] **Definition loader / KV cache** — tests in `engine/__tests__/definition-loader.test.ts` (cache hit skips Supabase, cache miss fetches and stores, invalidate removes key)
 - [ ] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
 - [ ] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
-- [ ] **Playwright E2E** — separate workstream; no tooling yet. Minimum viable suite: auth flow (Google SSO → redirect → canvas), create workflow → save → verify in list, trigger test run → see execution in list
+- [ ] **Playwright E2E** — see plan doc for full setup steps. Auth via email+password test user (not SSO); hide test user from UI. Focus on list/CRUD pages (workflows, env vars, sources, integrations, dashboard). Skip canvas and Slack. See `/Users/danhankins-wright/.claude/plans/soft-forging-scroll.md` → "Playwright E2E Testing — Plan".
 
 ---
 
