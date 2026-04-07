@@ -30,10 +30,10 @@ export async function GET(request: Request) {
     )
     const { error } = await supabase.auth.exchangeCodeForSession(code)
     if (!error) {
-      // Check allowlist — sign out immediately and block if not permitted
+      // Allowlist check — redirect before the browser can load any app page.
+      // Session cleanup happens client-side on /access-denied.
       const { data: { user } } = await supabase.auth.getUser()
       if (!isAllowed(user?.email)) {
-        await supabase.auth.signOut()
         return NextResponse.redirect(`${origin}/access-denied`)
       }
       return NextResponse.redirect(`${origin}${next}`)

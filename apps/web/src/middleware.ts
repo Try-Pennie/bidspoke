@@ -33,19 +33,14 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/auth') ||
     pathname.startsWith('/access-denied')
 
-  // Secondary gate: sign out and block any session that isn't on the allowlist.
-  // The primary gate is in /auth/callback, but this catches stale sessions or
-  // accounts removed from the list after they were already signed in.
+  // Allowlist gate: any authenticated session that isn't on the approved list
+  // is unconditionally blocked. No signOut here — session cleanup happens
+  // client-side on the /access-denied page. This redirect fires on every
+  // request so there is no path to any protected page.
   if (user && !isAllowed(user.email)) {
-    await supabase.auth.signOut()
     const url = request.nextUrl.clone()
     url.pathname = '/access-denied'
-    const redirect = NextResponse.redirect(url)
-    // Copy cleared auth cookies so the browser drops the session
-    supabaseResponse.cookies.getAll().forEach(({ name, value, ...rest }) => {
-      redirect.cookies.set(name, value, rest)
-    })
-    return redirect
+    return NextResponse.redirect(url)
   }
 
   if (!user && !isPublicPath) {
