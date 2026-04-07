@@ -237,19 +237,20 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       es.map((edge) => {
         const sourceNs = idToNs.get(edge.source)
         const targetNs = idToNs.get(edge.target)
-        // Source ran = it's the trigger, or its step is non-null in executionSteps
         const sourceRan =
           edge.source === 'trigger' ||
           (sourceNs !== undefined && executionSteps[sourceNs] != null)
-        // Target ran = its step is non-null
         const targetRan = targetNs !== undefined && executionSteps[targetNs] != null
-        const active = sourceRan && targetRan
-        return {
-          ...edge,
-          animated: active,
-          style: active
-            ? { stroke: '#22c55e', strokeWidth: 2 }
-            : { stroke: '#d1d5db', strokeWidth: 1 },
+
+        if (sourceRan && targetRan) {
+          // Taken path — green + animated
+          return { ...edge, animated: true, style: { stroke: '#22c55e', strokeWidth: 2 } }
+        } else if (sourceRan) {
+          // Source ran but this branch wasn't taken (e.g. filter pass when exit fired)
+          return { ...edge, animated: false, style: { stroke: '#d1d5db', strokeWidth: 1, opacity: 0.35 } }
+        } else {
+          // Downstream of an untaken path — never reached
+          return { ...edge, animated: false, style: { stroke: '#e5e7eb', strokeWidth: 1, opacity: 0.2 } }
         }
       })
     )
