@@ -42,7 +42,7 @@ describe('exit node', () => {
 
   describe('unimplemented Phase 2 node types', () => {
     const unimplemented: NodeDefinition['type'][] = [
-      'parallel', 'integration', 'transform', 'bid_evaluation',
+      'integration', 'transform', 'bid_evaluation',
     ]
 
     for (const type of unimplemented) {
@@ -51,5 +51,10 @@ describe('exit node', () => {
         await expect(executeNode(node, ctx(), env)).rejects.toThrow(/not yet implemented/i)
       })
     }
+
+    it('parallel node throws when called outside walkGraph', async () => {
+      const node: NodeDefinition = { id: 'n1', namespace: 'parallel_1', type: 'parallel', config: {} }
+      await expect(executeNode(node, ctx(), env)).rejects.toThrow(/walkGraph/i)
+    })
   })
 })

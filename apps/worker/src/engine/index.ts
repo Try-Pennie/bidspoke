@@ -4,6 +4,8 @@ import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult } from
 import { loadWorkflowDefinition } from './definition-loader'
 import { buildContext, recordStepOutput } from './context'
 import { executeNode } from './nodes/index'
+import { executeParallelNode } from './nodes/parallel'
+import type { ParallelChildResult } from './nodes/parallel'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { withRetry } from './retry'
@@ -226,6 +228,48 @@ export async function walkGraph(
       continue
     }
 
+    // ── Parallel node — fan out to children concurrently ───────────────────────
+    if (node.type === 'parallel') {
+      const stepStartedAt = new Date().toISOString()
+      const childIds = (node.children ?? []) as string[]
+      const childNodes = childIds
+        .map((id) => findNode(id, definition.nodes))
+        .filter((n): n is NodeDefinition => n !== undefined)
+
+      let output: unknown = null
+      let stepStatus: StepStatus = 'completed'
+      let errorMessage: string | undefined
+      const errorType: ErrorType = null
+
+      try {
+        const result = await executeParallelNode(
+          node,
+          childNodes,
+          (child, childIndex) =>
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id)
+        )
+        output = result.output
+        lastOutput = output
+      } catch (err) {
+        stepStatus = 'failed'
+        errorMessage = err instanceof Error ? err.message : String(err)
+      }
+
+      recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+      await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder)
+
+      if (stepStatus === 'failed') {
+        throw new StepFailureError(errorMessage!, node.namespace, errorType)
+      }
+
+      const edges = outgoingEdges(node.id, definition.edges)
+      const nextEdge = edges.find((e) => evaluateEdge(e, ctx))
+      current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+      stepOrder++
+      continue
+    }
+
+    // ── Sequential step execution ───────────────────────────────────────────────
     const stepStartedAt = new Date().toISOString()
     let stepStatus: StepStatus = 'running'
     let output: unknown = null
@@ -351,7 +395,8 @@ async function logStep(
   errorType: ErrorType,
   retriesUsed: number,
   startedAt: string,
-  stepOrder: number
+  stepOrder: number,
+  parallelGroupId?: string
 ): Promise<void> {
   const completedAt = new Date().toISOString()
   const durationMs = Date.now() - new Date(startedAt).getTime()
@@ -370,7 +415,58 @@ async function logStep(
     completed_at: completedAt,
     duration_ms: durationMs,
     step_order: stepOrder,
+    parallel_group_id: parallelGroupId,
   }, env.PII_REDACTION_FIELDS ?? '')
+}
+
+// Execute a single child node within a parallel group — simplified version of
+// the main walkGraph step loop: retries + logging, but no on_error branching
+// (parallel children always contribute their result, fulfilled or rejected).
+async function runParallelChild(
+  child: NodeDefinition,
+  ctx: ExecutionContext,
+  env: Env,
+  supabase: SupabaseClient,
+  executionId: string,
+  executionStartedAt: string,
+  stepOrder: number,
+  parallelGroupId: string
+): Promise<ParallelChildResult> {
+  const stepStartedAt = new Date().toISOString()
+
+  const retryConfig = {
+    retries: (child.config.retries as number) ?? 0,
+    backoff: (child.config.retry_backoff as 'linear' | 'exponential') ?? 'linear',
+    timeout_ms: (child.config.timeout_ms as number) ?? 30000,
+  }
+
+  let output: unknown = null
+  let stepStatus: StepStatus = 'completed'
+  let errorMessage: string | undefined
+  let errorType: ErrorType = null
+
+  try {
+    const result = await withRetry(
+      () => executeNode(child, ctx, env, supabase),
+      retryConfig,
+      (err) => {
+        if (err instanceof Response) return classifyHttpError(err.status)
+        return classifyTransportError(err)
+      }
+    )
+    output = result.output
+  } catch (err) {
+    stepStatus = 'failed'
+    errorMessage = err instanceof Error ? err.message : String(err)
+    errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
+  }
+
+  recordStepOutput(ctx, child.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+  await logStep(supabase, env, executionId, executionStartedAt, child, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder, parallelGroupId)
+
+  return stepStatus === 'completed'
+    ? { namespace: child.namespace, status: 'fulfilled', output }
+    : { namespace: child.namespace, status: 'rejected', error: errorMessage }
 }
 
 async function preloadResumeContext(

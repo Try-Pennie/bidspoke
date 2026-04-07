@@ -28,7 +28,9 @@ export async function executeNode(
       if (!supabase) throw new Error('Partner Bid node requires a Supabase client')
       return executePartnerBidNode(node, ctx, env, supabase)
     case 'parallel':
-      throw new Error('Parallel node not yet implemented (Phase 2.2)')
+      // Parallel nodes are handled directly in walkGraph before reaching executeNode.
+      // If this case is ever hit, it means a parallel node was called outside of walkGraph.
+      throw new Error('Parallel node must be executed through walkGraph, not executeNode directly')
     case 'integration':
       throw new Error('Integration node not yet implemented (Phase 2.2)')
     case 'transform':
