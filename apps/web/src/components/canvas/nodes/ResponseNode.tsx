@@ -25,8 +25,8 @@ export function ResponseNode({ data, selected }: NodeProps) {
       </div>
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
-        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
-        <p className="mt-0.5 text-xs text-gray-400">HTTP {statusCode}</p>
+        {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
+        <p className="mt-0.5 text-xs text-slate-400">HTTP {statusCode}</p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}

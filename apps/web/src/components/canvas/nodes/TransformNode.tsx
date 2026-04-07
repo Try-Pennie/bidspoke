@@ -35,9 +35,9 @@ export function TransformNode({ data, selected }: NodeProps) {
 
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
-        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
+        {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {count === 0 ? (
-          <p className="mt-0.5 truncate text-xs text-gray-400">No mappings configured</p>
+          <p className="mt-0.5 truncate text-xs text-slate-400">No mappings configured</p>
         ) : (
           <div className="mt-1 space-y-0.5">
             {mappings.slice(0, 3).map((m, i) => (
@@ -46,7 +46,7 @@ export function TransformNode({ data, selected }: NodeProps) {
               </p>
             ))}
             {count > 3 && (
-              <p className="text-xs text-gray-400">+{count - 3} more</p>
+              <p className="text-xs text-slate-400">+{count - 3} more</p>
             )}
           </div>
         )}

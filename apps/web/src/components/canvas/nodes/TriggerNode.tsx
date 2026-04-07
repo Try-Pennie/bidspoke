@@ -23,7 +23,7 @@ export function TriggerNode({ data, selected }: NodeProps) {
       </div>
       <div className="px-3 py-2">
         <p className="text-sm font-semibold text-gray-900">{method}</p>
-        <p className="mt-0.5 text-xs text-gray-400">Auth: {authLabel}</p>
+        <p className="mt-0.5 text-xs text-slate-400">Auth: {authLabel}</p>
       </div>
     </div>
   )

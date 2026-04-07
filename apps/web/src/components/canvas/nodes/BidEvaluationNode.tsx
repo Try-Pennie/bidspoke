@@ -48,7 +48,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
 
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
-        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
+        {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {winnerPreview ? (
           <p className={`mt-1 truncate rounded px-1.5 py-0.5 font-mono text-xs ${
             routeLabel === 'no_winner'
@@ -58,7 +58,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
             {winnerPreview}
           </p>
         ) : (
-          <p className="mt-0.5 truncate text-xs text-gray-400">
+          <p className="mt-0.5 truncate text-xs text-slate-400">
             {(config.parallel_source as string | undefined)
               ? `← ${config.parallel_source}`
               : 'No source configured'}
@@ -68,7 +68,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
 
       <div className="flex justify-between border-t border-gray-100 px-3 py-2 text-xs">
         <span className="text-yellow-600">↓ winner</span>
-        <span className="text-gray-400">↓ no winner</span>
+        <span className="text-slate-400">↓ no winner</span>
       </div>
 
       {/* winner handle — left */}

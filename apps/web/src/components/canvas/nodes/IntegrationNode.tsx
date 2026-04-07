@@ -52,17 +52,17 @@ export function IntegrationNode({ data, selected }: NodeProps) {
 
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
-        {label && <p className="truncate font-mono text-xs text-gray-400">{namespace}</p>}
+        {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {statusBadge ? (
           <p className="mt-1 truncate rounded bg-teal-50 px-1.5 py-0.5 font-mono text-xs text-teal-700">
             HTTP {statusBadge}
           </p>
         ) : url ? (
-          <p className="mt-0.5 truncate font-mono text-xs text-gray-400" title={url}>
+          <p className="mt-0.5 truncate font-mono text-xs text-slate-400" title={url}>
             {urlDisplay}
           </p>
         ) : (
-          <p className="mt-0.5 text-xs text-gray-400">No URL configured</p>
+          <p className="mt-0.5 text-xs text-slate-400">No URL configured</p>
         )}
       </div>
 
