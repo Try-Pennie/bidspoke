@@ -5,7 +5,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight } from 'lucide-react'
 
 interface Props {
   node: Node
@@ -88,6 +88,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
         {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
+        {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
 
         {/* Common: retry + error handling */}
         <details>
@@ -542,6 +543,77 @@ function BidEvaluationConfig({
         </div>
         <p className="mt-1 text-xs text-gray-400">When no fallback is set and all bids fail evaluation.</p>
       </Field>
+    </section>
+  )
+}
+
+function TransformConfig({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const mappings = (config.mappings as Array<{ source: string; target: string }> | undefined) ?? []
+
+  function addRow() {
+    onChange({ mappings: [...mappings, { source: '', target: '' }] })
+  }
+
+  function removeRow(i: number) {
+    onChange({ mappings: mappings.filter((_, idx) => idx !== i) })
+  }
+
+  function updateRow(i: number, patch: Partial<{ source: string; target: string }>) {
+    onChange({ mappings: mappings.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) })
+  }
+
+  return (
+    <section className="space-y-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Field mappings</p>
+      <p className="text-xs text-gray-400">
+        Only mapped fields appear in output. Source can be a path (<code className="rounded bg-gray-100 px-1 font-mono">steps.ns.field</code>),
+        quoted literal (<code className="rounded bg-gray-100 px-1 font-mono">&quot;pending&quot;</code>),
+        or arithmetic expression (<code className="rounded bg-gray-100 px-1 font-mono">steps.ns.amount * 0.85</code>).
+      </p>
+
+      <div className="space-y-2">
+        {mappings.map((row, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <FieldAutocomplete
+              value={row.source}
+              onChange={(v) => updateRow(i, { source: v })}
+              suggestions={refs}
+              placeholder="source…"
+              className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs focus:border-gray-400 focus:outline-none font-mono"
+            />
+            <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" />
+            <input
+              className="min-w-0 w-24 rounded-md border border-gray-200 px-2 py-1.5 text-xs focus:border-gray-400 focus:outline-none font-mono"
+              placeholder="target"
+              value={row.target}
+              onChange={(e) => updateRow(i, { target: e.target.value })}
+            />
+            <button
+              onClick={() => removeRow(i)}
+              className="flex-shrink-0 text-gray-300 hover:text-red-400"
+              title="Remove"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={addRow}
+        className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add field
+      </button>
     </section>
   )
 }

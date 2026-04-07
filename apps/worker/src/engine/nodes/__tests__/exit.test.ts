@@ -42,7 +42,7 @@ describe('exit node', () => {
 
   describe('unimplemented Phase 2 node types', () => {
     const unimplemented: NodeDefinition['type'][] = [
-      'integration', 'transform',
+      'integration',
     ]
 
     for (const type of unimplemented) {

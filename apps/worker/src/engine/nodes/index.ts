@@ -7,6 +7,7 @@ import { executeResponseNode } from './response'
 import { executeCodeNode } from './code'
 import { executePartnerBidNode } from './partner-bid'
 import { executeBidEvaluationNode } from './bid-evaluation'
+import { executeTransformNode } from './transform'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -35,7 +36,7 @@ export async function executeNode(
     case 'integration':
       throw new Error('Integration node not yet implemented (Phase 2.2)')
     case 'transform':
-      throw new Error('Transform node not yet implemented (Phase 2.2)')
+      return executeTransformNode(node, ctx)
     case 'bid_evaluation':
       return executeBidEvaluationNode(node, ctx, supabase)
     default:
