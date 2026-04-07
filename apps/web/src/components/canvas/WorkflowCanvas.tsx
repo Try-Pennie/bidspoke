@@ -501,7 +501,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       const newId = uid()
       // Auto-connect: find the nearest node above the drop point and wire it up
-      const dropPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      const rawPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
+      const snapTo = (v: number) => Math.round(v / 20) * 20
+      const dropPos = { x: snapTo(rawPos.x), y: snapTo(rawPos.y) }
       const sourceNode = findDropSource(nodes, dropPos)
       const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
       // Don't auto-connect if this source handle already has an outgoing edge
@@ -922,6 +924,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
+            snapToGrid={mode === 'edit'}
+            snapGrid={[20, 20]}
             fitView
             fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
             minZoom={0.2}
