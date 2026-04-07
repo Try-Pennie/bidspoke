@@ -79,6 +79,18 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
+// Mark connected nodes as non-draggable so the layout stays locked.
+// Isolated nodes (no edges touching them) remain freely draggable so the user
+// can position staging nodes or drag them into the flow to auto-connect.
+function applyDraggableFlags(nodes: Node[], edges: Edge[]): Node[] {
+  const connectedIds = new Set<string>()
+  for (const e of edges) {
+    connectedIds.add(e.source)
+    connectedIds.add(e.target)
+  }
+  return nodes.map((n) => ({ ...n, draggable: !connectedIds.has(n.id) }))
+}
+
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
   const workflowNodes = nodes.map((n) => ({
     id: n.id,
@@ -87,7 +99,8 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     data: { namespace: n.namespace, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
   }))
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
-  return layoutWorkflow(allNodes, defToEdges(edges))
+  const flowEdges = defToEdges(edges)
+  return applyDraggableFlags(layoutWorkflow(allNodes, flowEdges), flowEdges)
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -473,7 +486,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       snapshot()
       const newEdges = addEdge({ ...connection, id: uid() }, edges)
       setEdges(newEdges)
-      setNodes((ns) => layoutWorkflow(ns, newEdges))
+      setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, newEdges), newEdges))
       setIsDirty(true)
     },
     [snapshot, edges, setEdges, setNodes]
@@ -528,9 +541,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       setEdges(newEdges)
       if (autoConnected) {
-        setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
+        setNodes((ns) => applyDraggableFlags(layoutWorkflow([...ns, newNode], newEdges), newEdges))
       } else {
-        setNodes((ns) => [...ns, newNode])
+        setNodes((ns) => [...ns, { ...newNode, draggable: true }])
       }
       setIsDirty(true)
     },
@@ -557,7 +570,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const newEdges = edges.filter((e) => e.source !== id && e.target !== id)
       const newNodes = nodes.filter((n) => n.id !== id)
       setEdges(newEdges)
-      setNodes(layoutWorkflow(newNodes, newEdges))
+      setNodes(applyDraggableFlags(layoutWorkflow(newNodes, newEdges), newEdges))
       setSelectedNodeId(null)
       setIsDirty(true)
     },
@@ -904,6 +917,33 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onNodesChange={(changes) => {
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
+
+              // Slot-in: when an unconnected node finishes dragging near the workflow,
+              // auto-connect it (same logic as drop) and re-apply the locked layout.
+              for (const change of changes) {
+                if (change.type !== 'position' || change.dragging !== false) continue
+                const isConnected = edges.some((e) => e.source === change.id || e.target === change.id)
+                if (isConnected) continue
+
+                const node = nodes.find((n) => n.id === change.id)
+                if (!node) continue
+                const finalPos = (change as { position?: { x: number; y: number } }).position ?? node.position
+
+                const otherNodes = nodes.filter((n) => n.id !== change.id)
+                const sourceNode = findDropSource(otherNodes, finalPos)
+                const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+                const handleUsed = sourceNode
+                  ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+                  : false
+
+                if (sourceNode && sourceHandle && !handleUsed) {
+                  const newEdge = { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }
+                  const newEdges = [...edges, newEdge]
+                  setEdges(newEdges)
+                  setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, newEdges), newEdges))
+                  setIsDirty(true)
+                }
+              }
             }}
             onEdgesChange={(changes) => {
               onEdgesChange(changes)
@@ -913,7 +953,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   changes.filter((c) => c.type === 'remove').map((c) => c.id)
                 )
                 const remaining = edges.filter((e) => !removedIds.has(e.id))
-                setNodes((ns) => layoutWorkflow(ns, remaining))
+                setNodes((ns) => applyDraggableFlags(layoutWorkflow(ns, remaining), remaining))
               }
             }}
             onConnect={onConnect}
