@@ -751,7 +751,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </button>
           )}
 
-          {/* Overflow menu — Settings, Import, History */}
+          {/* Version history — always visible */}
+          <button
+            onClick={() => setShowVersions((s) => !s)}
+            className={`rounded p-1.5 hover:bg-gray-100 ${showVersions ? 'bg-gray-100 text-gray-700' : 'text-gray-400'}`}
+            title="Version history"
+          >
+            <Clock className="h-4 w-4" />
+          </button>
+
+          {/* Overflow menu — Settings, Import */}
           <div ref={overflowRef} className="relative">
             <button
               onClick={() => setShowOverflow((s) => !s)}
@@ -778,13 +787,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                     Import from Pipedream
                   </button>
                 )}
-                <button
-                  onClick={() => { setShowVersions((s) => !s); setShowOverflow(false) }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showVersions ? 'font-medium text-gray-900' : 'text-gray-700'}`}
-                >
-                  <Clock className="h-4 w-4 text-gray-400" />
-                  Version history
-                </button>
               </div>
             )}
           </div>
