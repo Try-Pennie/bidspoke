@@ -121,12 +121,12 @@
 ## Phase 2: Partner Bidding
 
 ### 2.1 Partner Infrastructure
-- [ ] Create partner_configs table with all fields (slug, formula, dedup, circuit breaker config, response_classification, alert_config)
-- [ ] Create partner_daily_counts table
-- [ ] Implement Durable Object for daily caps (cap-{slug}-{YYYY-MM-DD}) — PRD Section 2.5.1
-- [ ] Implement Durable Object for partner circuit breakers — PRD Section 2.5.2
-- [ ] Implement partner management UI (CRUD, formula preview, enable/disable)
-- [ ] Implement partner management API endpoints
+- [x] Create partner_configs table with all fields (slug, formula, dedup, circuit breaker config, response_classification, alert_config)
+- [x] Create partner_daily_counts table
+- [x] Implement Durable Object for daily caps (cap-{slug}-{YYYY-MM-DD}) — PRD Section 2.5.1
+- [x] Implement Durable Object for partner circuit breakers — PRD Section 2.5.2
+- [x] Implement partner management UI (CRUD, formula preview, enable/disable)
+- [x] Implement partner management API endpoints
 - [ ] **Test:** Cap enforcement (hit cap → partner skipped), cap reset at midnight UTC
 - [ ] **Test:** Partner circuit breaker (trip → open → half-open → recovery)
 
