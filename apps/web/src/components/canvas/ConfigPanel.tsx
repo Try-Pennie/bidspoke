@@ -744,7 +744,7 @@ function IntegrationConfig({
               value={(config.url as string | undefined) ?? ''}
               onChange={(v) => onChange({ url: v })}
               suggestions={refs}
-              placeholder="https://… or {{env.URL}}"
+              placeholder="https://api.example.com/endpoint"
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
             />
           </Field>
