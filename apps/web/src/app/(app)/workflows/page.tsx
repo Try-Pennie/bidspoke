@@ -7,7 +7,7 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
 import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check } from 'lucide-react'
-import { formatDate } from '@/lib/dates'
+import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 export default function WorkflowsPage() {
@@ -257,7 +257,7 @@ export default function WorkflowsPage() {
                     </td>
 
                     <td className="px-4 py-3 text-gray-500">
-                      {formatDate(wf.updated_at)}
+                      {formatDatetime(wf.updated_at)}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 

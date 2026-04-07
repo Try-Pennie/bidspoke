@@ -5,7 +5,7 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar } from '@/types/workflow'
 import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
-import { formatDate } from '@/lib/dates'
+import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 type NewVar = { key: string; value: string; is_secret: boolean }
@@ -228,7 +228,7 @@ export default function EnvPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-gray-500">
-                      {formatDate(v.updated_at)}
+                      {formatDatetime(v.updated_at)}
                     </td>
                     <td className="px-4 py-3">
                       {confirmingDelete === v.id ? (
