@@ -238,13 +238,20 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
-  // Copy/paste clipboard — in-memory, holds one node's type + config
-  const [clipboard, setClipboard] = useState<{
-    type: NodeType
-    config: Record<string, unknown>
-    variables: Record<string, unknown>
-    position: { x: number; y: number }
-  } | null>(null)
+  // Copy/paste clipboard — persisted to localStorage so it works across workflows
+  const CLIPBOARD_KEY = 'bidspoke:node-clipboard'
+  function readClipboard() {
+    try { return JSON.parse(localStorage.getItem(CLIPBOARD_KEY) ?? 'null') } catch { return null }
+  }
+  function writeClipboard(node: Node) {
+    const d = node.data as unknown as CanvasNodeData
+    localStorage.setItem(CLIPBOARD_KEY, JSON.stringify({
+      type: node.type as NodeType,
+      config: JSON.parse(JSON.stringify(d.config ?? {})),
+      variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+      position: node.position,
+    }))
+  }
 
   const triggerRef = useRef<WorkflowDef['trigger']>(
     workflow.definition?.trigger ?? DEFAULT_TRIGGER
@@ -418,68 +425,26 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const inInput = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
       if (inInput) return
 
-      // Cmd+C — copy selected node (not the trigger)
+      // Cmd+C — copy selected node (not the trigger) to localStorage
       if (meta && e.key === 'c' && selectedNodeId && selectedNodeId !== 'trigger') {
         const node = nodes.find((n) => n.id === selectedNodeId)
-        if (node) {
-          const d = node.data as unknown as CanvasNodeData
-          setClipboard({
-            type: node.type as NodeType,
-            config: JSON.parse(JSON.stringify(d.config ?? {})),
-            variables: JSON.parse(JSON.stringify(d.variables ?? {})),
-            position: node.position,
-          })
+        if (node) writeClipboard(node)
+      }
+
+      // Cmd+V — paste from localStorage clipboard
+      if (meta && e.key === 'v') {
+        const cb = readClipboard()
+        if (cb) {
+          e.preventDefault()
+          pasteNode(cb)
         }
       }
 
-      // Cmd+V — paste from clipboard
-      if (meta && e.key === 'v' && clipboard) {
-        e.preventDefault()
-        const ns = defaultNamespace(clipboard.type, nodeNamespaces)
-        const newId = uid()
-        snapshot()
-        setNodes((prev) => [
-          ...prev,
-          {
-            id: newId,
-            type: clipboard.type,
-            position: { x: clipboard.position.x + 40, y: clipboard.position.y + 40 },
-            data: {
-              namespace: ns,
-              config: JSON.parse(JSON.stringify(clipboard.config)),
-              variables: JSON.parse(JSON.stringify(clipboard.variables)),
-            } satisfies CanvasNodeData,
-          },
-        ])
-        setSelectedNodeId(newId)
-        setIsDirty(true)
-      }
-
-      // Cmd+D — duplicate selected node in place (no separate copy step needed)
+      // Cmd+D — duplicate selected node in place
       if (meta && e.key === 'd' && selectedNodeId && selectedNodeId !== 'trigger') {
         e.preventDefault()
         const node = nodes.find((n) => n.id === selectedNodeId)
-        if (node) {
-          const d = node.data as unknown as CanvasNodeData
-          const ns = defaultNamespace(node.type as NodeType, nodeNamespaces)
-          const newId = uid()
-          snapshot()
-          setNodes((prev) => [
-            ...prev,
-            {
-              id: newId,
-              type: node.type as NodeType,
-              position: { x: node.position.x + 40, y: node.position.y + 40 },
-              data: {
-                namespace: ns,
-                config: JSON.parse(JSON.stringify(d.config ?? {})),
-                variables: JSON.parse(JSON.stringify(d.variables ?? {})),
-              } satisfies CanvasNodeData,
-            },
-          ])
-          setSelectedNodeId(newId)
-          setIsDirty(true)
-        }
+        if (node) duplicateNode(node)
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -594,6 +559,46 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       setIsDirty(true)
     },
     [snapshot, nodes, edges, setNodes, setEdges]
+  )
+
+  // Shared logic for paste and duplicate
+  function pasteNode(cb: { type: NodeType; config: Record<string, unknown>; variables: Record<string, unknown>; position: { x: number; y: number } }) {
+    const ns = defaultNamespace(cb.type, nodeNamespaces)
+    const newId = uid()
+    snapshot()
+    setNodes((prev) => [
+      ...prev,
+      {
+        id: newId,
+        type: cb.type,
+        position: { x: cb.position.x + 40, y: cb.position.y + 40 },
+        data: {
+          namespace: ns,
+          config: JSON.parse(JSON.stringify(cb.config)),
+          variables: JSON.parse(JSON.stringify(cb.variables)),
+        } satisfies CanvasNodeData,
+      },
+    ])
+    setSelectedNodeId(newId)
+    setIsDirty(true)
+  }
+
+  function duplicateNode(node: Node) {
+    const d = node.data as unknown as CanvasNodeData
+    pasteNode({
+      type: node.type as NodeType,
+      config: d.config ?? {},
+      variables: d.variables ?? {},
+      position: node.position,
+    })
+  }
+
+  const handleNodeDuplicate = useCallback(
+    (id: string) => {
+      const node = nodes.find((n) => n.id === id)
+      if (node) duplicateNode(node)
+    },
+    [nodes, nodeNamespaces, snapshot, setNodes] // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   // ── Save ────────────────────────────────────────────────────────────────────
@@ -963,6 +968,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onUpdate={handleNodeUpdate}
             onDelete={handleNodeDelete}
             onClose={() => setSelectedNodeId(null)}
+            onDuplicate={handleNodeDuplicate}
             nodeNamespaces={nodeNamespaces}
             refs={refs}
           />

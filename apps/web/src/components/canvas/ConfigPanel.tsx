@@ -5,18 +5,19 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy } from 'lucide-react'
 
 interface Props {
   node: Node
   onUpdate: (id: string, data: Partial<CanvasNodeData>) => void
   onDelete: (id: string) => void
+  onDuplicate: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
   refs?: string[]
 }
 
-export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNamespaces, refs = [] }: Props) {
+export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onClose, nodeNamespaces, refs = [] }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -34,6 +35,13 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
           <p className="mt-0.5 text-sm font-semibold text-gray-900">{data.namespace}</p>
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => onDuplicate(node.id)}
+            className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+            title="Duplicate node (⌘D)"
+          >
+            <Copy className="h-4 w-4" />
+          </button>
           <button
             onClick={() => onDelete(node.id)}
             className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
