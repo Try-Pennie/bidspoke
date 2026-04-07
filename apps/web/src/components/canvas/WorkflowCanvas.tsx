@@ -1044,11 +1044,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <MiniMap
               nodeColor={(n) => {
                 const colorMap: Record<string, string> = {
-                  filter: '#3b82f6',
-                  branch: '#8b5cf6',
-                  code: '#f59e0b',
-                  response: '#10b981',
-                  exit: '#ef4444',
+                  trigger:        '#6366f1', // indigo
+                  filter:         '#3b82f6', // blue
+                  branch:         '#a855f7', // purple
+                  code:           '#f59e0b', // amber
+                  response:       '#10b981', // green
+                  exit:           '#ef4444', // red
+                  transform:      '#f97316', // orange
+                  webhook:        '#14b8a6', // teal
+                  bid_evaluation: '#f43f5e', // rose
                 }
                 return colorMap[n.type ?? ''] ?? '#9ca3af'
               }}

@@ -32,16 +32,16 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-yellow-300 ring-2 ring-yellow-100' : 'border-gray-200'
+        selected ? 'border-rose-300 ring-2 ring-rose-100' : 'border-gray-200'
       } ${getExecutionClasses(executionStep)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div className="flex items-center gap-2 rounded-t-lg bg-yellow-50 border-b border-yellow-100 px-3 py-2">
-        <Trophy className="h-4 w-4 text-yellow-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-yellow-700">Bid Eval</span>
-        <span className="ml-auto rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-600">
+      <div className="flex items-center gap-2 rounded-t-lg bg-rose-50 border-b border-rose-100 px-3 py-2">
+        <Trophy className="h-4 w-4 text-rose-500" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-rose-700">Bid Eval</span>
+        <span className="ml-auto rounded bg-rose-100 px-1.5 py-0.5 text-xs text-rose-600">
           {strategyLabel}
         </span>
       </div>
@@ -53,7 +53,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
           <p className={`mt-1 truncate rounded px-1.5 py-0.5 font-mono text-xs ${
             routeLabel === 'no_winner'
               ? 'bg-gray-100 text-gray-500'
-              : 'bg-yellow-100 text-yellow-700'
+              : 'bg-rose-100 text-rose-700'
           }`}>
             {winnerPreview}
           </p>
@@ -67,7 +67,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
       </div>
 
       <div className="flex justify-between border-t border-gray-100 px-3 py-2 text-xs">
-        <span className="text-yellow-600">↓ winner</span>
+        <span className="text-rose-600">↓ winner</span>
         <span className="text-slate-400">↓ no winner</span>
       </div>
 
