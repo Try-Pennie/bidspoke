@@ -8,6 +8,7 @@ import { executeCodeNode } from './code'
 import { executePartnerBidNode } from './partner-bid'
 import { executeBidEvaluationNode } from './bid-evaluation'
 import { executeTransformNode } from './transform'
+import { executeIntegrationNode } from './integration'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -34,7 +35,7 @@ export async function executeNode(
       // If this case is ever hit, it means a parallel node was called outside of walkGraph.
       throw new Error('Parallel node must be executed through walkGraph, not executeNode directly')
     case 'integration':
-      throw new Error('Integration node not yet implemented (Phase 2.2)')
+      return executeIntegrationNode(node, ctx, env)
     case 'transform':
       return executeTransformNode(node, ctx)
     case 'bid_evaluation':

@@ -89,6 +89,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onClose, nodeNam
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'integration' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
 
         {/* Common: retry + error handling */}
         <details>
@@ -614,6 +615,266 @@ function TransformConfig({
         <Plus className="h-3.5 w-3.5" />
         Add field
       </button>
+    </section>
+  )
+}
+
+// ── Integration node config ───────────────────────────────────────────────────
+
+const SERVICE_OPTIONS = [
+  { value: 'custom', label: 'Custom' },
+  { value: 'equifax', label: 'Equifax' },
+  { value: 'eligibility_scout', label: 'Eligibility Scout' },
+  { value: 'lendswift', label: 'LendSwift' },
+  { value: 'salesforce', label: 'Salesforce' },
+]
+
+const AUTH_PRESETS: Record<string, { authType: string }> = {
+  equifax: { authType: 'basic' },
+  eligibility_scout: { authType: 'bearer' },
+  lendswift: { authType: 'bearer' },
+  salesforce: { authType: 'bearer' },
+  custom: { authType: 'none' },
+}
+
+function IntegrationConfig({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const service = (config.service as string | undefined) ?? 'custom'
+  const method = (config.method as string | undefined) ?? 'POST'
+  const auth = (config.auth as Record<string, unknown> | undefined) ?? {}
+  const authType = (auth.type as string | undefined) ?? 'none'
+  const headersMap = (config.headers as Record<string, string> | undefined) ?? {}
+  const headerRows = Object.entries(headersMap)
+
+  const bodyStr =
+    config.body !== undefined
+      ? typeof config.body === 'string'
+        ? config.body
+        : JSON.stringify(config.body, null, 2)
+      : ''
+
+  function setAuth(patch: Record<string, unknown>) {
+    onChange({ auth: { ...auth, ...patch } })
+  }
+
+  function onServiceChange(svc: string) {
+    const preset = AUTH_PRESETS[svc] ?? AUTH_PRESETS.custom
+    onChange({ service: svc, auth: { ...auth, type: preset.authType } })
+  }
+
+  function setHeaderValue(key: string, value: string) {
+    onChange({ headers: { ...headersMap, [key]: value } })
+  }
+
+  function setHeaderKey(oldKey: string, newKey: string) {
+    const updated: Record<string, string> = {}
+    for (const [k, v] of Object.entries(headersMap)) {
+      updated[k === oldKey ? newKey : k] = v
+    }
+    onChange({ headers: updated })
+  }
+
+  function addHeader() {
+    onChange({ headers: { ...headersMap, '': '' } })
+  }
+
+  function removeHeader(key: string) {
+    const updated = { ...headersMap }
+    delete updated[key]
+    onChange({ headers: updated })
+  }
+
+  const showBody = method !== 'GET' && method !== 'HEAD'
+
+  return (
+    <section className="space-y-4">
+      {/* Service */}
+      <Field label="Service">
+        <div className="relative">
+          <select
+            value={service}
+            onChange={(e) => onServiceChange(e.target.value)}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            {SERVICE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+
+      {/* Method + URL */}
+      <div className="flex gap-2 items-end">
+        <div className="w-24 flex-shrink-0">
+          <Field label="Method">
+            <div className="relative">
+              <select
+                value={method}
+                onChange={(e) => onChange({ method: e.target.value })}
+                className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none font-mono"
+              >
+                {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-2.5 h-4 w-4 text-gray-400" />
+            </div>
+          </Field>
+        </div>
+        <div className="flex-1 min-w-0">
+          <Field label="URL">
+            <FieldAutocomplete
+              value={(config.url as string | undefined) ?? ''}
+              onChange={(v) => onChange({ url: v })}
+              suggestions={refs}
+              placeholder="https://… or {{env.URL}}"
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* Auth */}
+      <section>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Auth</p>
+        <div className="space-y-2">
+          <div className="relative">
+            <select
+              value={authType}
+              onChange={(e) => setAuth({ type: e.target.value })}
+              className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+            >
+              <option value="none">None</option>
+              <option value="bearer">Bearer token</option>
+              <option value="basic">Basic (username + password)</option>
+              <option value="api_key">API key header</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          </div>
+          {authType === 'bearer' && (
+            <Field label="Token — use {{env.SECRET_NAME}}">
+              <FieldAutocomplete
+                value={(auth.token as string | undefined) ?? ''}
+                onChange={(v) => setAuth({ token: v })}
+                suggestions={refs}
+                placeholder="{{env.API_TOKEN}}"
+                className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
+              />
+            </Field>
+          )}
+          {authType === 'basic' && (
+            <>
+              <Field label="Username">
+                <FieldAutocomplete
+                  value={(auth.username as string | undefined) ?? ''}
+                  onChange={(v) => setAuth({ username: v })}
+                  suggestions={refs}
+                  placeholder="{{env.SERVICE_USER}}"
+                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
+                />
+              </Field>
+              <Field label="Password — use {{env.SECRET_NAME}}">
+                <FieldAutocomplete
+                  value={(auth.password as string | undefined) ?? ''}
+                  onChange={(v) => setAuth({ password: v })}
+                  suggestions={refs}
+                  placeholder="{{env.SERVICE_PASS}}"
+                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
+                />
+              </Field>
+            </>
+          )}
+          {authType === 'api_key' && (
+            <>
+              <Field label="Header name">
+                <input
+                  className="input font-mono"
+                  placeholder="X-API-Key"
+                  value={(auth.header as string | undefined) ?? ''}
+                  onChange={(e) => setAuth({ header: e.target.value })}
+                />
+              </Field>
+              <Field label="Value — use {{env.SECRET_NAME}}">
+                <FieldAutocomplete
+                  value={(auth.key as string | undefined) ?? ''}
+                  onChange={(v) => setAuth({ key: v })}
+                  suggestions={refs}
+                  placeholder="{{env.SERVICE_API_KEY}}"
+                  className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
+                />
+              </Field>
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* Body */}
+      {showBody && (
+        <Field label="Body (JSON or template)">
+          <TemplateTextarea
+            className="input min-h-[100px] resize-y font-mono text-xs"
+            placeholder={'{\n  "ssn": "{{trigger.payload.ssn}}"\n}'}
+            value={bodyStr}
+            onChange={(val) => {
+              try {
+                onChange({ body: JSON.parse(val) })
+              } catch {
+                onChange({ body: val })
+              }
+            }}
+            refs={refs}
+          />
+        </Field>
+      )}
+
+      {/* Headers */}
+      <section>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">
+          Custom headers
+        </p>
+        <div className="space-y-1.5">
+          {headerRows.map(([key, value]) => (
+            <div key={key} className="flex items-center gap-1.5">
+              <input
+                className="min-w-0 w-28 flex-shrink-0 rounded-md border border-gray-200 px-2 py-1.5 text-xs font-mono focus:border-gray-400 focus:outline-none"
+                placeholder="Header-Name"
+                value={key}
+                onChange={(e) => setHeaderKey(key, e.target.value)}
+              />
+              <span className="text-gray-300 text-xs">:</span>
+              <FieldAutocomplete
+                value={value}
+                onChange={(v) => setHeaderValue(key, v)}
+                suggestions={refs}
+                placeholder="value or {{env.KEY}}"
+                className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs font-mono focus:border-gray-400 focus:outline-none"
+              />
+              <button
+                onClick={() => removeHeader(key)}
+                className="flex-shrink-0 text-gray-300 hover:text-red-400"
+                title="Remove"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={addHeader}
+          className="mt-1.5 flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add header
+        </button>
+      </section>
     </section>
   )
 }

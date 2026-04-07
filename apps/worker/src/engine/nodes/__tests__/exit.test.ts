@@ -41,9 +41,7 @@ describe('exit node', () => {
   })
 
   describe('unimplemented Phase 2 node types', () => {
-    const unimplemented: NodeDefinition['type'][] = [
-      'integration',
-    ]
+    const unimplemented: NodeDefinition['type'][] = []
 
     for (const type of unimplemented) {
       it(`${type} node throws a not-implemented error`, async () => {

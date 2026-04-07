@@ -135,11 +135,11 @@
 - [x] Parallel node (Promise.allSettled, wait_for all/first, timeout with partial/fail) — PRD Section 5.2
 - [x] Bid Evaluation node (highest bid, weighted score, tiebreaker, fallback, no-winner behavior) — PRD Section 5.8
 - [ ] Integration node (service-aware field mapping, schema dropdowns) — PRD Section 5.5
-- [ ] Transform node (two-column mapping, dot-path, expressions, array access) — PRD Section 5.7
+- [x] Transform node (two-column mapping, dot-path, expressions, array access) — PRD Section 5.7
 - [x] **Test:** Partner Bid node — formula-only bid (Tripoint) and API-returned bid
 - [x] **Test:** Parallel node — all children succeed, one fails (others continue), timeout partial results
 - [x] **Test:** Bid Evaluation — highest bid wins, tiebreaker, fallback fires when all rejected, no-winner exit
-- [ ] **Test:** Transform node — field rename, nested extraction, array [*] mapping, static values
+- [x] **Test:** Transform node — field rename, nested extraction, array [*] mapping, static values
 
 ### 2.3 Error Handling & Alerts
 - [ ] Implement three-category error classification with default rules — PRD Section 11.1

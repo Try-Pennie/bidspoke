@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -62,6 +62,13 @@ const NODES: PaletteNode[] = [
     icon: ArrowLeftRight,
     color: 'text-indigo-500',
   },
+  {
+    type: 'integration',
+    label: 'Integration',
+    description: 'HTTP API call',
+    icon: Plug,
+    color: 'text-teal-500',
+  },
 ]
 
 interface Props {
@@ -94,7 +101,7 @@ export default function NodePalette({ onDragStart }: Props) {
         <div className="px-1 pt-3">
           <p className="text-xs font-medium text-gray-300">Phase 2</p>
         </div>
-        {(['parallel', 'partner_bid', 'integration'] as NodeType[]).map((type) => (
+        {(['parallel', 'partner_bid'] as NodeType[]).map((type) => (
           <div
             key={type}
             className="flex cursor-not-allowed items-center gap-2 rounded-lg border border-dashed border-gray-200 p-2.5 opacity-40"
