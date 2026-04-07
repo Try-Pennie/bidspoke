@@ -733,7 +733,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             edges={edges}
             onNodesChange={(changes) => {
               onNodesChange(changes)
-              if (changes.some((c) => c.type === 'remove')) setIsDirty(true)
+              if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
             }}
             onEdgesChange={(changes) => {
               onEdgesChange(changes)
@@ -750,7 +750,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onNodeClick={(_, node) => { setSelectedNodeId(node.id) }}
             onPaneClick={() => setSelectedNodeId(null)}
             nodeTypes={nodeTypes}
-            nodesDraggable={false}
+            nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
             fitView
