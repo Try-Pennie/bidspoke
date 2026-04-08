@@ -6,7 +6,8 @@ import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution
 
 export function CodeNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
-  const workerName = config.worker_name as string | undefined
+  const script = config.script as string | undefined
+  const scriptPreview = script?.trim().split('\n')[0]?.slice(0, 40) || undefined
   const outputPreview = getOutputPreview(executionStep)
 
   return (
@@ -26,8 +27,8 @@ export function CodeNode({ data, selected }: NodeProps) {
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
-        <p className="mt-0.5 truncate text-xs text-slate-400">
-          {workerName ?? 'No worker configured'}
+        <p className="mt-0.5 truncate font-mono text-xs text-slate-400">
+          {scriptPreview ?? 'No script written'}
         </p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>

@@ -370,13 +370,12 @@ export function parsePipedreamExport(raw: string): ImportResult {
       namespace,
       type: 'code',
       config: {
-        worker_name: '',  // must be deployed and filled in
-        _imported_code: translatedCode,
+        script: translatedCode ?? '',
       },
       variables: Object.keys(variables).length > 0 ? variables : undefined,
     })
     if (translatedCode) {
-      warnings.push(`Code node "${namespace}": deploy translated code as a Dynamic Worker, then set the worker_name in the config.`)
+      warnings.push(`Code node "${namespace}": review the imported script before running — automatic translation may need adjustments.`)
     }
     edgePending.push({ sourceId: nodeId })
   }

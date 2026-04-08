@@ -63,23 +63,15 @@ describe('code node', () => {
       { namespace: 'step1', savedComponent: { code: 'const x = steps.foo.$return_value.bar' } },
     ])
     const { def } = parsePipedreamExport(raw)
-    expect(def.nodes[0].config._imported_code).toBe('const x = steps.foo.bar')
+    expect(def.nodes[0].config.script).toBe('const x = steps.foo.bar')
   })
 
-  it('leaves worker_name empty (must be deployed manually)', () => {
-    const raw = mkExport('W', [
-      { namespace: 's', savedComponent: { code: 'x' } },
-    ])
-    const { def } = parsePipedreamExport(raw)
-    expect(def.nodes[0].config.worker_name).toBe('')
-  })
-
-  it('warns when code node was created (needs deployment)', () => {
+  it('warns when code node was imported (may need review)', () => {
     const raw = mkExport('W', [
       { namespace: 's', savedComponent: { code: 'x' } },
     ])
     const { warnings } = parsePipedreamExport(raw)
-    expect(warnings.some((w) => w.includes('deploy translated code'))).toBe(true)
+    expect(warnings.some((w) => w.includes('review the imported script'))).toBe(true)
   })
 
   it('maps configured_props to node variables', () => {

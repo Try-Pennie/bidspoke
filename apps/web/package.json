@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
+    "@monaco-editor/react": "^4.7.0",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",
     "@xyflow/react": "^12.10.2",

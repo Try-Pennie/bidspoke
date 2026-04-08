@@ -41,7 +41,7 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       return null
     }
     case 'code': {
-      if (!config.worker_name) return 'No worker name set'
+      if (!config.script) return 'No script written'
       return null
     }
     // response, exit, parallel, trigger — always valid

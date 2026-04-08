@@ -1,6 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import dynamic from 'next/dynamic'
+
+const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
@@ -347,6 +350,13 @@ function BranchConfig({
   )
 }
 
+const DEFAULT_SCRIPT = `// Available: payload, steps, env
+// Return a JSON-serialisable value.
+
+return {
+
+}`
+
 function CodeConfig({
   config,
   onChange,
@@ -354,18 +364,36 @@ function CodeConfig({
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
 }) {
+  const script = (config.script as string | undefined) ?? DEFAULT_SCRIPT
+
   return (
-    <Field label="Worker name">
-      <input
-        className="input font-mono"
-        placeholder="workflow-abc123-step-name"
-        value={(config.worker_name as string | undefined) ?? ''}
-        onChange={(e) => onChange({ worker_name: e.target.value })}
-      />
-      <p className="mt-1 text-xs text-gray-400">
-        The custom script must be pre-deployed as a Cloudflare Worker in the <code className="rounded bg-gray-100 px-1">bidspoke-code-nodes</code> namespace. Ask an admin if you need a new script deployed.
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-gray-500">Script</p>
+      <div className="overflow-hidden rounded-lg border border-gray-200">
+        <MonacoEditor
+          height="280px"
+          language="javascript"
+          value={script}
+          onChange={(val) => onChange({ script: val ?? '' })}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 12,
+            lineNumbers: 'on',
+            scrollBeyondLastLine: false,
+            wordWrap: 'on',
+            tabSize: 2,
+            folding: false,
+            overviewRulerLanes: 0,
+            scrollbar: { vertical: 'auto', horizontal: 'hidden' },
+            padding: { top: 8, bottom: 8 },
+          }}
+          theme="vs"
+        />
+      </div>
+      <p className="text-xs text-gray-400">
+        Runs as an async function. Receives <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, and <code className="rounded bg-gray-100 px-1">env</code>. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
       </p>
-    </Field>
+    </div>
   )
 }
 
