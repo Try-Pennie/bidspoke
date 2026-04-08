@@ -291,62 +291,64 @@ export default function WorkflowsPage() {
 
                     {/* Actions column */}
                     <td className="px-4 py-3">
-                      {confirmingDelete === wf.id ? (
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => handleDelete(wf.id)}
-                            className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                          >
-                            Delete
-                          </button>
-                          <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <div ref={openMenuId === wf.id ? menuRef : undefined} className="relative">
-                          <button
-                            onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
-                            className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
-                            title="More options"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                          {openMenuId === wf.id && (
-                            <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                              <button
-                                onClick={() => handleToggleActive(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                              >
-                                <Power className="h-4 w-4 text-gray-400" />
-                                {wf.is_active ? 'Disable' : 'Enable'}
-                              </button>
-                              <button
-                                onClick={() => startRename(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                              >
-                                <Pencil className="h-4 w-4 text-gray-400" />
-                                Rename
-                              </button>
-                              <button
-                                onClick={() => handleDuplicate(wf.id)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                              >
-                                <Copy className="h-4 w-4 text-gray-400" />
-                                Duplicate
-                              </button>
-                              <div className="my-1 border-t border-gray-100" />
-                              <button
-                                onClick={() => requestDelete(wf.id)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                                Delete
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      <div ref={openMenuId === wf.id ? menuRef : undefined} className="relative">
+                        {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
+                        <button
+                          onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
+                          className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
+                          title="More options"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                        {/* Confirm — floats absolutely, extends left over adjacent column */}
+                        {confirmingDelete === wf.id && (
+                          <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
+                            <button
+                              onClick={() => handleDelete(wf.id)}
+                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                            >
+                              Delete
+                            </button>
+                            <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {/* Dropdown menu */}
+                        {openMenuId === wf.id && (
+                          <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                            <button
+                              onClick={() => handleToggleActive(wf)}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                            >
+                              <Power className="h-4 w-4 text-gray-400" />
+                              {wf.is_active ? 'Disable' : 'Enable'}
+                            </button>
+                            <button
+                              onClick={() => startRename(wf)}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                            >
+                              <Pencil className="h-4 w-4 text-gray-400" />
+                              Rename
+                            </button>
+                            <button
+                              onClick={() => handleDuplicate(wf.id)}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                            >
+                              <Copy className="h-4 w-4 text-gray-400" />
+                              Duplicate
+                            </button>
+                            <div className="my-1 border-t border-gray-100" />
+                            <button
+                              onClick={() => requestDelete(wf.id)}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
