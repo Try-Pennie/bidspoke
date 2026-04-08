@@ -256,7 +256,7 @@
 - [ ] Webhook auth rejects invalid/missing API keys
 - [ ] Error handling: no unhandled promise rejections in Worker
 - [ ] Execution logs writing correctly (check Supabase)
-- [ ] Slack alerts firing on failure
+- [x] Slack alerts firing on failure
 - [ ] Audit log capturing all mutations
 - [ ] Code pushed to GitHub, CI green
 - [ ] KV cache invalidation working on workflow save
