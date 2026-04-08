@@ -13,6 +13,7 @@ import { withRetry } from './retry'
 import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
+import { log } from '../lib/logger'
 import type { Env } from '../index'
 import type {
   ExecutionContext,
@@ -89,8 +90,10 @@ export async function executeWorkflow(
     const cached = await checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey)
     if (cached) {
       if (cached.status === 'processing') {
+        log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'processing' })
         return { response: { error: 'Duplicate request in progress' }, status: 409, traceId }
       }
+      log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'replay' })
       return { response: cached.response, status: 200, traceId, idempotentReplay: true }
     }
     await setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
@@ -123,6 +126,8 @@ export async function executeWorkflow(
     parent_execution_id: options.resumeFromExecutionId,
   })
 
+  log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
+
   // Build execution context
   const ctx = buildContext(payload, source, workflowId, traceId, envVars)
 
@@ -140,7 +145,7 @@ export async function executeWorkflow(
   let failedSuppressAlert = false
 
   try {
-    response = await walkGraph(ctx, definition, executionId, startedAt, supabase, env)
+    response = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id)
   } catch (err) {
     executionStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
@@ -154,6 +159,12 @@ export async function executeWorkflow(
 
   const completedAt = new Date().toISOString()
   const durationMs = Date.now() - new Date(startedAt).getTime()
+
+  if (executionStatus === 'completed') {
+    log({ event: 'execution_complete', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId, duration_ms: durationMs })
+  } else {
+    log({ event: 'execution_failed', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId, duration_ms: durationMs, error_message: errorMessage, error_type: failedErrorType, step_namespace: failedStep })
+  }
 
   // Update execution record (fire-and-forget)
   executionCtx.waitUntil(
@@ -217,7 +228,8 @@ export async function walkGraph(
   executionId: string,
   executionStartedAt: string,
   supabase: SupabaseClient,
-  env: Env
+  env: Env,
+  workflowVersionId = ''
 ): Promise<unknown> {
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
@@ -250,6 +262,7 @@ export async function walkGraph(
     // ── Parallel node — fan out to children concurrently ───────────────────────
     if (node.type === 'parallel') {
       const stepStartedAt = new Date().toISOString()
+      log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
       const childIds = (node.children ?? []) as string[]
       const childNodes = childIds
         .map((id) => findNode(id, definition.nodes))
@@ -265,13 +278,20 @@ export async function walkGraph(
           node,
           childNodes,
           (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id)
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id, workflowVersionId)
         )
         output = result.output
         lastOutput = output
       } catch (err) {
         stepStatus = 'failed'
         errorMessage = err instanceof Error ? err.message : String(err)
+      }
+
+      const parallelDurationMs = Date.now() - new Date(stepStartedAt).getTime()
+      if (stepStatus === 'completed') {
+        log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: parallelDurationMs })
+      } else {
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: parallelDurationMs, error_message: errorMessage, error_type: errorType })
       }
 
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
@@ -290,6 +310,7 @@ export async function walkGraph(
 
     // ── Sequential step execution ───────────────────────────────────────────────
     const stepStartedAt = new Date().toISOString()
+    log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
     let stepStatus: StepStatus = 'running'
     let output: unknown = null
     let errorMessage: string | undefined
@@ -311,6 +332,7 @@ export async function walkGraph(
       if (cbClient) {
         const cbCheck = await cbClient.check()
         if (!cbCheck.allowed) {
+          log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, partner_id: serviceName ?? undefined })
           throw new CircuitOpenError(serviceName!, cbCheck.opens_at)
         }
       }
@@ -352,11 +374,14 @@ export async function walkGraph(
 
       errorMessage = err instanceof Error ? err.message : String(err)
       const onError = node.config.on_error ?? 'fail'
+      const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
 
       if (onError === 'skip') {
         stepStatus = 'skipped'
+        log({ event: 'step_skipped', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
       } else if (onError === 'fallback' && node.config.fallback_node) {
         stepStatus = 'failed_with_fallback'
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
           recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
@@ -368,12 +393,15 @@ export async function walkGraph(
         throw new Error(`Fallback node ${node.config.fallback_node} not found`)
       } else {
         stepStatus = 'failed'
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
         await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
     }
 
+    const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
+    log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus })
     await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
 
@@ -453,9 +481,11 @@ async function runParallelChild(
   executionId: string,
   executionStartedAt: string,
   stepOrder: number,
-  parallelGroupId: string
+  parallelGroupId: string,
+  workflowVersionId = ''
 ): Promise<ParallelChildResult> {
   const stepStartedAt = new Date().toISOString()
+  log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type })
 
   const retryConfig = {
     retries: (child.config.retries as number) ?? 0,
@@ -482,6 +512,13 @@ async function runParallelChild(
     stepStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
     errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
+  }
+
+  const childDurationMs = Date.now() - new Date(stepStartedAt).getTime()
+  if (stepStatus === 'completed') {
+    log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type, duration_ms: childDurationMs })
+  } else {
+    log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type, duration_ms: childDurationMs, error_message: errorMessage, error_type: errorType })
   }
 
   recordStepOutput(ctx, child.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })

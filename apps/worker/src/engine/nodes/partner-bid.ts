@@ -21,6 +21,7 @@ import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
+import { log } from '../../lib/logger'
 import {
   classifyHttpError,
   evaluateResponseClassification,
@@ -116,6 +117,7 @@ export async function executePartnerBidNode(
     const cb = new CircuitBreakerClient(env, p.slug)
     const cbCheck = await cb.check()
     if (!cbCheck.allowed) {
+      log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug })
       return skip(p.slug, 'circuit_open')
     }
   }
@@ -133,6 +135,7 @@ export async function executePartnerBidNode(
     })
     const capResult = await capRes.json<CapCheckResult>()
     capCount = capResult.count
+    log({ event: 'cap_check', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, allowed: capResult.allowed, count: capCount, cap: p.daily_cap })
     if (!capResult.allowed) {
       return skip(p.slug, 'cap_exceeded')
     }
@@ -219,6 +222,7 @@ export async function executePartnerBidNode(
     raw_response: rawResponse,
     cap_count: capCount,
   }
+  log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })
   return { output }
 }
 
