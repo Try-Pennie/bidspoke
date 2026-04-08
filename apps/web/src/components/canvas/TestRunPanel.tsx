@@ -8,6 +8,7 @@ import type { ExecutionStep, SavedTestPayload } from '@/types/workflow'
 
 interface Props {
   workflowId: string
+  currentDefinition?: unknown
   onClose: () => void
   onComplete: () => void
   initialPayload?: string
@@ -22,6 +23,7 @@ const DEFAULT_PAYLOAD = '{\n  \n}'
 
 export default function TestRunPanel({
   workflowId,
+  currentDefinition,
   onClose,
   onComplete,
   initialPayload,
@@ -89,7 +91,7 @@ export default function TestRunPanel({
     setResult(null)
 
     try {
-      const res = await api.workflows.test(workflowId, parsed, execId)
+      const res = await api.workflows.test(workflowId, parsed, execId, currentDefinition)
       setResult({ ok: true, body: res })
       setResultKey((k) => k + 1)
       onComplete()

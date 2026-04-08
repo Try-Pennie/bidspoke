@@ -116,10 +116,10 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ is_active }),
       }),
-    test: (id: string, payload: unknown, executionId?: string) =>
+    test: (id: string, payload: unknown, executionId?: string, definition?: unknown) =>
       req<unknown>(`/api/workflows/${id}/test`, {
         method: 'POST',
-        body: JSON.stringify({ payload, execution_id: executionId }),
+        body: JSON.stringify({ payload, execution_id: executionId, definition }),
       }),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
       req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
