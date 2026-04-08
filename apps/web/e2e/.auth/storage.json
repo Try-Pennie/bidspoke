@@ -1,0 +1,25 @@
+{
+  "cookies": [
+    {
+      "name": "sb-xvrmivmpfykwwtriqwpg-auth-token",
+      "value": "{\"access_token\":\"eyJhbGciOiJFUzI1NiIsImtpZCI6IjBkZmEyYjg1LTg2YjQtNDE4MC1hMmZiLWQ0MmM0ZDY0MDQ5MSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3h2cm1pdm1wZnlrd3d0cmlxd3BnLnN1cGFiYXNlLmNvL2F1dGgvdjEiLCJzdWIiOiJlOTFlZTdlZC0zYWIxLTRkNjEtODViZi1kNjI0MGFmYTM3ZDYiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiZXhwIjoxNzc1NjY0OTUwLCJpYXQiOjE3NzU2NjEzNTAsImVtYWlsIjoiZTJlLXRlc3RAdHJ5cGVubmllLmNvbSIsInBob25lIjoiIiwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiZW1haWwiLCJwcm92aWRlcnMiOlsiZW1haWwiXX0sInVzZXJfbWV0YWRhdGEiOnsiZW1haWxfdmVyaWZpZWQiOnRydWV9LCJyb2xlIjoiYXV0aGVudGljYXRlZCIsImFhbCI6ImFhbDEiLCJhbXIiOlt7Im1ldGhvZCI6InBhc3N3b3JkIiwidGltZXN0YW1wIjoxNzc1NjYxMzUwfV0sInNlc3Npb25faWQiOiIxMzQ1YTczZC1mYjczLTRjN2EtYjI2My0xMDljNWRhYzc5N2EiLCJpc19hbm9ueW1vdXMiOmZhbHNlfQ.k9eft8ZwDht-CF5Nx1twWszURsoP0EXMdKdilr4nPapANbOM8aPVcPXlruwNG8FWib4noK2kmWkJ00io0jGQ_A\",\"token_type\":\"bearer\",\"expires_in\":3600,\"expires_at\":1775664950,\"refresh_token\":\"eg65waohcgos\",\"user\":{\"id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"aud\":\"authenticated\",\"role\":\"authenticated\",\"email\":\"e2e-test@trypennie.com\",\"email_confirmed_at\":\"2026-04-08T14:30:51.797586Z\",\"phone\":\"\",\"confirmed_at\":\"2026-04-08T14:30:51.797586Z\",\"last_sign_in_at\":\"2026-04-08T15:15:50.033348853Z\",\"app_metadata\":{\"provider\":\"email\",\"providers\":[\"email\"]},\"user_metadata\":{\"email_verified\":true},\"identities\":[{\"identity_id\":\"9b313b3b-a6c7-44cb-acaf-707673221741\",\"id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"user_id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"identity_data\":{\"email\":\"e2e-test@trypennie.com\",\"email_verified\":false,\"phone_verified\":false,\"sub\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\"},\"provider\":\"email\",\"last_sign_in_at\":\"2026-04-08T14:30:51.794985Z\",\"created_at\":\"2026-04-08T14:30:51.795041Z\",\"updated_at\":\"2026-04-08T14:30:51.795041Z\",\"email\":\"e2e-test@trypennie.com\"}],\"created_at\":\"2026-04-08T14:30:51.787059Z\",\"updated_at\":\"2026-04-08T15:15:50.03731Z\",\"is_anonymous\":false},\"weak_password\":null}",
+      "domain": "localhost",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "http://localhost:3000",
+      "localStorage": [
+        {
+          "name": "sb-xvrmivmpfykwwtriqwpg-auth-token",
+          "value": "{\"access_token\":\"eyJhbGciOiJFUzI1NiIsImtpZCI6IjBkZmEyYjg1LTg2YjQtNDE4MC1hMmZiLWQ0MmM0ZDY0MDQ5MSIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL3h2cm1pdm1wZnlrd3d0cmlxd3BnLnN1cGFiYXNlLmNvL2F1dGgvdjEiLCJzdWIiOiJlOTFlZTdlZC0zYWIxLTRkNjEtODViZi1kNjI0MGFmYTM3ZDYiLCJhdWQiOiJhdXRoZW50aWNhdGVkIiwiZXhwIjoxNzc1NjY0OTUwLCJpYXQiOjE3NzU2NjEzNTAsImVtYWlsIjoiZTJlLXRlc3RAdHJ5cGVubmllLmNvbSIsInBob25lIjoiIiwiYXBwX21ldGFkYXRhIjp7InByb3ZpZGVyIjoiZW1haWwiLCJwcm92aWRlcnMiOlsiZW1haWwiXX0sInVzZXJfbWV0YWRhdGEiOnsiZW1haWxfdmVyaWZpZWQiOnRydWV9LCJyb2xlIjoiYXV0aGVudGljYXRlZCIsImFhbCI6ImFhbDEiLCJhbXIiOlt7Im1ldGhvZCI6InBhc3N3b3JkIiwidGltZXN0YW1wIjoxNzc1NjYxMzUwfV0sInNlc3Npb25faWQiOiIxMzQ1YTczZC1mYjczLTRjN2EtYjI2My0xMDljNWRhYzc5N2EiLCJpc19hbm9ueW1vdXMiOmZhbHNlfQ.k9eft8ZwDht-CF5Nx1twWszURsoP0EXMdKdilr4nPapANbOM8aPVcPXlruwNG8FWib4noK2kmWkJ00io0jGQ_A\",\"token_type\":\"bearer\",\"expires_in\":3600,\"expires_at\":1775664950,\"refresh_token\":\"eg65waohcgos\",\"user\":{\"id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"aud\":\"authenticated\",\"role\":\"authenticated\",\"email\":\"e2e-test@trypennie.com\",\"email_confirmed_at\":\"2026-04-08T14:30:51.797586Z\",\"phone\":\"\",\"confirmed_at\":\"2026-04-08T14:30:51.797586Z\",\"last_sign_in_at\":\"2026-04-08T15:15:50.033348853Z\",\"app_metadata\":{\"provider\":\"email\",\"providers\":[\"email\"]},\"user_metadata\":{\"email_verified\":true},\"identities\":[{\"identity_id\":\"9b313b3b-a6c7-44cb-acaf-707673221741\",\"id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"user_id\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\",\"identity_data\":{\"email\":\"e2e-test@trypennie.com\",\"email_verified\":false,\"phone_verified\":false,\"sub\":\"e91ee7ed-3ab1-4d61-85bf-d6240afa37d6\"},\"provider\":\"email\",\"last_sign_in_at\":\"2026-04-08T14:30:51.794985Z\",\"created_at\":\"2026-04-08T14:30:51.795041Z\",\"updated_at\":\"2026-04-08T14:30:51.795041Z\",\"email\":\"e2e-test@trypennie.com\"}],\"created_at\":\"2026-04-08T14:30:51.787059Z\",\"updated_at\":\"2026-04-08T15:15:50.03731Z\",\"is_anonymous\":false},\"weak_password\":null}"
+        }
+      ]
+    }
+  ]
+}

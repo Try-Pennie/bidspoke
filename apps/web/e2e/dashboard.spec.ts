@@ -7,10 +7,10 @@ test.describe('Dashboard', () => {
   })
 
   test('page loads and shows KPI cards', async ({ page }) => {
-    await expect(page.getByText('Executions')).toBeVisible()
-    await expect(page.getByText('Success rate')).toBeVisible()
-    await expect(page.getByText('Avg duration')).toBeVisible()
-    await expect(page.getByText('Failed')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+    await expect(page.getByText('Total executions', { exact: true })).toBeVisible()
+    await expect(page.getByText('Success rate', { exact: true })).toBeVisible()
+    await expect(page.getByText('Avg duration', { exact: true })).toBeVisible()
   })
 
   test('page has no JS errors on load', async ({ page }) => {

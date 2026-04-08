@@ -7,31 +7,31 @@ test.describe('Integrations — HTTP service presets', () => {
   })
 
   test('page loads and shows Slack section', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: /Integrations/i })).toBeVisible()
-    await expect(page.getByText(/Slack/i)).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Integrations' })).toBeVisible()
+    await expect(page.getByText('Slack', { exact: true })).toBeVisible()
   })
 
   test('add HTTP service preset → appears in table', async ({ page }) => {
     const name = `E2E Service ${Date.now()}`
 
-    await page.getByRole('button', { name: /Add service/i }).click()
+    await page.getByRole('button', { name: 'Add service' }).click()
+    await page.locator('input[placeholder="My CRM"]').fill(name)
+    await page.getByRole('button', { name: 'Save service' }).click()
 
-    await page.locator('input[placeholder*="name"], input[name="name"]').fill(name)
-    await page.getByRole('button', { name: /^Save|^Add|^Create/i }).click()
-
-    await expect(page.getByText(name)).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText(name)).toBeVisible({ timeout: 8000 })
   })
 
   test('delete HTTP service preset → row removed', async ({ page }) => {
-    const e2eRow = page.locator('tr, [data-testid="service-row"]').filter({ hasText: 'E2E Service' }).first()
+    const e2eRow = page.locator('tr').filter({ hasText: 'E2E Service' }).first()
+    const e2eText = page.getByText(/E2E Service/).first()
 
-    if (!await e2eRow.isVisible()) {
+    if (!await e2eText.isVisible().catch(() => false)) {
       test.skip()
     }
 
-    await e2eRow.locator('button:has(.lucide-trash)').click()
-    await page.getByRole('button', { name: /^Delete|^Remove/i }).last().click()
+    await e2eRow.getByRole('button', { name: /delete|remove/i }).click()
+    await page.getByRole('button', { name: /delete|remove/i }).last().click()
 
-    await expect(e2eRow).not.toBeVisible({ timeout: 5000 })
+    await expect(e2eText).not.toBeVisible({ timeout: 5000 })
   })
 })

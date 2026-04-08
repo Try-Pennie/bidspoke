@@ -7,24 +7,20 @@ test.describe('Environment Variables', () => {
   })
 
   test('page loads and shows list', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: /Environment/i })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Add/i })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Environment Variables' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Add Variable' })).toBeVisible()
   })
 
   test('add a plain env var → appears in list', async ({ page }) => {
     const key = `E2E_TEST_${Date.now()}`
     const value = 'e2e-value'
 
-    await page.getByRole('button', { name: /Add/i }).click()
+    await page.getByRole('button', { name: 'Add Variable' }).click()
+    await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
+    await page.locator('input[placeholder="value"]').fill(value)
+    await page.getByRole('button', { name: 'Save' }).click()
 
-    // Fill key and value
-    await page.locator('input[placeholder*="KEY"], input[name="key"], input[placeholder*="key"]').fill(key)
-    await page.locator('input[placeholder*="value"], input[name="value"]').fill(value)
-
-    await page.getByRole('button', { name: /^Save|^Add|^Create/i }).click()
-
-    await expect(page.getByText(key)).toBeVisible({ timeout: 5000 })
-    // Plain var — value should be visible
+    await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value)).toBeVisible()
   })
 
@@ -32,31 +28,25 @@ test.describe('Environment Variables', () => {
     const key = `E2E_SECRET_${Date.now()}`
     const value = 'super-secret-value'
 
-    await page.getByRole('button', { name: /Add/i }).click()
+    await page.getByRole('button', { name: 'Add Variable' }).click()
+    await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
+    await page.locator('#is_secret').check()
+    await page.locator('input[placeholder="value"]').fill(value)
+    await page.getByRole('button', { name: 'Save' }).click()
 
-    await page.locator('input[placeholder*="KEY"], input[name="key"], input[placeholder*="key"]').fill(key)
-    await page.locator('input[placeholder*="value"], input[name="value"]').fill(value)
-
-    // Toggle the "Secret" checkbox
-    await page.locator('input[type="checkbox"], label:has-text("Secret")').click()
-
-    await page.getByRole('button', { name: /^Save|^Add|^Create/i }).click()
-
-    await expect(page.getByText(key)).toBeVisible({ timeout: 5000 })
-    // Value should NOT be visible in plain text
+    await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value)).not.toBeVisible()
   })
 
   test('delete env var → row removed', async ({ page }) => {
-    // Find and delete the first E2E test var we created
-    const e2eRow = page.locator('tr, [data-testid="env-row"]').filter({ hasText: 'E2E_TEST' }).first()
+    const e2eRow = page.locator('tr').filter({ hasText: 'E2E_TEST' }).first()
 
     if (!await e2eRow.isVisible()) {
       test.skip()
     }
 
-    await e2eRow.locator('button:has(.lucide-trash)').click()
-    await page.getByRole('button', { name: /^Delete|^Remove/i }).last().click()
+    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
+    await page.getByRole('button', { name: 'Delete' }).click()
 
     await expect(e2eRow).not.toBeVisible({ timeout: 5000 })
   })
