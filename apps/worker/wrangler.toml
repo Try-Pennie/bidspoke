@@ -1,7 +1,7 @@
 name = "bidspoke-worker"
 main = "src/index.ts"
 compatibility_date = "2024-05-24"
-compatibility_flags = ["nodejs_compat", "unsafe_eval"]
+compatibility_flags = ["nodejs_compat"]
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
 # Workers KV — workflow definition cache + idempotency

@@ -75,10 +75,10 @@ export async function sendFailureAlert(
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Workflow:*\n${payload.workflow_name}` },
-        { type: 'mrkdwn', text: `*Failed step:*\n${stepText}` },
-        { type: 'mrkdwn', text: `*Error type:*\n${errorLabel}` },
-        { type: 'mrkdwn', text: `*Time:*\n${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
+        { type: 'mrkdwn', text: `*Workflow:* ${payload.workflow_name}` },
+        { type: 'mrkdwn', text: `*Failed step:* ${stepText}` },
+        { type: 'mrkdwn', text: `*Error type:* ${errorLabel}` },
+        { type: 'mrkdwn', text: `*Time:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
       ],
     },
     {
@@ -130,9 +130,9 @@ export async function sendDurationAlert(
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Workflow:*\n${payload.workflow_name}` },
-        { type: 'mrkdwn', text: `*Duration:*\n${seconds}s (threshold: ${thresholdSeconds}s)` },
-        { type: 'mrkdwn', text: `*Time:*\n${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
+        { type: 'mrkdwn', text: `*Workflow:* ${payload.workflow_name}` },
+        { type: 'mrkdwn', text: `*Duration:* ${seconds}s (threshold: ${thresholdSeconds}s)` },
+        { type: 'mrkdwn', text: `*Time:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
       ],
     },
     {
@@ -173,12 +173,12 @@ export async function sendCircuitAlert(
     {
       type: 'section',
       fields: [
-        { type: 'mrkdwn', text: `*Service:*\n${payload.service_name}` },
+        { type: 'mrkdwn', text: `*Service:* ${payload.service_name}` },
         ...(isOpen && payload.error_count !== undefined
-          ? [{ type: 'mrkdwn', text: `*Errors in window:*\n${payload.error_count}` }]
+          ? [{ type: 'mrkdwn', text: `*Errors in window:* ${payload.error_count}` }]
           : []),
         ...(isOpen && payload.consecutive_cooldowns !== undefined && payload.consecutive_cooldowns > 0
-          ? [{ type: 'mrkdwn', text: `*Consecutive cooldowns:*\n${payload.consecutive_cooldowns}` }]
+          ? [{ type: 'mrkdwn', text: `*Consecutive cooldowns:* ${payload.consecutive_cooldowns}` }]
           : []),
       ],
     },
