@@ -244,7 +244,7 @@
 - [x] **Definition loader / KV cache** — tests in `engine/__tests__/definition-loader.test.ts` (cache hit skips Supabase, cache miss fetches and stores, invalidate removes key)
 - [x] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
 - [x] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
-- [ ] **Playwright E2E** — see plan doc for full setup steps. Auth via email+password test user (not SSO); hide test user from UI. Focus on list/CRUD pages (workflows, env vars, sources, integrations, dashboard). Skip canvas and Slack. See `/Users/danhankins-wright/.claude/plans/soft-forging-scroll.md` → "Playwright E2E Testing — Plan".
+- [x] **Playwright E2E** — setup complete. Auth via e2e-test@trypennie.com (hidden from access UI). Tests: auth redirects, dashboard, workflows CRUD, env vars CRUD, sources CRUD, integrations. Run with `pnpm run test:e2e` (requires `pnpm dev:web` + `pnpm dev:worker`, or set `BASE_URL` to prod URL).
 
 ---
 
