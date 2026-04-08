@@ -5,6 +5,8 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { invalidateWorkflowCache } from '../../engine/definition-loader'
 import { writeAuditLog } from '../../lib/audit'
 import { executeWorkflow } from '../../engine/index'
+import { deployCodeNodes } from '../../lib/code-node-deployer'
+import type { WorkflowDefinition } from '../../types'
 
 type Variables = AuthVariables
 
@@ -136,6 +138,18 @@ workflows.put('/:id', async (c) => {
 
   // Invalidate KV cache
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
+
+  // Deploy any code node scripts to the dispatch namespace (non-blocking)
+  if (body.definition) {
+    c.executionCtx.waitUntil(
+      deployCodeNodes(
+        id,
+        body.definition as WorkflowDefinition,
+        c.env.CLOUDFLARE_ACCOUNT_ID,
+        c.env.CLOUDFLARE_API_TOKEN
+      )
+    )
+  }
 
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     version: nextVersion,

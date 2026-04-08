@@ -1,11 +1,12 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { executeCodeNode } from '../code'
+import { codeWorkerName } from '../../../lib/code-node-deployer'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 
 function ctx(): ExecutionContext {
   return {
-    trigger: { payload: { lead_id: 'lead-1' }, source: 'test', workflow_id: 'wf', trace_id: 'trace' },
+    trigger: { payload: { lead_id: 'lead-1' }, source: 'test', workflow_id: 'wf-abc123', trace_id: 'trace' },
     steps: { prev: { output: { score: 720 }, status: 'completed' } },
     env: { API_KEY: 'secret' },
   }
@@ -15,50 +16,62 @@ function node(config: NodeDefinition['config']): NodeDefinition {
   return { id: 'n1', namespace: 'code_step', type: 'code', config }
 }
 
-const env = {} as Env
+function makeEnv(workerFetch: ReturnType<typeof vi.fn>): Env {
+  return {
+    DYNAMIC_WORKER_LOADER: {
+      get: vi.fn().mockReturnValue({ fetch: workerFetch }),
+    } as unknown as DispatchNamespace,
+  } as unknown as Env
+}
 
 describe('executeCodeNode', () => {
   it('throws if script is not configured', async () => {
+    const env = makeEnv(vi.fn())
     await expect(executeCodeNode(node({}), ctx(), env)).rejects.toThrow(/no script configured/)
   })
 
   it('throws if script is empty string', async () => {
+    const env = makeEnv(vi.fn())
     await expect(executeCodeNode(node({ script: '   ' }), ctx(), env)).rejects.toThrow(/no script configured/)
   })
 
-  it('executes inline script and returns its return value', async () => {
-    const result = await executeCodeNode(node({ script: 'return { ok: true }' }), ctx(), env)
-    expect(result.output).toEqual({ ok: true })
+  it('dispatches to the correct worker name', async () => {
+    const workerFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(workerFetch)
+    await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    const expectedName = codeWorkerName('wf-abc123', 'code_step')
+    expect((env.DYNAMIC_WORKER_LOADER.get as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(expectedName)
   })
 
-  it('exposes payload, steps, and env to the script', async () => {
+  it('sends payload, steps, and env to the worker', async () => {
+    const workerFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(workerFetch)
     const c = ctx()
-    const result = await executeCodeNode(
-      node({ script: 'return { leadId: payload.lead_id, score: steps.prev.output.score, key: env.API_KEY }' }),
-      c,
-      env
-    )
-    expect(result.output).toEqual({ leadId: 'lead-1', score: 720, key: 'secret' })
+    await executeCodeNode(node({ script: 'return {}' }), c, env)
+    const body = JSON.parse(workerFetch.mock.calls[0][1].body as string) as unknown
+    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env })
   })
 
-  it('supports async scripts', async () => {
-    const result = await executeCodeNode(
-      node({ script: 'const v = await Promise.resolve(42); return { v }' }),
-      ctx(),
-      env
-    )
-    expect(result.output).toEqual({ v: 42 })
+  it('returns the JSON output from the worker', async () => {
+    const output = { credit_score: 720, approved: true }
+    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(result.output).toEqual(output)
   })
 
-  it('throws a syntax error message for invalid JS', async () => {
-    await expect(
-      executeCodeNode(node({ script: 'return {{{' }), ctx(), env)
-    ).rejects.toThrow(/syntax error/)
+  it('throws with status and body on non-OK worker response', async () => {
+    const env = makeEnv(vi.fn().mockResolvedValue(new Response('ReferenceError: x is not defined', { status: 500 })))
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
+  })
+})
+
+describe('codeWorkerName', () => {
+  it('produces a deterministic name from workflow id and namespace', () => {
+    expect(codeWorkerName('abc12345-xxxx', 'validate')).toBe('bs-abc12345-validate')
   })
 
-  it('propagates runtime errors thrown inside the script', async () => {
-    await expect(
-      executeCodeNode(node({ script: 'throw new Error("intentional")' }), ctx(), env)
-    ).rejects.toThrow('intentional')
+  it('truncates to 64 chars', () => {
+    const name = codeWorkerName('a'.repeat(36), 'n'.repeat(40))
+    expect(name.length).toBeLessThanOrEqual(64)
   })
 })

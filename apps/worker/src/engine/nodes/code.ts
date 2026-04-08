@@ -1,35 +1,40 @@
-// Code node — user-defined JS executed inline via AsyncFunction constructor
+// Code node — user-defined JS executed in a sandboxed Dynamic Worker (Workers for Platforms)
 // Config: { script: string }
-// The script is the body of an async function receiving (payload, steps, env).
-// It must return a JSON-serialisable value.
+// The script is auto-deployed to the "bidspoke-code-nodes" dispatch namespace on workflow save.
+// Worker receives { payload, steps, env } and must return a JSON-serialisable value.
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import type { Env } from '../../index'
-
-interface CodeConfig {
-  script: string
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => (...args: unknown[]) => Promise<any>
+import { codeWorkerName } from '../../lib/code-node-deployer'
 
 export async function executeCodeNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
-  _env: Env
+  env: Env
 ): Promise<StepExecutionResult> {
-  const config = node.config as unknown as CodeConfig
-  if (!config.script?.trim()) {
+  const script = (node.config?.script as string | undefined)?.trim()
+  if (!script) {
     throw new Error(`Code node "${node.namespace}" has no script configured`)
   }
 
-  let fn: (...args: unknown[]) => Promise<unknown>
-  try {
-    fn = new AsyncFunction('payload', 'steps', 'env', config.script)
-  } catch (e) {
-    throw new Error(`Code node "${node.namespace}" syntax error: ${e instanceof Error ? e.message : String(e)}`)
+  const workerName = codeWorkerName(ctx.trigger.workflow_id, node.namespace)
+  const binding = env.DYNAMIC_WORKER_LOADER.get(workerName)
+
+  const res = await binding.fetch('https://worker/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      payload: ctx.trigger.payload,
+      steps: ctx.steps,
+      env: ctx.env,
+    }),
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`Code node "${node.namespace}" failed (HTTP ${res.status}): ${text}`)
   }
 
-  const output: unknown = await fn(ctx.trigger.payload, ctx.steps, ctx.env)
+  const output: unknown = await res.json()
   return { output }
 }
