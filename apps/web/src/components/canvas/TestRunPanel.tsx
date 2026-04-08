@@ -248,7 +248,7 @@ export default function TestRunPanel({
                 {result.ok ? 'Completed' : 'Failed'}
               </span>
             </div>
-            <pre className="max-h-48 overflow-auto text-xs text-gray-700">
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-700">
               {JSON.stringify(result.body, null, 2)}
             </pre>
           </div>
