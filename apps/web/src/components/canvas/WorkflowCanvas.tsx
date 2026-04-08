@@ -450,11 +450,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
 
-      // Copy/paste — skip when focus is inside any editable element
-      const focused = document.activeElement
-      const inInput = focused instanceof HTMLInputElement
-        || focused instanceof HTMLTextAreaElement
-        || (focused instanceof HTMLElement && focused.isContentEditable)
+      // Copy/paste — skip when the event originated from any editable element.
+      // Use composedPath() so this works through shadow DOM (e.g. Monaco internals).
+      const inInput = e.composedPath().some(
+        (el) => el instanceof HTMLInputElement
+          || el instanceof HTMLTextAreaElement
+          || (el instanceof HTMLElement && el.isContentEditable)
+      )
       if (inInput) return
 
       // Cmd+C — copy selected node (not the trigger) to localStorage
