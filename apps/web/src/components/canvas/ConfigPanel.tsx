@@ -27,15 +27,17 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
+  const isCode = type === 'code'
 
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showMeta, setShowMeta] = useState(true)
 
   function updateConfig(patch: Record<string, unknown>) {
     onUpdate(node.id, { config: { ...data.config, ...patch } })
   }
 
   return (
-    <aside className="flex w-80 flex-col border-l border-gray-200 bg-white">
+    <aside className={`flex flex-col border-l border-gray-200 bg-white ${isCode ? 'w-[540px]' : 'w-80'}`}>
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
@@ -86,7 +88,98 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
         </div>
       )}
 
-      {/* Scrollable body */}
+      {/* Body — code nodes use a flex-fill layout so the editor expands to full height */}
+      {isCode ? (
+        <div className="flex flex-1 flex-col overflow-hidden text-sm">
+          {/* Collapsible meta fields */}
+          <div className="border-b border-gray-100">
+            <button
+              onClick={() => setShowMeta((s) => !s)}
+              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-600"
+            >
+              <span className="uppercase tracking-wide">Step settings</span>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMeta ? '' : '-rotate-90'}`} />
+            </button>
+            {showMeta && (
+              <div className="grid grid-cols-2 gap-3 px-4 pb-3">
+                <div>
+                  <p className="mb-1 text-xs font-medium text-gray-500">Display name</p>
+                  <input
+                    className="input"
+                    placeholder={data.namespace}
+                    value={data.label ?? ''}
+                    onChange={(e) => onUpdate(node.id, { label: e.target.value || undefined })}
+                  />
+                </div>
+                <div>
+                  <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
+                  <input
+                    className="input font-mono"
+                    value={data.namespace}
+                    onChange={(e) => onUpdate(node.id, { namespace: e.target.value })}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Editor — fills remaining height */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <CodeConfig config={data.config} onChange={updateConfig} />
+          </div>
+          {/* Advanced */}
+          <div className="border-t border-gray-100 px-4 py-3">
+            <button
+              onClick={() => setShowAdvanced((s: boolean) => !s)}
+              className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
+              Advanced
+            </button>
+            {showAdvanced && (
+              <div className="mt-3 space-y-3">
+                <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
+                  <div className="flex items-center gap-2">
+                    <input type="number" className="input" placeholder="30000"
+                      value={(data.config.timeout_ms as number | undefined) ?? ''}
+                      onChange={(e) => updateConfig({ timeout_ms: e.target.value ? parseInt(e.target.value) : undefined })}
+                    />
+                    <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
+                  </div>
+                </Field>
+                <Field label="Retries" hint="How many times to retry on temporary failures. Max 5.">
+                  <input type="number" className="input" placeholder="0" min={0} max={5}
+                    value={(data.config.retries as number | undefined) ?? ''}
+                    onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
+                  />
+                </Field>
+                <Field label="If this step fails">
+                  <select className="input"
+                    value={(data.config.on_error as string | undefined) ?? 'fail'}
+                    onChange={(e) => updateConfig({ on_error: e.target.value })}
+                  >
+                    <option value="fail">Stop the workflow</option>
+                    <option value="skip">Skip and continue</option>
+                    <option value="fallback">Go to fallback step</option>
+                  </select>
+                </Field>
+                {data.config.on_error === 'fallback' && (
+                  <Field label="Fallback node">
+                    <select className="input"
+                      value={(data.config.fallback_node as string | undefined) ?? ''}
+                      onChange={(e) => updateConfig({ fallback_node: e.target.value })}
+                    >
+                      <option value="">— select —</option>
+                      {nodeNamespaces.filter((ns) => ns !== data.namespace).map((ns) => (
+                        <option key={ns} value={ns}>{ns}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
 
         {/* Display name */}
@@ -111,7 +204,6 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
         {/* Type-specific config */}
         {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'code' && <CodeConfig config={data.config} onChange={updateConfig} />}
         {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
@@ -179,6 +271,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
           </div>}
         </div>
       </div>
+      )}
     </aside>
   )
 }
@@ -367,17 +460,14 @@ function CodeConfig({
   const script = (config.script as string | undefined) ?? DEFAULT_SCRIPT
 
   return (
-    <div className="space-y-1.5">
-      <p className="text-xs font-medium text-gray-500">Script</p>
-      <div className="overflow-hidden rounded-lg border border-gray-200">
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="flex-1 overflow-hidden">
         <MonacoEditor
-          height="280px"
+          height="100%"
           language="javascript"
           value={script}
           onChange={(val) => onChange({ script: val ?? '' })}
           onMount={(_editor, monaco) => {
-            // Disable semantic validation (would flag `return` at top-level and
-            // undefined payload/steps/env). Keep syntax-only validation.
             monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
               noSemanticValidation: true,
               noSyntaxValidation: false,
@@ -391,21 +481,22 @@ function CodeConfig({
           }}
           options={{
             minimap: { enabled: false },
-            fontSize: 12,
+            fontSize: 11,
+            lineHeight: 18,
             lineNumbers: 'on',
             scrollBeyondLastLine: false,
-            wordWrap: 'on',
+            wordWrap: 'off',
             tabSize: 2,
             folding: false,
             overviewRulerLanes: 0,
-            scrollbar: { vertical: 'auto', horizontal: 'hidden' },
-            padding: { top: 8, bottom: 8 },
+            scrollbar: { vertical: 'auto', horizontal: 'auto' },
+            padding: { top: 10, bottom: 10 },
           }}
           theme="vs"
         />
       </div>
-      <p className="text-xs text-gray-400">
-        Runs as an async function. Receives <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, and <code className="rounded bg-gray-100 px-1">env</code>. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
+      <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
+        Async function body — <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
       </p>
     </div>
   )
