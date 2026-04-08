@@ -284,7 +284,7 @@ export default function WorkflowsPage() {
                     <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
                     {/* Actions column */}
-                    <td className="px-4 py-3">
+                    <td className="w-12 px-4 py-3 overflow-visible whitespace-nowrap">
                       {confirmingDelete === wf.id ? (
                         <div className="flex items-center gap-1.5">
                           <button

@@ -260,6 +260,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const triggerRef = useRef<WorkflowDef['trigger']>(
     workflow.definition?.trigger ?? DEFAULT_TRIGGER
   )
+  const prevErrorIdsRef = useRef<string>('')
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
@@ -270,8 +271,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [mode, nodes, edges]
   )
 
-  // Inject hasError into node data so nodes can show the amber ring
+  // Inject hasError into node data so nodes can show the amber ring.
+  // Guard with a ref so setNodes is only called when the error set actually changes —
+  // otherwise the useMemo above creates a new Map reference on every render, causing
+  // setNodes → new nodes → new Map → setNodes → infinite loop.
   useEffect(() => {
+    const errorIds = [...validationErrors.keys()].sort().join(',')
+    if (errorIds === prevErrorIdsRef.current) return
+    prevErrorIdsRef.current = errorIds
     setNodes((ns) =>
       ns.map((n) => {
         const hasError = validationErrors.has(n.id)
