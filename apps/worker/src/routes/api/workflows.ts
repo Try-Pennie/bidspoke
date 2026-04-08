@@ -331,7 +331,7 @@ workflows.post('/:id/test', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ payload: unknown; execution_id?: string }>()
+  const body = await c.req.json<{ payload: unknown; execution_id?: string; definition?: unknown }>()
 
   // Verify ownership
   const { error: ownerError } = await supabase
@@ -344,7 +344,14 @@ workflows.post('/:id/test', async (c) => {
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
 
   const result = await executeWorkflow(
-    { workflowId: id, payload: body.payload, source: 'test_runner', isTest: true, executionId: body.execution_id },
+    {
+      workflowId: id,
+      payload: body.payload,
+      source: 'test_runner',
+      isTest: true,
+      executionId: body.execution_id,
+      ...(body.definition ? { definitionOverride: body.definition as import('../../types').WorkflowDefinition } : {}),
+    },
     c.env,
     supabase,
     c.executionCtx

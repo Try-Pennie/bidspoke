@@ -20,6 +20,7 @@ import type {
   NodeDefinition,
   StepStatus,
   ErrorType,
+  WorkflowDefinition,
 } from '../types'
 
 // Carries step context through the throw so the alert can report which step failed
@@ -50,6 +51,7 @@ export interface ExecuteOptions {
   resumeFromExecutionId?: string
   isTest?: boolean
   executionId?: string
+  definitionOverride?: WorkflowDefinition
 }
 
 export interface ExecuteResult {
@@ -68,9 +70,10 @@ export async function executeWorkflow(
   const { workflowId, payload, source } = options
   const traceId = generateTraceId()
 
-  // Load workflow definition (KV-cached)
-  const { definition, workflow_version_id, workflow_name, org_id, slack_channel } =
-    await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase)
+  // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes)
+  const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase)
+  const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
+  const definition = options.definitionOverride ?? loaded.definition
 
   // Resolve idempotency key
   const idempotencyConfig = definition.trigger.config.idempotency
