@@ -450,9 +450,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
 
-      // Copy/paste — skip when focus is inside a text input or textarea
+      // Copy/paste — skip when focus is inside a text input, textarea, or Monaco editor
       const focused = document.activeElement
-      const inInput = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement
+      const inInput = focused instanceof HTMLInputElement
+        || focused instanceof HTMLTextAreaElement
+        || focused?.closest('.monaco-editor') !== null
       if (inInput) return
 
       // Cmd+C — copy selected node (not the trigger) to localStorage
