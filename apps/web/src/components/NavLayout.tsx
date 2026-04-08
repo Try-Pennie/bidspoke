@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import Image from 'next/image'
+
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield, LayoutDashboard } from 'lucide-react'
@@ -30,7 +30,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
       {/* Sidebar */}
       <nav className="flex w-52 flex-col bg-slate-900">
         <div className="flex items-center gap-2.5 px-4 py-5">
-          <Image
+          <img
             src="/icon-dark.png"
             alt="Bidspoke"
             width={26}
