@@ -39,7 +39,7 @@ export default function AccessPage() {
   async function load() {
     try {
       const data = await api.access.list()
-      setUsers(data)
+      setUsers(data.filter((u) => u.email !== 'e2e-test@trypennie.com'))
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load access list')
     } finally {
