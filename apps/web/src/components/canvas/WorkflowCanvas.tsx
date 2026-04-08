@@ -240,6 +240,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [testRunning, setTestRunning] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
   const overflowRef = useRef<HTMLDivElement>(null)
+  const sidePanelRef = useRef<HTMLDivElement>(null)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -450,8 +451,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
 
-      // Copy/paste — skip when the event originated from any editable element.
-      // Use composedPath() so this works through shadow DOM (e.g. Monaco internals).
+      // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
+      // This covers Monaco and all other inputs in those panels without relying on
+      // fragile element-type checks.
+      const target = e.target instanceof Node ? e.target : null
+      if (target && sidePanelRef.current?.contains(target)) return
+
+      // Also skip for any plain editable element outside the side panels (e.g. name input in toolbar)
       const inInput = e.composedPath().some(
         (el) => el instanceof HTMLInputElement
           || el instanceof HTMLTextAreaElement
@@ -1128,38 +1134,40 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           </ReactFlow>
         </div>
 
-        {mode === 'edit' && showTest && (
-          <TestRunPanel
-            workflowId={workflow.id}
-            currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
-            onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
-            onComplete={() => setRefreshSignal((s) => s + 1)}
-            initialPayload={testInitialPayload}
-            savedPayloads={savedPayloads}
-            onSavedPayloadsChange={setSavedPayloads}
-            onTestStart={handleTestStart}
-            onLiveStep={handleLiveStep}
-            onTestEnd={handleTestEnd}
-          />
-        )}
-        {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (
-          <TriggerConfigPanel
-            trigger={triggerRef.current}
-            onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
-            onClose={() => setSelectedNodeId(null)}
-          />
-        )}
-        {selectedNode && mode === 'edit' && !showTest && selectedNode.id !== 'trigger' && (
-          <ConfigPanel
-            node={selectedNode}
-            onUpdate={handleNodeUpdate}
-            onDelete={handleNodeDelete}
-            onClose={() => setSelectedNodeId(null)}
-            onDuplicate={handleNodeDuplicate}
-            nodeNamespaces={nodeNamespaces}
-            refs={refs}
-          />
-        )}
+        <div ref={sidePanelRef} className="contents">
+          {mode === 'edit' && showTest && (
+            <TestRunPanel
+              workflowId={workflow.id}
+              currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
+              onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
+              onComplete={() => setRefreshSignal((s) => s + 1)}
+              initialPayload={testInitialPayload}
+              savedPayloads={savedPayloads}
+              onSavedPayloadsChange={setSavedPayloads}
+              onTestStart={handleTestStart}
+              onLiveStep={handleLiveStep}
+              onTestEnd={handleTestEnd}
+            />
+          )}
+          {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (
+            <TriggerConfigPanel
+              trigger={triggerRef.current}
+              onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
+              onClose={() => setSelectedNodeId(null)}
+            />
+          )}
+          {selectedNode && mode === 'edit' && !showTest && selectedNode.id !== 'trigger' && (
+            <ConfigPanel
+              node={selectedNode}
+              onUpdate={handleNodeUpdate}
+              onDelete={handleNodeDelete}
+              onClose={() => setSelectedNodeId(null)}
+              onDuplicate={handleNodeDuplicate}
+              nodeNamespaces={nodeNamespaces}
+              refs={refs}
+            />
+          )}
+        </div>
         {selectedNode && mode === 'view' && executionId && (
           <ExecutionStepPanel
             node={selectedNode}
