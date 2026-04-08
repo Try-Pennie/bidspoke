@@ -161,7 +161,7 @@
 - [x] Implement structured JSON logging (trace_id, workflow_id, step info, event types) — PRD Section 10.3
 - [x] Implement observability dashboard (execution volume, duration, per-workflow breakdown, recent failures)
 - [x] Implement X-Trace-Id propagation to outbound partner API calls
-- [ ] **Test:** Trace a single lead end-to-end by trace_id across logs and execution_steps
+- [x] **Test:** Trace a single lead end-to-end by trace_id across logs and execution_steps
 
 ### 2.6 Workflow Templates
 - ~~Build outbound routing workflow template~~ — scratched, not needed
