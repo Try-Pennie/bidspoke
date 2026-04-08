@@ -35,7 +35,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
-import { layoutWorkflow, NODE_W, nodeHeight } from '@/lib/layout'
+import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
@@ -602,19 +602,21 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     const ns = defaultNamespace(cb.type, nodeNamespaces)
     const newId = uid()
     snapshot()
-    setNodes((prev) => [
+    setNodes((prev) => {
+      const position = findFreePosition(cb.position.x + NODE_W + 24, cb.position.y, cb.type, prev)
+      return [
       ...prev,
       {
         id: newId,
         type: cb.type,
-        position: { x: cb.position.x + 40, y: cb.position.y + 40 },
+        position,
         data: {
           namespace: ns,
           config: JSON.parse(JSON.stringify(cb.config)),
           variables: JSON.parse(JSON.stringify(cb.variables)),
         } satisfies CanvasNodeData,
       },
-    ])
+    ]})
     setSelectedNodeId(newId)
     setIsDirty(true)
   }
@@ -999,6 +1001,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                     setEdges(newEdges)
                     setNodes((ns) => layoutWorkflow(ns, newEdges))
                     setIsDirty(true)
+                  }
+                  // If no valid slot found, keep free-floating but push away from any overlap
+                  if (overlapsAny(finalPos, node.type, otherNodes)) {
+                    const safePos = findFreePosition(finalPos.x, finalPos.y, node.type, otherNodes)
+                    setNodes((ns) => ns.map((n) => n.id === change.id ? { ...n, position: safePos } : n))
                   }
                   // If no valid slot found, node stays where it was dropped (free-floating)
                 } else {
