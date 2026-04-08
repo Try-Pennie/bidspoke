@@ -176,7 +176,7 @@
 - [x] End-to-end: partner circuit breaker trips → excluded, recovers in half-open
 - [x] End-to-end: parallel resume — 1 of 2 children fails, resume re-runs only incomplete child
 - [x] Load test: 500 concurrent leads, parallel bids to 3 partners, verify no race conditions
-- [ ] Push all code to GitHub, verify CI passes
+- [x] Push all code to GitHub, verify CI passes
 - [ ] **Ship Phase 2**
 
 ---

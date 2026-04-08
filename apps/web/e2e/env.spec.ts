@@ -21,7 +21,7 @@ test.describe('Environment Variables', () => {
     await page.getByRole('button', { name: 'Save' }).click()
 
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
-    await expect(page.getByText(value)).toBeVisible()
+    await expect(page.getByText(value).first()).toBeVisible()
   })
 
   test('secret var — value is masked in the list', async ({ page }) => {
@@ -39,15 +39,19 @@ test.describe('Environment Variables', () => {
   })
 
   test('delete env var → row removed', async ({ page }) => {
-    const e2eRow = page.locator('tr').filter({ hasText: 'E2E_TEST' }).first()
+    // Create a dedicated var so we hold a unique key reference
+    const key = `E2E_DEL_${Date.now()}`
 
-    if (!await e2eRow.isVisible()) {
-      test.skip()
-    }
+    await page.getByRole('button', { name: 'Add Variable' }).click()
+    await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
+    await page.locator('input[placeholder="value"]').fill('del-me')
+    await page.getByRole('button', { name: 'Save' }).click()
+    await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
 
+    const e2eRow = page.locator('tr').filter({ hasText: key }).first()
     await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
-    await page.getByRole('button', { name: 'Delete' }).click()
+    await page.getByRole('button', { name: 'Delete', exact: true }).click()
 
-    await expect(e2eRow).not.toBeVisible({ timeout: 5000 })
+    await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })
 })

@@ -26,9 +26,10 @@ test.describe('Workflows list', () => {
     await page.getByRole('button', { name: 'More options' }).first().click()
     await page.getByRole('button', { name: 'Rename' }).click()
 
-    // Inline input replaces the name cell — fill and commit
-    await page.locator('input[type="text"]').first().fill(name)
-    await page.locator('input[type="text"]').first().press('Enter')
+    // Input is autoFocused — select all and type new name without clicking
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type(name)
+    await page.keyboard.press('Enter')
 
     await expect(page.getByText(name)).toBeVisible({ timeout: 5000 })
   })

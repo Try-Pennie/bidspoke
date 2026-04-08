@@ -18,20 +18,23 @@ test.describe('API Sources', () => {
     await page.locator('input[placeholder="wallet_owl"]').fill(name)
     await page.getByRole('button', { name: 'Generate key' }).click()
 
-    await expect(page.getByText(name)).toBeVisible({ timeout: 8000 })
+    await expect(page.getByText(name).first()).toBeVisible({ timeout: 8000 })
   })
 
   test('revoke source → row removed', async ({ page }) => {
-    const e2eRow = page.locator('li, [data-testid="source-row"], .source-row').filter({ hasText: 'e2e_source' }).first()
-    const sourceText = page.getByText(/e2e_source/).first()
+    // Create a dedicated source so we hold a unique name reference
+    const name = `e2e_del_${Date.now()}`
 
-    if (!await sourceText.isVisible().catch(() => false)) {
-      test.skip()
-    }
+    await page.getByRole('button', { name: 'New source' }).click()
+    await page.locator('input[placeholder="wallet_owl"]').fill(name)
+    await page.getByRole('button', { name: 'Generate key' }).click()
+    await expect(page.getByText(name).first()).toBeVisible({ timeout: 8000 })
 
-    await sourceText.locator('..').locator('..').getByRole('button', { name: 'Revoke' }).click()
-    await page.getByRole('button', { name: 'Revoke' }).click()
+    const sourceText = page.getByText(name).first()
+    const sourceCard = sourceText.locator('..').locator('..')
+    await sourceCard.getByRole('button', { name: 'Revoke' }).click()
+    await sourceCard.getByRole('button', { name: 'Revoke' }).click()
 
-    await expect(sourceText).not.toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('paragraph').filter({ hasText: name })).not.toBeVisible({ timeout: 5000 })
   })
 })

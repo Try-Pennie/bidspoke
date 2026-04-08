@@ -6,9 +6,13 @@ const WORKER_NAME = 'bidspoke-worker'
 export async function setCfSecret(
   key: string,
   value: string,
-  accountId: string,
-  apiToken: string
+  accountId: string | undefined,
+  apiToken: string | undefined
 ): Promise<void> {
+  if (!accountId || !apiToken) {
+    console.warn(`[dev] Skipping CF secret sync for "${key}" — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured`)
+    return
+  }
   const res = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/secrets`,
     {
@@ -28,9 +32,13 @@ export async function setCfSecret(
 
 export async function deleteCfSecret(
   key: string,
-  accountId: string,
-  apiToken: string
+  accountId: string | undefined,
+  apiToken: string | undefined
 ): Promise<void> {
+  if (!accountId || !apiToken) {
+    console.warn(`[dev] Skipping CF secret delete for "${key}" — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured`)
+    return
+  }
   const res = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/secrets/${key}`,
     {

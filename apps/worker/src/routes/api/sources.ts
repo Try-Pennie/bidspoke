@@ -80,20 +80,25 @@ sources.delete('/:name', async (c) => {
   const { orgId, userId } = c.get('user')
   const name = c.req.param('name')
 
-  const map = parseKeyMap(c.env.API_KEY_MAP)
-  const before = Object.keys(map).length
+  const supabase = createSupabaseClient(c.env)
 
+  // Use Supabase as the authoritative existence check
+  const { data: existing } = await supabase
+    .from('api_sources')
+    .select('name')
+    .eq('organization_id', orgId)
+    .eq('name', name)
+    .single()
+
+  if (!existing) return c.json({ error: 'Source not found' }, 404)
+
+  // Best-effort: remove from API_KEY_MAP secret (no-op locally if credentials not set)
+  const map = parseKeyMap(c.env.API_KEY_MAP ?? '{}')
   for (const [key, src] of Object.entries(map)) {
     if (src === name) delete map[key]
   }
-
-  if (Object.keys(map).length === before) {
-    return c.json({ error: 'Source not found' }, 404)
-  }
-
   await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
 
-  const supabase = createSupabaseClient(c.env)
   await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
 
   await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'deleted', userId, {
