@@ -29,9 +29,8 @@ tag = "v1"
 new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 
 # Dynamic Workers — code node sandboxing via Workers for Platforms
-[[unsafe.bindings]]
-name = "DYNAMIC_WORKER_LOADER"
-type = "dynamic_dispatch"
+[[dispatch_namespaces]]
+binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
 
 # Public vars
