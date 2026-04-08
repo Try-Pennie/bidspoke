@@ -168,14 +168,14 @@
 - ~~Build inbound bidding workflow template~~ — scratched, not needed
 
 ### 2.7 Phase 2 Integration Testing
-- [ ] End-to-end outbound: lead → validate → credit pull → enrich → Penny-fit NO → parallel bids (Tripoint + M1) → highest bid wins → route → Salesforce → respond with offer
-- [ ] End-to-end outbound: all bids rejected → fallback to Engine
-- [ ] End-to-end outbound: Tripoint dedup rejects → M1 wins → route to M1
-- [ ] End-to-end inbound: Engine pings → validate → decision engine → bid response
-- [ ] End-to-end: partner hits daily cap mid-day → excluded from bidding
-- [ ] End-to-end: partner circuit breaker trips → excluded, recovers in half-open
-- [ ] End-to-end: parallel resume — 1 of 2 children fails, resume re-runs only incomplete child
-- [ ] Load test: 500 concurrent leads, parallel bids to 3 partners, verify no race conditions
+- [x] End-to-end outbound: lead → validate → credit pull → enrich → Penny-fit NO → parallel bids (Tripoint + M1) → highest bid wins → route → Salesforce → respond with offer
+- [x] End-to-end outbound: all bids rejected → fallback to Engine
+- [x] End-to-end outbound: Tripoint dedup rejects → M1 wins → route to M1
+- [x] End-to-end inbound: Engine pings → validate → decision engine → bid response
+- [x] End-to-end: partner hits daily cap mid-day → excluded from bidding
+- [x] End-to-end: partner circuit breaker trips → excluded, recovers in half-open
+- [x] End-to-end: parallel resume — 1 of 2 children fails, resume re-runs only incomplete child
+- [x] Load test: 500 concurrent leads, parallel bids to 3 partners, verify no race conditions
 - [ ] Push all code to GitHub, verify CI passes
 - [ ] **Ship Phase 2**
 
