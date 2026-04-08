@@ -21,7 +21,7 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       return null
     }
     case 'webhook': {
-      // Integration node — canvas type is 'webhook'
+      // Webhook node — canvas type is 'webhook'
       const url = config.url as string | undefined
       if (!url?.trim()) return 'No URL configured'
       return null

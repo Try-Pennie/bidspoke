@@ -1,5 +1,5 @@
 /**
- * Integration node — PRD Section 5.5
+ * Webhook node — PRD Section 5.5
  *
  * Generic HTTP step with service-aware presets for Equifax, Eligibility Scout,
  * LendSwift, Salesforce, and custom endpoints.
@@ -65,7 +65,7 @@ export async function executeIntegrationNode(
   const config = node.config as unknown as IntegrationConfig
 
   if (!config.url) {
-    throw new Error('Integration node requires config.url')
+    throw new Error('Webhook node requires config.url')
   }
 
   // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves.
@@ -83,7 +83,7 @@ export async function executeIntegrationNode(
 
   // Resolve URL
   const resolvedUrl = String(resolveValue(config.url, enrichedCtx) ?? '')
-  if (!resolvedUrl) throw new Error('Integration node: url resolved to empty string')
+  if (!resolvedUrl) throw new Error('Webhook node: url resolved to empty string')
 
   // Build headers — start with Content-Type + trace ID, merge config headers
   const headers: Record<string, string> = {

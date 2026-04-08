@@ -648,7 +648,7 @@ function TransformConfig({
   )
 }
 
-// ── Integration node config ───────────────────────────────────────────────────
+// ── Webhook node config ───────────────────────────────────────────────────────
 
 const BUILTIN_SERVICE_OPTIONS = [
   { value: 'custom', label: 'Custom' },

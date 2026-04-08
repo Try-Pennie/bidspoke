@@ -350,7 +350,7 @@ export default function IntegrationsPage() {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">HTTP Services</h2>
               <p className="mt-0.5 text-sm text-gray-500">
-                Define reusable services that appear in the Integration node dropdown. Each preset pre-fills the auth type and optionally the base URL.
+                Define reusable services that appear in the Webhook node dropdown. Each preset pre-fills the auth type and optionally the base URL.
               </p>
             </div>
             {!addingPreset && (
@@ -461,7 +461,7 @@ export default function IntegrationsPage() {
             <div className="rounded-xl border-2 border-dashed border-gray-200 py-10 text-center">
               <p className="text-sm font-semibold text-gray-900">No services yet</p>
               <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-400">
-                Add a service to make it available in the Integration node dropdown with pre-filled auth settings.
+                Add a service to make it available in the Webhook node dropdown with pre-filled auth settings.
               </p>
               <button
                 onClick={() => setAddingPreset(true)}

@@ -323,7 +323,7 @@ export async function walkGraph(
       timeout_ms: (node.config.timeout_ms as number) ?? 30000,
     }
 
-    // Circuit breaker — applies to nodes with config.service set (Integration nodes, PRD Section 2.5.2)
+    // Circuit breaker — applies to nodes with config.service set (Webhook nodes, PRD Section 2.5.2)
     const serviceName = typeof node.config.service === 'string' ? node.config.service : null
     const cbClient = serviceName ? new CircuitBreakerClient(env, serviceName) : null
 
