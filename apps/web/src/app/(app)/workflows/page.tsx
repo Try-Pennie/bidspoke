@@ -222,13 +222,19 @@ export default function WorkflowsPage() {
           </div>
         ) : (
           <div className="rounded-xl border border-gray-200 bg-white">
-            <table className="w-full text-sm">
+            <table className="w-full table-fixed text-sm">
+              <colgroup>
+                <col />
+                <col className="w-40" />
+                <col className="w-36" />
+                <col className="w-24" />
+              </colgroup>
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
                   <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Name</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">By</th>
-                  <th className="w-12 rounded-tr-xl px-4 py-3" />
+                  <th className="rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -284,7 +290,7 @@ export default function WorkflowsPage() {
                     <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
                     {/* Actions column */}
-                    <td className="w-12 px-4 py-3 overflow-visible whitespace-nowrap">
+                    <td className="px-4 py-3">
                       {confirmingDelete === wf.id ? (
                         <div className="flex items-center gap-1.5">
                           <button
