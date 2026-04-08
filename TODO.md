@@ -240,10 +240,10 @@
 
 ### P2 — Nice to have
 
-- [ ] **Audit log** — smoke test in `lib/__tests__/audit.test.ts` (verify insert shape, no throw on Supabase error)
-- [ ] **Definition loader / KV cache** — tests in `engine/__tests__/definition-loader.test.ts` (cache hit skips Supabase, cache miss fetches and stores, invalidate removes key)
-- [ ] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
-- [ ] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
+- [x] **Audit log** — smoke test in `lib/__tests__/audit.test.ts` (verify insert shape, no throw on Supabase error)
+- [x] **Definition loader / KV cache** — tests in `engine/__tests__/definition-loader.test.ts` (cache hit skips Supabase, cache miss fetches and stores, invalidate removes key)
+- [x] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
+- [x] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
 - [ ] **Playwright E2E** — see plan doc for full setup steps. Auth via email+password test user (not SSO); hide test user from UI. Focus on list/CRUD pages (workflows, env vars, sources, integrations, dashboard). Skip canvas and Slack. See `/Users/danhankins-wright/.claude/plans/soft-forging-scroll.md` → "Playwright E2E Testing — Plan".
 
 ---
