@@ -375,6 +375,20 @@ function CodeConfig({
           language="javascript"
           value={script}
           onChange={(val) => onChange({ script: val ?? '' })}
+          onMount={(_editor, monaco) => {
+            // Disable semantic validation (would flag `return` at top-level and
+            // undefined payload/steps/env). Keep syntax-only validation.
+            monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+              noSemanticValidation: true,
+              noSyntaxValidation: false,
+            })
+            monaco.languages.typescript.javascriptDefaults.addExtraLib(
+              `declare const payload: Record<string, unknown>;
+               declare const steps: Record<string, { output: unknown; status: string }>;
+               declare const env: Record<string, string>;`,
+              'bidspoke-code-node-globals.d.ts'
+            )
+          }}
           options={{
             minimap: { enabled: false },
             fontSize: 12,
