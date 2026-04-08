@@ -117,7 +117,7 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 
 const testEnv = {
   SUPABASE_JWKS_URL: 'https://fake.jwks',
-  WORKFLOW_CACHE: {},
+  WORKFLOW_CACHE: { get: vi.fn().mockResolvedValue(null), put: vi.fn(), delete: vi.fn() },
   CLOUDFLARE_ACCOUNT_ID: 'acct-123',
   CLOUDFLARE_API_TOKEN: 'tok-abc',
 } as unknown as Env

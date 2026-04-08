@@ -4,6 +4,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { setCfSecret, deleteCfSecret } from '../../lib/cf-secrets'
 import { writeAuditLog } from '../../lib/audit'
+import { invalidateEnvCache } from '../../lib/env-loader'
 
 type Variables = AuthVariables
 
@@ -69,12 +70,10 @@ env.post('/', async (c) => {
 
   if (error) return c.json({ error: error.message }, 500)
 
-  await writeAuditLog(
-    supabase, orgId, 'environment_variable', data.id,
-    body.is_secret ? 'secret_rotated' : 'created',
-    userId,
-    { key: body.key }
-  )
+  await Promise.all([
+    writeAuditLog(supabase, orgId, 'environment_variable', data.id, body.is_secret ? 'secret_rotated' : 'created', userId, { key: body.key }),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+  ])
 
   return c.json({ ...data, value: body.is_secret ? null : data.value }, 201)
 })
@@ -113,12 +112,10 @@ env.put('/:id', async (c) => {
 
   if (error) return c.json({ error: error.message }, 500)
 
-  await writeAuditLog(
-    supabase, orgId, 'environment_variable', id,
-    existing.is_secret ? 'secret_rotated' : 'updated',
-    userId,
-    { key: existing.key }
-  )
+  await Promise.all([
+    writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, { key: existing.key }),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+  ])
 
   return c.json({ ...data, value: existing.is_secret ? null : data.value })
 })
@@ -144,7 +141,10 @@ env.delete('/:id', async (c) => {
 
   await supabase.from('environment_variables').delete().eq('id', id)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, { key: existing.key })
+  await Promise.all([
+    writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, { key: existing.key }),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+  ])
 
   return c.json({ ok: true })
 })

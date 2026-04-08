@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
+import { loadEnvVars } from '../lib/env-loader'
 import { buildContext, recordStepOutput } from './context'
 import { executeNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
@@ -75,7 +76,7 @@ export async function executeWorkflow(
   const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
   const definition = options.definitionOverride ?? loaded.definition
 
-  // Resolve idempotency key
+  // Resolve idempotency key (needs definition)
   const idempotencyConfig = definition.trigger.config.idempotency
   let idempotencyKey: string | null = null
 
@@ -88,46 +89,39 @@ export async function executeWorkflow(
 
   const ttl = idempotencyConfig?.ttl_seconds ?? 300
 
-  // Idempotency check
-  if (idempotencyKey) {
-    const cached = await checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey)
-    if (cached) {
-      if (cached.status === 'processing') {
-        log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'processing' })
-        return { response: { error: 'Duplicate request in progress' }, status: 409, traceId }
-      }
-      log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'replay' })
-      return { response: cached.response, status: 200, traceId, idempotentReplay: true }
-    }
-    await setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
-  }
-
-  // Load env vars for this org (global scope only for now)
-  const { data: envRows } = await supabase
-    .from('environment_variables')
-    .select('key, value')
-    .eq('scope', 'global')
-    .is('is_secret', false)
-  const envVars: Record<string, string> = {}
-  for (const row of (envRows ?? [])) {
-    if (row.value) envVars[row.key] = row.value
-  }
-
+  // Parallel: idempotency check + env var load (both independent once we have definition/org_id)
   const executionId = options.executionId ?? crypto.randomUUID()
   const startedAt = new Date().toISOString()
 
-  // Create execution record — must be awaited before walkGraph so FK constraints on execution_steps are satisfied
-  await createExecutionRecord(supabase, {
-    id: executionId,
-    workflow_id: workflowId,
-    workflow_version_id,
-    source,
-    trigger_payload: payload,
-    trace_id: traceId,
-    started_at: startedAt,
-    is_test: options.isTest ?? false,
-    parent_execution_id: options.resumeFromExecutionId,
-  })
+  const [idempotencyCached, envVars] = await Promise.all([
+    idempotencyKey ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey) : Promise.resolve(null),
+    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase),
+  ])
+
+  if (idempotencyCached) {
+    if (idempotencyCached.status === 'processing') {
+      log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'processing' })
+      return { response: { error: 'Duplicate request in progress' }, status: 409, traceId }
+    }
+    log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'replay' })
+    return { response: idempotencyCached.response, status: 200, traceId, idempotentReplay: true }
+  }
+
+  // Parallel: mark idempotency in-progress + create execution record (both independent)
+  await Promise.all([
+    idempotencyKey ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl) : Promise.resolve(),
+    createExecutionRecord(supabase, {
+      id: executionId,
+      workflow_id: workflowId,
+      workflow_version_id,
+      source,
+      trigger_payload: payload,
+      trace_id: traceId,
+      started_at: startedAt,
+      is_test: options.isTest ?? false,
+      parent_execution_id: options.resumeFromExecutionId,
+    }),
+  ])
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
