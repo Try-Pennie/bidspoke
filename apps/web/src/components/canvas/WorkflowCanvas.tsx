@@ -47,6 +47,7 @@ import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
+import { writeClipboard, readClipboard } from '@/lib/clipboard'
 
 // Defined outside component to prevent re-render on each render
 const nodeTypes: NodeTypes = {
@@ -245,18 +246,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   // Copy/paste clipboard — persisted to localStorage so it works across workflows
-  const CLIPBOARD_KEY = 'bidspoke:node-clipboard'
-  function readClipboard() {
-    try { return JSON.parse(localStorage.getItem(CLIPBOARD_KEY) ?? 'null') } catch { return null }
-  }
-  function writeClipboard(node: Node) {
+  function copyNode(node: Node) {
     const d = node.data as unknown as CanvasNodeData
-    localStorage.setItem(CLIPBOARD_KEY, JSON.stringify({
-      type: node.type as NodeType,
-      config: JSON.parse(JSON.stringify(d.config ?? {})),
-      variables: JSON.parse(JSON.stringify(d.variables ?? {})),
-      position: node.position,
-    }))
+    writeClipboard({ type: node.type as NodeType, config: d.config ?? {}, variables: d.variables ?? {}, position: node.position })
   }
 
   const triggerRef = useRef<WorkflowDef['trigger']>(
@@ -468,7 +460,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       // Cmd+C — copy selected node (not the trigger) to localStorage
       if (meta && e.key === 'c' && selectedNodeId && selectedNodeId !== 'trigger') {
         const node = nodes.find((n) => n.id === selectedNodeId)
-        if (node) writeClipboard(node)
+        if (node) copyNode(node)
       }
 
       // Cmd+V — paste from localStorage clipboard

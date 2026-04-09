@@ -199,7 +199,7 @@
 
 ### 3.4 Cross-Workflow Copy/Paste
 - [x] Implement copy/paste of nodes and node groups across workflows
-- [ ] **Test:** Copy a 3-node group from workflow A, paste into workflow B, verify independent copies
+- [x] **Test:** Copy a 3-node group from workflow A, paste into workflow B, verify independent copies
 
 ### 3.5 Long-Term Retention
 - [ ] Configure Cloudflare Logpush (export to R2 or Snowflake)
