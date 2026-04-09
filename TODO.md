@@ -251,7 +251,7 @@
 ## Pre-Ship Checklist (run before each phase ships)
 
 - [x] All tests pass (unit + integration + load)
-- [ ] No hardcoded secrets or credentials in codebase
+- [x] No hardcoded secrets or credentials in codebase
 - [ ] RLS policies verified (user in org A cannot see org B data)
 - [ ] Webhook auth rejects invalid/missing API keys
 - [ ] Error handling: no unhandled promise rejections in Worker
