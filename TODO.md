@@ -252,9 +252,9 @@
 
 - [x] All tests pass (unit + integration + load)
 - [x] No hardcoded secrets or credentials in codebase
-- [ ] RLS policies verified (user in org A cannot see org B data)
-- [ ] Webhook auth rejects invalid/missing API keys
-- [ ] Error handling: no unhandled promise rejections in Worker
+- [x] RLS policies verified (user in org A cannot see org B data)
+- [x] Webhook auth rejects invalid/missing API keys
+- [x] Error handling: no unhandled promise rejections in Worker
 - [x] Execution logs writing correctly (check Supabase)
 - [x] Slack alerts firing on failure
 - [ ] Audit log capturing all mutations

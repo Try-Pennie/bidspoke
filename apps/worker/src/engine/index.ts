@@ -171,7 +171,7 @@ export async function executeWorkflow(
       duration_ms: durationMs,
       response_body: response,
       error_message: errorMessage,
-    })
+    }).catch((e) => console.error('[execution] failed to update execution record:', e))
   )
 
   // Send Slack alert on failure (skip business rejections and test runs)
@@ -207,6 +207,7 @@ export async function executeWorkflow(
   if (idempotencyKey) {
     executionCtx.waitUntil(
       setIdempotencyResult(env.IDEMPOTENCY, workflowId, idempotencyKey, response, ttl)
+        .catch((e) => console.error('[idempotency] failed to cache result:', e))
     )
   }
 

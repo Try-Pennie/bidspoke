@@ -147,7 +147,7 @@ workflows.put('/:id', async (c) => {
         body.definition as WorkflowDefinition,
         c.env.CLOUDFLARE_ACCOUNT_ID,
         c.env.CLOUDFLARE_API_TOKEN
-      )
+      ).catch((e) => console.error('[code-nodes] deploy failed:', e))
     )
   }
 
