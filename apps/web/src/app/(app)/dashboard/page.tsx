@@ -106,7 +106,7 @@ export default function DashboardPage() {
       <div className="p-8">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Dashboard</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Last {window} days</h1>
           <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-0.5">
             {([7, 14, 30] as Window[]).map((w) => (
               <button
@@ -130,45 +130,89 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* KPI cards */}
-        <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {/* KPI section */}
+        <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
           {loading ? (
-            [...Array(4)].map((_, i) => (
-              <div key={i} className="rounded-xl border border-gray-200 bg-white p-5">
-                <Skeleton className="mb-2 h-3 w-20" />
-                <Skeleton className="h-8 w-16" />
+            <>
+              <div className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
+                <Skeleton className="mb-3 h-3 w-24" />
+                <Skeleton className="mb-4 h-14 w-36" />
+                <Skeleton className="h-3 w-48" />
               </div>
-            ))
+              <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
+                {[0, 1].map((i) => (
+                  <div key={i} className="rounded-xl border border-gray-200 bg-white p-5">
+                    <Skeleton className="mb-2 h-3 w-20" />
+                    <Skeleton className="h-8 w-16" />
+                  </div>
+                ))}
+              </div>
+            </>
           ) : (
             <>
-              <div className="rounded-xl border border-gray-200 bg-white p-5">
-                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Total executions</p>
-                <p className="mt-1.5 text-3xl font-bold text-gray-900">{s?.total ?? 0}</p>
-              </div>
-              <div className="rounded-xl border border-gray-200 bg-white p-5">
-                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Success rate</p>
-                <p className={`mt-1.5 text-3xl font-bold ${
-                  (s?.success_rate ?? 0) >= 95 ? 'text-green-600' :
-                  (s?.success_rate ?? 0) >= 80 ? 'text-amber-500' : 'text-red-500'
+              {/* Health card — dominant */}
+              <div className={`rounded-xl border p-6 lg:col-span-2 ${
+                !s || s.total === 0 ? 'border-gray-200 bg-white' :
+                s.success_rate >= 95 ? 'border-green-100 bg-green-50' :
+                s.success_rate >= 80 ? 'border-amber-100 bg-amber-50' :
+                'border-red-100 bg-red-50'
+              }`}>
+                <div className="mb-3 flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${
+                    !s || s.total === 0 ? 'bg-gray-300' :
+                    s.success_rate >= 95 ? 'bg-green-500' :
+                    s.success_rate >= 80 ? 'bg-amber-400' :
+                    'bg-red-500'
+                  }`} />
+                  <p className="text-xs text-gray-400">Success rate</p>
+                </div>
+                <p className={`text-5xl font-bold tabular-nums leading-none lg:text-6xl ${
+                  !s || s.total === 0 ? 'text-gray-300' :
+                  s.success_rate >= 95 ? 'text-green-600' :
+                  s.success_rate >= 80 ? 'text-amber-500' :
+                  'text-red-500'
                 }`}>
-                  {s?.total === 0 ? '—' : `${s?.success_rate ?? 0}%`}
+                  {!s || s.total === 0 ? '—' : `${s.success_rate}%`}
                 </p>
-              </div>
-              <div className="rounded-xl border border-gray-200 bg-white p-5">
-                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Avg duration</p>
-                <p className="mt-1.5 text-3xl font-bold text-gray-900">{fmt(s?.avg_duration_ms ?? null)}</p>
-                {s?.p95_duration_ms != null && (
-                  <p className="mt-0.5 text-xs text-gray-400">p95 {fmt(s.p95_duration_ms)}</p>
+                {s && s.total > 0 && (
+                  <p className="mt-3 text-sm text-gray-500">
+                    {s.failed > 0 ? (
+                      <>
+                        <span className="font-medium text-red-600">{s.failed} failed</span>
+                        {s.exited > 0 && <span>, {s.exited} exited early</span>}
+                        {' — '}{s.total} total runs
+                      </>
+                    ) : s.exited > 0 ? (
+                      <>{s.exited} exited early — {s.total} total runs</>
+                    ) : (
+                      <span className="text-green-700">All {s.total} runs completed</span>
+                    )}
+                  </p>
                 )}
               </div>
-              <div className="rounded-xl border border-gray-200 bg-white p-5">
-                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Failed</p>
-                <p className={`mt-1.5 text-3xl font-bold ${(s?.failed ?? 0) > 0 ? 'text-red-500' : 'text-gray-900'}`}>
-                  {s?.failed ?? 0}
-                </p>
-                {(s?.exited ?? 0) > 0 && (
-                  <p className="mt-0.5 text-xs text-gray-400">{s?.exited} exited early</p>
-                )}
+
+              {/* Secondary stats */}
+              <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
+                <div className="rounded-xl border border-gray-200 bg-white p-5">
+                  <p className="text-xs text-gray-400">Total runs</p>
+                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-gray-900">{s?.total ?? 0}</p>
+                </div>
+                <div className={`rounded-xl border p-5 ${
+                  s?.p95_duration_ms != null && s.p95_duration_ms > 5000
+                    ? 'border-amber-200 bg-amber-50'
+                    : 'border-gray-200 bg-white'
+                }`}>
+                  <p className="text-xs text-gray-400">Avg duration</p>
+                  <p className="mt-1.5 text-3xl font-bold text-gray-900">{fmt(s?.avg_duration_ms ?? null)}</p>
+                  {s?.p95_duration_ms != null && (
+                    <div className={`mt-1 flex items-center gap-1 text-xs ${
+                      s.p95_duration_ms > 5000 ? 'text-amber-600' : 'text-gray-400'
+                    }`}>
+                      {s.p95_duration_ms > 5000 && <Clock className="h-3 w-3 flex-shrink-0" />}
+                      <span>p95 {fmt(s.p95_duration_ms)}</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -177,8 +221,8 @@ export default function DashboardPage() {
         {/* Volume chart */}
         <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
           <div className="mb-4 flex items-center justify-between">
-            <p className="text-sm font-semibold text-gray-900">Execution volume</p>
-            <div className="flex items-center gap-4 text-xs text-gray-400">
+            <p className="text-base font-semibold text-gray-900">Execution volume</p>
+            <div className="flex items-center gap-4 text-xs text-gray-500">
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-indigo-400" />Completed</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-300" />Exited</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-300" />Failed</span>
@@ -199,7 +243,7 @@ export default function DashboardPage() {
           {/* By workflow */}
           <div className="rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-sm font-semibold text-gray-900">By workflow</p>
+              <p className="text-base font-semibold text-gray-900">By workflow</p>
             </div>
             {loading ? (
               <div className="divide-y divide-gray-100">
@@ -228,12 +272,19 @@ export default function DashboardPage() {
                   {data.by_workflow.map((wf) => (
                     <tr key={wf.workflow_id} className="hover:bg-gray-50">
                       <td className="px-5 py-2.5">
-                        <Link
-                          href={`/workflows/${wf.workflow_id}`}
-                          className="font-medium text-gray-900 hover:text-indigo-600"
-                        >
-                          {wf.name}
-                        </Link>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
+                            wf.success_rate >= 95 ? 'bg-green-500' :
+                            wf.success_rate >= 80 ? 'bg-amber-400' :
+                            'bg-red-500'
+                          }`} />
+                          <Link
+                            href={`/workflows/${wf.workflow_id}`}
+                            className="font-medium text-gray-900 hover:text-indigo-600"
+                          >
+                            {wf.name}
+                          </Link>
+                        </div>
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
@@ -255,7 +306,7 @@ export default function DashboardPage() {
           {/* Recent failures */}
           <div className="rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-sm font-semibold text-gray-900">Recent failures</p>
+              <p className="text-base font-semibold text-gray-900">Recent failures</p>
             </div>
             {loading ? (
               <div className="divide-y divide-gray-100">
@@ -317,17 +368,18 @@ export default function DashboardPage() {
         {!loading && data && data.by_partner.length > 0 && (
           <div className="mt-6 rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-sm font-semibold text-gray-900">Partner performance</p>
+              <p className="text-base font-semibold text-gray-900">Partner performance</p>
             </div>
-            <table className="w-full text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Partner</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Bids sent</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Accepted</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Win rate</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Avg bid</th>
-                  <th className="px-5 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Skipped</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Partner</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Bids sent</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Accepted</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Win rate</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Avg bid</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Skipped</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -355,15 +407,10 @@ export default function DashboardPage() {
                 ))}
               </tbody>
             </table>
+            </div>
           </div>
         )}
 
-        {!loading && data && data.summary.total > 0 && data.summary.p95_duration_ms != null && data.summary.p95_duration_ms > 5000 && (
-          <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-            <Clock className="h-4 w-4 flex-shrink-0" />
-            <span>p95 duration is over 5s. Check the execution detail view to identify slow steps.</span>
-          </div>
-        )}
       </div>
     </NavLayout>
   )
