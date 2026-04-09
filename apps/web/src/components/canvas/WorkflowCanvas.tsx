@@ -31,6 +31,8 @@ import { GenericNode } from './nodes/GenericNode'
 import { BidEvaluationNode } from './nodes/BidEvaluationNode'
 import { TransformNode } from './nodes/TransformNode'
 import { IntegrationNode } from './nodes/IntegrationNode'
+import { PartnerBidNode } from './nodes/PartnerBidNode'
+import { ParallelNode } from './nodes/ParallelNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -57,11 +59,10 @@ const nodeTypes: NodeTypes = {
   code: CodeNode,
   response: ResponseNode,
   exit: ExitNode,
-  // Phase 2 placeholders — render with GenericNode until implemented
   webhook: IntegrationNode,
-  partner_bid: GenericNode,
+  partner_bid: PartnerBidNode,
   transform: TransformNode,
-  parallel: GenericNode,
+  parallel: ParallelNode,
   bid_evaluation: BidEvaluationNode,
 }
 
@@ -112,6 +113,10 @@ function flowToDef(
     trigger,
     nodes: nodes.filter((n) => n.id !== 'trigger').map((n) => {
       const d = n.data as unknown as CanvasNodeData
+      // For parallel nodes, resolve children from config.children (stored as node IDs)
+      const children = n.type === 'parallel'
+        ? ((d.config.children as string[] | undefined) ?? [])
+        : undefined
       return {
         id: n.id,
         namespace: d.namespace,
@@ -120,6 +125,7 @@ function flowToDef(
         position: n.position,
         config: d.config,
         variables: d.variables,
+        ...(children !== undefined ? { children } : {}),
       }
     }),
     edges: edges.map((e) => ({
@@ -151,6 +157,7 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
 function primarySourceHandle(type: string): string | null {
   if (type === 'response' || type === 'exit') return null
   if (type === 'branch') return null  // N-way split — no sensible default
+  if (type === 'bid_evaluation') return null  // winner/no_winner — ambiguous default
   if (type === 'filter') return 'pass'
   return 'output'
 }
@@ -258,6 +265,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
+  const nodeOptions = nodes
+    .filter((n) => n.id !== 'trigger')
+    .map((n) => {
+      const d = n.data as unknown as CanvasNodeData
+      return { id: n.id, namespace: d.namespace, label: d.label }
+    })
 
   // Compute validation errors for all attached, unconfigured nodes (edit mode only)
   const validationErrors: Map<string, ValidationError> = useMemo(
@@ -1156,6 +1169,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClose={() => setSelectedNodeId(null)}
               onDuplicate={handleNodeDuplicate}
               nodeNamespaces={nodeNamespaces}
+              nodeOptions={nodeOptions}
               refs={refs}
             />
           )}

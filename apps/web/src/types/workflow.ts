@@ -29,6 +29,7 @@ export interface NodeDef {
   position?: { x: number; y: number }
   config: Record<string, unknown>
   variables?: Record<string, string>
+  children?: string[] // parallel node child IDs
 }
 
 export interface EdgeDef {

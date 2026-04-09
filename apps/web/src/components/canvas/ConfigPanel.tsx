@@ -11,7 +11,7 @@ import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
 import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { ServicePreset, ServiceConnection, SchemaObject } from '@/lib/api'
+import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 
 interface Props {
   node: Node
@@ -20,10 +20,11 @@ interface Props {
   onDuplicate: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
+  nodeOptions?: { id: string; namespace: string; label?: string }[]
   refs?: string[]
 }
 
-export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onClose, nodeNamespaces, refs = [] }: Props) {
+export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onClose, nodeNamespaces, nodeOptions = [], refs = [] }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -209,6 +210,8 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
+        {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} />}
 
         {/* Common: retry + error handling */}
         <div>
@@ -1188,6 +1191,149 @@ function WeightSlider({
         className="w-full accent-yellow-500"
       />
     </div>
+  )
+}
+
+// ── Partner Bid ───────────────────────────────────────────────────────────────
+
+function PartnerBidConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const [partners, setPartners] = useState<Partner[]>([])
+
+  useEffect(() => {
+    api.partners.list().then(setPartners).catch(() => {})
+  }, [])
+
+  const selectedId = (config.partner_id as string | undefined) ?? ''
+
+  function handleSelect(id: string) {
+    const partner = partners.find((p) => p.id === id)
+    onChange({ partner_id: id, partner_name: partner?.name ?? '' })
+  }
+
+  return (
+    <section className="space-y-4">
+      <Field label="Partner" hint="Which partner to request a bid from.">
+        <div className="relative">
+          <select
+            value={selectedId}
+            onChange={(e) => handleSelect(e.target.value)}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="">— select a partner —</option>
+            {partners.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}{!p.is_active ? ' (inactive)' : ''}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+    </section>
+  )
+}
+
+// ── Parallel ──────────────────────────────────────────────────────────────────
+
+function ParallelConfig({
+  config,
+  onChange,
+  currentNodeId,
+  nodeOptions,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  currentNodeId: string
+  nodeOptions: { id: string; namespace: string; label?: string }[]
+}) {
+  const waitFor = (config.wait_for as string | undefined) ?? 'all'
+  const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
+  const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
+  const children = (config.children as string[] | undefined) ?? []
+
+  // Options: exclude the current parallel node itself
+  const available = nodeOptions.filter((n) => n.id !== currentNodeId)
+
+  function toggleChild(id: string) {
+    const next = children.includes(id)
+      ? children.filter((c) => c !== id)
+      : [...children, id]
+    onChange({ children: next })
+  }
+
+  return (
+    <section className="space-y-4">
+      <Field label="Wait for" hint="'All' waits for every branch. 'First' continues as soon as one succeeds.">
+        <div className="relative">
+          <select
+            value={waitFor}
+            onChange={(e) => onChange({ wait_for: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="all">All branches</option>
+            <option value="first">First to succeed</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+
+      <Field label="Timeout (ms)" hint="How long to wait before moving on. Default 15000ms.">
+        <input
+          type="number"
+          className="input"
+          min={1000}
+          step={1000}
+          value={timeoutMs}
+          onChange={(e) => onChange({ timeout_ms: parseInt(e.target.value) || 15000 })}
+        />
+      </Field>
+
+      {waitFor === 'all' && (
+        <Field label="On timeout" hint="What to do if some branches haven't finished when the timeout fires.">
+          <div className="relative">
+            <select
+              value={onTimeout}
+              onChange={(e) => onChange({ on_timeout: e.target.value })}
+              className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+            >
+              <option value="partial">Continue with partial results</option>
+              <option value="fail">Fail the execution</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          </div>
+        </Field>
+      )}
+
+      <div>
+        <label className="mb-2 block text-xs font-medium text-gray-600">Branches</label>
+        <p className="mb-2 text-xs text-gray-400">Select which steps run in parallel inside this node.</p>
+        {available.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">No other steps in this workflow yet.</p>
+        ) : (
+          <div className="space-y-1.5 rounded-md border border-gray-200 p-2">
+            {available.map((opt) => (
+              <label key={opt.id} className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={children.includes(opt.id)}
+                  onChange={() => toggleChild(opt.id)}
+                  className="h-3.5 w-3.5 rounded border-gray-300 accent-slate-600"
+                />
+                <span className="font-mono text-xs text-gray-700">
+                  {opt.label ? `${opt.label} (${opt.namespace})` : opt.namespace}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   )
 }
 
