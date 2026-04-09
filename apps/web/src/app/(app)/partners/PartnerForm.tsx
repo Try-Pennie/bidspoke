@@ -422,7 +422,7 @@ export default function PartnerForm({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+            className="px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
           >
             Cancel
           </button>
