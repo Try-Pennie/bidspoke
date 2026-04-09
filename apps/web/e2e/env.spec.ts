@@ -1,6 +1,29 @@
 import { test, expect } from '@playwright/test'
+import * as path from 'path'
 
 test.describe('Environment Variables', () => {
+  test.afterAll(async ({ browser }) => {
+    const ctx = await browser.newContext({
+      storageState: path.resolve(__dirname, '.auth/storage.json'),
+    })
+    const page = await ctx.newPage()
+    try {
+      await page.goto('/env')
+      await page.waitForLoadState('networkidle')
+      let found = true
+      while (found) {
+        const e2eRow = page.locator('tr').filter({ hasText: /^E2E_/ }).first()
+        found = await e2eRow.isVisible().catch(() => false)
+        if (!found) break
+        await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
+        await page.getByRole('button', { name: 'Delete', exact: true }).click()
+        await page.waitForTimeout(300)
+      }
+    } finally {
+      await ctx.close()
+    }
+  })
+
   test.beforeEach(async ({ page }) => {
     await page.goto('/env')
     await page.waitForLoadState('networkidle')

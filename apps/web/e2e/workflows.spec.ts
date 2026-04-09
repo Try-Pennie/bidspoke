@@ -12,10 +12,10 @@ test.describe('Workflows list', () => {
     try {
       await page.goto('/workflows')
       await page.waitForLoadState('networkidle')
-      // Delete all workflows left behind by this suite
+      // Delete E2E-named workflows AND anything created by the e2e-test user
       let found = true
       while (found) {
-        const e2eRow = page.locator('tr').filter({ hasText: /E2E-/ }).first()
+        const e2eRow = page.locator('tr').filter({ hasText: /E2E-|e2e-test/ }).first()
         found = await e2eRow.isVisible().catch(() => false)
         if (!found) break
         await e2eRow.getByRole('button', { name: 'More options' }).click()
