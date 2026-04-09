@@ -211,9 +211,9 @@
 - [x] **Test:** Simulate traffic drop, verify alert fires
 
 ### 3.7 Phase 3 Integration Testing
-- [ ] Full regression: all Phase 1 + Phase 2 tests still pass
-- [ ] Schema autocomplete across all three services
-- [ ] GitHub backup for every workflow save
+- [x] Full regression: all Phase 1 + Phase 2 tests still pass
+- [x] Schema autocomplete across all three services
+- [x] GitHub backup for every workflow save
 - [ ] Push all code to GitHub, verify CI passes
 - [ ] **Ship Phase 3**
 

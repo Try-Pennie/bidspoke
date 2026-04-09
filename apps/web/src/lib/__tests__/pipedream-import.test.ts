@@ -90,7 +90,7 @@ describe('code node', () => {
 describe('code translation', () => {
   function translate(code: string) {
     const raw = mkExport('W', [{ namespace: 's', savedComponent: { code } }])
-    return parsePipedreamExport(raw).def.nodes[0].config._imported_code as string
+    return parsePipedreamExport(raw).def.nodes[0].config.script as string
   }
 
   it('removes @pipedream/platform import', () => {
