@@ -214,8 +214,8 @@
 - [x] Full regression: all Phase 1 + Phase 2 tests still pass
 - [x] Schema autocomplete across all three services
 - [x] GitHub backup for every workflow save
-- [ ] Push all code to GitHub, verify CI passes
-- [ ] **Ship Phase 3**
+- [x] Push all code to GitHub, verify CI passes
+- [x] **Ship Phase 3**
 
 ---
 
