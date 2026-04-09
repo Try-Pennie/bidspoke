@@ -21,60 +21,66 @@ function fmt(ms: number | null) {
 
 function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
   const maxTotal = Math.max(...data.map((d) => d.total), 1)
-  const H = 100
-  const LABEL_H = 20
-  const VW = 560
   const n = data.length
-  const slotW = VW / n
-  const barW = Math.max(slotW * 0.55, 2)
+  const CHART_H = 96
+
+  const showLabelAt = (i: number) =>
+    i === 0 || i === n - 1 || n <= 7 || i % Math.ceil(n / 6) === 0
 
   return (
-    <svg viewBox={`0 0 ${VW} ${H + LABEL_H}`} className="w-full" height={H + LABEL_H} preserveAspectRatio="none">
-      {data.map((d, i) => {
-        const x = i * slotW + (slotW - barW) / 2
+    <div>
+      <div className="relative" style={{ height: CHART_H }}>
+        {[0.25, 0.5, 0.75, 1].map((pct) => (
+          <div
+            key={pct}
+            className="absolute left-0 right-0 border-t border-gray-100"
+            style={{ top: Math.round(CHART_H * (1 - pct)) }}
+          />
+        ))}
+        <div className="absolute inset-0 flex items-end">
+          {data.map((d) => {
+            const completedH = (d.completed / maxTotal) * CHART_H
+            const exitedH = (d.exited / maxTotal) * CHART_H
+            const failedH = (d.failed / maxTotal) * CHART_H
+            const totalH = completedH + exitedH + failedH
 
-        const completedH = (d.completed / maxTotal) * H
-        const exitedH = (d.exited / maxTotal) * H
-        const failedH = (d.failed / maxTotal) * H
-
-        const completedY = H - completedH
-        const exitedY = completedY - exitedH
-        const failedY = exitedY - failedH
-
-        const showLabel = i === 0 || i === n - 1 || n <= 7 || i % Math.ceil(n / 6) === 0
-        const labelDate = new Date(d.date + 'T12:00:00Z')
-        const label = labelDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-
-        return (
-          <g key={d.date}>
-            {d.total === 0 && (
-              <rect x={x} y={H - 2} width={barW} height={2} fill="#f1f5f9" rx="1" />
-            )}
-            {d.completed > 0 && (
-              <rect x={x} y={completedY} width={barW} height={completedH} fill="#818cf8" rx="1.5" />
-            )}
-            {d.exited > 0 && (
-              <rect x={x} y={exitedY} width={barW} height={exitedH} fill="#cbd5e1" rx="1.5" />
-            )}
-            {d.failed > 0 && (
-              <rect x={x} y={failedY} width={barW} height={failedH} fill="#fca5a5" rx="1.5" />
-            )}
-            {showLabel && (
-              <text
-                x={x + barW / 2}
-                y={H + 14}
-                textAnchor="middle"
-                fontSize="9"
-                fill="#94a3b8"
-                fontFamily="ui-sans-serif,system-ui,sans-serif"
-              >
-                {label}
-              </text>
-            )}
-          </g>
-        )
-      })}
-    </svg>
+            return (
+              <div key={d.date} className="flex flex-1 justify-center items-end h-full">
+                {totalH > 0 ? (
+                  <div
+                    className="relative overflow-hidden rounded-t-[2px]"
+                    style={{ width: 'clamp(3px, 42%, 14px)', height: Math.max(totalH, 2) }}
+                  >
+                    <div className="absolute bottom-0 left-0 right-0 bg-indigo-400" style={{ height: completedH }} />
+                    {exitedH > 0 && (
+                      <div className="absolute left-0 right-0 bg-slate-300" style={{ height: exitedH, bottom: completedH }} />
+                    )}
+                    {failedH > 0 && (
+                      <div className="absolute left-0 right-0 bg-red-300" style={{ height: failedH, bottom: completedH + exitedH }} />
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-sm bg-gray-100" style={{ width: 'clamp(3px, 42%, 14px)', height: 2 }} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+      <div className="mt-2 flex">
+        {data.map((d, i) => {
+          const labelDate = new Date(d.date + 'T12:00:00Z')
+          const label = labelDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          return (
+            <div key={d.date} className="flex-1 flex justify-center">
+              {showLabelAt(i) && (
+                <span className="text-[10px] leading-none text-gray-400">{label}</span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
