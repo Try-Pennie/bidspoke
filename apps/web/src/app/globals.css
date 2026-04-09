@@ -28,6 +28,27 @@
   .check-path { animation: none; stroke-dashoffset: 0; }
 }
 
+/* Rule builder row — enter and exit animations */
+.rule-row {
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+
+@starting-style {
+  .rule-row {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+.rule-row-exiting {
+  opacity: 0 !important;
+  transform: translateY(-4px) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rule-row { transition: none; }
+}
+
 /* React Flow — override default z-index so our panels sit above it */
 .react-flow__panel {
   z-index: 10;

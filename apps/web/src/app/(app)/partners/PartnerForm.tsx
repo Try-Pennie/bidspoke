@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Partner, PartnerBody } from '@/lib/api'
-import { Save, Trash2, Loader2, Plus, X } from 'lucide-react'
+import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
@@ -15,6 +15,14 @@ interface BodyRule   { id: string; kind: 'body';   field: string; condition: Bod
 interface StatusRule { id: string; kind: 'status'; code: string;  bodyField: string; condition: StatusCondition; value: string }
 type Rule = BodyRule | StatusRule
 type SignalRules = Record<SignalCategory, Rule[]>
+
+interface FormSnapshot {
+  name: string; apiEndpoint: string; cfSecretKey: string; isActive: boolean
+  priority: string; dailyCap: string; minBid: string; bidFormula: string
+  dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
+  circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
+  alertTransient: boolean; alertPermanent: boolean
+}
 
 function uid() { return Math.random().toString(36).slice(2) }
 function emptyBody(): BodyRule   { return { id: uid(), kind: 'body',   field: '',   condition: 'equals',   value: '' } }
@@ -93,13 +101,14 @@ const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = 
 
 const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200'
 
-function RuleRow({ rule, onChange, onRemove }: {
+function RuleRow({ rule, onChange, onRemove, removing }: {
   rule: Rule
   onChange: (r: Rule) => void
   onRemove: () => void
+  removing?: boolean
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-2">
+    <div className={`rule-row flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-2${removing ? ' rule-row-exiting' : ''}`}>
       <select
         value={rule.kind}
         onChange={(e) => {
@@ -184,11 +193,20 @@ function RuleRow({ rule, onChange, onRemove }: {
 }
 
 function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: (v: SignalRules) => void }) {
+  const [removingIds, setRemovingIds] = useState<Set<string>>(new Set())
+  const valueRef = useRef(value)
+  valueRef.current = value
+
   function update(cat: SignalCategory, id: string, rule: Rule) {
     onChange({ ...value, [cat]: value[cat].map((r) => (r.id === id ? rule : r)) })
   }
   function remove(cat: SignalCategory, id: string) {
-    onChange({ ...value, [cat]: value[cat].filter((r) => r.id !== id) })
+    setRemovingIds((prev) => new Set([...prev, id]))
+    setTimeout(() => {
+      const cur = valueRef.current
+      onChange({ ...cur, [cat]: cur[cat].filter((r) => r.id !== id) })
+      setRemovingIds((prev) => { const s = new Set(prev); s.delete(id); return s })
+    }, 150)
   }
   function add(cat: SignalCategory) {
     onChange({ ...value, [cat]: [...value[cat], emptyBody()] })
@@ -222,6 +240,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
                 <RuleRow
                   key={rule.id}
                   rule={rule}
+                  removing={removingIds.has(rule.id)}
                   onChange={(r) => update(cat, rule.id, r)}
                   onRemove={() => remove(cat, rule.id)}
                 />
@@ -304,6 +323,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // ── Main form ─────────────────────────────────────────────────────────────────
 
+type SaveState = 'idle' | 'saving' | 'saved'
+
 export default function PartnerForm({
   partner,
   onSave,
@@ -314,8 +335,10 @@ export default function PartnerForm({
   onCancelDelete,
   deleting,
 }: Props) {
-  const [saving, setSaving] = useState(false)
+  const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [undoSnapshot, setUndoSnapshot] = useState<FormSnapshot | null>(null)
+  const [undoSecondsLeft, setUndoSecondsLeft] = useState(0)
 
   const [name, setName] = useState(partner?.name ?? '')
   const [slug, setSlug] = useState(partner?.slug ?? '')
@@ -340,10 +363,44 @@ export default function PartnerForm({
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
   const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
 
+  // Undo countdown
+  useEffect(() => {
+    if (undoSecondsLeft <= 0) return
+    const t = setTimeout(() => {
+      setUndoSecondsLeft((s) => {
+        if (s <= 1) { setUndoSnapshot(null); return 0 }
+        return s - 1
+      })
+    }, 1000)
+    return () => clearTimeout(t)
+  }, [undoSecondsLeft])
+
+  function captureSnapshot(): FormSnapshot {
+    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent }
+  }
+
+  function restoreSnapshot(snap: FormSnapshot) {
+    setName(snap.name); setApiEndpoint(snap.apiEndpoint); setCfSecretKey(snap.cfSecretKey)
+    setIsActive(snap.isActive); setPriority(snap.priority)
+    setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
+    setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
+    setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
+    setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
+    setAlertTransient(snap.alertTransient); setAlertPermanent(snap.alertPermanent)
+  }
+
+  function handleUndo() {
+    if (!undoSnapshot) return
+    restoreSnapshot(undoSnapshot)
+    setUndoSnapshot(null)
+    setUndoSecondsLeft(0)
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setSaving(true)
+    const snapshot = captureSnapshot()
+    setSaveState('saving')
     try {
       const body: PartnerBody = {
         name,
@@ -367,10 +424,15 @@ export default function PartnerForm({
         },
       }
       await onSave(body, partner?.id)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save partner')
-    } finally {
-      setSaving(false)
+      setSaveState('saved')
+      if (!isNew) {
+        setUndoSnapshot(snapshot)
+        setUndoSecondsLeft(5)
+      }
+      setTimeout(() => setSaveState('idle'), 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save partner')
+      setSaveState('idle')
     }
   }
 
@@ -382,7 +444,7 @@ export default function PartnerForm({
         <div>
           {isNew
             ? <h2 className="text-lg font-medium text-gray-400">New partner</h2>
-            : <h2 className="text-2xl font-bold text-gray-900">{partner.name}</h2>
+            : <h2 className="text-2xl font-bold text-gray-900">{name || <span className="text-gray-300">Unnamed</span>}</h2>
           }
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-400">{partner.slug}</p>
@@ -516,19 +578,21 @@ export default function PartnerForm({
               Pauses bids to this partner after repeated failures, then retries automatically.
             </p>
           </div>
-          {circuitEnabled && (
-            <div className="grid grid-cols-3 gap-4">
-              <Field label="Error threshold" hint="Errors before pausing.">
-                <Input value={circuitThreshold} onChange={setCircuitThreshold} type="number" placeholder="5" />
-              </Field>
-              <Field label="Window (seconds)" hint="Time period to count errors in.">
-                <Input value={circuitWindow} onChange={setCircuitWindow} type="number" placeholder="60" />
-              </Field>
-              <Field label="Pause duration (seconds)" hint="How long to wait before retrying.">
-                <Input value={circuitCooldown} onChange={setCircuitCooldown} type="number" placeholder="300" />
-              </Field>
+          <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div className="min-h-0 overflow-hidden">
+              <div className="grid grid-cols-3 gap-4 pt-1">
+                <Field label="Error threshold" hint="Errors before pausing.">
+                  <Input value={circuitThreshold} onChange={setCircuitThreshold} type="number" placeholder="5" />
+                </Field>
+                <Field label="Window (seconds)" hint="Time period to count errors in.">
+                  <Input value={circuitWindow} onChange={setCircuitWindow} type="number" placeholder="60" />
+                </Field>
+                <Field label="Pause duration (seconds)" hint="How long to wait before retrying.">
+                  <Input value={circuitCooldown} onChange={setCircuitCooldown} type="number" placeholder="300" />
+                </Field>
+              </div>
             </div>
-          )}
+          </div>
         </Section>
 
         <Section title="Response classification">
@@ -565,15 +629,25 @@ export default function PartnerForm({
         <div className="flex items-center gap-3 border-t border-gray-100 pt-6">
           <button
             type="submit"
-            disabled={saving || !name}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            disabled={saveState === 'saving' || !name}
+            className={`flex min-w-[130px] items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors duration-150 disabled:opacity-50 ${
+              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'
+            }`}
           >
-            {saving
-              ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>
-              : <><Save className="h-4 w-4" /> {isNew ? 'Create partner' : 'Save changes'}</>
-            }
+            {saveState === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>}
+            {saveState === 'saved'  && <><Check  className="h-4 w-4" /> Saved</>}
+            {saveState === 'idle'   && <><Save   className="h-4 w-4" /> {isNew ? 'Create partner' : 'Save changes'}</>}
           </button>
-          {!isNew && (
+          {undoSnapshot && (
+            <button
+              type="button"
+              onClick={handleUndo}
+              className="text-xs text-gray-400 transition-colors hover:text-gray-700"
+            >
+              Undo · {undoSecondsLeft}s
+            </button>
+          )}
+          {!isNew && !undoSnapshot && (
             <p className="text-xs text-gray-400">
               {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? '—'}`}
             </p>
