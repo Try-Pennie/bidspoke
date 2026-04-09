@@ -9,7 +9,7 @@ import type { StatsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { formatDatetime } from '@/lib/dates'
-import { AlertCircle, CheckCircle2, ArrowRight, Clock } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ArrowRight } from 'lucide-react'
 
 type Window = 7 | 14 | 30
 
@@ -202,9 +202,9 @@ export default function DashboardPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
   useEffect(() => {
-    function load() {
+    function load(showSkeleton = false) {
       if (document.hidden) return
-      setLoading(true)
+      if (showSkeleton) setLoading(true)
       setError(null)
       api.stats.get(window)
         .then((d) => { setData(d); setLastUpdated(new Date()) })
@@ -212,12 +212,13 @@ export default function DashboardPage() {
         .finally(() => setLoading(false))
     }
 
-    load()
+    load(true)
     const interval = setInterval(load, 60_000)
-    document.addEventListener('visibilitychange', load)
+    const onVisibility = () => load()
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       clearInterval(interval)
-      document.removeEventListener('visibilitychange', load)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [window])
 
@@ -327,21 +328,9 @@ export default function DashboardPage() {
                   <p className="text-xs text-gray-400">Total runs</p>
                   <p className="mt-1.5 text-3xl font-bold tabular-nums text-gray-900">{animatedTotal ?? s?.total ?? 0}</p>
                 </div>
-                <div className={`rounded-xl border p-5 ${
-                  s?.p95_duration_ms != null && s.p95_duration_ms > 5000
-                    ? 'border-amber-200 bg-amber-50'
-                    : 'border-gray-200 bg-white'
-                }`}>
+                <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Avg duration</p>
                   <p className="mt-1.5 text-3xl font-bold text-gray-900">{fmt(s?.avg_duration_ms ?? null)}</p>
-                  {s?.p95_duration_ms != null && (
-                    <div className={`mt-1 flex items-center gap-1 text-xs ${
-                      s.p95_duration_ms > 5000 ? 'text-amber-600' : 'text-gray-400'
-                    }`}>
-                      {s.p95_duration_ms > 5000 && <Clock className="h-3 w-3 flex-shrink-0" />}
-                      <span>p95 {fmt(s.p95_duration_ms)}</span>
-                    </div>
-                  )}
                 </div>
               </div>
             </>
