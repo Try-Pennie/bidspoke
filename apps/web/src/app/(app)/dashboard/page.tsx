@@ -257,7 +257,11 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : !data || data.by_workflow.length === 0 ? (
-              <div className="px-5 py-8 text-center text-sm text-gray-400">No executions in this window</div>
+              <div className="flex flex-col items-center py-8 text-center">
+                <CheckCircle2 className="mb-2 h-6 w-6 text-gray-300" />
+                <p className="text-sm font-medium text-gray-700">No executions</p>
+                <p className="mt-0.5 text-xs text-gray-400">Try a longer window to see historical data.</p>
+              </div>
             ) : (
               <table className="w-full text-sm">
                 <thead className="border-b border-gray-100 bg-gray-50">
