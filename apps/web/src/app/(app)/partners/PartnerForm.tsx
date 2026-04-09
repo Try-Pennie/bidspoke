@@ -380,9 +380,10 @@ export default function PartnerForm({
     <div className="mx-auto max-w-2xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">
-            {isNew ? 'New partner' : partner.name}
-          </h2>
+          {isNew
+            ? <h2 className="text-lg font-medium text-gray-400">New partner</h2>
+            : <h2 className="text-2xl font-bold text-gray-900">{partner.name}</h2>
+          }
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-400">{partner.slug}</p>
           )}
