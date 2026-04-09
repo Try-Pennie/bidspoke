@@ -241,7 +241,7 @@ export default function EnvPage() {
                       </button>
                       {/* Confirm — floats absolutely, extends left over adjacent column */}
                       {confirmingDelete === v.id && (
-                        <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
                           <button
                             onClick={() => handleDelete(v.id)}
                             className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
