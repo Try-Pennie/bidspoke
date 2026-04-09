@@ -187,7 +187,7 @@
 - [x] Implement Salesforce schema sync (objects, fields, record types) + autocomplete
 - [x] Implement Supabase schema sync (tables, columns) + autocomplete
 - [x] Implement Snowflake schema sync (schemas, tables) + autocomplete
-- [ ] **Test:** Schema sync fetches real metadata, autocomplete populates in Integration node config
+- [x] **Test:** Schema sync fetches real metadata, autocomplete populates in Integration node config
 
 ### 3.2 GitHub Backup
 - [ ] Implement GitHub integration (push workflow definitions on save, commit_sha on workflow_versions)
