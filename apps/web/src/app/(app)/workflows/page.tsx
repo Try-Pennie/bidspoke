@@ -11,9 +11,30 @@ import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
+function HealthDot({ rate }: { rate: number | null }) {
+  if (rate === null) {
+    return <span className="h-2.5 w-2.5 flex-shrink-0 rounded-full border-2 border-gray-200" title="No run history" />
+  }
+  if (rate < 80) {
+    return (
+      <span className="relative flex h-2.5 w-2.5 flex-shrink-0" title={`${rate}% success rate`}>
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
+        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
+      </span>
+    )
+  }
+  return (
+    <span
+      className={`h-2.5 w-2.5 flex-shrink-0 rounded-full ${rate >= 95 ? 'bg-green-500' : 'bg-amber-400'}`}
+      title={`${rate}% success rate`}
+    />
+  )
+}
+
 export default function WorkflowsPage() {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
+  const [healthMap, setHealthMap] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -36,8 +57,13 @@ export default function WorkflowsPage() {
   const [duplicating, setDuplicating] = useState<string | null>(null)
 
   useEffect(() => {
-    api.workflows.list()
-      .then(setWorkflows)
+    Promise.all([api.workflows.list(), api.stats.get(30)])
+      .then(([wfs, stats]) => {
+        setWorkflows(wfs)
+        const map: Record<string, number> = {}
+        for (const wf of stats.by_workflow) map[wf.workflow_id] = wf.success_rate
+        setHealthMap(map)
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
@@ -188,6 +214,7 @@ export default function WorkflowsPage() {
                   <tr key={i}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <Skeleton className="h-2.5 w-2.5 rounded-full" />
                         <Skeleton className="h-4 w-40" />
                         <Skeleton className="h-5 w-14 rounded-full" />
                       </div>
@@ -249,10 +276,11 @@ export default function WorkflowsPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {workflows.map((wf) => (
-                  <tr key={wf.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingId === wf.id ? 'opacity-0' : ''}`}>
+                  <tr key={wf.id} className={`transition-opacity duration-150 ${removingId === wf.id ? 'opacity-0' : ''} ${healthMap[wf.id] != null && healthMap[wf.id] < 80 ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-gray-50'}`}>
                     {/* Name + status badge */}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
+                        <HealthDot rate={healthMap[wf.id] ?? null} />
                         {renamingId === wf.id ? (
                           <form
                             onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
