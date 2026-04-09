@@ -4,6 +4,8 @@ export type AuditEntityType =
   | 'partner_config'
   | 'environment_variable'
   | 'service_connection'
+  | 'service_preset'
+  | 'user_allowlist'
   | 'workflow'
   | 'circuit_breaker'
 

@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
+import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
 
@@ -20,7 +21,7 @@ servicePresets.get('/', async (c) => {
 })
 
 servicePresets.post('/', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const body = await c.req.json<{ name: string; slug: string; auth_type: string; base_url?: string }>()
 
   if (!body.name?.trim()) return c.json({ error: 'name is required' }, 400)
@@ -48,11 +49,12 @@ servicePresets.post('/', async (c) => {
     if (error.code === '23505') return c.json({ error: `A service with slug "${slug}" already exists` }, 409)
     return c.json({ error: error.message }, 500)
   }
+  await writeAuditLog(supabase, orgId, 'service_preset', data.id, 'created', userId, { name: data.name, slug: data.slug })
   return c.json(data, 201)
 })
 
 servicePresets.put('/:id', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const body = await c.req.json<{ name?: string; auth_type?: string; base_url?: string }>()
 
@@ -76,11 +78,12 @@ servicePresets.put('/:id', async (c) => {
 
   if (error) return c.json({ error: error.message }, 500)
   if (!data) return c.json({ error: 'not found' }, 404)
+  await writeAuditLog(supabase, orgId, 'service_preset', id, 'updated', userId, patch)
   return c.json(data)
 })
 
 servicePresets.delete('/:id', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const { error } = await supabase
@@ -89,6 +92,7 @@ servicePresets.delete('/:id', async (c) => {
     .eq('id', id)
     .eq('organization_id', orgId)
   if (error) return c.json({ error: error.message }, 500)
+  await writeAuditLog(supabase, orgId, 'service_preset', id, 'deleted', userId)
   return c.json({ ok: true })
 })
 

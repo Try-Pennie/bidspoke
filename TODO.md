@@ -257,6 +257,6 @@
 - [x] Error handling: no unhandled promise rejections in Worker
 - [x] Execution logs writing correctly (check Supabase)
 - [x] Slack alerts firing on failure
-- [ ] Audit log capturing all mutations
+- [x] Audit log capturing all mutations
 - [ ] Code pushed to GitHub, CI green
 - [ ] KV cache invalidation working on workflow save

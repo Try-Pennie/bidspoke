@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
+import { writeAuditLog } from '../../lib/audit'
 
 const access = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -26,7 +27,7 @@ access.post('/', async (c) => {
     return c.json({ error: 'Only @trypennie.com addresses are permitted' }, 400)
   }
 
-  const { email: addedByEmail } = c.get('user')
+  const { orgId, userId, email: addedByEmail } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
   const { error } = await supabase
@@ -37,13 +38,14 @@ access.post('/', async (c) => {
     return c.json({ error: error.message }, 500)
   }
 
+  await writeAuditLog(supabase, orgId, 'user_allowlist', crypto.randomUUID(), 'created', userId, { email })
   return c.json({ email, added_by: addedByEmail }, 201)
 })
 
 // DELETE /api/access/:email — remove an email
 access.delete('/:email', async (c) => {
   const email = decodeURIComponent(c.req.param('email')).toLowerCase()
-  const { email: callerEmail } = c.get('user')
+  const { orgId, userId, email: callerEmail } = c.get('user')
 
   // Prevent self-removal — you can't lock yourself out
   if (email === callerEmail?.toLowerCase()) {
@@ -56,6 +58,8 @@ access.delete('/:email', async (c) => {
     .delete()
     .eq('email', email)
   if (error) return c.json({ error: error.message }, 500)
+
+  await writeAuditLog(supabase, orgId, 'user_allowlist', crypto.randomUUID(), 'deleted', userId, { email })
   return c.json({ ok: true })
 })
 
