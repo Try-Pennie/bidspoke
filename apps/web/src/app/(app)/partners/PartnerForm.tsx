@@ -46,7 +46,7 @@ function Input({ value, onChange, placeholder, type = 'text', mono }: {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="mb-4 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h3>
+      <h3 className="mb-4 text-xs font-semibold text-gray-500">{title}</h3>
       <div className="space-y-4">{children}</div>
     </div>
   )
