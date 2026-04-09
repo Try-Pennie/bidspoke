@@ -256,6 +256,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [showOverflow, setShowOverflow] = useState(false)
   const overflowRef = useRef<HTMLDivElement>(null)
   const sidePanelRef = useRef<HTMLDivElement>(null)
+  const nameRef = useRef<HTMLInputElement>(null)
   // Undo/redo
   const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
   const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
@@ -286,6 +287,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   )
 
   // Inject hasError into node data so nodes can show the amber ring.
+  // Auto-focus + select the name input for brand-new workflows so the first action is naming it
+  useEffect(() => {
+    if (mode === 'edit' && workflow.name === 'Untitled Workflow') {
+      nameRef.current?.select()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Guard with a ref so setNodes is only called when the error set actually changes —
   // otherwise the useMemo above creates a new Map reference on every render, causing
   // setNodes → new nodes → new Map → setNodes → infinite loop.
@@ -754,6 +762,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <div className="h-5 w-px bg-gray-200" />
           <div className="group flex items-center gap-1">
             <input
+              ref={nameRef}
               style={{ viewTransitionName: 'workflow-name' }}
               className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
                 mode === 'edit' ? 'hover:bg-gray-100/70 focus:bg-gray-100/70' : ''
