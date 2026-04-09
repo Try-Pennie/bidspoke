@@ -22,6 +22,12 @@ test.describe('Environment Variables', () => {
 
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value).first()).toBeVisible()
+
+    // cleanup
+    const e2eRow = page.locator('tr').filter({ hasText: key }).first()
+    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
+    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })
 
   test('secret var — value is masked in the list', async ({ page }) => {
@@ -36,6 +42,12 @@ test.describe('Environment Variables', () => {
 
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value)).not.toBeVisible()
+
+    // cleanup
+    const e2eRow = page.locator('tr').filter({ hasText: key }).first()
+    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
+    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })
 
   test('delete env var → row removed', async ({ page }) => {

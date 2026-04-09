@@ -19,19 +19,26 @@ test.describe('Integrations — HTTP service presets', () => {
     await page.getByRole('button', { name: 'Save service' }).click()
 
     await expect(page.getByText(name)).toBeVisible({ timeout: 8000 })
+
+    // cleanup
+    const e2eRow = page.locator('tr').filter({ hasText: name }).first()
+    await e2eRow.getByRole('button', { name: /delete|remove/i }).click()
+    await page.getByRole('button', { name: /delete|remove/i }).last().click()
+    await expect(page.getByText(name)).not.toBeVisible({ timeout: 5000 })
   })
 
   test('delete HTTP service preset → row removed', async ({ page }) => {
-    const e2eRow = page.locator('tr').filter({ hasText: 'E2E Service' }).first()
-    const e2eText = page.getByText(/E2E Service/).first()
+    const name = `E2E Service Del ${Date.now()}`
 
-    if (!await e2eText.isVisible().catch(() => false)) {
-      test.skip()
-    }
+    await page.getByRole('button', { name: 'Add service' }).click()
+    await page.locator('input[placeholder="My CRM"]').fill(name)
+    await page.getByRole('button', { name: 'Save service' }).click()
+    await expect(page.getByText(name)).toBeVisible({ timeout: 8000 })
 
+    const e2eRow = page.locator('tr').filter({ hasText: name }).first()
     await e2eRow.getByRole('button', { name: /delete|remove/i }).click()
     await page.getByRole('button', { name: /delete|remove/i }).last().click()
 
-    await expect(e2eText).not.toBeVisible({ timeout: 5000 })
+    await expect(page.getByText(name)).not.toBeVisible({ timeout: 5000 })
   })
 })

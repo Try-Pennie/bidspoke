@@ -19,6 +19,12 @@ test.describe('API Sources', () => {
     await page.getByRole('button', { name: 'Generate key' }).click()
 
     await expect(page.getByText(name).first()).toBeVisible({ timeout: 8000 })
+
+    // cleanup
+    const sourceCard = page.getByText(name).first().locator('..').locator('..')
+    await sourceCard.getByRole('button', { name: 'Revoke' }).click()
+    await sourceCard.getByRole('button', { name: 'Revoke' }).click()
+    await expect(page.getByRole('paragraph').filter({ hasText: name })).not.toBeVisible({ timeout: 5000 })
   })
 
   test('revoke source → row removed', async ({ page }) => {
