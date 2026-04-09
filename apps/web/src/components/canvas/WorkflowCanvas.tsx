@@ -84,12 +84,19 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
-  const workflowNodes = nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: { x: 0, y: 0 }, // overridden by layoutWorkflow
-    data: { namespace: n.namespace, label: n.label, config: n.config, variables: n.variables ?? {} } satisfies CanvasNodeData,
-  }))
+  const workflowNodes = nodes.map((n) => {
+    // Parallel nodes store children at NodeDef.children (top-level) but the
+    // config panel reads/writes config.children — merge them on load.
+    const config = n.type === 'parallel' && n.children?.length
+      ? { ...n.config, children: n.children }
+      : n.config
+    return {
+      id: n.id,
+      type: n.type,
+      position: { x: 0, y: 0 }, // overridden by layoutWorkflow
+      data: { namespace: n.namespace, label: n.label, config, variables: n.variables ?? {} } satisfies CanvasNodeData,
+    }
+  })
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
   return layoutWorkflow(allNodes, defToEdges(edges))
 }

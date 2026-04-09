@@ -32,6 +32,11 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (mappings.some((m) => !m.source?.trim() || !m.target?.trim())) return 'Some mappings are incomplete'
       return null
     }
+    case 'parallel': {
+      const children = config.children as string[] | undefined
+      if (!children?.length) return 'No branches selected'
+      return null
+    }
     case 'partner_bid': {
       if (!config.partner_id) return 'No partner selected'
       return null
@@ -44,7 +49,7 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!config.script) return 'No script written'
       return null
     }
-    // response, exit, parallel, trigger — always valid
+    // response, exit, trigger — always valid
     default:
       return null
   }
