@@ -19,15 +19,24 @@ export default function EnvPage() {
   const [creating, setCreating] = useState(false)
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({})
   const [revealing, setRevealing] = useState<Set<string>>(new Set())
+  const [revealUnavailable, setRevealUnavailable] = useState<Set<string>>(new Set())
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const keyInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (showForm) {
+      const frame = requestAnimationFrame(() => keyInputRef.current?.focus())
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [showForm])
 
   useEffect(() => {
     api.env.list()
       .then(setVars)
-      .catch((e) => setError(e.message))
+      .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
 
@@ -92,7 +101,7 @@ export default function EnvPage() {
             className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
           >
             <Plus className="h-4 w-4" />
-            Add Variable
+            Add variable
           </button>
         </div>
 
@@ -102,65 +111,72 @@ export default function EnvPage() {
           </div>
         )}
 
-        {/* Add form */}
-        {showForm && (
-          <form
-            onSubmit={handleCreate}
-            className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
-          >
-            <h2 className="mb-4 text-base font-semibold text-gray-900">New Variable</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
-                <input
-                  className="input w-full font-mono"
-                  placeholder="MY_API_KEY"
-                  value={newVar.key}
-                  onChange={(e) => setNewVar({ ...newVar, key: e.target.value.toUpperCase().replace(/\s/g, '_') })}
-                  required
-                />
+        {/* Add form — animated slide open/closed */}
+        <div
+          className={`grid transition-[grid-template-rows] duration-200 ease-out ${showForm ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}
+        >
+          <div className="min-h-0 overflow-hidden">
+            <form
+              onSubmit={handleCreate}
+              className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
+              inert={!showForm || undefined}
+            >
+              <h2 className="mb-4 text-sm font-medium text-gray-400">New variable</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
+                  <input
+                    ref={keyInputRef}
+                    className="input w-full font-mono"
+                    placeholder="MY_API_KEY"
+                    value={newVar.key}
+                    onChange={(e) => setNewVar({ ...newVar, key: e.target.value.toUpperCase().replace(/\s/g, '_') })}
+                    onBlur={() => setNewVar((v) => ({ ...v, key: v.key.replace(/_+$/, '') }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
+                  <input
+                    type={newVar.is_secret ? 'password' : 'text'}
+                    className="input w-full"
+                    placeholder="value"
+                    value={newVar.value}
+                    onChange={(e) => setNewVar({ ...newVar, value: e.target.value })}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
+              <div className="mt-3 flex items-center gap-2">
                 <input
-                  type={newVar.is_secret ? 'password' : 'text'}
-                  className="input w-full"
-                  placeholder="value"
-                  value={newVar.value}
-                  onChange={(e) => setNewVar({ ...newVar, value: e.target.value })}
+                  type="checkbox"
+                  id="is_secret"
+                  checked={newVar.is_secret}
+                  onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
+                  className="rounded border-gray-300 text-indigo-600"
                 />
+                <label htmlFor="is_secret" className="text-xs text-gray-600">
+                  Secret — value encrypted and synced to Cloudflare Worker
+                </label>
               </div>
-            </div>
-            <div className="mt-3 flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="is_secret"
-                checked={newVar.is_secret}
-                onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
-                className="rounded border-gray-300 text-indigo-600"
-              />
-              <label htmlFor="is_secret" className="text-xs text-gray-600">
-                Secret — value encrypted and synced to Cloudflare Worker
-              </label>
-            </div>
-            <div className="mt-4 flex gap-2">
-              <button
-                type="submit"
-                disabled={creating}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-              >
-                {creating ? 'Saving…' : 'Save'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowForm(false)}
-                className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={creating}
+                  className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
 
         {loading ? (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
@@ -205,12 +221,15 @@ export default function EnvPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {vars.map((v) => (
-                  <tr key={v.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingId === v.id ? 'opacity-0' : ''}`}>
-                    <td className="px-4 py-3 font-mono text-xs font-medium text-gray-900">{v.key}</td>
+                  <tr key={v.id} className={`env-row hover:bg-gray-50 ${removingId === v.id ? 'opacity-0 -translate-y-1' : ''}`}>
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-gray-900 whitespace-nowrap">{v.key}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
                       {v.is_secret ? (
                         <div className="flex items-center gap-1.5">
-                          <span>{revealedValues[v.id] ?? '••••••••'}</span>
+                          {revealUnavailable.has(v.id)
+                            ? <span className="font-sans text-gray-400 italic">Rotate to enable reveal</span>
+                            : <span>{revealedValues[v.id] ?? '••••••••'}</span>
+                          }
                           {revealedValues[v.id] ? (
                             <button
                               type="button"
@@ -221,7 +240,7 @@ export default function EnvPage() {
                             </button>
                           ) : revealing.has(v.id) ? (
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
-                          ) : (
+                          ) : revealUnavailable.has(v.id) ? null : (
                             <button
                               type="button"
                               onClick={async () => {
@@ -230,7 +249,12 @@ export default function EnvPage() {
                                   const { value } = await api.env.reveal(v.id)
                                   setRevealedValues((prev) => ({ ...prev, [v.id]: value }))
                                 } catch (err) {
-                                  setError(err instanceof Error ? err.message : 'Failed to reveal')
+                                  const msg = err instanceof Error ? err.message : ''
+                                  if (msg.includes('422')) {
+                                    setRevealUnavailable((s) => new Set([...s, v.id]))
+                                  } else {
+                                    setError(msg || 'Failed to reveal')
+                                  }
                                 } finally {
                                   setRevealing((s) => { const next = new Set(s); next.delete(v.id); return next })
                                 }
@@ -254,7 +278,7 @@ export default function EnvPage() {
                         {v.is_secret ? 'Secret' : 'Plain'}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">
+                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
                       {formatDatetime(v.updated_at)}
                     </td>
                     <td className="relative px-4 py-3">

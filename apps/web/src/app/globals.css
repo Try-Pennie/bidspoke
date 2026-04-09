@@ -28,6 +28,22 @@
   .check-path { animation: none; stroke-dashoffset: 0; }
 }
 
+/* Env var table row — enter animation */
+.env-row {
+  transition: opacity 150ms ease-out, transform 150ms ease-out;
+}
+
+@starting-style {
+  .env-row {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .env-row { transition: none; }
+}
+
 /* Rule builder row — enter and exit animations */
 .rule-row {
   transition: opacity 150ms ease-out, transform 150ms ease-out;
