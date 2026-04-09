@@ -460,7 +460,7 @@ export default function WorkflowsPage() {
                               {wf.name}
                             </Link>
                           )}
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                          <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${
                             wf.is_active
                               ? 'bg-green-50 text-green-700'
                               : 'bg-gray-100 text-gray-500'
