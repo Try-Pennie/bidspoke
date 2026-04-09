@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check } from 'lucide-react'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown } from 'lucide-react'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -31,6 +31,8 @@ function HealthDot({ rate }: { rate: number | null }) {
   )
 }
 
+type SortMode = 'time' | 'health'
+
 export default function WorkflowsPage() {
   const router = useRouter()
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
@@ -38,6 +40,13 @@ export default function WorkflowsPage() {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  // Sort (default: updated_at order from API)
+  const [sortMode, setSortMode] = useState<SortMode>('time')
 
   // ⋯ menu
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
@@ -56,6 +65,10 @@ export default function WorkflowsPage() {
   // Duplicate loading
   const [duplicating, setDuplicating] = useState<string | null>(null)
 
+  // FLIP animation refs for sort
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
+  const prevPositions = useRef<Map<string, number>>(new Map())
+
   useEffect(() => {
     Promise.all([api.workflows.list(), api.stats.get(30)])
       .then(([wfs, stats]) => {
@@ -68,6 +81,47 @@ export default function WorkflowsPage() {
       .finally(() => setLoading(false))
   }, [])
 
+  // Keyboard shortcut: / or ⌘K focuses search
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (e.key === '/' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
+
+  // FLIP: run after sortMode re-render, animate rows from old positions to new
+  useLayoutEffect(() => {
+    if (prevPositions.current.size === 0) return
+    for (const [id, el] of rowRefs.current) {
+      const prev = prevPositions.current.get(id)
+      if (prev == null) continue
+      const next = el.getBoundingClientRect().top
+      const dy = prev - next
+      if (Math.abs(dy) < 1) continue
+      el.style.transform = `translateY(${dy}px)`
+      el.style.transition = 'none'
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        for (const [, el] of rowRefs.current) {
+          el.style.transition = 'transform 350ms cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+          el.style.transform = ''
+        }
+      })
+    })
+    prevPositions.current = new Map()
+  }, [sortMode])
+
   // Close menu on outside click
   useEffect(() => {
     if (!openMenuId) return
@@ -79,6 +133,49 @@ export default function WorkflowsPage() {
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [openMenuId])
+
+  // Health priority for sort: red=4, amber=3, green=2, no-history=1, inactive=0
+  function healthPriority(wf: WorkflowSummary): number {
+    if (!wf.is_active) return 0
+    const rate = healthMap[wf.id]
+    if (rate == null) return 1
+    if (rate >= 95) return 2
+    if (rate >= 80) return 3
+    return 4
+  }
+
+  function toggleSort() {
+    const prefersReduced =
+      typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (!prefersReduced) {
+      for (const [id, el] of rowRefs.current) {
+        prevPositions.current.set(id, el.getBoundingClientRect().top)
+      }
+    }
+    setSortMode((s) => (s === 'time' ? 'health' : 'time'))
+  }
+
+  const sortedWorkflows =
+    sortMode === 'health'
+      ? [...workflows].sort((a, b) => healthPriority(b) - healthPriority(a))
+      : workflows
+
+  const isSearchActive = searchQuery.length > 0
+  const firstMatchId = isSearchActive
+    ? sortedWorkflows.find((wf) => wf.name.toLowerCase().includes(searchQuery.toLowerCase()))?.id
+    : undefined
+
+  // View Transitions: tag the clicked element, then navigate inside startViewTransition
+  function navigateToWorkflow(e: React.MouseEvent<HTMLElement>, id: string) {
+    // Pass through middle-click / modifier-click so browser handles them normally
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+    if (typeof document === 'undefined' || !('startViewTransition' in document)) return
+    e.preventDefault()
+    const el = e.currentTarget
+    el.style.viewTransitionName = 'workflow-name'
+    ;(document as Document & { startViewTransition(cb: () => void): void })
+      .startViewTransition(() => router.push(`/workflows/${id}`))
+  }
 
   async function handleCreate() {
     setCreating(true)
@@ -188,16 +285,42 @@ export default function WorkflowsPage() {
   return (
     <NavLayout>
       <div className="p-8">
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex items-center gap-4">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">Workflows</h1>
-          <button
-            onClick={handleCreate}
-            disabled={creating}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            <Plus className="h-4 w-4" />
-            {creating ? 'Creating…' : 'New Workflow'}
-          </button>
+          <div className="flex flex-1 items-center justify-end gap-3">
+            {/* Search */}
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+              <input
+                ref={searchRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && firstMatchId) router.push(`/workflows/${firstMatchId}`)
+                  if (e.key === 'Escape') { setSearchQuery(''); searchRef.current?.blur() }
+                }}
+                placeholder="Search… /"
+                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => { setSearchQuery(''); searchRef.current?.focus() }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <Plus className="h-4 w-4" />
+              {creating ? 'Creating…' : 'New Workflow'}
+            </button>
+          </div>
         </div>
 
         {error && (
@@ -268,130 +391,167 @@ export default function WorkflowsPage() {
               </colgroup>
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-semibold text-gray-500">Name</th>
+                  <th className="rounded-tl-xl px-4 py-3 text-left">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-gray-500">Name</span>
+                      <button
+                        onClick={toggleSort}
+                        title={sortMode === 'health' ? 'Sorted by health — click for date order' : 'Sort by health (failing first)'}
+                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${
+                          sortMode === 'health'
+                            ? 'bg-indigo-100 font-medium text-indigo-600'
+                            : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                        }`}
+                      >
+                        <ArrowUpDown className="h-3 w-3" />
+                        Health
+                      </button>
+                    </div>
+                  </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">By</th>
                   <th className="rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {workflows.map((wf) => (
-                  <tr key={wf.id} className={`transition-opacity duration-150 ${removingId === wf.id ? 'opacity-0' : ''} ${healthMap[wf.id] != null && healthMap[wf.id] < 80 ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-gray-50'}`}>
-                    {/* Name + status badge */}
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <HealthDot rate={healthMap[wf.id] ?? null} />
-                        {renamingId === wf.id ? (
-                          <form
-                            onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
-                            className="flex items-center gap-1.5"
-                          >
-                            <input
-                              autoFocus
-                              className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
-                              value={renameValue}
-                              onChange={(e) => setRenameValue(e.target.value)}
-                              onBlur={() => commitRename(wf.id)}
-                              onKeyDown={(e) => e.key === 'Escape' && setRenamingId(null)}
-                            />
-                            <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
-                              <Check className="h-3.5 w-3.5" />
-                            </button>
-                          </form>
-                        ) : (
-                          <Link
-                            href={`/workflows/${wf.id}`}
-                            className="font-semibold text-gray-900 hover:text-indigo-600"
-                          >
-                            {wf.name}
-                          </Link>
+                {sortedWorkflows.map((wf) => {
+                  const isMatch = !isSearchActive || wf.name.toLowerCase().includes(searchQuery.toLowerCase())
+                  const isFirstMatch = wf.id === firstMatchId
+                  const isFailing = healthMap[wf.id] != null && healthMap[wf.id] < 80
+                  return (
+                    <tr
+                      key={wf.id}
+                      ref={(el) => { if (el) rowRefs.current.set(wf.id, el); else rowRefs.current.delete(wf.id) }}
+                      className={[
+                        'transition-opacity duration-150',
+                        removingId === wf.id ? 'opacity-0' : '',
+                        isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
+                        isFirstMatch ? 'bg-indigo-50/50 hover:bg-indigo-50/70' :
+                          isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-gray-50',
+                      ].filter(Boolean).join(' ')}
+                    >
+                      {/* Name + status badge */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <HealthDot rate={healthMap[wf.id] ?? null} />
+                          {renamingId === wf.id ? (
+                            <form
+                              onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
+                              className="flex items-center gap-1.5"
+                            >
+                              <input
+                                autoFocus
+                                className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onBlur={() => commitRename(wf.id)}
+                                onKeyDown={(e) => e.key === 'Escape' && setRenamingId(null)}
+                              />
+                              <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                            </form>
+                          ) : (
+                            <Link
+                              href={`/workflows/${wf.id}`}
+                              onClick={(e) => navigateToWorkflow(e, wf.id)}
+                              className="font-semibold text-gray-900 hover:text-indigo-600"
+                            >
+                              {wf.name}
+                            </Link>
+                          )}
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                            wf.is_active
+                              ? 'bg-green-50 text-green-700'
+                              : 'bg-gray-100 text-gray-500'
+                          }`}>
+                            {wf.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                          {duplicating === wf.id && (
+                            <span className="text-xs text-gray-400">Duplicating…</span>
+                          )}
+                        </div>
+                        {wf.description && (
+                          <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
                         )}
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                          wf.is_active
-                            ? 'bg-green-50 text-green-700'
-                            : 'bg-gray-100 text-gray-500'
-                        }`}>
-                          {wf.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                        {duplicating === wf.id && (
-                          <span className="text-xs text-gray-400">Duplicating…</span>
-                        )}
-                      </div>
-                      {wf.description && (
-                        <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
-                      )}
-                    </td>
+                      </td>
 
-                    <td className="px-4 py-3 text-gray-500">
-                      {formatDatetime(wf.updated_at)}
-                    </td>
-                    <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
+                      <td className="px-4 py-3 text-gray-500">
+                        {formatDatetime(wf.updated_at)}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
-                    {/* Actions column */}
-                    <td className="px-4 py-3">
-                      <div ref={openMenuId === wf.id ? menuRef : undefined} className="relative">
-                        {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
-                        <button
-                          onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
-                          className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
-                          title="More options"
-                        >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </button>
-                        {/* Confirm — floats absolutely, extends left over adjacent column */}
-                        {confirmingDelete === wf.id && (
-                          <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
-                            <button
-                              onClick={() => handleDelete(wf.id)}
-                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                            >
-                              Delete
-                            </button>
-                            <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                        {/* Dropdown menu */}
-                        {openMenuId === wf.id && (
-                          <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                            <button
-                              onClick={() => handleToggleActive(wf)}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                            >
-                              <Power className="h-4 w-4 text-gray-400" />
-                              {wf.is_active ? 'Disable' : 'Enable'}
-                            </button>
-                            <button
-                              onClick={() => startRename(wf)}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                            >
-                              <Pencil className="h-4 w-4 text-gray-400" />
-                              Rename
-                            </button>
-                            <button
-                              onClick={() => handleDuplicate(wf.id)}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                            >
-                              <Copy className="h-4 w-4 text-gray-400" />
-                              Duplicate
-                            </button>
-                            <div className="my-1 border-t border-gray-100" />
-                            <button
-                              onClick={() => requestDelete(wf.id)}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                              Delete
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      {/* Actions column */}
+                      <td className="px-4 py-3">
+                        <div ref={openMenuId === wf.id ? menuRef : undefined} className="relative">
+                          {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
+                          <button
+                            onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
+                            className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
+                            title="More options"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                          {/* Confirm — floats absolutely, extends left over adjacent column */}
+                          {confirmingDelete === wf.id && (
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
+                              <button
+                                onClick={() => handleDelete(wf.id)}
+                                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                              >
+                                Delete
+                              </button>
+                              <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                          {/* Dropdown menu */}
+                          {openMenuId === wf.id && (
+                            <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                              <button
+                                onClick={() => handleToggleActive(wf)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                              >
+                                <Power className="h-4 w-4 text-gray-400" />
+                                {wf.is_active ? 'Disable' : 'Enable'}
+                              </button>
+                              <button
+                                onClick={() => startRename(wf)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                              >
+                                <Pencil className="h-4 w-4 text-gray-400" />
+                                Rename
+                              </button>
+                              <button
+                                onClick={() => handleDuplicate(wf.id)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                              >
+                                <Copy className="h-4 w-4 text-gray-400" />
+                                Duplicate
+                              </button>
+                              <div className="my-1 border-t border-gray-100" />
+                              <button
+                                onClick={() => requestDelete(wf.id)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                Delete
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
+            {isSearchActive && !firstMatchId && (
+              <div className="px-4 py-8 text-center text-sm text-gray-400">
+                No workflows match <span className="font-medium text-gray-600">&quot;{searchQuery}&quot;</span>
+              </div>
+            )}
           </div>
         )}
       </div>

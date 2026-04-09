@@ -739,7 +739,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       }`}>
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.push('/workflows')}
+            onClick={() => {
+              if (typeof document !== 'undefined' && 'startViewTransition' in document) {
+                ;(document as Document & { startViewTransition(cb: () => void): void })
+                  .startViewTransition(() => router.push('/workflows'))
+              } else {
+                router.push('/workflows')
+              }
+            }}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
             ← Workflows
@@ -747,6 +754,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <div className="h-5 w-px bg-gray-200" />
           <div className="group flex items-center gap-1">
             <input
+              style={{ viewTransitionName: 'workflow-name' }}
               className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
                 mode === 'edit' ? 'hover:bg-gray-100/70 focus:bg-gray-100/70' : ''
               }`}
