@@ -1,5 +1,6 @@
 'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
 
 import { usePathname, useRouter } from 'next/navigation'
@@ -30,7 +31,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
       {/* Sidebar */}
       <nav className="flex w-52 flex-col bg-slate-900">
         <div className="flex items-center gap-2.5 px-4 py-5">
-          <img
+          <Image
             src="/icon-dark.png"
             alt="Bidspoke"
             width={26}
