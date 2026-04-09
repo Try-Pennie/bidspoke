@@ -21,15 +21,17 @@ function fmt(ms: number | null) {
 
 function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
   const maxTotal = Math.max(...data.map((d) => d.total), 1)
-  const H = 120
+  const H = 100
+  const LABEL_H = 20
+  const VW = 560
   const n = data.length
-  const W = n * 12
+  const slotW = VW / n
+  const barW = Math.max(slotW * 0.55, 2)
 
   return (
-    <svg viewBox={`0 0 ${W} ${H + 18}`} className="w-full" preserveAspectRatio="none">
+    <svg viewBox={`0 0 ${VW} ${H + LABEL_H}`} className="w-full" height={H + LABEL_H} preserveAspectRatio="none">
       {data.map((d, i) => {
-        const barW = 8
-        const x = i * 12 + 2
+        const x = i * slotW + (slotW - barW) / 2
 
         const completedH = (d.completed / maxTotal) * H
         const exitedH = (d.exited / maxTotal) * H
@@ -39,13 +41,12 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
         const exitedY = completedY - exitedH
         const failedY = exitedY - failedH
 
-        const showLabel = i === 0 || i === n - 1 || (n <= 7) || i % Math.ceil(n / 6) === 0
+        const showLabel = i === 0 || i === n - 1 || n <= 7 || i % Math.ceil(n / 6) === 0
         const labelDate = new Date(d.date + 'T12:00:00Z')
         const label = labelDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 
         return (
           <g key={d.date}>
-            {/* Zero-state bg */}
             {d.total === 0 && (
               <rect x={x} y={H - 2} width={barW} height={2} fill="#f1f5f9" rx="1" />
             )}
@@ -63,7 +64,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                 x={x + barW / 2}
                 y={H + 14}
                 textAnchor="middle"
-                fontSize="7"
+                fontSize="9"
                 fill="#94a3b8"
                 fontFamily="ui-sans-serif,system-ui,sans-serif"
               >
