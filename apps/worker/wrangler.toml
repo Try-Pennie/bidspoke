@@ -44,15 +44,14 @@ GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow defini
 [triggers]
 crons = ["0 9 * * *"]
 
-# R2 bucket — cold-tier log archive (Logpush destination, Phase 3)
-# Logpush job must be created separately via CF API or dashboard:
+# R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
+# Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
+# To enable: create bucket "bidspoke-logs" in CF dashboard, then create a Logpush job:
 #   curl -X POST "https://api.cloudflare.com/client/v4/accounts/{account_id}/logpush/jobs" \
 #     -H "Authorization: Bearer {token}" \
-#     -d '{"name":"bidspoke-worker-logs","destination_conf":"r2://{BUCKET_NAME}/{PATH}?account-id={ACCOUNT}&access-key-id={KEY}&secret-access-key={SECRET}",
+#     -d '{"name":"bidspoke-worker-logs","destination_conf":"r2://bidspoke-logs/logs/{DATE}?account-id={ACCOUNT}&access-key-id={KEY}&secret-access-key={SECRET}",
 #          "dataset":"workers_trace_events","logpull_options":"fields=Event,EventTimestampMs,Outcome,Logs,ScriptName&timestamps=unixnano"}'
-[[r2_buckets]]
-binding = "LOG_ARCHIVE"
-bucket_name = "bidspoke-logs"
+# After confirming Logpush is active, set logpush_active = 'true' in Supabase app_config.
 
 [observability.logs]
 enabled = true
