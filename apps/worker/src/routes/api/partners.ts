@@ -39,7 +39,7 @@ partners.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('partner_configs')
-    .select('id, name, slug, api_endpoint, daily_cap, min_bid, bid_formula, is_active, priority, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email')
+    .select('id, name, slug, api_endpoint, daily_cap, min_bid, bid_formula, is_active, priority, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .order('priority', { ascending: true })
 
@@ -100,6 +100,7 @@ partners.post('/', async (c) => {
       priority: body.priority ?? 0,
       updated_by: userId,
       updated_by_email: email,
+      updated_by_name: c.get('user').name,
     })
     .select()
     .single()
@@ -137,6 +138,7 @@ partners.put('/:id', async (c) => {
   const updates: Record<string, unknown> = {
     updated_by: userId,
     updated_by_email: email,
+    updated_by_name: c.get('user').name,
   }
 
   const fields: (keyof PartnerBody)[] = [
@@ -159,7 +161,7 @@ partners.put('/:id', async (c) => {
   if (error) return c.json({ error: error.message }, 500)
 
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'updated', userId, {
-    changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email'),
+    changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
   })
 
   return c.json(data)

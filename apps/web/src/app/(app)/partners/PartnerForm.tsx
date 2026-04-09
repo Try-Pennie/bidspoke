@@ -574,10 +574,7 @@ export default function PartnerForm({
           </button>
           {!isNew && (
             <p className="text-xs text-gray-400">
-              {partner.updated_at
-                ? `Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}${partner.updated_by_email ? ` by ${partner.updated_by_email.split('@')[0]}` : ''}`
-                : partner.updated_by_email ? `Modified by ${partner.updated_by_email.split('@')[0]}` : ''
-              }
+              {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? '—'}`}
             </p>
           )}
         </div>

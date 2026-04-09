@@ -23,6 +23,7 @@ export interface Partner {
   created_at: string
   updated_at: string
   updated_by_email: string | null
+  updated_by_name: string | null
 }
 
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
