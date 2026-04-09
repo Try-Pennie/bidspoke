@@ -5,6 +5,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { setCfSecret, deleteCfSecret } from '../../lib/cf-secrets'
 import { writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
+import { encryptSecret, decryptSecret } from '../../lib/secret-crypto'
 
 type Variables = AuthVariables
 
@@ -47,9 +48,11 @@ env.post('/', async (c) => {
   if (!body.key) return c.json({ error: 'key is required' }, 400)
   if (body.is_secret && !body.value) return c.json({ error: 'value is required for secrets' }, 400)
 
-  // Sync to Cloudflare if secret
+  // Sync to Cloudflare if secret; also store encrypted copy for reveal
+  let storedValue: string | null = body.value ?? null
   if (body.is_secret && body.value) {
     await setCfSecret(body.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    storedValue = await encryptSecret(body.value, c.env.SECRET_ENCRYPTION_KEY)
   }
 
   const { data, error } = await supabase
@@ -57,7 +60,7 @@ env.post('/', async (c) => {
     .insert({
       organization_id: orgId,
       key: body.key,
-      value: body.is_secret ? null : (body.value ?? null),
+      value: storedValue,
       is_secret: body.is_secret ?? false,
       scope: body.scope ?? 'global',
       workflow_id: body.workflow_id ?? null,
@@ -75,7 +78,7 @@ env.post('/', async (c) => {
     invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
   ])
 
-  return c.json({ ...data, value: body.is_secret ? null : data.value }, 201)
+  return c.json({ ...data, value: data.is_secret ? null : data.value }, 201)
 })
 
 // PUT /api/env/:id
@@ -94,15 +97,19 @@ env.put('/:id', async (c) => {
 
   if (fetchError || !existing) return c.json({ error: 'Variable not found' }, 404)
 
+  let updatedValue: string | null | undefined
   if (existing.is_secret && body.value) {
     await setCfSecret(existing.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    updatedValue = await encryptSecret(body.value, c.env.SECRET_ENCRYPTION_KEY)
+  } else if (!existing.is_secret) {
+    updatedValue = body.value ?? existing.value
   }
 
   const { data, error } = await supabase
     .from('environment_variables')
     .update({
       key: body.key ?? existing.key,
-      value: existing.is_secret ? null : (body.value ?? existing.value),
+      value: updatedValue ?? existing.value,
       updated_by: userId,
       updated_by_email: email,
     })
@@ -118,6 +125,30 @@ env.put('/:id', async (c) => {
   ])
 
   return c.json({ ...data, value: existing.is_secret ? null : data.value })
+})
+
+// GET /api/env/:id/reveal — decrypt and return secret value; audit logged
+env.get('/:id/reveal', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+
+  const { data, error } = await supabase
+    .from('environment_variables')
+    .select('id, key, value, is_secret')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .single()
+
+  if (error || !data) return c.json({ error: 'Not found' }, 404)
+  if (!data.is_secret) return c.json({ error: 'Not a secret' }, 400)
+  if (!data.value) return c.json({ error: 'Value not available — rotate to enable reveal' }, 422)
+
+  const plaintext = await decryptSecret(data.value, c.env.SECRET_ENCRYPTION_KEY)
+
+  await writeAuditLog(supabase, orgId, 'environment_variable', id, 'secret_revealed', userId, { key: data.key })
+
+  return c.json({ value: plaintext })
 })
 
 // DELETE /api/env/:id

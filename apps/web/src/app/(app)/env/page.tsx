@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar } from '@/types/workflow'
-import { Plus, Trash2, Eye, EyeOff } from 'lucide-react'
+import { Plus, Trash2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -17,7 +17,8 @@ export default function EnvPage() {
   const [showForm, setShowForm] = useState(false)
   const [newVar, setNewVar] = useState<NewVar>({ key: '', value: '', is_secret: false })
   const [creating, setCreating] = useState(false)
-  const [revealed, setRevealed] = useState<Set<string>>(new Set())
+  const [revealedValues, setRevealedValues] = useState<Record<string, string>>({})
+  const [revealing, setRevealing] = useState<Set<string>>(new Set())
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
@@ -209,20 +210,36 @@ export default function EnvPage() {
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
                       {v.is_secret ? (
                         <div className="flex items-center gap-1.5">
-                          <span>{revealed.has(v.id) ? '(secret — cannot reveal server-side)' : '••••••••'}</span>
-                          <button
-                            onClick={() =>
-                              setRevealed((s) => {
-                                const next = new Set(s)
-                                if (next.has(v.id)) next.delete(v.id)
-                                else next.add(v.id)
-                                return next
-                              })
-                            }
-                            className="text-gray-300 hover:text-gray-500"
-                          >
-                            {revealed.has(v.id) ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                          </button>
+                          <span>{revealedValues[v.id] ?? '••••••••'}</span>
+                          {revealedValues[v.id] ? (
+                            <button
+                              type="button"
+                              onClick={() => setRevealedValues((prev) => { const next = { ...prev }; delete next[v.id]; return next })}
+                              className="text-gray-300 hover:text-gray-500"
+                            >
+                              <EyeOff className="h-3.5 w-3.5" />
+                            </button>
+                          ) : revealing.has(v.id) ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-gray-300" />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                setRevealing((s) => new Set([...s, v.id]))
+                                try {
+                                  const { value } = await api.env.reveal(v.id)
+                                  setRevealedValues((prev) => ({ ...prev, [v.id]: value }))
+                                } catch (err) {
+                                  setError(err instanceof Error ? err.message : 'Failed to reveal')
+                                } finally {
+                                  setRevealing((s) => { const next = new Set(s); next.delete(v.id); return next })
+                                }
+                              }}
+                              className="text-gray-300 hover:text-gray-500"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </div>
                       ) : (
                         v.value ?? '—'

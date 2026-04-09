@@ -36,6 +36,10 @@ export interface Env {
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
 
+  // Env var secret encryption — AES-GCM key, base64-encoded 32 bytes
+  // Generate: openssl rand -base64 32 | wrangler secret put SECRET_ENCRYPTION_KEY
+  SECRET_ENCRYPTION_KEY: string
+
   // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
 

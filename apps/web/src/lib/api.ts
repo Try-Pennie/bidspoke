@@ -183,6 +183,7 @@ export const api = {
       req<EnvVar>('/api/env', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: { value?: string }) =>
       req<EnvVar>(`/api/env/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    reveal: (id: string) => req<{ value: string }>(`/api/env/${id}/reveal`),
     delete: (id: string) => req<{ ok: boolean }>(`/api/env/${id}`, { method: 'DELETE' }),
   },
 

@@ -15,6 +15,7 @@ export type AuditAction =
   | 'deleted'
   | 'circuit_force_closed'
   | 'secret_rotated'
+  | 'secret_revealed'
   | 'schema_synced'
 
 export async function writeAuditLog(
