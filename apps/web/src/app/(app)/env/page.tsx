@@ -247,7 +247,7 @@ export default function EnvPage() {
                     </td>
                     <td className="px-4 py-3">
                       <span
-                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                        className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${
                           v.is_secret ? 'bg-orange-50 text-orange-700' : 'bg-gray-100 text-gray-600'
                         }`}
                       >
