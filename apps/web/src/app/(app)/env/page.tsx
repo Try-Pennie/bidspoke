@@ -230,9 +230,18 @@ export default function EnvPage() {
                     <td className="px-4 py-3 text-gray-500">
                       {formatDatetime(v.updated_at)}
                     </td>
-                    <td className="px-4 py-3">
-                      {confirmingDelete === v.id ? (
-                        <div className="flex items-center gap-1.5">
+                    <td className="relative px-4 py-3">
+                      {/* Always in DOM to hold cell size; invisible when confirm showing */}
+                      <button
+                        onClick={() => requestDelete(v.id)}
+                        className={`rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 ${confirmingDelete === v.id ? 'invisible pointer-events-none' : ''}`}
+                        title="Delete variable"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                      {/* Confirm — floats absolutely, extends left over adjacent column */}
+                      {confirmingDelete === v.id && (
+                        <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
                           <button
                             onClick={() => handleDelete(v.id)}
                             className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
@@ -243,14 +252,6 @@ export default function EnvPage() {
                             Cancel
                           </button>
                         </div>
-                      ) : (
-                        <button
-                          onClick={() => requestDelete(v.id)}
-                          className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
-                          title="Delete variable"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
                       )}
                     </td>
                   </tr>
