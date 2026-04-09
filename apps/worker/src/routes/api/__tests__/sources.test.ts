@@ -212,7 +212,7 @@ describe('DELETE /sources/:name', () => {
 
   it('returns 200 when source is deleted', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { single: { name: 'website_form' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/sources/website_form')
     expect(res.status).toBe(200)
@@ -222,7 +222,7 @@ describe('DELETE /sources/:name', () => {
 
   it('removes the key from the map before calling setCfSecret', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { single: { name: 'website_form' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/sources/website_form')
     const [, updatedMap] = vi.mocked(setCfSecret).mock.calls[0]

@@ -250,12 +250,12 @@
 
 ## Pre-Ship Checklist (run before each phase ships)
 
-- [ ] All tests pass (unit + integration + load)
+- [x] All tests pass (unit + integration + load)
 - [ ] No hardcoded secrets or credentials in codebase
 - [ ] RLS policies verified (user in org A cannot see org B data)
 - [ ] Webhook auth rejects invalid/missing API keys
 - [ ] Error handling: no unhandled promise rejections in Worker
-- [ ] Execution logs writing correctly (check Supabase)
+- [x] Execution logs writing correctly (check Supabase)
 - [x] Slack alerts firing on failure
 - [ ] Audit log capturing all mutations
 - [ ] Code pushed to GitHub, CI green
