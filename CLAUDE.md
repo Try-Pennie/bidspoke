@@ -41,3 +41,19 @@ pnpm lint          # lint all packages
 - Repo: https://github.com/Try-Pennie/bidspoke
 - Commit and push after each meaningful chunk of work
 - CI must pass before merging to main
+
+## Worker secrets (production)
+These must be set via `wrangler secret put <NAME> --name bidspoke-worker`. Never committed to git.
+
+| Secret | Purpose |
+|--------|---------|
+| `SUPABASE_SECRET_KEY` | Supabase service role key |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token for syncing partner secrets |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
+| `API_KEY_MAP` | JSON map of webhook API keys to source names |
+| `SECRET_ENCRYPTION_KEY` | AES-GCM key for encrypting env var secret values (enables reveal in UI) |
+
+### Rotating `SECRET_ENCRYPTION_KEY`
+Generate: `openssl rand -base64 32`, then `wrangler secret put SECRET_ENCRYPTION_KEY --name bidspoke-worker`.
+
+**Warning:** rotating this key breaks reveal for any secrets created before the rotation. Users will see "rotate to enable reveal" until they re-save the affected env vars with a new value.
