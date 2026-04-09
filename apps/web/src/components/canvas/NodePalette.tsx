@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -69,6 +69,20 @@ const NODES: PaletteNode[] = [
     icon: Plug,
     color: 'text-teal-500',
   },
+  {
+    type: 'parallel',
+    label: 'Parallel',
+    description: 'Run branches concurrently',
+    icon: GitFork,
+    color: 'text-slate-500',
+  },
+  {
+    type: 'partner_bid',
+    label: 'Partner Bid',
+    description: 'Request a partner bid',
+    icon: DollarSign,
+    color: 'text-sky-500',
+  },
 ]
 
 interface Props {
@@ -98,18 +112,6 @@ export default function NodePalette({ onDragStart }: Props) {
           </div>
         ))}
 
-        <div className="px-1 pt-3">
-          <p className="text-xs font-medium text-gray-300">Phase 2</p>
-        </div>
-        {(['parallel', 'partner_bid'] as NodeType[]).map((type) => (
-          <div
-            key={type}
-            className="flex cursor-not-allowed items-center gap-2 rounded-lg border border-dashed border-gray-200 p-2.5 opacity-40"
-            title="Available in Phase 2"
-          >
-            <p className="text-xs text-gray-400">{type.replace('_', ' ')}</p>
-          </div>
-        ))}
       </div>
     </aside>
   )
