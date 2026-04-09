@@ -259,4 +259,4 @@
 - [x] Slack alerts firing on failure
 - [x] Audit log capturing all mutations
 - [ ] Code pushed to GitHub, CI green
-- [ ] KV cache invalidation working on workflow save
+- [x] KV cache invalidation working on workflow save
