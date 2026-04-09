@@ -22,7 +22,7 @@ function fmt(ms: number | null) {
 function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
   const maxTotal = Math.max(...data.map((d) => d.total), 1)
   const n = data.length
-  const CHART_H = 96
+  const CHART_H = 112
 
   const showLabelAt = (i: number) =>
     i === 0 || i === n - 1 || n <= 7 || i % Math.ceil(n / 6) === 0
@@ -51,12 +51,12 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                     className="relative overflow-hidden rounded-t-[2px]"
                     style={{ width: 'clamp(3px, 42%, 14px)', height: Math.max(totalH, 2) }}
                   >
-                    <div className="absolute bottom-0 left-0 right-0 bg-indigo-400" style={{ height: completedH }} />
+                    <div className="absolute bottom-0 left-0 right-0 bg-indigo-500" style={{ height: completedH }} />
                     {exitedH > 0 && (
-                      <div className="absolute left-0 right-0 bg-slate-300" style={{ height: exitedH, bottom: completedH }} />
+                      <div className="absolute left-0 right-0 bg-slate-400" style={{ height: exitedH, bottom: completedH }} />
                     )}
                     {failedH > 0 && (
-                      <div className="absolute left-0 right-0 bg-red-300" style={{ height: failedH, bottom: completedH + exitedH }} />
+                      <div className="absolute left-0 right-0 bg-red-400" style={{ height: failedH, bottom: completedH + exitedH }} />
                     )}
                   </div>
                 ) : (
@@ -223,9 +223,9 @@ export default function DashboardPage() {
           <div className="mb-4 flex items-center justify-between">
             <p className="text-base font-semibold text-gray-900">Execution volume</p>
             <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-indigo-400" />Completed</span>
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-300" />Exited</span>
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-300" />Failed</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-indigo-500" />Completed</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-400" />Exited</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-400" />Failed</span>
             </div>
           </div>
           {loading ? (
