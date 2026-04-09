@@ -114,7 +114,7 @@ export default function DashboardPage() {
                 onClick={() => setWindow(w)}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   window === w
-                    ? 'bg-gray-900 text-white'
+                    ? 'bg-indigo-600 text-white'
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
