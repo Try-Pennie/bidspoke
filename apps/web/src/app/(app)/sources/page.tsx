@@ -27,8 +27,9 @@ export default function SourcesPage() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [copiedCurl, setCopiedCurl] = useState(false)
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
-  const [deleting, setDeleting] = useState<string | null>(null)
   const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null)
+  const [removingName, setRemovingName] = useState<string | null>(null)
+  const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedSourceName, setSelectedSourceName] = useState<string | null>(null)
   const revokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -83,19 +84,23 @@ export default function SourcesPage() {
   async function handleDelete(name: string) {
     if (revokeTimerRef.current) clearTimeout(revokeTimerRef.current)
     setConfirmingRevoke(null)
-    setDeleting(name)
-    setError(null)
-    try {
-      await api.sources.delete(name)
+    const item = sources.find((s) => s.name === name)
+    setRemovingName(name)
+    removeTimerRef.current = setTimeout(() => {
       setSources((prev) => {
         const next = prev.filter((s) => s.name !== name)
         if (selectedSourceName === name) setSelectedSourceName(next[0]?.name ?? null)
         return next
       })
+      setRemovingName(null)
+    }, 150)
+    try {
+      await api.sources.delete(name)
     } catch (e) {
+      if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+      setRemovingName(null)
+      if (item) setSources((prev) => prev.find((s) => s.name === name) ? prev : [...prev, item])
       setError(e instanceof Error ? e.message : 'Failed to revoke source')
-    } finally {
-      setDeleting(null)
     }
   }
 
@@ -233,9 +238,9 @@ export default function SourcesPage() {
                 {sources.map((source) => (
                   <div
                     key={source.name}
-                    className={`rounded-xl border bg-white p-4 transition-colors ${
+                    className={`rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
                       selectedSourceName === source.name ? 'border-gray-300' : 'border-gray-200'
-                    }`}
+                    } ${removingName === source.name ? 'opacity-0' : ''}`}
                     onClick={() => setSelectedSourceName(source.name)}
                   >
                     <div className="mb-3 flex items-center justify-between">
@@ -244,10 +249,9 @@ export default function SourcesPage() {
                         <div className="flex items-center gap-1.5">
                           <button
                             onClick={(e) => { e.stopPropagation(); handleDelete(source.name) }}
-                            disabled={deleting === source.name}
-                            className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                            className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
                           >
-                            {deleting === source.name ? 'Revoking…' : 'Revoke'}
+                            Revoke
                           </button>
                           <button onClick={(e) => { e.stopPropagation(); cancelRevoke() }} className="text-xs text-gray-400 hover:text-gray-600">
                             Cancel
@@ -256,8 +260,7 @@ export default function SourcesPage() {
                       ) : (
                         <button
                           onClick={(e) => { e.stopPropagation(); requestRevoke(source.name) }}
-                          disabled={deleting === source.name}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
                         >
                           <KeyRound className="h-3.5 w-3.5" />
                           Revoke

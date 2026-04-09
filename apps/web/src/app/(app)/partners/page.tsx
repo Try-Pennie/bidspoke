@@ -16,9 +16,10 @@ export default function PartnersPage() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Partner | null>(null)
   const [creating, setCreating] = useState(false)
-  const [deleting, setDeleting] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   async function load() {
     try {
@@ -42,15 +43,20 @@ export default function PartnersPage() {
   async function handleDelete(id: string) {
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
     setConfirmDelete(null)
-    setDeleting(id)
+    const item = partners.find((p) => p.id === id)
+    if (selected?.id === id) setSelected(null)
+    setRemovingId(id)
+    removeTimerRef.current = setTimeout(() => {
+      setPartners((prev) => prev.filter((p) => p.id !== id))
+      setRemovingId(null)
+    }, 150)
     try {
       await api.partners.delete(id)
-      setPartners((prev) => prev.filter((p) => p.id !== id))
-      if (selected?.id === id) setSelected(null)
     } catch (e) {
+      if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+      setRemovingId(null)
+      if (item) setPartners((prev) => prev.find((p) => p.id === id) ? prev : [...prev, item])
       setError(e instanceof Error ? e.message : 'Failed to delete partner')
-    } finally {
-      setDeleting(null)
     }
   }
 
@@ -113,10 +119,11 @@ export default function PartnersPage() {
                   <button
                     key={partner.id}
                     onClick={() => { setCreating(false); setSelected(partner) }}
-                    className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors ${
+                    className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[colors,opacity] duration-150 ${
                       selected?.id === partner.id
                         ? 'bg-gray-100'
                         : 'hover:bg-gray-50'
+                    } ${removingId === partner.id ? 'opacity-0' : ''
                     }`}
                   >
                     <div className="flex-1 min-w-0">
@@ -157,7 +164,7 @@ export default function PartnersPage() {
               confirmingDelete={confirmDelete === selected?.id}
               onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
               onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
-              deleting={deleting === selected?.id}
+              deleting={false}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

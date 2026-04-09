@@ -20,6 +20,8 @@ export default function EnvPage() {
   const [revealed, setRevealed] = useState<Set<string>>(new Set())
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     api.env.list()
@@ -58,10 +60,18 @@ export default function EnvPage() {
   async function handleDelete(id: string) {
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
     setConfirmingDelete(null)
+    const item = vars.find((v) => v.id === id)
+    setRemovingId(id)
+    removeTimerRef.current = setTimeout(() => {
+      setVars((vs) => vs.filter((v) => v.id !== id))
+      setRemovingId(null)
+    }, 150)
     try {
       await api.env.delete(id)
-      setVars((vs) => vs.filter((v) => v.id !== id))
     } catch (err) {
+      if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+      setRemovingId(null)
+      if (item) setVars((vs) => vs.find((v) => v.id === id) ? vs : [...vs, item])
       setError(err instanceof Error ? err.message : 'Delete failed')
     }
   }
@@ -194,7 +204,7 @@ export default function EnvPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {vars.map((v) => (
-                  <tr key={v.id} className="hover:bg-gray-50">
+                  <tr key={v.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingId === v.id ? 'opacity-0' : ''}`}>
                     <td className="px-4 py-3 font-mono text-xs font-medium text-gray-900">{v.key}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
                       {v.is_secret ? (

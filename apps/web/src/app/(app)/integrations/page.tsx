@@ -48,9 +48,10 @@ export default function IntegrationsPage() {
   const [addingPreset, setAddingPreset] = useState(false)
   const [newPreset, setNewPreset] = useState({ name: '', slug: '', auth_type: 'none', base_url: '' })
   const [savingPreset, setSavingPreset] = useState(false)
-  const [deletingPreset, setDeletingPreset] = useState<string | null>(null)
   const [confirmingDeletePreset, setConfirmingDeletePreset] = useState<string | null>(null)
   const deletePresetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [removingPresetId, setRemovingPresetId] = useState<string | null>(null)
+  const removePresetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     api.integrations.getSlack()
@@ -176,14 +177,19 @@ export default function IntegrationsPage() {
   async function handleDeletePreset(id: string) {
     if (deletePresetTimerRef.current) clearTimeout(deletePresetTimerRef.current)
     setConfirmingDeletePreset(null)
-    setDeletingPreset(id)
+    const item = presets.find((p) => p.id === id)
+    setRemovingPresetId(id)
+    removePresetTimerRef.current = setTimeout(() => {
+      setPresets((ps) => ps.filter((p) => p.id !== id))
+      setRemovingPresetId(null)
+    }, 150)
     try {
       await api.servicePresets.delete(id)
-      setPresets((ps) => ps.filter((p) => p.id !== id))
     } catch (e) {
+      if (removePresetTimerRef.current) clearTimeout(removePresetTimerRef.current)
+      setRemovingPresetId(null)
+      if (item) setPresets((ps) => ps.find((p) => p.id === id) ? ps : [...ps, item])
       setPresetsError(e instanceof Error ? e.message : 'Delete failed')
-    } finally {
-      setDeletingPreset(null)
     }
   }
 
@@ -484,7 +490,7 @@ export default function IntegrationsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {presets.map((p) => (
-                    <tr key={p.id} className="hover:bg-gray-50">
+                    <tr key={p.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingPresetId === p.id ? 'opacity-0' : ''}`}>
                       <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>
@@ -494,7 +500,7 @@ export default function IntegrationsPage() {
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => handleDeletePreset(p.id)}
-                              disabled={deletingPreset === p.id}
+                              disabled={false}
                               className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
                             >
                               Delete
@@ -506,7 +512,7 @@ export default function IntegrationsPage() {
                         ) : (
                           <button
                             onClick={() => requestDeletePreset(p.id)}
-                            disabled={deletingPreset === p.id}
+                            disabled={false}
                             className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
                             title="Delete service"
                           >

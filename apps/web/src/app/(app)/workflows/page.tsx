@@ -29,6 +29,8 @@ export default function WorkflowsPage() {
   // Inline delete confirm
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Duplicate loading
   const [duplicating, setDuplicating] = useState<string | null>(null)
@@ -141,10 +143,18 @@ export default function WorkflowsPage() {
   async function handleDelete(id: string) {
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
     setConfirmingDelete(null)
+    const item = workflows.find((w) => w.id === id)
+    setRemovingId(id)
+    removeTimerRef.current = setTimeout(() => {
+      setWorkflows((ws) => ws.filter((w) => w.id !== id))
+      setRemovingId(null)
+    }, 150)
     try {
       await api.workflows.delete(id)
-      setWorkflows((ws) => ws.filter((w) => w.id !== id))
     } catch (e) {
+      if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
+      setRemovingId(null)
+      if (item) setWorkflows((ws) => ws.find((w) => w.id === id) ? ws : [...ws, item])
       setError(e instanceof Error ? e.message : 'Delete failed')
     }
   }
@@ -239,7 +249,7 @@ export default function WorkflowsPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {workflows.map((wf) => (
-                  <tr key={wf.id} className="hover:bg-gray-50">
+                  <tr key={wf.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingId === wf.id ? 'opacity-0' : ''}`}>
                     {/* Name + status badge */}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
