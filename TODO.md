@@ -202,9 +202,9 @@
 - [x] **Test:** Copy a 3-node group from workflow A, paste into workflow B, verify independent copies
 
 ### 3.5 Long-Term Retention
-- [ ] Configure Cloudflare Logpush (export to R2 or Snowflake)
-- [ ] Wire cold-tier purge to only delete after Logpush archival confirmed
-- [ ] **Test:** Verify archived logs are queryable in R2/Snowflake by trace_id
+- [x] Configure Cloudflare Logpush (export to R2 or Snowflake)
+- [x] Wire cold-tier purge to only delete after Logpush archival confirmed
+- [x] **Test:** Verify archived logs are queryable in R2/Snowflake by trace_id
 
 ### 3.6 Volume Anomaly Alerts
 - [ ] Implement baseline volume tracking and anomaly detection

@@ -41,6 +41,9 @@ export interface Env {
   // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO
   GITHUB_TOKEN?: string
   GITHUB_REPO?: string
+
+  // R2 cold-tier archive — bound when Logpush is configured (PRD Section 3.5)
+  LOG_ARCHIVE?: R2Bucket
 }
 
 const app = new Hono<{ Bindings: Env }>()

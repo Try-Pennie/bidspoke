@@ -40,6 +40,16 @@ PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_
 APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
 
+# R2 bucket — cold-tier log archive (Logpush destination, Phase 3)
+# Logpush job must be created separately via CF API or dashboard:
+#   curl -X POST "https://api.cloudflare.com/client/v4/accounts/{account_id}/logpush/jobs" \
+#     -H "Authorization: Bearer {token}" \
+#     -d '{"name":"bidspoke-worker-logs","destination_conf":"r2://{BUCKET_NAME}/{PATH}?account-id={ACCOUNT}&access-key-id={KEY}&secret-access-key={SECRET}",
+#          "dataset":"workers_trace_events","logpull_options":"fields=Event,EventTimestampMs,Outcome,Logs,ScriptName&timestamps=unixnano"}'
+[[r2_buckets]]
+binding = "LOG_ARCHIVE"
+bucket_name = "bidspoke-logs"
+
 [observability.logs]
 enabled = true
 head_sampling_rate = 1
