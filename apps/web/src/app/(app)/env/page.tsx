@@ -195,10 +195,10 @@ export default function EnvPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Key</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Value</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Type</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Last updated</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Key</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Value</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Type</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Last updated</th>
                   <th className="w-16 px-4 py-3" />
                 </tr>
               </thead>

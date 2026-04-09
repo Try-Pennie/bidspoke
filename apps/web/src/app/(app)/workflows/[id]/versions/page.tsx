@@ -94,9 +94,9 @@ export default function VersionHistoryPage() {
             <table className="w-full text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Version</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Message</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Created</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Version</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Message</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Created</th>
                   <th className="w-24 px-4 py-3" />
                 </tr>
               </thead>

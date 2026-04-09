@@ -262,10 +262,10 @@ export default function DashboardPage() {
               <table className="w-full text-sm">
                 <thead className="border-b border-gray-100 bg-gray-50">
                   <tr>
-                    <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Workflow</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Runs</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Success</th>
-                    <th className="px-5 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Avg</th>
+                    <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500">Workflow</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Success</th>
+                    <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Avg</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -374,12 +374,12 @@ export default function DashboardPage() {
             <table className="w-full min-w-[560px] text-sm">
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
-                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Partner</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Bids sent</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Accepted</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Win rate</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Avg bid</th>
-                  <th className="px-5 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400 whitespace-nowrap">Skipped</th>
+                  <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500 whitespace-nowrap">Partner</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Bids sent</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Accepted</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Win rate</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Avg bid</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Skipped</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">

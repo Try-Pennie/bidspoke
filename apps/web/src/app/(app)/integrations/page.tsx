@@ -481,10 +481,10 @@ export default function IntegrationsPage() {
               <table className="w-full text-sm">
                 <thead className="border-b border-gray-100 bg-gray-50">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Name</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Slug</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Auth</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Base URL</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Name</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Slug</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Auth</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Base URL</th>
                     <th className="w-16 px-4 py-3" />
                   </tr>
                 </thead>
