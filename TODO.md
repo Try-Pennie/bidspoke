@@ -108,12 +108,12 @@
 
 ### 1.9 Phase 1 Integration Testing
 - [x] **Test:** Auth flow end-to-end (Google SSO → JWT → RLS scoped queries)
-- [ ] **Test:** pg_cron compaction on seeded test data
+- [x] **Test:** pg_cron compaction on seeded test data
 - [ ] End-to-end: website form lead → webhook → validate → credit pull (mocked) → enrich → Penny-fit branch → respond (deferred to Phase 2 — requires partner nodes)
 - [ ] End-to-end: resume from failed step, verify partial results preserved (deferred to Phase 2 — requires multi-step workflow)
 - [ ] End-to-end: duplicate lead rejected by idempotency (deferred — requires idempotency enabled in trigger config)
 - [x] End-to-end: audit log captures all mutations
-- [ ] Load test: 100 concurrent webhook requests, verify no failures
+- [x] Load test: 100 concurrent webhook requests, verify no failures
 - [x] Push all code to GitHub, verify CI passes
 - [x] **Ship Phase 1**
 
