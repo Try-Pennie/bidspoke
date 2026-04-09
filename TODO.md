@@ -177,7 +177,7 @@
 - [x] End-to-end: parallel resume — 1 of 2 children fails, resume re-runs only incomplete child
 - [x] Load test: 500 concurrent leads, parallel bids to 3 partners, verify no race conditions
 - [x] Push all code to GitHub, verify CI passes
-- [ ] **Ship Phase 2**
+- [x] **Ship Phase 2**
 
 ---
 
@@ -258,5 +258,5 @@
 - [x] Execution logs writing correctly (check Supabase)
 - [x] Slack alerts firing on failure
 - [x] Audit log capturing all mutations
-- [ ] Code pushed to GitHub, CI green
+- [x] Code pushed to GitHub, CI green
 - [x] KV cache invalidation working on workflow save
