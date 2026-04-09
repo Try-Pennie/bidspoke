@@ -60,6 +60,30 @@ export interface StatsResponse {
   }>
 }
 
+export interface SchemaField {
+  name: string
+  label: string
+  type: string
+  nullable?: boolean
+}
+
+export interface SchemaObject {
+  name: string
+  label: string
+  fields: SchemaField[]
+}
+
+export interface ServiceConnection {
+  id: string
+  service_type: 'salesforce' | 'supabase' | 'snowflake'
+  auth_type: string
+  schema_cache: { objects: SchemaObject[] } | null
+  schema_synced_at: string | null
+  created_at: string
+  updated_at: string
+  updated_by_email: string | null
+}
+
 export interface ServicePreset {
   id: string
   name: string
@@ -271,5 +295,20 @@ export const api = {
       req<{ email: string }>('/api/access', { method: 'POST', body: JSON.stringify({ email }) }),
     remove: (email: string) =>
       req<{ ok: boolean }>(`/api/access/${encodeURIComponent(email)}`, { method: 'DELETE' }),
+  },
+
+  connections: {
+    list: () => req<ServiceConnection[]>('/api/connections'),
+    save: (service_type: string, credentials: Record<string, unknown>) =>
+      req<ServiceConnection>('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify({ service_type, credentials }),
+      }),
+    delete: (service_type: string) =>
+      req<{ ok: boolean }>(`/api/connections/${service_type}`, { method: 'DELETE' }),
+    syncSchema: (service_type: string) =>
+      req<{ ok: boolean; object_count: number }>(`/api/connections/${service_type}/sync-schema`, {
+        method: 'POST',
+      }),
   },
 }

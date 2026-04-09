@@ -15,6 +15,7 @@ export type AuditAction =
   | 'deleted'
   | 'circuit_force_closed'
   | 'secret_rotated'
+  | 'schema_synced'
 
 export async function writeAuditLog(
   supabase: SupabaseClient,
