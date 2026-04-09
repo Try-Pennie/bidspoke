@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown } from 'lucide-react'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2 } from 'lucide-react'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -468,7 +468,7 @@ export default function WorkflowsPage() {
                             {wf.is_active ? 'Active' : 'Inactive'}
                           </span>
                           {duplicating === wf.id && (
-                            <span className="text-xs text-gray-400">Duplicating…</span>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
                           )}
                         </div>
                         {wf.description && (
