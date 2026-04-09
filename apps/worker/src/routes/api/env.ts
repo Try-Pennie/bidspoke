@@ -146,7 +146,9 @@ env.get('/:id/reveal', async (c) => {
 
   const plaintext = await decryptSecret(data.value, c.env.SECRET_ENCRYPTION_KEY)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', id, 'secret_revealed', userId, { key: data.key })
+  c.executionCtx.waitUntil(
+    writeAuditLog(supabase, orgId, 'environment_variable', id, 'secret_revealed', userId, { key: data.key })
+  )
 
   return c.json({ value: plaintext })
 })
