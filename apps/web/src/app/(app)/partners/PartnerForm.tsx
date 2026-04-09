@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import type { Partner, PartnerBody } from '@/lib/api'
-import { Save, Trash2, Loader2, ToggleLeft, ToggleRight, Plus, X } from 'lucide-react'
+import { Save, Trash2, Loader2, Plus, X } from 'lucide-react'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
@@ -275,6 +275,24 @@ function Input({ value, onChange, placeholder, type = 'text', mono }: {
   )
 }
 
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 ${checked ? 'bg-indigo-600' : 'bg-gray-200'}`}
+    >
+      <span className="sr-only">{label}</span>
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-150 ${checked ? 'translate-x-4' : 'translate-x-0'}`}
+      />
+    </button>
+  )
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
@@ -436,16 +454,10 @@ export default function PartnerForm({
               <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
             </Field>
             <Field label="Status">
-              <button
-                type="button"
-                onClick={() => setIsActive((v) => !v)}
-                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                {isActive
-                  ? <><ToggleRight className="h-4 w-4 text-green-500" /> Active</>
-                  : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Inactive</>
-                }
-              </button>
+              <div className="flex items-center gap-2.5 pt-1">
+                <Toggle checked={isActive} onChange={setIsActive} label="Partner active" />
+                <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
+              </div>
             </Field>
           </div>
         </Section>
@@ -495,17 +507,10 @@ export default function PartnerForm({
         </Section>
 
         <Section title="Circuit breaker">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setCircuitEnabled((v) => !v)}
-              className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              {circuitEnabled
-                ? <><ToggleRight className="h-4 w-4 text-green-500" /> Enabled</>
-                : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Disabled</>
-              }
-            </button>
+          <div className="flex items-center gap-2.5">
+            <Toggle checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
+            <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
+            <span className="text-gray-300">·</span>
             <p className="text-xs text-gray-400">
               Pauses bids to this partner after repeated failures, then retries automatically.
             </p>
@@ -544,32 +549,14 @@ export default function PartnerForm({
                 <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
                 <p className="text-xs text-gray-400">Network failures, timeouts, 429, 502–504</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setAlertTransient((v) => !v)}
-                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                {alertTransient
-                  ? <><ToggleRight className="h-4 w-4 text-green-500" /> On</>
-                  : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Off</>
-                }
-              </button>
+              <Toggle checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
             </div>
             <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
               <div>
                 <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
                 <p className="text-xs text-gray-400">4xx errors, auth failures, bad responses</p>
               </div>
-              <button
-                type="button"
-                onClick={() => setAlertPermanent((v) => !v)}
-                className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-              >
-                {alertPermanent
-                  ? <><ToggleRight className="h-4 w-4 text-green-500" /> On</>
-                  : <><ToggleLeft className="h-4 w-4 text-gray-400" /> Off</>
-                }
-              </button>
+              <Toggle checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
             </div>
           </div>
         </Section>
