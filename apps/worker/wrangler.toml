@@ -40,6 +40,10 @@ PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_
 APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
 
+# Scheduled cron trigger — runs volume anomaly check daily at 09:00 UTC
+[triggers]
+crons = ["0 9 * * *"]
+
 # R2 bucket — cold-tier log archive (Logpush destination, Phase 3)
 # Logpush job must be created separately via CF API or dashboard:
 #   curl -X POST "https://api.cloudflare.com/client/v4/accounts/{account_id}/logpush/jobs" \

@@ -2,6 +2,8 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import api from './routes/api/index'
+import { createSupabaseClient } from './lib/supabase'
+import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
@@ -74,4 +76,14 @@ app.route('/webhooks', webhooks)
 // REST API — JWT authenticated
 app.route('/api', api)
 
-export default app
+// Scheduled handler — runs daily at 09:00 UTC (see wrangler.toml [triggers])
+export default {
+  fetch: app.fetch.bind(app),
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    const supabase = createSupabaseClient(env)
+    ctx.waitUntil(
+      runVolumeAnomalyCheck(supabase, env.APP_URL)
+        .catch((e) => console.error('[volume-anomaly] check failed:', e))
+    )
+  },
+}

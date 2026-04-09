@@ -207,8 +207,8 @@
 - [x] **Test:** Verify archived logs are queryable in R2/Snowflake by trace_id
 
 ### 3.6 Volume Anomaly Alerts
-- [ ] Implement baseline volume tracking and anomaly detection
-- [ ] **Test:** Simulate traffic drop, verify alert fires
+- [x] Implement baseline volume tracking and anomaly detection
+- [x] **Test:** Simulate traffic drop, verify alert fires
 
 ### 3.7 Phase 3 Integration Testing
 - [ ] Full regression: all Phase 1 + Phase 2 tests still pass
