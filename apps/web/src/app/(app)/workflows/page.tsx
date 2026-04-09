@@ -409,7 +409,7 @@ export default function WorkflowsPage() {
                     </div>
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Last modified</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">By</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Modified by</th>
                   <th className="rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
