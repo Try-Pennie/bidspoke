@@ -2,7 +2,239 @@
 
 import { useState } from 'react'
 import type { Partner, PartnerBody } from '@/lib/api'
-import { Save, Trash2, Loader2, ToggleLeft, ToggleRight } from 'lucide-react'
+import { Save, Trash2, Loader2, ToggleLeft, ToggleRight, Plus, X } from 'lucide-react'
+
+// ── Signal rule builder ───────────────────────────────────────────────────────
+
+type RuleKind = 'body' | 'status'
+type BodyCondition = 'equals' | 'contains' | 'present'
+type StatusCondition = 'contains' | 'present'
+type SignalCategory = 'rejection' | 'transient' | 'permanent'
+
+interface BodyRule   { id: string; kind: 'body';   field: string; condition: BodyCondition;   value: string }
+interface StatusRule { id: string; kind: 'status'; code: string;  bodyField: string; condition: StatusCondition; value: string }
+type Rule = BodyRule | StatusRule
+type SignalRules = Record<SignalCategory, Rule[]>
+
+function uid() { return Math.random().toString(36).slice(2) }
+function emptyBody(): BodyRule   { return { id: uid(), kind: 'body',   field: '',   condition: 'equals',   value: '' } }
+function emptyStatus(): StatusRule { return { id: uid(), kind: 'status', code: '',    bodyField: '',         condition: 'contains', value: '' } }
+
+function parseRules(raw: unknown): SignalRules {
+  const result: SignalRules = { rejection: [], transient: [], permanent: [] }
+  if (!raw || typeof raw !== 'object') return result
+  const obj = raw as Record<string, unknown>
+  const map: [string, SignalCategory][] = [
+    ['rejection_signals', 'rejection'],
+    ['transient_signals', 'transient'],
+    ['permanent_signals', 'permanent'],
+  ]
+  for (const [key, cat] of map) {
+    if (!Array.isArray(obj[key])) continue
+    for (const sig of obj[key] as Record<string, unknown>[]) {
+      if (sig.field != null) {
+        let condition: BodyCondition = 'equals'
+        let value = ''
+        if (sig.present === true)      { condition = 'present' }
+        else if (sig.contains != null) { condition = 'contains'; value = String(sig.contains) }
+        else if (sig.equals != null)   { value = String(sig.equals) }
+        result[cat].push({ id: uid(), kind: 'body', field: String(sig.field), condition, value })
+      } else if (sig.status_code != null || sig.body_field != null || sig.header != null) {
+        let condition: StatusCondition = 'contains'
+        let value = ''
+        if (sig.present === true)      { condition = 'present' }
+        else if (sig.contains != null) { value = String(sig.contains) }
+        result[cat].push({
+          id: uid(), kind: 'status',
+          code:      sig.status_code != null ? String(sig.status_code) : '',
+          bodyField: String(sig.body_field ?? sig.header ?? ''),
+          condition, value,
+        })
+      }
+    }
+  }
+  return result
+}
+
+function serializeRules(rules: SignalRules): unknown {
+  const map: [SignalCategory, string][] = [
+    ['rejection', 'rejection_signals'],
+    ['transient', 'transient_signals'],
+    ['permanent', 'permanent_signals'],
+  ]
+  const result: Record<string, unknown[]> = {}
+  let hasAny = false
+  for (const [cat, key] of map) {
+    const signals: unknown[] = []
+    for (const r of rules[cat]) {
+      if (r.kind === 'body' && r.field.trim()) {
+        if      (r.condition === 'present')  signals.push({ field: r.field, present: true })
+        else if (r.condition === 'contains') signals.push({ field: r.field, contains: r.value })
+        else                                 signals.push({ field: r.field, equals: r.value })
+      } else if (r.kind === 'status' && (r.code.trim() || r.bodyField.trim())) {
+        const obj: Record<string, unknown> = {}
+        if (r.code.trim())      obj.status_code = parseInt(r.code)
+        if (r.bodyField.trim()) obj.body_field   = r.bodyField
+        if (r.condition === 'present')        obj.present  = true
+        else if (r.value.trim())              obj.contains = r.value
+        signals.push(obj)
+      }
+    }
+    if (signals.length > 0) { result[key] = signals; hasAny = true }
+  }
+  return hasAny ? result : null
+}
+
+const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = [
+  { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead — logged as a business rejection, never retried.' },
+  { cat: 'transient', label: 'Transient error', desc: 'Temporary failure — will be retried according to the workflow retry policy.' },
+  { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure — no retry, triggers alerts.' },
+]
+
+const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200'
+
+function RuleRow({ rule, onChange, onRemove }: {
+  rule: Rule
+  onChange: (r: Rule) => void
+  onRemove: () => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-2">
+      <select
+        value={rule.kind}
+        onChange={(e) => {
+          const k = e.target.value as RuleKind
+          onChange(k === 'body' ? { ...emptyBody(), id: rule.id } : { ...emptyStatus(), id: rule.id })
+        }}
+        className={`${inputCls} flex-shrink-0`}
+      >
+        <option value="body">Body field</option>
+        <option value="status">HTTP status</option>
+      </select>
+
+      {rule.kind === 'body' ? (
+        <>
+          <input
+            value={rule.field}
+            onChange={(e) => onChange({ ...rule, field: e.target.value })}
+            placeholder="field"
+            className={`${inputCls} w-28`}
+          />
+          <select
+            value={rule.condition}
+            onChange={(e) => onChange({ ...rule, condition: e.target.value as BodyCondition })}
+            className={`${inputCls} flex-shrink-0`}
+          >
+            <option value="equals">equals</option>
+            <option value="contains">contains</option>
+            <option value="present">is present</option>
+          </select>
+          {rule.condition !== 'present' && (
+            <input
+              value={rule.value}
+              onChange={(e) => onChange({ ...rule, value: e.target.value })}
+              placeholder="value"
+              className={`${inputCls} min-w-0 flex-1`}
+            />
+          )}
+        </>
+      ) : (
+        <>
+          <input
+            value={rule.code}
+            onChange={(e) => onChange({ ...rule, code: e.target.value })}
+            placeholder="status"
+            type="number"
+            className={`${inputCls} w-20`}
+          />
+          <input
+            value={rule.bodyField}
+            onChange={(e) => onChange({ ...rule, bodyField: e.target.value })}
+            placeholder="body field"
+            className={`${inputCls} w-28`}
+          />
+          <select
+            value={rule.condition}
+            onChange={(e) => onChange({ ...rule, condition: e.target.value as StatusCondition })}
+            className={`${inputCls} flex-shrink-0`}
+          >
+            <option value="contains">contains</option>
+            <option value="present">is present</option>
+          </select>
+          {rule.condition !== 'present' && (
+            <input
+              value={rule.value}
+              onChange={(e) => onChange({ ...rule, value: e.target.value })}
+              placeholder="value"
+              className={`${inputCls} min-w-0 flex-1`}
+            />
+          )}
+        </>
+      )}
+
+      <button
+        type="button"
+        onClick={onRemove}
+        className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
+function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: (v: SignalRules) => void }) {
+  function update(cat: SignalCategory, id: string, rule: Rule) {
+    onChange({ ...value, [cat]: value[cat].map((r) => (r.id === id ? rule : r)) })
+  }
+  function remove(cat: SignalCategory, id: string) {
+    onChange({ ...value, [cat]: value[cat].filter((r) => r.id !== id) })
+  }
+  function add(cat: SignalCategory) {
+    onChange({ ...value, [cat]: [...value[cat], emptyBody()] })
+  }
+
+  return (
+    <div className="space-y-5">
+      {SIGNAL_SECTIONS.map(({ cat, label, desc }) => (
+        <div key={cat}>
+          <div className="mb-2 flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-700">{label}</p>
+              <p className="text-xs text-gray-400">{desc}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => add(cat)}
+              className="flex flex-shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
+            >
+              <Plus className="h-3 w-3" />
+              Add rule
+            </button>
+          </div>
+          {value[cat].length === 0 ? (
+            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
+              No rules — uses default HTTP status classification.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {value[cat].map((rule) => (
+                <RuleRow
+                  key={rule.id}
+                  rule={rule}
+                  onChange={(r) => update(cat, rule.id, r)}
+                  onRemove={() => remove(cat, rule.id)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Form field primitives ─────────────────────────────────────────────────────
 
 interface Props {
   partner?: Partner
@@ -52,6 +284,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+// ── Main form ─────────────────────────────────────────────────────────────────
+
 export default function PartnerForm({
   partner,
   onSave,
@@ -65,7 +299,6 @@ export default function PartnerForm({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Basic fields
   const [name, setName] = useState(partner?.name ?? '')
   const [slug, setSlug] = useState(partner?.slug ?? '')
   const [apiEndpoint, setApiEndpoint] = useState(partner?.api_endpoint ?? '')
@@ -73,27 +306,18 @@ export default function PartnerForm({
   const [isActive, setIsActive] = useState(partner?.is_active ?? true)
   const [priority, setPriority] = useState(String(partner?.priority ?? 0))
 
-  // Bidding
   const [dailyCap, setDailyCap] = useState(partner?.daily_cap != null ? String(partner.daily_cap) : '')
   const [minBid, setMinBid] = useState(partner?.min_bid != null ? String(partner.min_bid) : '')
   const [bidFormula, setBidFormula] = useState(partner?.bid_formula ?? '')
   const [dedupEndpoint, setDedupEndpoint] = useState(partner?.dedup_endpoint ?? '')
 
-  // Circuit breaker
   const [circuitEnabled, setCircuitEnabled] = useState(partner?.circuit_enabled ?? true)
   const [circuitThreshold, setCircuitThreshold] = useState(String(partner?.circuit_error_threshold ?? 5))
   const [circuitWindow, setCircuitWindow] = useState(String(partner?.circuit_window_seconds ?? 60))
   const [circuitCooldown, setCircuitCooldown] = useState(String(partner?.circuit_cooldown_seconds ?? 300))
 
-  // Response classification
-  const [responseClassification, setResponseClassification] = useState(
-    partner?.response_classification
-      ? JSON.stringify(partner.response_classification, null, 2)
-      : ''
-  )
-  const [responseClassificationError, setResponseClassificationError] = useState<string | null>(null)
+  const [signalRules, setSignalRules] = useState<SignalRules>(() => parseRules(partner?.response_classification))
 
-  // Alert config
   const defaultAlertConfig = partner?.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
   const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
@@ -101,21 +325,7 @@ export default function PartnerForm({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setResponseClassificationError(null)
     setSaving(true)
-
-    // Parse response_classification JSON if provided
-    let parsedClassification: unknown = null
-    if (responseClassification.trim()) {
-      try {
-        parsedClassification = JSON.parse(responseClassification)
-      } catch {
-        setResponseClassificationError('Invalid JSON — check syntax and try again.')
-        setSaving(false)
-        return
-      }
-    }
-
     try {
       const body: PartnerBody = {
         name,
@@ -132,7 +342,7 @@ export default function PartnerForm({
         circuit_error_threshold: parseInt(circuitThreshold) || 5,
         circuit_window_seconds: parseInt(circuitWindow) || 60,
         circuit_cooldown_seconds: parseInt(circuitCooldown) || 300,
-        response_classification: parsedClassification,
+        response_classification: serializeRules(signalRules),
         alert_config: {
           transient_errors: { alert: alertTransient },
           permanent_errors: { alert: alertPermanent },
@@ -213,14 +423,14 @@ export default function PartnerForm({
           <Field label="Name" hint="Display name shown in the UI.">
             <Input value={name} onChange={setName} placeholder="Tripoint" />
           </Field>
-          {isNew ? (
+          {isNew && (
             <Field
               label="Slug"
               hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
             >
               <Input value={slug} onChange={setSlug} placeholder="tripoint" mono />
             </Field>
-          ) : null}
+          )}
           <div className="flex items-center gap-6">
             <Field label="Priority">
               <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
@@ -249,7 +459,7 @@ export default function PartnerForm({
           </Field>
           <Field
             label="Auth secret name"
-            hint="Name of the secret (stored in Cloudflare Workers) that holds this partner's API key. Enter the secret name, not the value itself — e.g. TRIPOINT_API_KEY."
+            hint="Name of the Cloudflare Workers secret holding this partner's API key — e.g. TRIPOINT_API_KEY."
           >
             <Input value={cfSecretKey} onChange={setCfSecretKey} placeholder="TRIPOINT_API_KEY" mono />
           </Field>
@@ -272,7 +482,7 @@ export default function PartnerForm({
           </div>
           <Field
             label="Bid formula"
-            hint="Expression evaluated to compute the bid price. Variables from trigger.payload and steps.* are available. E.g. debt_amount * 0.65"
+            hint="Expression evaluated to compute the bid price. Variables from trigger.payload and steps.* are available."
           >
             <textarea
               value={bidFormula}
@@ -300,25 +510,15 @@ export default function PartnerForm({
               Pauses bids to this partner after repeated failures, then retries automatically.
             </p>
           </div>
-
           {circuitEnabled && (
             <div className="grid grid-cols-3 gap-4">
-              <Field
-                label="Error threshold"
-                hint="How many errors in the window before pausing."
-              >
+              <Field label="Error threshold" hint="Errors before pausing.">
                 <Input value={circuitThreshold} onChange={setCircuitThreshold} type="number" placeholder="5" />
               </Field>
-              <Field
-                label="Window (seconds)"
-                hint="Time period to count errors in."
-              >
+              <Field label="Window (seconds)" hint="Time period to count errors in.">
                 <Input value={circuitWindow} onChange={setCircuitWindow} type="number" placeholder="60" />
               </Field>
-              <Field
-                label="Pause duration (seconds)"
-                hint="How long to wait before trying again."
-              >
+              <Field label="Pause duration (seconds)" hint="How long to wait before retrying.">
                 <Input value={circuitCooldown} onChange={setCircuitCooldown} type="number" placeholder="300" />
               </Field>
             </div>
@@ -327,39 +527,10 @@ export default function PartnerForm({
 
         <Section title="Response classification">
           <p className="text-xs text-gray-400">
-            Override how this partner&apos;s responses are classified. Evaluated before default rules.
-            Leave blank to use defaults (HTTP status–based classification).
+            Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
+            Leave all sections empty to use default HTTP status–based classification.
           </p>
-          <Field
-            label="Signal overrides (JSON)"
-            hint={'Supported keys: rejection_signals, transient_signals, permanent_signals. Each signal is { field, equals?, contains?, present? } for body fields or { status_code?, body_field?, contains?, header?, present? } for status signals.'}
-          >
-            <textarea
-              value={responseClassification}
-              onChange={(e) => {
-                setResponseClassification(e.target.value)
-                setResponseClassificationError(null)
-              }}
-              rows={8}
-              placeholder={`{
-  "rejection_signals": [
-    { "field": "status", "equals": "rejected" },
-    { "field": "accepted", "equals": false }
-  ],
-  "transient_signals": [
-    { "status_code": 200, "body_field": "error", "contains": "service unavailable" },
-    { "status_code": 403, "header": "Retry-After", "present": true }
-  ],
-  "permanent_signals": [
-    { "status_code": 503, "body_field": "error", "contains": "account suspended" }
-  ]
-}`}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-gray-900 placeholder-gray-300 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200"
-            />
-            {responseClassificationError && (
-              <p className="mt-1 text-xs text-red-600">{responseClassificationError}</p>
-            )}
-          </Field>
+          <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
         </Section>
 
         <Section title="Alert configuration">
@@ -416,7 +587,10 @@ export default function PartnerForm({
           </button>
           {!isNew && (
             <p className="text-xs text-gray-400">
-              Last updated {partner.updated_by_email ? `by ${partner.updated_by_email}` : ''}
+              {partner.updated_at
+                ? `Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}${partner.updated_by_email ? ` by ${partner.updated_by_email.split('@')[0]}` : ''}`
+                : partner.updated_by_email ? `Modified by ${partner.updated_by_email.split('@')[0]}` : ''
+              }
             </p>
           )}
         </div>
