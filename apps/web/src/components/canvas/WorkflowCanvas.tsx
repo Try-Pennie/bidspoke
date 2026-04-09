@@ -508,9 +508,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // The trigger node has a single output — it can only connect to one downstream node.
   // All other nodes are unrestricted (filter/branch already split via separate handles).
   const isValidConnection = useCallback(
-    (connection: { source: string | null; sourceHandle?: string | null }) => {
+    (connection: { source: string | null; sourceHandle?: string | null; target?: string | null }) => {
+      // Trigger can only have one outgoing edge
       if (connection.source === 'trigger') {
         return !edges.some((e) => e.source === 'trigger')
+      }
+      // Each source handle can only connect to one target
+      if (connection.source && connection.sourceHandle) {
+        return !edges.some(
+          (e) => e.source === connection.source && e.sourceHandle === connection.sourceHandle
+        )
       }
       return true
     },
