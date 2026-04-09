@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import type { StatsResponse } from '@/lib/api'
@@ -13,23 +13,115 @@ import { AlertCircle, CheckCircle2, ArrowRight, Clock } from 'lucide-react'
 
 type Window = 7 | 14 | 30
 
+function useCountUp(target: number | null, duration = 500): number | null {
+  const [display, setDisplay] = useState<number | null>(null)
+  const rafRef = useRef<number | null>(null)
+  const prevTargetRef = useRef<number>(0)
+
+  useEffect(() => {
+    if (target === null) {
+      setDisplay(null)
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      return
+    }
+    const prefersReduced =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (prefersReduced) {
+      setDisplay(target)
+      prevTargetRef.current = target
+      return
+    }
+    const from = prevTargetRef.current
+    const start = performance.now()
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+    function tick(now: number) {
+      const t = Math.min((now - start) / duration, 1)
+      const eased = 1 - Math.pow(1 - t, 3)
+      setDisplay(Math.round(from + (target! - from) * eased))
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick)
+      } else {
+        prevTargetRef.current = target!
+        rafRef.current = null
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => { if (rafRef.current != null) cancelAnimationFrame(rafRef.current) }
+  }, [target, duration])
+
+  return display
+}
+
 function fmt(ms: number | null) {
   if (ms == null) return '—'
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
 }
 
+type ChartTooltip = {
+  date: string; completed: number; exited: number; failed: number; total: number; x: number
+}
+
 function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
   const maxTotal = Math.max(...data.map((d) => d.total), 1)
   const n = data.length
   const CHART_H = 112
+  const TOOLTIP_W = 152
+  const [tooltip, setTooltip] = useState<ChartTooltip | null>(null)
+  const chartRef = useRef<HTMLDivElement>(null)
 
   const showLabelAt = (i: number) =>
     i === 0 || i === n - 1 || n <= 7 || i % Math.ceil(n / 6) === 0
 
   return (
     <div>
-      <div className="relative" style={{ height: CHART_H }}>
+      <div ref={chartRef} className="relative" style={{ height: CHART_H }}>
+        {/* Tooltip */}
+        {tooltip && (() => {
+          const w = chartRef.current?.offsetWidth ?? 600
+          const left = Math.max(0, Math.min(tooltip.x - TOOLTIP_W / 2, w - TOOLTIP_W))
+          const label = new Date(tooltip.date + 'T12:00:00Z')
+            .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+          return (
+            <div
+              className="absolute top-1 z-10 pointer-events-none rounded-lg border border-gray-200 bg-white shadow-sm px-3 py-2.5 text-xs"
+              style={{ left, width: TOOLTIP_W }}
+            >
+              <p className="mb-2 font-medium text-gray-600">{label}</p>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="flex items-center gap-1.5 text-gray-500">
+                    <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-indigo-500" />Completed
+                  </span>
+                  <span className="tabular-nums font-medium text-gray-700">{tooltip.completed}</span>
+                </div>
+                {tooltip.exited > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-gray-500">
+                      <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-slate-400" />Exited
+                    </span>
+                    <span className="tabular-nums font-medium text-gray-700">{tooltip.exited}</span>
+                  </div>
+                )}
+                {tooltip.failed > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-gray-500">
+                      <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-red-400" />Failed
+                    </span>
+                    <span className="tabular-nums font-medium text-red-600">{tooltip.failed}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-1.5 mt-1">
+                  <span className="text-gray-400">Total</span>
+                  <span className="tabular-nums font-semibold text-gray-700">{tooltip.total}</span>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* Grid lines */}
         {[0.25, 0.5, 0.75, 1].map((pct) => (
           <div
             key={pct}
@@ -37,6 +129,8 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
             style={{ top: Math.round(CHART_H * (1 - pct)) }}
           />
         ))}
+
+        {/* Bars */}
         <div className="absolute inset-0 flex items-end">
           {data.map((d) => {
             const completedH = (d.completed / maxTotal) * CHART_H
@@ -45,7 +139,21 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
             const totalH = completedH + exitedH + failedH
 
             return (
-              <div key={d.date} className="flex flex-1 justify-center items-end h-full">
+              <div
+                key={d.date}
+                className="flex flex-1 justify-center items-end h-full cursor-default"
+                onMouseEnter={(e) => {
+                  if (!chartRef.current) return
+                  const rect = chartRef.current.getBoundingClientRect()
+                  const col = e.currentTarget.getBoundingClientRect()
+                  setTooltip({
+                    date: d.date, completed: d.completed, exited: d.exited,
+                    failed: d.failed, total: d.total,
+                    x: col.left + col.width / 2 - rect.left,
+                  })
+                }}
+                onMouseLeave={() => setTooltip(null)}
+              >
                 {totalH > 0 ? (
                   <div
                     className="relative overflow-hidden rounded-t-[2px]"
@@ -67,6 +175,8 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
           })}
         </div>
       </div>
+
+      {/* Date labels */}
       <div className="mt-2 flex">
         {data.map((d, i) => {
           const labelDate = new Date(d.date + 'T12:00:00Z')
@@ -85,28 +195,56 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
 }
 
 export default function DashboardPage() {
-  const [window, setWindow] = useState<Window>(7)
+  const [window, setWindow] = useState<Window>(30)
   const [data, setData] = useState<StatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
   useEffect(() => {
-    setLoading(true)
-    setError(null)
-    api.stats.get(window)
-      .then(setData)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
+    function load() {
+      if (document.hidden) return
+      setLoading(true)
+      setError(null)
+      api.stats.get(window)
+        .then((d) => { setData(d); setLastUpdated(new Date()) })
+        .catch((e) => setError(e.message))
+        .finally(() => setLoading(false))
+    }
+
+    load()
+    const interval = setInterval(load, 60_000)
+    document.addEventListener('visibilitychange', load)
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', load)
+    }
   }, [window])
 
   const s = data?.summary
+  const animatedRate = useCountUp(s?.success_rate ?? null)
+  const animatedTotal = useCountUp(s?.total ?? null)
 
   return (
     <NavLayout>
       <div className="p-8">
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-semibold text-gray-900">Last {window} days</h1>
+          <div className="flex items-center gap-2.5">
+              <span className={`h-2 w-2 rounded-full ${
+                loading || !s || s.total === 0 ? 'bg-gray-300' :
+                s.success_rate >= 95 ? 'bg-green-500' :
+                s.success_rate >= 80 ? 'bg-amber-400' :
+                'bg-red-500'
+              }`} />
+              <h1 className="text-2xl font-semibold text-gray-900">Last {window} days</h1>
+            </div>
+          <div className="flex items-center gap-3">
+            {lastUpdated && (
+              <span className="text-xs text-gray-400">
+                Updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+              </span>
+            )}
           <div className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white p-0.5">
             {([7, 14, 30] as Window[]).map((w) => (
               <button
@@ -122,6 +260,7 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
+          </div>
         </div>
 
         {error && (
@@ -135,9 +274,9 @@ export default function DashboardPage() {
           {loading ? (
             <>
               <div className="rounded-xl border border-gray-200 bg-white p-6 lg:col-span-2">
-                <Skeleton className="mb-3 h-3 w-24" />
-                <Skeleton className="mb-4 h-14 w-36" />
-                <Skeleton className="h-3 w-48" />
+                <Skeleton className="mb-3 h-3 w-20" />
+                <Skeleton className="mb-4 h-14 w-32" />
+                <Skeleton className="h-4 w-52" />
               </div>
               <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
                 {[0, 1].map((i) => (
@@ -157,33 +296,24 @@ export default function DashboardPage() {
                 s.success_rate >= 80 ? 'border-amber-100 bg-amber-50' :
                 'border-red-100 bg-red-50'
               }`}>
-                <div className="mb-3 flex items-center gap-2">
-                  <span className={`h-2 w-2 rounded-full ${
-                    !s || s.total === 0 ? 'bg-gray-300' :
-                    s.success_rate >= 95 ? 'bg-green-500' :
-                    s.success_rate >= 80 ? 'bg-amber-400' :
-                    'bg-red-500'
-                  }`} />
-                  <p className="text-xs text-gray-400">Success rate</p>
-                </div>
+                <p className="mb-3 text-xs text-gray-400">Success rate</p>
                 <p className={`text-5xl font-bold tabular-nums leading-none lg:text-6xl ${
                   !s || s.total === 0 ? 'text-gray-300' :
                   s.success_rate >= 95 ? 'text-green-600' :
                   s.success_rate >= 80 ? 'text-amber-500' :
                   'text-red-500'
                 }`}>
-                  {!s || s.total === 0 ? '—' : `${s.success_rate}%`}
+                  {!s || s.total === 0 ? '—' : `${animatedRate ?? s.success_rate}%`}
                 </p>
                 {s && s.total > 0 && (
                   <p className="mt-3 text-sm text-gray-500">
-                    {s.failed > 0 ? (
+                    {s.failed > 0 || s.exited > 0 ? (
                       <>
-                        <span className="font-medium text-red-600">{s.failed} failed</span>
-                        {s.exited > 0 && <span>, {s.exited} exited early</span>}
-                        {' — '}{s.total} total runs
+                        {s.total} runs:{' '}
+                        {s.failed > 0 && <span className="font-medium text-red-600">{s.failed} failed</span>}
+                        {s.failed > 0 && s.exited > 0 && <span>, </span>}
+                        {s.exited > 0 && <span>{s.exited} exited early</span>}
                       </>
-                    ) : s.exited > 0 ? (
-                      <>{s.exited} exited early — {s.total} total runs</>
                     ) : (
                       <span className="text-green-700">All {s.total} runs completed</span>
                     )}
@@ -195,7 +325,7 @@ export default function DashboardPage() {
               <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Total runs</p>
-                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-gray-900">{s?.total ?? 0}</p>
+                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-gray-900">{animatedTotal ?? s?.total ?? 0}</p>
                 </div>
                 <div className={`rounded-xl border p-5 ${
                   s?.p95_duration_ms != null && s.p95_duration_ms > 5000
@@ -396,6 +526,7 @@ export default function DashboardPage() {
                     <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.bids_sent}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.accepted}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">
+                      {/* TODO: calibrate win rate thresholds against real Pennie data — 50/25 are placeholders */}
                       <span className={`font-medium ${
                         p.win_rate >= 50 ? 'text-green-600' :
                         p.win_rate >= 25 ? 'text-amber-500' : 'text-red-500'
