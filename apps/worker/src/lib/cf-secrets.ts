@@ -46,7 +46,7 @@ export async function deleteCfSecret(
       headers: { Authorization: `Bearer ${apiToken}` },
     }
   )
-  if (!res.ok) {
+  if (!res.ok && res.status !== 404) {
     const body = await res.text()
     throw new Error(`Failed to delete Cloudflare secret: ${body}`)
   }
