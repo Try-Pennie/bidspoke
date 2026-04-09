@@ -69,16 +69,19 @@ export default async function globalSetup() {
   await page.goto(BASE_URL)
 
   // Set auth cookies (what @supabase/ssr middleware reads)
+  const parsedBase = new URL(BASE_URL)
+  const cookieDomain = parsedBase.hostname
+  const isSecure = parsedBase.protocol === 'https:'
   const sessionStr = JSON.stringify(data.session)
   const chunks = buildCookieChunks(STORAGE_KEY, sessionStr)
   await context.addCookies(
     chunks.map(({ name, value }) => ({
       name,
       value,
-      domain: 'localhost',
+      domain: cookieDomain,
       path: '/',
       httpOnly: false,
-      secure: false,
+      secure: isSecure,
       sameSite: 'Lax',
     }))
   )
