@@ -307,6 +307,50 @@ export default function DashboardPage() {
         </div>
 
         {/* Slowest step types hint */}
+        {!loading && data && data.by_partner.length > 0 && (
+          <div className="mt-6 rounded-xl border border-gray-200 bg-white">
+            <div className="border-b border-gray-100 px-5 py-3">
+              <p className="text-sm font-semibold text-gray-900">Partner performance</p>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="border-b border-gray-100 bg-gray-50">
+                <tr>
+                  <th className="px-5 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-400">Partner</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Bids sent</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Accepted</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Win rate</th>
+                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Avg bid</th>
+                  <th className="px-5 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-400">Skipped</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {data.by_partner.map((p) => (
+                  <tr key={p.slug} className="hover:bg-gray-50">
+                    <td className="px-5 py-2.5">
+                      <span className="font-medium text-gray-900">{p.name}</span>
+                      <span className="ml-1.5 font-mono text-xs text-gray-400">{p.slug}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.bids_sent}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.accepted}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">
+                      <span className={`font-medium ${
+                        p.win_rate >= 50 ? 'text-green-600' :
+                        p.win_rate >= 25 ? 'text-amber-500' : 'text-red-500'
+                      }`}>
+                        {p.bids_sent === 0 ? '—' : `${p.win_rate}%`}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
+                      {p.avg_bid != null ? `$${p.avg_bid.toLocaleString()}` : '—'}
+                    </td>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-gray-400">{p.skipped}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
         {!loading && data && data.summary.total > 0 && data.summary.p95_duration_ms != null && data.summary.p95_duration_ms > 5000 && (
           <div className="mt-4 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             <Clock className="h-4 w-4 flex-shrink-0" />

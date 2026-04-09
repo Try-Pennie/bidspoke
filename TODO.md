@@ -194,8 +194,8 @@
 - [x] **Test:** Save workflow → verify commit in GitHub repo with correct definition JSON
 
 ### 3.3 Dashboards & Reporting
-- [ ] Implement execution history dashboard with partner performance metrics
-- [ ] **Test:** Dashboard shows accurate volume, duration, partner win rates
+- [x] Implement execution history dashboard with partner performance metrics
+- [x] **Test:** Dashboard shows accurate volume, duration, partner win rates
 
 ### 3.4 Cross-Workflow Copy/Paste
 - [x] Implement copy/paste of nodes and node groups across workflows

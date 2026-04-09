@@ -49,6 +49,16 @@ export interface StatsResponse {
     success_rate: number
     avg_duration_ms: number | null
   }>
+  by_partner: Array<{
+    slug: string
+    name: string
+    bids_sent: number
+    accepted: number
+    skipped: number
+    errors: number
+    win_rate: number
+    avg_bid: number | null
+  }>
   recent_failures: Array<{
     id: string
     workflow_id: string

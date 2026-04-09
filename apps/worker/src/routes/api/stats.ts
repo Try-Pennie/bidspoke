@@ -30,6 +30,7 @@ stats.get('/', async (c) => {
     summary: { total: 0, completed: 0, failed: 0, exited: 0, avg_duration_ms: null as number | null, p95_duration_ms: null as number | null, success_rate: 0 },
     by_day: [] as unknown[],
     by_workflow: [] as unknown[],
+    by_partner: [] as unknown[],
     recent_failures: [] as unknown[],
   }
 
@@ -130,11 +131,71 @@ stats.get('/', async (c) => {
       trace_id: r.trace_id,
     }))
 
+  // 7. By partner — aggregate partner_bid steps across all executions in window
+  const executionIds = rows.map((r) => r.id)
+  let by_partner: unknown[] = []
+
+  if (executionIds.length > 0) {
+    const { data: partnerSteps } = await supabase
+      .from('execution_steps')
+      .select('output, status')
+      .in('execution_id', executionIds)
+      .eq('step_type', 'partner_bid')
+
+    const { data: partnerConfigs } = await supabase
+      .from('partner_configs')
+      .select('slug, name')
+      .eq('organization_id', orgId)
+
+    const partnerNameMap: Record<string, string> = Object.fromEntries(
+      (partnerConfigs ?? []).map((p) => [p.slug as string, p.name as string])
+    )
+
+    type PartnerStat = { bids_sent: number; accepted: number; skipped: number; errors: number; total_bid: number; bid_count: number }
+    const pStats: Record<string, PartnerStat> = {}
+
+    const infraSkipReasons = new Set(['circuit_open', 'cap_exceeded', 'duplicate', 'partner_inactive'])
+
+    for (const step of partnerSteps ?? []) {
+      const out = step.output as { partner?: string; bid?: number | null; accepted?: boolean; skipped?: boolean; skip_reason?: string } | null
+      if (!out?.partner) continue
+      const slug = out.partner
+      if (!pStats[slug]) pStats[slug] = { bids_sent: 0, accepted: 0, skipped: 0, errors: 0, total_bid: 0, bid_count: 0 }
+
+      if ((step.status as string) === 'failed') {
+        pStats[slug].errors++
+      } else if (out.skipped && infraSkipReasons.has(out.skip_reason ?? '')) {
+        pStats[slug].skipped++
+      } else {
+        pStats[slug].bids_sent++
+        if (out.accepted && typeof out.bid === 'number') {
+          pStats[slug].accepted++
+          pStats[slug].total_bid += out.bid
+          pStats[slug].bid_count++
+        }
+      }
+    }
+
+    by_partner = Object.entries(pStats)
+      .map(([slug, s]) => ({
+        slug,
+        name: partnerNameMap[slug] ?? slug,
+        bids_sent: s.bids_sent,
+        accepted: s.accepted,
+        skipped: s.skipped,
+        errors: s.errors,
+        win_rate: s.bids_sent > 0 ? Math.round((s.accepted / s.bids_sent) * 100) : 0,
+        avg_bid: s.bid_count > 0 ? Math.round(s.total_bid / s.bid_count) : null,
+      }))
+      .sort((a, b) => b.bids_sent - a.bids_sent)
+  }
+
   return c.json({
     window_days: windowDays,
     summary: { total, completed, failed, exited, avg_duration_ms, p95_duration_ms, success_rate },
     by_day,
     by_workflow,
+    by_partner,
     recent_failures,
   })
 })
