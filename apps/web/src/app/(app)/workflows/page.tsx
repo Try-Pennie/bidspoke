@@ -385,9 +385,9 @@ export default function WorkflowsPage() {
             <table className="w-full table-fixed text-sm">
               <colgroup>
                 <col />
-                <col className="w-40" />
-                <col className="w-36" />
-                <col className="w-24" />
+                <col className="w-52" />
+                <col className="w-44" />
+                <col className="w-16" />
               </colgroup>
               <thead className="border-b border-gray-100 bg-gray-50">
                 <tr>
@@ -476,10 +476,10 @@ export default function WorkflowsPage() {
                         )}
                       </td>
 
-                      <td className="px-4 py-3 text-gray-500">
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
                         {formatDatetime(wf.updated_at)}
                       </td>
-                      <td className="px-4 py-3 text-gray-500">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
                       {/* Actions column */}
                       <td className="px-4 py-3">
