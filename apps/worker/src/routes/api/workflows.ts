@@ -3,6 +3,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidateWorkflowCache } from '../../engine/definition-loader'
+import { pushWorkflowToGitHub } from '../../lib/github'
 import { writeAuditLog } from '../../lib/audit'
 import { executeWorkflow } from '../../engine/index'
 import { deployCodeNodes } from '../../lib/code-node-deployer'
@@ -150,6 +151,28 @@ workflows.put('/:id', async (c) => {
       ).catch((e) => console.error('[code-nodes] deploy failed:', e))
     )
   }
+
+  // Push definition to GitHub backup repo and store commit SHA on the version row (non-blocking)
+  const workflowName = (updates.name as string | undefined) ?? (existing.definition as { name?: string } | null)?.name ?? id
+  c.executionCtx.waitUntil(
+    pushWorkflowToGitHub(
+      c.env.GITHUB_TOKEN,
+      c.env.GITHUB_REPO,
+      id,
+      workflowName,
+      body.definition ?? existing.definition,
+      nextVersion,
+      body.message
+    )
+      .then((commitSha) => {
+        if (!commitSha) return
+        return supabase
+          .from('workflow_versions')
+          .update({ commit_sha: commitSha })
+          .eq('id', version.id)
+      })
+      .catch((e) => console.error('[github] backup failed:', e))
+  )
 
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     version: nextVersion,

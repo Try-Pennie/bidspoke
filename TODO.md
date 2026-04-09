@@ -190,8 +190,8 @@
 - [x] **Test:** Schema sync fetches real metadata, autocomplete populates in Integration node config
 
 ### 3.2 GitHub Backup
-- [ ] Implement GitHub integration (push workflow definitions on save, commit_sha on workflow_versions)
-- [ ] **Test:** Save workflow → verify commit in GitHub repo with correct definition JSON
+- [x] Implement GitHub integration (push workflow definitions on save, commit_sha on workflow_versions)
+- [x] **Test:** Save workflow → verify commit in GitHub repo with correct definition JSON
 
 ### 3.3 Dashboards & Reporting
 - [ ] Implement execution history dashboard with partner performance metrics

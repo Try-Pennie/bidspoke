@@ -36,6 +36,11 @@ export interface Env {
 
   // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
+
+  // GitHub backup — push workflow definitions on save (PRD Section 3.2)
+  // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO
+  GITHUB_TOKEN?: string
+  GITHUB_REPO?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
