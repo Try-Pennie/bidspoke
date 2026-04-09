@@ -81,7 +81,7 @@ export default function EnvPage() {
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-gray-900">Environment Variables</h1>
+            <h1 className="text-3xl font-bold text-gray-900">Environment Variables</h1>
             <p className="mt-1 text-sm text-gray-500">
               Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
             </p>

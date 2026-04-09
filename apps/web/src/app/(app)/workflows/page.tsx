@@ -286,7 +286,7 @@ export default function WorkflowsPage() {
     <NavLayout>
       <div className="p-8">
         <div className="mb-6 flex items-center gap-4">
-          <h1 className="text-3xl font-bold tracking-tight text-gray-900">Workflows</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Workflows</h1>
           <div className="flex flex-1 items-center justify-end gap-3">
             {/* Search */}
             <div className="relative">
@@ -368,7 +368,7 @@ export default function WorkflowsPage() {
               <text x="50" y="115" textAnchor="middle" fill="#15803d" fontSize="8" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif" letterSpacing="1">RESPOND</text>
             </svg>
 
-            <h2 className="text-xl font-bold tracking-tight text-gray-900">Build your first workflow</h2>
+            <h2 className="text-xl font-bold text-gray-900">Build your first workflow</h2>
             <p className="mx-auto mt-2 max-w-sm text-sm text-gray-400">
               Connect a trigger to filters, decisions, and API calls — and automate what happens when a lead comes in.
             </p>
