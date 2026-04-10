@@ -181,14 +181,14 @@ export default function EndpointsPage() {
                 )}
 
                 {/* Subdomain + path row */}
-                <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+                <div className="grid grid-cols-2 items-end gap-2">
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600">Subdomain</label>
                     <div className="flex items-center rounded-lg border border-gray-200 bg-white focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-500/20">
                       <input
                         ref={subdomainInputRef}
                         className="min-w-0 flex-1 rounded-l-lg bg-transparent px-3 py-2 font-mono text-sm text-gray-900 outline-none placeholder:text-gray-400"
-                        placeholder="tripoint"
+                        placeholder="custom-name"
                         value={form.subdomain}
                         onChange={(e) => setForm((f) => ({ ...f, subdomain: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') }))}
                         required
@@ -196,7 +196,6 @@ export default function EndpointsPage() {
                       <span className="flex-shrink-0 rounded-r-lg border-l border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-400">.{ENDPOINT_DOMAIN}</span>
                     </div>
                   </div>
-                  <span className="mb-2 text-sm text-gray-400">/</span>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-gray-600">Path</label>
                     <input
@@ -233,7 +232,7 @@ export default function EndpointsPage() {
                   <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
                   <input
                     className="input w-full font-mono"
-                    placeholder={form.subdomain || 'tripoint'}
+                    placeholder={form.subdomain || 'custom-name'}
                     value={form.source_name}
                     onChange={(e) => setForm((f) => ({ ...f, source_name: e.target.value.toLowerCase().replace(/\s+/g, '_') }))}
                   />
@@ -281,7 +280,7 @@ export default function EndpointsPage() {
             <Globe className="mx-auto mb-3 h-6 w-6 text-gray-300" />
             <p className="text-base font-semibold text-gray-900">No custom endpoints yet</p>
             <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
-              Give partners a URL like <span className="font-mono text-gray-600">tripoint.{ENDPOINT_DOMAIN}/bidding</span> instead of a generic webhook ID and API key.
+              Give partners a URL like <span className="font-mono text-gray-600">custom-name.{ENDPOINT_DOMAIN}/bidding</span> instead of a generic webhook ID and API key.
             </p>
             <button
               onClick={() => setAdding(true)}
