@@ -99,6 +99,21 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     return c.json({ error: 'Endpoint not active' }, 404)
   }
 
+  // Require a valid API key — same auth contract as generic webhooks
+  const apiKey = c.req.header('X-API-Key')
+  if (!apiKey) {
+    return c.json({ error: 'Missing X-API-Key header' }, 401)
+  }
+  let keyMap: Record<string, string>
+  try {
+    keyMap = JSON.parse(c.env.API_KEY_MAP) as Record<string, string>
+  } catch {
+    return c.json({ error: 'Internal configuration error' }, 500)
+  }
+  if (!keyMap[apiKey]) {
+    return c.json({ error: 'Invalid API key' }, 401)
+  }
+
   let payload: unknown
   try {
     payload = await c.req.json()
