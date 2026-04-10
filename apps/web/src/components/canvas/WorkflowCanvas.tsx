@@ -737,6 +737,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       setIsDirty(false)
       setSavedOk(true)
       setTimeout(() => setSavedOk(false), 2500)
+      router.push(`/workflows/${workflow.id}?mode=view`)
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
     } finally {
