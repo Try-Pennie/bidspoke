@@ -69,7 +69,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   // Initial load + 5s polling (visibility-aware)
   useEffect(() => {
     load()
-    const tick = setInterval(() => { if (!document.hidden) load(true) }, 5000)
+    const tick = setInterval(() => { if (!document.hidden) load(true) }, 1000)
     const onVisible = () => { if (!document.hidden) load(true) }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
