@@ -52,6 +52,14 @@ export default function IntegrationsPage() {
   const deletePresetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingPresetId, setRemovingPresetId] = useState<string | null>(null)
   const removePresetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const presetNameInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (addingPreset) {
+      const frame = requestAnimationFrame(() => presetNameInputRef.current?.focus())
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [addingPreset])
 
   useEffect(() => {
     api.integrations.getSlack()
@@ -334,15 +342,15 @@ export default function IntegrationsPage() {
               )}
 
               {success && (
-                <p className="text-sm text-green-600">Slack connected successfully.</p>
+                <p className="result-success text-sm text-green-600">Slack connected successfully.</p>
               )}
 
               <button
                 type="submit"
                 disabled={saving || !resolved || !selectedChannel}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               >
-                {saving ? 'Connecting…' : 'Connect Slack'}
+                {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</> : 'Connect Slack'}
               </button>
             </form>
           )}
@@ -359,15 +367,14 @@ export default function IntegrationsPage() {
                 Define reusable services that appear in the Webhook node dropdown. Each preset pre-fills the auth type and optionally the base URL.
               </p>
             </div>
-            {!addingPreset && (
-              <button
-                onClick={() => setAddingPreset(true)}
-                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-              >
-                <Plus className="h-4 w-4" />
-                Add service
-              </button>
-            )}
+            <button
+              onClick={() => setAddingPreset(true)}
+              disabled={addingPreset}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-0 disabled:pointer-events-none"
+            >
+              <Plus className="h-4 w-4" />
+              Add service
+            </button>
           </div>
 
           {presetsError && (
@@ -376,16 +383,19 @@ export default function IntegrationsPage() {
             </div>
           )}
 
-          {addingPreset && (
+          <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingPreset ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div className="min-h-0 overflow-hidden">
             <form
               onSubmit={handleAddPreset}
               className="mb-6 rounded-xl border border-gray-200 bg-white p-5"
+              inert={!addingPreset || undefined}
             >
-              <p className="mb-4 text-sm font-semibold text-gray-900">New service</p>
+              <p className="mb-4 text-sm font-medium text-gray-400">New service</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-600">Display name</label>
                   <input
+                    ref={presetNameInputRef}
                     className="input w-full"
                     placeholder="My CRM"
                     value={newPreset.name}
@@ -398,7 +408,6 @@ export default function IntegrationsPage() {
                       }))
                     }}
                     required
-                    autoFocus
                   />
                 </div>
                 <div>
@@ -438,20 +447,21 @@ export default function IntegrationsPage() {
                 <button
                   type="submit"
                   disabled={savingPreset}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  {savingPreset ? 'Saving…' : 'Save service'}
+                  {savingPreset ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save service'}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setAddingPreset(false); setNewPreset({ name: '', slug: '', auth_type: 'none', base_url: '' }) }}
-                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
                 >
                   Cancel
                 </button>
               </div>
             </form>
-          )}
+            </div>
+          </div>
 
           {presetsLoading ? (
             <div className="space-y-2">
@@ -490,7 +500,7 @@ export default function IntegrationsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {presets.map((p) => (
-                    <tr key={p.id} className={`hover:bg-gray-50 transition-opacity duration-150 ${removingPresetId === p.id ? 'opacity-0' : ''}`}>
+                    <tr key={p.id} className={`env-row hover:bg-gray-50 ${removingPresetId === p.id ? 'opacity-0 -translate-y-1' : ''}`}>
                       <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>
@@ -500,8 +510,7 @@ export default function IntegrationsPage() {
                           <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => handleDeletePreset(p.id)}
-                              disabled={false}
-                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
                             >
                               Delete
                             </button>
@@ -512,8 +521,7 @@ export default function IntegrationsPage() {
                         ) : (
                           <button
                             onClick={() => requestDeletePreset(p.id)}
-                            disabled={false}
-                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 disabled:opacity-50"
+                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
                             title="Delete service"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
