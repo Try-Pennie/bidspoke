@@ -94,9 +94,9 @@ function serializeRules(rules: SignalRules): unknown {
 }
 
 const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = [
-  { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead — logged as a business rejection, never retried.' },
-  { cat: 'transient', label: 'Transient error', desc: 'Temporary failure — will be retried according to the workflow retry policy.' },
-  { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure — no retry, triggers alerts.' },
+  { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead. Logged as a business rejection, never retried.' },
+  { cat: 'transient', label: 'Transient error', desc: 'Temporary failure. Will be retried according to the workflow retry policy.' },
+  { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure. No retry, triggers alerts.' },
 ]
 
 const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200'
@@ -232,7 +232,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
           </div>
           {value[cat].length === 0 ? (
             <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
-              No rules — uses default HTTP status classification.
+              No rules. Uses default HTTP status classification.
             </p>
           ) : (
             <div className="space-y-1.5">
@@ -534,7 +534,7 @@ export default function PartnerForm({
           </Field>
           <Field
             label="Auth secret name"
-            hint="Name of the Cloudflare Workers secret holding this partner's API key — e.g. TRIPOINT_API_KEY."
+            hint="Name of the Cloudflare Workers secret holding this partner's API key, e.g. TRIPOINT_API_KEY."
           >
             <Input value={cfSecretKey} onChange={setCfSecretKey} placeholder="TRIPOINT_API_KEY" mono />
           </Field>
@@ -557,7 +557,7 @@ export default function PartnerForm({
           </div>
           <Field
             label="Bid formula"
-            hint="Expression evaluated to compute the bid price. Variables from trigger.payload and steps.* are available."
+            hint="Arithmetic expression for the bid price. Use any numeric field from trigger.payload by name (e.g. debt_amount * 0.65). Supports standard operators (+, -, *, /, **) and Math functions (Math.floor, Math.min, Math.max, Math.round, Math.abs, Math.sqrt)."
           >
             <textarea
               value={bidFormula}

@@ -254,6 +254,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
   const [testRunning, setTestRunning] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
+  const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const overflowRef = useRef<HTMLDivElement>(null)
   const sidePanelRef = useRef<HTMLDivElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -462,6 +463,28 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     })
   }, [nodes, edges, setNodes, setEdges])
 
+  const removeFromChain = useCallback((nodeId: string) => {
+    snapshot()
+    const inEdges = edges.filter((e) => e.target === nodeId)
+    const outEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'output')
+    const connectedIds = new Set([...inEdges.map((e) => e.id), ...outEdges.map((e) => e.id)])
+    const remaining = edges.filter((e) => !connectedIds.has(e.id))
+    const bridgeEdges: Edge[] = []
+    if (inEdges.length === 1 && outEdges.length === 1) {
+      bridgeEdges.push({
+        id: uid(),
+        source: inEdges[0].source,
+        target: outEdges[0].target,
+        sourceHandle: inEdges[0].sourceHandle ?? 'output',
+      })
+    }
+    const newEdges = [...remaining, ...bridgeEdges]
+    setEdges(newEdges)
+    setNodes((ns) => layoutWorkflow(ns, newEdges))
+    setIsDirty(true)
+    setContextMenu(null)
+  }, [snapshot, edges, setEdges, setNodes])
+
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -470,6 +493,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
+      if (e.key === 'Escape') { setContextMenu(null) }
 
       // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
       // This covers Monaco and all other inputs in those panels without relying on
@@ -1124,8 +1148,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             isValidConnection={isValidConnection}
-            onNodeClick={(_, node) => { setSelectedNodeId(node.id) }}
-            onPaneClick={() => setSelectedNodeId(null)}
+            onNodeClick={(_, node) => { setSelectedNodeId(node.id); setContextMenu(null) }}
+            onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null) }}
+            onNodeContextMenu={mode === 'edit' ? (e, node) => {
+              if (node.id === 'trigger') return
+              e.preventDefault()
+              setContextMenu({ nodeId: node.id, x: e.clientX, y: e.clientY })
+            } : undefined}
             nodeTypes={nodeTypes}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
@@ -1168,6 +1197,32 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               maskColor="rgba(243,244,246,0.7)"
             />
           </ReactFlow>
+
+          {contextMenu && (() => {
+            const cmInEdges = edges.filter((e) => e.target === contextMenu.nodeId)
+            const cmOutEdges = edges.filter((e) => e.source === contextMenu.nodeId && e.sourceHandle === 'output')
+            const isInChain = cmInEdges.length > 0 || cmOutEdges.length > 0
+            return (
+              <div
+                className="fixed z-50 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+                onContextMenu={(e) => e.preventDefault()}
+              >
+                {isInChain && (
+                  <button
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                    onClick={() => removeFromChain(contextMenu.nodeId)}
+                  >
+                    <X className="h-3.5 w-3.5 text-gray-400" />
+                    Remove from chain
+                  </button>
+                )}
+                {!isInChain && (
+                  <div className="px-3 py-1.5 text-xs text-gray-400">No connections</div>
+                )}
+              </div>
+            )
+          })()}
         </div>
 
         <div ref={sidePanelRef} className="contents">

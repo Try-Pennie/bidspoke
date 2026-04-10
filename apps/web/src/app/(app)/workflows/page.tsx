@@ -202,7 +202,7 @@ export default function WorkflowsPage() {
         )
         if (errors.length > 0) {
           const names = errors.map((e) => e.label || e.namespace).join(', ')
-          setError(`Can't activate "${wf.name}" — these nodes need to be configured: ${names}. Open the workflow to fix them.`)
+          setError(`Can't activate "${wf.name}": these nodes need to be configured: ${names}. Open the workflow to fix them.`)
           return
         }
       } catch {
@@ -370,7 +370,7 @@ export default function WorkflowsPage() {
 
             <h2 className="text-xl font-bold text-gray-900">Build your first workflow</h2>
             <p className="mx-auto mt-2 max-w-sm text-sm text-gray-400">
-              Connect a trigger to filters, decisions, and API calls — and automate what happens when a lead comes in.
+              Connect a trigger to filters, decisions, and API calls. Automate what happens when a lead comes in.
             </p>
             <button
               onClick={handleCreate}
@@ -396,7 +396,7 @@ export default function WorkflowsPage() {
                       <span className="text-xs font-semibold text-gray-500">Name</span>
                       <button
                         onClick={toggleSort}
-                        title={sortMode === 'health' ? 'Sorted by health — click for date order' : 'Sort by health (failing first)'}
+                        title={sortMode === 'health' ? 'Sorted by health. Click for date order.' : 'Sort by health (failing first)'}
                         className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${
                           sortMode === 'health'
                             ? 'bg-indigo-100 font-medium text-indigo-600'

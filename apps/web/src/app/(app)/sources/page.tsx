@@ -259,7 +259,7 @@ export default function SourcesPage() {
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
                 <p className="text-base font-semibold text-gray-900">No API sources yet</p>
                 <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
-                  Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow — and it shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
+                  Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow. It shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
                 </p>
                 <button
                   onClick={() => setAdding(true)}
@@ -388,7 +388,7 @@ export default function SourcesPage() {
                   <span className="font-mono text-gray-400">/workflows/&#123;id&#125;</span>
                 </p>
                 <p>
-                  <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> is optional but recommended — duplicate requests with the same key return the cached response.
+                  <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> is optional but recommended. Generate a unique ID (any UUID) for each trigger attempt. If your caller retries with the same key within 5 minutes, the workflow won&apos;t run twice. <code className="rounded bg-gray-100 px-1 font-mono">$(uuidgen)</code> generates one on Mac/Linux.
                 </p>
                 <p>
                   The source name <code className="rounded bg-gray-100 px-1 font-mono">{exampleSource}</code> is available as{' '}

@@ -155,7 +155,7 @@ export default function EnvPage() {
                   className="rounded border-gray-300 text-indigo-600"
                 />
                 <label htmlFor="is_secret" className="text-xs text-gray-600">
-                  Secret — value encrypted and synced to Cloudflare Worker
+                  Secret. Value encrypted and synced to Cloudflare Worker.
                 </label>
               </div>
               <div className="mt-4 flex gap-2">
