@@ -606,31 +606,38 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const dropPos = { x: snapTo(rawPos.x), y: snapTo(rawPos.y) }
       const sourceNode = findDropSource(nodes, dropPos)
       const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
-      // Don't auto-connect if this source handle already has an outgoing edge
-      const handleAlreadyUsed = sourceNode
-        ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
-        : false
-      const autoConnected = !!(sourceNode && sourceHandle && !handleAlreadyUsed)
+      const existingOutEdge = (sourceNode && sourceHandle)
+        ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+        : null
+      // True when we can simply append after sourceNode (handle is free)
+      const autoConnected = !!(sourceNode && sourceHandle && !existingOutEdge)
+      // True when we need to INSERT between sourceNode and its current target
+      const insertBetween = !!(sourceNode && sourceHandle && existingOutEdge)
 
       const newNode = {
         id: newId,
         type,
-        // Connected nodes: let dagre position them in the flow.
-        // Disconnected nodes: place exactly where the user dropped — keeps them
-        // visually separate from the workflow so they don't look wired in.
-        position: autoConnected ? { x: 0, y: 0 } : dropPos,
+        position: { x: 0, y: 0 }, // dagre will position it
         data: { namespace, config: defaultNodeConfig(type), variables: {} } satisfies CanvasNodeData,
       }
 
-      const newEdges = autoConnected
-        ? [...edges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
-        : edges
+      let newEdges = edges
+      if (autoConnected) {
+        newEdges = [...edges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
+      } else if (insertBetween) {
+        newEdges = [
+          ...edges.filter((e) => e.id !== existingOutEdge!.id),
+          { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! },
+          { id: uid(), source: newId, target: existingOutEdge!.target, sourceHandle: 'output' },
+        ]
+      }
 
       setEdges(newEdges)
-      if (autoConnected) {
+      if (autoConnected || insertBetween) {
         setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
       } else {
-        setNodes((ns) => [...ns, { ...newNode, draggable: true }])
+        // No suitable source found — drop free-floating at the cursor position
+        setNodes((ns) => [...ns, { ...newNode, position: dropPos, draggable: true }])
       }
       setIsDirty(true)
     },
@@ -1067,23 +1074,34 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   // SLOT-IN: isolated node dragged near the workflow → auto-connect
                   const sourceNode = findDropSource(otherNodes, finalPos)
                   const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
-                  const handleUsed = sourceNode
-                    ? edges.some((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
-                    : false
+                  const existingOutEdge = (sourceNode && sourceHandle)
+                    ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+                    : null
 
-                  if (sourceNode && sourceHandle && !handleUsed) {
-                    const newEdge = { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }
-                    const newEdges = [...edges, newEdge]
+                  if (sourceNode && sourceHandle && !existingOutEdge) {
+                    // Append: handle is free, simply connect sourceNode → this node
+                    const newEdges = [...edges, { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }]
                     setEdges(newEdges)
                     setNodes((ns) => layoutWorkflow(ns, newEdges))
                     setIsDirty(true)
-                  }
+                  } else if (sourceNode && sourceHandle && existingOutEdge) {
+                    // Insert between: remove sourceNode→oldTarget, add sourceNode→this→oldTarget
+                    const newEdges = [
+                      ...edges.filter((e) => e.id !== existingOutEdge.id),
+                      { id: uid(), source: sourceNode.id, target: change.id, sourceHandle },
+                      { id: uid(), source: change.id, target: existingOutEdge.target, sourceHandle: 'output' },
+                    ]
+                    setEdges(newEdges)
+                    setNodes((ns) => layoutWorkflow(ns, newEdges))
+                    setIsDirty(true)
+                  } else {
                   // If no valid slot found, keep free-floating but push away from any overlap
                   if (overlapsAny(finalPos, node.type, otherNodes)) {
                     const safePos = findFreePosition(finalPos.x, finalPos.y, node.type, otherNodes)
                     setNodes((ns) => ns.map((n) => n.id === change.id ? { ...n, position: safePos } : n))
                   }
                   // If no valid slot found, node stays where it was dropped (free-floating)
+                  }
                 } else {
                   // REORDER: connected node dragged to a new position in the flow
                   const newSource = findDropSource(otherNodes, finalPos)
