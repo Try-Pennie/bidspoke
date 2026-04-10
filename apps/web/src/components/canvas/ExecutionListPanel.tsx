@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { CheckCircle, XCircle, Clock, RefreshCw, Loader2 } from 'lucide-react'
+import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -57,17 +57,28 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     })
   }
 
-  function load() {
-    setLoading(true)
+  const load = useCallback((silent = false) => {
+    if (!silent) setLoading(true)
     api.executions
       .list(workflowId)
       .then(setExecutions)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }
+  }, [workflowId])
 
-  useEffect(() => { load() }, [workflowId]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (refreshSignal) load() }, [refreshSignal]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Initial load + 5s polling (visibility-aware)
+  useEffect(() => {
+    load()
+    const tick = setInterval(() => { if (!document.hidden) load(true) }, 5000)
+    const onVisible = () => { if (!document.hidden) load(true) }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(tick)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [load])
+
+  useEffect(() => { if (refreshSignal) load(true) }, [refreshSignal, load])
 
   const filtered = filter === 'all' ? executions : executions.filter((e) => e.status === filter)
 
@@ -82,15 +93,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   return (
     <aside className="flex w-64 flex-col border-r border-gray-200 bg-white">
-      <div className="flex items-center justify-between border-b border-gray-100 px-3 py-3">
+      <div className="border-b border-gray-100 px-3 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Executions</p>
-        <button
-          onClick={load}
-          className="rounded p-1 text-gray-400 hover:bg-gray-100"
-          title="Refresh"
-        >
-          <RefreshCw className="h-3 w-3" />
-        </button>
       </div>
       <div className="flex border-b border-gray-100">
         {FILTER_TABS.map((tab) => (
