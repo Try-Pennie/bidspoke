@@ -5,12 +5,13 @@ import Link from 'next/link'
 
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield, LayoutDashboard } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield, LayoutDashboard, Globe } from 'lucide-react'
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/workflows', label: 'Workflows', icon: GitBranch },
   { href: '/partners', label: 'Partners', icon: Users },
+  { href: '/endpoints', label: 'Endpoints', icon: Globe },
   { href: '/env', label: 'Environment', icon: Settings },
   { href: '/sources', label: 'API Sources', icon: KeyRound },
   { href: '/integrations', label: 'Integrations', icon: Puzzle },

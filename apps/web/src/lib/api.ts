@@ -95,6 +95,26 @@ export interface ServiceConnection {
   updated_by_email: string | null
 }
 
+export interface WebhookEndpoint {
+  id: string
+  subdomain: string
+  path: string
+  workflow_id: string
+  workflow_name: string | null
+  source_name: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface WebhookEndpointBody {
+  subdomain?: string
+  path?: string
+  workflow_id?: string
+  source_name?: string
+  is_active?: boolean
+}
+
 export interface ServicePreset {
   id: string
   name: string
@@ -307,6 +327,16 @@ export const api = {
       req<{ email: string }>('/api/access', { method: 'POST', body: JSON.stringify({ email }) }),
     remove: (email: string) =>
       req<{ ok: boolean }>(`/api/access/${encodeURIComponent(email)}`, { method: 'DELETE' }),
+  },
+
+  endpoints: {
+    list: () => req<WebhookEndpoint[]>('/api/endpoints'),
+    create: (body: WebhookEndpointBody) =>
+      req<WebhookEndpoint>('/api/endpoints', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: WebhookEndpointBody) =>
+      req<WebhookEndpoint>(`/api/endpoints/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/endpoints/${id}`, { method: 'DELETE' }),
   },
 
   connections: {

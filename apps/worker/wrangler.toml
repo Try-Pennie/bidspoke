@@ -33,6 +33,19 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
 
+# Custom endpoint routing — partner subdomains (e.g. tripoint.trypennie.dev)
+# The worker reads the Host header to route *.trypennie.dev requests.
+#
+# DNS setup required (one-time, in Cloudflare dashboard):
+#   Add a wildcard A/CNAME record: * → your Worker's IP/hostname
+#   Or use a Cloudflare Workers custom domain binding for *.trypennie.dev
+#
+# Note: bidspoke.trypennie.dev (Pages) takes priority over this wildcard route
+# because Cloudflare Pages custom domain bindings outrank Worker routes.
+[[routes]]
+pattern = "*.trypennie.dev/*"
+zone_name = "trypennie.dev"
+
 # Public vars
 [vars]
 SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-known/jwks.json"

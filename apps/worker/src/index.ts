@@ -4,6 +4,7 @@ import webhooks from './routes/webhooks'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
+import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
@@ -70,6 +71,15 @@ app.onError((err, c) => {
 })
 
 app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
+
+// Custom endpoint routing — handles *.trypennie.dev partner subdomains
+// Must be registered before /webhooks and /api so it intercepts early
+app.use('*', async (c, next) => {
+  if (isCustomEndpointHost(c.req.header('host') ?? '')) {
+    return handleCustomEndpoint(c)
+  }
+  return next()
+})
 
 // Webhook execution endpoint — authenticated via X-API-Key (PRD 12.2)
 app.route('/webhooks', webhooks)
