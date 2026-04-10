@@ -1,10 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { X, Plus, Trash2, HelpCircle, Copy, Check } from 'lucide-react'
 import type { TriggerDef } from '@/types/workflow'
+import { api } from '@/lib/api'
+import type { WebhookEndpoint } from '@/lib/api'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
+const ENDPOINT_DOMAIN = 'trypennie.dev'
 
 interface Props {
   workflowId: string
@@ -28,12 +31,26 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
 
   const [newField, setNewField] = useState('')
   const [copied, setCopied] = useState(false)
+  const [copiedCustom, setCopiedCustom] = useState<string | null>(null)
+  const [customEndpoints, setCustomEndpoints] = useState<WebhookEndpoint[]>([])
   const webhookUrl = `${WORKER_URL}/webhooks/${workflowId}`
+
+  useEffect(() => {
+    api.endpoints.list()
+      .then((eps) => setCustomEndpoints(eps.filter((e) => e.workflow_id === workflowId && e.is_active)))
+      .catch(() => {/* non-critical */})
+  }, [workflowId])
 
   function copyUrl() {
     navigator.clipboard.writeText(webhookUrl)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
+  }
+
+  function copyCustomUrl(url: string) {
+    navigator.clipboard.writeText(url)
+    setCopiedCustom(url)
+    setTimeout(() => setCopiedCustom(null), 1500)
   }
 
   return (
@@ -57,12 +74,12 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
         {/* Webhook URL */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</label>
-          <div className="flex items-center gap-1.5 rounded border border-gray-200 bg-gray-50 pl-2.5 pr-1.5 py-1.5">
-            <span className="flex-1 truncate font-mono text-xs text-gray-700">{webhookUrl}</span>
+          <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-gray-50 pl-2.5 pr-1.5 py-1.5">
+            <span className="flex-1 break-all font-mono text-xs text-gray-700">{webhookUrl}</span>
             <button
               type="button"
               onClick={copyUrl}
-              className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+              className="mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
               title="Copy URL"
             >
               {copied
@@ -72,6 +89,34 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
             </button>
           </div>
         </div>
+
+        {/* Custom endpoints mapped to this workflow */}
+        {customEndpoints.length > 0 && (
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Custom endpoints</label>
+            <div className="space-y-1.5">
+              {customEndpoints.map((ep) => {
+                const url = `https://${ep.subdomain}.${ENDPOINT_DOMAIN}${ep.path}`
+                return (
+                  <div key={ep.id} className="flex items-start gap-1.5 rounded border border-indigo-100 bg-indigo-50 pl-2.5 pr-1.5 py-1.5">
+                    <span className="flex-1 break-all font-mono text-xs text-indigo-700">{url}</span>
+                    <button
+                      type="button"
+                      onClick={() => copyCustomUrl(url)}
+                      className="mt-0.5 flex-shrink-0 rounded p-1 text-indigo-300 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                      title="Copy URL"
+                    >
+                      {copiedCustom === url
+                        ? <Check className="h-3.5 w-3.5 text-green-500" />
+                        : <Copy className="h-3.5 w-3.5" />
+                      }
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Method */}
         <div>
