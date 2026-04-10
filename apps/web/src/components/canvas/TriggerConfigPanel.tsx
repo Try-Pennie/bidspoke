@@ -11,9 +11,10 @@ interface Props {
   trigger: TriggerDef
   onChange: (trigger: TriggerDef) => void
   onClose: () => void
+  readOnly?: boolean
 }
 
-export default function TriggerConfigPanel({ workflowId, trigger, onChange, onClose }: Props) {
+export default function TriggerConfigPanel({ workflowId, trigger, onChange, onClose, readOnly = false }: Props) {
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
 
@@ -42,12 +43,16 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Trigger</p>
           <p className="mt-0.5 text-sm font-semibold text-gray-900">Webhook</p>
         </div>
-        <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          {readOnly && <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">View only</span>}
+          <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
+      <div className="flex-1 overflow-y-auto text-sm">
+      <div className={`p-4 space-y-5 ${readOnly ? 'pointer-events-none' : ''}`}>
 
         {/* Webhook URL */}
         <div>
@@ -231,6 +236,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
           )}
         </div>
 
+      </div>
       </div>
     </aside>
   )

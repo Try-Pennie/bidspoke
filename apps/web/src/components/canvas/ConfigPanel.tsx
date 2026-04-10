@@ -15,16 +15,17 @@ import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/
 
 interface Props {
   node: Node
-  onUpdate: (id: string, data: Partial<CanvasNodeData>) => void
-  onDelete: (id: string) => void
-  onDuplicate: (id: string) => void
+  onUpdate?: (id: string, data: Partial<CanvasNodeData>) => void
+  onDelete?: (id: string) => void
+  onDuplicate?: (id: string) => void
   onClose: () => void
   nodeNamespaces: string[]
   nodeOptions?: { id: string; namespace: string; label?: string }[]
   refs?: string[]
+  readOnly?: boolean
 }
 
-export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onClose, nodeNamespaces, nodeOptions = [], refs = [] }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -47,20 +48,26 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
           {data.label && <p className="font-mono text-xs text-gray-400">{data.namespace}</p>}
         </div>
         <div className="flex items-center gap-1">
-          <button
-            onClick={() => onDuplicate(node.id)}
-            className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
-            title="Duplicate node (⌘D)"
-          >
-            <Copy className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => onDelete(node.id)}
-            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
-            title="Delete node"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
+          {readOnly ? (
+            <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">View only</span>
+          ) : (
+            <>
+              <button
+                onClick={() => onDuplicate(node.id)}
+                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                title="Duplicate node (⌘D)"
+              >
+                <Copy className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => onDelete(node.id)}
+                className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                title="Delete node"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
           <button
             onClick={onClose}
             className="rounded p-1.5 text-gray-400 hover:bg-gray-100"
@@ -91,7 +98,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
 
       {/* Body — code nodes use a flex-fill layout so the editor expands to full height */}
       {isCode ? (
-        <div className="flex flex-1 flex-col overflow-hidden text-sm">
+        <div className={`flex flex-1 flex-col overflow-hidden text-sm ${readOnly ? 'pointer-events-none' : ''}`}>
           {/* Collapsible meta fields */}
           <div className="border-b border-gray-100">
             <button
@@ -181,7 +188,8 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
           </div>
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto p-4 space-y-5 text-sm">
+      <div className="flex-1 overflow-y-auto text-sm">
+      <div className={`p-4 space-y-5 ${readOnly ? 'pointer-events-none' : ''}`}>
 
         {/* Display name */}
         <Field label="Display name" hint="How this step appears on the canvas. Leave blank to use the step ID.">
@@ -273,6 +281,7 @@ export default function ConfigPanel({ node, onUpdate, onDelete, onDuplicate, onC
             )}
           </div>}
         </div>
+      </div>
       </div>
       )}
     </aside>

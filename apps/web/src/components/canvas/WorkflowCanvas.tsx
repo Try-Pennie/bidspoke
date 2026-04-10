@@ -1277,6 +1277,25 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onClose={() => setSelectedNodeId(null)}
           />
         )}
+        {selectedNode && mode === 'view' && !executionId && selectedNode.id === 'trigger' && (
+          <TriggerConfigPanel
+            readOnly
+            workflowId={workflow.id}
+            trigger={triggerRef.current}
+            onChange={() => {}}
+            onClose={() => setSelectedNodeId(null)}
+          />
+        )}
+        {selectedNode && mode === 'view' && !executionId && selectedNode.id !== 'trigger' && (
+          <ConfigPanel
+            readOnly
+            node={selectedNode}
+            onClose={() => setSelectedNodeId(null)}
+            nodeNamespaces={nodeNamespaces}
+            nodeOptions={nodeOptions}
+            refs={refs}
+          />
+        )}
         {showVersions && (
           <VersionHistoryPanel
             workflowId={workflow.id}
