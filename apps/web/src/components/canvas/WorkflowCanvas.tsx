@@ -301,7 +301,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // Auto-focus + select the name input for brand-new workflows so the first action is naming it
   useEffect(() => {
     if (mode === 'edit' && workflow.name === 'Untitled Workflow') {
-      nameRef.current?.select()
+      requestAnimationFrame(() => {
+        nameRef.current?.focus()
+        nameRef.current?.select()
+      })
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
