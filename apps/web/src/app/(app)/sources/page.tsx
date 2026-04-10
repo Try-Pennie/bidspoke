@@ -26,6 +26,7 @@ export default function SourcesPage() {
   const [saving, setSaving] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [copiedCurl, setCopiedCurl] = useState(false)
+  const [copyCurlCount, setCopyCurlCount] = useState(0)
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null)
   const [removingName, setRemovingName] = useState<string | null>(null)
@@ -33,6 +34,9 @@ export default function SourcesPage() {
   const [selectedSourceName, setSelectedSourceName] = useState<string | null>(null)
   const revokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  const keySpanRef = useRef<HTMLSpanElement | null>(null)
+  const [displayedKey, setDisplayedKey] = useState('your_api_key')
+  const prevExampleKeyRef = useRef('your_api_key')
 
   useEffect(() => {
     if (adding) {
@@ -60,6 +64,31 @@ export default function SourcesPage() {
       setSelectedSourceName(sources[0].name)
     }
   }, [sources, selectedSourceName])
+
+  const selectedSource = sources.find((s) => s.name === selectedSourceName) ?? sources[0] ?? null
+  const exampleKey = selectedSource
+    ? `${selectedSource.api_key.slice(0, 8)}${'•'.repeat(16)}`
+    : 'your_api_key'
+
+  // Animate the key line in the cURL panel when selection changes
+  useEffect(() => {
+    const prev = prevExampleKeyRef.current
+    prevExampleKeyRef.current = exampleKey
+    if (exampleKey === prev) return
+    // Skip animation on initial data load
+    if (prev === 'your_api_key' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setDisplayedKey(exampleKey)
+      return
+    }
+    const el = keySpanRef.current
+    if (!el) { setDisplayedKey(exampleKey); return }
+    const out = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease-out', fill: 'forwards' })
+    out.onfinish = () => {
+      setDisplayedKey(exampleKey)
+      el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 150, easing: 'ease-in' })
+    }
+    return () => out.cancel()
+  }, [exampleKey])
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -118,15 +147,11 @@ export default function SourcesPage() {
     setTimeout(() => setCopiedKey(null), 2000)
   }
 
-  const selectedSource = sources.find((s) => s.name === selectedSourceName) ?? sources[0] ?? null
-  const exampleKey = selectedSource
-    ? `${selectedSource.api_key.slice(0, 8)}${'•'.repeat(16)}`
-    : 'your_api_key'
   const exampleSource = selectedSource?.name ?? 'your_source'
 
   const curlExample = `curl -X POST \\
   "${WORKER_URL}/webhooks/{workflow_id}" \\
-  -H "X-API-Key: ${exampleKey}" \\
+  -H "X-API-Key: ${displayedKey}" \\
   -H "Content-Type: application/json" \\
   -H "X-Idempotency-Key: $(uuidgen)" \\
   -d '{"your": "payload"}'`
@@ -140,6 +165,7 @@ export default function SourcesPage() {
   -d '{"your": "payload"}'`
     await navigator.clipboard.writeText(raw)
     setCopiedCurl(true)
+    setCopyCurlCount((n) => n + 1)
     setTimeout(() => setCopiedCurl(false), 2000)
   }
 
@@ -338,7 +364,7 @@ export default function SourcesPage() {
                     // colorize pieces
                     if (line.includes('X-API-Key')) {
                       const [label, val] = line.split(': ')
-                      return <span key={i}>{label + ': '}<span className="text-green-400">{val}</span>{'\n'}</span>
+                      return <span key={i}>{label + ': '}<span ref={keySpanRef} className="text-green-400">{val}</span>{'\n'}</span>
                     }
                     if (line.includes('workflow_id')) {
                       return <span key={i}>{line.replace('{workflow_id}', '')}<span className="text-sky-400">{'{'+'workflow_id}'}</span>{'\n'}</span>
@@ -350,7 +376,7 @@ export default function SourcesPage() {
                   onClick={handleCopyCurl}
                   className="absolute right-3 top-3 flex items-center gap-1.5 rounded-md bg-gray-800 px-2 py-1 text-xs text-gray-400 hover:bg-gray-700 hover:text-gray-200"
                 >
-                  {copiedCurl ? <Check className="h-3 w-3 text-green-400" /> : <Copy className="h-3 w-3" />}
+                  {copiedCurl ? <Check key={copyCurlCount} className="h-3 w-3 text-green-400 copy-confirm" /> : <Copy className="h-3 w-3" />}
                   {copiedCurl ? 'Copied' : 'Copy'}
                 </button>
               </div>

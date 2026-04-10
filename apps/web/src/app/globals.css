@@ -65,6 +65,21 @@
   .rule-row { transition: none; }
 }
 
+/* Copy button — checkmark pop-in */
+@keyframes copy-confirm {
+  0%   { transform: scale(0.6); opacity: 0; }
+  60%  { transform: scale(1.25); }
+  100% { transform: scale(1);   opacity: 1; }
+}
+
+.copy-confirm {
+  animation: copy-confirm 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-confirm { animation: none; }
+}
+
 /* React Flow — override default z-index so our panels sit above it */
 .react-flow__panel {
   z-index: 10;
