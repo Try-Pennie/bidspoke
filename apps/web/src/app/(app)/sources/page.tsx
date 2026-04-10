@@ -5,7 +5,7 @@ export const runtime = 'edge'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal } from 'lucide-react'
+import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal, Loader2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'https://your-worker.workers.dev'
@@ -26,12 +26,20 @@ export default function SourcesPage() {
   const [saving, setSaving] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [copiedCurl, setCopiedCurl] = useState(false)
-  const [revealedKey, setRevealedKey] = useState<string | null>(null)
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const [confirmingRevoke, setConfirmingRevoke] = useState<string | null>(null)
   const [removingName, setRemovingName] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedSourceName, setSelectedSourceName] = useState<string | null>(null)
   const revokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const nameInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (adding) {
+      const frame = requestAnimationFrame(() => nameInputRef.current?.focus())
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [adding])
 
   async function load() {
     try {
@@ -146,15 +154,14 @@ export default function SourcesPage() {
               The source name is available as <code className="rounded bg-gray-100 px-1 font-mono text-xs">trigger.source</code> in workflows.
             </p>
           </div>
-          {!adding && (
-            <button
-              onClick={() => setAdding(true)}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-            >
-              <Plus className="h-4 w-4" />
-              New source
-            </button>
-          )}
+          <button
+            onClick={() => setAdding(true)}
+            disabled={adding}
+            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-0 disabled:pointer-events-none"
+          >
+            <Plus className="h-4 w-4" />
+            New source
+          </button>
         </div>
 
         {error && (
@@ -163,41 +170,43 @@ export default function SourcesPage() {
           </div>
         )}
 
-        {adding && (
-          <div className="mb-6 max-w-md rounded-xl border border-gray-200 bg-white p-5">
-            <p className="mb-4 text-base font-semibold text-gray-900">New source</p>
-            <form onSubmit={handleAdd} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
-                <input
-                  className="input w-full font-mono"
-                  placeholder="wallet_owl"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value.toLowerCase().replace(/\s/g, '_'))}
-                  autoFocus
-                  required
-                />
-                <p className="mt-1 text-xs text-gray-400">Lowercase letters, numbers, underscores. Used as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflows.</p>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  {saving ? 'Generating…' : 'Generate key'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setAdding(false); setNewName('') }}
-                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+        <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${adding ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+          <div className="min-h-0 overflow-hidden">
+            <div className="mb-6 max-w-md rounded-xl border border-gray-200 bg-white p-5" inert={!adding || undefined}>
+              <p className="mb-4 text-sm font-medium text-gray-400">New source</p>
+              <form onSubmit={handleAdd} className="space-y-4">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
+                  <input
+                    ref={nameInputRef}
+                    className="input w-full font-mono"
+                    placeholder="wallet_owl"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value.toLowerCase().replace(/\s/g, '_'))}
+                    required
+                  />
+                  <p className="mt-1 text-xs text-gray-400">Lowercase letters, numbers, underscores. Used as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflows.</p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</> : 'Generate key'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setAdding(false); setNewName('') }}
+                    className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        )}
+        </div>
 
         <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_340px]">
 
@@ -238,8 +247,10 @@ export default function SourcesPage() {
                 {sources.map((source) => (
                   <div
                     key={source.name}
-                    className={`rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
-                      selectedSourceName === source.name ? 'border-gray-300' : 'border-gray-200'
+                    className={`cursor-pointer rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
+                      selectedSourceName === source.name
+                        ? 'border-indigo-200 ring-2 ring-indigo-500/20'
+                        : 'border-gray-200 hover:border-gray-300'
                     } ${removingName === source.name ? 'opacity-0' : ''}`}
                     onClick={() => setSelectedSourceName(source.name)}
                   >
@@ -269,16 +280,16 @@ export default function SourcesPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <code className="flex-1 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-                        {revealedKey === source.api_key
+                        {revealedKeys.has(source.api_key)
                           ? source.api_key
                           : `${source.api_key.slice(0, 8)}${'•'.repeat(24)}`}
                       </code>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setRevealedKey(revealedKey === source.api_key ? null : source.api_key) }}
+                        onClick={(e) => { e.stopPropagation(); setRevealedKeys((prev) => { const next = new Set(prev); next.has(source.api_key) ? next.delete(source.api_key) : next.add(source.api_key); return next }) }}
                         className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50"
-                        title={revealedKey === source.api_key ? 'Hide' : 'Reveal'}
+                        title={revealedKeys.has(source.api_key) ? 'Hide' : 'Reveal'}
                       >
-                        {revealedKey === source.api_key ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {revealedKeys.has(source.api_key) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleCopy(source.api_key) }}
@@ -302,7 +313,7 @@ export default function SourcesPage() {
                   <Terminal className="h-4 w-4 text-gray-400" />
                   <span className="text-sm font-medium text-gray-700">How to trigger a workflow</span>
                 </div>
-                {sources.length > 1 && (
+                {sources.length > 1 ? (
                   <select
                     value={selectedSourceName ?? ''}
                     onChange={(e) => setSelectedSourceName(e.target.value)}
@@ -312,12 +323,14 @@ export default function SourcesPage() {
                       <option key={s.name} value={s.name}>{s.name}</option>
                     ))}
                   </select>
-                )}
+                ) : sources.length === 1 ? (
+                  <span className="font-mono text-xs text-gray-500">{sources[0].name}</span>
+                ) : null}
               </div>
 
               {/* Code block */}
               <div className="relative bg-gray-950 px-4 py-4">
-                <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-gray-300 whitespace-pre-wrap break-all">
+                <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-gray-300 whitespace-pre-wrap break-words">
                   <span className="text-gray-500">{'# source: '}</span>
                   <span className="text-amber-400">{exampleSource}</span>
                   {'\n'}
