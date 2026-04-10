@@ -156,6 +156,16 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
   return `${base}_${i}`
 }
 
+function defaultNodeConfig(type: NodeType): Record<string, unknown> {
+  if (type === 'branch') {
+    return {
+      branches: [{ label: 'branch_1', condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } }],
+      use_else: true,
+    }
+  }
+  return {}
+}
+
 // ── Auto-connect helpers ─────────────────────────────────────────────────────
 
 // The primary output handle to use when auto-connecting FROM an existing node.
@@ -609,7 +619,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         // Disconnected nodes: place exactly where the user dropped — keeps them
         // visually separate from the workflow so they don't look wired in.
         position: autoConnected ? { x: 0, y: 0 } : dropPos,
-        data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+        data: { namespace, config: defaultNodeConfig(type), variables: {} } satisfies CanvasNodeData,
       }
 
       const newEdges = autoConnected

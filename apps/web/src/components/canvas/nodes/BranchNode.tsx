@@ -9,11 +9,16 @@ interface BranchEntry { label: string }
 export function BranchNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
+  const useElse = (config.use_else as boolean | undefined) ?? true
   const outputPreview = getOutputPreview(executionStep)
 
-  // All handles: one per branch label + else
-  const handles = [...branches.map((b) => b.label), 'else']
+  // All handles: one per branch label, plus else if enabled
+  const handles = [...branches.map((b) => b.label), ...(useElse ? ['else'] : [])]
   const handleCount = handles.length
+
+  const description = branches.length === 0
+    ? 'No branches'
+    : useElse ? 'branches + else' : 'branches'
 
   return (
     <div
@@ -31,27 +36,27 @@ export function BranchNode({ data, selected }: NodeProps) {
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
-        <p className="mt-0.5 text-xs text-slate-400">
-          {branches.length === 0 ? 'No branches' : `${branches.length} branch${branches.length !== 1 ? 'es' : ''} + else`}
-        </p>
+        <p className="mt-0.5 text-xs text-slate-400">{description}</p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}
       </div>
-      <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
-        {handles.map((label) => (
-          <span key={label} className={label === 'else' ? 'text-slate-400' : 'text-purple-600'}>
-            ↓ {label}
-          </span>
-        ))}
-      </div>
+      {handles.length > 0 && (
+        <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
+          {handles.map((h) => (
+            <span key={h} className={h === 'else' ? 'text-slate-400' : 'text-purple-600'}>
+              ↓ {h}
+            </span>
+          ))}
+        </div>
+      )}
 
-      {handles.map((label, i) => (
+      {handles.map((h, i) => (
         <Handle
-          key={label}
+          key={h}
           type="source"
           position={Position.Bottom}
-          id={label}
+          id={h}
           style={{ left: `${((i + 1) / (handleCount + 1)) * 100}%` }}
         />
       ))}
