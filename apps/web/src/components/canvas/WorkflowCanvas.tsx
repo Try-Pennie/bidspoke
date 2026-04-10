@@ -967,14 +967,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={() => router.push(`/workflows/${workflow.id}/executions/${executionId}`)}
+            <a
+              href={`/workflows/${workflow.id}/executions/${executionId}`}
+              target="_blank"
+              rel="noopener noreferrer"
               className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
               title="Open full execution report"
             >
               <ExternalLink className="h-3.5 w-3.5" />
               Full report
-            </button>
+            </a>
             {executionPayload !== undefined && (
               <button
                 onClick={() => {
