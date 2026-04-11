@@ -1,5 +1,10 @@
 # Bidspoke — Project Conventions
 
+@TODO.md
+
+## Design
+@.impeccable.md
+
 ## Stack
 - **Frontend:** Next.js 14 (App Router) on Cloudflare Pages — `apps/web`
 - **Worker:** Cloudflare Workers with Hono — `apps/worker`
@@ -22,9 +27,11 @@
 ## Code Standards
 - Prefer TypeScript over JavaScript for all new code
 - Use straight quotes (`'` and `"`) in all string literals — never smart/curly quotes
+- No em dashes in copy or UI text — use periods, colons, or commas instead
 
 ## Workflow Preferences
 - After completing a task that has an associated TODO or planning doc, always update that doc to reflect the completed work before moving on
+- Never use the `open` command to preview files — triggers Island browser unexpectedly
 
 ## PRD reference
 See [PRD.md](./PRD.md) for full specs. Phase sections in PRD map to TODO.md phases.
@@ -37,10 +44,13 @@ pnpm typecheck     # typecheck all packages
 pnpm lint          # lint all packages
 ```
 
+> **pnpm gotcha:** Always use `pnpm run <script>`, never `pnpm <script>` — `pnpm deploy` hits the pnpm built-in, not the project script.
+
 ## GitHub
 - Repo: https://github.com/Try-Pennie/bidspoke
 - Commit and push after each meaningful chunk of work
 - CI must pass before merging to main
+- Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes — CI uses frozen-lockfile and will break otherwise
 
 ## Worker secrets (production)
 These must be set via `wrangler secret put <NAME> --name bidspoke-worker`. Never committed to git.
