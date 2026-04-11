@@ -210,6 +210,15 @@
 - [x] Implement baseline volume tracking and anomaly detection
 - [x] **Test:** Simulate traffic drop, verify alert fires
 
+### 3.8 Custom Endpoints
+- [x] Implement `webhook_endpoints` table (subdomain + path → workflow_id + source_name)
+- [x] Worker subdomain middleware — intercepts `*.trypennie.dev` before normal routing, KV-cached (60s)
+- [x] Enforce API key auth on custom endpoints (same contract as generic webhooks)
+- [x] CRUD API at `/api/endpoints` with KV cache invalidation on update/delete
+- [x] Frontend: Endpoints page (slide-open form, toggle active, copy URL, optimistic delete)
+- [x] Trigger panel: shows custom endpoints mapped to workflow alongside generic URL
+- [x] CF infrastructure: wildcard DNS `* CNAME → bidspoke-worker.workers.dev`, Worker route `*.trypennie.dev/*`, bypass route `bidspoke.trypennie.dev/*` (no worker) to protect Pages
+
 ### 3.7 Phase 3 Integration Testing
 - [x] Full regression: all Phase 1 + Phase 2 tests still pass
 - [x] Schema autocomplete across all three services
