@@ -1,7 +1,7 @@
 /**
- * Custom endpoint routing — handles *.trypennie.dev partner subdomains.
+ * Custom endpoint routing — handles hook.trypennie.dev partner endpoints.
  *
- * POST https://tripoint.trypennie.dev/bidding
+ * POST https://hook.trypennie.dev/tripoint/bidding
  *   → looks up webhook_endpoints WHERE subdomain='tripoint' AND path='/bidding'
  *   → executes the mapped workflow with source=source_name
  *
@@ -9,7 +9,7 @@
  * 60-second TTL to avoid a Supabase lookup on every inbound request.
  *
  * To test locally, pass a spoofed Host header:
- *   curl -X POST http://localhost:8787/bidding -H "Host: tripoint.trypennie.dev" -d '{}'
+ *   curl -X POST http://localhost:8787/tripoint/bidding -H "Host: hook.trypennie.dev" -d '{}'
  */
 
 import type { Context } from 'hono'
@@ -17,9 +17,7 @@ import type { Env } from '../index'
 import { executeWorkflow } from '../engine/index'
 import { createSupabaseClient } from '../lib/supabase'
 
-const BASE_DOMAIN = 'trypennie.dev'
-// Subdomains reserved for internal use — never treated as custom endpoints
-const RESERVED = new Set(['bidspoke', 'worker', 'api', 'app', 'www', 'mail', 'admin', 'staging', 'dev', 'go'])
+const HOOK_HOST = 'hook.trypennie.dev'
 const CACHE_TTL = 60 // seconds
 
 interface CachedEndpoint {
@@ -30,16 +28,10 @@ interface CachedEndpoint {
 }
 
 /**
- * Returns true if the given host header belongs to a partner custom endpoint
- * rather than a reserved internal domain.
+ * Returns true if the request is for the custom endpoint host.
  */
 export function isCustomEndpointHost(host: string): boolean {
-  const hostname = host.split(':')[0].toLowerCase()
-  if (!hostname.endsWith(`.${BASE_DOMAIN}`)) return false
-  const sub = hostname.slice(0, hostname.length - BASE_DOMAIN.length - 1)
-  // Reject if multi-level (e.g. foo.bar.trypennie.dev) or reserved
-  if (!sub || sub.includes('.')) return false
-  return !RESERVED.has(sub)
+  return host.split(':')[0].toLowerCase() === HOOK_HOST
 }
 
 /** Normalize a URL path: lowercase, leading slash, no trailing slash. */
@@ -58,10 +50,14 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     return c.json({ error: 'Method not allowed' }, 405)
   }
 
-  const host = (c.req.header('host') ?? '').split(':')[0].toLowerCase()
-  const subdomain = host.slice(0, host.length - BASE_DOMAIN.length - 1)
-  const path = normalizePath(new URL(c.req.url).pathname)
-  const cacheKey = `ep:${subdomain}:${path}`
+  // Parse partner slug and path from URL: /tripoint/bidding → slug='tripoint', path='/bidding'
+  const segments = new URL(c.req.url).pathname.split('/').filter(Boolean)
+  if (segments.length < 1) {
+    return c.json({ error: 'Endpoint not found' }, 404)
+  }
+  const partner = segments[0]
+  const path = normalizePath('/' + segments.slice(1).join('/'))
+  const cacheKey = `ep:${partner}:${path}`
 
   // --- KV cache lookup ---
   let endpoint: CachedEndpoint | null = null
@@ -80,7 +76,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     const { data, error } = await supabase
       .from('webhook_endpoints')
       .select('id, workflow_id, source_name, is_active')
-      .eq('subdomain', subdomain)
+      .eq('subdomain', partner)
       .eq('path', path)
       .single()
 

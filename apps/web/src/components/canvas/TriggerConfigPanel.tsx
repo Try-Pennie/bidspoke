@@ -7,7 +7,7 @@ import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
-const ENDPOINT_DOMAIN = 'trypennie.dev'
+const HOOK_BASE = 'https://hook.trypennie.dev'
 
 interface Props {
   workflowId: string
@@ -96,7 +96,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
             <label className="mb-1.5 block text-xs font-medium text-gray-500">Custom endpoints</label>
             <div className="space-y-1.5">
               {customEndpoints.map((ep) => {
-                const url = `https://${ep.subdomain}.${ENDPOINT_DOMAIN}${ep.path}`
+                const url = `${HOOK_BASE}/${ep.subdomain}${ep.path}`
                 return (
                   <div key={ep.id} className="flex items-start gap-1.5 rounded border border-indigo-100 bg-indigo-50 pl-2.5 pr-1.5 py-1.5">
                     <span className="flex-1 break-all font-mono text-xs text-indigo-700">{url}</span>
