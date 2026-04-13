@@ -19,7 +19,7 @@ import { createSupabaseClient } from '../lib/supabase'
 
 const BASE_DOMAIN = 'trypennie.dev'
 // Subdomains reserved for internal use — never treated as custom endpoints
-const RESERVED = new Set(['bidspoke', 'worker', 'api', 'app', 'www', 'mail', 'admin', 'staging', 'dev'])
+const RESERVED = new Set(['bidspoke', 'worker', 'api', 'app', 'www', 'mail', 'admin', 'staging', 'dev', 'go'])
 const CACHE_TTL = 60 // seconds
 
 interface CachedEndpoint {
