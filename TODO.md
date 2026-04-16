@@ -228,6 +228,30 @@
 
 ---
 
+## Phase 4: Engine Bidding Cutover
+
+> Scoped 2026-04-16 after a call with Michael. Full plan and answered decisions live in [docs/engine-cutover-scope.md](./docs/engine-cutover-scope.md). Reference artifacts (Pipedream JSON, SF Apex) in [docs/reference/](./docs/reference/). Target cutover: 1-2 weeks from scope date.
+
+### Critical path to cutover (all must land before engine is rerouted)
+
+- [ ] **4.3 Shadow mirror mode — Phase A (dry_run)** — Pipedream-side mirror step fires fire-and-forget to a Bidspoke shadow endpoint; Bidspoke returns 204 and runs workflow with `shadow_mode: 'dry_run'` (skips all outbound calls). Goal: prove volume handling this week. See scope §3.3.
+- [ ] **4.1 Engine bidding workflow — lift and shift** — import the Pipedream JSON via the existing Pipedream importer, then reshape each step per scope §3.1. Response-shape contract must match Pipedream byte-for-byte.
+- [ ] **4.1a Equifax integration** — new service connection + Integration preset for the credit report endpoint. Worker secret for credentials. See scope §3.1a.
+- [ ] **4.2 Partner Bid Config as first-class entity** — new `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables. `is_default BOOLEAN` with unique partial index. New "Bid Lookup" node. Ops UI mirrors Salesforce layout. See scope §3.2.
+  - Partners to migrate: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default.
+- [ ] **4.2a Constants — per-kind tables + UI** — `offer_copy`, `redirect_urls`, `state_allowlists`, `partner_uuid_map`. Worker-cached reads with invalidate-on-save. See scope §3.2a.
+- [ ] **4.4 Token-based auth** (hard blocker for cutover) — `issued_tokens` table, `POST /token` route, `auth_mode: 'api_key' | 'token'` on `webhook_endpoints`. See scope §3.4.
+- [ ] **4.0 Cutover** — flip engine routing to `engine.trypennie.dev/bidding` and disable Pipedream in the same step. Pipedream workflow stays warm as rollback target.
+
+### Follow-on (after cutover)
+
+- [ ] **4.5a Win tracking via scheduled Salesforce pull** — hourly scheduled workflow + manual "Run now" button. Updates `opportunities.bid_accepted` and `opportunities.monetized`. See scope §3.5a.
+- [ ] **4.5 Person + Lead Sightings + Opportunity data model** — `persons` (two-column SSN: encrypted + peppered hash), `lead_sightings` (every SSN arrival), `opportunities` (only real bids). Ships after cutover. Retention policy needs revisiting — can't purge bid-outcome rows on the 90-day schedule. See scope §3.5.
+- [ ] **4.6 Repeat-lead visibility in dashboard** — per-person timeline, per-SSN churn, cross-sub-account overlap. Depends on 4.5.
+- [ ] **4.7 Dynamic bid optimization hooks** — Reese's ML patches matrix cells via `PATCH /api/partner-bid-configs/:slug/rows`. Design-accommodation only; no UI work now.
+
+---
+
 ## Test Coverage Backlog
 
 > Tests that need to be written before going live. Grouped by priority.
