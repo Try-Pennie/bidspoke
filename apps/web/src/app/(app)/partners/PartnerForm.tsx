@@ -24,6 +24,7 @@ interface FormSnapshot {
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
   sellOffOfferTitle: string; sellOffOfferDetails: string
+  partnerType: 'source' | 'buyer'
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -373,6 +374,8 @@ export default function PartnerForm({
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
   const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
 
+  const [partnerType, setPartnerType] = useState<'source' | 'buyer'>(partner?.partner_type ?? 'buyer')
+
   const [sellOffOfferTitle, setSellOffOfferTitle] = useState(partner?.sell_off_offer_title ?? '')
   const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
 
@@ -402,7 +405,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails }
+    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -414,6 +417,7 @@ export default function PartnerForm({
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
     setAlertTransient(snap.alertTransient); setAlertPermanent(snap.alertPermanent)
     setSellOffOfferTitle(snap.sellOffOfferTitle); setSellOffOfferDetails(snap.sellOffOfferDetails)
+    setPartnerType(snap.partnerType)
   }
 
   function handleUndo() {
@@ -432,6 +436,7 @@ export default function PartnerForm({
       const body: PartnerBody = {
         name,
         slug: partner ? undefined : slug,
+        partner_type: partnerType,
         api_endpoint: apiEndpoint || null,
         cf_secret_key: cfSecretKey || null,
         is_active: isActive,
@@ -546,6 +551,24 @@ export default function PartnerForm({
               />
             </Field>
           )}
+          <Field label="Type" hint="Source partners send leads to Pennie. Buyer partners receive bids.">
+            <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
+              {(['source', 'buyer'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setPartnerType(t)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors duration-100 ${
+                    partnerType === t
+                      ? 'bg-p-blue-dark text-white'
+                      : 'text-gray-500 hover:text-graphite'
+                  }`}
+                >
+                  {t === 'source' ? 'Source' : 'Buyer'}
+                </button>
+              ))}
+            </div>
+          </Field>
           <div className="flex items-center gap-6">
             <Field label="Priority">
               <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
@@ -559,7 +582,7 @@ export default function PartnerForm({
           </div>
         </Section>
 
-        <Section title="API">
+        {partnerType === 'buyer' && <Section title="API">
           <Field
             label="API endpoint"
             hint="URL to POST bids to. Leave blank for formula-only partners (e.g. Tripoint)."
@@ -578,9 +601,9 @@ export default function PartnerForm({
           >
             <Input value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" />
           </Field>
-        </Section>
+        </Section>}
 
-        <Section title="Bidding">
+        {partnerType === 'buyer' && <Section title="Bidding">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Daily cap" hint="Max leads per day. Leave blank for unlimited.">
               <Input value={dailyCap} onChange={setDailyCap} type="number" placeholder="∞" />
@@ -601,9 +624,9 @@ export default function PartnerForm({
               className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </Field>
-        </Section>
+        </Section>}
 
-        <Section title="Circuit breaker">
+        {partnerType === 'buyer' && <Section title="Circuit breaker">
           <div className="flex items-center gap-2.5">
             <Toggle checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
             <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
@@ -627,15 +650,15 @@ export default function PartnerForm({
               </div>
             </div>
           </div>
-        </Section>
+        </Section>}
 
-        <Section title="Response classification">
+        {partnerType === 'buyer' && <Section title="Response classification">
           <p className="text-xs text-gray-400">
             Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
             Leave all sections empty to use default HTTP status–based classification.
           </p>
           <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
-        </Section>
+        </Section>}
 
         <Section title="Sell-off offer copy">
           <p className="text-xs text-gray-400">
@@ -719,7 +742,7 @@ export default function PartnerForm({
           </Section>
         )}
 
-        <Section title="Alert configuration">
+        {partnerType === 'buyer' && <Section title="Alert configuration">
           <p className="text-xs text-gray-400">
             Default: alert on all errors. Turn off alert types that produce noise for this partner.
             Business rejections never alert regardless.
@@ -740,7 +763,7 @@ export default function PartnerForm({
               <Toggle checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
             </div>
           </div>
-        </Section>
+        </Section>}
 
         <div className="flex items-center gap-3 border-t border-gray-100 pt-6">
           <button

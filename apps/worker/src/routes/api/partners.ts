@@ -30,6 +30,7 @@ interface PartnerBody {
   priority?: number
   sell_off_offer_title?: string | null
   sell_off_offer_details?: string | null
+  partner_type?: 'source' | 'buyer'
 }
 
 const partners = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -101,6 +102,7 @@ partners.post('/', async (c) => {
       circuit_enabled: body.circuit_enabled ?? true,
       is_active: body.is_active ?? true,
       priority: body.priority ?? 0,
+      partner_type: body.partner_type ?? 'buyer',
       updated_by: userId,
       updated_by_email: email,
       updated_by_name: c.get('user').name,
@@ -150,6 +152,7 @@ partners.put('/:id', async (c) => {
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'is_active', 'priority',
     'sell_off_offer_title', 'sell_off_offer_details',
+    'partner_type',
   ]
   for (const f of fields) {
     if (body[f] !== undefined) updates[f] = body[f]

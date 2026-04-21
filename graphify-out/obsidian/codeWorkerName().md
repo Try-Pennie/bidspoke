@@ -1,0 +1,19 @@
+---
+source_file: "apps/worker/src/lib/code-node-deployer.ts"
+type: "code"
+community: "API Layer & Execution History"
+location: "L10"
+tags:
+  - graphify/code
+  - graphify/EXTRACTED
+  - community/API_Layer_&_Execution_History
+---
+
+# codeWorkerName()
+
+## Connections
+- [[code-node-deployer.ts]] - `contains` [EXTRACTED]
+- [[deployCodeNodes()]] - `calls` [EXTRACTED]
+- [[executeCodeNode()]] - `calls` [INFERRED]
+
+#graphify/code #graphify/EXTRACTED #community/API_Layer_&_Execution_History
