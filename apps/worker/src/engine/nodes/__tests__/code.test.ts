@@ -43,13 +43,13 @@ describe('executeCodeNode', () => {
     expect((env.DYNAMIC_WORKER_LOADER.get as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(expectedName)
   })
 
-  it('sends payload, steps, and env to the worker', async () => {
+  it('sends payload, steps, env, and execution to the worker', async () => {
     const workerFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
     const env = makeEnv(workerFetch)
     const c = ctx()
     await executeCodeNode(node({ script: 'return {}' }), c, env)
     const body = JSON.parse(workerFetch.mock.calls[0][1].body as string) as unknown
-    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env })
+    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env, execution: { trace_id: 'trace' } })
   })
 
   it('returns the JSON output from the worker', async () => {
@@ -62,6 +62,28 @@ describe('executeCodeNode', () => {
   it('throws with status and body on non-OK worker response', async () => {
     const env = makeEnv(vi.fn().mockResolvedValue(new Response('ReferenceError: x is not defined', { status: 500 })))
     await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
+  })
+
+  it('returns earlyResponse when script returns { response: { status, body } }', async () => {
+    const sentinel = { response: { status: 200, body: { status: 'rejected', reason: 'ineligible state' } } }
+    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(result.earlyResponse).toEqual({ status: 200, body: { status: 'rejected', reason: 'ineligible state' }, headers: undefined })
+  })
+
+  it('returns earlyExit when script returns { exit: true }', async () => {
+    const sentinel = { exit: true, reason: 'bidding not active' }
+    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(result.earlyExit).toBe(true)
+  })
+
+  it('does not set earlyResponse for objects with a response field that is not an object', async () => {
+    const output = { response: 'some string value', other: 123 }
+    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(result.earlyResponse).toBeUndefined()
+    expect(result.output).toEqual(output)
   })
 })
 

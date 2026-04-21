@@ -27,6 +27,7 @@ export async function executeCodeNode(
       payload: ctx.trigger.payload,
       steps: ctx.steps,
       env: ctx.env,
+      execution: { trace_id: ctx.trigger.trace_id },
     }),
   })
 
@@ -36,5 +37,20 @@ export async function executeCodeNode(
   }
 
   const output: unknown = await res.json()
+
+  // Detect early-exit sentinels emitted by translated Pipedream code:
+  //   $.respond({...})  → return { response: { status, body, headers? } }
+  //   $.flow.exit(...)  → return { exit: true, reason: ... }
+  if (output !== null && typeof output === 'object') {
+    const obj = output as Record<string, unknown>
+    if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
+      const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
+      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers } }
+    }
+    if (obj.exit === true) {
+      return { output, earlyExit: true }
+    }
+  }
+
   return { output }
 }

@@ -131,7 +131,7 @@ describe('end-to-end: outbound lead routing — happy path', () => {
     }
 
     const result = await walkGraph(makeCtx({ debt_amount: 15000 }), def, 'exec-1', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: true, partner: 'm1', offer: 60 })
+    expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 60 })
   })
 
   it('data from earlier steps is available to later steps via ctx', async () => {
@@ -215,7 +215,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-3', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: false, reason: 'no_bids' })
+    expect(result.body).toEqual({ accepted: false, reason: 'no_bids' })
   })
 
   it('all bids rejected with fallback_partner → fallback partner selected as winner', async () => {
@@ -245,7 +245,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-4', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: true, partner: 'engine', offer: 0 })
+    expect(result.body).toEqual({ accepted: true, partner: 'engine', offer: 0 })
   })
 })
 
@@ -284,7 +284,7 @@ describe('end-to-end: Tripoint dedup rejects → M1 wins', () => {
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-5', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: true, partner: 'm1', offer: 55 })
+    expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 55 })
   })
 })
 
@@ -317,7 +317,7 @@ describe('end-to-end: inbound bidding', () => {
       makeCtx({ applicant_id: 'A1', loan_amount: 25000 }),
       def, 'exec-6', new Date().toISOString(), supabase, env
     )
-    expect(result).toEqual({ bid: 42.50, accepted: true })
+    expect(result.body).toEqual({ bid: 42.50, accepted: true })
   })
 
   it('invalid lead → validate rejects → gate routes to exit → early termination', async () => {
@@ -351,7 +351,7 @@ describe('end-to-end: inbound bidding', () => {
       makeCtx({ applicant_id: 'A1' }),
       def, 'exec-7', new Date().toISOString(), supabase, env
     )
-    expect(result).toEqual({ accepted: false, reason: 'invalid_lead' })
+    expect(result.body).toEqual({ accepted: false, reason: 'invalid_lead' })
   })
 })
 
@@ -388,7 +388,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-8', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: true, partner: 'm1', offer: 38 })
+    expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 38 })
   })
 
   it('both partners capped → no winner exit path', async () => {
@@ -419,7 +419,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-9', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: false, reason: 'all_partners_capped' })
+    expect(result.body).toEqual({ accepted: false, reason: 'all_partners_capped' })
   })
 })
 
@@ -455,7 +455,7 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-10', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ accepted: true, partner: 'm1', offer: 70 })
+    expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 70 })
   })
 
   it('half-open recovery: circuit re-closed after successful bid', async () => {
@@ -676,7 +676,7 @@ describe('end-to-end: concurrent execution — no race conditions', () => {
     )
 
     // Verify each execution returned distinct output tied to its own payload
-    const leadIds = results.map((r) => (r as { lead: { lead_id: string } }).lead.lead_id)
+    const leadIds = results.map((r) => (r.body as { lead: { lead_id: string } }).lead.lead_id)
     const uniqueIds = new Set(leadIds)
     expect(uniqueIds.size).toBe(20)
   })

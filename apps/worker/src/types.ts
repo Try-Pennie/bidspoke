@@ -110,6 +110,8 @@ export interface StepExecutionResult {
   output: unknown
   error?: string
   error_type?: ErrorType
+  earlyResponse?: { status: number; body: unknown; headers?: Record<string, string> }
+  earlyExit?: true
 }
 
 export interface LoadedWorkflow {

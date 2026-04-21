@@ -62,6 +62,11 @@ export interface ExecuteResult {
   idempotentReplay?: boolean
 }
 
+export interface WalkGraphResult {
+  body: unknown
+  status: number
+}
+
 export async function executeWorkflow(
   options: ExecuteOptions,
   env: Env,
@@ -141,8 +146,11 @@ export async function executeWorkflow(
   let failedErrorType: ErrorType = null
   let failedSuppressAlert = false
 
+  let walkStatus = 200
   try {
-    response = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id)
+    const walkResult = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id)
+    response = walkResult.body
+    walkStatus = walkResult.status
   } catch (err) {
     executionStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
@@ -213,7 +221,7 @@ export async function executeWorkflow(
 
   return {
     response,
-    status: executionStatus === 'completed' ? 200 : 500,
+    status: executionStatus === 'completed' ? walkStatus : 500,
     traceId,
   }
 }
@@ -228,7 +236,7 @@ export async function walkGraph(
   supabase: SupabaseClient,
   env: Env,
   workflowVersionId = ''
-): Promise<unknown> {
+): Promise<WalkGraphResult> {
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
   let lastOutput: unknown = null
@@ -241,7 +249,7 @@ export async function walkGraph(
     if (priorStep?.status === 'completed') {
       const priorOutput = priorStep.output
       lastOutput = priorOutput
-      if (node.type === 'exit' || node.type === 'response') return priorOutput
+      if (node.type === 'exit' || node.type === 'response') return { body: priorOutput, status: 200 }
       const resumeEdges = outgoingEdges(node.id, definition.edges)
       let resumeNext: NodeDefinition | undefined
       if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') && priorOutput !== null && typeof priorOutput === 'object') {
@@ -350,6 +358,18 @@ export async function walkGraph(
       // Record success — closes half-open circuit if probing
       if (cbClient) cbClient.recordSuccess().catch(() => {})
 
+      // Early exit from a code node (translated $.respond() / $.flow.exit() Pipedream patterns)
+      if (result.earlyResponse ?? result.earlyExit) {
+        const seqDurationMsEarly = Date.now() - new Date(stepStartedAt).getTime()
+        log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
+        recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
+        await logStep(supabase, env, executionId, executionStartedAt, node, 'completed', null, output, undefined, null, retriesUsed, stepStartedAt, stepOrder)
+        if (result.earlyResponse) {
+          return { body: result.earlyResponse.body, status: result.earlyResponse.status }
+        }
+        return { body: output, status: 200 }
+      }
+
     } catch (err) {
       // Classify error type — needed for CB recording and Slack alerting
       let suppressAlert = false
@@ -405,7 +425,7 @@ export async function walkGraph(
 
     // Exit node — return immediately
     if (node.type === 'exit' || node.type === 'response') {
-      return output
+      return { body: output, status: 200 }
     }
 
     // Follow the appropriate outgoing edge.
@@ -428,7 +448,7 @@ export async function walkGraph(
     stepOrder++
   }
 
-  return lastOutput
+  return { body: lastOutput, status: 200 }
 }
 
 async function logStep(

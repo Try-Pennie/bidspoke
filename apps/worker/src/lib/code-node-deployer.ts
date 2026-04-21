@@ -16,11 +16,11 @@ export function codeWorkerName(workflowId: string, namespace: string): string {
 function buildWorkerScript(script: string): string {
   return `export default {
   async fetch(request) {
-    const { payload, steps, env } = await request.json()
-    const fn = async (payload, steps, env) => {
+    const { payload, steps, env, execution } = await request.json()
+    const fn = async (payload, steps, env, execution) => {
 ${script.split('\n').map((l) => `      ${l}`).join('\n')}
     }
-    const result = await fn(payload, steps, env)
+    const result = await fn(payload, steps, env, execution)
     return Response.json(result)
   }
 }`

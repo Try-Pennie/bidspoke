@@ -110,7 +110,7 @@ describe('resume — skip completed steps', () => {
     const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
     const ctx = makeCtx({ step_a: { score: 700 } })
     const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
-    expect(result).toEqual({ response: 'done' })
+    expect(result.body).toEqual({ response: 'done' })
   })
 
   it('skipping a node does not log a new step record', async () => {
