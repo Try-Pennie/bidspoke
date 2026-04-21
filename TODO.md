@@ -257,6 +257,7 @@
 
 ### Follow-on (after cutover)
 
+- [ ] **4.9 Partner outbound field mapping** — per-partner schema mapping stored on the partner page (same two-column UI as Transform node). Partner Bid node applies the mapping automatically before the API call — no Transform/code node needed in the workflow. Covers field renames (TLG field name changes), value transforms (employed → 1), and field exclusions. Inbound mapping (normalizing partner response fields) is a stretch goal. Goal: eliminate copy-pasted transform code nodes from every workflow that sends leads to a partner. Scoped 2026-04-21 after a call with Bruno/Brian/Michael — identified as the key enabler for reusable "bid group" nodes.
 - [ ] **4.5a Win tracking via scheduled Salesforce pull** — hourly scheduled workflow + manual "Run now" button. Updates `opportunities.bid_accepted` and `opportunities.monetized`. See scope §3.5a.
 - [ ] **4.5 Person + Lead Sightings + Opportunity data model** — `persons` (two-column SSN: encrypted + peppered hash), `lead_sightings` (every SSN arrival), `opportunities` (only real bids). Ships after cutover. Retention policy needs revisiting — can't purge bid-outcome rows on the 90-day schedule. See scope §3.5.
 - [ ] **4.6 Repeat-lead visibility in dashboard** — per-person timeline, per-SSN churn, cross-sub-account overlap. Depends on 4.5.
