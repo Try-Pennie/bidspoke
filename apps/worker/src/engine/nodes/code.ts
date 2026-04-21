@@ -20,13 +20,20 @@ export async function executeCodeNode(
   const workerName = codeWorkerName(ctx.trigger.workflow_id, node.namespace)
   const binding = env.DYNAMIC_WORKER_LOADER.get(workerName)
 
+  const rawEnv = env as unknown as Record<string, unknown>
+  const cfSecrets: Record<string, string> = {}
+  for (const key of Object.keys(rawEnv)) {
+    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key] as string
+  }
+  const mergedEnv = { ...cfSecrets, ...ctx.env }
+
   const res = await binding.fetch('https://worker/execute', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       payload: ctx.trigger.payload,
       steps: ctx.steps,
-      env: ctx.env,
+      env: mergedEnv,
       execution: { trace_id: ctx.trigger.trace_id },
     }),
   })
