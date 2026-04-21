@@ -383,7 +383,7 @@ export default function DashboardPage() {
               </div>
             ) : (
               <table className="w-full text-sm">
-                <thead className="border-b border-gray-100 bg-gray-50">
+                <thead className="border-b border-gray-100 bg-beige">
                   <tr>
                     <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500">Workflow</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
@@ -393,7 +393,7 @@ export default function DashboardPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {data.by_workflow.map((wf) => (
-                    <tr key={wf.workflow_id} className="hover:bg-gray-50">
+                    <tr key={wf.workflow_id} className="hover:bg-beige">
                       <td className="px-5 py-2.5">
                         <div className="flex items-center gap-2">
                           <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
@@ -495,7 +495,7 @@ export default function DashboardPage() {
             </div>
             <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">
-              <thead className="border-b border-gray-100 bg-gray-50">
+              <thead className="border-b border-gray-100 bg-beige">
                 <tr>
                   <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500 whitespace-nowrap">Partner</th>
                   <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Bids sent</th>
@@ -507,7 +507,7 @@ export default function DashboardPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {data.by_partner.map((p) => (
-                  <tr key={p.slug} className="hover:bg-gray-50">
+                  <tr key={p.slug} className="hover:bg-beige">
                     <td className="px-5 py-2.5">
                       <span className="font-medium text-graphite">{p.name}</span>
                       <span className="ml-1.5 font-mono text-xs text-gray-400">{p.slug}</span>

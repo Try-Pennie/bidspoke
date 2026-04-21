@@ -140,7 +140,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
         ) : (
           groups.map(({ label, items }) => (
             <div key={label}>
-              <div className="sticky top-0 bg-gray-50 px-3 py-1.5 border-b border-gray-100">
+              <div className="sticky top-0 bg-beige px-3 py-1.5 border-b border-gray-100">
                 <p className="text-xs font-medium text-gray-400">{label}</p>
               </div>
               {items.map((exec) => {
@@ -151,7 +151,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                   <button
                     key={exec.id}
                     onClick={() => onSelect(exec.id)}
-                    className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
+                    className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
                       isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
                       exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
                     }`}

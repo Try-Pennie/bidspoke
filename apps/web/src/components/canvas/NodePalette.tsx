@@ -102,7 +102,7 @@ export default function NodePalette({ onDragStart }: Props) {
             key={type}
             draggable
             onDragStart={(e) => onDragStart(e, type)}
-            className="flex cursor-grab items-start gap-2.5 rounded-lg border border-gray-200 p-2.5 hover:border-gray-300 hover:bg-gray-50 active:cursor-grabbing"
+            className="flex cursor-grab items-start gap-2.5 rounded-lg border border-gray-200 p-2.5 hover:border-gray-300 hover:bg-beige active:cursor-grabbing"
           >
             <Icon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${color}`} />
             <div>

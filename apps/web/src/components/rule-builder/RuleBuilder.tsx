@@ -111,14 +111,14 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
             {group.conditions.map((cond, ci) => (
               <div key={ci} className="flex items-center gap-1.5">
                 <FieldAutocomplete
-                  className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                  className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                   placeholder="field.path"
                   value={cond.field}
                   onChange={(val) => updateCondition(gi, ci, { ...cond, field: val })}
                   suggestions={fieldSuggestions}
                 />
                 <select
-                  className="rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                  className="rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                   value={cond.operator}
                   onChange={(e) =>
                     updateCondition(gi, ci, {
@@ -135,7 +135,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                 </select>
                 {!VALUE_LESS_OPERATORS.has(cond.operator) && (
                   <input
-                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                     placeholder="value"
                     value={cond.value !== undefined ? String(cond.value) : ''}
                     onChange={(e) => updateCondition(gi, ci, { ...cond, value: e.target.value })}
@@ -153,7 +153,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
 
           <button
             onClick={() => addCondition(gi)}
-            className="mt-2 flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+            className="mt-2 flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
           >
             <Plus className="h-3 w-3" />
             Add condition

@@ -253,7 +253,7 @@ export default function IntegrationsPage() {
             </div>
           ) : slack?.connected ? (
             <div className="space-y-3">
-              <div className="rounded-lg bg-gray-50 p-3 text-sm">
+              <div className="rounded-lg bg-beige p-3 text-sm">
                 {slack.workspace_name && (
                   <p className="text-gray-600">Workspace: <span className="font-medium text-graphite">{slack.workspace_name}</span></p>
                 )}
@@ -489,7 +489,7 @@ export default function IntegrationsPage() {
           ) : presets.length > 0 ? (
             <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
               <table className="w-full text-sm">
-                <thead className="border-b border-gray-100 bg-gray-50">
+                <thead className="border-b border-gray-100 bg-beige">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Name</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Slug</th>
@@ -500,7 +500,7 @@ export default function IntegrationsPage() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {presets.map((p) => (
-                    <tr key={p.id} className={`env-row hover:bg-gray-50 ${removingPresetId === p.id ? 'opacity-0 -translate-y-1' : ''}`}>
+                    <tr key={p.id} className={`env-row hover:bg-beige ${removingPresetId === p.id ? 'opacity-0 -translate-y-1' : ''}`}>
                       <td className="px-4 py-3 font-medium text-graphite">{p.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>

@@ -446,7 +446,7 @@ function BranchConfig({
       ))}
       <button
         onClick={addBranch}
-        className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+        className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
       >
         <Plus className="h-3.5 w-3.5" />
         Add branch
@@ -663,7 +663,7 @@ function BidEvaluationConfig({
 
       {/* Weighted score sliders */}
       {strategy === 'weighted_score' && (
-        <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50 p-3">
+        <div className="space-y-3 rounded-lg border border-gray-100 bg-beige p-3">
           <p className="text-xs text-gray-500">Rank partners by a combined score. Slide each weight to control how much it matters — higher = more important.</p>
           <WeightSlider
             label="Bid amount"
@@ -803,7 +803,7 @@ function TransformConfig({
 
       <button
         onClick={addRow}
-        className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+        className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
       >
         <Plus className="h-3.5 w-3.5" />
         Add field
@@ -946,14 +946,14 @@ function IntegrationConfig({
 
       {/* Schema browser — visible when a schema-aware service is selected */}
       {SCHEMA_SERVICES.has(service) && (
-        <section className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
+        <section className="rounded-md border border-gray-200 bg-beige p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Schema</span>
             {activeConnection ? (
               <button
                 onClick={handleSyncSchema}
                 disabled={syncingSchema}
-                className="text-xs text-blue-500 hover:text-blue-700 disabled:opacity-50"
+                className="text-xs text-p-blue-dark hover:text-navy disabled:opacity-50"
               >
                 {syncingSchema ? 'Syncing…' : activeConnection.schema_synced_at ? 'Re-sync' : 'Sync schema'}
               </button>
@@ -991,7 +991,7 @@ function IntegrationConfig({
                       key={f.name}
                       title={`Type: ${f.type}${f.nullable ? '' : ' (required)'}`}
                       onClick={() => navigator.clipboard?.writeText(f.name).catch(() => {})}
-                      className="flex w-full items-center justify-between px-2.5 py-1 text-left text-xs hover:bg-blue-50"
+                      className="flex w-full items-center justify-between px-2.5 py-1 text-left text-xs hover:bg-p-blue-light"
                     >
                       <span className="font-mono text-gray-800">{f.name}</span>
                       <span className="text-gray-400">{f.type}</span>
@@ -1184,7 +1184,7 @@ function IntegrationConfig({
         </div>
         <button
           onClick={addHeader}
-          className="mt-1.5 flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700"
+          className="mt-1.5 flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
         >
           <Plus className="h-3.5 w-3.5" />
           Add header

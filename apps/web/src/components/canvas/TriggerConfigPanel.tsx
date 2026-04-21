@@ -74,7 +74,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
         {/* Webhook URL */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</label>
-          <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-gray-50 pl-2.5 pr-1.5 py-1.5">
+          <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-beige pl-2.5 pr-1.5 py-1.5">
             <span className="flex-1 break-all font-mono text-xs text-gray-700">{webhookUrl}</span>
             <button
               type="button"
@@ -258,7 +258,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
                         })
                         setNewField('')
                       }}
-                      className="rounded p-1 text-gray-400 hover:text-blue-500"
+                      className="rounded p-1 text-gray-400 hover:text-p-blue-dark"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>

@@ -18,7 +18,7 @@ export function GenericNode({ data, selected, type }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 
-      <div className="flex items-center gap-2 rounded-t-lg bg-gray-50 border-b border-gray-200 px-3 py-2">
+      <div className="flex items-center gap-2 rounded-t-lg bg-beige border-b border-gray-200 px-3 py-2">
         <Box className="h-4 w-4 text-slate-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
           {type?.replace('_', ' ') ?? 'Node'}

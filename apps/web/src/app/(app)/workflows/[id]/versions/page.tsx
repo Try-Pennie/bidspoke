@@ -92,7 +92,7 @@ export default function VersionHistoryPage() {
         ) : (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <table className="w-full text-sm">
-              <thead className="border-b border-gray-100 bg-gray-50">
+              <thead className="border-b border-gray-100 bg-beige">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Version</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Message</th>
@@ -102,7 +102,7 @@ export default function VersionHistoryPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {versions.map((v) => (
-                  <tr key={v.id} className="hover:bg-gray-50">
+                  <tr key={v.id} className="hover:bg-beige">
                     <td className="px-4 py-3 font-medium text-graphite">v{v.version_number}</td>
                     <td className="px-4 py-3 text-gray-500">{v.message ?? '—'}</td>
                     <td className="px-4 py-3 text-gray-500">
@@ -127,7 +127,7 @@ export default function VersionHistoryPage() {
                         <button
                           onClick={() => requestRestore(v.id)}
                           disabled={restoring === v.id}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige disabled:opacity-50"
                         >
                           <RotateCcw className="h-3 w-3" />
                           {restoring === v.id ? 'Restoring…' : 'Restore'}

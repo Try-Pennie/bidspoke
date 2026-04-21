@@ -330,7 +330,7 @@ export default function EndpointsPage() {
                     {/* Copy URL */}
                     <button
                       onClick={() => handleCopy(ep)}
-                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                      className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
                       title="Copy URL"
                     >
                       {copiedId === ep.id
@@ -343,7 +343,7 @@ export default function EndpointsPage() {
                     <button
                       onClick={() => handleToggle(ep)}
                       disabled={togglingId === ep.id}
-                      className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+                      className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:bg-beige disabled:opacity-40"
                       title={ep.is_active ? 'Disable endpoint' : 'Enable endpoint'}
                     >
                       {ep.is_active

@@ -122,7 +122,7 @@ export default function PartnersPage() {
                     className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[colors,opacity] duration-150 ${
                       selected?.id === partner.id
                         ? 'bg-gray-100'
-                        : 'hover:bg-gray-50'
+                        : 'hover:bg-beige'
                     } ${removingId === partner.id ? 'opacity-0' : ''
                     }`}
                   >

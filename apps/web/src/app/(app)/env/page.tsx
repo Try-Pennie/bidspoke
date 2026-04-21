@@ -210,7 +210,7 @@ export default function EnvPage() {
         ) : (
           <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
             <table className="w-full text-sm">
-              <thead className="border-b border-gray-100 bg-gray-50">
+              <thead className="border-b border-gray-100 bg-beige">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Key</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Value</th>
@@ -221,7 +221,7 @@ export default function EnvPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {vars.map((v) => (
-                  <tr key={v.id} className={`env-row hover:bg-gray-50 ${removingId === v.id ? 'opacity-0 -translate-y-1' : ''}`}>
+                  <tr key={v.id} className={`env-row hover:bg-beige ${removingId === v.id ? 'opacity-0 -translate-y-1' : ''}`}>
                     <td className="px-4 py-3 font-mono text-xs font-medium text-graphite whitespace-nowrap">{v.key}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
                       {v.is_secret ? (

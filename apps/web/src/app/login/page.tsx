@@ -25,7 +25,7 @@ export default function LoginPage() {
         </div>
         <button
           onClick={handleGoogleLogin}
-          className="flex w-full items-center justify-center gap-3 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-2"
+          className="flex w-full items-center justify-center gap-3 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-beige focus:outline-none focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-2"
         >
           <svg className="h-5 w-5" viewBox="0 0 24 24">
             <path

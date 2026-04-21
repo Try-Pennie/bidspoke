@@ -54,7 +54,7 @@ export default function ExecutionStepPanel({ node, onClose }: Props) {
         ) : (
           <>
             {/* Status + duration */}
-            <div className="flex items-center justify-between rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="flex items-center justify-between rounded-lg border border-gray-100 bg-beige px-3 py-2">
               <div className="flex items-center gap-2">
                 {(() => {
                   const cfg = STATUS_CONFIG[executionStep.status as keyof typeof STATUS_CONFIG]

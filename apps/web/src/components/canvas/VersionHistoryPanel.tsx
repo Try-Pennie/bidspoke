@@ -128,7 +128,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore }: 
                     <button
                       onClick={() => requestRestore(v.id)}
                       disabled={!!restoring}
-                      className="flex flex-shrink-0 items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-gray-50 disabled:opacity-40"
+                      className="flex flex-shrink-0 items-center gap-1 rounded border border-gray-200 px-2 py-1 text-xs text-gray-500 hover:bg-beige disabled:opacity-40"
                     >
                       <RotateCcw className="h-3 w-3" />
                       Restore

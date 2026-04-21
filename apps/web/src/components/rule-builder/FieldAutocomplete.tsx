@@ -81,7 +81,7 @@ export default function FieldAutocomplete({ value, onChange, suggestions, placeh
               key={s}
               onMouseDown={(e) => { e.preventDefault(); select(s) }}
               className={`cursor-pointer px-2 py-1 font-mono ${
-                i === activeIdx ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
+                i === activeIdx ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-700 hover:bg-beige'
               }`}
             >
               {s}

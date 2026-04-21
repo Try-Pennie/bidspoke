@@ -157,7 +157,7 @@ export default function TestRunPanel({
                 <div key={sp.name} className="flex items-center gap-1.5">
                   <button
                     onClick={() => setPayload(JSON.stringify(sp.payload, null, 2))}
-                    className="flex flex-1 items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-left text-xs hover:bg-gray-50"
+                    className="flex flex-1 items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-left text-xs hover:bg-beige"
                   >
                     <ChevronDown className="h-3 w-3 text-gray-300 rotate-[-90deg]" />
                     <span className="font-medium text-gray-700">{sp.name}</span>
@@ -204,7 +204,7 @@ export default function TestRunPanel({
             <button
               onClick={savePayload}
               disabled={saving || !saveName.trim()}
-              className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
             >
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
             </button>

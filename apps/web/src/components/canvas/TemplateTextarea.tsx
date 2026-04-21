@@ -104,7 +104,7 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
               key={s}
               onMouseDown={(e) => { e.preventDefault(); insertRef(s) }}
               className={`cursor-pointer px-3 py-1.5 font-mono ${
-                i === activeIdx ? 'bg-blue-50 text-blue-700' : 'text-gray-700 hover:bg-gray-50'
+                i === activeIdx ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-700 hover:bg-beige'
               }`}
             >
               {`{{${s}}}`}

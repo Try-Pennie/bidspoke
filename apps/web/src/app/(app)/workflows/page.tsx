@@ -389,7 +389,7 @@ export default function WorkflowsPage() {
                 <col className="w-44" />
                 <col className="w-16" />
               </colgroup>
-              <thead className="border-b border-gray-100 bg-gray-50">
+              <thead className="border-b border-gray-100 bg-beige">
                 <tr>
                   <th className="rounded-tl-xl px-4 py-3 text-left">
                     <div className="flex items-center gap-2">
@@ -427,7 +427,7 @@ export default function WorkflowsPage() {
                         removingId === wf.id ? 'opacity-0' : '',
                         isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
                         isFirstMatch ? 'bg-p-blue-light/50 hover:bg-p-blue-light/70' :
-                          isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-gray-50',
+                          isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-beige',
                       ].filter(Boolean).join(' ')}
                     >
                       {/* Name + status badge */}
@@ -511,21 +511,21 @@ export default function WorkflowsPage() {
                             <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                               <button
                                 onClick={() => handleToggleActive(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                               >
                                 <Power className="h-4 w-4 text-gray-400" />
                                 {wf.is_active ? 'Disable' : 'Enable'}
                               </button>
                               <button
                                 onClick={() => startRename(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                               >
                                 <Pencil className="h-4 w-4 text-gray-400" />
                                 Rename
                               </button>
                               <button
                                 onClick={() => handleDuplicate(wf.id)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                               >
                                 <Copy className="h-4 w-4 text-gray-400" />
                                 Duplicate

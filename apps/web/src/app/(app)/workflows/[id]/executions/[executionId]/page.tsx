@@ -16,7 +16,7 @@ const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: 
   completed:            { icon: <CheckCircle className="h-4 w-4" />, label: 'Completed',   bg: 'bg-green-50',  text: 'text-green-700' },
   failed:               { icon: <XCircle className="h-4 w-4" />,    label: 'Failed',       bg: 'bg-red-50',    text: 'text-red-700'   },
   skipped:              { icon: <SkipForward className="h-4 w-4" />, label: 'Skipped',      bg: 'bg-gray-50',   text: 'text-gray-500'  },
-  running:              { icon: <Clock className="h-4 w-4" />,       label: 'Running',      bg: 'bg-blue-50',   text: 'text-blue-700'  },
+  running:              { icon: <Clock className="h-4 w-4" />,       label: 'Running',      bg: 'bg-p-blue-light', text: 'text-p-blue-dark' },
   failed_with_fallback: { icon: <RefreshCw className="h-4 w-4" />,   label: 'Fallback',     bg: 'bg-yellow-50', text: 'text-yellow-700'},
 }
 
@@ -75,7 +75,7 @@ export default function ExecutionDetailPage() {
           </button>
           <button
             onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
-            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
           >
             <LayoutTemplate className="h-3.5 w-3.5" />
             View on canvas

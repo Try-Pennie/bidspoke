@@ -52,7 +52,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
           {!result ? (
             <>
               <textarea
-                className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs focus:border-blue-400 focus:outline-none focus:bg-white"
+                className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs focus:border-p-blue-dark focus:outline-none focus:bg-white"
                 rows={14}
                 placeholder={'{\n  "id": "p_...",\n  "name": "Lead Routing",\n  "steps": [...]\n}'}
                 value={json}
@@ -113,7 +113,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
         <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3">
           <button
             onClick={onClose}
-            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+            className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
           >
             Cancel
           </button>
@@ -130,7 +130,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => { setResult(null); setError(null) }}
-                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
               >
                 Back
               </button>
@@ -151,7 +151,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
 
 function typeColor(type: string): string {
   const map: Record<string, string> = {
-    filter: 'bg-blue-100 text-blue-700',
+    filter: 'bg-p-blue-light text-p-blue-dark',
     branch: 'bg-purple-100 text-purple-700',
     code: 'bg-amber-100 text-amber-700',
     response: 'bg-green-100 text-green-700',
