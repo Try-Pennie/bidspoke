@@ -1414,13 +1414,32 @@ function SalesforceConfig({
       {showBody && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Body (JSON)</label>
-          <TemplateTextarea
-            value={bodyText}
-            onChange={saveBody}
-            refs={refs}
-            placeholder={'{\n  "Field__c": "{{steps.step.output.value}}"\n}'}
-            className="font-mono text-xs"
-          />
+          <div className="overflow-hidden rounded border border-gray-200" style={{ height: 240 }}>
+            <MonacoEditor
+              height={240}
+              language="json"
+              value={bodyText}
+              onChange={(val) => saveBody(val ?? '')}
+              onMount={(_editor, monaco) => {
+                monaco.languages.json.jsonDefaults.setDiagnosticsOptions({ validate: false })
+              }}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 11,
+                lineHeight: 18,
+                lineNumbers: 'on',
+                scrollBeyondLastLine: false,
+                wordWrap: 'off',
+                tabSize: 2,
+                folding: false,
+                overviewRulerLanes: 0,
+                scrollbar: { vertical: 'auto', horizontal: 'auto' },
+                padding: { top: 8, bottom: 8 },
+              }}
+              theme="vs"
+            />
+          </div>
+          <p className="mt-1 text-xs text-gray-400">Use <code className="rounded bg-gray-100 px-1">{`{{steps.x.output.field}}`}</code> to reference prior step output.</p>
         </div>
       )}
     </section>
