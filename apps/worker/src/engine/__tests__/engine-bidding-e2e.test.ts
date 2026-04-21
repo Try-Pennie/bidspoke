@@ -197,7 +197,7 @@ describe('engine bidding: early-exit rejections', () => {
         exit_rejected:             exitOutput,
       })
 
-      const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), `exec-reject-${exitOutput.reason.replace(/ /g, '-')}`, new Date().toISOString(), supabase, env)
+      const result = await walkGraph(makeCtx(), makeEngineBiddingDef(), `exec-reject-${(exitOutput.reason as string).replace(/ /g, '-')}`, new Date().toISOString(), supabase, env)
       const body = result.body as Record<string, unknown>
       expect(body.status).toBe('rejected')
       expect(body.reason).toBe(exitOutput.reason)
