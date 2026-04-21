@@ -246,6 +246,7 @@
 - [ ] **4.2 Partner Bid Config as first-class entity** — new `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables. `is_default BOOLEAN` with unique partial index. New "Bid Lookup" node. Ops UI mirrors Salesforce layout. See scope §3.2.
   - Partners to migrate: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default.
 - [x] **4.2a Constants node** — workflow-level constants stored in node config (key-value editor), partner data (UUID map + sell-off copy) from DB (KV-cached). `partner_uuid_map` table + sell-off columns on `partner_configs`. Constants executor merges both sources. Importer auto-detects `constants` namespace. Partner form updated with sell-off fields + UUID list.
+- [x] **Partner type toggle** — `partner_type: 'source' | 'buyer'` field on `partner_configs`. Form shows Source/Buyer segmented toggle; buyer-only sections (API, Bidding, Circuit breaker, Response classification, Alert config) hidden for source partners.
 - [ ] **4.4 Token-based auth** (hard blocker for cutover) — `issued_tokens` table, `POST /token` route, `auth_mode: 'api_key' | 'token'` on `webhook_endpoints`. See scope §3.4.
 - [ ] **4.0 Cutover** — flip engine routing to `engine.trypennie.dev/bidding` and disable Pipedream in the same step. Pipedream workflow stays warm as rollback target.
 
