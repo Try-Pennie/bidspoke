@@ -241,6 +241,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} edges={edges} onEdgesChange={onEdgesChange} />}
+        {type === 'parallel_end' && <ParallelEndConfig config={data.config} onChange={updateConfig} />}
 
         {/* Common: retry + error handling */}
         <div>
@@ -1358,6 +1359,49 @@ function ParallelConfig({
 
   return (
     <section className="space-y-4">
+      <div>
+        <label className="mb-2 block text-xs font-medium text-gray-600">Branches</label>
+        <p className="mb-2 text-xs text-gray-400">Select which steps run in parallel inside this node.</p>
+        {available.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">No downstream steps available yet.</p>
+        ) : (
+          <div className="space-y-1.5 rounded-md border border-gray-200 p-2">
+            {available.map((opt) => (
+              <label key={opt.id} className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={children.includes(opt.id)}
+                  onChange={() => toggleChild(opt.id)}
+                  className="h-3.5 w-3.5 rounded border-gray-300 accent-slate-600"
+                />
+                <span className="font-mono text-xs text-gray-700">
+                  {opt.label ? `${opt.label} (${opt.namespace})` : opt.namespace}
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-gray-400">Configure wait behavior on the Parallel (end) node.</p>
+    </section>
+  )
+}
+
+// ── Parallel End ───────────────────────────────────────────────────────────────
+
+function ParallelEndConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const waitFor = (config.wait_for as string | undefined) ?? 'all'
+  const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
+  const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
+
+  return (
+    <section className="space-y-4">
       <Field label="Wait for" hint="'All' waits for every branch. 'First' continues as soon as one succeeds.">
         <div className="relative">
           <select
@@ -1398,30 +1442,6 @@ function ParallelConfig({
           </div>
         </Field>
       )}
-
-      <div>
-        <label className="mb-2 block text-xs font-medium text-gray-600">Branches</label>
-        <p className="mb-2 text-xs text-gray-400">Select which steps run in parallel inside this node.</p>
-        {available.length === 0 ? (
-          <p className="text-xs text-gray-400 italic">No other steps in this workflow yet.</p>
-        ) : (
-          <div className="space-y-1.5 rounded-md border border-gray-200 p-2">
-            {available.map((opt) => (
-              <label key={opt.id} className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={children.includes(opt.id)}
-                  onChange={() => toggleChild(opt.id)}
-                  className="h-3.5 w-3.5 rounded border-gray-300 accent-slate-600"
-                />
-                <span className="font-mono text-xs text-gray-700">
-                  {opt.label ? `${opt.label} (${opt.namespace})` : opt.namespace}
-                </span>
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
     </section>
   )
 }

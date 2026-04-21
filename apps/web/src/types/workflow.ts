@@ -5,6 +5,7 @@ export type NodeType =
   | 'response'
   | 'exit'
   | 'parallel'
+  | 'parallel_end'
   | 'partner_bid'
   | 'webhook'
   | 'transform'

@@ -274,6 +274,14 @@ export async function walkGraph(
         .map((id) => findNode(id, definition.nodes))
         .filter((n): n is NodeDefinition => n !== undefined)
 
+      // Look ahead: if a parallel_end join node exists, use its config for
+      // wait_for/timeout so those settings live on the end node in the UI.
+      const previewChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
+      const endNodePreview = previewChildEdges
+        .map((e) => findNode(e.target, definition.nodes))
+        .find((n) => n?.type === 'parallel_end')
+      const execNode = endNodePreview ? { ...node, config: { ...node.config, ...endNodePreview.config } } : node
+
       let output: unknown = null
       let stepStatus: StepStatus = 'completed'
       let errorMessage: string | undefined
@@ -281,7 +289,7 @@ export async function walkGraph(
 
       try {
         const result = await executeParallelNode(
-          node,
+          execNode,
           childNodes,
           (child, childIndex) =>
             runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id, workflowVersionId)
@@ -307,17 +315,32 @@ export async function walkGraph(
         throw new StepFailureError(errorMessage!, node.namespace, errorType)
       }
 
-      // Continuation comes from the last parallel child's outgoing edge (children
-      // run "inside" the parallel; the last child connects to whatever comes next).
-      // Fall back to the parallel node's own outgoing edges (excluding children)
-      // for workflows that predate the fan-out edge model.
+      // Find the parallel_end join node by looking for a parallel_end node that
+      // any child points to. If found, record output there and continue from it.
+      // Falls back to last-child continuation for pre-parallel_end workflows.
       const childIdSet = new Set(childIds)
-      const lastChild = childNodes.length > 0 ? childNodes[childNodes.length - 1] : null
-      const contEdges = lastChild
-        ? outgoingEdges(lastChild.id, definition.edges).filter((e) => !childIdSet.has(e.target))
-        : outgoingEdges(node.id, definition.edges).filter((e) => !childIdSet.has(e.target))
-      const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
-      current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+      const allChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
+      const endNodeId = allChildEdges.map((e) => e.target).find((tid) => {
+        const n = findNode(tid, definition.nodes)
+        return n?.type === 'parallel_end'
+      })
+
+      if (endNodeId) {
+        const endNode = findNode(endNodeId, definition.nodes)!
+        recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+        await logStep(supabase, env, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder + 1)
+        const contEdges = outgoingEdges(endNodeId, definition.edges)
+        const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
+        current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+      } else {
+        // Backward compat: last child's outgoing edge
+        const lastChild = childNodes.length > 0 ? childNodes[childNodes.length - 1] : null
+        const contEdges = lastChild
+          ? outgoingEdges(lastChild.id, definition.edges).filter((e) => !childIdSet.has(e.target))
+          : outgoingEdges(node.id, definition.edges).filter((e) => !childIdSet.has(e.target))
+        const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
+        current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+      }
       stepOrder++
       continue
     }

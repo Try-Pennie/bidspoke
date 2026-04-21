@@ -33,6 +33,7 @@ import { TransformNode } from './nodes/TransformNode'
 import { IntegrationNode } from './nodes/IntegrationNode'
 import { PartnerBidNode } from './nodes/PartnerBidNode'
 import { ParallelNode } from './nodes/ParallelNode'
+import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
@@ -64,6 +65,7 @@ const nodeTypes: NodeTypes = {
   partner_bid: PartnerBidNode,
   transform: TransformNode,
   parallel: ParallelNode,
+  parallel_end: ParallelEndNode,
   bid_evaluation: BidEvaluationNode,
   constants: ConstantsNode,
 }
@@ -212,6 +214,7 @@ function primarySourceHandle(type: string): string | null {
   if (type === 'response' || type === 'exit') return null
   if (type === 'branch') return null  // N-way split — no sensible default
   if (type === 'bid_evaluation') return null  // winner/no_winner — ambiguous default
+  if (type === 'parallel') return null  // fan-out configured via picker, not auto-connect
   if (type === 'filter') return 'pass'
   return 'output'
 }
@@ -322,7 +325,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
   const nodeOptions = nodes
-    .filter((n) => n.id !== 'trigger')
+    .filter((n) => n.id !== 'trigger' && n.type !== 'parallel_end')
     .map((n) => {
       const d = n.data as unknown as CanvasNodeData
       return { id: n.id, namespace: d.namespace, label: d.label }
@@ -653,6 +656,38 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const autoConnected = !!(sourceNode && sourceHandle && !existingOutEdge)
       // True when we need to INSERT between sourceNode and its current target
       const insertBetween = !!(sourceNode && sourceHandle && existingOutEdge)
+
+      // Parallel drops create a start+end pair with a placeholder edge between them
+      if (type === 'parallel') {
+        const endId = uid()
+        const endNamespace = defaultNamespace('parallel_end', [...nodeNamespaces, namespace])
+        const startNode = {
+          id: newId,
+          type: 'parallel' as NodeType,
+          position: { x: 0, y: 0 },
+          data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+        }
+        const endNode = {
+          id: endId,
+          type: 'parallel_end' as NodeType,
+          position: { x: 0, y: 0 },
+          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial' }, variables: {} } satisfies CanvasNodeData,
+        }
+        let newEdges = edges
+        if (autoConnected) {
+          newEdges = [...edges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
+        } else if (insertBetween) {
+          newEdges = [
+            ...edges.filter((e) => e.id !== existingOutEdge!.id),
+            { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! },
+            { id: uid(), source: endId, target: existingOutEdge!.target, sourceHandle: 'output' },
+          ]
+        }
+        setEdges(newEdges)
+        setNodes((ns) => layoutWorkflow([...ns, startNode, endNode], newEdges))
+        setIsDirty(true)
+        return
+      }
 
       const newNode = {
         id: newId,
@@ -1284,6 +1319,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   bid_evaluation: '#f43f5e', // rose
                   partner_bid:    '#0ea5e9', // sky
                   parallel:       '#64748b', // slate
+                  parallel_end:   '#64748b', // slate
                 }
                 return colorMap[n.type ?? ''] ?? '#9ca3af'
               }}

@@ -6,13 +6,15 @@ export const NODE_W = 208
 
 // Per-type heights (header + body rows)
 const NODE_H: Record<string, number> = {
-  trigger:      72,
-  filter:       100,  // has pass/exit row at bottom
-  branch:       112,  // has branch labels row at bottom
-  code:          88,
-  response:      88,
-  exit:          72,
-  default:       80,
+  trigger:        72,
+  filter:        100,  // has pass/exit row at bottom
+  branch:        112,  // has branch labels row at bottom
+  code:           88,
+  response:       88,
+  exit:           72,
+  parallel:       96,  // has branch-label row at bottom
+  parallel_end:   80,
+  default:        80,
 }
 
 export function nodeHeight(type: string | undefined) {
