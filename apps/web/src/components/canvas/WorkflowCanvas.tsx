@@ -665,13 +665,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           id: newId,
           type: 'parallel' as NodeType,
           position: { x: 0, y: 0 },
-          data: { namespace, config: {}, variables: {} } satisfies CanvasNodeData,
+          data: { namespace, config: {}, variables: {}, _pairId: endId } satisfies CanvasNodeData,
         }
         const endNode = {
           id: endId,
           type: 'parallel_end' as NodeType,
           position: { x: 0, y: 0 },
-          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial' }, variables: {} } satisfies CanvasNodeData,
+          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial' }, variables: {}, _pairId: newId } satisfies CanvasNodeData,
         }
         let newEdges = edges
         if (autoConnected) {
@@ -736,8 +736,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const handleNodeDelete = useCallback(
     (id: string) => {
       snapshot()
-      const newEdges = edges.filter((e) => e.source !== id && e.target !== id)
-      const newNodes = nodes.filter((n) => n.id !== id)
+      const node = nodes.find((n) => n.id === id)
+      const pairId = (node?.data as unknown as CanvasNodeData)?._pairId
+      const idsToRemove = new Set([id, ...(pairId ? [pairId] : [])])
+      const newEdges = edges.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target))
+      const newNodes = nodes.filter((n) => !idsToRemove.has(n.id))
       setEdges(newEdges)
       setNodes(layoutWorkflow(newNodes, newEdges))
       setSelectedNodeId(null)
