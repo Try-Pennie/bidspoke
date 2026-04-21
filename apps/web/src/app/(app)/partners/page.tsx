@@ -60,13 +60,16 @@ export default function PartnersPage() {
     }
   }
 
-  async function handleSave(body: PartnerBody, id?: string) {
+  async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[]) {
     if (id) {
       const updated = await api.partners.update(id, body)
       setPartners((prev) => prev.map((p) => p.id === id ? updated : p))
       setSelected(updated)
     } else {
       const created = await api.partners.create(body as Required<PartnerBody>)
+      if (pendingUuids?.length) {
+        await Promise.all(pendingUuids.map((uuid) => api.partnerUuids.create({ partner_slug: created.slug, uuid })))
+      }
       setPartners((prev) => [...prev, created])
       setCreating(false)
       setSelected(created)

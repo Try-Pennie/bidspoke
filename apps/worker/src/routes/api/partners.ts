@@ -30,6 +30,7 @@ interface PartnerBody {
   priority?: number
   sell_off_offer_title?: string | null
   sell_off_offer_details?: string | null
+  click_url?: string | null
   partner_type?: 'source' | 'buyer'
 }
 
@@ -43,7 +44,7 @@ partners.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('partner_configs')
-    .select('id, name, slug, api_endpoint, daily_cap, min_bid, bid_formula, is_active, priority, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
+    .select('id, name, slug, api_endpoint, daily_cap, min_bid, bid_formula, is_active, priority, partner_type, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .order('priority', { ascending: true })
 
@@ -103,6 +104,9 @@ partners.post('/', async (c) => {
       is_active: body.is_active ?? true,
       priority: body.priority ?? 0,
       partner_type: body.partner_type ?? 'buyer',
+      sell_off_offer_title: body.sell_off_offer_title ?? null,
+      sell_off_offer_details: body.sell_off_offer_details ?? null,
+      click_url: body.click_url ?? null,
       updated_by: userId,
       updated_by_email: email,
       updated_by_name: c.get('user').name,
@@ -119,6 +123,10 @@ partners.post('/', async (c) => {
     name: body.name,
     slug,
   })
+
+  if (body.sell_off_offer_title || body.sell_off_offer_details || body.click_url) {
+    await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  }
 
   return c.json(data, 201)
 })
@@ -152,7 +160,7 @@ partners.put('/:id', async (c) => {
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'is_active', 'priority',
     'sell_off_offer_title', 'sell_off_offer_details',
-    'partner_type',
+    'click_url', 'partner_type',
   ]
   for (const f of fields) {
     if (body[f] !== undefined) updates[f] = body[f]
@@ -171,7 +179,7 @@ partners.put('/:id', async (c) => {
     changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
   })
 
-  const affectsSellOff = 'sell_off_offer_title' in updates || 'sell_off_offer_details' in updates
+  const affectsSellOff = 'sell_off_offer_title' in updates || 'sell_off_offer_details' in updates || 'click_url' in updates
   if (affectsSellOff) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }

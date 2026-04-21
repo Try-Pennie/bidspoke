@@ -22,6 +22,7 @@ export interface Partner {
   priority: number
   sell_off_offer_title: string | null
   sell_off_offer_details: string | null
+  click_url: string | null
   partner_type: 'source' | 'buyer'
   created_at: string
   updated_at: string

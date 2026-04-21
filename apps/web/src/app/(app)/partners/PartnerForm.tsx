@@ -18,7 +18,7 @@ type Rule = BodyRule | StatusRule
 type SignalRules = Record<SignalCategory, Rule[]>
 
 interface FormSnapshot {
-  name: string; apiEndpoint: string; cfSecretKey: string; isActive: boolean
+  name: string; apiEndpoint: string; cfSecretKey: string; clickUrl: string; isActive: boolean
   priority: string; dailyCap: string; minBid: string; bidFormula: string
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
@@ -260,7 +260,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
 
 interface Props {
   partner?: Partner
-  onSave: (body: PartnerBody, id?: string) => Promise<void>
+  onSave: (body: PartnerBody, id?: string, pendingUuids?: string[]) => Promise<void>
   onCancel: () => void
   onDelete?: (id: string) => void
   confirmingDelete?: boolean
@@ -355,6 +355,7 @@ export default function PartnerForm({
   }
   const [apiEndpoint, setApiEndpoint] = useState(partner?.api_endpoint ?? '')
   const [cfSecretKey, setCfSecretKey] = useState(partner?.cf_secret_key ?? '')
+  const [clickUrl, setClickUrl] = useState(partner?.click_url ?? '')
   const [isActive, setIsActive] = useState(partner?.is_active ?? true)
   const [priority, setPriority] = useState(String(partner?.priority ?? 0))
 
@@ -406,12 +407,12 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
     setName(snap.name); setApiEndpoint(snap.apiEndpoint); setCfSecretKey(snap.cfSecretKey)
-    setIsActive(snap.isActive); setPriority(snap.priority)
+    setClickUrl(snap.clickUrl); setIsActive(snap.isActive); setPriority(snap.priority)
     setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
     setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
@@ -440,6 +441,7 @@ export default function PartnerForm({
         partner_type: partnerType,
         api_endpoint: apiEndpoint || null,
         cf_secret_key: cfSecretKey || null,
+        click_url: clickUrl || null,
         is_active: isActive,
         priority: parseInt(priority) || 0,
         daily_cap: dailyCap ? parseInt(dailyCap) : null,
@@ -458,10 +460,7 @@ export default function PartnerForm({
         sell_off_offer_title: sellOffOfferTitle || null,
         sell_off_offer_details: sellOffOfferDetails || null,
       }
-      await onSave(body, partner?.id)
-      if (isNew && pendingUuids.length > 0) {
-        await Promise.all(pendingUuids.map((uuid) => api.partnerUuids.create({ partner_slug: slug, uuid })))
-      }
+      await onSave(body, partner?.id, isNew ? pendingUuids : undefined)
       setSaveState('saved')
       if (!isNew) {
         setUndoSnapshot(snapshot)
@@ -594,6 +593,12 @@ export default function PartnerForm({
             hint="URL to POST bids to. Leave blank for formula-only partners (e.g. Tripoint)."
           >
             <Input value={apiEndpoint} onChange={setApiEndpoint} placeholder="https://api.partner.com/bids" />
+          </Field>
+          <Field
+            label="Click URL"
+            hint="Landing page URL for leads routed to this partner. Exposed as {Slug}ClickUrl in the Constants node."
+          >
+            <Input value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" />
           </Field>
           <Field
             label="Auth secret name"

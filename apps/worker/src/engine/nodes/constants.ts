@@ -12,19 +12,22 @@ export async function executeConstantsNode(
   const data = (node.config.data ?? {}) as Record<string, unknown>
   const partnerData = await loadPartnerConstants(ctx.trigger.org_id, env.WORKFLOW_CACHE, supabase)
 
-  // Flatten sell-off copy: slug 'sofi' → 'SofiSellOffOfferTitle' / 'SofiSellOffOfferDetails'
-  const sellOffFlat: Record<string, string> = {}
+  const partnerFlat: Record<string, string> = {}
   for (const [slug, copy] of Object.entries(partnerData.sellOff)) {
     const cap = slug.charAt(0).toUpperCase() + slug.slice(1)
-    sellOffFlat[`${cap}SellOffOfferTitle`] = copy.title
-    sellOffFlat[`${cap}SellOffOfferDetails`] = copy.details
+    partnerFlat[`${cap}SellOffOfferTitle`] = copy.title
+    partnerFlat[`${cap}SellOffOfferDetails`] = copy.details
+  }
+  for (const [slug, url] of Object.entries(partnerData.clickUrls)) {
+    const cap = slug.charAt(0).toUpperCase() + slug.slice(1)
+    partnerFlat[`${cap}ClickUrl`] = url
   }
 
   return {
     output: {
       ...data,
       subAccountIdsMap: partnerData.subAccountIdsMap,
-      ...sellOffFlat,
+      ...partnerFlat,
     },
   }
 }
