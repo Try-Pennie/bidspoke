@@ -58,7 +58,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Trigger</p>
-          <p className="mt-0.5 text-sm font-semibold text-gray-900">Webhook</p>
+          <p className="mt-0.5 text-sm font-semibold text-graphite">Webhook</p>
         </div>
         <div className="flex items-center gap-1">
           {readOnly && <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">View only</span>}
@@ -98,12 +98,12 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
               {customEndpoints.map((ep) => {
                 const url = `${HOOK_BASE}/${ep.subdomain}${ep.path}`
                 return (
-                  <div key={ep.id} className="flex items-start gap-1.5 rounded border border-indigo-100 bg-indigo-50 pl-2.5 pr-1.5 py-1.5">
-                    <span className="flex-1 break-all font-mono text-xs text-indigo-700">{url}</span>
+                  <div key={ep.id} className="flex items-start gap-1.5 rounded border border-p-blue-light bg-p-blue-light pl-2.5 pr-1.5 py-1.5">
+                    <span className="flex-1 break-all font-mono text-xs text-p-blue-dark">{url}</span>
                     <button
                       type="button"
                       onClick={() => copyCustomUrl(url)}
-                      className="mt-0.5 flex-shrink-0 rounded p-1 text-indigo-300 hover:bg-indigo-100 hover:text-indigo-600 transition-colors"
+                      className="mt-0.5 flex-shrink-0 rounded p-1 text-p-blue hover:bg-p-blue-light hover:text-p-blue-dark transition-colors"
                       title="Copy URL"
                     >
                       {copiedCustom === url
@@ -122,7 +122,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">HTTP method</label>
           <select
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
+            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             value={cfg.method}
             onChange={(e) => update({ method: e.target.value })}
           >
@@ -137,7 +137,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Authentication</label>
           <select
-            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
+            className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             value={cfg.auth_method}
             onChange={(e) => update({ auth_method: e.target.value as 'api_key' })}
           >
@@ -155,7 +155,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
           <button
             onClick={() => update({ custom_response: !cfg.custom_response })}
             className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              cfg.custom_response ? 'bg-indigo-600' : 'bg-gray-200'
+              cfg.custom_response ? 'bg-p-blue-dark' : 'bg-gray-200'
             }`}
           >
             <span
@@ -177,7 +177,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
               placeholder="Off"
               value={cfg.duration_alert_ms ?? ''}
               onChange={(e) => update({ duration_alert_ms: e.target.value ? Number(e.target.value) : undefined })}
-              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
+              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             />
             <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
           </div>
@@ -199,7 +199,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
             <button
               onClick={() => updateIdempotency({ enabled: !idempotency.enabled })}
               className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                idempotency.enabled ? 'bg-indigo-600' : 'bg-gray-200'
+                idempotency.enabled ? 'bg-p-blue-dark' : 'bg-gray-200'
               }`}
             >
               <span
@@ -237,7 +237,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
                   ))}
                   <div className="flex items-center gap-1">
                     <input
-                      className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-indigo-400 focus:outline-none"
+                      className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-p-blue-dark focus:outline-none"
                       placeholder="body.field_name"
                       value={newField}
                       onChange={(e) => setNewField(e.target.value)}
@@ -270,7 +270,7 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
                 <label className="mb-1 block text-xs font-medium text-gray-500">Remember for (seconds)</label>
                 <input
                   type="number"
-                  className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-indigo-400 focus:outline-none"
+                  className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
                   value={idempotency.ttl_seconds ?? 86400}
                   min={60}
                   onChange={(e) => updateIdempotency({ ttl_seconds: Number(e.target.value) })}

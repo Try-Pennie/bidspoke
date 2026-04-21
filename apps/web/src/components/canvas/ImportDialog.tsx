@@ -37,7 +37,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
           <div>
-            <p className="font-semibold text-gray-900">Import from Pipedream</p>
+            <p className="font-semibold text-graphite">Import from Pipedream</p>
             <p className="text-xs text-gray-500 mt-0.5">
               Paste the raw JSON export from a Pipedream workflow
             </p>
@@ -73,7 +73,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
               <div className="rounded-lg border border-gray-200 p-3 space-y-1">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-green-500" />
-                  <span className="text-sm font-medium text-gray-900">{result.name}</span>
+                  <span className="text-sm font-medium text-graphite">{result.name}</span>
                 </div>
                 <p className="text-xs text-gray-500 pl-6">
                   {result.def.nodes.length} node{result.def.nodes.length !== 1 ? 's' : ''},{' '}
@@ -121,7 +121,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
             <button
               onClick={handleParse}
               disabled={!json.trim()}
-              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
               <Upload className="h-3.5 w-3.5" />
               Parse
@@ -136,7 +136,7 @@ export default function ImportDialog({ onImport, onClose }: Props) {
               </button>
               <button
                 onClick={handleConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+                className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0]"
               >
                 <CheckCircle2 className="h-3.5 w-3.5" />
                 Import to canvas

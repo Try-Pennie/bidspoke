@@ -174,7 +174,7 @@ export default function SourcesPage() {
       <div className="p-8">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">API Sources</h1>
+            <h1 className="text-3xl font-bold text-graphite">API Sources</h1>
             <p className="mt-1 text-sm text-gray-500">
               Each source gets a unique API key passed in the <code className="rounded bg-gray-100 px-1 font-mono text-xs">X-API-Key</code> header.
               The source name is available as <code className="rounded bg-gray-100 px-1 font-mono text-xs">trigger.source</code> in workflows.
@@ -183,7 +183,7 @@ export default function SourcesPage() {
           <button
             onClick={() => setAdding(true)}
             disabled={adding}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-0 disabled:pointer-events-none"
+            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-0 disabled:pointer-events-none"
           >
             <Plus className="h-4 w-4" />
             New source
@@ -217,14 +217,14 @@ export default function SourcesPage() {
                   <button
                     type="submit"
                     disabled={saving}
-                    className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                    className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
                   >
                     {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</> : 'Generate key'}
                   </button>
                   <button
                     type="button"
                     onClick={() => { setAdding(false); setNewName('') }}
-                    className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+                    className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
                   >
                     Cancel
                   </button>
@@ -257,13 +257,13 @@ export default function SourcesPage() {
             ) : sources.length === 0 ? (
               <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
-                <p className="text-base font-semibold text-gray-900">No API sources yet</p>
+                <p className="text-base font-semibold text-graphite">No API sources yet</p>
                 <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
                   Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow. It shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
                 </p>
                 <button
                   onClick={() => setAdding(true)}
-                  className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                  className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
                 >
                   Add your first source
                 </button>
@@ -275,13 +275,13 @@ export default function SourcesPage() {
                     key={source.name}
                     className={`cursor-pointer rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
                       selectedSourceName === source.name
-                        ? 'border-indigo-200 ring-2 ring-indigo-500/20'
+                        ? 'border-p-blue-light ring-2 ring-p-blue-dark/20'
                         : 'border-gray-200 hover:border-gray-300'
                     } ${removingName === source.name ? 'opacity-0' : ''}`}
                     onClick={() => setSelectedSourceName(source.name)}
                   >
                     <div className="mb-3 flex items-center justify-between">
-                      <p className="font-mono text-sm font-semibold text-gray-900">{source.name}</p>
+                      <p className="font-mono text-sm font-semibold text-graphite">{source.name}</p>
                       {confirmingRevoke === source.name ? (
                         <div className="flex items-center gap-1.5">
                           <button

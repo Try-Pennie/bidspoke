@@ -205,7 +205,7 @@ export default function IntegrationsPage() {
     <NavLayout>
       <div className="p-8">
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Integrations</h1>
+          <h1 className="text-3xl font-bold text-graphite">Integrations</h1>
           <p className="mt-1 text-sm text-gray-500">Connect external services for alerts and notifications.</p>
         </div>
 
@@ -229,7 +229,7 @@ export default function IntegrationsPage() {
                 <path d="M0 34.249a5.381 5.381 0 0 0 5.376 5.386 5.381 5.381 0 0 0 5.376-5.386v-5.387H5.376A5.381 5.381 0 0 0 0 34.249m14.336 0v14.364A5.381 5.381 0 0 0 19.712 54a5.381 5.381 0 0 0 5.376-5.387V34.249a5.381 5.381 0 0 0-5.376-5.387 5.381 5.381 0 0 0-5.376 5.387" fill="#E01E5A"/>
               </svg>
               <div>
-                <p className="font-semibold text-gray-900">Slack</p>
+                <p className="font-semibold text-graphite">Slack</p>
                 <p className="text-sm text-gray-500">Failure alerts and circuit breaker notifications</p>
               </div>
             </div>
@@ -255,9 +255,9 @@ export default function IntegrationsPage() {
             <div className="space-y-3">
               <div className="rounded-lg bg-gray-50 p-3 text-sm">
                 {slack.workspace_name && (
-                  <p className="text-gray-600">Workspace: <span className="font-medium text-gray-900">{slack.workspace_name}</span></p>
+                  <p className="text-gray-600">Workspace: <span className="font-medium text-graphite">{slack.workspace_name}</span></p>
                 )}
-                <p className="text-gray-600">Default channel: <span className="font-medium text-gray-900">{slack.default_channel}</span></p>
+                <p className="text-gray-600">Default channel: <span className="font-medium text-graphite">{slack.default_channel}</span></p>
                 {slack.updated_by_email && (
                   <p className="mt-1 text-xs text-gray-400">Connected by {slack.updated_by_email}</p>
                 )}
@@ -348,7 +348,7 @@ export default function IntegrationsPage() {
               <button
                 type="submit"
                 disabled={saving || !resolved || !selectedChannel}
-                className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
               >
                 {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</> : 'Connect Slack'}
               </button>
@@ -362,7 +362,7 @@ export default function IntegrationsPage() {
         <div className="mt-10">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-gray-900">HTTP Services</h2>
+              <h2 className="text-lg font-semibold text-graphite">HTTP Services</h2>
               <p className="mt-0.5 text-sm text-gray-500">
                 Define reusable services that appear in the Webhook node dropdown. Each preset pre-fills the auth type and optionally the base URL.
               </p>
@@ -370,7 +370,7 @@ export default function IntegrationsPage() {
             <button
               onClick={() => setAddingPreset(true)}
               disabled={addingPreset}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-0 disabled:pointer-events-none"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-0 disabled:pointer-events-none"
             >
               <Plus className="h-4 w-4" />
               Add service
@@ -447,14 +447,14 @@ export default function IntegrationsPage() {
                 <button
                   type="submit"
                   disabled={savingPreset}
-                  className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
                 >
                   {savingPreset ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save service'}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setAddingPreset(false); setNewPreset({ name: '', slug: '', auth_type: 'none', base_url: '' }) }}
-                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
                 >
                   Cancel
                 </button>
@@ -475,13 +475,13 @@ export default function IntegrationsPage() {
             </div>
           ) : presets.length === 0 && !addingPreset ? (
             <div className="rounded-xl border-2 border-dashed border-gray-200 py-10 text-center">
-              <p className="text-sm font-semibold text-gray-900">No services yet</p>
+              <p className="text-sm font-semibold text-graphite">No services yet</p>
               <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-400">
                 Add a service to make it available in the Webhook node dropdown with pre-filled auth settings.
               </p>
               <button
                 onClick={() => setAddingPreset(true)}
-                className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
               >
                 Add your first service
               </button>
@@ -501,7 +501,7 @@ export default function IntegrationsPage() {
                 <tbody className="divide-y divide-gray-100">
                   {presets.map((p) => (
                     <tr key={p.id} className={`env-row hover:bg-gray-50 ${removingPresetId === p.id ? 'opacity-0 -translate-y-1' : ''}`}>
-                      <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
+                      <td className="px-4 py-3 font-medium text-graphite">{p.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-400">{p.base_url ?? '—'}</td>

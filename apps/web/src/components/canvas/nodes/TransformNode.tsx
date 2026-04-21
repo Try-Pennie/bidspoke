@@ -34,7 +34,7 @@ export function TransformNode({ data, selected }: NodeProps) {
       </div>
 
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {count === 0 ? (
           <p className="mt-0.5 truncate text-xs text-slate-400">No mappings configured</p>

@@ -13,16 +13,16 @@ export function TriggerNode({ data, selected }: NodeProps) {
 
   return (
     <div className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-      selected ? 'border-indigo-400 ring-2 ring-indigo-200' : 'border-gray-200'
+      selected ? 'border-p-blue-dark ring-2 ring-p-blue-light' : 'border-gray-200'
     }`}>
       <Handle type="source" position={Position.Bottom} id="output" />
 
-      <div className="flex items-center gap-2 rounded-t-lg bg-indigo-50 border-b border-indigo-100 px-3 py-2">
-        <Zap className="h-4 w-4 text-indigo-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-indigo-700">Trigger</span>
+      <div className="flex items-center gap-2 rounded-t-lg bg-p-blue-light border-b border-p-blue-light px-3 py-2">
+        <Zap className="h-4 w-4 text-p-blue-dark" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-p-blue-dark">Trigger</span>
       </div>
       <div className="px-3 py-2">
-        <p className="text-sm font-semibold text-gray-900">{method}</p>
+        <p className="text-sm font-semibold text-graphite">{method}</p>
         <p className="mt-0.5 text-xs text-slate-400">Auth: {authLabel}</p>
       </div>
     </div>

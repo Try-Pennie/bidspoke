@@ -138,7 +138,7 @@ export default function TestRunPanel({
     <aside className="flex w-96 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-sm font-semibold text-gray-900">Test run</p>
+          <p className="text-sm font-semibold text-graphite">Test run</p>
           <p className="text-xs text-gray-400">Runs in test mode — no Slack alerts</p>
         </div>
         <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
@@ -179,7 +179,7 @@ export default function TestRunPanel({
         <div>
           <p className="mb-1.5 text-xs font-medium text-gray-500">Trigger payload (JSON)</p>
           <textarea
-            className="h-52 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200"
+            className="h-52 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             value={payload}
             onChange={(e) => { setPayload(e.target.value); setParseError(null) }}
             spellCheck={false}
@@ -261,7 +261,7 @@ export default function TestRunPanel({
         <button
           onClick={run}
           disabled={running}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-p-blue-dark py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
         >
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
           {running ? 'Running…' : 'Run test'}

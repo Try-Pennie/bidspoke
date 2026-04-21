@@ -18,7 +18,7 @@ const NODES: PaletteNode[] = [
     label: 'Filter',
     description: 'Pass or exit gate',
     icon: Filter,
-    color: 'text-blue-500',
+    color: 'text-p-blue-dark',
   },
   {
     type: 'branch',
@@ -60,7 +60,7 @@ const NODES: PaletteNode[] = [
     label: 'Transform',
     description: 'Reshape & rename fields',
     icon: ArrowLeftRight,
-    color: 'text-indigo-500',
+    color: 'text-p-blue-dark',
   },
   {
     type: 'webhook',

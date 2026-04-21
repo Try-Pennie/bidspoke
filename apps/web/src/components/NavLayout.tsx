@@ -30,7 +30,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen">
       {/* Sidebar */}
-      <nav className="flex w-52 flex-col bg-slate-900">
+      <nav className="flex w-52 flex-col bg-navy">
         <div className="flex items-center gap-2.5 px-4 py-5">
           <Image
             src="/icon-dark.png"
@@ -39,7 +39,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
             height={26}
             className="flex-shrink-0"
           />
-          <span className="text-lg font-bold tracking-tight text-white">Bidspoke</span>
+          <span className="text-lg font-semibold tracking-tight text-white">Bidspoke</span>
         </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
           {NAV.map(({ href, label, icon: Icon }) => {
@@ -48,35 +48,35 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
               <Link
                 key={href}
                 href={href}
-                className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   active
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                    ? 'bg-white/10 text-white'
+                    : 'text-white/60 hover:bg-white/5 hover:text-white/80'
                 }`}
               >
-                <Icon className={`h-4 w-4 ${active ? 'text-indigo-400' : 'text-slate-500'}`} />
+                <Icon className={`h-4 w-4 ${active ? 'text-p-blue' : 'text-white/40'}`} />
                 {label}
               </Link>
             )
           })}
         </div>
-        <div className="border-t border-slate-700/60 px-2 py-4 space-y-0.5">
+        <div className="border-t border-white/10 px-2 py-4 space-y-0.5">
           <Link
             href="/access"
-            className={`flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
+            className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
               pathname === '/access'
-                ? 'bg-slate-800 text-white'
-                : 'text-slate-500 hover:bg-slate-800 hover:text-slate-200'
+                ? 'bg-white/10 text-white'
+                : 'text-white/50 hover:bg-white/5 hover:text-white/80'
             }`}
           >
-            <Shield className={`h-4 w-4 ${pathname === '/access' ? 'text-indigo-400' : 'text-slate-500'}`} />
+            <Shield className={`h-4 w-4 ${pathname === '/access' ? 'text-p-blue' : 'text-white/40'}`} />
             Access
           </Link>
           <button
             onClick={handleSignOut}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-800 hover:text-slate-200"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/50 transition-colors hover:bg-white/5 hover:text-white/80"
           >
-            <LogOut className="h-4 w-4" />
+            <LogOut className="h-4 w-4 text-white/40" />
             Sign out
           </button>
         </div>

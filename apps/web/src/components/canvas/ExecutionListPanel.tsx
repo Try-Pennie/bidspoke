@@ -103,7 +103,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
             onClick={() => setFilter(tab.key)}
             className={`flex-1 py-1.5 text-xs transition-colors ${
               filter === tab.key
-                ? 'border-b-2 border-indigo-500 font-semibold text-indigo-600'
+                ? 'border-b-2 border-p-blue-dark font-semibold text-p-blue-dark'
                 : 'text-gray-400 hover:text-gray-600'
             }`}
           >
@@ -152,7 +152,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     key={exec.id}
                     onClick={() => onSelect(exec.id)}
                     className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-gray-50 ${
-                      isSelected ? 'border-l-2 border-l-indigo-400 bg-indigo-50' :
+                      isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
                       exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
                     }`}
                   >

@@ -95,7 +95,7 @@ export default function AccessPage() {
       <div className="p-8">
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Access</h1>
+            <h1 className="text-3xl font-bold text-graphite">Access</h1>
             <p className="mt-1 text-sm text-gray-500">
               Only these accounts can sign in. All addresses must be <span className="font-mono text-xs bg-gray-100 rounded px-1">@trypennie.com</span>.
             </p>
@@ -103,7 +103,7 @@ export default function AccessPage() {
           {!adding && (
             <button
               onClick={() => setAdding(true)}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
             >
               <UserPlus className="h-4 w-4" />
               Add user
@@ -137,7 +137,7 @@ export default function AccessPage() {
             <button
               type="submit"
               disabled={saving}
-              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
               {saving ? 'Adding…' : 'Add'}
             </button>
@@ -171,7 +171,7 @@ export default function AccessPage() {
               {users.map((u) => (
                 <li key={u.email} className="flex items-center justify-between gap-3 px-4 py-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-gray-900">{u.email}</p>
+                    <p className="truncate text-sm font-medium text-graphite">{u.email}</p>
                     <p className="text-xs text-gray-400">
                       Added {new Date(u.added_at).toLocaleDateString()} by {u.added_by}
                     </p>

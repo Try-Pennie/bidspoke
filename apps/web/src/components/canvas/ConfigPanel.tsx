@@ -44,7 +44,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{type}</p>
-          <p className="mt-0.5 text-sm font-semibold text-gray-900">{data.label || data.namespace}</p>
+          <p className="mt-0.5 text-sm font-semibold text-graphite">{data.label || data.namespace}</p>
           {data.label && <p className="font-mono text-xs text-gray-400">{data.namespace}</p>}
         </div>
         <div className="flex items-center gap-1">
@@ -460,7 +460,7 @@ function BranchConfig({
           type="button"
           onClick={() => onChange({ use_else: !useElse })}
           className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-            useElse ? 'bg-indigo-600' : 'bg-gray-200'
+            useElse ? 'bg-p-blue-dark' : 'bg-gray-200'
           }`}
         >
           <span

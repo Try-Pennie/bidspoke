@@ -40,7 +40,7 @@ export default function ExecutionStepPanel({ node, onClose }: Props) {
     <aside className="flex h-full w-80 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="font-mono text-sm font-semibold text-gray-900">{namespace}</p>
+          <p className="font-mono text-sm font-semibold text-graphite">{namespace}</p>
           <p className="text-xs capitalize text-gray-400">{node.type} node</p>
         </div>
         <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">

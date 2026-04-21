@@ -68,7 +68,7 @@ export default function ExecutionDetailPage() {
         <div className="mb-6 flex items-center justify-between">
           <button
             onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
-            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900"
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-graphite"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to workflow
@@ -131,7 +131,7 @@ export default function ExecutionDetailPage() {
             {/* Header */}
             <div className="flex items-start justify-between">
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">Execution detail</h1>
+                <h1 className="text-3xl font-bold text-graphite">Execution detail</h1>
                 <p className="mt-1 font-mono text-xs text-gray-400">{execution.id}</p>
               </div>
               <StatusBadge status={execution.status} />
@@ -141,15 +141,15 @@ export default function ExecutionDetailPage() {
             <div className="grid grid-cols-2 gap-4 rounded-xl border border-gray-200 bg-white p-5 sm:grid-cols-4">
               <div>
                 <p className="text-xs font-medium text-gray-500">Source</p>
-                <p className="mt-1 font-mono text-sm text-gray-900">{execution.source}</p>
+                <p className="mt-1 font-mono text-sm text-graphite">{execution.source}</p>
               </div>
               <div>
                 <p className="text-xs font-medium text-gray-500">Duration</p>
-                <p className="mt-1 text-sm text-gray-900">{formatDuration(execution.duration_ms)}</p>
+                <p className="mt-1 text-sm text-graphite">{formatDuration(execution.duration_ms)}</p>
               </div>
               <div>
                 <p className="text-xs font-medium text-gray-500">Started</p>
-                <p className="mt-1 text-sm text-gray-900">{formatDatetime(execution.started_at)}</p>
+                <p className="mt-1 text-sm text-graphite">{formatDatetime(execution.started_at)}</p>
               </div>
               <div>
                 <p className="text-xs font-medium text-gray-500">Trace ID</p>
@@ -185,7 +185,7 @@ export default function ExecutionDetailPage() {
                             {i + 1}
                           </span>
                           <div>
-                            <p className="font-mono text-sm font-semibold text-gray-900">{step.step_namespace}</p>
+                            <p className="font-mono text-sm font-semibold text-graphite">{step.step_namespace}</p>
                             <p className="text-xs text-gray-400">{step.step_type} · {formatDuration(step.duration_ms)}</p>
                           </div>
                         </div>

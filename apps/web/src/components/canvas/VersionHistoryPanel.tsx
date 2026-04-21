@@ -56,7 +56,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore }: 
   return (
     <aside className="flex h-full w-80 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-        <p className="text-sm font-semibold text-gray-900">Version history</p>
+        <p className="text-sm font-semibold text-graphite">Version history</p>
         <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
@@ -95,7 +95,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore }: 
               <li key={v.id} className="px-4 py-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold text-gray-900">v{v.version_number}</p>
+                    <p className="text-xs font-semibold text-graphite">v{v.version_number}</p>
                     <p className="mt-0.5 truncate text-xs text-gray-400">
                       {v.message ?? 'No message'}
                     </p>

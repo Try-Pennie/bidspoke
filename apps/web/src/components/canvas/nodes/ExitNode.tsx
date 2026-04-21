@@ -23,7 +23,7 @@ export function ExitNode({ data, selected }: NodeProps) {
         <span className="text-xs font-semibold uppercase tracking-wide text-red-700">Exit</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         <p className="mt-0.5 text-xs text-slate-400">Early termination</p>
         {outputPreview && (

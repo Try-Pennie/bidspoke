@@ -286,7 +286,7 @@ export default function WorkflowsPage() {
     <NavLayout>
       <div className="p-8">
         <div className="mb-6 flex items-center gap-4">
-          <h1 className="text-3xl font-bold text-gray-900">Workflows</h1>
+          <h1 className="text-3xl font-bold text-graphite">Workflows</h1>
           <div className="flex flex-1 items-center justify-end gap-3">
             {/* Search */}
             <div className="relative">
@@ -301,7 +301,7 @@ export default function WorkflowsPage() {
                   if (e.key === 'Escape') { setSearchQuery(''); searchRef.current?.blur() }
                 }}
                 placeholder="Search… /"
-                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-p-blue-dark"
               />
               {searchQuery && (
                 <button
@@ -315,7 +315,7 @@ export default function WorkflowsPage() {
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
               {creating ? 'Creating…' : 'New Workflow'}
@@ -368,14 +368,14 @@ export default function WorkflowsPage() {
               <text x="50" y="115" textAnchor="middle" fill="#15803d" fontSize="8" fontWeight="700" fontFamily="ui-sans-serif,system-ui,sans-serif" letterSpacing="1">RESPOND</text>
             </svg>
 
-            <h2 className="text-xl font-bold text-gray-900">Build your first workflow</h2>
+            <h2 className="text-xl font-bold text-graphite">Build your first workflow</h2>
             <p className="mx-auto mt-2 max-w-sm text-sm text-gray-400">
               Connect a trigger to filters, decisions, and API calls. Automate what happens when a lead comes in.
             </p>
             <button
               onClick={handleCreate}
               disabled={creating}
-              className="mt-6 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="mt-6 rounded-lg bg-p-blue-dark px-5 py-2.5 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
               {creating ? 'Creating…' : 'New workflow'}
             </button>
@@ -399,7 +399,7 @@ export default function WorkflowsPage() {
                         title={sortMode === 'health' ? 'Sorted by health. Click for date order.' : 'Sort by health (failing first)'}
                         className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${
                           sortMode === 'health'
-                            ? 'bg-indigo-100 font-medium text-indigo-600'
+                            ? 'bg-p-blue-light font-medium text-p-blue-dark'
                             : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                         }`}
                       >
@@ -426,7 +426,7 @@ export default function WorkflowsPage() {
                         'transition-opacity duration-150',
                         removingId === wf.id ? 'opacity-0' : '',
                         isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
-                        isFirstMatch ? 'bg-indigo-50/50 hover:bg-indigo-50/70' :
+                        isFirstMatch ? 'bg-p-blue-light/50 hover:bg-p-blue-light/70' :
                           isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-gray-50',
                       ].filter(Boolean).join(' ')}
                     >
@@ -441,7 +441,7 @@ export default function WorkflowsPage() {
                             >
                               <input
                                 autoFocus
-                                className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-gray-900 focus:outline-none focus:ring-1 focus:ring-gray-400"
+                                className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
                                 value={renameValue}
                                 onChange={(e) => setRenameValue(e.target.value)}
                                 onBlur={() => commitRename(wf.id)}
@@ -455,7 +455,7 @@ export default function WorkflowsPage() {
                             <Link
                               href={`/workflows/${wf.id}`}
                               onClick={(e) => navigateToWorkflow(e, wf.id)}
-                              className="font-semibold text-gray-900 hover:text-indigo-600"
+                              className="font-semibold text-graphite hover:text-p-blue-dark"
                             >
                               {wf.name}
                             </Link>
@@ -468,7 +468,7 @@ export default function WorkflowsPage() {
                             {wf.is_active ? 'Active' : 'Inactive'}
                           </span>
                           {duplicating === wf.id && (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-p-blue-dark" />
                           )}
                         </div>
                         {wf.description && (

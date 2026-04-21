@@ -25,7 +25,7 @@ export function CodeNode({ data, selected }: NodeProps) {
         <span className="font-mono text-xs font-bold tracking-wide text-amber-700">CODE</span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         <p className="mt-0.5 truncate font-mono text-xs text-slate-400">
           {scriptPreview ?? 'No script written'}

@@ -29,21 +29,21 @@ export function FilterNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-blue-400 ring-2 ring-blue-200' : 'border-gray-200'
+        selected ? 'border-p-blue-dark ring-2 ring-p-blue-light' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">
-        <Filter className="h-4 w-4 text-blue-500" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-blue-700">Filter</span>
-        <span className="ml-auto rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-600">
+      <div className="flex items-center gap-2 rounded-t-lg bg-p-blue-light border-b border-p-blue-light px-3 py-2">
+        <Filter className="h-4 w-4 text-p-blue-dark" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-p-blue-dark">Filter</span>
+        <span className="ml-auto rounded bg-p-blue-light px-1.5 py-0.5 text-xs text-p-blue-dark">
           {operation === 'continue_if' ? 'continue if' : 'end if'}
         </span>
       </div>
       <div className="px-3 py-2">
-        <p className="truncate text-sm font-semibold text-gray-900">{label || namespace}</p>
+        <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         <p className="mt-0.5 truncate text-xs text-slate-400">
           {conditionSummary ?? 'No condition set'}

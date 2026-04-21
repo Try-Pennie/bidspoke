@@ -82,10 +82,10 @@ export default function PartnersPage() {
         {/* List */}
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
-            <h1 className="text-3xl font-bold text-gray-900">Partners</h1>
+            <h1 className="text-3xl font-bold text-graphite">Partners</h1>
             <button
               onClick={() => { setSelected(null); setCreating(true) }}
-              className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700"
+              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0]"
             >
               <Plus className="h-3.5 w-3.5" />
               New
@@ -104,11 +104,11 @@ export default function PartnersPage() {
               </div>
             ) : partners.length === 0 ? (
               <div className="p-6 text-center">
-                <p className="text-base font-semibold text-gray-900">No partners yet</p>
+                <p className="text-base font-semibold text-graphite">No partners yet</p>
                 <p className="mt-1 text-xs text-gray-400">Partners are the lenders or buyers your workflows route leads to.</p>
                 <button
                   onClick={() => { setSelected(null); setCreating(true) }}
-                  className="mt-3 text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                  className="mt-3 text-xs font-medium text-p-blue-dark hover:text-p-blue-dark"
                 >
                   Add your first partner →
                 </button>
@@ -128,7 +128,7 @@ export default function PartnersPage() {
                   >
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-gray-900">{partner.name}</span>
+                        <span className="truncate text-sm font-medium text-graphite">{partner.name}</span>
                         {!partner.is_active && (
                           <span className="flex-shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
                             inactive

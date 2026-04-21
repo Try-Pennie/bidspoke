@@ -809,7 +809,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <input
               ref={nameRef}
               style={{ viewTransitionName: 'workflow-name' }}
-              className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-gray-900 outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-indigo-200 ${
+              className={`rounded border-0 bg-transparent text-base font-bold tracking-tight text-graphite outline-none ring-0 px-2 py-1 focus:ring-1 focus:ring-p-blue-light ${
                 mode === 'edit' ? 'hover:bg-gray-100/70 focus:bg-gray-100/70' : ''
               }`}
               value={name}
@@ -828,7 +828,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <button
               onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
-                mode === 'edit' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-400 hover:bg-gray-50'
+                mode === 'edit' ? 'bg-p-blue-dark text-white' : 'bg-white text-gray-400 hover:bg-gray-50'
               }`}
             >
               <Pencil className="h-3 w-3" />
@@ -876,7 +876,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClick={() => { setShowTest((s) => !s); setSelectedNodeId(null) }}
               className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium ${
                 showTest
-                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                  ? 'border-p-blue-light bg-p-blue-light text-p-blue-dark'
                   : 'border-gray-200 text-gray-600 hover:bg-gray-50'
               }`}
               title="Run a test execution"
@@ -908,7 +908,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                 <button
                   onClick={() => { setShowSettings((s) => !s); setShowOverflow(false) }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'font-medium text-gray-900' : 'text-gray-700'}`}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-gray-50 ${showSettings ? 'font-medium text-graphite' : 'text-gray-700'}`}
                 >
                   <Settings className="h-4 w-4 text-gray-400" />
                   Settings
@@ -942,7 +942,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClick={handleSave}
               disabled={saving || !isDirty}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
-                saving    ? 'bg-indigo-600' :
+                saving    ? 'bg-p-blue-dark' :
                 savedOk   ? 'bg-green-600 hover:bg-green-700' :
                 isDirty   ? 'bg-amber-500 hover:bg-amber-600' :
                             'bg-gray-300 cursor-default'
@@ -960,18 +960,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       </header>
 
       {mode === 'view' && executionId && (
-        <div className="flex items-center justify-between border-b border-indigo-100 bg-indigo-50 px-4 py-1.5 text-xs">
-          <div className="flex items-center gap-2 text-indigo-700">
+        <div className="flex items-center justify-between border-b border-p-blue-light bg-p-blue-light px-4 py-1.5 text-xs">
+          <div className="flex items-center gap-2 text-p-blue-dark">
             <Eye className="h-3.5 w-3.5" />
             <span className="font-medium">Viewing execution</span>
-            <span className="font-mono text-indigo-400">{executionId.slice(0, 8)}…</span>
+            <span className="font-mono text-p-blue-dark">{executionId.slice(0, 8)}…</span>
           </div>
           <div className="flex items-center gap-3">
             <a
               href={`/workflows/${workflow.id}/executions/${executionId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
+              className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
               title="Open full execution report"
             >
               <ExternalLink className="h-3.5 w-3.5" />
@@ -984,7 +984,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   setShowTest(true)
                   router.push(`/workflows/${workflow.id}?mode=edit`)
                 }}
-                className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
+                className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
                 title="Load this payload into the test panel"
               >
                 <FlaskConical className="h-3.5 w-3.5" />
@@ -1002,7 +1002,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   setReplaying(false)
                 }
               }}
-              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+              className="flex items-center gap-1 text-p-blue-dark hover:text-navy disabled:opacity-50"
               title="Re-run with the same trigger payload"
             >
               {replaying
@@ -1012,7 +1012,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </button>
             <button
               onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
-              className="flex items-center gap-1 text-indigo-400 hover:text-indigo-600"
+              className="flex items-center gap-1 text-p-blue-dark hover:text-p-blue-dark"
             >
               <X className="h-3.5 w-3.5" />
               Clear
@@ -1214,7 +1214,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <MiniMap
               nodeColor={(n) => {
                 const colorMap: Record<string, string> = {
-                  trigger:        '#6366f1', // indigo
+                  trigger:        '#439FE1', // indigo
                   filter:         '#3b82f6', // blue
                   branch:         '#a855f7', // purple
                   code:           '#f59e0b', // amber

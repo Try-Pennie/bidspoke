@@ -92,7 +92,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
               <div className="space-y-1">
                 <div className="flex items-center justify-between gap-3">
                   <span className="flex items-center gap-1.5 text-gray-500">
-                    <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-indigo-500" />Completed
+                    <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-p-blue-dark" />Completed
                   </span>
                   <span className="tabular-nums font-medium text-gray-700">{tooltip.completed}</span>
                 </div>
@@ -159,7 +159,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                     className="relative overflow-hidden rounded-t-[2px]"
                     style={{ width: 'clamp(3px, 42%, 14px)', height: Math.max(totalH, 2) }}
                   >
-                    <div className="absolute bottom-0 left-0 right-0 bg-indigo-500" style={{ height: completedH }} />
+                    <div className="absolute bottom-0 left-0 right-0 bg-p-blue-dark" style={{ height: completedH }} />
                     {exitedH > 0 && (
                       <div className="absolute left-0 right-0 bg-slate-400" style={{ height: exitedH, bottom: completedH }} />
                     )}
@@ -238,7 +238,7 @@ export default function DashboardPage() {
                 s.success_rate >= 80 ? 'bg-amber-400' :
                 'bg-red-500'
               }`} />
-              <h1 className="text-2xl font-semibold text-gray-900">Last {window} days</h1>
+              <h1 className="text-2xl font-semibold text-graphite">Last {window} days</h1>
             </div>
           <div className="flex items-center gap-3">
             {lastUpdated && (
@@ -253,7 +253,7 @@ export default function DashboardPage() {
                 onClick={() => setWindow(w)}
                 className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
                   window === w
-                    ? 'bg-indigo-600 text-white'
+                    ? 'bg-p-blue-dark text-white'
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -326,11 +326,11 @@ export default function DashboardPage() {
               <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Total runs</p>
-                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-gray-900">{animatedTotal ?? s?.total ?? 0}</p>
+                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-graphite">{animatedTotal ?? s?.total ?? 0}</p>
                 </div>
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Avg duration</p>
-                  <p className="mt-1.5 text-3xl font-bold text-gray-900">{fmt(s?.avg_duration_ms ?? null)}</p>
+                  <p className="mt-1.5 text-3xl font-bold text-graphite">{fmt(s?.avg_duration_ms ?? null)}</p>
                 </div>
               </div>
             </>
@@ -340,9 +340,9 @@ export default function DashboardPage() {
         {/* Volume chart */}
         <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
           <div className="mb-4 flex items-center justify-between">
-            <p className="text-base font-semibold text-gray-900">Execution volume</p>
+            <p className="text-base font-semibold text-graphite">Execution volume</p>
             <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-indigo-500" />Completed</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-p-blue-dark" />Completed</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-400" />Exited</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-400" />Failed</span>
             </div>
@@ -362,7 +362,7 @@ export default function DashboardPage() {
           {/* By workflow */}
           <div className="rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-base font-semibold text-gray-900">By workflow</p>
+              <p className="text-base font-semibold text-graphite">By workflow</p>
             </div>
             {loading ? (
               <div className="divide-y divide-gray-100">
@@ -403,7 +403,7 @@ export default function DashboardPage() {
                           }`} />
                           <Link
                             href={`/workflows/${wf.workflow_id}`}
-                            className="font-medium text-gray-900 hover:text-indigo-600"
+                            className="font-medium text-graphite hover:text-p-blue-dark"
                           >
                             {wf.name}
                           </Link>
@@ -429,7 +429,7 @@ export default function DashboardPage() {
           {/* Recent failures */}
           <div className="rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-base font-semibold text-gray-900">Recent failures</p>
+              <p className="text-base font-semibold text-graphite">Recent failures</p>
             </div>
             {loading ? (
               <div className="divide-y divide-gray-100">
@@ -456,7 +456,7 @@ export default function DashboardPage() {
                           <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-red-400" />
                           <Link
                             href={`/workflows/${f.workflow_id}`}
-                            className="truncate text-sm font-medium text-gray-900 hover:text-indigo-600"
+                            className="truncate text-sm font-medium text-graphite hover:text-p-blue-dark"
                           >
                             {f.workflow_name}
                           </Link>
@@ -474,7 +474,7 @@ export default function DashboardPage() {
                         <span className="text-xs text-gray-400">{formatDatetime(f.started_at)}</span>
                         <Link
                           href={`/workflows/${f.workflow_id}/executions/${f.id}`}
-                          className="flex items-center gap-0.5 text-xs text-indigo-500 hover:text-indigo-700"
+                          className="flex items-center gap-0.5 text-xs text-p-blue-dark hover:text-p-blue-dark"
                         >
                           View <ArrowRight className="h-3 w-3" />
                         </Link>
@@ -491,7 +491,7 @@ export default function DashboardPage() {
         {!loading && data && data.by_partner.length > 0 && (
           <div className="mt-6 rounded-xl border border-gray-200 bg-white">
             <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-base font-semibold text-gray-900">Partner performance</p>
+              <p className="text-base font-semibold text-graphite">Partner performance</p>
             </div>
             <div className="overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">
@@ -509,7 +509,7 @@ export default function DashboardPage() {
                 {data.by_partner.map((p) => (
                   <tr key={p.slug} className="hover:bg-gray-50">
                     <td className="px-5 py-2.5">
-                      <span className="font-medium text-gray-900">{p.name}</span>
+                      <span className="font-medium text-graphite">{p.name}</span>
                       <span className="ml-1.5 font-mono text-xs text-gray-400">{p.slug}</span>
                     </td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.bids_sent}</td>

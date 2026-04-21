@@ -63,7 +63,7 @@ export default function VersionHistoryPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to editor
           </button>
-          <h1 className="text-3xl font-bold text-gray-900">Version History</h1>
+          <h1 className="text-3xl font-bold text-graphite">Version History</h1>
         </div>
 
         {error && (
@@ -103,7 +103,7 @@ export default function VersionHistoryPage() {
               <tbody className="divide-y divide-gray-100">
                 {versions.map((v) => (
                   <tr key={v.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">v{v.version_number}</td>
+                    <td className="px-4 py-3 font-medium text-graphite">v{v.version_number}</td>
                     <td className="px-4 py-3 text-gray-500">{v.message ?? '—'}</td>
                     <td className="px-4 py-3 text-gray-500">
                       {formatDatetime(v.created_at)}

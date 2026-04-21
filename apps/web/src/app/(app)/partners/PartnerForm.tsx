@@ -99,7 +99,7 @@ const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = 
   { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure. No retry, triggers alerts.' },
 ]
 
-const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-indigo-200'
+const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-graphite placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light'
 
 function RuleRow({ rule, onChange, onRemove, removing }: {
   rule: Rule
@@ -224,7 +224,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
             <button
               type="button"
               onClick={() => add(cat)}
-              className="flex flex-shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
+              className="flex flex-shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
             >
               <Plus className="h-3 w-3" />
               Add rule
@@ -289,7 +289,7 @@ function Input({ value, onChange, placeholder, type = 'text', mono }: {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200 ${mono ? 'font-mono' : ''}`}
+      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light ${mono ? 'font-mono' : ''}`}
     />
   )
 }
@@ -301,7 +301,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 ${checked ? 'bg-indigo-600' : 'bg-gray-200'}`}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 ${checked ? 'bg-p-blue-dark' : 'bg-gray-200'}`}
     >
       <span className="sr-only">{label}</span>
       <span
@@ -444,7 +444,7 @@ export default function PartnerForm({
         <div>
           {isNew
             ? <h2 className="text-lg font-medium text-gray-400">New partner</h2>
-            : <h2 className="text-2xl font-bold text-gray-900">{name || <span className="text-gray-300">Unnamed</span>}</h2>
+            : <h2 className="text-2xl font-bold text-graphite">{name || <span className="text-gray-300">Unnamed</span>}</h2>
           }
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-400">{partner.slug}</p>
@@ -485,7 +485,7 @@ export default function PartnerForm({
           <button
             type="button"
             onClick={onCancel}
-            className="px-3 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+            className="px-3 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
           >
             Cancel
           </button>
@@ -564,7 +564,7 @@ export default function PartnerForm({
               onChange={(e) => setBidFormula(e.target.value)}
               placeholder="debt_amount * 0.65"
               rows={2}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-gray-900 placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-indigo-200"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </Field>
         </Section>
@@ -631,7 +631,7 @@ export default function PartnerForm({
             type="submit"
             disabled={saveState === 'saving' || !name}
             className={`flex min-w-[130px] items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors duration-150 disabled:opacity-50 ${
-              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'
+              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-p-blue-dark hover:bg-[#3A8FD0]'
             }`}
           >
             {saveState === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>}

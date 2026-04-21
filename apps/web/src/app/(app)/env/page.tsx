@@ -91,14 +91,14 @@ export default function EnvPage() {
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Environment Variables</h1>
+            <h1 className="text-3xl font-bold text-graphite">Environment Variables</h1>
             <p className="mt-1 text-sm text-gray-500">
               Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
             </p>
           </div>
           <button
             onClick={() => setShowForm(true)}
-            className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
           >
             <Plus className="h-4 w-4" />
             Add variable
@@ -152,7 +152,7 @@ export default function EnvPage() {
                   id="is_secret"
                   checked={newVar.is_secret}
                   onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
-                  className="rounded border-gray-300 text-indigo-600"
+                  className="rounded border-gray-300 text-p-blue-dark"
                 />
                 <label htmlFor="is_secret" className="text-xs text-gray-600">
                   Secret. Value encrypted and synced to Cloudflare Worker.
@@ -162,14 +162,14 @@ export default function EnvPage() {
                 <button
                   type="submit"
                   disabled={creating}
-                  className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
                 >
                   {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowForm(false)}
-                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-900"
+                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
                 >
                   Cancel
                 </button>
@@ -196,13 +196,13 @@ export default function EnvPage() {
           </div>
         ) : vars.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center">
-            <p className="text-base font-semibold text-gray-900">No variables yet</p>
+            <p className="text-base font-semibold text-graphite">No variables yet</p>
             <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
               Environment variables let workflows reference API keys and config values without hardcoding them. Reference them in any step as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>.
             </p>
             <button
               onClick={() => setShowForm(true)}
-              className="mt-4 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
             >
               Add your first variable
             </button>
@@ -222,7 +222,7 @@ export default function EnvPage() {
               <tbody className="divide-y divide-gray-100">
                 {vars.map((v) => (
                   <tr key={v.id} className={`env-row hover:bg-gray-50 ${removingId === v.id ? 'opacity-0 -translate-y-1' : ''}`}>
-                    <td className="px-4 py-3 font-mono text-xs font-medium text-gray-900 whitespace-nowrap">{v.key}</td>
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-graphite whitespace-nowrap">{v.key}</td>
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">
                       {v.is_secret ? (
                         <div className="flex items-center gap-1.5">
