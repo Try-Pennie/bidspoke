@@ -16,6 +16,7 @@ export function ParallelNode({ data, selected }: NodeProps) {
 
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const children = (config.children as string[] | undefined) ?? []
+  const handleCount = children.length
 
   let resultLine: string | null = null
   if (executionStep?.output && Array.isArray(executionStep.output)) {
@@ -58,7 +59,29 @@ export function ParallelNode({ data, selected }: NodeProps) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Bottom} id="output" />
+      {/* Branch-label row — shows each child namespace, matching branch node style */}
+      {children.length > 0 && (
+        <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
+          {children.map((childId, i) => (
+            <span key={i} className="text-slate-500 truncate">↓</span>
+          ))}
+        </div>
+      )}
+
+      {/* Fan-out handles: one per child, spread across bottom like branch node */}
+      {children.length > 0 ? (
+        children.map((_, i) => (
+          <Handle
+            key={i}
+            type="source"
+            position={Position.Bottom}
+            id={`child-${i}`}
+            style={{ left: `${((i + 1) / (handleCount + 1)) * 100}%` }}
+          />
+        ))
+      ) : (
+        <Handle type="source" position={Position.Bottom} id="output" />
+      )}
     </div>
   )
 }

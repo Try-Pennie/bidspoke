@@ -99,6 +99,11 @@ function handleSortIndex(
     const idx = handles.indexOf(handleId)
     return idx >= 0 ? idx : 999
   }
+  if (nodeType === 'parallel') {
+    // child-0, child-1, ... → sort left-to-right by index
+    const m = /^child-(\d+)$/.exec(handleId)
+    return m ? parseInt(m[1]) : 999
+  }
   return 0
 }
 

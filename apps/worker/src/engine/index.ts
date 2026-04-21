@@ -307,8 +307,16 @@ export async function walkGraph(
         throw new StepFailureError(errorMessage!, node.namespace, errorType)
       }
 
-      const edges = outgoingEdges(node.id, definition.edges)
-      const nextEdge = edges.find((e) => evaluateEdge(e, ctx))
+      // Continuation comes from the last parallel child's outgoing edge (children
+      // run "inside" the parallel; the last child connects to whatever comes next).
+      // Fall back to the parallel node's own outgoing edges (excluding children)
+      // for workflows that predate the fan-out edge model.
+      const childIdSet = new Set(childIds)
+      const lastChild = childNodes.length > 0 ? childNodes[childNodes.length - 1] : null
+      const contEdges = lastChild
+        ? outgoingEdges(lastChild.id, definition.edges).filter((e) => !childIdSet.has(e.target))
+        : outgoingEdges(node.id, definition.edges).filter((e) => !childIdSet.has(e.target))
+      const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
       current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
       stepOrder++
       continue

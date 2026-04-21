@@ -23,9 +23,11 @@ interface Props {
   nodeOptions?: { id: string; namespace: string; label?: string }[]
   refs?: string[]
   readOnly?: boolean
+  edges?: { id: string; source: string; target: string; sourceHandle?: string | null }[]
+  onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -238,7 +240,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
-        {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} />}
+        {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} edges={edges} onEdgesChange={onEdgesChange} />}
 
         {/* Common: retry + error handling */}
         <div>
@@ -1293,25 +1295,65 @@ function ParallelConfig({
   onChange,
   currentNodeId,
   nodeOptions,
+  edges,
+  onEdgesChange,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   currentNodeId: string
   nodeOptions: { id: string; namespace: string; label?: string }[]
+  edges: { id: string; source: string; target: string; sourceHandle?: string | null }[]
+  onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }) {
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
   const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
   const children = (config.children as string[] | undefined) ?? []
 
-  // Options: exclude the current parallel node itself
-  const available = nodeOptions.filter((n) => n.id !== currentNodeId)
+  // BFS descendants of currentNodeId — only these can be parallel branches
+  const descendants = (() => {
+    const visited = new Set<string>()
+    const queue = [currentNodeId]
+    while (queue.length > 0) {
+      const id = queue.shift()!
+      for (const e of edges) {
+        if (e.source === id && !visited.has(e.target)) {
+          visited.add(e.target)
+          queue.push(e.target)
+        }
+      }
+    }
+    return visited
+  })()
+
+  const available = nodeOptions.filter((n) => descendants.has(n.id))
 
   function toggleChild(id: string) {
-    const next = children.includes(id)
-      ? children.filter((c) => c !== id)
-      : [...children, id]
-    onChange({ children: next })
+    if (children.includes(id)) {
+      // Remove: update children array + delete fan-out edge
+      const next = children.filter((c) => c !== id)
+      onChange({ children: next })
+      const removeIds = edges
+        .filter((e) => e.source === currentNodeId && e.target === id && (e.sourceHandle ?? '').startsWith('child-'))
+        .map((e) => e.id)
+      if (removeIds.length > 0) onEdgesChange?.([], removeIds)
+    } else {
+      // Add: append to children array + create fan-out edge
+      const next = [...children, id]
+      const childIndex = next.length - 1
+      onChange({ children: next })
+      const newEdge = {
+        id: `${currentNodeId}-child-${childIndex}-${id}`,
+        source: currentNodeId,
+        target: id,
+        sourceHandle: `child-${childIndex}`,
+      }
+      // Remove any existing sequential edge between adjacent children (avoids double connections)
+      const removeIds = edges
+        .filter((e) => e.source === currentNodeId && e.target === id && !(e.sourceHandle ?? '').startsWith('child-'))
+        .map((e) => e.id)
+      onEdgesChange?.([newEdge], removeIds)
+    }
   }
 
   return (

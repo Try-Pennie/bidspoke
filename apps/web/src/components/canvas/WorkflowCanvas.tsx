@@ -85,7 +85,39 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
+function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
+  const parallelNodes = nodes.filter((n) => n.type === 'parallel' && (n.children?.length ?? 0) > 0)
+  if (parallelNodes.length === 0) return edges
+
+  let result = [...edges]
+
+  for (const pNode of parallelNodes) {
+    const childIds = new Set(pNode.children ?? [])
+    // Already has fan-out edges — skip migration
+    if (result.some((e) => e.source === pNode.id && (e.source_handle ?? '').startsWith('child-'))) continue
+
+    // Remove sequential edges between children
+    result = result.filter((e) => !(childIds.has(e.source) && childIds.has(e.target)))
+    // Remove the old single sequential edge from parallel to its first child
+    result = result.filter((e) => !(e.source === pNode.id && childIds.has(e.target)))
+
+    // Add fan-out edges from parallel to each child
+    const children = pNode.children ?? []
+    for (let i = 0; i < children.length; i++) {
+      result.push({
+        id: `${pNode.id}-child-${i}`,
+        source: pNode.id,
+        target: children[i],
+        source_handle: `child-${i}`,
+      })
+    }
+  }
+
+  return result
+}
+
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
+  const migratedEdges = migrateParallelEdges(nodes, edges)
   const workflowNodes = nodes.map((n) => {
     // Parallel nodes store children at NodeDef.children (top-level) but the
     // config panel reads/writes config.children — merge them on load.
@@ -100,7 +132,7 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     }
   })
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
-  return layoutWorkflow(allNodes, defToEdges(edges))
+  return layoutWorkflow(allNodes, defToEdges(migratedEdges))
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -244,7 +276,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
 
-  const initEdges = defToEdges(workflow.definition?.edges ?? [])
+  const initEdges = defToEdges(migrateParallelEdges(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? []))
   const [nodes, setNodes, onNodesChange] = useNodesState(
     defToNodes(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? [], workflow.definition?.trigger)
   )
@@ -719,6 +751,28 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (node) duplicateNode(node)
     },
     [nodes, nodeNamespaces, snapshot, setNodes] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+
+  const handleParallelEdgesChange = useCallback(
+    (
+      add: { id: string; source: string; target: string; sourceHandle: string }[],
+      removeIds: string[]
+    ) => {
+      snapshot()
+      setEdges((prev) => {
+        const filtered = prev.filter((e) => !removeIds.includes(e.id))
+        const newEdges = add.map((a) => ({
+          id: a.id,
+          source: a.source,
+          target: a.target,
+          sourceHandle: a.sourceHandle,
+          data: {},
+        }))
+        return [...filtered, ...newEdges]
+      })
+      setIsDirty(true)
+    },
+    [snapshot, setEdges] // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   // ── Save ────────────────────────────────────────────────────────────────────
@@ -1297,6 +1351,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               nodeNamespaces={nodeNamespaces}
               nodeOptions={nodeOptions}
               refs={refs}
+              edges={edges}
+              onEdgesChange={handleParallelEdgesChange}
             />
           )}
         </div>
@@ -1323,6 +1379,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             nodeNamespaces={nodeNamespaces}
             nodeOptions={nodeOptions}
             refs={refs}
+            edges={edges}
           />
         )}
         {showVersions && (
