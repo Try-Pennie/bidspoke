@@ -230,18 +230,26 @@
 
 ## Phase 4: Engine Bidding Cutover
 
-> Scoped 2026-04-16 after a call with Michael. Full plan and answered decisions live in [docs/engine-cutover-scope.md](./docs/engine-cutover-scope.md). Reference artifacts (Pipedream JSON, SF Apex) in [docs/reference/](./docs/reference/). Target cutover: 1-2 weeks from scope date.
+> Scoped 2026-04-16 after a call with Michael. Updated 2026-04-21 after Bruno call — added 3.1b (Tripoint token DO), 3.1c (Tripoint submission workflow), 3.1d (M1 ping-only), result code correction, Tripoint lead ID write-back, and 3.8 (under 20K remarketing). Full plan lives in [docs/engine-cutover-scope.md](./docs/engine-cutover-scope.md). Reference artifacts (Pipedream JSON, SF Apex) in [docs/reference/](./docs/reference/). Target cutover: 1-2 weeks from scope date.
 
 ### Critical path to cutover (all must land before engine is rerouted)
 
 - [ ] **4.3 Shadow mirror mode — Phase A (dry_run)** — Pipedream-side mirror step fires fire-and-forget to a Bidspoke shadow endpoint; Bidspoke returns 204 and runs workflow with `shadow_mode: 'dry_run'` (skips all outbound calls). Goal: prove volume handling this week. See scope §3.3.
 - [ ] **4.1 Engine bidding workflow — lift and shift** — import the Pipedream JSON via the existing Pipedream importer, then reshape each step per scope §3.1. Response-shape contract must match Pipedream byte-for-byte.
+  - Tripoint approved result codes are **1000-1001 and 1013-2017 only** (not 2019 — codes 2018-2019 are fraud-flagged).
+  - After a successful Tripoint bid, write `leadId` back to Salesforce prospect as `Tripoint_Lead_ID__c`.
 - [ ] **4.1a Equifax integration** — new service connection + Integration preset for the credit report endpoint. Worker secret for credentials. See scope §3.1a.
+- [ ] **4.1b Tripoint token Durable Object** — shared, serialized token manager for Tripoint's outbound API auth. Prevents concurrent-request token races (Bruno hit this in Pipedream). See scope §3.1b.
 - [ ] **4.2 Partner Bid Config as first-class entity** — new `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables. `is_default BOOLEAN` with unique partial index. New "Bid Lookup" node. Ops UI mirrors Salesforce layout. See scope §3.2.
   - Partners to migrate: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default.
 - [ ] **4.2a Constants — per-kind tables + UI** — `offer_copy`, `redirect_urls`, `state_allowlists`, `partner_uuid_map`. Worker-cached reads with invalidate-on-save. See scope §3.2a.
 - [ ] **4.4 Token-based auth** (hard blocker for cutover) — `issued_tokens` table, `POST /token` route, `auth_mode: 'api_key' | 'token'` on `webhook_endpoints`. See scope §3.4.
 - [ ] **4.0 Cutover** — flip engine routing to `engine.trypennie.dev/bidding` and disable Pipedream in the same step. Pipedream workflow stays warm as rollback target.
+
+### Pre-main-flow migration (must land before main flow migrates off Pipedream)
+
+- [ ] **4.1c Tripoint submission workflow** — 3rd Pipedream workflow to migrate. Triggered by Denise's frontend with a Tripoint lead ID; submits to Tripoint via proxy, checks 200/208 success codes, patches Salesforce. See scope §3.1c.
+- [ ] **4.1d M1 ping-only integration** — M1 bidding is ping-only in the main flow (returns bid + click URL); conversion POST is a separate out-of-band endpoint Brian built with a required 60-second delay. Partner Bid node needs `bid_mode: 'ping_only'` support. See scope §3.1d.
 
 ### Follow-on (after cutover)
 
@@ -249,6 +257,7 @@
 - [ ] **4.5 Person + Lead Sightings + Opportunity data model** — `persons` (two-column SSN: encrypted + peppered hash), `lead_sightings` (every SSN arrival), `opportunities` (only real bids). Ships after cutover. Retention policy needs revisiting — can't purge bid-outcome rows on the 90-day schedule. See scope §3.5.
 - [ ] **4.6 Repeat-lead visibility in dashboard** — per-person timeline, per-SSN churn, cross-sub-account overlap. Depends on 4.5.
 - [ ] **4.7 Dynamic bid optimization hooks** — Reese's ML patches matrix cells via `PATCH /api/partner-bid-configs/:slug/rows`. Design-accommodation only; no UI work now.
+- [ ] **4.8 Under 20K remarketing workflow** — fan-out M1 + Tripoint + engine simultaneously; 10-second window for M1/Tripoint; if either responds, route to higher bid and skip engine; fall back to engine (up to 20s) only if neither M1 nor Tripoint respond. Needed for remark/second-look flow on the get-offers landing page. See scope §3.8.
 
 ---
 

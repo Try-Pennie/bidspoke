@@ -50,6 +50,10 @@ Import the Pipedream "engine bidding" workflow into Bidspoke. Dan shared the ful
 
 Parity-level migration. New features (win-aware dedup, internal person table) layer on after cutover.
 
+**Tripoint result code range (correction from Bruno call 2026-04-21):** Approved codes are **1000-1001 and 1013-2017 only**. Codes 2018 and 2019 are fraud-flagged/known-bad and must be treated as rejections, not approvals. Do not use the range 1013-2019.
+
+**Tripoint lead ID write-back (required, confirmed Bruno call 2026-04-21):** When Tripoint returns a successful response, they include a `leadId` field. This must be written back to the Salesforce prospect as `Tripoint_Lead_ID__c` so Denise can pull it for the click-through submission flow. Required in both the engine bidding workflow and the main flow. Wire as a Salesforce PATCH step immediately after a successful Tripoint bid.
+
 ### 3.1a Equifax integration (P0, in critical path)
 Engine's flow calls Equifax directly (not through Salesforce). Bidspoke has no Equifax integration today. Stand it up as part of engine cutover:
 - New service connection for Equifax (credentials in Cloudflare Worker secrets).
@@ -57,6 +61,48 @@ Engine's flow calls Equifax directly (not through Salesforce). Bidspoke has no E
 - Schema sync optional — Equifax response shape is well-known and stable; hand-mapped fields are fine for v1.
 
 Scope it tightly: only the one endpoint engine's flow uses (credit report pull). Broader Equifax functionality (bureau changes, soft vs hard inquiry, etc.) comes later as needed.
+
+### 3.1b Tripoint outbound token management — Durable Object (P0, in critical path)
+Bruno already built a Cloudflare Durable Object that manages Tripoint's API auth token for the Pipedream proxy. When we build the Tripoint Integration node in Bidspoke, we need to replicate this pattern — **not** fetch a new token per request.
+
+**Why it's needed:** Tripoint's auth flow requires fetching a token before each lead submission. If concurrent requests each fetch their own token, the previous token is invalidated mid-flight and requests fail with 401. Bruno ran into this and solved it with a shared, serialized token in a Durable Object.
+
+**Implementation:** Add a `TriPointTokenObject` Durable Object that:
+- Holds the current Tripoint access token + expiry
+- On `getToken()`: returns the cached token if valid, otherwise fetches a new one from Tripoint's auth endpoint and caches it
+- Serializes concurrent requests — if a fetch is already in progress, subsequent calls await the same fetch rather than issuing a second one
+- Wire into the Tripoint Integration node config: before any Tripoint API call, the node fetches the token from the DO and injects it as the Authorization header
+
+This is separate from §3.4 (token auth for engine-to-Bidspoke auth) — that is inbound auth. This is outbound auth to Tripoint's API.
+
+### 3.1c Tripoint submission workflow — 3rd workflow (P0, pre-main-flow migration)
+There are three Pipedream workflows to migrate, not two. The engine-cutover-scope.md previously covered only engine bidding. The third workflow — **Tripoint submission** — must be in Bidspoke before the main flow can migrate.
+
+**What it does:** Takes an existing Tripoint lead ID (returned from the main flow bid) and submits the full lead to Tripoint. Triggered by Denise's frontend when the user clicks through.
+
+**Flow:**
+1. Receive `leadId` (Tripoint's ID from the main flow response)
+2. Submit lead to Tripoint via the proxy DO (§3.1b handles token)
+3. Check response status code: **200 or 208 = success**, anything else = failure
+4. On success: patch the Salesforce submission record with the result
+5. On failure: flag the submission and Slack alert
+
+**Response contract back to frontend:** Returns the raw Tripoint submit response. Frontend doesn't use the body — it only cares whether the call succeeded. Salesforce update happens server-side.
+
+**Note from Bruno:** "all he needs to do is when we return from the main flow, there's going to be the tripoint lead ID. He needs to save that one. And then he needs to hit the tripoint submission with that as a lead ID."
+
+### 3.1d M1 bidding architecture — ping-only, conversion is out-of-band (P0 for M1 launch)
+M1's bidding flow is fundamentally different from Tripoint's, and must be implemented differently in the Partner Bid node.
+
+**M1 flow:**
+1. **PING only in the main bidding workflow** — POST to M1's ping endpoint, receive `{ bid_amount, click_through_url }` back
+2. If M1 wins: return `click_through_url` to the frontend. The user clicking that URL is the "conversion."
+3. **No accept/post step in the main flow.** The post on conversion is handled by a separate endpoint Brian built, triggered when Denise's frontend sends the user to the click URL.
+4. **60-second delay on M1 conversion endpoint** — Brian's conversion API has a 60-second intentional delay before forwarding the request. This is a product requirement from M1, not a bug. Do not remove it.
+
+**Implication for Partner Bid node config:** M1 needs a `bid_mode: 'ping_only'` (or similar) flag so the node knows to return the click URL as part of its output without attempting a second confirmation call. The Bid Evaluation node then uses `bid_amount` for comparison but passes `click_through_url` through to the Response node for the final payload.
+
+**Enabling M1:** Bruno confirmed it's currently hard-coded off (returns 0 bid, always loses). To enable: remove the early-return override and pull from the Partner Bid Config. Coordinate with Brian on M1's current API response shape before flipping on.
 
 ### 3.2a Constants page (P0 — required for engine parity)
 Pipedream's `constants` step returns a large config object that the whole workflow depends on. Dan wants this as a dedicated Ops page with richer editors, not flat env vars.
@@ -172,6 +218,26 @@ New dashboard view: per-person timeline, per-SSN churn counts, cross-sub-account
 ### 3.7 Dynamic bid optimization hooks (P3, design-accommodation only)
 Reese's longer-term work reads outcomes and adjusts bid matrix cells. No implementation now — just make sure §3.2's matrix API supports programmatic patches with audit trail so this slots in without a rebuild.
 
+### 3.8 Under 20K remarketing workflow — fan-out bidding (P1, post-cutover)
+New workflow, not previously in scope. Surfaced in Bruno call 2026-04-21.
+
+**Trigger:** User returns to the "get offers" landing page (under 20K debt flow) — either a remark or a second-look after not clicking through initially.
+
+**Fan-out strategy (confirmed by Dan and Jeff on the call):**
+1. Hit M1, Tripoint, and engine **simultaneously** in a Parallel node
+2. Wait up to **10 seconds** for M1 or Tripoint to respond
+3. If either M1 or Tripoint responds within 10 seconds: route to the higher of the two bids. Engine is ignored even if it eventually responds.
+4. If neither M1 nor Tripoint responds within 10 seconds: route to engine (engine can take up to 20 seconds; acceptable as last resort)
+5. If all three fail: no offer, exit
+
+**Why deprioritize engine:** Engine's second-look process (Salesforce lookup, external scoring) can take up to 20 seconds. M1 and Tripoint respond in under 5 seconds typically. Sequential wait would compound latency; parallel with early-exit avoids it.
+
+**Implementation notes:**
+- Use Parallel node with `wait_for: 'first_success'` or `on_timeout: 'partial'` + `timeout_ms: 10000`
+- Bid Evaluation node needs to know which results came from M1/Tripoint vs engine to implement the "prefer M1/Tripoint even if engine responded first" rule. Add a `source` field to each parallel child's output.
+- M1 in this flow is still ping-only (§3.1d) — if M1 wins, return the click URL.
+- This workflow is distinct from the engine bidding workflow (§3.1) — it handles inbound from Denise's landing page, not from engine's ping.
+
 ## 4. Dependencies and suggested order
 
 ```
@@ -180,13 +246,20 @@ Critical path to engine cutover (target: 1-2 weeks — realistic risk called out
   3.3 shadow Phase A (dry_run) ──→ volume test live (goal: this week)
                                           │
   3.1  engine workflow lift-and-shift ────┤
+       + result codes 1013-2017 only      │
+       + Tripoint lead ID → SF write      │
   3.1a Equifax integration (new) ─────────┤
+  3.1b Tripoint token DO (new) ───────────┤
   3.2  Partner Bid Config + Lookup node ──┤─→ parity validated via
   3.2a Constants (per-kind tables + UI) ──┤   manual spot-check
   3.4  Token auth (hard blocker) ─────────┤   (Pipedream logs vs. Bidspoke
                                           │    dry-run outputs, same payload)
                                           │
                                           └─→ engine cutover on token auth
+
+Pre-main-flow migration (before main flow can move):
+  3.1c Tripoint submission workflow (3rd workflow)
+  3.1d M1 ping-only architecture + 60s conversion delay
 
 Follow-on (after cutover, in priority order):
 
@@ -197,6 +270,8 @@ Follow-on (after cutover, in priority order):
                                │     └─→ 3.7 dynamic bid updates (Reese)
                                │
   3.3 Phase B (full parity) ───┘ (only if end-to-end parity test is needed)
+
+  3.8 Under 20K remarketing workflow (M1 + Tripoint + engine fan-out, 10s timeout)
 ```
 
 **Critical path honest assessment:** The 1-2 week target is tight with four new workstreams (§3.1a Equifax, §3.2 bid config, §3.2a Constants, §3.4 token auth) plus the engine workflow port in §3.1. Realistic de-scoping levers:
@@ -278,6 +353,16 @@ Not deal-breakers — but worth flagging so we don't build the wrong thing.
 - **Partner list is final**: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, and a Default row. No further confirmation needed before migration.
 - **SF pull cadence is hourly, with a manual "Run now" button** on the dashboard for Ops. SF API limits are not a constraint (Enterprise org has headroom).
 - **Phase B duplicate-prospect strategy is N/A** — Dan will flip engine's routing and disable the Pipedream workflow in the same step at cutover, so both systems never run for real in parallel. Pipedream stays warm purely as a rollback target, not as a second live system.
+
+**Additional answers from Bruno call 2026-04-21:**
+- **Tripoint result codes are 1000-1001 and 1013-2017.** Codes 2018 and 2019 are fraud-flagged/known-bad — treat as rejection. (§3.1 updated.)
+- **Tripoint lead ID must be written to Salesforce prospect** (`Tripoint_Lead_ID__c`) after every successful bid so Denise can close the loop on click-through. Required in engine bidding and main flow. (§3.1 updated.)
+- **Tripoint outbound auth requires a shared token Durable Object** (§3.1b). Bruno already built this for the Pipedream proxy; Bidspoke needs the same pattern. Per-request token fetching causes 401 races under concurrent load.
+- **Three workflows to migrate, not two.** Engine bidding, main flow, and Tripoint submission (§3.1c). The submission workflow is triggered by Denise when a user clicks through.
+- **M1 is ping-only in the bidding flow** (§3.1d). No accept/post happens in the main workflow. Post on conversion is a separate endpoint Brian built with a required 60-second delay. M1 currently hard-coded off; enabling requires removing Bruno's early-return override and confirming M1's current API response shape with Brian.
+- **Under 20K remarketing workflow** (§3.8) is a new workflow needed for the remark/second-look flow. Fan-out M1 + Tripoint + engine simultaneously, 10-second window for M1/Tripoint, fall back to engine if neither responds.
+- **Pipedream has been hanging randomly without errors** — Bruno can't reproduce or trace it. Accelerates urgency to cut over; not blocking but confirms migration is right call.
+- **Bruno confirmed 2-week migration window** and is aligned on keeping Pipedream warm as rollback target.
 
 ## 8. Verification
 
