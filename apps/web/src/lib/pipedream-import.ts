@@ -202,14 +202,23 @@ function translateCode(code: string): string {
     // Remove @pipedream/platform imports
     .replace(/import\s*\{[^}]*axios[^}]*\}\s*from\s*["']@pipedream\/platform["'];?/g, '// Uses native fetch')
     .replace(/import\s*\{[^}]*\}\s*from\s*["']@pipedream\/platform["'];?/g, '// @pipedream/platform removed')
+    // Remove axios import from "axios" (bare package)
+    .replace(/import\s+axios\s+from\s+["']axios["'];?/g, '// Uses native fetch')
     // Translate data refs
     .replace(/steps\.trigger\.event\.body/g, 'trigger.payload')
     .replace(/steps\.trigger\.event/g, 'trigger.payload')
     .replace(/steps\.trigger\.context\.trace_id/g, 'execution.trace_id')
-    .replace(/steps\.([^.]+)\.\$return_value/g, 'steps.$1')
+    .replace(/steps\.([^.]+)\.\$return_value/g, 'steps.$1.output')
     // Env vars
     .replace(/process\.env\.(\w+)/g, 'env.$1')
-    // `this.prop` → `config.prop`
+    // Salesforce OAuth token from Pipedream app auth → dedicated env var
+    .replace(/config\.salesforce\.\$auth\.oauth_access_token/g, 'env.SALESFORCE_ACCESS_TOKEN')
+    // Equifax credentials from Pipedream props → env vars
+    .replace(/config\.equifaxUsername/g, 'env.EQUIFAX_USERNAME')
+    .replace(/config\.equifaxPassword/g, 'env.EQUIFAX_PASSWORD')
+    // Pipedream data store → env var pattern (bidding active flags keyed by source name)
+    .replace(/await\s+config\.dataStore\.get\((\w+)\)/g, "(env['BIDDING_ACTIVE_' + $1.toUpperCase()] ?? env.BIDDING_ACTIVE_DEFAULT ?? 'false') === 'true'")
+    // `this.prop` → `config.prop` (general Pipedream configured_props access)
     .replace(/\bthis\.(\w+)\b/g, 'config.$1')
     // $.export("$summary", msg) → console.log(msg)
     .replace(/\$\.export\(['"]?\$summary['"]?,\s*/g, 'console.log(')
@@ -221,8 +230,10 @@ function translateCode(code: string): string {
     // $.respond({ ... }) → return { response: { ... } }
     .replace(/await\s+\$\.respond\((\{(?:[^{}]|\{[^{}]*\})*\})\)/g, 'return { response: $1 }')
     .replace(/\$\.respond\((\{(?:[^{}]|\{[^{}]*\})*\})\)/g, 'return { response: $1 }')
-    // axios($, config) → await fetch(url, config) (rough)
+    // axios($, { method, url, ... }) → await fetch(url, { method, ... }) (rough)
     .replace(/\baxios\(\$,\s*/g, 'await fetch(')
+    // axios.post(url, body, config) → fetch(url, { method: 'POST', body: JSON.stringify(body), ...config })
+    .replace(/axios\.post\(/g, 'fetch(/* POST */ ')
 }
 
 // ── Auto-layout ───────────────────────────────────────────────────────────────

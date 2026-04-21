@@ -238,8 +238,11 @@
 - [ ] **4.1 Engine bidding workflow — lift and shift** — import the Pipedream JSON via the existing Pipedream importer, then reshape each step per scope §3.1. Response-shape contract must match Pipedream byte-for-byte.
   - Tripoint approved result codes are **1000-1001 and 1013-2017 only** (not 2019 — codes 2018-2019 are fraud-flagged).
   - After a successful Tripoint bid, write `leadId` back to Salesforce prospect as `Tripoint_Lead_ID__c`.
-- [ ] **4.1a Equifax integration** — new service connection + Integration preset for the credit report endpoint. Worker secret for credentials. See scope §3.1a.
-- [ ] **4.1b Tripoint token Durable Object** — shared, serialized token manager for Tripoint's outbound API auth. Prevents concurrent-request token races (Bruno hit this in Pipedream). See scope §3.1b.
+- [ ] **4.1a Equifax integration** — Worker secrets (EQUIFAX_USERNAME, EQUIFAX_PASSWORD) + equifax_credit_report as a Code node with rewritten script. See scope §3.1a.
+  - [x] Code node early-exit sentinel support ($.respond() / $.flow.exit() translated patterns)
+  - [x] execution.trace_id passed to code node workers
+  - [x] Pipedream importer improvements: steps.$return_value.X → steps.X.output.Y, Salesforce/Equifax/dataStore translations, bare axios import removal
+- [ ] **4.1b Tripoint token Durable Object** — deferred to main flow migration (engine flow calls Brian's existing proxy via TRIPOINT_PROXY_SECRET). See scope §3.1b.
 - [ ] **4.2 Partner Bid Config as first-class entity** — new `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables. `is_default BOOLEAN` with unique partial index. New "Bid Lookup" node. Ops UI mirrors Salesforce layout. See scope §3.2.
   - Partners to migrate: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default.
 - [ ] **4.2a Constants — per-kind tables + UI** — `offer_copy`, `redirect_urls`, `state_allowlists`, `partner_uuid_map`. Worker-cached reads with invalidate-on-save. See scope §3.2a.

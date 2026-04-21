@@ -63,7 +63,7 @@ describe('code node', () => {
       { namespace: 'step1', savedComponent: { code: 'const x = steps.foo.$return_value.bar' } },
     ])
     const { def } = parsePipedreamExport(raw)
-    expect(def.nodes[0].config.script).toBe('const x = steps.foo.bar')
+    expect(def.nodes[0].config.script).toBe('const x = steps.foo.output.bar')
   })
 
   it('warns when code node was imported (may need review)', () => {
@@ -99,8 +99,8 @@ describe('code translation', () => {
     expect(out).not.toContain('@pipedream/platform')
   })
 
-  it('translates steps.NAMESPACE.$return_value.field → steps.NAMESPACE.field', () => {
-    expect(translate('steps.credit.$return_value.score')).toBe('steps.credit.score')
+  it('translates steps.NAMESPACE.$return_value.field → steps.NAMESPACE.output.field', () => {
+    expect(translate('steps.credit.$return_value.score')).toBe('steps.credit.output.score')
   })
 
   it('translates steps.trigger.event.body → trigger.payload', () => {
