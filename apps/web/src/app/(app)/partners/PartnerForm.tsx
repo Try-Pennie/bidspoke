@@ -671,7 +671,7 @@ export default function PartnerForm({
           <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
         </Section>}
 
-        <Section title="Sell-off offer copy">
+        {partnerType === 'source' && <Section title="Sell-off offer copy">
           <p className="text-xs text-gray-400">
             Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
           </p>
@@ -687,9 +687,9 @@ export default function PartnerForm({
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </Field>
-        </Section>
+        </Section>}
 
-        <Section title="Sub-account UUIDs">
+        {partnerType === 'source' && <Section title="Sub-account UUIDs">
           <p className="text-xs text-gray-400">
             External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
           </p>
@@ -770,7 +770,7 @@ export default function PartnerForm({
             </button>
           </div>
           {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
-        </Section>
+        </Section>}
 
         {partnerType === 'buyer' && <Section title="Alert configuration">
           <p className="text-xs text-gray-400">
