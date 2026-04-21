@@ -136,13 +136,27 @@ async function authHeaders(): Promise<HeadersInit> {
   }
 }
 
+function redirectToLogin() {
+  if (typeof window !== 'undefined') window.location.href = '/login'
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = await authHeaders()
+  let headers: HeadersInit
+  try {
+    headers = await authHeaders()
+  } catch {
+    redirectToLogin()
+    throw new Error('Not authenticated')
+  }
   const res = await fetch(`${WORKER_URL}${path}`, {
     ...init,
     headers: { ...(init?.headers ?? {}), ...headers },
   })
   if (!res.ok) {
+    if (res.status === 401) {
+      redirectToLogin()
+      throw new Error('Not authenticated')
+    }
     const body = await res.text().catch(() => '')
     throw new Error(`API ${res.status}: ${body}`)
   }
