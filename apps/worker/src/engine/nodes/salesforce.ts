@@ -19,16 +19,17 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../.
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 
-type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query'
+type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
 interface SalesforceConfig {
   operation: SalesforceOperation
   object?: string       // SObject API name, e.g. Prospect__c
-  body?: unknown        // template-enabled JSON body (create / update / upsert)
+  body?: unknown        // template-enabled JSON body (create / update / upsert / apex)
   record_id?: string    // template-enabled — required for update
   external_id_field?: string  // upsert: external ID field name
   external_id_value?: string  // upsert: template-enabled external ID value
   soql?: string         // template-enabled SOQL query string
+  apex_path?: string    // apex: relative path, e.g. /services/apexrest/prospect-trades
 }
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
@@ -123,6 +124,13 @@ export async function executeSalesforceNode(
     if (!soql) throw new Error('Salesforce query requires soql')
     url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
     method = 'GET'
+  } else if (operation === 'apex') {
+    const apexPath = (config.apex_path ?? '').replace(/^\/?/, '/')
+    if (!apexPath || apexPath === '/') throw new Error('Salesforce apex requires apex_path')
+    url = `${instanceUrl}${apexPath}`
+    method = 'POST'
+    const resolvedBody = resolveValue(config.body, enrichedCtx)
+    bodyStr = JSON.stringify(resolvedBody)
   } else {
     throw new Error(`Unknown Salesforce operation: ${operation}`)
   }

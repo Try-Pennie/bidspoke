@@ -10,7 +10,8 @@ const OPERATION_LABELS: Record<string, string> = {
   create: 'Create',
   update: 'Update',
   upsert: 'Upsert',
-  query: 'Query',
+  query:  'Query',
+  apex:   'Apex',
 }
 
 export function SalesforceNode({ data, selected }: NodeProps) {
@@ -18,7 +19,11 @@ export function SalesforceNode({ data, selected }: NodeProps) {
 
   const operation = (config.operation as string | undefined) ?? 'create'
   const object = (config.object as string | undefined) ?? ''
+  const apexPath = (config.apex_path as string | undefined) ?? ''
   const opLabel = OPERATION_LABELS[operation] ?? operation
+  const subtitle = operation === 'apex'
+    ? (apexPath || 'Unconfigured')
+    : object ? `${opLabel} ${object}` : 'Unconfigured'
 
   const execOutput = executionStep?.output as { status?: number; body?: unknown } | null | undefined
   const statusCode = execOutput?.status
@@ -35,7 +40,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
       <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">
         <Cloud className="h-4 w-4 text-blue-500" />
         <span className="text-xs font-semibold uppercase tracking-wide text-blue-600">Salesforce</span>
-        {object && (
+        {(object || operation === 'apex') && (
           <span className="ml-auto rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-600">
             {opLabel}
           </span>
@@ -45,9 +50,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
-        <p className="mt-0.5 truncate text-xs text-slate-400">
-          {object ? `${opLabel} ${object}` : 'Unconfigured'}
-        </p>
+        <p className="mt-0.5 truncate text-xs text-slate-400">{subtitle}</p>
         {statusCode !== undefined && (
           <p className={`mt-1 truncate rounded px-1.5 py-0.5 font-mono text-xs ${statusCode >= 200 && statusCode < 300 ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
             {statusCode}

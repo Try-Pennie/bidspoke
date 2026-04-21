@@ -1298,6 +1298,7 @@ const SF_OPERATIONS = [
   { value: 'update', label: 'Update record' },
   { value: 'upsert', label: 'Upsert record' },
   { value: 'query',  label: 'Query (SOQL)' },
+  { value: 'apex',   label: 'Apex REST' },
 ]
 
 function SalesforceConfig({
@@ -1316,6 +1317,7 @@ function SalesforceConfig({
   const extField  = (config.external_id_field as string | undefined) ?? ''
   const extValue  = (config.external_id_value as string | undefined) ?? ''
   const soql      = (config.soql as string | undefined) ?? ''
+  const apexPath  = (config.apex_path as string | undefined) ?? ''
 
   const [bodyText, setBodyText] = useState(() =>
     body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body, null, 2)) : ''
@@ -1334,6 +1336,7 @@ function SalesforceConfig({
   const showId     = operation === 'update'
   const showUpsert = operation === 'upsert'
   const showSoql   = operation === 'query'
+  const showApex   = operation === 'apex'
 
   return (
     <section className="space-y-4">
@@ -1350,7 +1353,7 @@ function SalesforceConfig({
         </select>
       </div>
 
-      {!showSoql && (
+      {!showSoql && !showApex && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Object (SObject API name)</label>
           <input
@@ -1358,6 +1361,18 @@ function SalesforceConfig({
             value={object}
             onChange={(e) => onChange({ object: e.target.value })}
             placeholder="e.g. Prospect__c"
+          />
+        </div>
+      )}
+
+      {showApex && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Apex path</label>
+          <input
+            className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none"
+            value={apexPath}
+            onChange={(e) => onChange({ apex_path: e.target.value })}
+            placeholder="/services/apexrest/my-endpoint"
           />
         </div>
       )}
