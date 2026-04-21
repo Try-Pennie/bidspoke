@@ -124,7 +124,7 @@ describe('end-to-end: outbound lead routing — happy path', () => {
       edges: [
         edge('validate', 'enrich'),
         edge('enrich', 'bids'),
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'route', 'winner'),
         edge('route', 'respond'),
       ],
@@ -164,7 +164,7 @@ describe('end-to-end: outbound lead routing — happy path', () => {
       ],
       edges: [
         edge('validate', 'bids'),
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'route_lead', 'winner'),
         edge('route_lead', 'respond'),
       ],
@@ -208,7 +208,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondWinner, respondNoWinner],
       edges: [
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'respond_winner',   'winner'),
         edge('pick', 'respond_no_winner', 'no_winner'),
       ],
@@ -239,7 +239,7 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
       edges: [
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'respond', 'winner'),
       ],
     }
@@ -278,7 +278,7 @@ describe('end-to-end: Tripoint dedup rejects → M1 wins', () => {
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
       edges: [
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'respond', 'winner'),
       ],
     }
@@ -384,7 +384,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
 
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('bids', 'pick'), edge('pick', 'respond', 'winner')],
+      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-8', new Date().toISOString(), supabase, env)
@@ -412,7 +412,7 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondWinner, respondFallback],
       edges: [
-        edge('bids', 'pick'),
+        edge('m1_bid', 'pick'),
         edge('pick', 'rw', 'winner'),
         edge('pick', 'rf', 'no_winner'),
       ],
@@ -451,7 +451,7 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
 
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('bids', 'pick'), edge('pick', 'respond', 'winner')],
+      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-10', new Date().toISOString(), supabase, env)
@@ -488,7 +488,7 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
 
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('bids', 'pick'), edge('pick', 'respond', 'winner')],
+      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
     }
 
     // First execution: tripoint circuit open → M1 wins

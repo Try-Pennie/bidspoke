@@ -49,7 +49,7 @@ describe('executeCodeNode', () => {
     const c = ctx()
     await executeCodeNode(node({ script: 'return {}' }), c, env)
     const body = JSON.parse(workerFetch.mock.calls[0][1].body as string) as unknown
-    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env, execution: { org_id: '', trace_id: 'trace' } })
+    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env, execution: { trace_id: 'trace' } })
   })
 
   it('returns the JSON output from the worker', async () => {

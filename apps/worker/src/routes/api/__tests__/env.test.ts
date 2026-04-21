@@ -8,6 +8,10 @@ vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
 vi.mock('../../../lib/cf-secrets')
+vi.mock('../../../lib/secret-crypto', () => ({
+  encryptSecret: vi.fn().mockResolvedValue('encrypted-test-value'),
+  decryptSecret: vi.fn().mockResolvedValue('decrypted-test-value'),
+}))
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
