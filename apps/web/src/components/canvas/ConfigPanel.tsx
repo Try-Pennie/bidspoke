@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -33,6 +33,24 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
+  const nsManuallyEdited = useRef(false)
+
+  useEffect(() => { nsManuallyEdited.current = false }, [node.id])
+
+  function toNamespace(label: string) {
+    return label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+  }
+
+  function handleLabelChange(value: string) {
+    const patch: Partial<CanvasNodeData> = { label: value || undefined }
+    if (!nsManuallyEdited.current) patch.namespace = toNamespace(value) || data.namespace
+    onUpdate(node.id, patch)
+  }
+
+  function handleNamespaceChange(value: string) {
+    nsManuallyEdited.current = true
+    onUpdate(node.id, { namespace: value })
+  }
 
   function updateConfig(patch: Record<string, unknown>) {
     onUpdate(node.id, { config: { ...data.config, ...patch } })
@@ -116,7 +134,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                     className="input"
                     placeholder={data.namespace}
                     value={data.label ?? ''}
-                    onChange={(e) => onUpdate(node.id, { label: e.target.value || undefined })}
+                    onChange={(e) => handleLabelChange(e.target.value)}
                   />
                 </div>
                 <div>
@@ -124,7 +142,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                   <input
                     className="input font-mono"
                     value={data.namespace}
-                    onChange={(e) => onUpdate(node.id, { namespace: e.target.value })}
+                    onChange={(e) => handleNamespaceChange(e.target.value)}
                   />
                 </div>
               </div>
@@ -197,7 +215,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             className="input"
             placeholder={data.namespace}
             value={data.label ?? ''}
-            onChange={(e) => onUpdate(node.id, { label: e.target.value || undefined })}
+            onChange={(e) => handleLabelChange(e.target.value)}
           />
         </Field>
 
@@ -206,7 +224,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <input
             className="input"
             value={data.namespace}
-            onChange={(e) => onUpdate(node.id, { namespace: e.target.value })}
+            onChange={(e) => handleNamespaceChange(e.target.value)}
           />
         </Field>
 
