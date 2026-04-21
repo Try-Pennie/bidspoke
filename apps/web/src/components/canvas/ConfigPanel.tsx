@@ -241,6 +241,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
+        {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig config={data.config} onChange={updateConfig} />}
 
@@ -1286,6 +1287,142 @@ function PartnerBidConfig({
           <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
         </div>
       </Field>
+    </section>
+  )
+}
+
+// ── Salesforce ────────────────────────────────────────────────────────────────
+
+const SF_OPERATIONS = [
+  { value: 'create', label: 'Create record' },
+  { value: 'update', label: 'Update record' },
+  { value: 'upsert', label: 'Upsert record' },
+  { value: 'query',  label: 'Query (SOQL)' },
+]
+
+function SalesforceConfig({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const operation = (config.operation as string | undefined) ?? 'create'
+  const object    = (config.object as string | undefined) ?? ''
+  const body      = config.body
+  const recordId  = (config.record_id as string | undefined) ?? ''
+  const extField  = (config.external_id_field as string | undefined) ?? ''
+  const extValue  = (config.external_id_value as string | undefined) ?? ''
+  const soql      = (config.soql as string | undefined) ?? ''
+
+  const [bodyText, setBodyText] = useState(() =>
+    body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body, null, 2)) : ''
+  )
+
+  function saveBody(raw: string) {
+    setBodyText(raw)
+    try {
+      onChange({ body: JSON.parse(raw) })
+    } catch {
+      onChange({ body: raw })
+    }
+  }
+
+  const showBody   = operation !== 'query'
+  const showId     = operation === 'update'
+  const showUpsert = operation === 'upsert'
+  const showSoql   = operation === 'query'
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <label className="mb-1 block text-xs font-medium text-gray-600">Operation</label>
+        <select
+          className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+          value={operation}
+          onChange={(e) => onChange({ operation: e.target.value })}
+        >
+          {SF_OPERATIONS.map((op) => (
+            <option key={op.value} value={op.value}>{op.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {!showSoql && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Object (SObject API name)</label>
+          <input
+            className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+            value={object}
+            onChange={(e) => onChange({ object: e.target.value })}
+            placeholder="e.g. Prospect__c"
+          />
+        </div>
+      )}
+
+      {showId && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Record ID</label>
+          <TemplateTextarea
+            value={recordId}
+            onChange={(v) => onChange({ record_id: v })}
+            refs={refs}
+            placeholder="{{steps.create_prospect.output.body.id}}"
+            className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+          />
+        </div>
+      )}
+
+      {showUpsert && (
+        <>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">External ID field</label>
+            <input
+              className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+              value={extField}
+              onChange={(e) => onChange({ external_id_field: e.target.value })}
+              placeholder="e.g. Lead_UUID__c"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">External ID value</label>
+            <TemplateTextarea
+              value={extValue}
+              onChange={(v) => onChange({ external_id_value: v })}
+              refs={refs}
+              placeholder="{{trigger.payload.leadUuid}}"
+              className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
+            />
+          </div>
+        </>
+      )}
+
+      {showSoql && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">SOQL query</label>
+          <TemplateTextarea
+            value={soql}
+            onChange={(v) => onChange({ soql: v })}
+            refs={refs}
+            placeholder="SELECT Id FROM Prospect__c WHERE Lead_UUID__c = '{{trigger.payload.leadUuid}}'"
+          />
+        </div>
+      )}
+
+      {showBody && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Body (JSON)</label>
+          <TemplateTextarea
+            value={bodyText}
+            onChange={saveBody}
+            refs={refs}
+            placeholder={'{\n  "Field__c": "{{steps.step.output.value}}"\n}'}
+            className="font-mono text-xs"
+          />
+        </div>
+      )}
     </section>
   )
 }

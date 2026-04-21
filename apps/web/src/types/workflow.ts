@@ -11,6 +11,7 @@ export type NodeType =
   | 'transform'
   | 'bid_evaluation'
   | 'constants'
+  | 'salesforce'
 
 export interface EdgeCondition {
   field: string

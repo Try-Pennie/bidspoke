@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign, Package } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign, Package, Cloud } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -89,6 +89,13 @@ const NODES: PaletteNode[] = [
     description: 'Workflow constants + partner data',
     icon: Package,
     color: 'text-indigo-500',
+  },
+  {
+    type: 'salesforce',
+    label: 'Salesforce',
+    description: 'Create, update, or query records',
+    icon: Cloud,
+    color: 'text-blue-500',
   },
 ]
 

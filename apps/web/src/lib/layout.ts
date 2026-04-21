@@ -14,6 +14,7 @@ const NODE_H: Record<string, number> = {
   exit:           72,
   parallel:       96,  // has branch-label row at bottom
   parallel_end:   80,
+  salesforce:     96,  // has operation/object subtitle row
   default:        80,
 }
 

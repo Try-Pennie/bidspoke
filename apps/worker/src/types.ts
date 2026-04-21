@@ -15,6 +15,7 @@ export type NodeType =
   | 'response'
   | 'exit'
   | 'constants'
+  | 'salesforce'
 
 export interface WorkflowDefinition {
   id: string

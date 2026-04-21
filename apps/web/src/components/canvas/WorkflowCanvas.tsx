@@ -35,6 +35,7 @@ import { PartnerBidNode } from './nodes/PartnerBidNode'
 import { ParallelNode } from './nodes/ParallelNode'
 import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
+import { SalesforceNode } from './nodes/SalesforceNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -68,6 +69,7 @@ const nodeTypes: NodeTypes = {
   parallel_end: ParallelEndNode,
   bid_evaluation: BidEvaluationNode,
   constants: ConstantsNode,
+  salesforce: SalesforceNode,
 }
 
 function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
@@ -1323,6 +1325,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   partner_bid:    '#0ea5e9', // sky
                   parallel:       '#64748b', // slate
                   parallel_end:   '#64748b', // slate
+                  salesforce:     '#3b82f6', // blue
                 }
                 return colorMap[n.type ?? ''] ?? '#9ca3af'
               }}
