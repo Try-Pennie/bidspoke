@@ -44,7 +44,7 @@ partners.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('partner_configs')
-    .select('id, name, slug, api_endpoint, daily_cap, min_bid, bid_formula, is_active, priority, partner_type, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
+    .select('id, name, slug, api_endpoint, click_url, daily_cap, min_bid, bid_formula, is_active, priority, partner_type, sell_off_offer_title, sell_off_offer_details, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .order('priority', { ascending: true })
 
