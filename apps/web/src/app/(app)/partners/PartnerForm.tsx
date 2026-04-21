@@ -380,6 +380,7 @@ export default function PartnerForm({
   const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
 
   const [uuids, setUuids] = useState<PartnerUuid[]>([])
+  const [pendingUuids, setPendingUuids] = useState<string[]>([])
   const [newUuid, setNewUuid] = useState('')
   const [addingUuid, setAddingUuid] = useState(false)
   const [uuidError, setUuidError] = useState<string | null>(null)
@@ -458,6 +459,9 @@ export default function PartnerForm({
         sell_off_offer_details: sellOffOfferDetails || null,
       }
       await onSave(body, partner?.id)
+      if (isNew && pendingUuids.length > 0) {
+        await Promise.all(pendingUuids.map((uuid) => api.partnerUuids.create({ partner_slug: slug, uuid })))
+      }
       setSaveState('saved')
       if (!isNew) {
         setUndoSnapshot(snapshot)
@@ -570,9 +574,11 @@ export default function PartnerForm({
             </div>
           </Field>
           <div className="flex items-center gap-6">
-            <Field label="Priority">
-              <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
-            </Field>
+            {partnerType === 'buyer' && (
+              <Field label="Priority">
+                <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
+              </Field>
+            )}
             <Field label="Status">
               <div className="flex items-center gap-2.5 pt-1">
                 <Toggle checked={isActive} onChange={setIsActive} label="Partner active" />
@@ -678,13 +684,26 @@ export default function PartnerForm({
           </Field>
         </Section>
 
-        {!isNew && (
-          <Section title="Sub-account UUIDs">
-            <p className="text-xs text-gray-400">
-              External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
-            </p>
-            <div className="space-y-1.5">
-              {uuids.map((u) => (
+        <Section title="Sub-account UUIDs">
+          <p className="text-xs text-gray-400">
+            External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
+          </p>
+          <div className="space-y-1.5">
+            {isNew ? (
+              pendingUuids.map((uuid, i) => (
+                <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))}
+                    className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))
+            ) : (
+              uuids.map((u) => (
                 <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                   <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
                   <button
@@ -706,41 +725,47 @@ export default function PartnerForm({
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={newUuid}
-                onChange={(e) => { setNewUuid(e.target.value); setUuidError(null) }}
-                placeholder="Enter UUID"
-                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-              />
-              <button
-                type="button"
-                disabled={!newUuid.trim() || addingUuid}
-                onClick={async () => {
-                  if (!newUuid.trim() || !partner) return
-                  setAddingUuid(true)
-                  setUuidError(null)
-                  try {
-                    const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
-                    setUuids((prev) => [...prev, created])
-                    setNewUuid('')
-                  } catch (err) {
-                    setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
-                  } finally {
-                    setAddingUuid(false)
-                  }
-                }}
-                className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
-              >
-                {addingUuid ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                Add
-              </button>
-            </div>
-            {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
-          </Section>
-        )}
+              ))
+            )}
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={newUuid}
+              onChange={(e) => { setNewUuid(e.target.value); setUuidError(null) }}
+              placeholder="Enter UUID"
+              className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            />
+            <button
+              type="button"
+              disabled={!newUuid.trim() || addingUuid}
+              onClick={async () => {
+                if (!newUuid.trim()) return
+                if (isNew) {
+                  setPendingUuids((prev) => [...prev, newUuid.trim()])
+                  setNewUuid('')
+                  return
+                }
+                if (!partner) return
+                setAddingUuid(true)
+                setUuidError(null)
+                try {
+                  const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
+                  setUuids((prev) => [...prev, created])
+                  setNewUuid('')
+                } catch (err) {
+                  setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
+                } finally {
+                  setAddingUuid(false)
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+            >
+              {addingUuid ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              Add
+            </button>
+          </div>
+          {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
+        </Section>
 
         {partnerType === 'buyer' && <Section title="Alert configuration">
           <p className="text-xs text-gray-400">
