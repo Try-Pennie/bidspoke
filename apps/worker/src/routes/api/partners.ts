@@ -7,6 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 
 type Variables = AuthVariables
 
@@ -27,6 +28,8 @@ interface PartnerBody {
   circuit_enabled?: boolean
   is_active?: boolean
   priority?: number
+  sell_off_offer_title?: string | null
+  sell_off_offer_details?: string | null
 }
 
 const partners = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -146,6 +149,7 @@ partners.put('/:id', async (c) => {
     'bid_formula', 'dedup_endpoint', 'response_classification', 'alert_config',
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'is_active', 'priority',
+    'sell_off_offer_title', 'sell_off_offer_details',
   ]
   for (const f of fields) {
     if (body[f] !== undefined) updates[f] = body[f]
@@ -163,6 +167,11 @@ partners.put('/:id', async (c) => {
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
   })
+
+  const affectsSellOff = 'sell_off_offer_title' in updates || 'sell_off_offer_details' in updates
+  if (affectsSellOff) {
+    await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  }
 
   return c.json(data)
 })

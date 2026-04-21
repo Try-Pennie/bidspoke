@@ -50,7 +50,7 @@ function chain(...nodes: NodeDefinition[]) {
 
 function makeCtx(traceId = 'trace-test-abc', workflowId = 'wf-test'): ExecutionContext {
   return {
-    trigger: { payload: { lead_id: 'L1' }, source: 'test', workflow_id: workflowId, trace_id: traceId },
+    trigger: { payload: { lead_id: 'L1' }, source: 'test', workflow_id: workflowId, org_id: '', trace_id: traceId },
     steps: {},
     env: {},
   }

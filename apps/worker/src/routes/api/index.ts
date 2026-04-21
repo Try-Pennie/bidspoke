@@ -14,6 +14,7 @@ import servicePresets from './service-presets'
 import stats from './stats'
 import connections from './connections'
 import endpointRoutes from './endpoints'
+import partnerUuids from './partner-uuids'
 
 type Variables = AuthVariables
 
@@ -34,6 +35,7 @@ api.route('/service-presets', servicePresets)
 api.route('/stats', stats)
 api.route('/connections', connections)
 api.route('/endpoints', endpointRoutes)
+api.route('/partner-uuids', partnerUuids)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)

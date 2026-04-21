@@ -28,7 +28,7 @@ function makeCtx(steps: Record<string, unknown> = {}, payload: unknown = {}): Ex
     stepMap[ns] = { output, status: 'completed' }
   }
   return {
-    trigger: { payload, source: 'test', workflow_id: 'wf-1', trace_id: 'tr-1' },
+    trigger: { payload, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'tr-1' },
     steps: stepMap,
     env: { API_VERSION: 'v2' },
   } as unknown as ExecutionContext

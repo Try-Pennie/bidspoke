@@ -219,6 +219,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
+        {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} />}
 
         {/* Common: retry + error handling */}
@@ -1360,6 +1361,115 @@ function ParallelConfig({
             ))}
           </div>
         )}
+      </div>
+    </section>
+  )
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+function ConstantsConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const data = (config.data ?? {}) as Record<string, unknown>
+
+  function updateData(updatedData: Record<string, unknown>) {
+    onChange({ data: updatedData })
+  }
+
+  function setKeyName(oldKey: string, newKey: string) {
+    if (oldKey === newKey) return
+    const updated: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(data)) {
+      updated[k === oldKey ? newKey : k] = v
+    }
+    updateData(updated)
+  }
+
+  function setValue(key: string, raw: string) {
+    const isStates = key === 'states' || Array.isArray(data[key])
+    const parsed = isStates ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw
+    updateData({ ...data, [key]: parsed })
+  }
+
+  function removeKey(key: string) {
+    const updated = { ...data }
+    delete updated[key]
+    updateData(updated)
+  }
+
+  function addKey() {
+    let name = 'key'
+    let i = 1
+    while (name in data) { name = `key${i++}` }
+    updateData({ ...data, [name]: '' })
+  }
+
+  const entries = Object.entries(data)
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-medium text-gray-600">Workflow constants</p>
+          <button
+            type="button"
+            onClick={addKey}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
+          >
+            <Plus className="h-3 w-3" />
+            Add key
+          </button>
+        </div>
+        {entries.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-400">
+            No constants defined. Click &ldquo;Add key&rdquo; to start.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {entries.map(([key, value]) => {
+              const isArray = Array.isArray(value)
+              const displayValue = isArray ? (value as string[]).join(', ') : String(value ?? '')
+              return (
+                <div key={key} className="flex items-center gap-1.5">
+                  <input
+                    className="w-32 flex-shrink-0 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                    value={key}
+                    onChange={(e) => setKeyName(key, e.target.value)}
+                    placeholder="key"
+                  />
+                  <input
+                    className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                    value={displayValue}
+                    onChange={(e) => setValue(key, e.target.value)}
+                    placeholder={key === 'states' ? 'AL, AZ, CA, ...' : 'value'}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeKey(key)}
+                    className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <p className="mt-2 text-xs text-gray-400">
+          For array values (e.g. &ldquo;states&rdquo;), enter comma-separated items.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3">
+        <p className="text-xs font-medium text-indigo-700">Partner data is automatic</p>
+        <p className="mt-1 text-xs text-indigo-600">
+          Sub-account UUIDs and sell-off offer copy are pulled from partner settings and merged in at runtime.
+        </p>
       </div>
     </section>
   )

@@ -9,6 +9,7 @@ export type NodeType =
   | 'webhook'
   | 'transform'
   | 'bid_evaluation'
+  | 'constants'
 
 export interface EdgeCondition {
   field: string

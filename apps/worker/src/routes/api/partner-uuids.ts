@@ -1,0 +1,71 @@
+import { Hono } from 'hono'
+import type { Env } from '../../index'
+import type { AuthVariables } from '../../middleware/jwt-auth'
+import { createSupabaseClient } from '../../lib/supabase'
+import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
+
+type Variables = AuthVariables
+
+const partnerUuids = new Hono<{ Bindings: Env; Variables: Variables }>()
+
+// ── List ──────────────────────────────────────────────────────────────────────
+
+partnerUuids.get('/', async (c) => {
+  const { orgId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+
+  const { data, error } = await supabase
+    .from('partner_uuid_map')
+    .select('id, partner_slug, uuid, created_at')
+    .eq('org_id', orgId)
+    .order('partner_slug', { ascending: true })
+
+  if (error) return c.json({ error: error.message }, 500)
+  return c.json(data)
+})
+
+// ── Create ────────────────────────────────────────────────────────────────────
+
+partnerUuids.post('/', async (c) => {
+  const { orgId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ partner_slug?: string; uuid?: string }>()
+
+  if (!body.partner_slug) return c.json({ error: 'partner_slug is required' }, 400)
+  if (!body.uuid) return c.json({ error: 'uuid is required' }, 400)
+
+  const { data, error } = await supabase
+    .from('partner_uuid_map')
+    .insert({ org_id: orgId, partner_slug: body.partner_slug, uuid: body.uuid })
+    .select()
+    .single()
+
+  if (error) {
+    if (error.code === '23505') return c.json({ error: `UUID "${body.uuid}" already exists` }, 409)
+    return c.json({ error: error.message }, 500)
+  }
+
+  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  return c.json(data, 201)
+})
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+partnerUuids.delete('/:id', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  const supabase = createSupabaseClient(c.env)
+
+  const { error } = await supabase
+    .from('partner_uuid_map')
+    .delete()
+    .eq('id', id)
+    .eq('org_id', orgId)
+
+  if (error) return c.json({ error: error.message }, 500)
+
+  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
+  return c.json({ ok: true })
+})
+
+export default partnerUuids

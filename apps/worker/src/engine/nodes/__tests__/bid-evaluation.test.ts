@@ -16,7 +16,7 @@ function makeNode(config: Record<string, unknown>): NodeDefinition {
 
 function makeCtx(parallelNamespace: string, results: ParallelChildResult[]): ExecutionContext {
   return {
-    trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', trace_id: 'tr-1' },
+    trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'tr-1' },
     steps: {
       [parallelNamespace]: { output: results, status: 'completed' },
     },
@@ -51,7 +51,7 @@ describe('executeBidEvaluationNode', () => {
 
     it('throws when parallel source has not completed', async () => {
       const ctx = {
-        trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', trace_id: 'tr-1' },
+        trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'tr-1' },
         steps: {},
         env: {},
       } as unknown as ExecutionContext

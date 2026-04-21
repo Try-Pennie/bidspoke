@@ -18,7 +18,7 @@ function makeNode(config: Record<string, unknown> = {}): NodeDefinition {
 
 function makeCtx(payload: Record<string, unknown> = {}): ExecutionContext {
   return {
-    trigger: { payload, source: 'test', workflow_id: 'wf-1', trace_id: 'trace-1' },
+    trigger: { payload, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'trace-1' },
     steps: {},
     env: {},
   }
@@ -287,7 +287,7 @@ describe('executePartnerBidNode', () => {
 describe('evaluateFormula', () => {
   function ctx(payload: Record<string, unknown>): ExecutionContext {
     return {
-      trigger: { payload, source: 'test', workflow_id: 'wf', trace_id: 't' },
+      trigger: { payload, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 't' },
       steps: {}, env: {},
     }
   }

@@ -40,7 +40,7 @@ const env = {} as Env
 
 function makeCtx(payload: Record<string, unknown> = {}): ExecutionContext {
   return {
-    trigger: { payload, source: 'website_form', workflow_id: 'wf-outbound', trace_id: 'trace-int-test' },
+    trigger: { payload, source: 'website_form', workflow_id: 'wf-outbound', org_id: '', trace_id: 'trace-int-test' },
     steps: {},
     env: {},
   }

@@ -5,10 +5,11 @@ export function buildContext(
   source: string,
   workflowId: string,
   traceId: string,
-  envVars: Record<string, string>
+  envVars: Record<string, string>,
+  orgId: string
 ): ExecutionContext {
   return {
-    trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId },
+    trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId, org_id: orgId },
     steps: {},
     env: envVars,
   }

@@ -131,7 +131,7 @@ export async function executeWorkflow(
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
   // Build execution context
-  const ctx = buildContext(payload, source, workflowId, traceId, envVars)
+  const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id)
 
   // If resuming, pre-populate completed steps
   if (options.resumeFromExecutionId) {

@@ -4,7 +4,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 
 function ctx(payload: unknown = {}): ExecutionContext {
   return {
-    trigger: { payload, source: 'test', workflow_id: 'wf', trace_id: 'trace' },
+    trigger: { payload, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
     steps: {},
     env: {},
   }

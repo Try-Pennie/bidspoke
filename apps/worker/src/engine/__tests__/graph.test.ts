@@ -8,7 +8,7 @@ import type { Env } from '../../index'
 
 function ctx(payload: unknown = {}, steps: Record<string, unknown> = {}, env: Record<string, string> = {}): ExecutionContext {
   return {
-    trigger: { payload, source: 'test', workflow_id: 'wf', trace_id: 'trace' },
+    trigger: { payload, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
     steps: Object.fromEntries(
       Object.entries(steps).map(([k, v]) => [k, { output: v, status: 'completed' as const }])
     ),

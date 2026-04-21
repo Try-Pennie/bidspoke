@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import type { Partner, PartnerBody } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerUuid } from '@/lib/api'
+import { api } from '@/lib/api'
 import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ interface FormSnapshot {
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
+  sellOffOfferTitle: string; sellOffOfferDetails: string
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -363,6 +365,22 @@ export default function PartnerForm({
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
   const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
 
+  const [sellOffOfferTitle, setSellOffOfferTitle] = useState(partner?.sell_off_offer_title ?? '')
+  const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
+
+  const [uuids, setUuids] = useState<PartnerUuid[]>([])
+  const [newUuid, setNewUuid] = useState('')
+  const [addingUuid, setAddingUuid] = useState(false)
+  const [uuidError, setUuidError] = useState<string | null>(null)
+  const [removingUuidId, setRemovingUuidId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!partner) return
+    api.partnerUuids.list()
+      .then((all) => setUuids(all.filter((u) => u.partner_slug === partner.slug)))
+      .catch(() => {})
+  }, [partner?.slug])
+
   // Undo countdown
   useEffect(() => {
     if (undoSecondsLeft <= 0) return
@@ -376,7 +394,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent }
+    return { name, apiEndpoint, cfSecretKey, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -387,6 +405,7 @@ export default function PartnerForm({
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
     setAlertTransient(snap.alertTransient); setAlertPermanent(snap.alertPermanent)
+    setSellOffOfferTitle(snap.sellOffOfferTitle); setSellOffOfferDetails(snap.sellOffOfferDetails)
   }
 
   function handleUndo() {
@@ -422,6 +441,8 @@ export default function PartnerForm({
           transient_errors: { alert: alertTransient },
           permanent_errors: { alert: alertPermanent },
         },
+        sell_off_offer_title: sellOffOfferTitle || null,
+        sell_off_offer_details: sellOffOfferDetails || null,
       }
       await onSave(body, partner?.id)
       setSaveState('saved')
@@ -602,6 +623,88 @@ export default function PartnerForm({
           </p>
           <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
         </Section>
+
+        <Section title="Sell-off offer copy">
+          <p className="text-xs text-gray-400">
+            Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
+          </p>
+          <Field label="Sell-off offer title">
+            <Input value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+          </Field>
+          <Field label="Sell-off offer details">
+            <textarea
+              value={sellOffOfferDetails}
+              onChange={(e) => setSellOffOfferDetails(e.target.value)}
+              placeholder="Personal loans from $5,000–$100,000 with competitive rates."
+              rows={3}
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            />
+          </Field>
+        </Section>
+
+        {!isNew && (
+          <Section title="Sub-account UUIDs">
+            <p className="text-xs text-gray-400">
+              External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
+            </p>
+            <div className="space-y-1.5">
+              {uuids.map((u) => (
+                <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
+                  <button
+                    type="button"
+                    disabled={removingUuidId === u.id}
+                    onClick={async () => {
+                      setRemovingUuidId(u.id)
+                      try {
+                        await api.partnerUuids.delete(u.id)
+                        setUuids((prev) => prev.filter((x) => x.id !== u.id))
+                      } catch {
+                        // noop
+                      } finally {
+                        setRemovingUuidId(null)
+                      }
+                    }}
+                    className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 disabled:opacity-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newUuid}
+                onChange={(e) => { setNewUuid(e.target.value); setUuidError(null) }}
+                placeholder="Enter UUID"
+                className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              />
+              <button
+                type="button"
+                disabled={!newUuid.trim() || addingUuid}
+                onClick={async () => {
+                  if (!newUuid.trim() || !partner) return
+                  setAddingUuid(true)
+                  setUuidError(null)
+                  try {
+                    const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
+                    setUuids((prev) => [...prev, created])
+                    setNewUuid('')
+                  } catch (err) {
+                    setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
+                  } finally {
+                    setAddingUuid(false)
+                  }
+                }}
+                className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+              >
+                {addingUuid ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                Add
+              </button>
+            </div>
+            {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
+          </Section>
+        )}
 
         <Section title="Alert configuration">
           <p className="text-xs text-gray-400">

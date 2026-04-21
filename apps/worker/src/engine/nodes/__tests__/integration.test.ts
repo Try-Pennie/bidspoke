@@ -21,7 +21,7 @@ function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<strin
     stepMap[ns] = { output, status: 'completed' }
   }
   return {
-    trigger: { payload: { ssn: '123-45-6789', amount: 10000 }, source: 'test', workflow_id: 'wf-1', trace_id: 'tr-1' },
+    trigger: { payload: { ssn: '123-45-6789', amount: 10000 }, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'tr-1' },
     steps: stepMap,
     env: overrides.env ?? {},
   } as unknown as ExecutionContext

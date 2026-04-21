@@ -41,7 +41,7 @@ function chain(...nodes: NodeDefinition[]) {
 
 function makeCtx(preloaded: Record<string, unknown> = {}): ExecutionContext {
   return {
-    trigger: { payload: {}, source: 'test', workflow_id: 'wf', trace_id: 'tr' },
+    trigger: { payload: {}, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'tr' },
     steps: Object.fromEntries(
       Object.entries(preloaded).map(([k, v]) => [k, { output: v, status: 'completed' as const }])
     ),

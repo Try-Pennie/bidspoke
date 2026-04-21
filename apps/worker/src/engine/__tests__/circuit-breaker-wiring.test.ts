@@ -41,7 +41,7 @@ import { walkGraph } from '../index'
 
 function makeCtx(): ExecutionContext {
   return {
-    trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', trace_id: 'trace-1' },
+    trigger: { payload: {}, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'trace-1' },
     steps: {},
     env: {},
   }

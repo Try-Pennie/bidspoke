@@ -4,7 +4,7 @@ import type { ExecutionContext, NodeDefinition } from '../../../types'
 
 function ctx(overrides: { payload?: unknown; steps?: Record<string, unknown>; env?: Record<string, string> } = {}): ExecutionContext {
   return {
-    trigger: { payload: overrides.payload ?? {}, source: 'test', workflow_id: 'wf', trace_id: 'trace' },
+    trigger: { payload: overrides.payload ?? {}, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
     steps: Object.fromEntries(
       Object.entries(overrides.steps ?? {}).map(([k, v]) => [k, { output: v, status: 'completed' as const }])
     ),

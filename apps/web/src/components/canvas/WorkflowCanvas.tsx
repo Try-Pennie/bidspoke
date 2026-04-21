@@ -33,6 +33,7 @@ import { TransformNode } from './nodes/TransformNode'
 import { IntegrationNode } from './nodes/IntegrationNode'
 import { PartnerBidNode } from './nodes/PartnerBidNode'
 import { ParallelNode } from './nodes/ParallelNode'
+import { ConstantsNode } from './nodes/ConstantsNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -64,6 +65,7 @@ const nodeTypes: NodeTypes = {
   transform: TransformNode,
   parallel: ParallelNode,
   bid_evaluation: BidEvaluationNode,
+  constants: ConstantsNode,
 }
 
 function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
@@ -162,6 +164,9 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
       branches: [{ label: 'branch_1', condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } }],
       use_else: true,
     }
+  }
+  if (type === 'constants') {
+    return { data: {} }
   }
   return {}
 }

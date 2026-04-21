@@ -352,6 +352,22 @@ export function parsePipedreamExport(raw: string): ImportResult {
       continue
     }
 
+    // ── Constants node ────────────────────────────────────────────────────────
+    if (namespace === 'constants') {
+      flushEdge(nodeId)
+      nodes.push({
+        id: nodeId,
+        namespace,
+        type: 'constants',
+        config: { data: {} },
+      })
+      warnings.push(
+        'Constants node created. Fill in workflow constants (offer copy, URLs, states) in the node config panel. Partner data (sub-account UUIDs, sell-off copy) comes from partner settings.'
+      )
+      edgePending.push({ sourceId: nodeId })
+      continue
+    }
+
     // ── Code node ────────────────────────────────────────────────────────────
     const rawCode = step.savedComponent?.code ?? step.code ?? ''
     const translatedCode = rawCode ? translateCode(rawCode) : ''

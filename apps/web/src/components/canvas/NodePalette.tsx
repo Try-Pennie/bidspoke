@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign, Package } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -82,6 +82,13 @@ const NODES: PaletteNode[] = [
     description: 'Request a partner bid',
     icon: DollarSign,
     color: 'text-sky-500',
+  },
+  {
+    type: 'constants',
+    label: 'Constants',
+    description: 'Workflow constants + partner data',
+    icon: Package,
+    color: 'text-indigo-500',
   },
 ]
 

@@ -20,6 +20,8 @@ export interface Partner {
   circuit_enabled: boolean
   is_active: boolean
   priority: number
+  sell_off_offer_title: string | null
+  sell_off_offer_details: string | null
   created_at: string
   updated_at: string
   updated_by_email: string | null
@@ -27,6 +29,13 @@ export interface Partner {
 }
 
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
+
+export interface PartnerUuid {
+  id: string
+  partner_slug: string
+  uuid: string
+  created_at: string
+}
 
 export interface StatsResponse {
   window_days: number
@@ -298,6 +307,14 @@ export const api = {
       req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string }>(`/api/partners/${id}/cap-count`),
+  },
+
+  partnerUuids: {
+    list: () => req<PartnerUuid[]>('/api/partner-uuids'),
+    create: (body: { partner_slug: string; uuid: string }) =>
+      req<PartnerUuid>('/api/partner-uuids', { method: 'POST', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/partner-uuids/${id}`, { method: 'DELETE' }),
   },
 
   integrations: {

@@ -1,0 +1,8 @@
+wing: bidspoke
+rooms:
+- name: supabase
+  description: Files from supabase/
+- name: apps
+  description: Files from apps/
+- name: general
+  description: Files that don't fit other rooms

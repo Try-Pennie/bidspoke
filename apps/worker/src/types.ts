@@ -13,6 +13,7 @@ export type NodeType =
   | 'bid_evaluation'
   | 'response'
   | 'exit'
+  | 'constants'
 
 export interface WorkflowDefinition {
   id: string
@@ -94,6 +95,7 @@ export interface ExecutionContext {
     source: string
     workflow_id: string
     trace_id: string
+    org_id: string
   }
   steps: Record<string, StepOutput>  // keyed by node namespace
   env: Record<string, string>
