@@ -32,7 +32,7 @@ export async function executeCodeNode(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       payload: ctx.trigger.payload,
-      steps: ctx.steps,
+      steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
       env: mergedEnv,
       execution: { trace_id: ctx.trigger.trace_id },
     }),

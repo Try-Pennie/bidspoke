@@ -42,6 +42,7 @@ export default function TestRunPanel({
   // Saved payloads
   const [saveName, setSaveName] = useState('')
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [showSaveInput, setShowSaveInput] = useState(false)
 
   async function run() {
@@ -116,6 +117,7 @@ export default function TestRunPanel({
       return
     }
     setParseError(null)
+    setSaveError(null)
     setSaving(true)
     try {
       const next = [...savedPayloads.filter((p) => p.name !== saveName.trim()), { name: saveName.trim(), payload: parsed }]
@@ -123,6 +125,8 @@ export default function TestRunPanel({
       onSavedPayloadsChange?.(next)
       setSaveName('')
       setShowSaveInput(false)
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : 'Save failed')
     } finally {
       setSaving(false)
     }
@@ -189,31 +193,34 @@ export default function TestRunPanel({
 
         {/* Save payload */}
         {showSaveInput ? (
-          <div className="flex items-center gap-1.5">
-            <input
-              autoFocus
-              className="flex-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:border-gray-400 focus:outline-none"
-              placeholder="Payload name (e.g. happy path)"
-              value={saveName}
-              onChange={(e) => setSaveName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') savePayload()
-                if (e.key === 'Escape') { setShowSaveInput(false); setSaveName('') }
-              }}
-            />
-            <button
-              onClick={savePayload}
-              disabled={saving || !saveName.trim()}
-              className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
-            >
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
-            </button>
-            <button
-              onClick={() => { setShowSaveInput(false); setSaveName('') }}
-              className="rounded p-1 text-gray-400 hover:text-gray-600"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <input
+                autoFocus
+                className="flex-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:border-gray-400 focus:outline-none"
+                placeholder="Payload name (e.g. happy path)"
+                value={saveName}
+                onChange={(e) => { setSaveName(e.target.value); setSaveError(null) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') savePayload()
+                  if (e.key === 'Escape') { setShowSaveInput(false); setSaveName(''); setSaveError(null) }
+                }}
+              />
+              <button
+                onClick={savePayload}
+                disabled={saving || !saveName.trim()}
+                className="rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Save'}
+              </button>
+              <button
+                onClick={() => { setShowSaveInput(false); setSaveName(''); setSaveError(null) }}
+                className="rounded p-1 text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {saveError && <p className="text-xs text-red-500">{saveError}</p>}
           </div>
         ) : (
           <button
