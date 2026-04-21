@@ -1311,23 +1311,25 @@ function ParallelConfig({
   const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
   const children = (config.children as string[] | undefined) ?? []
 
-  // BFS descendants of currentNodeId — only these can be parallel branches
-  const descendants = (() => {
+  // BFS ancestors of currentNodeId — nodes that can reach the parallel node going forward.
+  // We exclude these (and the node itself) from the picker so only downstream nodes appear.
+  // This works even when the parallel node has no outgoing edges yet (fresh drop).
+  const ancestors = (() => {
     const visited = new Set<string>()
     const queue = [currentNodeId]
     while (queue.length > 0) {
       const id = queue.shift()!
       for (const e of edges) {
-        if (e.source === id && !visited.has(e.target)) {
-          visited.add(e.target)
-          queue.push(e.target)
+        if (e.target === id && !visited.has(e.source)) {
+          visited.add(e.source)
+          queue.push(e.source)
         }
       }
     }
     return visited
   })()
 
-  const available = nodeOptions.filter((n) => descendants.has(n.id))
+  const available = nodeOptions.filter((n) => !ancestors.has(n.id) && n.id !== currentNodeId)
 
   function toggleChild(id: string) {
     if (children.includes(id)) {
