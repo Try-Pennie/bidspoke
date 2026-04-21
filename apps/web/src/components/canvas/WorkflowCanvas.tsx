@@ -675,12 +675,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           position: { x: 0, y: 0 },
           data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial' }, variables: {}, _pairId: newId } satisfies CanvasNodeData,
         }
-        let newEdges = edges
+        // Hidden backbone edge so Dagre ranks end below start even before children are wired
+        const backboneEdge = { id: uid(), source: newId, target: endId, sourceHandle: 'output', hidden: true }
+        let newEdges = [...edges, backboneEdge]
         if (autoConnected) {
-          newEdges = [...edges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
+          newEdges = [...newEdges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
         } else if (insertBetween) {
           newEdges = [
             ...edges.filter((e) => e.id !== existingOutEdge!.id),
+            backboneEdge,
             { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! },
             { id: uid(), source: endId, target: existingOutEdge!.target, sourceHandle: 'output' },
           ]
