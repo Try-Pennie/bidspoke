@@ -1364,7 +1364,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         </div>
 
         <div ref={sidePanelRef} className="contents">
-          {mode === 'edit' && showTest && (
+          {mode === 'edit' && showTest && !(selectedNode && (selectedNode.data as { executionStep?: unknown }).executionStep) && (
             <TestRunPanel
               workflowId={workflow.id}
               currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
@@ -1401,7 +1401,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             />
           )}
         </div>
-        {selectedNode && mode === 'view' && executionId && (
+        {selectedNode && (
+          (mode === 'view' && executionId) ||
+          (mode === 'edit' && showTest && !!(selectedNode.data as { executionStep?: unknown }).executionStep)
+        ) && (
           <ExecutionStepPanel
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
