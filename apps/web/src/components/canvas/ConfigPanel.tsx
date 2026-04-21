@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { useUpdateNodeInternals } from '@xyflow/react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -1306,9 +1307,23 @@ function ParallelConfig({
   edges: { id: string; source: string; target: string; sourceHandle?: string | null }[]
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }) {
-  const waitFor = (config.wait_for as string | undefined) ?? 'all'
-  const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
-  const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
+  const updateNodeInternals = useUpdateNodeInternals()
+  // Queue an edge addition after a node-config change. We can't add the edge in the same
+  // render as config.children changes because React Flow hasn't re-registered the new
+  // child-N handle in nodeInternals yet — the edge would be silently dropped.
+  const [pendingEdge, setPendingEdge] = useState<{
+    add: { id: string; source: string; target: string; sourceHandle: string }[]
+    removeIds: string[]
+  } | null>(null)
+
+  useEffect(() => {
+    if (!pendingEdge) return
+    // Force React Flow to re-scan the parallel node's handles now that the DOM has updated.
+    updateNodeInternals(currentNodeId)
+    onEdgesChange?.(pendingEdge.add, pendingEdge.removeIds)
+    setPendingEdge(null)
+  }, [pendingEdge]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const children = (config.children as string[] | undefined) ?? []
 
   // BFS ancestors of currentNodeId — nodes that can reach the parallel node going forward.
@@ -1341,7 +1356,9 @@ function ParallelConfig({
         .map((e) => e.id)
       if (removeIds.length > 0) onEdgesChange?.([], removeIds)
     } else {
-      // Add: append to children array + create fan-out edge
+      // Add: append to children array, then queue the fan-out edge for the next render.
+      // The new child-N handle doesn't exist in React Flow's nodeInternals until after
+      // the config change commits to the DOM, so we defer the edge creation via useEffect.
       const next = [...children, id]
       const childIndex = next.length - 1
       onChange({ children: next })
@@ -1351,11 +1368,11 @@ function ParallelConfig({
         target: id,
         sourceHandle: `child-${childIndex}`,
       }
-      // Remove any existing sequential edge between adjacent children (avoids double connections)
+      // Remove any existing non-child-* edge from parallel to this node (avoids double connections)
       const removeIds = edges
         .filter((e) => e.source === currentNodeId && e.target === id && !(e.sourceHandle ?? '').startsWith('child-'))
         .map((e) => e.id)
-      onEdgesChange?.([newEdge], removeIds)
+      setPendingEdge({ add: [newEdge], removeIds })
     }
   }
 
