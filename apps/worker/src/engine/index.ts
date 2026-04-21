@@ -240,6 +240,7 @@ export async function walkGraph(
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
   let lastOutput: unknown = null
+  let pendingResponse: WalkGraphResult | null = null
 
   while (current) {
     const node = current
@@ -389,16 +390,24 @@ export async function walkGraph(
       // Record success — closes half-open circuit if probing
       if (cbClient) cbClient.recordSuccess().catch(() => {})
 
-      // Early exit from a code node (translated $.respond() / $.flow.exit() Pipedream patterns)
+      // Early exit / respond sentinels from translated Pipedream patterns:
+      //   { response } alone          → respond + exit ($.respond() + $.flow.exit())
+      //   { response, continueExecution: true } → respond + continue ($.respond() only)
+      //   { exit: true }              → exit silently ($.flow.exit() only)
       if (result.earlyResponse ?? result.earlyExit) {
         const seqDurationMsEarly = Date.now() - new Date(stepStartedAt).getTime()
         log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
         recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
         await logStep(supabase, env, executionId, executionStartedAt, node, 'completed', null, output, undefined, null, retriesUsed, stepStartedAt, stepOrder)
-        if (result.earlyResponse) {
-          return { body: result.earlyResponse.body, status: result.earlyResponse.status }
+        if (result.continueAfterResponse && result.earlyResponse) {
+          pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status }
+          // fall through — continue walking the graph
+        } else {
+          if (result.earlyResponse) {
+            return { body: result.earlyResponse.body, status: result.earlyResponse.status }
+          }
+          return { body: output, status: 200 }
         }
-        return { body: output, status: 200 }
       }
 
     } catch (err) {
@@ -479,7 +488,7 @@ export async function walkGraph(
     stepOrder++
   }
 
-  return { body: lastOutput, status: 200 }
+  return pendingResponse ?? { body: lastOutput, status: 200 }
 }
 
 async function logStep(

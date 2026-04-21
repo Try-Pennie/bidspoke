@@ -52,6 +52,9 @@ export async function executeCodeNode(
     const obj = output as Record<string, unknown>
     if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
       const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
+      if (obj.continueExecution === true) {
+        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true }
+      }
       return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers } }
     }
     if (obj.exit === true) {

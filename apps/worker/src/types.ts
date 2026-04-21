@@ -116,6 +116,7 @@ export interface StepExecutionResult {
   error_type?: ErrorType
   earlyResponse?: { status: number; body: unknown; headers?: Record<string, string> }
   earlyExit?: true
+  continueAfterResponse?: true  // respond but keep walking (mirrors Pipedream $.respond() without $.flow.exit())
 }
 
 export interface LoadedWorkflow {
