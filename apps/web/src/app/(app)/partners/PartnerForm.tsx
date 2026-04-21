@@ -344,6 +344,14 @@ export default function PartnerForm({
 
   const [name, setName] = useState(partner?.name ?? '')
   const [slug, setSlug] = useState(partner?.slug ?? '')
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false)
+
+  function handleNameChange(value: string) {
+    setName(value)
+    if (!slugManuallyEdited) {
+      setSlug(value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''))
+    }
+  }
   const [apiEndpoint, setApiEndpoint] = useState(partner?.api_endpoint ?? '')
   const [cfSecretKey, setCfSecretKey] = useState(partner?.cf_secret_key ?? '')
   const [isActive, setIsActive] = useState(partner?.is_active ?? true)
@@ -523,14 +531,19 @@ export default function PartnerForm({
 
         <Section title="Identity">
           <Field label="Name" hint="Display name shown in the UI.">
-            <Input value={name} onChange={setName} placeholder="Tripoint" />
+            <Input value={name} onChange={handleNameChange} placeholder="Tripoint" />
           </Field>
           {isNew && (
             <Field
               label="Slug"
               hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
             >
-              <Input value={slug} onChange={setSlug} placeholder="tripoint" mono />
+              <Input
+                value={slug}
+                onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
+                placeholder="tripoint"
+                mono
+              />
             </Field>
           )}
           <div className="flex items-center gap-6">
