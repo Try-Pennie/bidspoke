@@ -245,7 +245,7 @@
 - [ ] **4.1b Tripoint token Durable Object** — deferred to main flow migration (engine flow calls Brian's existing proxy via TRIPOINT_PROXY_SECRET). See scope §3.1b.
 - [ ] **4.2 Partner Bid Config as first-class entity** — new `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables. `is_default BOOLEAN` with unique partial index. New "Bid Lookup" node. Ops UI mirrors Salesforce layout. See scope §3.2.
   - Partners to migrate: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default.
-- [ ] **4.2a Constants — per-kind tables + UI** — `offer_copy`, `redirect_urls`, `state_allowlists`, `partner_uuid_map`. Worker-cached reads with invalidate-on-save. See scope §3.2a.
+- [x] **4.2a Constants node** — workflow-level constants stored in node config (key-value editor), partner data (UUID map + sell-off copy) from DB (KV-cached). `partner_uuid_map` table + sell-off columns on `partner_configs`. Constants executor merges both sources. Importer auto-detects `constants` namespace. Partner form updated with sell-off fields + UUID list.
 - [ ] **4.4 Token-based auth** (hard blocker for cutover) — `issued_tokens` table, `POST /token` route, `auth_mode: 'api_key' | 'token'` on `webhook_endpoints`. See scope §3.4.
 - [ ] **4.0 Cutover** — flip engine routing to `engine.trypennie.dev/bidding` and disable Pipedream in the same step. Pipedream workflow stays warm as rollback target.
 
