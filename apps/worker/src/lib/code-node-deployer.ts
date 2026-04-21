@@ -19,6 +19,7 @@ function buildWorkerScript(script: string): string {
     const { payload, steps, env, execution } = await request.json()
     const fn = async (payload, steps, env, execution) => {
       const trigger = { payload }
+      const process = { env }
 ${script.split('\n').map((l) => `      ${l}`).join('\n')}
     }
     const result = await fn(payload, steps, env, execution)
