@@ -217,7 +217,7 @@ function translateCode(code: string): string {
     .replace(/config\.equifaxUsername/g, 'env.EQUIFAX_USERNAME')
     .replace(/config\.equifaxPassword/g, 'env.EQUIFAX_PASSWORD')
     // Pipedream data store → env var pattern (bidding active flags keyed by source name)
-    .replace(/await\s+config\.dataStore\.get\((\w+)\)/g, "(env['BIDDING_ACTIVE_' + $1.toUpperCase()] ?? env.BIDDING_ACTIVE_DEFAULT ?? 'false') === 'true'")
+    .replace(/await\s+config\.dataStore\.get\((\w+)\)/g, "(env['BIDDING_ACTIVE_' + $1.toUpperCase()] ?? 'true') === 'true'")
     // `this.prop` → `config.prop` (general Pipedream configured_props access)
     .replace(/\bthis\.(\w+)\b/g, 'config.$1')
     // $.export("$summary", msg) → console.log(msg)
