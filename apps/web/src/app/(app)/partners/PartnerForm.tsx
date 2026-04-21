@@ -379,7 +379,7 @@ export default function PartnerForm({
     api.partnerUuids.list()
       .then((all) => setUuids(all.filter((u) => u.partner_slug === partner.slug)))
       .catch(() => {})
-  }, [partner?.slug])
+  }, [partner])
 
   // Undo countdown
   useEffect(() => {
