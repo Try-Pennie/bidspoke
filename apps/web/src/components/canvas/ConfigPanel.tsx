@@ -10,7 +10,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ChevronRight, ArrowRight, Copy, Link2, RotateCcw, Loader2 } from 'lucide-react'
+import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronRight, ArrowRight, Copy, Link2, RotateCcw, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
@@ -108,18 +108,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         </div>
       </div>
 
-      {/* Execution result banner */}
-      {exec && exec.status === 'failed' && (
-        <div className="border-b border-red-100 bg-red-50 px-4 py-2.5">
-          <div className="flex items-center gap-1.5 text-xs font-medium text-red-600">
-            <XCircle className="h-3.5 w-3.5 flex-shrink-0" />
-            Failed{exec.error_type ? ` · ${exec.error_type}` : ''}
-          </div>
-          {exec.error_message && (
-            <p className="mt-1 font-mono text-xs text-red-700">{exec.error_message}</p>
-          )}
-        </div>
-      )}
+      {/* (Top failure banner removed — the Failed pill + duration in the
+          RESULTS section plus the structured Output tree cover this already.) */}
       {exec && exec.status === 'completed' && (
         <div className="flex items-center gap-1.5 border-b border-green-100 bg-green-50 px-4 py-2 text-xs font-medium text-green-700">
           <CheckCircle className="h-3.5 w-3.5" />
@@ -499,9 +489,8 @@ function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionSt
           <div className={`rounded-md border px-3 py-2 text-xs font-medium ${statusColor}`}>
             {statusLabel}{exec.duration_ms > 0 ? ` · ${exec.duration_ms}ms` : ''}
           </div>
-          {exec.error_message && (
-            <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded border border-red-100 bg-red-50 p-2 text-xs text-red-700">{exec.error_message}</pre>
-          )}
+          {/* (Separate error_message box removed — the Failed pill above plus
+              the Output tree below both already surface the failure detail.) */}
           {hasOutput && (
             <div>
               <p className="mb-1.5 text-xs font-medium text-gray-500">Output</p>
