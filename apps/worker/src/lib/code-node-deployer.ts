@@ -28,45 +28,65 @@ ${script.split('\n').map((l) => `      ${l}`).join('\n')}
 }`
 }
 
+export interface DeployResult {
+  namespace: string
+  error?: string
+}
+
 /**
  * Deploys all code nodes in a workflow definition to the dispatch namespace.
- * Skips nodes with empty scripts. Fires-and-forgets non-critical failures.
+ * Runs deployments in parallel and returns per-node results so callers can
+ * surface errors to the user rather than swallowing them silently.
  */
 export async function deployCodeNodes(
   workflowId: string,
   definition: WorkflowDefinition,
   accountId: string | undefined,
   apiToken: string | undefined
-): Promise<void> {
+): Promise<DeployResult[]> {
   if (!accountId || !apiToken) {
     console.warn('[code-deployer] Skipping — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured')
-    return
+    return []
   }
 
   const codeNodes = definition.nodes.filter((n) => n.type === 'code' && (n.config?.script as string | undefined)?.trim())
 
-  for (const node of codeNodes) {
-    const script = node.config.script as string
-    const workerName = codeWorkerName(workflowId, node.namespace)
-    const workerScript = buildWorkerScript(script)
+  const results = await Promise.all(
+    codeNodes.map(async (node): Promise<DeployResult> => {
+      const script = node.config.script as string
+      const workerName = codeWorkerName(workflowId, node.namespace)
+      const workerScript = buildWorkerScript(script)
 
-    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${workerName}`
+      const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${workerName}`
 
-    const formData = new FormData()
-    formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))
-    formData.append('script.js', new Blob([workerScript], { type: 'application/javascript+module' }), 'script.js')
+      const formData = new FormData()
+      formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))
+      formData.append('script.js', new Blob([workerScript], { type: 'application/javascript+module' }), 'script.js')
 
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${apiToken}` },
-      body: formData,
-    })
+      const res = await fetch(url, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${apiToken}` },
+        body: formData,
+      })
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.error(`[code-deployer] Failed to deploy "${workerName}": ${res.status} ${body}`)
-    } else {
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        // Try to extract the human-readable error from Cloudflare's JSON response
+        let errorMessage: string
+        try {
+          const parsed = JSON.parse(body) as { errors?: { message?: string }[] }
+          errorMessage = parsed.errors?.[0]?.message ?? `HTTP ${res.status}`
+        } catch {
+          errorMessage = body || `HTTP ${res.status}`
+        }
+        console.error(`[code-deployer] Failed to deploy "${workerName}": ${errorMessage}`)
+        return { namespace: node.namespace, error: errorMessage }
+      }
+
       console.log(`[code-deployer] Deployed "${workerName}"`)
-    }
-  }
+      return { namespace: node.namespace }
+    })
+  )
+
+  return results
 }

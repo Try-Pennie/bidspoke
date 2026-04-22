@@ -839,15 +839,22 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setSavedOk(false)
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
-      await api.workflows.save(workflow.id, {
+      const result = await api.workflows.save(workflow.id, {
         name,
         definition,
         slack_channel: slackChannel || null,
       })
       setIsDirty(false)
-      setSavedOk(true)
-      setTimeout(() => setSavedOk(false), 2500)
-      router.push(`/workflows/${workflow.id}?mode=view`)
+      if (result.deploy_errors?.length) {
+        const msg = result.deploy_errors
+          .map((e) => `${e.namespace}: ${e.error}`)
+          .join('\n')
+        setSaveError(`Saved, but ${result.deploy_errors.length === 1 ? 'one code node' : `${result.deploy_errors.length} code nodes`} failed to deploy:\n${msg}`)
+      } else {
+        setSavedOk(true)
+        setTimeout(() => setSavedOk(false), 2500)
+        router.push(`/workflows/${workflow.id}?mode=view`)
+      }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
     } finally {

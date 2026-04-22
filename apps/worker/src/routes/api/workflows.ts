@@ -140,16 +140,18 @@ workflows.put('/:id', async (c) => {
   // Invalidate KV cache
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
 
-  // Deploy any code node scripts to the dispatch namespace (non-blocking)
+  // Deploy code node scripts — run synchronously so errors surface in the save response
+  const deployErrors: { namespace: string; error: string }[] = []
   if (body.definition) {
-    c.executionCtx.waitUntil(
-      deployCodeNodes(
-        id,
-        body.definition as WorkflowDefinition,
-        c.env.CLOUDFLARE_ACCOUNT_ID,
-        c.env.CLOUDFLARE_API_TOKEN
-      ).catch((e) => console.error('[code-nodes] deploy failed:', e))
-    )
+    const results = await deployCodeNodes(
+      id,
+      body.definition as WorkflowDefinition,
+      c.env.CLOUDFLARE_ACCOUNT_ID,
+      c.env.CLOUDFLARE_API_TOKEN
+    ).catch((e) => { console.error('[code-nodes] deploy failed:', e); return [] })
+    for (const r of results) {
+      if (r.error) deployErrors.push({ namespace: r.namespace, error: r.error })
+    }
   }
 
   // Push definition to GitHub backup repo and store commit SHA on the version row (non-blocking)
@@ -179,7 +181,7 @@ workflows.put('/:id', async (c) => {
     changed_by_name: email,
   })
 
-  return c.json({ ...updated, version_id: version.id })
+  return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined })
 })
 
 // PATCH /api/workflows/:id — lightweight field updates (is_active) without creating a version snapshot

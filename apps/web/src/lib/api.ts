@@ -182,7 +182,7 @@ export const api = {
     create: (name: string) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name }) }),
     save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
-      req<Workflow>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      req<Workflow & { deploy_errors?: { namespace: string; error: string }[] }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
     duplicate: async (id: string) => {
       const wf = await req<Workflow>(`/api/workflows/${id}`)
