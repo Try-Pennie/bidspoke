@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { CheckCircle, XCircle, Clock, Loader2 } from 'lucide-react'
+import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
+import type { WorkflowVersion } from '@/types/workflow'
 
 type ExecRow = {
   id: string
@@ -13,6 +14,33 @@ type ExecRow = {
   started_at: string
   duration_ms: number | null
   error_message: string | null
+}
+
+type ListItem =
+  | { type: 'date-header'; label: string }
+  | { type: 'exec'; exec: ExecRow }
+  | { type: 'version-divider'; version: WorkflowVersion }
+
+function buildItems(filtered: ExecRow[], versions: WorkflowVersion[]): ListItem[] {
+  const items: ListItem[] = []
+  let vi = 0
+  let currentDateLabel = ''
+
+  for (const exec of filtered) {
+    // Insert dividers for versions saved after this execution's start (walking newest-first)
+    while (vi < versions.length && versions[vi].created_at > exec.started_at) {
+      items.push({ type: 'version-divider', version: versions[vi] })
+      vi++
+    }
+    // Date section header
+    const dateLabel = getDateLabel(exec.started_at)
+    if (dateLabel !== currentDateLabel) {
+      currentDateLabel = dateLabel
+      items.push({ type: 'date-header', label: dateLabel })
+    }
+    items.push({ type: 'exec', exec })
+  }
+  return items
 }
 
 function formatDuration(ms: number | null): string {
@@ -31,7 +59,7 @@ interface Props {
   workflowId: string
   selectedId?: string
   onSelect: (id: string) => void
-  refreshSignal?: number  // increment to trigger a refresh
+  refreshSignal?: number
 }
 
 type StatusFilter = 'all' | 'failed' | 'completed'
@@ -44,6 +72,7 @@ const FILTER_TABS: { key: StatusFilter; label: string }[] = [
 
 export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
   const [executions, setExecutions] = useState<ExecRow[]>([])
+  const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
@@ -66,9 +95,14 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .finally(() => setLoading(false))
   }, [workflowId])
 
-  // Initial load + 5s polling (visibility-aware)
+  const loadVersions = useCallback(() => {
+    api.versions.list(workflowId).then(setVersions).catch(() => {})
+  }, [workflowId])
+
+  // Initial load + 1s polling for executions; versions load once (refresh on save signal)
   useEffect(() => {
     load()
+    loadVersions()
     const tick = setInterval(() => { if (!document.hidden) load(true) }, 1000)
     const onVisible = () => { if (!document.hidden) load(true) }
     document.addEventListener('visibilitychange', onVisible)
@@ -76,20 +110,17 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       clearInterval(tick)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [load])
+  }, [load, loadVersions])
 
-  useEffect(() => { if (refreshSignal) load(true) }, [refreshSignal, load])
+  useEffect(() => {
+    if (refreshSignal) {
+      load(true)
+      loadVersions()
+    }
+  }, [refreshSignal, load, loadVersions])
 
   const filtered = filter === 'all' ? executions : executions.filter((e) => e.status === filter)
-
-  // Group by date
-  const groups: { label: string; items: ExecRow[] }[] = []
-  for (const exec of filtered) {
-    const label = getDateLabel(exec.started_at)
-    const existing = groups.find((g) => g.label === label)
-    if (existing) existing.items.push(exec)
-    else groups.push({ label, items: [exec] })
-  }
+  const items = buildItems(filtered, versions)
 
   return (
     <aside className="flex w-64 flex-col border-r border-gray-200 bg-white">
@@ -138,52 +169,73 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
             )}
           </div>
         ) : (
-          groups.map(({ label, items }) => (
-            <div key={label}>
-              <div className="sticky top-0 bg-beige px-3 py-1.5 border-b border-gray-100">
-                <p className="text-xs font-medium text-gray-400">{label}</p>
-              </div>
-              {items.map((exec) => {
-                const cfg = STATUS_ICON[exec.status] ?? STATUS_ICON['failed']
-                const Icon = cfg.icon
-                const isSelected = exec.id === selectedId
+          <div>
+            {items.map((item, i) => {
+              if (item.type === 'date-header') {
                 return (
-                  <button
-                    key={exec.id}
-                    onClick={() => onSelect(exec.id)}
-                    className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
-                      isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
-                      exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${cfg.color}`} />
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
-                        {exec.source}
-                      </span>
-                      {exec.duration_ms !== null && (
-                        <span className="ml-auto text-xs text-gray-400">
-                          {formatDuration(exec.duration_ms)}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 text-xs text-gray-400">{formatTime(exec.started_at)}</p>
-                    {exec.status === 'failed' && exec.error_message && (
-                      <p
-                        onClick={(e) => toggleError(exec.id, e)}
-                        className={`mt-0.5 text-xs text-red-500 hover:text-red-700 cursor-pointer ${
-                          expandedErrors.has(exec.id) ? 'whitespace-pre-wrap break-words' : 'truncate'
-                        }`}
-                        title={expandedErrors.has(exec.id) ? 'Click to collapse' : 'Click to expand'}
-                      >
-                        {exec.error_message}
-                      </p>
-                    )}
-                  </button>
+                  <div key={`date-${item.label}-${i}`} className="sticky top-0 bg-beige px-3 py-1.5 border-b border-gray-100">
+                    <p className="text-xs font-medium text-gray-400">{item.label}</p>
+                  </div>
                 )
-              })}
-            </div>
-          ))
+              }
+
+              if (item.type === 'version-divider') {
+                const v = item.version
+                return (
+                  <div
+                    key={`v-${v.id}`}
+                    className="flex items-center gap-2 px-2 py-1.5"
+                    title={`Saved ${formatTime(v.created_at)}${v.message ? ` · ${v.message}` : ''}`}
+                  >
+                    <div className="h-px flex-1 bg-gray-200" />
+                    <span className="whitespace-nowrap text-[10px] font-medium text-gray-400">
+                      Version {v.version_number}
+                    </span>
+                    <div className="h-px flex-1 bg-gray-200" />
+                  </div>
+                )
+              }
+
+              const exec = item.exec
+              const cfg = STATUS_ICON[exec.status] ?? STATUS_ICON['failed']
+              const Icon = cfg.icon
+              const isSelected = exec.id === selectedId
+              return (
+                <button
+                  key={exec.id}
+                  onClick={() => onSelect(exec.id)}
+                  className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
+                    isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
+                    exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${cfg.color}`} />
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
+                      {exec.source}
+                    </span>
+                    {exec.duration_ms !== null && (
+                      <span className="ml-auto text-xs text-gray-400">
+                        {formatDuration(exec.duration_ms)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-xs text-gray-400">{formatTime(exec.started_at)}</p>
+                  {exec.status === 'failed' && exec.error_message && (
+                    <p
+                      onClick={(e) => toggleError(exec.id, e)}
+                      className={`mt-0.5 text-xs text-red-500 hover:text-red-700 cursor-pointer ${
+                        expandedErrors.has(exec.id) ? 'whitespace-pre-wrap break-words' : 'truncate'
+                      }`}
+                      title={expandedErrors.has(exec.id) ? 'Click to collapse' : 'Click to expand'}
+                    >
+                      {exec.error_message}
+                    </p>
+                  )}
+                </button>
+              )
+            })}
+          </div>
         )}
       </div>
     </aside>
