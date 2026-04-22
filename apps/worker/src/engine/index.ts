@@ -459,6 +459,76 @@ export async function walkGraph(
       continue
     }
 
+    // ── Code-node chain execution ──────────────────────────────────────────────
+    // When adjacent code nodes are eligible to chain (no retries, no service,
+    // no conditions on edges between them, no sentinels expected at intermediate
+    // steps), execute them in ONE subrequest to the bundled worker and process
+    // all results at once. Saves N-1 subrequest round-trips per run.
+    // Skip when there's no dispatch namespace binding — tests mock executeNode
+    // per step and won't have the binding wired up.
+    if (node.type === 'code' && env.DYNAMIC_WORKER_LOADER) {
+      const chain = collectCodeChain(node, definition)
+      if (chain.length > 1) {
+        const chainResult = await executeCodeChain(chain, ctx, env)
+        // Log + record each result. Any sentinel or failure in the chain stops
+        // further chain processing (bundled worker also stops at the first
+        // sentinel/failure).
+        let terminated = false
+        for (let i = 0; i < chainResult.results.length; i++) {
+          const r = chainResult.results[i]
+          const chainNode = chain[i]
+          const stepStartedAtIso = new Date(Date.now() - r.durationMs).toISOString()
+          if (r.status === 'completed') {
+            log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs })
+          } else {
+            log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs, error_message: r.error, error_type: 'transient' })
+          }
+          recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: r.status === 'failed' ? 'transient' : null })
+          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, null, r.output ?? null, r.error, r.status === 'failed' ? 'transient' : null, 0, stepStartedAtIso, stepOrder)
+          stepOrder++
+          if (r.status === 'completed') lastOutput = r.output
+
+          // Handle sentinel on this step (bundled worker already short-circuited
+          // the chain on sentinel, so this is the last result we'll see).
+          if (r.sentinel) {
+            terminated = true
+            if (r.sentinel.kind === 'exit') {
+              return { body: r.output ?? null, status: 200 }
+            }
+            // 'response' sentinel
+            const resp = (r.output as { response?: { status?: number; body?: unknown } } | null)?.response
+            const body = resp?.body ?? null
+            const status = resp?.status ?? 200
+            if (r.sentinel.continueAfter) {
+              pendingResponse = { body, status }
+              onRespondEarly?.(pendingResponse)
+              // advance to next node after the chain's last node
+              const contEdges = outgoingEdges(chainNode.id, definition.edges)
+              const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
+              current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+              break
+            } else {
+              return { body, status }
+            }
+          }
+
+          if (r.status === 'failed') {
+            terminated = true
+            throw new StepFailureError(r.error ?? 'Code node failed', chainNode.namespace, 'transient')
+          }
+        }
+
+        if (terminated) continue
+
+        // No sentinel, no error — normal end-of-chain advance past the last node.
+        const lastChainNode = chain[chain.length - 1]
+        const contEdges = outgoingEdges(lastChainNode.id, definition.edges)
+        const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
+        current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+        continue
+      }
+    }
+
     // ── Sequential step execution ───────────────────────────────────────────────
     const stepStartedAt = new Date().toISOString()
     log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
@@ -779,4 +849,163 @@ async function preloadResumeContext(
 // Cloudflare ExecutionContext type alias (avoid conflict with our ExecutionContext)
 type ExecutionContext_CF = {
   waitUntil: (promise: Promise<unknown>) => void
+}
+
+// ── Code-node chain execution helpers ───────────────────────────────────────
+
+import { codeBundleName, codeWorkerName } from '../lib/code-node-deployer'
+
+interface ChainStepResult {
+  namespace: string
+  status: 'completed' | 'failed'
+  output?: unknown
+  error?: string
+  durationMs: number
+  sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
+}
+
+/**
+ * Walk forward from `start` (a code node) collecting adjacent code nodes that
+ * can be run as a single chain. Chain ends when we hit:
+ * - A non-code node (salesforce, filter, branch, parallel, etc.)
+ * - A node with retries configured (retries handled per-step in main walker)
+ * - A node with a circuit breaker service
+ * - An edge with conditions (filter/branch handoff — needs main walker)
+ * - A node with multiple incoming/outgoing edges (branching)
+ * Returns [start, ...rest] — always includes `start`. Chain of 1 means no chain.
+ */
+function collectCodeChain(start: NodeDefinition, definition: { nodes: NodeDefinition[]; edges: import('../types').EdgeDefinition[] }): NodeDefinition[] {
+  const chain: NodeDefinition[] = [start]
+  let current = start
+  // Safety cap — chains longer than 20 steps are unusual and we don't want to
+  // send megabytes in a single subrequest.
+  while (chain.length < 20) {
+    const outs = definition.edges.filter((e) => e.source === current.id)
+    if (outs.length !== 1) break
+    const edge = outs[0]
+    if (edge.condition) break
+    const next = definition.nodes.find((n) => n.id === edge.target)
+    if (!next) break
+    if (next.type !== 'code') break
+    if ((next.config?.retries as number | undefined) && (next.config.retries as number) > 0) break
+    if (typeof next.config?.service === 'string') break
+    const incoming = definition.edges.filter((e) => e.target === next.id)
+    if (incoming.length !== 1) break
+    chain.push(next)
+    current = next
+  }
+  return chain
+}
+
+/**
+ * Dispatch a chain of code nodes to the bundled worker's /execute-chain
+ * endpoint. Returns per-step results including timing and sentinel detection.
+ */
+async function executeCodeChain(
+  chain: NodeDefinition[],
+  ctx: ExecutionContext,
+  env: Env
+): Promise<{ results: ChainStepResult[] }> {
+  const rawEnv = env as unknown as Record<string, unknown>
+  const cfSecrets: Record<string, string> = {}
+  for (const key of Object.keys(rawEnv)) {
+    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key] as string
+  }
+  const mergedEnv = { ...cfSecrets, ...ctx.env }
+
+  const chainPayload = chain.map((n) => ({ namespace: n.namespace }))
+
+  const body = JSON.stringify({
+    chain: chainPayload,
+    payload: ctx.trigger.payload,
+    // Can't easily filter steps across a chain (each step may reference
+    // different steps). Send the full context; OK for MVP.
+    steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
+    env: mergedEnv,
+    execution: { trace_id: ctx.trigger.trace_id },
+  })
+
+  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(ctx.trigger.workflow_id))
+  let bundleRes: Response | undefined
+  let bindingError: unknown
+  try {
+    bundleRes = await bundleBinding.fetch('https://worker/execute-chain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+  } catch (err) {
+    bindingError = err
+  }
+
+  // Fallback: if the bundled worker is old (no /execute-chain) or missing,
+  // run each step as an individual subrequest via the single-step path.
+  const chainUnsupported =
+    bindingError !== undefined ||
+    bundleRes?.status === 404 ||
+    bundleRes?.status === 503
+
+  if (chainUnsupported || !bundleRes) {
+    const results: ChainStepResult[] = []
+    for (const node of chain) {
+      const startMs = Date.now()
+      try {
+        const singleBody = JSON.stringify({
+          payload: ctx.trigger.payload,
+          steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
+          env: mergedEnv,
+          execution: { trace_id: ctx.trigger.trace_id },
+        })
+        const perNodeBinding = env.DYNAMIC_WORKER_LOADER.get(codeWorkerName(ctx.trigger.workflow_id, node.namespace))
+        const r = await perNodeBinding.fetch('https://worker/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: singleBody,
+        })
+        const text = await r.text()
+        const output: unknown = text === '' || text === 'undefined' ? null : JSON.parse(text)
+        const durationMs = Date.now() - startMs
+        const sentinel = detectSentinel(output)
+        recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
+        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined })
+        if (sentinel) break
+      } catch (err) {
+        const durationMs = Date.now() - startMs
+        results.push({ namespace: node.namespace, status: 'failed', error: err instanceof Error ? err.message : String(err), durationMs })
+        break
+      }
+    }
+    return { results }
+  }
+
+  if (!bundleRes.ok) {
+    return {
+      results: [{
+        namespace: chain[0].namespace,
+        status: 'failed',
+        error: `Chain dispatch failed: HTTP ${bundleRes.status}`,
+        durationMs: 0,
+      }],
+    }
+  }
+
+  const parsed = await bundleRes.json() as { results: ChainStepResult[] }
+  // Update ctx.steps for each successful result so downstream (non-chain) nodes
+  // see them.
+  for (const r of parsed.results) {
+    if (r.status === 'completed') {
+      recordStepOutput(ctx, r.namespace, { output: r.output ?? null, status: 'completed' })
+    }
+  }
+  return parsed
+}
+
+function detectSentinel(output: unknown): { kind: 'response' | 'exit'; continueAfter: boolean } | null {
+  if (output === null || typeof output !== 'object') return null
+  const obj = output as Record<string, unknown>
+  if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
+    return { kind: 'response', continueAfter: obj.continueExecution === true }
+  }
+  if (obj.exit === true) return { kind: 'exit', continueAfter: false }
+  return null
 }

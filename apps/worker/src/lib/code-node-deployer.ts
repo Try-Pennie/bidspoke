@@ -49,9 +49,58 @@ ${indented}
 ${entries}
 }
 
+// Run a single registered script by namespace.
+async function runOne(ns, payload, steps, env, execution) {
+  const fn = scripts[ns]
+  if (!fn) throw new Error('script not found: ' + ns)
+  return await fn(payload, steps, env, execution)
+}
+
+// Detect a code-node sentinel in a returned value. Matches the engine's
+// single-step sentinel detection; used to short-circuit a chain when any
+// step requests respond-and-exit / exit / respond-and-continue.
+function detectSentinel(output) {
+  if (output === null || typeof output !== 'object') return null
+  if ('response' in output && output.response !== null && typeof output.response === 'object') {
+    return { kind: 'response', continueAfter: output.continueExecution === true }
+  }
+  if (output.exit === true) return { kind: 'exit', continueAfter: false }
+  return null
+}
+
 export default {
   async fetch(request) {
     const url = new URL(request.url)
+
+    // /execute-chain — runs N adjacent code nodes sequentially in one subrequest,
+    // threading each step's output into the next step's steps context. Main
+    // worker dispatches here when it detects a run of plain code nodes, saving
+    // N-1 HTTP round-trips. Short-circuits on any sentinel (exit, response, or
+    // response+continueExecution — the main worker handles continueExecution
+    // semantics; this endpoint just stops further steps in the chain).
+    if (url.pathname === '/execute-chain') {
+      const { chain, payload, steps, env, execution } = await request.json()
+      const results = []
+      const stepsCtx = steps ?? {}
+      for (const { namespace } of chain) {
+        const startMs = Date.now()
+        try {
+          const output = await runOne(namespace, payload, stepsCtx, env, execution)
+          const durationMs = Date.now() - startMs
+          const sentinel = detectSentinel(output)
+          stepsCtx[namespace] = { output: output ?? null, status: 'completed' }
+          results.push({ namespace, status: 'completed', output: output ?? null, durationMs, sentinel })
+          // Stop the chain on any sentinel — main worker decides what happens next
+          if (sentinel) break
+        } catch (err) {
+          const durationMs = Date.now() - startMs
+          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), durationMs })
+          break
+        }
+      }
+      return Response.json({ results })
+    }
+
     const match = url.pathname.match(/^\\/execute\\/([^/]+)$/)
     if (!match) {
       return new Response(JSON.stringify({ error: 'route must be /execute/{namespace}' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
