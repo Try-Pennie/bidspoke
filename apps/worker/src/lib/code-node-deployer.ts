@@ -23,7 +23,7 @@ function buildWorkerScript(script: string): string {
 ${script.split('\n').map((l) => `      ${l}`).join('\n')}
     }
     const result = await fn(payload, steps, env, execution)
-    return Response.json(result)
+    return Response.json(result ?? null)
   }
 }`
 }

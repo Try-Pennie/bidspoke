@@ -38,12 +38,13 @@ export async function executeCodeNode(
     }),
   })
 
+  const text = await res.text()
+
   if (!res.ok) {
-    const text = await res.text()
     throw new Error(`Code node "${node.namespace}" failed (HTTP ${res.status}): ${text}`)
   }
 
-  const output: unknown = await res.json()
+  const output: unknown = text === '' || text === 'undefined' ? null : JSON.parse(text)
 
   // Detect early-exit sentinels emitted by translated Pipedream code:
   //   $.respond({...})  → return { response: { status, body, headers? } }
