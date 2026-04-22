@@ -177,10 +177,10 @@ function parseRuleGroup(rg: PdRuleGroup, warnings: string[]): { groups: Conditio
 
     if (!operator) {
       if (APPROXIMATE_OPS.has(pdOp)) {
-        warnings.push(`Operator "${r.operator}" has no exact match — mapped to "contains". Review rule on field "${field}".`)
+        warnings.push(`Operator "${r.operator}" has no exact match. Mapped to "contains". Review rule on field "${field}".`)
         operator = 'contains'
       } else {
-        warnings.push(`Unknown operator "${r.operator}" on field "${field}" — defaulted to "eq".`)
+        warnings.push(`Unknown operator "${r.operator}" on field "${field}". Defaulted to "eq".`)
         operator = 'eq'
       }
     }
@@ -258,7 +258,7 @@ export function parsePipedreamExport(raw: string): ImportResult {
   try {
     pd = JSON.parse(raw) as PdWorkflow
   } catch {
-    throw new Error('Invalid JSON — paste the raw export from Pipedream.')
+    throw new Error('Invalid JSON. Paste the raw export from Pipedream.')
   }
 
   // Normalise steps array
@@ -382,7 +382,7 @@ export function parsePipedreamExport(raw: string): ImportResult {
     const hasApp = apps.length > 0
     if (hasApp) {
       const appNames = apps.map((a) => a.name_slug ?? a.app ?? 'unknown').join(', ')
-      warnings.push(`Step "${namespace}" uses app integration(s): ${appNames}. Mapped to a code node — consider a Webhook node when Phase 2 is ready.`)
+      warnings.push(`Step "${namespace}" uses app integration(s): ${appNames}. Mapped to a code node. Consider a Webhook node when Phase 2 is ready.`)
     }
 
     if (!translatedCode) {
@@ -402,7 +402,7 @@ export function parsePipedreamExport(raw: string): ImportResult {
       variables: Object.keys(variables).length > 0 ? variables : undefined,
     })
     if (translatedCode) {
-      warnings.push(`Code node "${namespace}": review the imported script before running — automatic translation may need adjustments.`)
+      warnings.push(`Code node "${namespace}": review the imported script before running. Automatic translation may need adjustments.`)
     }
     edgePending.push({ sourceId: nodeId })
   }

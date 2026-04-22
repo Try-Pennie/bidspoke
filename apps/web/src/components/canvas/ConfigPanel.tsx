@@ -207,7 +207,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                       value={(data.config.fallback_node as string | undefined) ?? ''}
                       onChange={(e) => updateConfig({ fallback_node: e.target.value })}
                     >
-                      <option value="">— select —</option>
+                      <option value="">Select...</option>
                       {nodeNamespaces.filter((ns) => ns !== data.namespace).map((ns) => (
                         <option key={ns} value={ns}>{ns}</option>
                       ))}
@@ -233,7 +233,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         </Field>
 
         {/* Namespace */}
-        <Field label="Step ID" hint="Unique identifier used to reference this step's output in later steps — e.g. steps.credit_check.score">
+        <Field label="Step ID" hint="Unique identifier used to reference this step's output in later steps. E.g. steps.credit_check.score">
           <input
             className="input"
             value={data.namespace}
@@ -306,7 +306,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                   value={(data.config.fallback_node as string | undefined) ?? ''}
                   onChange={(e) => updateConfig({ fallback_node: e.target.value })}
                 >
-                  <option value="">— select —</option>
+                  <option value="">Select...</option>
                   {nodeNamespaces.filter((ns) => ns !== data.namespace).map((ns) => (
                     <option key={ns} value={ns}>{ns}</option>
                   ))}
@@ -767,7 +767,7 @@ function CodeConfig({
         />
       </div>
       <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
-        Async function body — <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
+        Async function body. <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
       </p>
     </div>
   )
@@ -877,7 +877,7 @@ function BidEvaluationConfig({
             onChange={(e) => onChange({ parallel_source: e.target.value })}
             className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
           >
-            <option value="">— select a step —</option>
+            <option value="">Select a step...</option>
             {nodeNamespaces.map((ns) => (
               <option key={ns} value={ns}>{ns}</option>
             ))}
@@ -904,7 +904,7 @@ function BidEvaluationConfig({
       {/* Weighted score sliders */}
       {strategy === 'weighted_score' && (
         <div className="space-y-3 rounded-lg border border-gray-100 bg-beige p-3">
-          <p className="text-xs text-gray-500">Rank partners by a combined score. Slide each weight to control how much it matters — higher = more important.</p>
+          <p className="text-xs text-gray-500">Rank partners by a combined score. Slide each weight to control how much it matters. Higher = more important.</p>
           <WeightSlider
             label="Bid amount"
             value={(config.weight_bid as number | undefined) ?? 1.0}
@@ -963,7 +963,7 @@ function BidEvaluationConfig({
       </Field>
 
       {/* No-winner behavior */}
-      <Field label="If no winner is found" hint="What to do when all bids are rejected, below minimum, or errored — and no fallback partner is set.">
+      <Field label="If no winner is found" hint="What to do when all bids are rejected, below minimum, or errored, and no fallback partner is set.">
         <div className="relative">
           <select
             value={noWinnerBehavior}
@@ -1315,7 +1315,7 @@ function IntegrationConfig({
             <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
           </div>
           {authType === 'bearer' && (
-            <Field label="Token — use {{env.SECRET_NAME}}">
+            <Field label="Token (use {{env.SECRET_NAME}})">
               <FieldAutocomplete
                 value={(auth.token as string | undefined) ?? ''}
                 onChange={(v) => setAuth({ token: v })}
@@ -1336,7 +1336,7 @@ function IntegrationConfig({
                   className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-mono focus:border-gray-400 focus:outline-none"
                 />
               </Field>
-              <Field label="Password — use {{env.SECRET_NAME}}">
+              <Field label="Password (use {{env.SECRET_NAME}})">
                 <FieldAutocomplete
                   value={(auth.password as string | undefined) ?? ''}
                   onChange={(v) => setAuth({ password: v })}
@@ -1357,7 +1357,7 @@ function IntegrationConfig({
                   onChange={(e) => setAuth({ header: e.target.value })}
                 />
               </Field>
-              <Field label="Value — use {{env.SECRET_NAME}}">
+              <Field label="Value (use {{env.SECRET_NAME}})">
                 <FieldAutocomplete
                   value={(auth.key as string | undefined) ?? ''}
                   onChange={(v) => setAuth({ key: v })}
@@ -1493,7 +1493,7 @@ function PartnerBidConfig({
             onChange={(e) => handleSelect(e.target.value)}
             className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
           >
-            <option value="">— select a partner —</option>
+            <option value="">Select a partner...</option>
             {partners.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}{!p.is_active ? ' (inactive)' : ''}

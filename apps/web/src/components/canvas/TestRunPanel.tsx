@@ -219,7 +219,7 @@ export default function TestRunPanel({
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-sm font-semibold text-graphite">Test run</p>
-          <p className="text-xs text-gray-400">Runs in test mode — no Slack alerts</p>
+          <p className="text-xs text-gray-400">Runs in test mode. No Slack alerts.</p>
         </div>
         <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
           <X className="h-4 w-4" />

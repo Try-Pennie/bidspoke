@@ -56,7 +56,7 @@ export function ParallelNode({ data, selected }: NodeProps) {
           <p className="mt-0.5 truncate text-xs text-slate-400">
             {children.length > 0
               ? `${children.length} branch${children.length !== 1 ? 'es' : ''} (start)`
-              : '(start) — no branches'}
+              : '(start). No branches.'}
           </p>
         )}
       </div>
