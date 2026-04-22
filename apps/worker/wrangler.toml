@@ -4,6 +4,14 @@ compatibility_date = "2024-05-24"
 compatibility_flags = ["nodejs_compat"]
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
+# Smart placement — CF analyzes where this worker makes most outbound requests
+# (Salesforce, Supabase, Equifax, partner APIs) and positions instances closer
+# to those backends. Big win for workflows dominated by external API latency.
+# First invocation hits default edge placement; subsequent runs benefit as CF
+# learns the traffic pattern (~minutes to tune).
+[placement]
+mode = "smart"
+
 # Workers KV — workflow definition cache + idempotency
 [[kv_namespaces]]
 binding = "WORKFLOW_CACHE"

@@ -83,7 +83,9 @@ export async function executeSalesforceNode(
     throw new Error('Salesforce node requires SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, and SALESFORCE_CLIENT_SECRET env vars')
   }
 
+  const tokenStart = Date.now()
   const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret)
+  const tokenMs = Date.now() - tokenStart
   const operation = config.operation ?? 'create'
   const object = config.object ?? ''
 
@@ -138,6 +140,7 @@ export async function executeSalesforceNode(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
 
+  const fetchStart = Date.now()
   let res: Response
   try {
     res = await fetch(url, {
@@ -149,9 +152,12 @@ export async function executeSalesforceNode(
   } finally {
     clearTimeout(timer)
   }
+  const fetchMs = Date.now() - fetchStart
 
   // Salesforce returns 204 No Content for successful updates — body is empty
   const responseText = await res.text()
+  const targetLabel = object || (config.apex_path ?? '')
+  console.log(`[salesforce] ${operation} ${targetLabel} — token ${tokenMs}ms, fetch ${fetchMs}ms, status ${res.status}, trace=${ctx.trigger.trace_id}`)
   let parsedBody: unknown = null
   if (responseText) {
     try {
