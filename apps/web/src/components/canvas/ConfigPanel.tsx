@@ -489,8 +489,13 @@ function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionSt
           <div className={`rounded-md border px-3 py-2 text-xs font-medium ${statusColor}`}>
             {statusLabel}{exec.duration_ms > 0 ? ` · ${exec.duration_ms}ms` : ''}
           </div>
-          {/* (Separate error_message box removed — the Failed pill above plus
-              the Output tree below both already surface the failure detail.) */}
+          {/* Error message — shown only when there's no Output tree to carry it.
+              When the step's output IS the error shape (e.g. respond sentinel
+              with error body), the Output tree already displays the detail and
+              repeating it would be redundant. */}
+          {exec.error_message && !hasOutput && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-red-100 bg-red-50 p-2 text-xs text-red-700">{exec.error_message}</pre>
+          )}
           {hasOutput && (
             <div>
               <p className="mb-1.5 text-xs font-medium text-gray-500">Output</p>
