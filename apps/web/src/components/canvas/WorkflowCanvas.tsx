@@ -502,10 +502,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           return { ...edge, animated: true, style: { stroke: '#22c55e', strokeWidth: 2 } }
         } else if (sourceRan) {
           // Source ran but this branch wasn't taken (e.g. filter pass when exit fired)
-          return { ...edge, animated: false, style: { stroke: '#d1d5db', strokeWidth: 1, opacity: 0.35 } }
+          return { ...edge, animated: false, style: { stroke: '#d1d5db', strokeWidth: 1.5 } }
         } else {
-          // Downstream of an untaken path — never reached
-          return { ...edge, animated: false, style: { stroke: '#e5e7eb', strokeWidth: 1, opacity: 0.2 } }
+          // Not yet reached — show as default gray so edges stay visible
+          return { ...edge, animated: false, style: undefined }
         }
       })
     )
