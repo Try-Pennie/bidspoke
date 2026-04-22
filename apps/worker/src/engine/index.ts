@@ -118,21 +118,26 @@ export async function executeWorkflow(
     return { response: idempotencyCached.response, status: 200, traceId, idempotentReplay: true }
   }
 
-  // Parallel: mark idempotency in-progress + create execution record (both independent)
-  await Promise.all([
-    idempotencyKey ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl) : Promise.resolve(),
-    createExecutionRecord(supabase, {
-      id: executionId,
-      workflow_id: workflowId,
-      workflow_version_id,
-      source,
-      trigger_payload: payload,
-      trace_id: traceId,
-      started_at: startedAt,
-      is_test: options.isTest ?? false,
-      parent_execution_id: options.resumeFromExecutionId,
-    }),
-  ])
+  // Fire the idempotency-processing KV write and the execution-record insert
+  // in parallel WITH the walk — they're independent of step execution. We
+  // await them before flushing step logs at the end (execution_steps has a
+  // FK on workflow_executions.id, so the record must exist before the batch
+  // insert). This removes ~50-100ms of Supabase insert latency from the
+  // critical path before the first step runs.
+  const idempotencyProcessingPromise = idempotencyKey
+    ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
+    : Promise.resolve()
+  const executionRecordPromise = createExecutionRecord(supabase, {
+    id: executionId,
+    workflow_id: workflowId,
+    workflow_version_id,
+    source,
+    trigger_payload: payload,
+    trace_id: traceId,
+    started_at: startedAt,
+    is_test: options.isTest ?? false,
+    parent_execution_id: options.resumeFromExecutionId,
+  })
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
@@ -172,15 +177,20 @@ export async function executeWorkflow(
     response = { error: errorMessage, trace_id: traceId }
   }
 
-  // Flush accumulated step logs. Test runs await so the UI's post-response
-  // fetch finds rows in place; production uses waitUntil so the HTTP response
-  // returns without waiting on the batch insert.
-  const flushPromise = flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '')
+  // Flush accumulated step logs. Must await the execution-record insert
+  // first — execution_steps has a FK to workflow_executions.id, so the
+  // batch insert fails if the record isn't there yet. Test runs await
+  // the flush so the UI's post-response fetch finds rows; production
+  // uses waitUntil so the HTTP response returns without waiting.
+  const flushPromise = executionRecordPromise
+    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? ''))
     .catch((e) => console.error('[step-logger] flush failed:', e))
   if (options.isTest) {
     await flushPromise
   } else {
     executionCtx.waitUntil(flushPromise)
+    // Also keep idempotencyProcessing alive past the response so it can complete
+    executionCtx.waitUntil(idempotencyProcessingPromise.catch(() => {}))
   }
 
   const completedAt = new Date().toISOString()
