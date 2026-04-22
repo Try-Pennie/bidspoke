@@ -127,7 +127,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'TB', ranksep: 72, nodesep: 48, marginx: 60, marginy: 60 })
+  g.setGraph({ rankdir: 'TB', ranksep: 32, nodesep: 48, marginx: 60, marginy: 60 })
 
   for (const node of nodes) {
     g.setNode(node.id, { width: NODE_W, height: nodeHeight(node.type) })
