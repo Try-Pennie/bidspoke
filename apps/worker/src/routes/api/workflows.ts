@@ -382,6 +382,16 @@ workflows.post('/:id/test', async (c) => {
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
 
+  // Deploy any code nodes from the current (unsaved) definition so test runs the latest scripts
+  if (body.definition) {
+    await deployCodeNodes(
+      id,
+      body.definition as WorkflowDefinition,
+      c.env.CLOUDFLARE_ACCOUNT_ID,
+      c.env.CLOUDFLARE_API_TOKEN
+    ).catch((e) => console.error('[code-nodes] test deploy failed:', e))
+  }
+
   const result = await executeWorkflow(
     {
       workflowId: id,
