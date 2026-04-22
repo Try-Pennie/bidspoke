@@ -71,7 +71,9 @@ function resolveField(field: string, ctx: ExecutionContext): unknown {
     return getPath(ctx.trigger, parts.slice(1))
   }
   if (parts[0] === 'steps' && parts[1]) {
-    return getPath(ctx.steps[parts[1]]?.output, parts.slice(2))
+    // Tolerate explicit `.output` — matches the copy-path format from the JSON tree
+    const pathParts = parts[2] === 'output' ? parts.slice(3) : parts.slice(2)
+    return getPath(ctx.steps[parts[1]]?.output, pathParts)
   }
   if (parts[0] === 'env') {
     return ctx.env[parts[1]]

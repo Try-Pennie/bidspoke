@@ -52,7 +52,12 @@ function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
     const step = ctx.steps[parts[1]]
     if (!step) return undefined
     if (parts.length === 2) return step.output
-    return getPath(step.output, parts.slice(2))
+    // Tolerate explicit `.output` — matches the copy-path format from the JSON tree
+    // and the code-node-script convention. `{{steps.X.output}}` and `{{steps.X.output.Y}}`
+    // resolve the same as `{{steps.X}}` and `{{steps.X.Y}}`.
+    const pathParts = parts[2] === 'output' ? parts.slice(3) : parts.slice(2)
+    if (pathParts.length === 0) return step.output
+    return getPath(step.output, pathParts)
   }
   return undefined
 }

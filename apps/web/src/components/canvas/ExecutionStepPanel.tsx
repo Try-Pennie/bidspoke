@@ -1,4 +1,5 @@
-import { X, CheckCircle, XCircle, SkipForward, Clock } from 'lucide-react'
+import { useState } from 'react'
+import { Check, Clock, Copy, CheckCircle, SkipForward, X, XCircle } from 'lucide-react'
 import type { ExecutionStep } from '@/types/workflow'
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
@@ -20,12 +21,27 @@ const STATUS_CONFIG = {
 }
 
 function JsonBlock({ label, value }: { label: string; value: unknown }) {
+  const [copied, setCopied] = useState(false)
   if (value === null || value === undefined) return null
+  const text = JSON.stringify(value, null, 2)
   return (
     <div>
-      <p className="mb-1 text-xs font-medium text-gray-500">{label}</p>
+      <div className="mb-1 flex items-center justify-between">
+        <p className="text-xs font-medium text-gray-500">{label}</p>
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(text).catch(() => {})
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          }}
+          className="rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+          title="Copy"
+        >
+          {copied ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
+        </button>
+      </div>
       <pre className="max-h-64 overflow-auto rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-700">
-        {JSON.stringify(value, null, 2)}
+        {text}
       </pre>
     </div>
   )
@@ -39,6 +55,7 @@ function formatDuration(ms: number) {
 export default function ExecutionStepPanel({ node, onClose, width, onResize }: Props) {
   const { namespace, executionStep } = node.data as unknown as CanvasNodeData
   const effectiveWidth = width ?? 320
+  const [errCopied, setErrCopied] = useState(false)
 
   return (
     <aside
@@ -82,10 +99,23 @@ export default function ExecutionStepPanel({ node, onClose, width, onResize }: P
             {/* Error */}
             {executionStep.error_message && (
               <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-                <p className="mb-1 text-xs font-medium text-red-600">
-                  Error{executionStep.error_type ? ` · ${executionStep.error_type}` : ''}
-                  {executionStep.retries_used > 0 ? ` · ${executionStep.retries_used} retr${executionStep.retries_used === 1 ? 'y' : 'ies'}` : ''}
-                </p>
+                <div className="mb-1 flex items-center justify-between">
+                  <p className="text-xs font-medium text-red-600">
+                    Error{executionStep.error_type ? ` · ${executionStep.error_type}` : ''}
+                    {executionStep.retries_used > 0 ? ` · ${executionStep.retries_used} retr${executionStep.retries_used === 1 ? 'y' : 'ies'}` : ''}
+                  </p>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(executionStep.error_message ?? '').catch(() => {})
+                      setErrCopied(true)
+                      setTimeout(() => setErrCopied(false), 1500)
+                    }}
+                    className="rounded p-0.5 text-red-400 hover:bg-red-100 hover:text-red-600"
+                    title="Copy"
+                  >
+                    {errCopied ? <Check className="h-3 w-3 text-green-600" /> : <Copy className="h-3 w-3" />}
+                  </button>
+                </div>
                 <p className="font-mono text-xs text-red-700">{executionStep.error_message}</p>
               </div>
             )}

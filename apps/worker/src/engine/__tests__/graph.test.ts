@@ -182,3 +182,28 @@ describe('exit node', () => {
     expect(result.output).toBeNull()
   })
 })
+
+// --- resolveField — tolerate explicit .output in step paths ---
+
+describe('resolveField — .output tolerance', () => {
+  function single(field: string, operator: EdgeCondition['operator'], value: unknown, steps: Record<string, unknown>): boolean {
+    return evaluateConditionGroups(
+      [{ conditions: [{ field, operator, value }], logic: 'AND' }],
+      'AND',
+      ctx({}, steps)
+    )
+  }
+
+  it('resolves steps.X.Y (no .output)', () => {
+    expect(single('steps.foo.name', 'eq', 'bar', { foo: { name: 'bar' } })).toBe(true)
+  })
+
+  it('resolves steps.X.output.Y (explicit .output — copy-path format)', () => {
+    expect(single('steps.foo.output.name', 'eq', 'bar', { foo: { name: 'bar' } })).toBe(true)
+  })
+
+  it('steps.X and steps.X.output resolve identically', () => {
+    expect(single('steps.foo', 'eq', 42, { foo: 42 })).toBe(true)
+    expect(single('steps.foo.output', 'eq', 42, { foo: 42 })).toBe(true)
+  })
+})

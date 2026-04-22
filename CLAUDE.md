@@ -29,6 +29,14 @@
 - Use straight quotes (`'` and `"`) in all string literals — never smart/curly quotes
 - No em dashes in copy or UI text — use periods, colons, or commas instead
 
+## Codebase Navigation
+A graphify knowledge graph of this codebase lives in `graphify-out/`. Before reading codebase files to answer a question or explore architecture, consult the graph first:
+1. Grep `graphify-out/obsidian/` community files for relevant terms to identify which files are involved
+2. Or grep `graphify-out/graph.json` for node labels/IDs
+3. Then read only the specific files the graph points to
+
+This avoids broad directory walks and full-file reads. Skip the graph only when you already know the exact file path.
+
 ## Workflow Preferences
 - After completing a task that has an associated TODO or planning doc, always update that doc to reflect the completed work before moving on
 - Never use the `open` command to preview files — triggers Island browser unexpectedly

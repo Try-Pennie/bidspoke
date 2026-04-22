@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { api } from '@/lib/api'
-import { CheckCircle2, ChevronDown, ChevronRight, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import type { ExecutionStep, SavedTestPayload } from '@/types/workflow'
 import RailResizeHandle from './RailResizeHandle'
@@ -72,6 +72,13 @@ export default function TestRunPanel({
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [showSaveInput, setShowSaveInput] = useState(false)
+
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  function copy(key: string, text: string) {
+    navigator.clipboard.writeText(text).catch(() => {})
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500)
+  }
 
   const nsToLabel = useMemo(() => {
     const def = currentDefinition as { nodes?: Array<{ namespace?: string; label?: string }> } | null | undefined
@@ -325,6 +332,15 @@ export default function TestRunPanel({
               <span className={`text-xs font-medium ${result.ok ? 'text-green-700' : 'text-red-700'}`}>
                 {result.ok ? 'Completed' : 'Failed'}
               </span>
+              <button
+                onClick={() => copy('result', typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2))}
+                className="ml-auto rounded p-1 text-gray-400 hover:bg-black/5 hover:text-gray-600"
+                title="Copy"
+              >
+                {copiedKey === 'result'
+                  ? <Check className="h-3 w-3 text-green-600" />
+                  : <Copy className="h-3 w-3" />}
+              </button>
             </div>
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-700">
               {JSON.stringify(result.body, null, 2)}
@@ -367,19 +383,52 @@ export default function TestRunPanel({
                       <div className="space-y-2 border-t border-gray-100 bg-gray-50 px-3 py-2.5">
                         {step.error_message && (
                           <div>
-                            <p className="mb-1 text-xs font-medium text-red-600">Error</p>
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-medium text-red-600">Error</p>
+                              <button
+                                onClick={() => copy(`${step.step_namespace}-err`, step.error_message ?? '')}
+                                className="rounded p-0.5 text-red-400 hover:bg-red-100 hover:text-red-600"
+                                title="Copy"
+                              >
+                                {copiedKey === `${step.step_namespace}-err`
+                                  ? <Check className="h-3 w-3 text-green-600" />
+                                  : <Copy className="h-3 w-3" />}
+                              </button>
+                            </div>
                             <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-50 p-2 text-xs text-red-700 border border-red-100">{step.error_message}</pre>
                           </div>
                         )}
                         {step.output !== null && step.output !== undefined && (
                           <div>
-                            <p className="mb-1 text-xs font-medium text-gray-500">Output</p>
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-medium text-gray-500">Output</p>
+                              <button
+                                onClick={() => copy(`${step.step_namespace}-out`, JSON.stringify(step.output, null, 2))}
+                                className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                title="Copy"
+                              >
+                                {copiedKey === `${step.step_namespace}-out`
+                                  ? <Check className="h-3 w-3 text-green-600" />
+                                  : <Copy className="h-3 w-3" />}
+                              </button>
+                            </div>
                             <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-white p-2 text-xs text-gray-700">{JSON.stringify(step.output, null, 2)}</pre>
                           </div>
                         )}
                         {step.input !== null && step.input !== undefined && (
                           <div>
-                            <p className="mb-1 text-xs font-medium text-gray-500">Input</p>
+                            <div className="mb-1 flex items-center justify-between">
+                              <p className="text-xs font-medium text-gray-500">Input</p>
+                              <button
+                                onClick={() => copy(`${step.step_namespace}-in`, JSON.stringify(step.input, null, 2))}
+                                className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                title="Copy"
+                              >
+                                {copiedKey === `${step.step_namespace}-in`
+                                  ? <Check className="h-3 w-3 text-green-600" />
+                                  : <Copy className="h-3 w-3" />}
+                              </button>
+                            </div>
                             <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-white p-2 text-xs text-gray-700">{JSON.stringify(step.input, null, 2)}</pre>
                           </div>
                         )}

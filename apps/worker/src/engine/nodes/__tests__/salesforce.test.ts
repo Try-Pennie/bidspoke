@@ -300,14 +300,15 @@ describe('executeSalesforceNode', () => {
       env
     ).catch((e) => e)
 
-    expect(err).toBeInstanceOf(Response)
-    expect((err as Response).status).toBe(401)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('401')
+    expect((err as Error).message).toContain('Unauthorized')
     expect(vi.mocked(env.WORKFLOW_CACHE.delete as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith('sf-token-org-1')
   })
 
-  // ── Non-2xx throws Response ─────────────────────────────────────────────────
+  // ── Non-2xx throws readable Error ───────────────────────────────────────────
 
-  it('throws a Response instance on 4xx so the engine can classify it', async () => {
+  it('throws an Error with status and body on 4xx so the UI can show the real SF error', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
     fetchMock.mockResolvedValue(mockResponse(400, '{"message":"Bad request"}'))
@@ -318,11 +319,12 @@ describe('executeSalesforceNode', () => {
       env
     ).catch((e) => e)
 
-    expect(err).toBeInstanceOf(Response)
-    expect((err as Response).status).toBe(400)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('400')
+    expect((err as Error).message).toContain('Bad request')
   })
 
-  it('throws a Response instance on 5xx', async () => {
+  it('throws an Error on 5xx with the response body included', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
     fetchMock.mockResolvedValue(mockResponse(503, 'Service Unavailable'))
@@ -333,8 +335,9 @@ describe('executeSalesforceNode', () => {
       env
     ).catch((e) => e)
 
-    expect(err).toBeInstanceOf(Response)
-    expect((err as Response).status).toBe(503)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toContain('503')
+    expect((err as Error).message).toContain('Service Unavailable')
   })
 
   // ── 204 No Content ──────────────────────────────────────────────────────────
