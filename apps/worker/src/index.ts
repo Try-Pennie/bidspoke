@@ -63,6 +63,8 @@ app.use(
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
     credentials: true,
+    // Cache preflight for 24h so repeat requests from the app skip the OPTIONS round-trip
+    maxAge: 86400,
   })
 )
 

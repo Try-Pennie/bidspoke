@@ -150,7 +150,8 @@ workflows.put('/:id', async (c) => {
       id,
       body.definition as WorkflowDefinition,
       c.env.CLOUDFLARE_ACCOUNT_ID,
-      c.env.CLOUDFLARE_API_TOKEN
+      c.env.CLOUDFLARE_API_TOKEN,
+      c.env.WORKFLOW_CACHE
     ).catch((e) => { console.error('[code-nodes] deploy failed:', e); return [] })
     for (const r of results) {
       if (r.error) deployErrors.push({ namespace: r.namespace, error: r.error })
@@ -385,13 +386,15 @@ workflows.post('/:id/test', async (c) => {
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Deploy any code nodes from the current (unsaved) definition so test runs the latest scripts
+  // Deploy any code nodes from the current (unsaved) definition so test runs the latest scripts.
+  // Hash-and-skip via WORKFLOW_CACHE avoids the ~200-500ms CF upload on repeated tests with no changes.
   if (body.definition) {
     await deployCodeNodes(
       id,
       body.definition as WorkflowDefinition,
       c.env.CLOUDFLARE_ACCOUNT_ID,
-      c.env.CLOUDFLARE_API_TOKEN
+      c.env.CLOUDFLARE_API_TOKEN,
+      c.env.WORKFLOW_CACHE
     ).catch((e) => console.error('[code-nodes] test deploy failed:', e))
   }
 
@@ -453,7 +456,7 @@ workflows.post('/:id/test-node', async (c) => {
 
   // Deploy code node from current (unsaved) definition
   if (node.type === 'code') {
-    await deployCodeNodes(id, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    await deployCodeNodes(id, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
       .catch((e) => console.error('[code-nodes] test-node deploy failed:', e))
   }
 
