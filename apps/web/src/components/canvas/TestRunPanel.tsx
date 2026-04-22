@@ -102,6 +102,9 @@ export default function TestRunPanel({
       onComplete()
     } finally {
       setRunning(false)
+      // Steps are logged via Cloudflare waitUntil() after the HTTP response.
+      // Keep the Realtime channel alive so those late-arriving inserts reach the canvas.
+      await new Promise<void>((r) => setTimeout(r, 3000))
       onTestEnd?.()
       await supabase.removeChannel(channel)
     }
