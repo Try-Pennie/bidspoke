@@ -457,9 +457,33 @@ export async function walkGraph(
       //   { exit: true }              → exit silently ($.flow.exit() only)
       if (result.earlyResponse ?? result.earlyExit) {
         const seqDurationMsEarly = Date.now() - new Date(stepStartedAt).getTime()
-        log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
-        recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
-        logStep(stepLogQueue, executionId, executionStartedAt, node, 'completed', null, output, undefined, null, retriesUsed, stepStartedAt, stepOrder)
+        // If the code node responded with a 4xx/5xx, treat the step as FAILED
+        // in the UI and logs — even though the code ran to completion. An HTTP
+        // error status is the node's own signal that something went wrong, and
+        // rendering it green is confusing ("step succeeded but gave me an error").
+        // 2xx/3xx sentinels stay 'completed' (the happy respond-and-exit path).
+        const respStatus = result.earlyResponse?.status
+        const sentinelFailed = respStatus !== undefined && respStatus >= 400
+        const earlyStepStatus: StepStatus = sentinelFailed ? 'failed' : 'completed'
+        const earlyErrorMessage = sentinelFailed
+          ? `Code returned error response: HTTP ${respStatus}${
+              result.earlyResponse?.body
+                ? ` — ${(typeof result.earlyResponse.body === 'string'
+                    ? result.earlyResponse.body
+                    : JSON.stringify(result.earlyResponse.body)
+                  ).slice(0, 300)}`
+                : ''
+            }`
+          : undefined
+        const earlyErrorType: ErrorType = sentinelFailed ? classifyHttpError(respStatus!) : null
+
+        if (sentinelFailed) {
+          log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly, error_message: earlyErrorMessage, error_type: earlyErrorType })
+        } else {
+          log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
+        }
+        recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType })
+        logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, null, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder)
         if (result.continueAfterResponse && result.earlyResponse) {
           pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status }
           // fall through — continue walking the graph
