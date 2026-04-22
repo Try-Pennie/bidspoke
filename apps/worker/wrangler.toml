@@ -46,9 +46,11 @@ PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_
 APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
 
-# Scheduled cron trigger — runs volume anomaly check daily at 09:00 UTC
+# Scheduled cron triggers:
+#   "0 9 * * *"     daily 09:00 UTC — volume anomaly check
+#   "*/4 * * * *"   every 4 min    — pre-warm KV caches so cold-path latency stays low
 [triggers]
-crons = ["0 9 * * *"]
+crons = ["0 9 * * *", "*/4 * * * *"]
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.

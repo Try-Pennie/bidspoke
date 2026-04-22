@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { LoadedWorkflow, WorkflowDefinition } from '../types'
 
-const CACHE_TTL_SECONDS = 60
+const CACHE_TTL_SECONDS = 300
 const cacheKey = (workflowId: string) => `workflow-def-${workflowId}`
 
 interface CachedDefinition {
@@ -59,7 +59,8 @@ export async function loadWorkflowDefinition(
     slack_channel: (data.slack_channel as string | null) ?? null,
   }
 
-  // Cache for ~60s — KV is eventually consistent, small propagation window is acceptable (PRD 2.6)
+  // Cache for 5min — KV is eventually consistent; invalidation fires on save, and
+  // the scheduled pre-warm cron keeps active workflows hot (PRD 2.6).
   await kv.put(cacheKey(workflowId), JSON.stringify(result), {
     expirationTtl: CACHE_TTL_SECONDS,
   })

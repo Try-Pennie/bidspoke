@@ -4,6 +4,7 @@ import webhooks from './routes/webhooks'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
+import { prewarmKvCaches } from './lib/cache-prewarm'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
@@ -87,14 +88,21 @@ app.route('/webhooks', webhooks)
 // REST API — JWT authenticated
 app.route('/api', api)
 
-// Scheduled handler — runs daily at 09:00 UTC (see wrangler.toml [triggers])
+// Scheduled handler — dispatches on cron string (see wrangler.toml [triggers])
 export default {
   fetch: app.fetch.bind(app),
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     const supabase = createSupabaseClient(env)
-    ctx.waitUntil(
-      runVolumeAnomalyCheck(supabase, env.APP_URL)
-        .catch((e) => console.error('[volume-anomaly] check failed:', e))
-    )
+    if (event.cron === '0 9 * * *') {
+      ctx.waitUntil(
+        runVolumeAnomalyCheck(supabase, env.APP_URL)
+          .catch((e) => console.error('[volume-anomaly] check failed:', e))
+      )
+    } else if (event.cron === '*/4 * * * *') {
+      ctx.waitUntil(
+        prewarmKvCaches(supabase, env)
+          .catch((e) => console.error('[prewarm] failed:', e))
+      )
+    }
   },
 }

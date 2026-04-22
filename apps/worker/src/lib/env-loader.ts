@@ -1,9 +1,10 @@
 // KV-cached env var loader — avoids a Supabase round-trip on every execution.
-// Cache is per-org, TTL 60s. Invalidated explicitly on any env var mutation.
+// Cache is per-org, TTL 300s. Invalidated explicitly on any env var mutation.
+// Pre-warmed by the scheduled cron in index.ts.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-const TTL = 60
+const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
 
 export async function loadEnvVars(
