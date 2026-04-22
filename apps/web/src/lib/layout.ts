@@ -4,18 +4,22 @@ import type { Node, Edge } from '@xyflow/react'
 // All canvas nodes share this width (w-52 = 208px)
 export const NODE_W = 208
 
-// Per-type heights (header + body rows)
+// Per-type heights — must match the MAX rendered height for that type so
+// dagre's layout reserves enough room and produces visually-uniform gaps.
+// When actual rendered height exceeds the declared value, adjacent nodes
+// appear to have uneven spacing (because dagre lays out as if the node were
+// shorter, then the DOM pushes past the reserved slot into the next rank).
 const NODE_H: Record<string, number> = {
-  trigger:        72,
-  filter:        100,  // has pass/exit row at bottom
-  branch:        112,  // has branch labels row at bottom
-  code:           88,
-  response:       88,
-  exit:           72,
-  parallel:       96,  // has branch-label row at bottom
-  parallel_end:   80,
-  salesforce:     96,  // has operation/object subtitle row
-  default:        80,
+  trigger:       120,
+  filter:        120,
+  branch:        140,  // branch labels row at bottom + variable label count
+  code:          120,  // namespace + body + comment/result preview row
+  response:      120,
+  exit:           96,
+  parallel:      120,
+  parallel_end:  100,
+  salesforce:    140,  // operation + object subtitle + optional status code row
+  default:       120,
 }
 
 export function nodeHeight(type: string | undefined) {
@@ -123,7 +127,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'TB', ranksep: 60, nodesep: 48, marginx: 60, marginy: 60 })
+  g.setGraph({ rankdir: 'TB', ranksep: 72, nodesep: 48, marginx: 60, marginy: 60 })
 
   for (const node of nodes) {
     g.setNode(node.id, { width: NODE_W, height: nodeHeight(node.type) })

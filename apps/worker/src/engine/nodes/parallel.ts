@@ -28,6 +28,10 @@ interface ParallelConfig {
   wait_for?: 'all' | 'first'
   timeout_ms?: number
   on_timeout?: 'partial' | 'fail'
+  // Default 'fail' — if any child rejects, the parallel step fails and the
+  // workflow stops. Set to 'continue' when the downstream step (e.g. a Bid
+  // Evaluation node) handles rejections in the result array itself.
+  on_child_error?: 'fail' | 'continue'
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -45,11 +49,23 @@ export async function executeParallelNode(
   const waitFor = config.wait_for ?? 'all'
   const timeoutMs = config.timeout_ms ?? 15000
   const onTimeout = config.on_timeout ?? 'partial'
+  const onChildError = config.on_child_error ?? 'fail'
 
   const output: ParallelOutput =
     waitFor === 'first'
       ? await runFirst(childNodes, runChild, timeoutMs)
       : await runAll(childNodes, runChild, timeoutMs, onTimeout)
+
+  // wait_for:'all' with on_child_error:'fail' — bail if any child failed
+  if (waitFor === 'all' && onChildError === 'fail') {
+    const failed = output.find((c) => c.status === 'rejected' || c.status === 'timeout')
+    if (failed) {
+      const reason = failed.status === 'timeout'
+        ? `child "${failed.namespace}" did not complete in time`
+        : `child "${failed.namespace}" failed: ${failed.error ?? 'unknown error'}`
+      throw new Error(`Parallel failed — ${reason}`)
+    }
+  }
 
   return { output }
 }

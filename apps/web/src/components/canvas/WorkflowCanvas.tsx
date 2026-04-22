@@ -717,7 +717,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           id: endId,
           type: 'parallel_end' as NodeType,
           position: { x: 0, y: 0 },
-          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial' }, variables: {}, _pairId: newId } satisfies CanvasNodeData,
+          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial', on_child_error: 'fail' }, variables: {}, _pairId: newId } satisfies CanvasNodeData,
         }
         // Hidden backbone edge so Dagre ranks end below start even before children are wired
         const backboneEdge = { id: uid(), source: newId, target: endId, sourceHandle: 'output', hidden: true }
@@ -1419,7 +1419,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         </div>
 
         <div ref={sidePanelRef} className="contents">
-          {mode === 'edit' && showTest && !selectedNode && (
+          {mode === 'edit' && showTest && (!selectedNode || selectedNode.id === 'trigger') && (
             <TestRunPanel
               workflowId={workflow.id}
               currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
@@ -1436,7 +1436,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onResize={setSidePanelWidth}
             />
           )}
-          {selectedNode && mode === 'edit' && selectedNode.id === 'trigger' && (
+          {selectedNode && mode === 'edit' && selectedNode.id === 'trigger' && !showTest && (
             <TriggerConfigPanel
               workflowId={workflow.id}
               trigger={triggerRef.current}

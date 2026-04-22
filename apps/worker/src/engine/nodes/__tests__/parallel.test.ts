@@ -61,7 +61,7 @@ describe('executeParallelNode', () => {
       expect(runChild).toHaveBeenCalledTimes(2)
     })
 
-    it('includes rejected children alongside fulfilled ones', async () => {
+    it('includes rejected children alongside fulfilled ones when on_child_error is continue', async () => {
       const children = [makeChild('bid_a'), makeChild('bid_b'), makeChild('bid_c')]
       const runChild = makeRunChild([
         fulfilled('bid_a'),
@@ -69,7 +69,11 @@ describe('executeParallelNode', () => {
         fulfilled('bid_c', { bid: 500 }),
       ])
 
-      const result = await executeParallelNode(makeNode({ wait_for: 'all', timeout_ms: 5000 }), children, runChild)
+      const result = await executeParallelNode(
+        makeNode({ wait_for: 'all', timeout_ms: 5000, on_child_error: 'continue' }),
+        children,
+        runChild
+      )
       const output = result.output as ParallelChildResult[]
 
       expect(output).toHaveLength(3)
@@ -77,6 +81,18 @@ describe('executeParallelNode', () => {
       expect(output[1].status).toBe('rejected')
       expect(output[1].error).toBe('circuit open')
       expect(output[2].status).toBe('fulfilled')
+    })
+
+    it('throws when any child rejects and on_child_error is fail (default)', async () => {
+      const children = [makeChild('bid_a'), makeChild('bid_b')]
+      const runChild = makeRunChild([
+        fulfilled('bid_a'),
+        rejected('bid_b', 'circuit open'),
+      ])
+
+      await expect(
+        executeParallelNode(makeNode({ wait_for: 'all', timeout_ms: 5000 }), children, runChild)
+      ).rejects.toThrow(/Parallel failed.*bid_b.*circuit open/)
     })
 
     it('runs children concurrently (all start before any finish)', async () => {
@@ -109,7 +125,7 @@ describe('executeParallelNode', () => {
         })
 
         const result = await executeParallelNode(
-          makeNode({ wait_for: 'all', timeout_ms: 50, on_timeout: 'partial' }),
+          makeNode({ wait_for: 'all', timeout_ms: 50, on_timeout: 'partial', on_child_error: 'continue' }),
           children,
           runChild
         )

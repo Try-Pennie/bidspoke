@@ -1808,6 +1808,7 @@ function ParallelEndConfig({
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
   const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
+  const onChildError = (config.on_child_error as string | undefined) ?? 'fail'
 
   return (
     <section className="space-y-4">
@@ -1846,6 +1847,22 @@ function ParallelEndConfig({
             >
               <option value="partial">Continue with partial results</option>
               <option value="fail">Fail the execution</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          </div>
+        </Field>
+      )}
+
+      {waitFor === 'all' && (
+        <Field label="On child error" hint="What to do when a branch fails. Default is to stop the workflow. Use 'Continue' when a downstream step (e.g. Bid Evaluation) handles rejections in the result array.">
+          <div className="relative">
+            <select
+              value={onChildError}
+              onChange={(e) => onChange({ on_child_error: e.target.value })}
+              className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+            >
+              <option value="fail">Fail the execution</option>
+              <option value="continue">Continue with results (include rejections)</option>
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
           </div>
