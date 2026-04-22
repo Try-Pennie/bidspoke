@@ -630,6 +630,22 @@ async function runParallelChild(
       }
     )
     output = result.output
+
+    // Early-response and early-exit sentinels don't make sense inside a
+    // parallel block — you can't respond or exit the workflow while sibling
+    // children are still running. Treat them as child failures so the
+    // parallel's on_child_error policy handles them consistently, and so
+    // the step shows the correct failed/red state in the UI instead of
+    // silently looking successful with an error shape in its output.
+    if (result.earlyResponse) {
+      const r = result.earlyResponse
+      const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+      const preview = bodyStr.length > 300 ? bodyStr.slice(0, 300) + '…' : bodyStr
+      throw new Error(`Code returned a respond sentinel (status ${r.status}). Inside a parallel block, respond-and-exit is not meaningful — throw an error instead. Body: ${preview}`)
+    }
+    if (result.earlyExit) {
+      throw new Error('Code returned an exit sentinel inside a parallel block. Early-exit is not supported for parallel children — throw an error instead.')
+    }
   } catch (err) {
     stepStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
