@@ -2,10 +2,13 @@ import { X, CheckCircle, XCircle, SkipForward, Clock } from 'lucide-react'
 import type { ExecutionStep } from '@/types/workflow'
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
+import RailResizeHandle from './RailResizeHandle'
 
 interface Props {
   node: Node
   onClose: () => void
+  width?: number
+  onResize?: (width: number) => void
 }
 
 const STATUS_CONFIG = {
@@ -33,11 +36,16 @@ function formatDuration(ms: number) {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
-export default function ExecutionStepPanel({ node, onClose }: Props) {
+export default function ExecutionStepPanel({ node, onClose, width, onResize }: Props) {
   const { namespace, executionStep } = node.data as unknown as CanvasNodeData
+  const effectiveWidth = width ?? 320
 
   return (
-    <aside className="flex h-full w-80 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
+    <aside
+      className="relative flex h-full flex-shrink-0 flex-col border-l border-gray-200 bg-white"
+      style={{ width: effectiveWidth }}
+    >
+      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="font-mono text-sm font-semibold text-graphite">{namespace}</p>

@@ -6,14 +6,18 @@ import { api } from '@/lib/api'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { WorkflowVersion } from '@/types/workflow'
+import RailResizeHandle from './RailResizeHandle'
 
 interface Props {
   workflowId: string
   onClose: () => void
   onRestore: (versionId: string) => Promise<void>
+  width?: number
+  onResize?: (width: number) => void
 }
 
-export default function VersionHistoryPanel({ workflowId, onClose, onRestore }: Props) {
+export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize }: Props) {
+  const effectiveWidth = width ?? 320
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -54,7 +58,11 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore }: 
   }
 
   return (
-    <aside className="flex h-full w-80 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
+    <aside
+      className="relative flex h-full flex-shrink-0 flex-col border-l border-gray-200 bg-white"
+      style={{ width: effectiveWidth }}
+    >
+      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-semibold text-graphite">Version history</p>
         <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">

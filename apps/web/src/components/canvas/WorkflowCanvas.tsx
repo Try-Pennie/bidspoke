@@ -308,6 +308,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [lastTestExecId, setLastTestExecId] = useState<string | null>(null)
   const [showOverflow, setShowOverflow] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+  const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return 320
+    const saved = Number.parseInt(window.localStorage.getItem('bidspoke.sidePanelWidth') ?? '', 10)
+    if (Number.isFinite(saved) && saved >= 280 && saved <= 800) return saved
+    return 320
+  })
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('bidspoke.sidePanelWidth', String(sidePanelWidth))
+  }, [sidePanelWidth])
   const overflowRef = useRef<HTMLDivElement>(null)
   const sidePanelRef = useRef<HTMLDivElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
@@ -1097,88 +1107,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         </div>
       </header>
 
-      {mode === 'view' && executionId && (
-        <div className="flex items-center justify-between border-b border-p-blue-light bg-p-blue-light px-4 py-1.5 text-xs">
-          <div className="flex items-center gap-2 text-p-blue-dark">
-            <Eye className="h-3.5 w-3.5" />
-            <span className="font-medium">Viewing execution</span>
-            <span className="font-mono text-p-blue-dark">{executionId.slice(0, 8)}…</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <a
-              href={`/workflows/${workflow.id}/executions/${executionId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
-              title="Open full execution report"
-            >
-              <ExternalLink className="h-3.5 w-3.5" />
-              Full report
-            </a>
-            {executionPayload !== undefined && (
-              <button
-                onClick={() => {
-                  setTestInitialPayload(JSON.stringify(executionPayload, null, 2))
-                  setShowTest(true)
-                  router.push(`/workflows/${workflow.id}?mode=edit`)
-                }}
-                className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
-                title="Load this payload into the test panel"
-              >
-                <FlaskConical className="h-3.5 w-3.5" />
-                Use as test
-              </button>
-            )}
-            <button
-              disabled={replaying}
-              onClick={async () => {
-                setReplaying(true)
-                try {
-                  await api.executions.replay(executionId)
-                  setRefreshSignal((s) => s + 1)
-                } finally {
-                  setReplaying(false)
-                }
-              }}
-              className="flex items-center gap-1 text-p-blue-dark hover:text-navy disabled:opacity-50"
-              title="Re-run with the same trigger payload"
-            >
-              {replaying
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <RotateCcw className="h-3.5 w-3.5" />}
-              Replay
-            </button>
-            <button
-              onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
-              className="flex items-center gap-1 text-p-blue-dark hover:text-p-blue-dark"
-            >
-              <X className="h-3.5 w-3.5" />
-              Clear
-            </button>
-          </div>
-        </div>
-      )}
-
-      {saveError && (
-        <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
-          <AlertCircle className="h-3.5 w-3.5" />
-          {saveError}
-        </div>
-      )}
-
-      {showSettings && (
-        <div className="flex items-center gap-4 border-b border-gray-200 bg-beige px-4 py-2 text-xs">
-          <span className="font-medium text-gray-500">Slack channel override</span>
-          <input
-            className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
-            placeholder="#alerts (leave empty to use org default)"
-            value={slackChannel}
-            onChange={(e) => { setSlackChannel(e.target.value); setIsDirty(true) }}
-          />
-          <span className="text-gray-400">Overrides the default channel for this workflow&#39;s alerts.</span>
-        </div>
-      )}
-
       {/* Canvas area */}
       <div className="flex flex-1 overflow-hidden">
         {mode === 'edit' ? (
@@ -1192,7 +1120,92 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           />
         )}
 
-        <div className="relative flex-1 h-full" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
+        {/* Center column: banners stacked on top of the React Flow canvas. Right rail lives as a sibling
+            of this column so it spans the full height of the canvas row (up to just under the header). */}
+        <div className="flex flex-1 flex-col min-w-0">
+          {mode === 'view' && executionId && (
+            <div className="flex items-center justify-between border-b border-p-blue-light bg-p-blue-light px-4 py-1.5 text-xs">
+              <div className="flex items-center gap-2 text-p-blue-dark">
+                <Eye className="h-3.5 w-3.5" />
+                <span className="font-medium">Viewing execution</span>
+                <span className="font-mono text-p-blue-dark">{executionId.slice(0, 8)}…</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <a
+                  href={`/workflows/${workflow.id}/executions/${executionId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
+                  title="Open full execution report"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Full report
+                </a>
+                {executionPayload !== undefined && (
+                  <button
+                    onClick={() => {
+                      setTestInitialPayload(JSON.stringify(executionPayload, null, 2))
+                      setShowTest(true)
+                      router.push(`/workflows/${workflow.id}?mode=edit`)
+                    }}
+                    className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
+                    title="Load this payload into the test panel"
+                  >
+                    <FlaskConical className="h-3.5 w-3.5" />
+                    Use as test
+                  </button>
+                )}
+                <button
+                  disabled={replaying}
+                  onClick={async () => {
+                    setReplaying(true)
+                    try {
+                      await api.executions.replay(executionId)
+                      setRefreshSignal((s) => s + 1)
+                    } finally {
+                      setReplaying(false)
+                    }
+                  }}
+                  className="flex items-center gap-1 text-p-blue-dark hover:text-navy disabled:opacity-50"
+                  title="Re-run with the same trigger payload"
+                >
+                  {replaying
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RotateCcw className="h-3.5 w-3.5" />}
+                  Replay
+                </button>
+                <button
+                  onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
+                  className="flex items-center gap-1 text-p-blue-dark hover:text-p-blue-dark"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
+          {saveError && (
+            <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
+              <AlertCircle className="h-3.5 w-3.5" />
+              {saveError}
+            </div>
+          )}
+
+          {showSettings && (
+            <div className="flex items-center gap-4 border-b border-gray-200 bg-beige px-4 py-2 text-xs">
+              <span className="font-medium text-gray-500">Slack channel override</span>
+              <input
+                className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
+                placeholder="#alerts (leave empty to use org default)"
+                value={slackChannel}
+                onChange={(e) => { setSlackChannel(e.target.value); setIsDirty(true) }}
+              />
+              <span className="text-gray-400">Overrides the default channel for this workflow&#39;s alerts.</span>
+            </div>
+          )}
+
+          <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -1397,6 +1410,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               </div>
             )
           })()}
+          </div>
         </div>
 
         <div ref={sidePanelRef} className="contents">
@@ -1413,6 +1427,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onLiveStep={handleLiveStep}
               onTestEnd={handleTestEnd}
               onTestStepsLoaded={handleTestStepsLoaded}
+              width={sidePanelWidth}
+              onResize={setSidePanelWidth}
             />
           )}
           {selectedNode && mode === 'edit' && selectedNode.id === 'trigger' && (
@@ -1421,6 +1437,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               trigger={triggerRef.current}
               onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
+              width={sidePanelWidth}
+              onResize={setSidePanelWidth}
             />
           )}
           {selectedNode && mode === 'edit' && selectedNode.id !== 'trigger' && (
@@ -1437,6 +1455,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onEdgesChange={handleParallelEdgesChange}
               canRerun={!!lastTestExecId}
               onRerun={handleNodeRerun}
+              width={sidePanelWidth}
+              onResize={setSidePanelWidth}
             />
           )}
         </div>
@@ -1444,6 +1464,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <ExecutionStepPanel
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
+            width={sidePanelWidth}
+            onResize={setSidePanelWidth}
           />
         )}
         {selectedNode && mode === 'view' && !executionId && selectedNode.id === 'trigger' && (
@@ -1453,6 +1475,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             trigger={triggerRef.current}
             onChange={() => {}}
             onClose={() => setSelectedNodeId(null)}
+            width={sidePanelWidth}
+            onResize={setSidePanelWidth}
           />
         )}
         {selectedNode && mode === 'view' && !executionId && selectedNode.id !== 'trigger' && (
@@ -1464,6 +1488,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             nodeOptions={nodeOptions}
             refs={refs}
             edges={edges}
+            width={sidePanelWidth}
+            onResize={setSidePanelWidth}
           />
         )}
         {showVersions && (
@@ -1471,6 +1497,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             workflowId={workflow.id}
             onClose={() => setShowVersions(false)}
             onRestore={handleVersionRestore}
+            width={sidePanelWidth}
+            onResize={setSidePanelWidth}
           />
         )}
       </div>

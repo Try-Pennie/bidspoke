@@ -297,6 +297,22 @@ export async function walkGraph(
         )
         output = result.output
         lastOutput = output
+
+        // Children cut off by the parent's timeout never get their own step log
+        // written (runParallelChild was abandoned). Synthesize one so clicking
+        // the child in the UI shows what happened instead of "not reached".
+        if (Array.isArray(output)) {
+          const timeoutMs = (execNode.config.timeout_ms as number | undefined) ?? 15000
+          for (const childResult of output as ParallelChildResult[]) {
+            if (childResult.status !== 'timeout') continue
+            const childIndex = childNodes.findIndex((c) => c.namespace === childResult.namespace)
+            if (childIndex < 0) continue
+            const child = childNodes[childIndex]
+            const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
+            recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
+            await logStep(supabase, env, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, stepOrder + childIndex, node.id)
+          }
+        }
       } catch (err) {
         stepStatus = 'failed'
         errorMessage = err instanceof Error ? err.message : String(err)

@@ -10,12 +10,18 @@ export function ConstantsNode({ data, selected }: NodeProps) {
   const keyCount = dataObj ? Object.keys(dataObj).length : 0
   const outputPreview = getOutputPreview(executionStep)
 
+  // Constants always provide their payload when the workflow runs at all.
+  // Treat a missing step log as "provided" (green) instead of the default dim/unreached look.
+  const execForStyle = executionStep === null
+    ? { status: 'completed' as const, output: null, input: null, error_message: null, error_type: null, retries_used: 0, duration_ms: 0 }
+    : executionStep
+
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-indigo-400 ring-2 ring-indigo-200' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
-      style={getExecutionStyle(executionStep)}
+      } ${getNodeClasses(execForStyle, hasError)}`}
+      style={getExecutionStyle(execForStyle)}
     >
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />

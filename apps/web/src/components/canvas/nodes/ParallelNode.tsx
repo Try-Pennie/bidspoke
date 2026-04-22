@@ -21,9 +21,11 @@ export function ParallelNode({ data, selected }: NodeProps) {
   let resultLine: string | null = null
   if (executionStep?.output && Array.isArray(executionStep.output)) {
     const results = executionStep.output as ParallelChildResult[]
-    const fulfilled = results.filter((r) => r.status === 'fulfilled').length
-    const total = results.length
-    resultLine = `${fulfilled}/${total} completed`
+    const failed = results.filter((r) => r.status !== 'fulfilled').length
+    if (failed > 0) {
+      const total = results.length
+      resultLine = `${total - failed}/${total} completed`
+    }
   }
 
   return (
@@ -47,7 +49,7 @@ export function ParallelNode({ data, selected }: NodeProps) {
         <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {resultLine ? (
-          <p className="mt-1 truncate rounded bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600">
+          <p className="mt-1 truncate rounded bg-amber-50 px-1.5 py-0.5 font-mono text-xs text-amber-700">
             {resultLine}
           </p>
         ) : (

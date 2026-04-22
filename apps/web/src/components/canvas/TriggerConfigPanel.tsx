@@ -5,6 +5,7 @@ import { X, Plus, Trash2, HelpCircle, Copy, Check } from 'lucide-react'
 import type { TriggerDef } from '@/types/workflow'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
+import RailResizeHandle from './RailResizeHandle'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
 const HOOK_BASE = 'https://hook.trypennie.dev'
@@ -15,9 +16,12 @@ interface Props {
   onChange: (trigger: TriggerDef) => void
   onClose: () => void
   readOnly?: boolean
+  width?: number
+  onResize?: (width: number) => void
 }
 
-export default function TriggerConfigPanel({ workflowId, trigger, onChange, onClose, readOnly = false }: Props) {
+export default function TriggerConfigPanel({ workflowId, trigger, onChange, onClose, readOnly = false, width, onResize }: Props) {
+  const effectiveWidth = width ?? 320
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
 
@@ -54,7 +58,11 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
   }
 
   return (
-    <aside className="flex w-80 flex-shrink-0 flex-col border-l border-gray-200 bg-white">
+    <aside
+      className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
+      style={{ width: effectiveWidth }}
+    >
+      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Trigger</p>

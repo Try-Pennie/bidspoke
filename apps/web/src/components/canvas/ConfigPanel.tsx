@@ -13,6 +13,7 @@ import TemplateTextarea from './TemplateTextarea'
 import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ChevronRight, ArrowRight, Copy, Link2, RotateCcw, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
+import RailResizeHandle from './RailResizeHandle'
 
 interface Props {
   node: Node
@@ -28,13 +29,16 @@ interface Props {
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
   canRerun?: boolean
   onRerun?: (namespace: string) => void
+  width?: number
+  onResize?: (width: number) => void
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, width, onResize }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
   const isCode = type === 'code'
+  const effectiveWidth = width ?? (isCode ? 540 : 320)
 
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showMeta, setShowMeta] = useState(true)
@@ -62,7 +66,11 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   }
 
   return (
-    <aside className={`flex flex-col border-l border-gray-200 bg-white ${isCode ? 'w-[540px]' : 'w-80'}`}>
+    <aside
+      className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
+      style={{ width: effectiveWidth }}
+    >
+      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
