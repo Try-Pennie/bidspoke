@@ -454,10 +454,27 @@ workflows.post('/:id/test-node', async (c) => {
   const node = definition.nodes.find((n) => n.namespace === body.namespace)
   if (!node) return c.json({ error: 'Node not found in definition' }, 404)
 
-  // Deploy code node from current (unsaved) definition
+  // Deploy code node from current (unsaved) definition — propagate errors
+  // in the response so a silent upload failure doesn't leave the user re-running
+  // stale code without feedback.
+  let deployResult: { deployed: boolean; skipped: boolean; error?: string } = { deployed: false, skipped: false }
   if (node.type === 'code') {
-    await deployCodeNodes(id, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
-      .catch((e) => console.error('[code-nodes] test-node deploy failed:', e))
+    try {
+      const results = await deployCodeNodes(id, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
+      const failed = results.find((r) => r.error)
+      if (failed?.error) {
+        deployResult = { deployed: false, skipped: false, error: failed.error }
+        return c.json({ output: null, status: 'failed', error_message: `Code deploy failed: ${failed.error}`, duration_ms: 0, deploy: deployResult }, 500)
+      }
+      // deployCodeNodes returns [] when nothing to deploy; non-empty means it
+      // ran. Distinguish skip vs. actual upload by looking at logs — but for
+      // the response, both are "ok, new code is live" from the caller's POV.
+      deployResult = { deployed: results.length > 0, skipped: false }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[code-nodes] test-node deploy threw:', e)
+      return c.json({ output: null, status: 'failed', error_message: `Code deploy threw: ${msg}`, duration_ms: 0, deploy: { deployed: false, skipped: false, error: msg } }, 500)
+    }
   }
 
   // Reconstruct execution context
@@ -468,10 +485,10 @@ workflows.post('/:id/test-node', async (c) => {
   const started = Date.now()
   try {
     const result = await executeNode(node, ctx, c.env, supabase)
-    return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started })
+    return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started, deploy: deployResult })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    return c.json({ output: null, status: 'failed', error_message: msg, duration_ms: Date.now() - started })
+    return c.json({ output: null, status: 'failed', error_message: msg, duration_ms: Date.now() - started, deploy: deployResult })
   }
 })
 

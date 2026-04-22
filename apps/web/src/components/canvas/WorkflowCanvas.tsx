@@ -453,7 +453,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         },
       }))
     } catch (e) {
+      // Surface the failure in the step display instead of silently console-logging.
+      // Common cause: the code-node deploy failed (CF upload error) — without this,
+      // the user clicks Re-run, sees nothing happen, and has no clue the upload
+      // never landed.
+      const msg = e instanceof Error ? e.message : String(e)
       console.error('Re-run failed:', e)
+      setLiveSteps((prev) => ({
+        ...prev,
+        [namespace]: {
+          status: 'failed' as ExecutionStep['status'],
+          output: null,
+          input: null,
+          error_message: `Re-run failed: ${msg}`,
+          error_type: null,
+          duration_ms: 0,
+          retries_used: 0,
+        },
+      }))
     }
   }, [lastTestExecId, nodes, edges, workflow.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
