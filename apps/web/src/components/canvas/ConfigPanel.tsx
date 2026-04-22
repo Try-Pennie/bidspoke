@@ -10,7 +10,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy, RotateCcw, Loader2 } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ChevronRight, ArrowRight, Copy, Link2, RotateCcw, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 
@@ -311,14 +311,135 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       </div>
       )}
 
-      {exec && <StepResults exec={exec} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} />}
+      {exec && <StepResults exec={exec} namespace={data.namespace ?? ''} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} />}
     </aside>
+  )
+}
+
+// ── JSON tree with copyable paths/values ──────────────────────────────────────
+
+function JsonNode({ label, value, path, depth }: {
+  label: string
+  value: unknown
+  path: string
+  depth: number
+}) {
+  const [expanded, setExpanded] = useState(depth < 2)
+  const [copiedKey, setCopiedKey] = useState<'path' | 'value' | null>(null)
+
+  function copyTo(text: string, key: 'path' | 'value') {
+    navigator.clipboard.writeText(text).catch(() => {})
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 1400)
+  }
+
+  const isObj = value !== null && value !== undefined && typeof value === 'object'
+  const childEntries: [string, unknown, string][] = isObj
+    ? Array.isArray(value)
+      ? (value as unknown[]).map((v, i) => [`[${i}]`, v, `${path}[${i}]`])
+      : Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, v, `${path}.${k}`])
+    : []
+
+  const copyableValue = isObj
+    ? JSON.stringify(value)
+    : value === null || value === undefined
+    ? String(value)
+    : typeof value === 'string'
+    ? value
+    : String(value)
+
+  const displayValue = isObj ? null
+    : value === null || value === undefined
+    ? <span className="text-gray-400 italic">null</span>
+    : typeof value === 'boolean'
+    ? <span className="text-amber-600">{String(value)}</span>
+    : typeof value === 'number'
+    ? <span className="text-blue-600">{value}</span>
+    : <span className="text-green-700 break-all">{'"'}{String(value)}{'"'}</span>
+
+  return (
+    <div>
+      <div
+        className="group flex min-h-[22px] items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-blue-50 cursor-default"
+        style={{ paddingLeft: `${depth * 14 + 4}px` }}
+      >
+        {isObj ? (
+          <button
+            onClick={() => setExpanded((e) => !e)}
+            className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+          >
+            <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          </button>
+        ) : (
+          <span className="h-3.5 w-3.5 shrink-0" />
+        )}
+
+        <span className="shrink-0 font-mono text-xs text-gray-700">{label}</span>
+        <span className="shrink-0 font-mono text-xs text-gray-400">:</span>
+
+        {isObj && !expanded && (
+          <span className="font-mono text-xs text-gray-400 ml-0.5">
+            {Array.isArray(value) ? `[${childEntries.length}]` : `{${childEntries.length}}`}
+          </span>
+        )}
+        {!isObj && <span className="font-mono text-xs ml-0.5 min-w-0">{displayValue}</span>}
+
+        <div className="ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex">
+          {copiedKey === 'path' ? (
+            <span className="px-1 text-[10px] text-green-600">copied</span>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); copyTo(path, 'path') }}
+              className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+              title={`Copy path: ${path}`}
+            >
+              <Link2 className="h-3 w-3" />
+            </button>
+          )}
+          {copiedKey === 'value' ? (
+            <span className="px-1 text-[10px] text-green-600">copied</span>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); copyTo(copyableValue, 'value') }}
+              className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+              title="Copy value"
+            >
+              <Copy className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {isObj && expanded && childEntries.map(([lbl, val, childPath]) => (
+        <JsonNode key={lbl} label={lbl} value={val} path={childPath} depth={depth + 1} />
+      ))}
+    </div>
+  )
+}
+
+function JsonTreeView({ data, basePath }: { data: unknown; basePath: string }) {
+  if (data === null || data === undefined || typeof data !== 'object') {
+    return (
+      <div className="rounded border border-gray-200 bg-gray-50 p-1">
+        <JsonNode label="value" value={data} path={basePath} depth={0} />
+      </div>
+    )
+  }
+  const entries: [string, unknown, string][] = Array.isArray(data)
+    ? (data as unknown[]).map((v, i) => [`[${i}]`, v, `${basePath}[${i}]`])
+    : Object.entries(data as Record<string, unknown>).map(([k, v]) => [k, v, `${basePath}.${k}`])
+  return (
+    <div className="max-h-64 overflow-auto rounded border border-gray-200 bg-gray-50 p-1">
+      {entries.map(([lbl, val, path]) => (
+        <JsonNode key={lbl} label={lbl} value={val} path={path} depth={0} />
+      ))}
+    </div>
   )
 }
 
 // ── Step results section (shown below config after a test run) ─────────────────
 
-function StepResults({ exec, canRerun, onRerun }: { exec: ExecutionStep; canRerun?: boolean; onRerun?: () => Promise<void> }) {
+function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionStep; namespace: string; canRerun?: boolean; onRerun?: () => Promise<void> }) {
   const [open, setOpen] = useState(true)
   const [showInput, setShowInput] = useState(false)
   const [rerunning, setRerunning] = useState(false)
@@ -375,21 +496,21 @@ function StepResults({ exec, canRerun, onRerun }: { exec: ExecutionStep; canReru
           )}
           {hasOutput && (
             <div>
-              <p className="mb-1 text-xs font-medium text-gray-500">Output</p>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">{JSON.stringify(exec.output, null, 2)}</pre>
+              <p className="mb-1.5 text-xs font-medium text-gray-500">Output</p>
+              <JsonTreeView data={exec.output} basePath={`steps.${namespace}.output`} />
             </div>
           )}
           {hasInput && (
             <div>
               <button
                 onClick={() => setShowInput((s) => !s)}
-                className="mb-1 flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-600"
+                className="mb-1.5 flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-600"
               >
                 <ChevronDown className={`h-3 w-3 transition-transform ${showInput ? '' : '-rotate-90'}`} />
                 Input
               </button>
               {showInput && (
-                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">{JSON.stringify(exec.input, null, 2)}</pre>
+                <JsonTreeView data={exec.input} basePath={`steps.${namespace}.input`} />
               )}
             </div>
           )}
