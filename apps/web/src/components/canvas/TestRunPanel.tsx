@@ -27,6 +27,7 @@ interface Props {
   onTestStart?: (executionId: string) => void
   onLiveStep?: (namespace: string, step: ExecutionStep) => void
   onTestEnd?: () => void
+  onTestStepsLoaded?: (steps: Record<string, ExecutionStep>) => void
 }
 
 const DEFAULT_PAYLOAD = '{\n  \n}'
@@ -50,6 +51,7 @@ export default function TestRunPanel({
   onTestStart,
   onLiveStep,
   onTestEnd,
+  onTestStepsLoaded,
 }: Props) {
   const [payload, setPayload] = useState(initialPayload ?? DEFAULT_PAYLOAD)
   const [running, setRunning] = useState(false)
@@ -137,7 +139,22 @@ export default function TestRunPanel({
       try {
         const exec = await api.executions.get(execId)
         if (exec.steps?.length) {
-          setTestSteps(exec.steps as TestStep[])
+          const steps = exec.steps as TestStep[]
+          setTestSteps(steps)
+          // Feed results back to canvas for node + edge coloring
+          const byNamespace: Record<string, ExecutionStep> = {}
+          for (const s of steps) {
+            byNamespace[s.step_namespace] = {
+              status: s.status as ExecutionStep['status'],
+              input: s.input,
+              output: s.output,
+              error_message: s.error_message,
+              error_type: null,
+              duration_ms: s.duration_ms,
+              retries_used: 0,
+            }
+          }
+          onTestStepsLoaded?.(byNamespace)
         }
       } catch {
         // non-critical

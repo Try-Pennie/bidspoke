@@ -419,6 +419,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setTestRunning(false)
   }, [])
 
+  const handleTestStepsLoaded = useCallback((steps: Record<string, ExecutionStep>) => {
+    setLiveSteps(steps)
+  }, [])
+
   // Apply live step data to nodes during a test run
   useEffect(() => {
     const hasLive = Object.keys(liveSteps).length > 0 || testRunning
@@ -446,9 +450,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     )
   }, [liveSteps, testRunning]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Color edges based on which nodes ran
+  // Color edges based on which nodes ran (view mode uses executionSteps; test mode uses liveSteps)
   useEffect(() => {
-    if (!executionSteps) {
+    const stepsToUse = executionSteps ?? (Object.keys(liveSteps).length > 0 ? liveSteps : undefined)
+    if (!stepsToUse) {
       setEdges((es) => es.map((e) => ({ ...e, animated: false, style: undefined })))
       return
     }
@@ -465,8 +470,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         const targetNs = idToNs.get(edge.target)
         const sourceRan =
           edge.source === 'trigger' ||
-          (sourceNs !== undefined && executionSteps[sourceNs] != null)
-        const targetRan = targetNs !== undefined && executionSteps[targetNs] != null
+          (sourceNs !== undefined && stepsToUse[sourceNs] != null)
+        const targetRan = targetNs !== undefined && stepsToUse[targetNs] != null
 
         if (sourceRan && targetRan) {
           // Taken path — green + animated
@@ -480,7 +485,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         }
       })
     )
-  }, [executionSteps]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [executionSteps, liveSteps]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const refs = [
     'trigger.payload',
@@ -1376,6 +1381,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onTestStart={handleTestStart}
               onLiveStep={handleLiveStep}
               onTestEnd={handleTestEnd}
+              onTestStepsLoaded={handleTestStepsLoaded}
             />
           )}
           {selectedNode && mode === 'edit' && !showTest && selectedNode.id === 'trigger' && (
