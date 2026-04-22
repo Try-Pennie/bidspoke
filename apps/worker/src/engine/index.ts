@@ -297,6 +297,15 @@ export async function walkGraph(
         .map((id) => findNode(id, definition.nodes))
         .filter((n): n is NodeDefinition => n !== undefined)
 
+      // Step-order allocation for the whole parallel block, so the UI renders
+      // the flow in the expected order:
+      //   parallel_start  →  child_0, child_1, ...  →  parallel_end  →  next step
+      // Previous allocation collided (children started at stepOrder + 0, same as
+      // parallel_start; parallel_end shared stepOrder with child_1).
+      const parallelStartOrder = stepOrder
+      const childOrderBase = stepOrder + 1
+      const parallelEndOrder = childOrderBase + childNodes.length
+
       // Look ahead: if a parallel_end join node exists, use its config for
       // wait_for/timeout so those settings live on the end node in the UI.
       const previewChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
@@ -315,7 +324,7 @@ export async function walkGraph(
           execNode,
           childNodes,
           (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id, workflowVersionId, stepLogQueue)
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue)
         )
         output = result.output
         lastOutput = output
@@ -332,7 +341,7 @@ export async function walkGraph(
             const child = childNodes[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
-            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, stepOrder + childIndex, node.id)
+            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id)
           }
         }
       } catch (err) {
@@ -348,7 +357,7 @@ export async function walkGraph(
       }
 
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder)
+      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelStartOrder)
 
       // Locate the parallel_end join node — any edge from a child pointing to a
       // parallel_end counts. Logged with the same status as the parallel start
@@ -363,7 +372,7 @@ export async function walkGraph(
       const endNode = endNodeId ? findNode(endNodeId, definition.nodes) : undefined
       if (endNode) {
         recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-        logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder + 1)
+        logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelEndOrder)
       }
 
       if (stepStatus === 'failed') {
@@ -383,7 +392,8 @@ export async function walkGraph(
         const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
         current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
       }
-      stepOrder++
+      // Advance past the whole parallel block (parallel_start + children + parallel_end)
+      stepOrder = parallelEndOrder + 1
       continue
     }
 
