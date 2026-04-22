@@ -308,7 +308,72 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       </div>
       </div>
       )}
+
+      {exec && <StepResults exec={exec} />}
     </aside>
+  )
+}
+
+// ── Step results section (shown below config after a test run) ─────────────────
+
+function StepResults({ exec }: { exec: ExecutionStep }) {
+  const [open, setOpen] = useState(true)
+  const [showInput, setShowInput] = useState(false)
+  const hasOutput = exec.output !== null && exec.output !== undefined
+  const hasInput = exec.input !== null && exec.input !== undefined
+
+  const statusLabel = exec.status === 'completed' ? 'Success'
+    : exec.status === 'failed' ? 'Failed'
+    : exec.status === 'failed_with_fallback' ? 'Failed (fallback)'
+    : exec.status === 'skipped' ? 'Skipped'
+    : exec.status
+
+  const statusColor = exec.status === 'completed'
+    ? 'bg-green-50 border-green-200 text-green-700'
+    : exec.status === 'skipped'
+    ? 'bg-gray-50 border-gray-200 text-gray-500'
+    : 'bg-red-50 border-red-200 text-red-700'
+
+  return (
+    <div className="border-t border-gray-200 flex-shrink-0">
+      <button
+        onClick={() => setOpen((s) => !s)}
+        className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+      >
+        <span>Results</span>
+        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} />
+      </button>
+      {open && (
+        <div className="space-y-2 px-4 pb-4">
+          <div className={`rounded-md border px-3 py-2 text-xs font-medium ${statusColor}`}>
+            {statusLabel}{exec.duration_ms > 0 ? ` · ${exec.duration_ms}ms` : ''}
+          </div>
+          {exec.error_message && (
+            <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded border border-red-100 bg-red-50 p-2 text-xs text-red-700">{exec.error_message}</pre>
+          )}
+          {hasOutput && (
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-500">Output</p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">{JSON.stringify(exec.output, null, 2)}</pre>
+            </div>
+          )}
+          {hasInput && (
+            <div>
+              <button
+                onClick={() => setShowInput((s) => !s)}
+                className="mb-1 flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-600"
+              >
+                <ChevronDown className={`h-3 w-3 transition-transform ${showInput ? '' : '-rotate-90'}`} />
+                Input
+              </button>
+              {showInput && (
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-gray-50 p-2 text-xs text-gray-700">{JSON.stringify(exec.input, null, 2)}</pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
