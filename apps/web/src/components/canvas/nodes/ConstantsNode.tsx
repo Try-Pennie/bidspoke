@@ -11,12 +11,13 @@ export function ConstantsNode({ data, selected }: NodeProps) {
   const outputPreview = getOutputPreview(executionStep)
 
   // Constants always provide their payload when the workflow runs at all.
-  // Treat a missing step log (null OR undefined) as "provided" (green) instead
-  // of the default dim/unreached look. Any real status (completed/failed/running)
-  // wins and renders as itself.
-  const execForStyle = executionStep
-    ? executionStep
-    : { status: 'completed' as const, output: null, input: null, error_message: null, error_type: null, retries_used: 0, duration_ms: 0 }
+  // Only synthesize a completed state when executionStep is explicitly null
+  // (post-execution, step not captured) — NOT when it's undefined (edit mode
+  // with no test ever run; would paint green spuriously).
+  const execForStyle =
+    executionStep === null
+      ? { status: 'completed' as const, output: null, input: null, error_message: null, error_type: null, retries_used: 0, duration_ms: 0 }
+      : executionStep
 
   return (
     <div
