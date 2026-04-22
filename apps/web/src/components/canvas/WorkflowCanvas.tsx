@@ -1513,22 +1513,31 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         </div>
 
         <div ref={sidePanelRef} className="contents">
-          {mode === 'edit' && showTest && (!selectedNode || selectedNode.id === 'trigger') && (
-            <TestRunPanel
-              workflowId={workflow.id}
-              currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
-              onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
-              onComplete={() => setRefreshSignal((s) => s + 1)}
-              initialPayload={testInitialPayload}
-              savedPayloads={savedPayloads}
-              onSavedPayloadsChange={setSavedPayloads}
-              onTestStart={handleTestStart}
-              onLiveStep={handleLiveStep}
-              onTestEnd={handleTestEnd}
-              onTestStepsLoaded={handleTestStepsLoaded}
-              width={sidePanelWidth}
-              onResize={setSidePanelWidth}
-            />
+          {/* TestRunPanel stays mounted while the test tool is open so its
+              local state (steps, result banner, running status) survives
+              when the user clicks into a node and back to the trigger. */}
+          {mode === 'edit' && showTest && (
+            <div
+              style={{
+                display: !selectedNode || selectedNode.id === 'trigger' ? 'contents' : 'none',
+              }}
+            >
+              <TestRunPanel
+                workflowId={workflow.id}
+                currentDefinition={flowToDef(nodes, edges, triggerRef.current)}
+                onClose={() => { setShowTest(false); setTestInitialPayload(undefined) }}
+                onComplete={() => setRefreshSignal((s) => s + 1)}
+                initialPayload={testInitialPayload}
+                savedPayloads={savedPayloads}
+                onSavedPayloadsChange={setSavedPayloads}
+                onTestStart={handleTestStart}
+                onLiveStep={handleLiveStep}
+                onTestEnd={handleTestEnd}
+                onTestStepsLoaded={handleTestStepsLoaded}
+                width={sidePanelWidth}
+                onResize={setSidePanelWidth}
+              />
+            </div>
           )}
           {selectedNode && mode === 'edit' && selectedNode.id === 'trigger' && !showTest && (
             <TriggerConfigPanel
