@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { executeCodeNode } from '../code'
-import { codeWorkerName } from '../../../lib/code-node-deployer'
+import { codeWorkerName, codeBundleName, buildBundledWorkerScript } from '../../../lib/code-node-deployer'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
 import type { Env } from '../../../index'
 
@@ -16,74 +16,124 @@ function node(config: NodeDefinition['config']): NodeDefinition {
   return { id: 'n1', namespace: 'code_step', type: 'code', config }
 }
 
-function makeEnv(workerFetch: ReturnType<typeof vi.fn>): Env {
+/**
+ * Builds an Env whose DYNAMIC_WORKER_LOADER routes `get(name)` to a dedicated
+ * mock fetch — lets tests assert which worker name was dispatched to, and
+ * simulate bundle-missing scenarios by returning a 503 from the bundle binding.
+ */
+function makeEnv(getRouter: (name: string) => ReturnType<typeof vi.fn>): Env {
   return {
     DYNAMIC_WORKER_LOADER: {
-      get: vi.fn().mockReturnValue({ fetch: workerFetch }),
+      get: vi.fn((name: string) => ({ fetch: getRouter(name) })),
     } as unknown as DispatchNamespace,
   } as unknown as Env
 }
 
 describe('executeCodeNode', () => {
   it('throws if script is not configured', async () => {
-    const env = makeEnv(vi.fn())
+    const env = makeEnv(() => vi.fn())
     await expect(executeCodeNode(node({}), ctx(), env)).rejects.toThrow(/no script configured/)
   })
 
   it('throws if script is empty string', async () => {
-    const env = makeEnv(vi.fn())
+    const env = makeEnv(() => vi.fn())
     await expect(executeCodeNode(node({ script: '   ' }), ctx(), env)).rejects.toThrow(/no script configured/)
   })
 
-  it('dispatches to the correct worker name', async () => {
-    const workerFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
-    const env = makeEnv(workerFetch)
+  it('dispatches to the bundled worker with /execute/{namespace} path', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : vi.fn()))
     await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
-    const expectedName = codeWorkerName('wf-abc123', 'code_step')
-    expect((env.DYNAMIC_WORKER_LOADER.get as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(expectedName)
+    expect(bundleFetch).toHaveBeenCalledTimes(1)
+    const url = bundleFetch.mock.calls[0][0] as string
+    expect(url).toBe('https://worker/execute/code_step')
   })
 
   it('sends payload, steps, env, and execution to the worker', async () => {
-    const workerFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
-    const env = makeEnv(workerFetch)
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
     const c = ctx()
     await executeCodeNode(node({ script: 'return {}' }), c, env)
-    const body = JSON.parse(workerFetch.mock.calls[0][1].body as string) as unknown
-    expect(body).toMatchObject({ payload: c.trigger.payload, steps: c.steps, env: c.env, execution: { trace_id: 'trace' } })
+    const body = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as unknown
+    expect(body).toMatchObject({ payload: c.trigger.payload, env: c.env, execution: { trace_id: 'trace' } })
   })
 
   it('returns the JSON output from the worker', async () => {
     const output = { credit_score: 720, approved: true }
-    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
     const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
     expect(result.output).toEqual(output)
   })
 
   it('throws with status and body on non-OK worker response', async () => {
-    const env = makeEnv(vi.fn().mockResolvedValue(new Response('ReferenceError: x is not defined', { status: 500 })))
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response('ReferenceError: x is not defined', { status: 500 })))
     await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
   })
 
   it('returns earlyResponse when script returns { response: { status, body } }', async () => {
     const sentinel = { response: { status: 200, body: { status: 'rejected', reason: 'ineligible state' } } }
-    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
     const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
     expect(result.earlyResponse).toEqual({ status: 200, body: { status: 'rejected', reason: 'ineligible state' }, headers: undefined })
   })
 
   it('returns earlyExit when script returns { exit: true }', async () => {
     const sentinel = { exit: true, reason: 'bidding not active' }
-    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
     const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
     expect(result.earlyExit).toBe(true)
   })
 
   it('does not set earlyResponse for objects with a response field that is not an object', async () => {
     const output = { response: 'some string value', other: 123 }
-    const env = makeEnv(vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(output), { status: 200 })))
     const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
     expect(result.earlyResponse).toBeUndefined()
     expect(result.output).toEqual(output)
+  })
+})
+
+describe('executeCodeNode — bundle fallback to per-node worker', () => {
+  it('falls back to the per-node worker when the bundle returns 503 (worker not deployed)', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('Worker not found', { status: 503 }))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"result":"from-legacy"}', { status: 200 }))
+    const bundleName = codeBundleName('wf-abc123')
+    const perNodeName = codeWorkerName('wf-abc123', 'code_step')
+    const env = makeEnv((name) => {
+      if (name === bundleName) return bundleFetch
+      if (name === perNodeName) return perNodeFetch
+      return vi.fn()
+    })
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(bundleFetch).toHaveBeenCalledTimes(1)
+    expect(perNodeFetch).toHaveBeenCalledTimes(1)
+    expect(perNodeFetch.mock.calls[0][0]).toBe('https://worker/execute')
+    expect(result.output).toEqual({ result: 'from-legacy' })
+  })
+
+  it('falls back when the bundle returns 404 (namespace not in bundle)', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'script not found: code_step' }), { status: 404 }))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(perNodeFetch).toHaveBeenCalledTimes(1)
+    expect(result.output).toEqual({ ok: true })
+  })
+
+  it('does NOT fall back on a 500 script error from the bundle (surfaces the error)', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('TypeError: x.y is undefined', { status: 500 }))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
+    expect(perNodeFetch).not.toHaveBeenCalled()
+  })
+
+  it('falls back when the binding itself throws', async () => {
+    const bundleFetch = vi.fn().mockRejectedValue(new Error('binding resolve failed'))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
+    const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(result.output).toEqual({ ok: true })
   })
 })
 
@@ -95,5 +145,43 @@ describe('codeWorkerName', () => {
   it('truncates to 64 chars', () => {
     const name = codeWorkerName('a'.repeat(36), 'n'.repeat(40))
     expect(name.length).toBeLessThanOrEqual(64)
+  })
+})
+
+describe('codeBundleName', () => {
+  it('produces a deterministic bundle name from workflow id', () => {
+    expect(codeBundleName('abc12345-xxxx-yyyy')).toBe('bs-wf-abc12345')
+  })
+
+  it('is distinct from the per-node legacy name', () => {
+    const wfId = 'abc12345-xxxx'
+    expect(codeBundleName(wfId)).not.toBe(codeWorkerName(wfId, 'validate'))
+  })
+})
+
+describe('buildBundledWorkerScript', () => {
+  it('wraps each script into a named entry in the scripts map', () => {
+    const bundle = buildBundledWorkerScript([
+      { namespace: 'parse_name', script: 'return { firstName: payload.name }' },
+      { namespace: 'validate', script: 'return { ok: true }' },
+    ])
+    expect(bundle).toContain('"parse_name":')
+    expect(bundle).toContain('"validate":')
+    expect(bundle).toContain('return { firstName: payload.name }')
+    expect(bundle).toContain('return { ok: true }')
+  })
+
+  it('exports a fetch handler with /execute/{namespace} routing', () => {
+    const bundle = buildBundledWorkerScript([{ namespace: 'foo', script: 'return 1' }])
+    expect(bundle).toContain('export default {')
+    expect(bundle).toContain('async fetch(request)')
+    // Regex literal is emitted with escaped slashes: /^\/execute\/([^/]+)$/
+    expect(bundle).toContain('\\/execute\\/([^/]+)')
+  })
+
+  it('provides trigger and process locals to each script closure', () => {
+    const bundle = buildBundledWorkerScript([{ namespace: 'x', script: 'return trigger.payload' }])
+    expect(bundle).toContain('const trigger = { payload }')
+    expect(bundle).toContain('const process = { env }')
   })
 })

@@ -1,11 +1,13 @@
-// Code node — user-defined JS executed in a sandboxed Dynamic Worker (Workers for Platforms)
-// Config: { script: string }
-// The script is auto-deployed to the "bidspoke-code-nodes" dispatch namespace on workflow save.
-// Worker receives { payload, steps, env } and must return a JSON-serialisable value.
+// Code node — user-defined JS executed in a sandboxed Dynamic Worker.
+// On workflow save, all code scripts are deployed into a single bundled worker
+// per workflow (one dispatch worker, path-routed by namespace). This executor
+// dispatches to /execute/{namespace} on that bundle. If the bundle is missing
+// or doesn't contain this namespace (migration in progress), it falls back to
+// the legacy per-node worker.
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import type { Env } from '../../index'
-import { codeWorkerName } from '../../lib/code-node-deployer'
+import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
 
 export async function executeCodeNode(
   node: NodeDefinition,
@@ -17,9 +19,6 @@ export async function executeCodeNode(
     throw new Error(`Code node "${node.namespace}" has no script configured`)
   }
 
-  const workerName = codeWorkerName(ctx.trigger.workflow_id, node.namespace)
-  const binding = env.DYNAMIC_WORKER_LOADER.get(workerName)
-
   const rawEnv = env as unknown as Record<string, unknown>
   const cfSecrets: Record<string, string> = {}
   for (const key of Object.keys(rawEnv)) {
@@ -27,17 +26,14 @@ export async function executeCodeNode(
   }
   const mergedEnv = { ...cfSecrets, ...ctx.env }
 
-  const res = await binding.fetch('https://worker/execute', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      payload: ctx.trigger.payload,
-      steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
-      env: mergedEnv,
-      execution: { trace_id: ctx.trigger.trace_id },
-    }),
+  const body = JSON.stringify({
+    payload: ctx.trigger.payload,
+    steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
+    env: mergedEnv,
+    execution: { trace_id: ctx.trigger.trace_id },
   })
 
+  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body)
   const text = await res.text()
 
   if (!res.ok) {
@@ -64,4 +60,46 @@ export async function executeCodeNode(
   }
 
   return { output }
+}
+
+/**
+ * Attempts to dispatch to the bundled worker first; falls back to the legacy
+ * per-node worker if the bundle is missing (503) or the namespace isn't in
+ * the bundle (404). Any other status (including 500 from a user script error)
+ * is returned directly — we do NOT fall back on script errors, since that
+ * could silently run stale code.
+ */
+async function dispatchWithFallback(
+  env: Env,
+  workflowId: string,
+  namespace: string,
+  body: string
+): Promise<Response> {
+  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(workflowId))
+  let bundleRes: Response | undefined
+  let bindingError: unknown
+  try {
+    bundleRes = await bundleBinding.fetch(`https://worker/execute/${namespace}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    })
+  } catch (err) {
+    bindingError = err
+  }
+
+  const bundleMissing =
+    bindingError !== undefined ||
+    bundleRes?.status === 503 ||
+    bundleRes?.status === 404
+
+  if (!bundleMissing && bundleRes) return bundleRes
+
+  console.log(`[code-node] Bundle miss for "${namespace}" on workflow ${workflowId.slice(0, 8)}, falling back to per-node worker`)
+  const perNodeBinding = env.DYNAMIC_WORKER_LOADER.get(codeWorkerName(workflowId, namespace))
+  return perNodeBinding.fetch('https://worker/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  })
 }
