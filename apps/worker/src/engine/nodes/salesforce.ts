@@ -166,7 +166,7 @@ export async function executeSalesforceNode(
     if (res.status === 401) {
       await env.WORKFLOW_CACHE.delete(`sf-token-${ctx.trigger.org_id}`)
     }
-    throw new Response(responseText, { status: res.status, headers: res.headers })
+    throw new Error(`Salesforce API error (${res.status}): ${responseText}`)
   }
 
   return { output: { status: res.status, body: parsedBody } }
