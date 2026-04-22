@@ -502,13 +502,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       es.map((edge) => {
         const sourceNs = idToNs.get(edge.source)
         const targetNs = idToNs.get(edge.target)
-        const sourceRan =
-          edge.source === 'trigger' ||
-          (sourceNs !== undefined && stepsToUse[sourceNs] != null)
-        const targetRan = targetNs !== undefined && stepsToUse[targetNs] != null
+        const sourceStep = sourceNs !== undefined ? stepsToUse[sourceNs] : undefined
+        const targetStep = targetNs !== undefined ? stepsToUse[targetNs] : undefined
+        const sourceRan = edge.source === 'trigger' || sourceStep != null
+        const targetRan = targetStep != null
+        const sourceFailed = sourceStep?.status === 'failed' || sourceStep?.status === 'failed_with_fallback'
+        const targetFailed = targetStep?.status === 'failed' || targetStep?.status === 'failed_with_fallback'
 
         if (sourceRan && targetRan) {
-          // Taken path — green + animated
+          // Path was taken — red if either endpoint failed, green otherwise
+          if (sourceFailed || targetFailed) {
+            return { ...edge, animated: true, style: { stroke: '#ef4444', strokeWidth: 2 } }
+          }
           return { ...edge, animated: true, style: { stroke: '#22c55e', strokeWidth: 2 } }
         } else if (sourceRan) {
           // Source ran but this branch wasn't taken (e.g. filter pass when exit fired)
