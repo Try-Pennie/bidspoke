@@ -681,3 +681,50 @@ describe('end-to-end: concurrent execution — no race conditions', () => {
     expect(uniqueIds.size).toBe(20)
   })
 })
+
+// ── parallel_end logging on parallel failure ─────────────────────────────────
+
+describe('parallel_end logging — matches parallel start status', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  it('logs parallel_end with failed status when parallel itself fails', async () => {
+    const { writeStepLog } = await import('../step-logger')
+    vi.mocked(writeStepLog).mockResolvedValue(undefined)
+
+    // wait_for:'first' with every child rejecting causes executeParallelNode to throw
+    vi.mocked(executeNode).mockRejectedValue(new Error('child blew up'))
+
+    const childA = node('a', 'child_a', 'code')
+    const childB = node('b', 'child_b', 'code')
+    const par    = parallelNode('par', 'fan_out', ['a', 'b'], { wait_for: 'first' })
+    const end    = node('end', 'fan_end', 'parallel_end')
+    const tail   = node('tail', 'tail', 'response')
+
+    const def = {
+      nodes: [par, childA, childB, end, tail],
+      edges: [
+        edge('a', 'end'),
+        edge('b', 'end'),
+        edge('end', 'tail'),
+      ],
+    }
+
+    await expect(
+      walkGraph(makeCtx(), def, 'exec-par-fail', new Date().toISOString(), supabase, env)
+    ).rejects.toThrow()
+
+    const loggedRows = vi.mocked(writeStepLog).mock.calls.map((c) => c[1] as {
+      step_namespace: string
+      step_type: string
+      status: string
+    })
+    const endRow = loggedRows.find((r) => r.step_namespace === 'fan_end')
+    expect(endRow).toBeDefined()
+    expect(endRow!.step_type).toBe('parallel_end')
+    expect(endRow!.status).toBe('failed')
+  })
+})

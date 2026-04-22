@@ -31,7 +31,15 @@ export async function writeStepLog(
     input: redactPii(entry.input, piiFields),
     output: redactPii(entry.output, piiFields),
   }
-  await supabase.from('execution_steps').insert(row)
+  const { error } = await supabase.from('execution_steps').insert(row)
+  if (error) {
+    console.error('[step-logger] execution_steps insert failed', {
+      execution_id: entry.execution_id,
+      step_namespace: entry.step_namespace,
+      step_type: entry.step_type,
+      error,
+    })
+  }
 }
 
 export async function createExecutionRecord(

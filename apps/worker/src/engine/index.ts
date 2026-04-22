@@ -328,25 +328,28 @@ export async function walkGraph(
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
       await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder)
 
-      if (stepStatus === 'failed') {
-        throw new StepFailureError(errorMessage!, node.namespace, errorType)
-      }
-
-      // Find the parallel_end join node by looking for a parallel_end node that
-      // any child points to. If found, record output there and continue from it.
-      // Falls back to last-child continuation for pre-parallel_end workflows.
+      // Locate the parallel_end join node — any edge from a child pointing to a
+      // parallel_end counts. Logged with the same status as the parallel start
+      // so the pair renders as a single logical unit on the canvas (green/red/etc.
+      // together) even when parallel failed and we throw below.
       const childIdSet = new Set(childIds)
       const allChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
       const endNodeId = allChildEdges.map((e) => e.target).find((tid) => {
         const n = findNode(tid, definition.nodes)
         return n?.type === 'parallel_end'
       })
-
-      if (endNodeId) {
-        const endNode = findNode(endNodeId, definition.nodes)!
+      const endNode = endNodeId ? findNode(endNodeId, definition.nodes) : undefined
+      if (endNode) {
         recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
         await logStep(supabase, env, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder + 1)
-        const contEdges = outgoingEdges(endNodeId, definition.edges)
+      }
+
+      if (stepStatus === 'failed') {
+        throw new StepFailureError(errorMessage!, node.namespace, errorType)
+      }
+
+      if (endNode) {
+        const contEdges = outgoingEdges(endNode.id, definition.edges)
         const nextEdge = contEdges.find((e) => evaluateEdge(e, ctx))
         current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
       } else {
