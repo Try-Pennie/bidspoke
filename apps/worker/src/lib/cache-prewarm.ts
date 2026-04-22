@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadWorkflowDefinition } from '../engine/definition-loader'
 import { loadEnvVars } from './env-loader'
 import { loadPartnerConstants } from './partner-constants-loader'
+import { getSalesforceToken } from '../engine/nodes/salesforce'
 import type { Env } from '../index'
 
 export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promise<void> {
@@ -24,10 +25,26 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const orgIds = Array.from(new Set(workflows.map((w) => w.organization_id as string)))
 
-  const perOrg = orgIds.flatMap((orgId) => [
-    loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
-    loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
-  ])
+  // SF creds are currently CF secrets (single-tenant). Read once here and pass
+  // to the per-org token warmer below.
+  const rawEnv = env as unknown as Record<string, unknown>
+  const sfInstance = (typeof rawEnv.SALESFORCE_INSTANCE_URL === 'string' ? rawEnv.SALESFORCE_INSTANCE_URL : '').replace(/\/$/, '')
+  const sfClientId = typeof rawEnv.SALESFORCE_CLIENT_ID === 'string' ? rawEnv.SALESFORCE_CLIENT_ID : ''
+  const sfClientSecret = typeof rawEnv.SALESFORCE_CLIENT_SECRET === 'string' ? rawEnv.SALESFORCE_CLIENT_SECRET : ''
+  const canWarmSalesforce = sfInstance !== '' && sfClientId !== '' && sfClientSecret !== ''
+
+  const perOrg = orgIds.flatMap((orgId) => {
+    const tasks: Promise<unknown>[] = [
+      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+      loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+    ]
+    if (canWarmSalesforce) {
+      tasks.push(
+        getSalesforceToken(env, orgId, sfInstance, sfClientId, sfClientSecret).catch(() => undefined)
+      )
+    }
+    return tasks
+  })
 
   const perWorkflow = workflows.map((w) =>
     loadWorkflowDefinition(w.id as string, env.WORKFLOW_CACHE, supabase).catch(() => undefined)
@@ -37,6 +54,6 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const durationMs = Date.now() - start
   console.log(
-    `[prewarm] refreshed ${workflows.length} workflow defs, ${orgIds.length} orgs (env + partner constants) in ${durationMs}ms`
+    `[prewarm] refreshed ${workflows.length} workflow defs, ${orgIds.length} orgs (env + partner constants${canWarmSalesforce ? ' + SF token' : ''}) in ${durationMs}ms`
   )
 }

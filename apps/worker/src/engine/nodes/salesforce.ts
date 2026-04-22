@@ -35,7 +35,7 @@ interface SalesforceConfig {
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
 
-async function getSalesforceToken(env: Env, orgId: string, instanceUrl: string, clientId: string, clientSecret: string): Promise<string> {
+export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: string, clientId: string, clientSecret: string): Promise<string> {
   const cacheKey = `sf-token-${orgId}`
   const cached = await env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return cached
