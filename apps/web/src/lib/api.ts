@@ -388,4 +388,14 @@ export const api = {
         method: 'POST',
       }),
   },
+
+  admin: {
+    migrateCodeWorkers: () =>
+      req<{
+        migrated: number
+        skipped: number
+        errored: number
+        results: { id: string; name: string; status: string; error?: string; node_count?: number }[]
+      }>('/api/admin/migrate-code-workers', { method: 'POST' }),
+  },
 }
