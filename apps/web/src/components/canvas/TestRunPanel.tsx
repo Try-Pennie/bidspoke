@@ -15,6 +15,7 @@ type TestStep = {
   error_message: string | null
   duration_ms: number
   step_order: number
+  parallel_group_id?: string | null
 }
 
 interface Props {
@@ -352,7 +353,22 @@ export default function TestRunPanel({
         {/* Step list */}
         {testSteps && testSteps.length > 0 && (
           <div>
-            <p className="mb-1.5 text-xs font-medium text-gray-500">Steps</p>
+            {(() => {
+              // Wall-clock total: sum durations, but skip parallel children
+              // (their duration overlaps with the parallel_start/end wrapper).
+              const totalMs = testSteps.reduce(
+                (sum, s) => sum + (s.parallel_group_id ? 0 : s.duration_ms),
+                0
+              )
+              return (
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <p className="text-xs font-medium text-gray-500">Steps</p>
+                  <p className="text-xs tabular-nums text-gray-500">
+                    <span className="text-gray-400">total </span>{totalMs}ms
+                  </p>
+                </div>
+              )
+            })()}
             <div className="overflow-hidden rounded-lg border border-gray-200 divide-y divide-gray-100">
               {testSteps.map((step) => {
                 const isExpanded = expandedStep === step.step_namespace
@@ -366,9 +382,12 @@ export default function TestRunPanel({
                     >
                       <StepIcon status={step.status} />
                       <span className="min-w-0 flex-1 truncate font-medium text-gray-700">{label}</span>
-                      {step.duration_ms > 0 && (
-                        <span className="shrink-0 tabular-nums text-gray-400">{step.duration_ms}ms</span>
-                      )}
+                      <span
+                        className={`shrink-0 tabular-nums ${step.duration_ms > 0 ? 'text-gray-400' : 'text-gray-300'}`}
+                        title={step.duration_ms > 0 ? undefined : 'Completed in under a millisecond'}
+                      >
+                        {step.duration_ms > 0 ? `${step.duration_ms}ms` : '<1ms'}
+                      </span>
                       {step.error_message && (
                         <span className="ml-1 shrink-0 max-w-[96px] truncate text-red-500" title={step.error_message}>
                           {step.error_message.split('\n')[0]}
