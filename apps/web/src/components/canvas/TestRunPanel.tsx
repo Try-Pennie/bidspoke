@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from 'react'
 import { api } from '@/lib/api'
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle, Zap } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import type { ExecutionStep, SavedTestPayload } from '@/types/workflow'
+import type { ExecutionStep, SavedTestPayload, WorkflowDef } from '@/types/workflow'
 import RailResizeHandle from './RailResizeHandle'
+import { findParallelSuggestions } from '@/lib/parallel-suggestions'
 
 type TestStep = {
   step_namespace: string
@@ -458,6 +459,34 @@ export default function TestRunPanel({
                 )
               })}
             </div>
+            {/* Suggestions: adjacent steps with no data dependency that could
+                run in parallel. Estimated savings use the actual measured
+                durations from this run. */}
+            {(() => {
+              if (!currentDefinition || !testSteps || testSteps.length === 0) return null
+              const def = currentDefinition as WorkflowDef
+              const suggestions = findParallelSuggestions(def, testSteps)
+              if (suggestions.length === 0) return null
+              return (
+                <div className="mt-4">
+                  <div className="mb-1.5 flex items-center gap-1.5">
+                    <Zap className="h-3 w-3 text-amber-500" />
+                    <p className="text-xs font-medium text-gray-500">Suggestions</p>
+                  </div>
+                  <div className="overflow-hidden rounded-lg border border-amber-100 bg-amber-50/50 divide-y divide-amber-100">
+                    {suggestions.map((s) => (
+                      <div key={`${s.upstream}-${s.downstream}`} className="px-3 py-2 text-xs text-gray-700">
+                        <span className="font-medium text-graphite">{s.upstreamLabel}</span>
+                        {' + '}
+                        <span className="font-medium text-graphite">{s.downstreamLabel}</span>
+                        {' '}could run in parallel.{' '}
+                        <span className="tabular-nums text-gray-500">Saves ~{s.estimatedSavingsMs}ms.</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         )}
       </div>

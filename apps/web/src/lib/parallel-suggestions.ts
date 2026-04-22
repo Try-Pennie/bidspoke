@@ -1,16 +1,14 @@
 // Detects sequentially-connected steps that have no data dependency on each
 // other and could run in parallel for faster execution. Used by TestRunPanel
-// to show post-run suggestions with estimated savings.
+// to show post-run suggestions with estimated savings based on the actual
+// measured durations.
 //
-// Heuristic: for each edge A → B where both are non-branching nodes (no
-// filter/branch/bid_evaluation/parallel/parallel_end on either side), check
-// whether B's config references A's namespace (via any steps.A.X pattern
-// in scripts, templates, or body fields). If B doesn't reference A, the
-// two could run concurrently.
+// Heuristic: for each edge A → B where both are non-structural nodes,
+// check whether B's config references A's namespace (scan serialized config
+// for any `steps.A.X` pattern). If B doesn't reference A, the two could
+// run concurrently.
 
-import type { Node, Edge } from '@xyflow/react'
-import type { CanvasNodeData } from '@/types/workflow'
-import type { ExecutionStep } from '@/types/workflow'
+import type { WorkflowDef, NodeDef, EdgeDef } from '@/types/workflow'
 
 const STRUCTURAL_TYPES = new Set([
   'filter',
@@ -21,13 +19,14 @@ const STRUCTURAL_TYPES = new Set([
   'exit',
   'response',
   'trigger',
+  'constants',
 ])
 
 function isStructural(type: string | undefined): boolean {
   return type !== undefined && STRUCTURAL_TYPES.has(type)
 }
 
-/** Extract every "steps.NAMESPACE" reference found in a string (config, script, template). */
+/** Any `steps.NAMESPACE` reference found in a serialized config string. */
 function findStepsReferences(haystack: string): Set<string> {
   const refs = new Set<string>()
   const re = /\bsteps\s*\.\s*([a-zA-Z_$][\w$]*)/g
@@ -36,87 +35,65 @@ function findStepsReferences(haystack: string): Set<string> {
   return refs
 }
 
-/** Serialize a node's config to a scannable string (scripts, templates, bodies, field refs). */
-function scanNodeConfig(data: CanvasNodeData): Set<string> {
-  const cfg = data.config ?? {}
-  // Quickest scan: JSON.stringify the whole config and scan for steps.X patterns
-  const serialized = JSON.stringify(cfg)
-  return findStepsReferences(serialized)
-}
-
 export interface ParallelSuggestion {
-  upstream: string  // namespace of the upstream step
-  downstream: string  // namespace of the downstream step
+  upstream: string
+  downstream: string
   upstreamLabel: string
   downstreamLabel: string
-  estimatedSavingsMs: number  // min(upstream.duration, downstream.duration) — the time spent running them serially that would overlap in parallel
+  estimatedSavingsMs: number
+}
+
+export interface TestStepTiming {
+  step_namespace: string
+  duration_ms: number
+  parallel_group_id?: string | null
 }
 
 export function findParallelSuggestions(
-  nodes: Node[],
-  edges: Edge[],
-  testSteps: Array<{ step_namespace: string; duration_ms: number; parallel_group_id?: string | null }>
+  definition: WorkflowDef,
+  testSteps: TestStepTiming[]
 ): ParallelSuggestion[] {
-  const nodeByNs = new Map<string, Node>()
-  for (const n of nodes) {
-    const ns = (n.data as unknown as CanvasNodeData | undefined)?.namespace
-    if (ns) nodeByNs.set(ns, n)
-  }
+  const nodeById = new Map<string, NodeDef>()
+  for (const n of definition.nodes) nodeById.set(n.id, n)
 
   const durationByNs = new Map<string, number>()
   for (const s of testSteps) {
-    // Skip parallel children — they're already in a parallel group
-    if (s.parallel_group_id) continue
+    if (s.parallel_group_id) continue  // skip parallel children
     durationByNs.set(s.step_namespace, s.duration_ms)
   }
 
   const suggestions: ParallelSuggestion[] = []
   const seen = new Set<string>()
 
-  for (const edge of edges) {
-    const sourceNode = nodes.find((n) => n.id === edge.source)
-    const targetNode = nodes.find((n) => n.id === edge.target)
-    if (!sourceNode || !targetNode) continue
+  for (const edge of definition.edges as EdgeDef[]) {
+    const src = nodeById.get(edge.source)
+    const tgt = nodeById.get(edge.target)
+    if (!src || !tgt) continue
+    if (isStructural(src.type) || isStructural(tgt.type)) continue
 
-    if (isStructural(sourceNode.type) || isStructural(targetNode.type)) continue
-
-    const sourceNs = (sourceNode.data as unknown as CanvasNodeData | undefined)?.namespace
-    const targetNs = (targetNode.data as unknown as CanvasNodeData | undefined)?.namespace
-    if (!sourceNs || !targetNs) continue
-
-    // Deduplicate suggestions
-    const key = `${sourceNs}::${targetNs}`
+    const key = `${src.namespace}::${tgt.namespace}`
     if (seen.has(key)) continue
     seen.add(key)
 
-    // Does target reference source's namespace in its config?
-    const targetRefs = scanNodeConfig(targetNode.data as unknown as CanvasNodeData)
-    if (targetRefs.has(sourceNs)) continue  // real dependency — can't parallelize
+    // Does target reference source's namespace anywhere in its config?
+    const tgtRefs = findStepsReferences(JSON.stringify(tgt.config ?? {}))
+    if (tgtRefs.has(src.namespace)) continue  // real dependency
 
-    // Both steps need durations from the test run to estimate savings
-    const srcDur = durationByNs.get(sourceNs)
-    const tgtDur = durationByNs.get(targetNs)
+    const srcDur = durationByNs.get(src.namespace)
+    const tgtDur = durationByNs.get(tgt.namespace)
     if (srcDur === undefined || tgtDur === undefined) continue
-
-    // Skip if both are very fast — parallelizing adds overhead, not worth it for <50ms each
+    // Not worth parallelizing if both are trivially fast
     if (srcDur < 50 && tgtDur < 50) continue
 
-    const estimatedSavingsMs = Math.min(srcDur, tgtDur)
-
     suggestions.push({
-      upstream: sourceNs,
-      downstream: targetNs,
-      upstreamLabel: (sourceNode.data as unknown as CanvasNodeData | undefined)?.label || sourceNs,
-      downstreamLabel: (targetNode.data as unknown as CanvasNodeData | undefined)?.label || targetNs,
-      estimatedSavingsMs,
+      upstream: src.namespace,
+      downstream: tgt.namespace,
+      upstreamLabel: (src as unknown as { label?: string }).label || src.namespace,
+      downstreamLabel: (tgt as unknown as { label?: string }).label || tgt.namespace,
+      estimatedSavingsMs: Math.min(srcDur, tgtDur),
     })
   }
 
-  // Biggest savings first
   suggestions.sort((a, b) => b.estimatedSavingsMs - a.estimatedSavingsMs)
   return suggestions
-}
-
-export function mapStepToExecution(step: ExecutionStep): ExecutionStep {
-  return step
 }
