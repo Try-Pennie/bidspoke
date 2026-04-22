@@ -93,6 +93,85 @@ describe('executeCodeNode', () => {
   })
 })
 
+describe('executeCodeNode — steps filtering by static analysis', () => {
+  function ctxWithSteps(): ExecutionContext {
+    return {
+      trigger: { payload: { id: 'L1' }, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
+      steps: {
+        small_a:  { output: { v: 1 }, status: 'completed' },
+        small_b:  { output: { v: 2 }, status: 'completed' },
+        huge_c:   { output: { blob: 'x'.repeat(50_000) }, status: 'completed' },
+        unused_d: { output: { nope: true }, status: 'completed' },
+      },
+      env: {},
+    }
+  }
+
+  it('sends only the referenced steps when the script uses dot access', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    await executeCodeNode(
+      node({ script: 'return steps.small_a.output.v + steps.small_b.output.v' }),
+      ctxWithSteps(),
+      env
+    )
+    const sent = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { steps: Record<string, unknown> }
+    expect(Object.keys(sent.steps).sort()).toEqual(['small_a', 'small_b', 'trigger'])
+    expect(sent.steps.huge_c).toBeUndefined()
+    expect(sent.steps.unused_d).toBeUndefined()
+  })
+
+  it('falls back to sending all steps when script uses bracket access', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    await executeCodeNode(
+      node({ script: 'const key = "small_a"; return steps[key].output.v' }),
+      ctxWithSteps(),
+      env
+    )
+    const sent = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { steps: Record<string, unknown> }
+    expect(Object.keys(sent.steps).sort()).toEqual(['huge_c', 'small_a', 'small_b', 'trigger', 'unused_d'])
+  })
+
+  it('falls back to sending all steps when script aliases the steps object', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    await executeCodeNode(
+      node({ script: 'const s = steps; return s.small_a.output.v' }),
+      ctxWithSteps(),
+      env
+    )
+    const sent = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { steps: Record<string, unknown> }
+    expect(sent.steps.huge_c).toBeDefined()
+  })
+
+  it('falls back when script uses Object.keys(steps)', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    await executeCodeNode(
+      node({ script: 'return Object.keys(steps).length' }),
+      ctxWithSteps(),
+      env
+    )
+    const sent = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { steps: Record<string, unknown> }
+    expect(sent.steps.huge_c).toBeDefined()
+  })
+
+  it('always includes trigger in the steps payload', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    await executeCodeNode(
+      node({ script: 'return payload.id' }),  // no steps references
+      ctxWithSteps(),
+      env
+    )
+    const sent = JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { steps: Record<string, unknown> }
+    expect(sent.steps.trigger).toEqual({ payload: { id: 'L1' } })
+    // No non-trigger steps should be included
+    expect(Object.keys(sent.steps)).toEqual(['trigger'])
+  })
+})
+
 describe('executeCodeNode — bundle fallback to per-node worker', () => {
   it('falls back to the per-node worker when the bundle returns 503 (worker not deployed)', async () => {
     const bundleFetch = vi.fn().mockResolvedValue(new Response('Worker not found', { status: 503 }))
