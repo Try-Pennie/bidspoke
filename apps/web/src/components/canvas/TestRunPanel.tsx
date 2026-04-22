@@ -27,7 +27,7 @@ interface Props {
   onTestStart?: (executionId: string) => void
   onLiveStep?: (namespace: string, step: ExecutionStep) => void
   onTestEnd?: () => void
-  onTestStepsLoaded?: (steps: Record<string, ExecutionStep>) => void
+  onTestStepsLoaded?: (steps: Record<string, ExecutionStep>, execId: string) => void
 }
 
 const DEFAULT_PAYLOAD = '{\n  \n}'
@@ -154,7 +154,7 @@ export default function TestRunPanel({
               retries_used: 0,
             }
           }
-          onTestStepsLoaded?.(byNamespace)
+          onTestStepsLoaded?.(byNamespace, execId)
         }
       } catch {
         // non-critical

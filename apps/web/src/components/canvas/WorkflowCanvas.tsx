@@ -305,6 +305,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [showVersions, setShowVersions] = useState(false)
   const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
   const [testRunning, setTestRunning] = useState(false)
+  const [lastTestExecId, setLastTestExecId] = useState<string | null>(null)
   const [showOverflow, setShowOverflow] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const overflowRef = useRef<HTMLDivElement>(null)
@@ -419,9 +420,32 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setTestRunning(false)
   }, [])
 
-  const handleTestStepsLoaded = useCallback((steps: Record<string, ExecutionStep>) => {
+  const handleTestStepsLoaded = useCallback((steps: Record<string, ExecutionStep>, execId: string) => {
     setLiveSteps(steps)
+    setLastTestExecId(execId)
   }, [])
+
+  const handleNodeRerun = useCallback(async (namespace: string) => {
+    if (!lastTestExecId) return
+    const definition = flowToDef(nodes, edges, triggerRef.current)
+    try {
+      const result = await api.workflows.testNode(workflow.id, { namespace, execution_id: lastTestExecId, definition })
+      setLiveSteps((prev) => ({
+        ...prev,
+        [namespace]: {
+          status: result.status as ExecutionStep['status'],
+          output: result.output,
+          input: null,
+          error_message: result.error_message,
+          error_type: null,
+          duration_ms: result.duration_ms,
+          retries_used: 0,
+        },
+      }))
+    } catch (e) {
+      console.error('Re-run failed:', e)
+    }
+  }, [lastTestExecId, nodes, edges, workflow.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Apply live step data to nodes during a test run
   useEffect(() => {
@@ -1411,6 +1435,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               refs={refs}
               edges={edges}
               onEdgesChange={handleParallelEdgesChange}
+              canRerun={!!lastTestExecId}
+              onRerun={handleNodeRerun}
             />
           )}
         </div>

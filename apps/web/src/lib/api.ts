@@ -201,6 +201,8 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ payload, execution_id: executionId, definition }),
       }),
+    testNode: (id: string, data: { namespace: string; execution_id: string; definition: unknown }) =>
+      req<{ output: unknown; status: string; error_message: string | null; duration_ms: number }>(`/api/workflows/${id}/test-node`, { method: 'POST', body: JSON.stringify(data) }),
     saveTestPayloads: (id: string, test_payloads: Array<{ name: string; payload: unknown }>) =>
       req<{ test_payloads: Array<{ name: string; payload: unknown }> }>(`/api/workflows/${id}/test-payloads`, {
         method: 'PATCH',

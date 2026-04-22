@@ -6,8 +6,11 @@ import { invalidateWorkflowCache } from '../../engine/definition-loader'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { writeAuditLog } from '../../lib/audit'
 import { executeWorkflow } from '../../engine/index'
+import { executeNode } from '../../engine/nodes/index'
+import { buildContext } from '../../engine/context'
+import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes } from '../../lib/code-node-deployer'
-import type { WorkflowDefinition } from '../../types'
+import type { WorkflowDefinition, StepOutput } from '../../types'
 
 type Variables = AuthVariables
 
@@ -407,6 +410,66 @@ workflows.post('/:id/test', async (c) => {
   )
 
   return c.json(result.response, result.status as 200 | 500, { 'X-Trace-Id': result.traceId })
+})
+
+// POST /api/workflows/:id/test-node — re-run a single node using context from a prior execution
+workflows.post('/:id/test-node', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ namespace: string; execution_id: string; definition?: WorkflowDefinition }>()
+
+  // Fetch the prior execution for trigger payload + trace ID
+  const { data: exec } = await supabase
+    .from('workflow_executions')
+    .select('trigger_payload, trace_id, source')
+    .eq('id', body.execution_id)
+    .eq('organization_id', orgId)
+    .single()
+
+  if (!exec) return c.json({ error: 'Execution not found' }, 404)
+
+  // Fetch its steps to reconstruct ctx.steps
+  const { data: stepRows } = await supabase
+    .from('execution_steps')
+    .select('step_namespace, status, output, error_message, error_type')
+    .eq('execution_id', body.execution_id)
+
+  const ctxSteps: Record<string, StepOutput> = {}
+  for (const row of stepRows ?? []) {
+    ctxSteps[row.step_namespace as string] = {
+      output: row.output,
+      status: row.status as StepOutput['status'],
+      error: row.error_message as string | undefined,
+      error_type: row.error_type as StepOutput['error_type'],
+    }
+  }
+
+  // Find the node definition
+  const definition = body.definition
+  if (!definition) return c.json({ error: 'definition is required' }, 400)
+  const node = definition.nodes.find((n) => n.namespace === body.namespace)
+  if (!node) return c.json({ error: 'Node not found in definition' }, 404)
+
+  // Deploy code node from current (unsaved) definition
+  if (node.type === 'code') {
+    await deployCodeNodes(id, definition, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+      .catch((e) => console.error('[code-nodes] test-node deploy failed:', e))
+  }
+
+  // Reconstruct execution context
+  const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase)
+  const ctx = buildContext(exec.trigger_payload, exec.source as string, id, exec.trace_id as string, envVars, orgId)
+  ctx.steps = ctxSteps
+
+  const started = Date.now()
+  try {
+    const result = await executeNode(node, ctx, c.env, supabase)
+    return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return c.json({ output: null, status: 'failed', error_message: msg, duration_ms: Date.now() - started })
+  }
 })
 
 export default workflows

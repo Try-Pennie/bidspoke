@@ -10,7 +10,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy } from 'lucide-react'
+import { X, Trash2, Plus, XCircle, CheckCircle, ChevronDown, ArrowRight, Copy, RotateCcw, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 
@@ -26,9 +26,11 @@ interface Props {
   readOnly?: boolean
   edges?: { id: string; source: string; target: string; sourceHandle?: string | null }[]
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
+  canRerun?: boolean
+  onRerun?: (namespace: string) => void
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -309,16 +311,23 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       </div>
       )}
 
-      {exec && <StepResults exec={exec} />}
+      {exec && <StepResults exec={exec} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} />}
     </aside>
   )
 }
 
 // ── Step results section (shown below config after a test run) ─────────────────
 
-function StepResults({ exec }: { exec: ExecutionStep }) {
+function StepResults({ exec, canRerun, onRerun }: { exec: ExecutionStep; canRerun?: boolean; onRerun?: () => Promise<void> }) {
   const [open, setOpen] = useState(true)
   const [showInput, setShowInput] = useState(false)
+  const [rerunning, setRerunning] = useState(false)
+
+  async function handleRerun() {
+    if (!onRerun) return
+    setRerunning(true)
+    try { await onRerun() } finally { setRerunning(false) }
+  }
   const hasOutput = exec.output !== null && exec.output !== undefined
   const hasInput = exec.input !== null && exec.input !== undefined
 
@@ -336,13 +345,26 @@ function StepResults({ exec }: { exec: ExecutionStep }) {
 
   return (
     <div className="border-t border-gray-200 flex-shrink-0">
-      <button
-        onClick={() => setOpen((s) => !s)}
-        className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
-      >
-        <span>Results</span>
-        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} />
-      </button>
+      <div className="flex items-center justify-between px-4 py-2.5">
+        <button
+          onClick={() => setOpen((s) => !s)}
+          className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+        >
+          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} />
+          Results
+        </button>
+        {canRerun && onRerun && (
+          <button
+            onClick={handleRerun}
+            disabled={rerunning}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+            title="Re-run this step with the same upstream context"
+          >
+            {rerunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+            Re-run
+          </button>
+        )}
+      </div>
       {open && (
         <div className="space-y-2 px-4 pb-4">
           <div className={`rounded-md border px-3 py-2 text-xs font-medium ${statusColor}`}>
