@@ -162,11 +162,46 @@ export async function executeWorkflow(
   const stepLogQueue: StepLogEntry[] = []
 
   let walkStatus = 200
-  try {
-    const walkResult = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue)
-    response = walkResult.body
-    walkStatus = walkResult.status
-  } catch (err) {
+
+  // Respond-early mechanics: when a code node returns continueExecution:true,
+  // walkGraph signals the response is ready via onRespondEarly. We race that
+  // signal against full walk completion. Whichever fires first unblocks the
+  // caller. The remaining walk (for continueExecution flows) finishes in the
+  // background via ctx.waitUntil, matching Pipedream's $.respond() semantics.
+  let earlyResponseResolve: (r: WalkGraphResult) => void = () => {}
+  const earlyResponsePromise = new Promise<WalkGraphResult>((res) => { earlyResponseResolve = res })
+
+  const walkPromise = walkGraph(
+    ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue,
+    (r) => earlyResponseResolve(r)
+  )
+
+  // Swallow walk errors here — they're re-caught below after awaiting. Raw
+  // walkPromise is referenced by both the race and the background continuation.
+  const walkPromiseCaught = walkPromise.catch((err) => ({ __error: err }))
+
+  // Race: whichever resolves first becomes the response to the caller.
+  const raceResult = await Promise.race([
+    earlyResponsePromise.then((r) => ({ kind: 'early' as const, body: r.body, status: r.status })),
+    walkPromiseCaught.then((r) => {
+      if (r && typeof r === 'object' && '__error' in r) {
+        return { kind: 'error' as const, err: (r as { __error: unknown }).__error }
+      }
+      const walkRes = r as WalkGraphResult
+      return { kind: 'complete' as const, body: walkRes.body, status: walkRes.status }
+    }),
+  ])
+
+  let hasContinuation = false
+  if (raceResult.kind === 'early') {
+    response = raceResult.body
+    walkStatus = raceResult.status
+    hasContinuation = true
+  } else if (raceResult.kind === 'complete') {
+    response = raceResult.body
+    walkStatus = raceResult.status
+  } else {
+    const err = raceResult.err
     executionStatus = 'failed'
     errorMessage = err instanceof Error ? err.message : String(err)
     if (err instanceof StepFailureError) {
@@ -182,13 +217,22 @@ export async function executeWorkflow(
   // batch insert fails if the record isn't there yet. Test runs await
   // the flush so the UI's post-response fetch finds rows; production
   // uses waitUntil so the HTTP response returns without waiting.
-  const flushPromise = executionRecordPromise
+  //
+  // Also: if we returned early due to continueExecution, the remaining walk
+  // is still running. Chain the flush AFTER the walk fully completes so
+  // post-response steps get their logs written too.
+  const flushPromise = walkPromiseCaught
+    .then(() => executionRecordPromise)
     .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? ''))
     .catch((e) => console.error('[step-logger] flush failed:', e))
+
   if (options.isTest) {
+    // Test mode: wait for everything so the UI sees a complete step list.
+    await walkPromiseCaught
     await flushPromise
   } else {
     executionCtx.waitUntil(flushPromise)
+    if (hasContinuation) executionCtx.waitUntil(walkPromiseCaught)
     // Also keep idempotencyProcessing alive past the response so it can complete
     executionCtx.waitUntil(idempotencyProcessingPromise.catch(() => {}))
   }
@@ -257,8 +301,15 @@ export async function executeWorkflow(
   }
 }
 
-// Walk the graph from entry node to completion, executing each step
-// Exported for unit testing only — not part of the public API
+// Walk the graph from entry node to completion, executing each step.
+// Exported for unit testing only — not part of the public API.
+//
+// onRespondEarly: called as soon as a code node fires continueExecution:true,
+// with the response that should be sent to the caller. The walk CONTINUES
+// after this callback fires (running post-response nodes like patch-after-
+// respond). The outer executeWorkflow uses this to send the HTTP response
+// immediately and push the remaining walk into ctx.waitUntil, matching
+// Pipedream's $.respond()-then-continue semantics.
 export async function walkGraph(
   ctx: ExecutionContext,
   definition: { nodes: NodeDefinition[]; edges: import('../types').EdgeDefinition[] },
@@ -267,7 +318,8 @@ export async function walkGraph(
   supabase: SupabaseClient,
   env: Env,
   workflowVersionId = '',
-  stepLogQueue: StepLogEntry[] = []
+  stepLogQueue: StepLogEntry[] = [],
+  onRespondEarly?: (response: WalkGraphResult) => void
 ): Promise<WalkGraphResult> {
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
@@ -426,6 +478,10 @@ export async function walkGraph(
     const serviceName = typeof node.config.service === 'string' ? node.config.service : null
     const cbClient = serviceName ? new CircuitBreakerClient(env, serviceName) : null
 
+    // Tracks whether the earlyResponse branch already logged the step so the
+    // outer completion path doesn't double-log it.
+    let loggedEarly = false
+
     try {
       // Check circuit before attempting the call
       if (cbClient) {
@@ -484,8 +540,13 @@ export async function walkGraph(
         }
         recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType })
         logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, null, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder)
+        loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
           pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status }
+          // Signal to the outer handler that the response is ready now; the
+          // remaining walk continues here but the caller doesn't have to wait
+          // for it (outer pushes the continuation into ctx.waitUntil).
+          onRespondEarly?.(pendingResponse)
           // fall through — continue walking the graph
         } else {
           if (result.earlyResponse) {
@@ -543,10 +604,15 @@ export async function walkGraph(
       }
     }
 
-    const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
-    log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
-    recordStepOutput(ctx, node.namespace, { output, status: stepStatus })
-    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
+    // Skip the normal completion logging if the earlyResponse branch above
+    // already logged the step (continueExecution case). Without this guard,
+    // the step shows up twice in the Steps list with identical durations.
+    if (!loggedEarly) {
+      const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
+      log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
+      recordStepOutput(ctx, node.namespace, { output, status: stepStatus })
+      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
+    }
 
     // Exit node — return immediately
     if (node.type === 'exit' || node.type === 'response') {
