@@ -308,8 +308,9 @@ export default function TestRunPanel({
           </button>
         )}
 
-        {/* Result banner */}
-        {result && (
+        {/* Result banner — shown on success (to preview response body) or on failure
+            when no step errors are available (otherwise the step list tells the story). */}
+        {result && (result.ok || !testSteps || testSteps.length === 0) && (
           <div
             key={resultKey}
             className={`rounded-lg border p-3 ${result.ok ? 'border-green-200 bg-green-50 result-success' : 'border-red-200 bg-red-50'}`}
@@ -343,7 +344,7 @@ export default function TestRunPanel({
               </button>
             </div>
             <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-700">
-              {JSON.stringify(result.body, null, 2)}
+              {typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2)}
             </pre>
           </div>
         )}
