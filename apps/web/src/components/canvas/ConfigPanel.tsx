@@ -358,13 +358,13 @@ function JsonNode({ label, value, path, depth }: {
   return (
     <div>
       <div
-        className="group flex min-h-[22px] items-center gap-1 rounded-sm px-1 py-0.5 hover:bg-blue-50 cursor-default"
+        className="group flex min-h-[22px] items-start gap-1 rounded-sm px-1 py-0.5 hover:bg-blue-50 cursor-default"
         style={{ paddingLeft: `${depth * 14 + 4}px` }}
       >
         {isObj ? (
           <button
             onClick={() => setExpanded((e) => !e)}
-            className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+            className="mt-[2px] flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           </button>
@@ -372,17 +372,17 @@ function JsonNode({ label, value, path, depth }: {
           <span className="h-3.5 w-3.5 shrink-0" />
         )}
 
-        <span className="shrink-0 font-mono text-xs text-gray-700">{label}</span>
-        <span className="shrink-0 font-mono text-xs text-gray-400">:</span>
+        <span className="shrink-0 font-mono text-xs text-gray-700 leading-[18px]">{label}</span>
+        <span className="shrink-0 font-mono text-xs text-gray-400 leading-[18px]">:</span>
 
-        {isObj && !expanded && (
-          <span className="font-mono text-xs text-gray-400 ml-0.5">
+        {isObj && (
+          <span className="font-mono text-xs text-gray-400 ml-0.5 leading-[18px]">
             {Array.isArray(value) ? `[${childEntries.length}]` : `{${childEntries.length}}`}
           </span>
         )}
-        {!isObj && <span className="font-mono text-xs ml-0.5 min-w-0">{displayValue}</span>}
+        {!isObj && <span className="font-mono text-xs ml-0.5 min-w-0 leading-[18px]">{displayValue}</span>}
 
-        <div className="ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex">
+        <div className="ml-auto mt-[1px] hidden shrink-0 items-center gap-0.5 group-hover:flex">
           {copiedKey === 'path' ? (
             <span className="px-1 text-[10px] text-green-600">copied</span>
           ) : (
@@ -416,21 +416,13 @@ function JsonNode({ label, value, path, depth }: {
 }
 
 function JsonTreeView({ data, basePath }: { data: unknown; basePath: string }) {
-  if (data === null || data === undefined || typeof data !== 'object') {
-    return (
-      <div className="rounded border border-gray-200 bg-gray-50 p-1">
-        <JsonNode label="value" value={data} path={basePath} depth={0} />
-      </div>
-    )
-  }
-  const entries: [string, unknown, string][] = Array.isArray(data)
-    ? (data as unknown[]).map((v, i) => [`[${i}]`, v, `${basePath}[${i}]`])
-    : Object.entries(data as Record<string, unknown>).map(([k, v]) => [k, v, `${basePath}.${k}`])
+  // Render the entire value as one root JsonNode so copy-path / copy-value
+  // are available on the whole object (matches Pipedream's tree UX where
+  // `steps.trigger` itself can be copied). Root label is the full basePath
+  // ("steps.namespace.output"); auto-expanded for immediate visibility.
   return (
     <div className="max-h-64 overflow-auto rounded border border-gray-200 bg-gray-50 p-1">
-      {entries.map(([lbl, val, path]) => (
-        <JsonNode key={lbl} label={lbl} value={val} path={path} depth={0} />
-      ))}
+      <JsonNode label={basePath} value={data} path={basePath} depth={0} />
     </div>
   )
 }
