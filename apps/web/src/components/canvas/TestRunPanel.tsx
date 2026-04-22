@@ -1,10 +1,20 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { api } from '@/lib/api'
-import { Play, X, XCircle, Loader2, Save, Trash2, ChevronDown } from 'lucide-react'
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import type { ExecutionStep, SavedTestPayload } from '@/types/workflow'
+
+type TestStep = {
+  step_namespace: string
+  status: string
+  input: unknown
+  output: unknown
+  error_message: string | null
+  duration_ms: number
+  step_order: number
+}
 
 interface Props {
   workflowId: string
@@ -20,6 +30,14 @@ interface Props {
 }
 
 const DEFAULT_PAYLOAD = '{\n  \n}'
+
+function StepIcon({ status }: { status: string }) {
+  if (status === 'completed') return <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-500" />
+  if (status === 'failed') return <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" />
+  if (status === 'failed_with_fallback') return <XCircle className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+  if (status === 'skipped') return <MinusCircle className="h-3.5 w-3.5 shrink-0 text-gray-300" />
+  return <div className="h-3.5 w-3.5 shrink-0 rounded-full border-2 border-gray-200" />
+}
 
 export default function TestRunPanel({
   workflowId,
@@ -38,12 +56,23 @@ export default function TestRunPanel({
   const [result, setResult] = useState<{ ok: boolean; body: unknown } | null>(null)
   const [resultKey, setResultKey] = useState(0)
   const [parseError, setParseError] = useState<string | null>(null)
+  const [testSteps, setTestSteps] = useState<TestStep[] | null>(null)
+  const [expandedStep, setExpandedStep] = useState<string | null>(null)
 
   // Saved payloads
   const [saveName, setSaveName] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [showSaveInput, setShowSaveInput] = useState(false)
+
+  const nsToLabel = useMemo(() => {
+    const def = currentDefinition as { nodes?: Array<{ namespace?: string; label?: string }> } | null | undefined
+    const map: Record<string, string> = {}
+    for (const n of def?.nodes ?? []) {
+      if (n.namespace && n.label) map[n.namespace] = n.label
+    }
+    return map
+  }, [currentDefinition])
 
   async function run() {
     let parsed: unknown
@@ -54,6 +83,8 @@ export default function TestRunPanel({
       return
     }
     setParseError(null)
+    setTestSteps(null)
+    setExpandedStep(null)
 
     const execId = crypto.randomUUID()
 
@@ -102,8 +133,16 @@ export default function TestRunPanel({
       onComplete()
     } finally {
       setRunning(false)
-      // Steps are logged via Cloudflare waitUntil() after the HTTP response.
-      // Keep the Realtime channel alive so those late-arriving inserts reach the canvas.
+      // Fetch step results — steps are logged synchronously so they're in the DB by now
+      try {
+        const exec = await api.executions.get(execId)
+        if (exec.steps?.length) {
+          setTestSteps(exec.steps as TestStep[])
+        }
+      } catch {
+        // non-critical
+      }
+      // Keep Realtime channel open for canvas node coloring (Realtime has delivery lag)
       await new Promise<void>((r) => setTimeout(r, 3000))
       onTestEnd?.()
       await supabase.removeChannel(channel)
@@ -186,7 +225,7 @@ export default function TestRunPanel({
         <div>
           <p className="mb-1.5 text-xs font-medium text-gray-500">Trigger payload (JSON)</p>
           <textarea
-            className="h-52 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="h-44 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             value={payload}
             onChange={(e) => { setPayload(e.target.value); setParseError(null) }}
             spellCheck={false}
@@ -235,7 +274,7 @@ export default function TestRunPanel({
           </button>
         )}
 
-        {/* Result */}
+        {/* Result banner */}
         {result && (
           <div
             key={resultKey}
@@ -260,9 +299,69 @@ export default function TestRunPanel({
                 {result.ok ? 'Completed' : 'Failed'}
               </span>
             </div>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-700">
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-gray-700">
               {JSON.stringify(result.body, null, 2)}
             </pre>
+          </div>
+        )}
+
+        {/* Step list */}
+        {testSteps && testSteps.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-xs font-medium text-gray-500">Steps</p>
+            <div className="overflow-hidden rounded-lg border border-gray-200 divide-y divide-gray-100">
+              {testSteps.map((step) => {
+                const isExpanded = expandedStep === step.step_namespace
+                const label = nsToLabel[step.step_namespace] ?? step.step_namespace
+                const hasDetail = !!(step.error_message || (step.output !== null && step.output !== undefined))
+                return (
+                  <div key={step.step_namespace}>
+                    <button
+                      onClick={() => hasDetail && setExpandedStep(isExpanded ? null : step.step_namespace)}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs ${hasDetail ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default'}`}
+                    >
+                      <StepIcon status={step.status} />
+                      <span className="min-w-0 flex-1 truncate font-medium text-gray-700">{label}</span>
+                      {step.duration_ms > 0 && (
+                        <span className="shrink-0 tabular-nums text-gray-400">{step.duration_ms}ms</span>
+                      )}
+                      {step.error_message && (
+                        <span className="ml-1 shrink-0 max-w-[96px] truncate text-red-500" title={step.error_message}>
+                          {step.error_message.split('\n')[0]}
+                        </span>
+                      )}
+                      {hasDetail && (
+                        isExpanded
+                          ? <ChevronDown className="h-3 w-3 shrink-0 text-gray-300" />
+                          : <ChevronRight className="h-3 w-3 shrink-0 text-gray-300" />
+                      )}
+                    </button>
+                    {isExpanded && (
+                      <div className="space-y-2 border-t border-gray-100 bg-gray-50 px-3 py-2.5">
+                        {step.error_message && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium text-red-600">Error</p>
+                            <pre className="max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-50 p-2 text-xs text-red-700 border border-red-100">{step.error_message}</pre>
+                          </div>
+                        )}
+                        {step.output !== null && step.output !== undefined && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium text-gray-500">Output</p>
+                            <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-white p-2 text-xs text-gray-700">{JSON.stringify(step.output, null, 2)}</pre>
+                          </div>
+                        )}
+                        {step.input !== null && step.input !== undefined && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium text-gray-500">Input</p>
+                            <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded border border-gray-200 bg-white p-2 text-xs text-gray-700">{JSON.stringify(step.input, null, 2)}</pre>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
       </div>
