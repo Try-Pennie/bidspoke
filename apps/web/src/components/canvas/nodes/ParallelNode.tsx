@@ -18,22 +18,31 @@ export function ParallelNode({ data, selected }: NodeProps) {
   const children = (config.children as string[] | undefined) ?? []
   const handleCount = children.length
 
+  // Surface any child failure on the parallel node itself, regardless of whether
+  // the parallel's own step status is 'completed' (e.g. on_child_error:'continue'
+  // flows always succeed at the parallel level but may contain rejected children).
   let resultLine: string | null = null
+  let hasChildFailure = false
   if (executionStep?.output && Array.isArray(executionStep.output)) {
     const results = executionStep.output as ParallelChildResult[]
     const failed = results.filter((r) => r.status !== 'fulfilled').length
     if (failed > 0) {
       const total = results.length
       resultLine = `${total - failed}/${total} completed`
+      hasChildFailure = true
     }
   }
+
+  const effectiveStep = hasChildFailure && executionStep
+    ? { ...executionStep, status: 'failed' as const }
+    : executionStep
 
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-slate-400 ring-2 ring-slate-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
-      style={getExecutionStyle(executionStep)}
+      } ${getNodeClasses(effectiveStep, hasError)}`}
+      style={getExecutionStyle(effectiveStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />
 
@@ -49,7 +58,7 @@ export function ParallelNode({ data, selected }: NodeProps) {
         <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
         {resultLine ? (
-          <p className="mt-1 truncate rounded bg-amber-50 px-1.5 py-0.5 font-mono text-xs text-amber-700">
+          <p className="mt-1 truncate rounded bg-red-50 px-1.5 py-0.5 font-mono text-xs text-red-700">
             {resultLine}
           </p>
         ) : (
