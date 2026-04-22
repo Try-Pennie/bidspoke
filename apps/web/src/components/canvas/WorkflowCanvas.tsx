@@ -786,9 +786,83 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     (id: string) => {
       snapshot()
       const node = nodes.find((n) => n.id === id)
-      const pairId = (node?.data as unknown as CanvasNodeData)?._pairId
+      if (!node) return
+
+      // Find the parallel pair — explicit _pairId first, then structural
+      // fallback for parallels created before _pairId tracking was added.
+      let pairId = (node.data as unknown as CanvasNodeData)?._pairId
+      if (!pairId) {
+        if (node.type === 'parallel') {
+          // Walk forward from the parallel start (through children or the
+          // hidden backbone edge) to find the parallel_end.
+          const visited = new Set<string>([id])
+          const queue = [id]
+          while (queue.length > 0) {
+            const cur = queue.shift()!
+            for (const e of edges) {
+              if (e.source !== cur || visited.has(e.target)) continue
+              visited.add(e.target)
+              const target = nodes.find((n) => n.id === e.target)
+              if (target?.type === 'parallel_end') {
+                pairId = target.id
+                queue.length = 0
+                break
+              }
+              queue.push(e.target)
+            }
+          }
+        } else if (node.type === 'parallel_end') {
+          // Walk backward from the end to find its parallel_start.
+          const visited = new Set<string>([id])
+          const queue = [id]
+          while (queue.length > 0) {
+            const cur = queue.shift()!
+            for (const e of edges) {
+              if (e.target !== cur || visited.has(e.source)) continue
+              visited.add(e.source)
+              const source = nodes.find((n) => n.id === e.source)
+              if (source?.type === 'parallel') {
+                pairId = source.id
+                queue.length = 0
+                break
+              }
+              queue.push(e.source)
+            }
+          }
+        }
+      }
+
       const idsToRemove = new Set([id, ...(pairId ? [pairId] : [])])
-      const newEdges = edges.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target))
+
+      // Collect upstream sources (pointing INTO deletion set) and downstream
+      // targets (pointed TO by deletion set) so the surviving graph can be
+      // spliced back together — otherwise deleting a middle node leaves the
+      // downstream subtree orphaned on the canvas.
+      const upstreamSources = new Set<string>()
+      const downstreamTargets = new Set<string>()
+      for (const e of edges) {
+        if (idsToRemove.has(e.target) && !idsToRemove.has(e.source)) upstreamSources.add(e.source)
+        if (idsToRemove.has(e.source) && !idsToRemove.has(e.target)) downstreamTargets.add(e.target)
+      }
+
+      const keptEdges = edges.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target))
+
+      // Splice: connect each upstream to each downstream (skip duplicates).
+      // For the common single-in/single-out case this is just one edge.
+      const spliceEdges = [] as typeof edges
+      for (const source of upstreamSources) {
+        for (const target of downstreamTargets) {
+          const already = keptEdges.some((e) => e.source === source && e.target === target)
+          if (already) continue
+          spliceEdges.push({
+            id: `splice-${source}-${target}-${Date.now()}`,
+            source,
+            target,
+          })
+        }
+      }
+
+      const newEdges = [...keptEdges, ...spliceEdges]
       const newNodes = nodes.filter((n) => !idsToRemove.has(n.id))
       setEdges(newEdges)
       setNodes(layoutWorkflow(newNodes, newEdges))
@@ -1218,6 +1292,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
 
+              // Skip slot-in logic when multiple nodes just finished dragging
+              // together — that's a group move, not a single-node re-placement.
+              const finishedPositionChanges = changes.filter(
+                (c) => c.type === 'position' && c.dragging === false
+              )
+              const isGroupDrag = finishedPositionChanges.length > 1
+              if (isGroupDrag) return
+
               for (const change of changes) {
                 if (change.type !== 'position' || change.dragging !== false) continue
                 // Don't let the trigger node be reordered
@@ -1338,7 +1420,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             isValidConnection={isValidConnection}
-            onNodeClick={(_, node) => { setSelectedNodeId(node.id); setContextMenu(null) }}
+            onNodeClick={(e, node) => {
+              // Shift / Cmd click → add to multi-selection (handled by React Flow);
+              // don't clobber selectedNodeId, which drives the ConfigPanel.
+              if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                setContextMenu(null)
+                return
+              }
+              setSelectedNodeId(node.id)
+              setContextMenu(null)
+            }}
             onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null) }}
             onNodeContextMenu={mode === 'edit' ? (e, node) => {
               if (node.id === 'trigger') return
@@ -1356,6 +1447,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
             minZoom={0.2}
             maxZoom={1.5}
+            multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
+            selectionKeyCode="Shift"
+            selectNodesOnDrag={false}
           >
             <Background variant={BackgroundVariant.Dots} color="#cbd5e1" gap={20} size={1.5} style={{ backgroundColor: '#f8fafc' }} />
             <Controls />
