@@ -98,7 +98,7 @@ export default {
         runVolumeAnomalyCheck(supabase, env.APP_URL)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
-    } else if (event.cron === '*/4 * * * *') {
+    } else if (event.cron === '* * * * *') {
       ctx.waitUntil(
         prewarmKvCaches(supabase, env)
           .catch((e) => console.error('[prewarm] failed:', e))
