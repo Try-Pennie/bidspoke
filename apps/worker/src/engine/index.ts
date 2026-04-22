@@ -3,6 +3,7 @@ import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
 import { loadEnvVars } from '../lib/env-loader'
+import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput } from './context'
 import { executeNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
@@ -11,7 +12,8 @@ import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
-import { writeStepLog, createExecutionRecord, updateExecutionRecord } from './step-logger'
+import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
+import type { StepLogEntry } from './step-logger'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
 import { log } from '../lib/logger'
@@ -101,6 +103,10 @@ export async function executeWorkflow(
   const [idempotencyCached, envVars] = await Promise.all([
     idempotencyKey ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey) : Promise.resolve(null),
     loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase),
+    // Pre-warm partner constants KV so constants node finds a hot cache instead of
+    // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
+    // node retries on its own access and surfaces any real failure there.
+    loadPartnerConstants(org_id, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
   ])
 
   if (idempotencyCached) {
@@ -146,9 +152,13 @@ export async function executeWorkflow(
   let failedErrorType: ErrorType = null
   let failedSuppressAlert = false
 
+  // Step logs are accumulated here and flushed in a single Supabase insert after
+  // the walk completes. Avoids serializing graph execution on N per-step writes.
+  const stepLogQueue: StepLogEntry[] = []
+
   let walkStatus = 200
   try {
-    const walkResult = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id)
+    const walkResult = await walkGraph(ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue)
     response = walkResult.body
     walkStatus = walkResult.status
   } catch (err) {
@@ -160,6 +170,17 @@ export async function executeWorkflow(
       failedSuppressAlert = err.suppressAlert
     }
     response = { error: errorMessage, trace_id: traceId }
+  }
+
+  // Flush accumulated step logs. Test runs await so the UI's post-response
+  // fetch finds rows in place; production uses waitUntil so the HTTP response
+  // returns without waiting on the batch insert.
+  const flushPromise = flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '')
+    .catch((e) => console.error('[step-logger] flush failed:', e))
+  if (options.isTest) {
+    await flushPromise
+  } else {
+    executionCtx.waitUntil(flushPromise)
   }
 
   const completedAt = new Date().toISOString()
@@ -235,7 +256,8 @@ export async function walkGraph(
   executionStartedAt: string,
   supabase: SupabaseClient,
   env: Env,
-  workflowVersionId = ''
+  workflowVersionId = '',
+  stepLogQueue: StepLogEntry[] = []
 ): Promise<WalkGraphResult> {
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
@@ -293,7 +315,7 @@ export async function walkGraph(
           execNode,
           childNodes,
           (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id, workflowVersionId)
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, stepOrder + childIndex, node.id, workflowVersionId, stepLogQueue)
         )
         output = result.output
         lastOutput = output
@@ -310,7 +332,7 @@ export async function walkGraph(
             const child = childNodes[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
-            await logStep(supabase, env, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, stepOrder + childIndex, node.id)
+            logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, stepOrder + childIndex, node.id)
           }
         }
       } catch (err) {
@@ -326,7 +348,7 @@ export async function walkGraph(
       }
 
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-      await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder)
+      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder)
 
       // Locate the parallel_end join node — any edge from a child pointing to a
       // parallel_end counts. Logged with the same status as the parallel start
@@ -341,7 +363,7 @@ export async function walkGraph(
       const endNode = endNodeId ? findNode(endNodeId, definition.nodes) : undefined
       if (endNode) {
         recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-        await logStep(supabase, env, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder + 1)
+        logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder + 1)
       }
 
       if (stepStatus === 'failed') {
@@ -417,7 +439,7 @@ export async function walkGraph(
         const seqDurationMsEarly = Date.now() - new Date(stepStartedAt).getTime()
         log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
         recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
-        await logStep(supabase, env, executionId, executionStartedAt, node, 'completed', null, output, undefined, null, retriesUsed, stepStartedAt, stepOrder)
+        logStep(stepLogQueue, executionId, executionStartedAt, node, 'completed', null, output, undefined, null, retriesUsed, stepStartedAt, stepOrder)
         if (result.continueAfterResponse && result.earlyResponse) {
           pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status }
           // fall through — continue walking the graph
@@ -462,7 +484,7 @@ export async function walkGraph(
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
           recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
-          await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
+          logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
           current = fallback
           stepOrder++
           continue
@@ -472,7 +494,7 @@ export async function walkGraph(
         stepStatus = 'failed'
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
-        await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
+        logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
     }
@@ -480,7 +502,7 @@ export async function walkGraph(
     const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
     log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus })
-    await logStep(supabase, env, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
+    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
 
     // Exit node — return immediately
     if (node.type === 'exit' || node.type === 'response') {
@@ -510,9 +532,11 @@ export async function walkGraph(
   return pendingResponse ?? { body: lastOutput, status: 200 }
 }
 
-async function logStep(
-  supabase: SupabaseClient,
-  env: Env,
+// Synchronously enqueue a step log entry. Writes are batched and flushed once
+// at the end of execution (see flushStepLogs) instead of per-step, to avoid
+// serializing graph walk on N Supabase inserts.
+function logStep(
+  queue: StepLogEntry[],
   executionId: string,
   executionStartedAt: string,
   node: NodeDefinition,
@@ -525,10 +549,10 @@ async function logStep(
   startedAt: string,
   stepOrder: number,
   parallelGroupId?: string
-): Promise<void> {
+): void {
   const completedAt = new Date().toISOString()
   const durationMs = Date.now() - new Date(startedAt).getTime()
-  await writeStepLog(supabase, {
+  queue.push({
     execution_id: executionId,
     execution_started_at: executionStartedAt,
     step_namespace: node.namespace,
@@ -544,7 +568,7 @@ async function logStep(
     duration_ms: durationMs,
     step_order: stepOrder,
     parallel_group_id: parallelGroupId,
-  }, env.PII_REDACTION_FIELDS ?? '')
+  })
 }
 
 // Execute a single child node within a parallel group — simplified version of
@@ -559,7 +583,8 @@ async function runParallelChild(
   executionStartedAt: string,
   stepOrder: number,
   parallelGroupId: string,
-  workflowVersionId = ''
+  workflowVersionId = '',
+  stepLogQueue: StepLogEntry[] = []
 ): Promise<ParallelChildResult> {
   const stepStartedAt = new Date().toISOString()
   log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type })
@@ -599,7 +624,7 @@ async function runParallelChild(
   }
 
   recordStepOutput(ctx, child.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-  await logStep(supabase, env, executionId, executionStartedAt, child, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder, parallelGroupId)
+  logStep(stepLogQueue, executionId, executionStartedAt, child, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder, parallelGroupId)
 
   return stepStatus === 'completed'
     ? { namespace: child.namespace, status: 'fulfilled', output }

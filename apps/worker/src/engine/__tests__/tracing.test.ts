@@ -25,10 +25,9 @@ vi.mock('../../lib/circuit-breaker-client', () => ({
 }))
 
 vi.mock('../nodes/index')
-vi.mock('../step-logger')
 
 import { executeNode } from '../nodes/index'
-import { writeStepLog } from '../step-logger'
+import type { StepLogEntry } from '../step-logger'
 import { walkGraph } from '../index'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -189,36 +188,32 @@ describe('trace_id propagation — execution_steps linkage', () => {
     vi.restoreAllMocks()
   })
 
-  it('writeStepLog is called with the same execution_id for all steps', async () => {
-    vi.mocked(writeStepLog).mockResolvedValue(undefined)
-
+  it('step log queue is populated with the same execution_id for all steps', async () => {
     const def = chain(
       node('a', 'step_a', 'code'),
       node('b', 'step_b', 'code'),
       node('c', 'step_c', 'response')
     )
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    const queue: StepLogEntry[] = []
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID, queue)
 
-    const calls = vi.mocked(writeStepLog).mock.calls
-    expect(calls.length).toBe(3)
+    expect(queue.length).toBe(3)
     // Every step row shares the same execution_id, which is the FK to workflow_executions
     // where trace_id lives — this is how execution_steps are traceable by trace_id
-    for (const [, entry] of calls) {
-      expect((entry as { execution_id: string }).execution_id).toBe(EXECUTION_ID)
+    for (const entry of queue) {
+      expect(entry.execution_id).toBe(EXECUTION_ID)
     }
   })
 
-  it('writeStepLog receives step_namespace and step_type for each step', async () => {
-    vi.mocked(writeStepLog).mockResolvedValue(undefined)
-
+  it('step log queue receives step_namespace and step_type for each step', async () => {
     const def = chain(
       node('a', 'credit_pull', 'code'),
       node('b', 'respond', 'response')
     )
-    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+    const queue: StepLogEntry[] = []
+    await walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID, queue)
 
-    const entries = vi.mocked(writeStepLog).mock.calls.map(([, entry]) => entry as { step_namespace: string; step_type: string })
-    expect(entries.map((e) => e.step_namespace)).toEqual(['credit_pull', 'respond'])
-    expect(entries.map((e) => e.step_type)).toEqual(['code', 'response'])
+    expect(queue.map((e) => e.step_namespace)).toEqual(['credit_pull', 'respond'])
+    expect(queue.map((e) => e.step_type)).toEqual(['code', 'response'])
   })
 })

@@ -42,6 +42,30 @@ export async function writeStepLog(
   }
 }
 
+// Batch-insert an accumulated queue of step logs. Used at end of execution
+// to flush all step logs in a single round-trip instead of one-per-step.
+export async function flushStepLogs(
+  supabase: SupabaseClient,
+  queue: StepLogEntry[],
+  piiFieldsRaw: string
+): Promise<void> {
+  if (queue.length === 0) return
+  const piiFields = parsePiiFields(piiFieldsRaw)
+  const rows = queue.map((entry) => ({
+    ...entry,
+    input: redactPii(entry.input, piiFields),
+    output: redactPii(entry.output, piiFields),
+  }))
+  const { error } = await supabase.from('execution_steps').insert(rows)
+  if (error) {
+    console.error('[step-logger] execution_steps batch insert failed', {
+      count: rows.length,
+      execution_id: queue[0]?.execution_id,
+      error,
+    })
+  }
+}
+
 export async function createExecutionRecord(
   supabase: SupabaseClient,
   record: {

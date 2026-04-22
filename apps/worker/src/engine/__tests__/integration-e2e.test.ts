@@ -692,9 +692,6 @@ describe('parallel_end logging — matches parallel start status', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('logs parallel_end with failed status when parallel itself fails', async () => {
-    const { writeStepLog } = await import('../step-logger')
-    vi.mocked(writeStepLog).mockResolvedValue(undefined)
-
     // wait_for:'first' with every child rejecting causes executeParallelNode to throw
     vi.mocked(executeNode).mockRejectedValue(new Error('child blew up'))
 
@@ -713,16 +710,12 @@ describe('parallel_end logging — matches parallel start status', () => {
       ],
     }
 
+    const queue: import('../step-logger').StepLogEntry[] = []
     await expect(
-      walkGraph(makeCtx(), def, 'exec-par-fail', new Date().toISOString(), supabase, env)
+      walkGraph(makeCtx(), def, 'exec-par-fail', new Date().toISOString(), supabase, env, '', queue)
     ).rejects.toThrow()
 
-    const loggedRows = vi.mocked(writeStepLog).mock.calls.map((c) => c[1] as {
-      step_namespace: string
-      step_type: string
-      status: string
-    })
-    const endRow = loggedRows.find((r) => r.step_namespace === 'fan_end')
+    const endRow = queue.find((r) => r.step_namespace === 'fan_end')
     expect(endRow).toBeDefined()
     expect(endRow!.step_type).toBe('parallel_end')
     expect(endRow!.status).toBe('failed')

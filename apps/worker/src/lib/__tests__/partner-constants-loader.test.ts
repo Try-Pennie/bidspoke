@@ -73,7 +73,7 @@ describe('loadPartnerConstants', () => {
     expect(sb.from).toHaveBeenCalledWith('partner_uuid_map')
   })
 
-  it('stores combined result in KV with 60s TTL after cache miss', async () => {
+  it('stores combined result in KV with 300s TTL after cache miss', async () => {
     const kv = makeKv(null)
     const sb = makeSupabase([], [])
 
@@ -82,7 +82,7 @@ describe('loadPartnerConstants', () => {
     expect(kv.put).toHaveBeenCalledWith(
       CACHE_KEY,
       expect.any(String),
-      { expirationTtl: 60 }
+      { expirationTtl: 300 }
     )
   })
 

@@ -114,14 +114,12 @@ describe('resume — skip completed steps', () => {
   })
 
   it('skipping a node does not log a new step record', async () => {
-    const { writeStepLog } = await import('../step-logger')
-    vi.mocked(writeStepLog).mockResolvedValue(undefined)
     const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
     const ctx = makeCtx({ step_a: { ok: true } })
-    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
-    // writeStepLog should only be called for step_b (not step_a which was skipped)
-    const loggedNamespaces = vi.mocked(writeStepLog).mock.calls
-      .map((c) => (c[1] as { step_namespace: string }).step_namespace)
+    const queue: import('../step-logger').StepLogEntry[] = []
+    await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env, '', queue)
+    // Only step_b should be logged (step_a was skipped because it was pre-populated)
+    const loggedNamespaces = queue.map((e) => e.step_namespace)
     expect(loggedNamespaces).not.toContain('step_a')
     expect(loggedNamespaces).toContain('step_b')
   })

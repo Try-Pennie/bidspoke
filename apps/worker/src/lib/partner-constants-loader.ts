@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-const TTL = 60
+const TTL = 300
 const cacheKey = (orgId: string) => `partner-constants-${orgId}`
 
 export interface PartnerConstants {
