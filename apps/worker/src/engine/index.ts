@@ -14,6 +14,7 @@ import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import type { StepLogEntry } from './step-logger'
+import { estimateStepBasedCost } from './cost-rates'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
 import { log } from '../lib/logger'
@@ -246,15 +247,24 @@ export async function executeWorkflow(
     log({ event: 'execution_failed', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId, duration_ms: durationMs, error_message: errorMessage, error_type: failedErrorType, step_namespace: failedStep })
   }
 
-  // Update execution record (fire-and-forget)
+  // Update execution record (fire-and-forget). Wait for the walk to finish
+  // so continueExecution flows include post-response steps in the cost
+  // rollup; the tail consumer adds the main-Worker CPU slice on top once
+  // Cloudflare reports true cpuTime for the invocation.
   executionCtx.waitUntil(
-    updateExecutionRecord(supabase, executionId, startedAt, {
-      status: executionStatus,
-      completed_at: completedAt,
-      duration_ms: durationMs,
-      response_body: response,
-      error_message: errorMessage,
-    }).catch((e) => console.error('[execution] failed to update execution record:', e))
+    walkPromiseCaught
+      .then(async () => {
+        const cost = estimateStepBasedCost(stepLogQueue)
+        await updateExecutionRecord(supabase, executionId, startedAt, {
+          status: executionStatus,
+          completed_at: completedAt,
+          duration_ms: durationMs,
+          response_body: response,
+          error_message: errorMessage,
+          cost_usd: cost,
+        })
+      })
+      .catch((e) => console.error('[execution] failed to update execution record:', e))
   )
 
   // Send Slack alert on failure (skip business rejections and test runs)

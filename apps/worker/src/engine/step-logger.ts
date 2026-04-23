@@ -97,6 +97,7 @@ export async function updateExecutionRecord(
     duration_ms: number
     response_body?: unknown
     error_message?: string
+    cost_usd?: number
   }
 ): Promise<void> {
   // Use started_at for partition pruning; fall back to id-only if no rows matched

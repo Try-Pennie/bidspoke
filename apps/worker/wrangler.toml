@@ -79,6 +79,12 @@ head_sampling_rate = 1
 persist = true
 invocation_logs = true
 
+# Tail consumer — receives a TraceItem per request with true cpuTime,
+# adds the main-Worker cost slice onto workflow_executions.cost_usd.
+# See apps/worker-tail for the consumer code.
+[[tail_consumers]]
+service = "bidspoke-worker-tail"
+
 # Secrets (set via `wrangler secret put`):
 #   SUPABASE_URL
 #   SUPABASE_SECRET_KEY

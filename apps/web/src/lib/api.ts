@@ -60,6 +60,7 @@ export interface StatsResponse {
     exited: number
     success_rate: number
     avg_duration_ms: number | null
+    cost_usd: number
   }>
   by_partner: Array<{
     slug: string

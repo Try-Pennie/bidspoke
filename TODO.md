@@ -266,6 +266,12 @@
 
 ---
 
+## Platform / Ops
+
+- [x] **Estimated cost per execution** (2026-04-23) — `workflow_executions.cost_usd` + `cpu_ms` columns; engine writes step-based slice (partner API calls + code-node WFP + Supabase per-run) at finalize; `apps/worker-tail` tail consumer adds the main-Worker CF request + CPU slice using true `cpuTime` from `TraceItem`; `Est. cost` column on dashboard by-workflow table. Rates live in `apps/worker/src/engine/cost-rates.ts`. Partner per-call rates empty until contracts are confirmed.
+
+---
+
 ## Test Coverage Backlog
 
 > Tests that need to be written before going live. Grouped by priority.

@@ -59,6 +59,14 @@ function fmt(ms: number | null) {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
+function fmtCost(usd: number | null | undefined) {
+  if (usd == null || usd === 0) return '—'
+  if (usd < 0.01) return `<$0.01`
+  if (usd < 1) return `$${usd.toFixed(3)}`
+  if (usd < 100) return `$${usd.toFixed(2)}`
+  return `$${Math.round(usd).toLocaleString()}`
+}
+
 type ChartTooltip = {
   date: string; completed: number; exited: number; failed: number; total: number; x: number
 }
@@ -372,6 +380,7 @@ export default function DashboardPage() {
                     <Skeleton className="ml-auto h-4 w-10" />
                     <Skeleton className="h-4 w-10" />
                     <Skeleton className="h-4 w-14" />
+                    <Skeleton className="h-4 w-14" />
                   </div>
                 ))}
               </div>
@@ -388,7 +397,8 @@ export default function DashboardPage() {
                     <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500">Workflow</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Success</th>
-                    <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Avg</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Avg</th>
+                    <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Est. cost</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -418,7 +428,8 @@ export default function DashboardPage() {
                           {wf.success_rate}%
                         </span>
                       </td>
-                      <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
+                      <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
                     </tr>
                   ))}
                 </tbody>

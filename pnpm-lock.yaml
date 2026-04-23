@@ -110,6 +110,19 @@ importers:
         specifier: ^4.0.0
         version: 4.80.0(@cloudflare/workers-types@4.20260402.1)
 
+  apps/worker-tail:
+    dependencies:
+      '@supabase/supabase-js':
+        specifier: ^2.101.1
+        version: 2.101.1
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20240524.0
+        version: 4.20260402.1
+      wrangler:
+        specifier: ^4.0.0
+        version: 4.80.0(@cloudflare/workers-types@4.20260402.1)
+
 packages:
 
   '@alloc/quick-lru@5.2.0':

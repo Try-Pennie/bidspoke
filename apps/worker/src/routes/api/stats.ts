@@ -39,7 +39,7 @@ stats.get('/', async (c) => {
   // 2. All real executions in window
   const { data: executions, error } = await supabase
     .from('workflow_executions')
-    .select('id, workflow_id, status, duration_ms, started_at, error_message, source, trace_id')
+    .select('id, workflow_id, status, duration_ms, started_at, error_message, source, trace_id, cost_usd')
     .in('workflow_id', workflowIds)
     .gte('started_at', since)
     .eq('is_test', false)
@@ -87,13 +87,13 @@ stats.get('/', async (c) => {
   }))
 
   // 5. By workflow
-  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; durations: number[] }
+  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; durations: number[]; cost_usd: number }
   const wfStats: Record<string, WfStat> = {}
   for (const r of rows) {
     if (!wfStats[r.workflow_id]) {
       wfStats[r.workflow_id] = {
         name: workflowMap[r.workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, durations: [],
+        total: 0, completed: 0, failed: 0, exited: 0, durations: [], cost_usd: 0,
       }
     }
     wfStats[r.workflow_id].total++
@@ -101,6 +101,7 @@ stats.get('/', async (c) => {
     else if (r.status === 'failed') wfStats[r.workflow_id].failed++
     else if (r.status === 'exited') wfStats[r.workflow_id].exited++
     if (r.duration_ms != null) wfStats[r.workflow_id].durations.push(r.duration_ms as number)
+    if (r.cost_usd != null) wfStats[r.workflow_id].cost_usd += Number(r.cost_usd)
   }
   const by_workflow = Object.entries(wfStats)
     .map(([workflow_id, s]) => ({
@@ -114,6 +115,7 @@ stats.get('/', async (c) => {
       avg_duration_ms: s.durations.length
         ? Math.round(s.durations.reduce((a, b) => a + b, 0) / s.durations.length)
         : null,
+      cost_usd: s.cost_usd,
     }))
     .sort((a, b) => b.total - a.total)
 
