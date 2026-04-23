@@ -111,8 +111,16 @@ export default {
       return new Response(JSON.stringify({ error: 'script not found: ' + ns }), { status: 404, headers: { 'Content-Type': 'application/json' } })
     }
     const { payload, steps, env, execution } = await request.json()
-    const result = await fn(payload, steps, env, execution)
-    return Response.json(result ?? null)
+    try {
+      const result = await fn(payload, steps, env, execution)
+      return Response.json(result ?? null)
+    } catch (err) {
+      // Surface the real script error as a 500 JSON response so the engine's
+      // dispatchWithFallback treats it as bundle-present-with-error and reports
+      // the actual message, not a misleading "Worker not found" fallback miss.
+      const message = err && err.message ? err.message : String(err)
+      return new Response(JSON.stringify({ error: message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+    }
   }
 }`
 }

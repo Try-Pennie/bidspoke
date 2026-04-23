@@ -88,7 +88,12 @@ export async function executeCodeNode(
   const text = await res.text()
 
   if (!res.ok) {
-    throw new Error(`Code node "${node.namespace}" failed (HTTP ${res.status}): ${text}`)
+    let detail = text
+    try {
+      const parsed = JSON.parse(text) as { error?: string }
+      if (parsed?.error) detail = parsed.error
+    } catch { /* keep raw text */ }
+    throw new Error(detail)
   }
 
   const output: unknown = text === '' || text === 'undefined' ? null : JSON.parse(text)

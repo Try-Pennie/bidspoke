@@ -65,9 +65,14 @@ describe('executeCodeNode', () => {
     expect(result.output).toEqual(output)
   })
 
-  it('throws with status and body on non-OK worker response', async () => {
+  it('surfaces the raw response text when non-OK and body is not JSON', async () => {
     const env = makeEnv(() => vi.fn().mockResolvedValue(new Response('ReferenceError: x is not defined', { status: 500 })))
-    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow('ReferenceError: x is not defined')
+  })
+
+  it('extracts { error } from a JSON 500 body so the real script error reaches the user', async () => {
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'Gmail API error 403: quota exceeded' }), { status: 500 })))
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow('Gmail API error 403: quota exceeded')
   })
 
   it('returns earlyResponse when script returns { response: { status, body } }', async () => {
@@ -203,7 +208,7 @@ describe('executeCodeNode — bundle fallback to per-node worker', () => {
     const bundleFetch = vi.fn().mockResolvedValue(new Response('TypeError: x.y is undefined', { status: 500 }))
     const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
     const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
-    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow(/HTTP 500/)
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow('TypeError: x.y is undefined')
     expect(perNodeFetch).not.toHaveBeenCalled()
   })
 
