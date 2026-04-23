@@ -58,7 +58,7 @@ export interface StatsResponse {
     completed: number
     failed: number
     exited: number
-    success_rate: number
+    success_rate: number | null
     avg_duration_ms: number | null
     cost_usd: number
   }>

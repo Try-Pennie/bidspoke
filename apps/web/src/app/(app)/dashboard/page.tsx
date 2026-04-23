@@ -407,6 +407,7 @@ export default function DashboardPage() {
                       <td className="px-5 py-2.5">
                         <div className="flex items-center gap-2">
                           <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
+                            wf.success_rate == null ? 'bg-gray-300' :
                             wf.success_rate >= 95 ? 'bg-green-500' :
                             wf.success_rate >= 80 ? 'bg-amber-400' :
                             'bg-red-500'
@@ -419,14 +420,18 @@ export default function DashboardPage() {
                           </Link>
                         </div>
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total || '—'}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        <span className={`font-medium ${
-                          wf.success_rate >= 95 ? 'text-green-600' :
-                          wf.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'
-                        }`}>
-                          {wf.success_rate}%
-                        </span>
+                        {wf.success_rate == null ? (
+                          <span className="text-gray-400">—</span>
+                        ) : (
+                          <span className={`font-medium ${
+                            wf.success_rate >= 95 ? 'text-green-600' :
+                            wf.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'
+                          }`}>
+                            {wf.success_rate}%
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
                       <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>

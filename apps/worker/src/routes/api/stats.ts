@@ -36,7 +36,7 @@ stats.get('/', async (c) => {
 
   if (workflowIds.length === 0) return c.json(empty)
 
-  // 2. All real executions in window
+  // 2. All real executions in window (production only — health / volume / duration)
   const { data: executions, error } = await supabase
     .from('workflow_executions')
     .select('id, workflow_id, status, duration_ms, started_at, error_message, source, trace_id, cost_usd')
@@ -48,6 +48,20 @@ stats.get('/', async (c) => {
   if (error) return c.json({ error: error.message }, 500)
 
   const rows = executions ?? []
+
+  // 2b. Cost attribution includes test runs — we pay for them too.
+  const { data: costRows } = await supabase
+    .from('workflow_executions')
+    .select('workflow_id, cost_usd')
+    .in('workflow_id', workflowIds)
+    .gte('started_at', since)
+    .not('cost_usd', 'is', null)
+
+  const costByWorkflow: Record<string, number> = {}
+  for (const r of costRows ?? []) {
+    const wf = r.workflow_id as string
+    costByWorkflow[wf] = (costByWorkflow[wf] ?? 0) + Number(r.cost_usd)
+  }
 
   // 3. Summary
   const total = rows.length
@@ -86,14 +100,16 @@ stats.get('/', async (c) => {
     total: c.completed + c.failed + c.exited,
   }))
 
-  // 5. By workflow
-  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; durations: number[]; cost_usd: number }
+  // 5. By workflow — production-only runs/success/avg; cost includes test runs.
+  // Workflows with zero production runs still appear (cost-only row) as long as
+  // they have cost attribution in the window.
+  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; durations: number[] }
   const wfStats: Record<string, WfStat> = {}
   for (const r of rows) {
     if (!wfStats[r.workflow_id]) {
       wfStats[r.workflow_id] = {
         name: workflowMap[r.workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, durations: [], cost_usd: 0,
+        total: 0, completed: 0, failed: 0, exited: 0, durations: [],
       }
     }
     wfStats[r.workflow_id].total++
@@ -101,8 +117,18 @@ stats.get('/', async (c) => {
     else if (r.status === 'failed') wfStats[r.workflow_id].failed++
     else if (r.status === 'exited') wfStats[r.workflow_id].exited++
     if (r.duration_ms != null) wfStats[r.workflow_id].durations.push(r.duration_ms as number)
-    if (r.cost_usd != null) wfStats[r.workflow_id].cost_usd += Number(r.cost_usd)
   }
+
+  // Ensure test-only workflows surface so the cost column still shows.
+  for (const workflow_id of Object.keys(costByWorkflow)) {
+    if (!wfStats[workflow_id]) {
+      wfStats[workflow_id] = {
+        name: workflowMap[workflow_id] ?? 'Unknown',
+        total: 0, completed: 0, failed: 0, exited: 0, durations: [],
+      }
+    }
+  }
+
   const by_workflow = Object.entries(wfStats)
     .map(([workflow_id, s]) => ({
       workflow_id,
@@ -111,13 +137,13 @@ stats.get('/', async (c) => {
       completed: s.completed,
       failed: s.failed,
       exited: s.exited,
-      success_rate: Math.round((s.completed / s.total) * 100),
+      success_rate: s.total > 0 ? Math.round((s.completed / s.total) * 100) : null,
       avg_duration_ms: s.durations.length
         ? Math.round(s.durations.reduce((a, b) => a + b, 0) / s.durations.length)
         : null,
-      cost_usd: s.cost_usd,
+      cost_usd: costByWorkflow[workflow_id] ?? 0,
     }))
-    .sort((a, b) => b.total - a.total)
+    .sort((a, b) => b.total - a.total || b.cost_usd - a.cost_usd)
 
   // 6. Recent failures (latest 10)
   const recent_failures = rows

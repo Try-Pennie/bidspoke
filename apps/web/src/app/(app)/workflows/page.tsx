@@ -74,7 +74,9 @@ export default function WorkflowsPage() {
       .then(([wfs, stats]) => {
         setWorkflows(wfs)
         const map: Record<string, number> = {}
-        for (const wf of stats.by_workflow) map[wf.workflow_id] = wf.success_rate
+        for (const wf of stats.by_workflow) {
+          if (wf.success_rate != null) map[wf.workflow_id] = wf.success_rate
+        }
         setHealthMap(map)
       })
       .catch((e) => setError(e.message))
