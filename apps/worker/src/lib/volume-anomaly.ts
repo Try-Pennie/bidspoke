@@ -90,6 +90,7 @@ export async function runVolumeAnomalyCheck(
     .select('id, organization_id')
     .in('organization_id', orgIds)
     .eq('is_active', true)
+    .is('deleted_at', null)
 
   const wfToOrg: Record<string, string> = {}
   const orgWorkflowIds: Record<string, string[]> = {}

@@ -25,6 +25,7 @@ workflows.get('/', async (c) => {
     .from('workflows')
     .select('id, name, description, is_active, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .order('updated_at', { ascending: false })
 
   if (error) return c.json({ error: error.message }, 500)
@@ -71,6 +72,7 @@ workflows.get('/:id', async (c) => {
     .select('*')
     .eq('id', c.req.param('id') as string)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (error) return c.json({ error: 'Workflow not found' }, 404)
@@ -90,6 +92,7 @@ workflows.put('/:id', async (c) => {
     .select('id, definition')
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (fetchError || !existing) return c.json({ error: 'Workflow not found' }, 404)
@@ -200,6 +203,7 @@ workflows.patch('/:id', async (c) => {
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (fetchError) return c.json({ error: 'Workflow not found' }, 404)
@@ -225,7 +229,10 @@ workflows.patch('/:id', async (c) => {
   return c.json(data)
 })
 
-// DELETE /api/workflows/:id
+// DELETE /api/workflows/:id — soft delete. Execution rows have a
+// RESTRICT FK on workflows(id) and are audit/cost history, so we retire
+// the workflow via deleted_at and also flip is_active off so anything that
+// only checks is_active (cache prewarm, definition loader) skips it too.
 workflows.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
   const id = c.req.param('id') as string
@@ -233,9 +240,10 @@ workflows.delete('/:id', async (c) => {
 
   const { error } = await supabase
     .from('workflows')
-    .delete()
+    .update({ deleted_at: new Date().toISOString(), is_active: false, updated_by: userId })
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
 
   if (error) return c.json({ error: error.message }, 500)
 
@@ -260,6 +268,7 @@ workflows.patch('/:id/test-payloads', async (c) => {
     .update({ test_payloads: body.test_payloads })
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .select('test_payloads')
     .single()
 
@@ -279,6 +288,7 @@ workflows.get('/:id/versions', async (c) => {
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
@@ -305,6 +315,7 @@ workflows.get('/:id/versions/:version_id', async (c) => {
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
@@ -382,6 +393,7 @@ workflows.post('/:id/test', async (c) => {
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
     .single()
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)

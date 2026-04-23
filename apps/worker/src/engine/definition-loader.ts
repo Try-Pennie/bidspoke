@@ -37,6 +37,7 @@ export async function loadWorkflowDefinition(
     `)
     .eq('id', workflowId)
     .eq('is_active', true)
+    .is('deleted_at', null)
     .order('version_number', { referencedTable: 'workflow_versions', ascending: false })
     .limit(1, { referencedTable: 'workflow_versions' })
     .single()

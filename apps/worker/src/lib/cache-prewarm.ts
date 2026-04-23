@@ -17,6 +17,7 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
     .from('workflows')
     .select('id, organization_id')
     .eq('is_active', true)
+    .is('deleted_at', null)
 
   if (error || !workflows || workflows.length === 0) {
     console.log(`[prewarm] no active workflows found (error: ${error?.message ?? 'none'})`)

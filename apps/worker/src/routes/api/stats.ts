@@ -19,6 +19,7 @@ stats.get('/', async (c) => {
     .from('workflows')
     .select('id, name')
     .eq('organization_id', orgId)
+    .is('deleted_at', null)
 
   const workflowIds = (workflows ?? []).map((w) => w.id)
   const workflowMap: Record<string, string> = Object.fromEntries(

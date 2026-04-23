@@ -24,6 +24,7 @@ admin.post('/migrate-code-workers', async (c) => {
     .select('id, name, definition')
     .eq('organization_id', orgId)
     .eq('is_active', true)
+    .is('deleted_at', null)
 
   if (error) return c.json({ error: error.message }, 500)
   if (!workflows) return c.json({ migrated: 0, results: [] })
