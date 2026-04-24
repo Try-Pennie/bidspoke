@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw } from 'lucide-react'
+import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -36,6 +36,46 @@ function formatDuration(ms: number | null) {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
+function buildReport(execution: Execution): string {
+  const lines: string[] = []
+  lines.push(`# Execution ${execution.id}`)
+  lines.push('')
+  lines.push(`Status: ${execution.status}`)
+  lines.push(`Source: ${execution.source}`)
+  lines.push(`Duration: ${formatDuration(execution.duration_ms)}`)
+  lines.push(`Started: ${execution.started_at}`)
+  lines.push(`Trace ID: ${execution.trace_id}`)
+  if (execution.error_message) {
+    lines.push(`Error: ${execution.error_message}`)
+  }
+  lines.push('')
+  lines.push('## Trigger payload')
+  lines.push('```json')
+  lines.push(JSON.stringify(execution.trigger_payload, null, 2))
+  lines.push('```')
+  lines.push('')
+  lines.push(`## Steps (${execution.steps.length})`)
+  lines.push('')
+  execution.steps.forEach((step, i) => {
+    lines.push(`### ${i + 1}. ${step.step_namespace} (${step.step_type})`)
+    lines.push(`Status: ${step.status} · Duration: ${formatDuration(step.duration_ms)}${step.retries_used > 0 ? ` · Retries: ${step.retries_used}` : ''}`)
+    if (step.error_message) {
+      lines.push(`Error: ${step.error_message}${step.error_type ? ` (${step.error_type})` : ''}`)
+    }
+    lines.push('')
+    lines.push('Input:')
+    lines.push('```json')
+    lines.push(JSON.stringify(step.input, null, 2))
+    lines.push('```')
+    lines.push('Output:')
+    lines.push('```json')
+    lines.push(JSON.stringify(step.output, null, 2))
+    lines.push('```')
+    lines.push('')
+  })
+  return lines.join('\n')
+}
+
 function JsonBlock({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <span className="text-gray-400 italic">null</span>
   return (
@@ -54,6 +94,33 @@ export default function ExecutionDetailPage() {
   const [execution, setExecution] = useState<Execution | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function copyReport() {
+    if (!execution) return
+    const text = buildReport(execution)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Fallback for older browsers / contexts where clipboard API rejects
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try {
+        document.execCommand('copy')
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      } catch {
+        // swallow — nothing else to do
+      }
+      document.body.removeChild(ta)
+    }
+  }
 
   useEffect(() => {
     api.executions.get(executionId)
@@ -73,13 +140,23 @@ export default function ExecutionDetailPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to workflow
           </button>
-          <button
-            onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
-            className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
-          >
-            <LayoutTemplate className="h-3.5 w-3.5" />
-            View on canvas
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={copyReport}
+              disabled={!execution}
+              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? 'Copied' : 'Copy report'}
+            </button>
+            <button
+              onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
+              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              View on canvas
+            </button>
+          </div>
         </div>
 
         {loading && (
@@ -165,6 +242,14 @@ export default function ExecutionDetailPage() {
               </div>
             )}
 
+            {/* Trigger payload */}
+            <div>
+              <h2 className="mb-3 text-sm font-semibold text-gray-700">Trigger payload</h2>
+              <div className="rounded-xl border border-gray-200 bg-white p-4">
+                <JsonBlock value={execution.trigger_payload} />
+              </div>
+            </div>
+
             {/* Steps */}
             <div>
               <h2 className="mb-3 text-sm font-semibold text-gray-700">Steps</h2>
@@ -217,13 +302,6 @@ export default function ExecutionDetailPage() {
               )}
             </div>
 
-            {/* Trigger payload */}
-            <div>
-              <h2 className="mb-3 text-sm font-semibold text-gray-700">Trigger payload</h2>
-              <div className="rounded-xl border border-gray-200 bg-white p-4">
-                <JsonBlock value={execution.trigger_payload} />
-              </div>
-            </div>
           </div>
         )}
       </div>
