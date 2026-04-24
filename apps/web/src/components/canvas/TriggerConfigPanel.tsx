@@ -181,7 +181,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               <button
                 type="button"
                 onClick={copyUrl}
-                className="mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+                className="pointer-events-auto mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
                 title="Copy URL"
               >
                 {copied
@@ -217,7 +217,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                     <button
                       type="button"
                       onClick={() => copyCustomUrl(url)}
-                      className="mt-0.5 flex-shrink-0 rounded p-1 text-p-blue hover:bg-p-blue-light hover:text-p-blue-dark transition-colors"
+                      className="pointer-events-auto mt-0.5 flex-shrink-0 rounded p-1 text-p-blue hover:bg-p-blue-light hover:text-p-blue-dark transition-colors"
                       title="Copy URL"
                     >
                       {copiedCustom === url
@@ -390,7 +390,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         <button
                           type="button"
                           onClick={() => toggleReveal(s.api_key)}
-                          className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                           title={revealed ? 'Hide' : 'Reveal'}
                         >
                           {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -398,7 +398,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         <button
                           type="button"
                           onClick={() => copyKey(s.api_key)}
-                          className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                           title="Copy key"
                         >
                           {copiedKey === s.api_key
