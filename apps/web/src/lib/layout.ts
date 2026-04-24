@@ -216,6 +216,45 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // ── Post-process: x-align single-child linear chains with their parent.
+  //
+  // Dagre's network-simplex layout will sometimes pull a downstream chain
+  // toward the visual center of the graph instead of placing it directly
+  // under its actual parent. This is most visible when a Branch has multiple
+  // children but only one of them has further descendants — dagre centers
+  // those descendants between the branch's children, making it look like
+  // they belong to the wrong branch.
+  //
+  // Fix: for any node with exactly one incoming edge whose parent has exactly
+  // one outgoing edge, copy the parent's x. Iterate until stable so chains
+  // of any length get aligned. Only kicks in for linear segments — multi-child
+  // nodes keep dagre's balanced layout.
+  const inEdgesByTarget = new Map<string, Edge[]>()
+  for (const edge of edges) {
+    const list = inEdgesByTarget.get(edge.target) ?? []
+    list.push(edge)
+    inEdgesByTarget.set(edge.target, list)
+  }
+  let changed = true
+  let iterations = 0
+  while (changed && iterations < nodes.length) {
+    changed = false
+    iterations++
+    for (const node of nodes) {
+      const inE = inEdgesByTarget.get(node.id) ?? []
+      if (inE.length !== 1) continue
+      const parentId = inE[0].source
+      const parentOut = outEdgesBySource.get(parentId) ?? []
+      if (parentOut.length !== 1) continue
+      const childPos = pos.get(node.id)
+      const parentPos = pos.get(parentId)
+      if (!childPos || !parentPos) continue
+      if (Math.abs(childPos.x - parentPos.x) < 0.5) continue
+      childPos.x = parentPos.x
+      changed = true
+    }
+  }
+
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
   const EXTRA_DISCONNECTED_GAP = DISCONNECTED_GAP
