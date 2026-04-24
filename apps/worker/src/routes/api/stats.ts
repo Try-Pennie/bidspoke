@@ -38,6 +38,9 @@ stats.get('/', async (c) => {
   if (workflowIds.length === 0) return c.json(empty)
 
   // 2. All real executions in window (production only — health / volume / duration)
+  // Supabase's default row cap is 1000. A single high-volume workflow can fill
+  // that, truncating quieter workflows off the tail. Bump the limit so the
+  // by-workflow aggregation sees everything in the window.
   const { data: executions, error } = await supabase
     .from('workflow_executions')
     .select('id, workflow_id, status, outcome, duration_ms, started_at, error_message, source, trace_id, cost_usd')
@@ -45,6 +48,7 @@ stats.get('/', async (c) => {
     .gte('started_at', since)
     .eq('is_test', false)
     .order('started_at', { ascending: false })
+    .limit(100000)
 
   if (error) return c.json({ error: error.message }, 500)
 
@@ -57,6 +61,7 @@ stats.get('/', async (c) => {
     .in('workflow_id', workflowIds)
     .gte('started_at', since)
     .not('cost_usd', 'is', null)
+    .limit(100000)
 
   const costByWorkflow: Record<string, number> = {}
   for (const r of costRows ?? []) {
