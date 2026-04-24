@@ -217,7 +217,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
-  const EXTRA_DISCONNECTED_GAP = 120
+  const EXTRA_DISCONNECTED_GAP = 280
   const adj = new Map<string, Set<string>>()
   for (const n of nodes) adj.set(n.id, new Set())
   for (const e of edges) {

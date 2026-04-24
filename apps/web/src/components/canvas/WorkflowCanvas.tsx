@@ -1519,8 +1519,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
-            snapToGrid={mode === 'edit'}
-            snapGrid={[20, 20]}
+            snapToGrid={false}
             fitView
             fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
             minZoom={0.2}
