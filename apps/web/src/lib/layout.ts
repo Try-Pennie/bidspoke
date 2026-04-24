@@ -11,14 +11,14 @@ export const NODE_W = 208
 // shorter, then the DOM pushes past the reserved slot into the next rank).
 const NODE_H: Record<string, number> = {
   trigger:       120,
-  filter:        120,
-  branch:        140,  // branch labels row at bottom + variable label count
-  code:          120,  // namespace + body + comment/result preview row
-  response:      120,
+  filter:        144,  // header + body + optional _route output preview pill
+  branch:        164,  // header + body + branch labels row + optional _route output preview pill
+  code:          144,  // header + body + optional output preview pill
+  response:      144,  // header + body + optional output preview pill
   exit:           96,
   parallel:      120,
   parallel_end:  100,
-  salesforce:    140,  // operation + object subtitle + optional status code row
+  salesforce:    164,  // header + body + Update tag + optional status code preview pill
   default:       120,
 }
 
