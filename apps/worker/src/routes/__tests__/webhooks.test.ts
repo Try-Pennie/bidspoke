@@ -8,10 +8,13 @@ import type { Env } from '../../index'
 
 // ── Mocks (hoisted before imports) ───────────────────────────────────────────
 
-vi.mock('../../engine/index')
+vi.mock('../../engine/index', async () => {
+  const actual = await vi.importActual<typeof import('../../engine/index')>('../../engine/index')
+  return { ...actual, executeWorkflow: vi.fn() }
+})
 vi.mock('../../lib/supabase')
 
-import { executeWorkflow } from '../../engine/index'
+import { executeWorkflow, SourceNotAuthorizedError } from '../../engine/index'
 import { createSupabaseClient } from '../../lib/supabase'
 import webhooks from '../webhooks'
 
@@ -109,6 +112,29 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockRejectedValue(new Error('Database connection failed'))
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
       expect(res.status).toBe(500)
+    })
+  })
+
+  describe('source-to-workflow assignment', () => {
+    it('passes enforceSourceAssignment: true to the engine', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue({
+        response: {}, status: 200, traceId: 'trace-1', idempotentReplay: false,
+      })
+      await request('wf-1', { apiKey: 'sk_test_key' })
+      expect(vi.mocked(executeWorkflow)).toHaveBeenCalledWith(
+        expect.objectContaining({ enforceSourceAssignment: true }),
+        expect.anything(), expect.anything(), expect.anything()
+      )
+    })
+
+    it('returns 403 when the source is not authorized for this workflow', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(
+        new SourceNotAuthorizedError('website_form', 'wf-1')
+      )
+      const res = await request('wf-1', { apiKey: 'sk_test_key' })
+      expect(res.status).toBe(403)
+      const body = await res.json() as { error: string }
+      expect(body.error).toMatch(/not authorized/i)
     })
   })
 

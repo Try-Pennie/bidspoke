@@ -17,6 +17,7 @@ import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
+import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
 import type {
@@ -47,13 +48,7 @@ class CircuitOpenError extends Error {
   }
 }
 
-// Thrown when a source has assignments and the current workflow isn't one of them.
-// Only enforced on the generic /webhooks/:id path; custom endpoints are self-granting.
-export class SourceNotAuthorizedError extends Error {
-  constructor(source: string, workflowId: string) {
-    super(`API key (source "${source}") is not authorized for workflow ${workflowId}`)
-  }
-}
+export { SourceNotAuthorizedError }
 
 export interface ExecuteOptions {
   workflowId: string
@@ -94,18 +89,8 @@ export async function executeWorkflow(
   const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
   const definition = options.definitionOverride ?? loaded.definition
 
-  // Source assignment enforcement — generic webhook path only. Empty assignments
-  // mean unrestricted; any row present for the source locks it to listed workflows.
   if (options.enforceSourceAssignment) {
-    const { data: assignments } = await supabase
-      .from('source_workflow_assignments')
-      .select('workflow_id')
-      .eq('organization_id', org_id)
-      .eq('source_name', source)
-    if (assignments && assignments.length > 0) {
-      const allowed = assignments.some((a) => a.workflow_id === workflowId)
-      if (!allowed) throw new SourceNotAuthorizedError(source, workflowId)
-    }
+    await enforceSourceAssignment(supabase, org_id, source, workflowId)
   }
 
   // Resolve idempotency key (needs definition)
