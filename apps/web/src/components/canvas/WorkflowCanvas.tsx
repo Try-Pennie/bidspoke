@@ -634,28 +634,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     })
   }, [nodes, edges, setNodes, setEdges])
 
-  const removeFromChain = useCallback((nodeId: string) => {
-    snapshot()
-    const inEdges = edges.filter((e) => e.target === nodeId)
-    const outEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'output')
-    const connectedIds = new Set([...inEdges.map((e) => e.id), ...outEdges.map((e) => e.id)])
-    const remaining = edges.filter((e) => !connectedIds.has(e.id))
-    const bridgeEdges: Edge[] = []
-    if (inEdges.length === 1 && outEdges.length === 1) {
-      bridgeEdges.push({
-        id: uid(),
-        source: inEdges[0].source,
-        target: outEdges[0].target,
-        sourceHandle: inEdges[0].sourceHandle ?? 'output',
-      })
-    }
-    const newEdges = [...remaining, ...bridgeEdges]
-    setEdges(newEdges)
-    setNodes((ns) => layoutWorkflow(ns, newEdges))
-    setIsDirty(true)
-    setContextMenu(null)
-  }, [snapshot, edges, setEdges, setNodes])
-
   // Given an edge set that leaves some nodes orphaned, BFS from any node that
   // lost all incoming edges and shift the resulting subgraph right of the
   // main flow. Marks each shifted node manualPosition so layout keeps them
@@ -685,6 +663,29 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       }
     })
   }, [nodes])
+
+  const removeFromChain = useCallback((nodeId: string) => {
+    snapshot()
+    const inEdges = edges.filter((e) => e.target === nodeId)
+    const outEdges = edges.filter((e) => e.source === nodeId && e.sourceHandle === 'output')
+    const connectedIds = new Set([...inEdges.map((e) => e.id), ...outEdges.map((e) => e.id)])
+    const remaining = edges.filter((e) => !connectedIds.has(e.id))
+    const bridgeEdges: Edge[] = []
+    if (inEdges.length === 1 && outEdges.length === 1) {
+      bridgeEdges.push({
+        id: uid(),
+        source: inEdges[0].source,
+        target: outEdges[0].target,
+        sourceHandle: inEdges[0].sourceHandle ?? 'output',
+      })
+    }
+    const newEdges = [...remaining, ...bridgeEdges]
+    const shifted = shiftDisconnectedRight(newEdges)
+    setEdges(newEdges)
+    setNodes(layoutWorkflow(shifted, newEdges))
+    setIsDirty(true)
+    setContextMenu(null)
+  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
 
   // Disconnect: cut only the node's incoming edges. The node and its entire
   // downstream subgraph float away as a disconnected cluster (still internally
