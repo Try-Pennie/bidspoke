@@ -49,7 +49,6 @@ import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
 import { reachableFromTrigger } from './reachability'
-import DeletableEdge from './DeletableEdge'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
@@ -75,7 +74,6 @@ const nodeTypes: NodeTypes = {
   salesforce: SalesforceNode,
 }
 
-const edgeTypes = { default: DeletableEdge }
 
 function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
   return {
@@ -316,6 +314,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [lastTestExecId, setLastTestExecId] = useState<string | null>(null)
   const [showOverflow, setShowOverflow] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+  const [edgeContextMenu, setEdgeContextMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null)
   const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return 320
     const saved = Number.parseInt(window.localStorage.getItem('bidspoke.sidePanelWidth') ?? '', 10)
@@ -640,32 +639,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setContextMenu(null)
   }, [snapshot, edges, setEdges, setNodes])
 
-  // Delete a single edge — used by the hover-X on custom edges.
+  // Disconnect a single edge — used by the right-click menu on edges.
   const deleteEdge = useCallback((edgeId: string) => {
     snapshot()
     const newEdges = edges.filter((e) => e.id !== edgeId)
     setEdges(newEdges)
     setNodes((ns) => layoutWorkflow(ns, newEdges))
     setIsDirty(true)
+    setEdgeContextMenu(null)
   }, [snapshot, edges, setEdges, setNodes])
 
-  // Track which edge the mouse is over so DeletableEdge can render the X button
-  // only on the hovered edge. We use ReactFlow's native edge hover callbacks
-  // rather than a wide invisible hit-path, so node clicks and right-clicks
-  // aren't intercepted.
-  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
-
-  // Inject the edge delete handler + hover state into each edge's data so
-  // DeletableEdge can call/read them. Omitted in view/readonly mode.
-  const edgesWithHandlers = useMemo(
-    () => mode === 'edit'
-      ? edges.map((e) => ({
-          ...e,
-          data: { ...(e.data ?? {}), onDelete: deleteEdge, hovered: e.id === hoveredEdgeId },
-        }))
-      : edges,
-    [edges, deleteEdge, hoveredEdgeId, mode]
-  )
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 
@@ -675,7 +658,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
-      if (e.key === 'Escape') { setContextMenu(null) }
+      if (e.key === 'Escape') { setContextMenu(null); setEdgeContextMenu(null) }
 
       // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
       // This covers Monaco and all other inputs in those panels without relying on
@@ -751,32 +734,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [snapshot, edges, setEdges, setNodes]
   )
 
-  // Edge reconnect (dragging an edge endpoint to a different node). Replaces
-  // the old edge with a new one. If the drag bypasses a single node (old
-  // target had one outgoing edge to the new target, and losing this incoming
-  // leaves it orphaned), also drop that outgoing edge so the bypassed node
-  // is fully disconnected — matches Dan's "drag wire from constants to
-  // validate should remove parse_name but keep the rest intact" example.
-  const onReconnect = useCallback(
-    (oldEdge: Edge, newConnection: Connection) => {
-      snapshot()
-      let nextEdges = edges.filter((e) => e.id !== oldEdge.id)
-      const oldTarget = oldEdge.target
-      const newTarget = newConnection.target
-      const isBypass =
-        newTarget && newTarget !== oldTarget &&
-        !nextEdges.some((e) => e.target === oldTarget) &&
-        nextEdges.some((e) => e.source === oldTarget && e.target === newTarget)
-      if (isBypass) {
-        nextEdges = nextEdges.filter((e) => !(e.source === oldTarget && e.target === newTarget))
-      }
-      nextEdges = addEdge({ ...newConnection, id: uid() }, nextEdges)
-      setEdges(nextEdges)
-      setNodes((ns) => layoutWorkflow(ns, nextEdges))
-      setIsDirty(true)
-    },
-    [snapshot, edges, setEdges, setNodes]
-  )
 
   // ── Drag-drop from palette ──────────────────────────────────────────────────
 
@@ -1397,7 +1354,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
             nodes={nodes}
-            edges={edgesWithHandlers}
+            edges={edges}
             onNodesChange={(changes) => {
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
@@ -1529,9 +1486,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
-            onReconnect={mode === 'edit' ? onReconnect : undefined}
-            onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
-            onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
             isValidConnection={isValidConnection}
             onNodeClick={(e, node) => {
               // Shift / Cmd click → add to multi-selection (handled by React Flow);
@@ -1543,14 +1497,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               setSelectedNodeId(node.id)
               setContextMenu(null)
             }}
-            onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null) }}
+            onPaneClick={() => { setSelectedNodeId(null); setContextMenu(null); setEdgeContextMenu(null) }}
             onNodeContextMenu={mode === 'edit' ? (e, node) => {
               if (node.id === 'trigger') return
               e.preventDefault()
+              setEdgeContextMenu(null)
               setContextMenu({ nodeId: node.id, x: e.clientX, y: e.clientY })
             } : undefined}
+            onEdgeContextMenu={mode === 'edit' ? (e, edge) => {
+              e.preventDefault()
+              setContextMenu(null)
+              setEdgeContextMenu({ edgeId: edge.id, x: e.clientX, y: e.clientY })
+            } : undefined}
             nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
@@ -1637,6 +1596,22 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               </div>
             )
           })()}
+
+          {edgeContextMenu && (
+            <div
+              className="fixed z-50 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+              style={{ left: edgeContextMenu.x, top: edgeContextMenu.y }}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <button
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
+                onClick={() => deleteEdge(edgeContextMenu.edgeId)}
+              >
+                <X className="h-3.5 w-3.5 text-gray-400" />
+                Disconnect
+              </button>
+            </div>
+          )}
           </div>
         </div>
 
