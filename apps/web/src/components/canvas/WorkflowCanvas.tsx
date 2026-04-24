@@ -785,6 +785,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [snapshot, edges, setEdges, setNodes]
   )
 
+  // Edge reconnect: drag an existing edge's endpoint to a different handle.
+  // Typical use: drop the target end onto a disconnected node to slot it in.
+  // If the reconnect orphans a node (its old target loses all incoming), the
+  // shiftDisconnectedRight helper pushes the orphan to a free column so the
+  // Y of each remaining chain is preserved.
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      snapshot()
+      let next = edges.filter((e) => e.id !== oldEdge.id)
+      next = addEdge({ ...newConnection, id: uid() }, next)
+      const shifted = shiftDisconnectedRight(next)
+      setEdges(next)
+      setNodes(layoutWorkflow(shifted, next))
+      setIsDirty(true)
+    },
+    [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes]
+  )
+
 
   // ── Drag-drop from palette ──────────────────────────────────────────────────
 
@@ -1556,6 +1574,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
+            onReconnect={mode === 'edit' ? onReconnect : undefined}
             onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
             onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
             isValidConnection={isValidConnection}
