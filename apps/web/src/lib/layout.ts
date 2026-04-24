@@ -302,13 +302,15 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
 
   return nodes.map((node) => {
+    // manualPosition only applies to nodes NOT reachable from the trigger.
+    // Active (reachable) nodes always take dagre's position so the main flow
+    // stays aligned even if the node happened to have an old manual flag.
+    // Orphans with existing positions are preserved regardless of the flag
+    // (prevents drift on unrelated edits).
     const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
-    // Respect explicit manual position or "floating" nodes that already have a
-    // placement. Unplaced unreachable nodes (position 0,0) still get dagred so
-    // initial drops land somewhere visible.
+    const isReachable = reachable.has(node.id)
     const hasExistingPos = node.position.x !== 0 || node.position.y !== 0
-    if (manual) return node
-    if (!reachable.has(node.id) && hasExistingPos) return node
+    if (!isReachable && (manual || hasExistingPos)) return node
     const p = pos.get(node.id)
     if (!p) return node
     return {
