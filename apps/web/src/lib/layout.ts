@@ -272,11 +272,43 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Reachability from trigger — any unreachable node with an existing
+  // position is treated as manually-positioned and left alone. Prevents
+  // disconnected subgraphs from getting re-aligned to the top whenever
+  // another part of the graph mutates (e.g. dropping a new node).
+  const reachable = new Set<string>()
+  if (nodeMap.has('trigger')) {
+    const outgoing = new Map<string, string[]>()
+    for (const e of edges) {
+      const arr = outgoing.get(e.source) ?? []
+      arr.push(e.target)
+      outgoing.set(e.source, arr)
+    }
+    // Parallel parent → children follow-through (matches canvas reachability)
+    for (const n of nodes) {
+      const children = (n.data as { children?: unknown })?.children
+      if (Array.isArray(children) && children.every((c) => typeof c === 'string')) {
+        const arr = outgoing.get(n.id) ?? []
+        outgoing.set(n.id, [...arr, ...(children as string[])])
+      }
+    }
+    const queue = ['trigger']
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      if (reachable.has(id)) continue
+      reachable.add(id)
+      for (const next of outgoing.get(id) ?? []) queue.push(next)
+    }
+  }
+
   return nodes.map((node) => {
-    // Respect manually-positioned nodes — user dragged them somewhere
-    // specific and expects that position to stick through re-layouts.
     const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
+    // Respect explicit manual position or "floating" nodes that already have a
+    // placement. Unplaced unreachable nodes (position 0,0) still get dagred so
+    // initial drops land somewhere visible.
+    const hasExistingPos = node.position.x !== 0 || node.position.y !== 0
     if (manual) return node
+    if (!reachable.has(node.id) && hasExistingPos) return node
     const p = pos.get(node.id)
     if (!p) return node
     return {
