@@ -362,7 +362,9 @@ export async function walkGraph(
     if (priorStep?.status === 'completed') {
       const priorOutput = priorStep.output
       lastOutput = priorOutput
-      if (node.type === 'exit' || node.type === 'response') return { body: priorOutput, status: 200 }
+      if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
+        return { body: priorOutput, status: 200 }
+      }
       const resumeEdges = outgoingEdges(node.id, definition.edges)
       let resumeNext: NodeDefinition | undefined
       if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') && priorOutput !== null && typeof priorOutput === 'object') {
@@ -712,8 +714,11 @@ export async function walkGraph(
       logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder)
     }
 
-    // Exit node — return immediately
-    if (node.type === 'exit' || node.type === 'response') {
+    // Exit node — return immediately. Response nodes also terminate, unless
+    // continue_after_response is set — in that case the earlyResponse branch
+    // above already fired the HTTP response and we keep walking the graph
+    // (mirrors the code-node continueExecution sentinel).
+    if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
       return { body: output, status: 200 }
     }
 

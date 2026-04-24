@@ -695,6 +695,20 @@ function ResponseConfig({
           refs={refs}
         />
       </Field>
+      <label className="flex items-start gap-2 text-xs text-gray-700">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={Boolean(config.continue_after_response)}
+          onChange={(e) => onChange({ continue_after_response: e.target.checked || undefined })}
+        />
+        <span>
+          <span className="font-medium">Continue after response</span>
+          <span className="mt-0.5 block text-gray-400">
+            Send the HTTP response immediately and keep walking the graph (for post-response work like Salesforce patches).
+          </span>
+        </span>
+      </label>
     </section>
   )
 }
