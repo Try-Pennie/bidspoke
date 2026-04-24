@@ -466,7 +466,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               <div className="group relative">
                 <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
                 <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
-                  Prevents duplicate executions for the same lead. When enabled, identical requests return the cached response instead of running the workflow again. Configure which payload fields define &ldquo;same lead&rdquo; below.
+                  When the same lead comes in twice, only run the workflow once. The second call gets back whatever the first run returned. Pick the fields that define &quot;same lead&quot; below (e.g. <code className="rounded bg-gray-100 px-1 font-mono">body.leadUuid</code>), or send an <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> header on the request.
                 </div>
               </div>
             </div>
