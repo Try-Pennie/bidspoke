@@ -29,7 +29,6 @@ export interface TriggerConfig {
   type: 'http_webhook'
   config: {
     method: string
-    custom_response?: boolean
     auth_method: 'api_key'
     idempotency?: {
       enabled: boolean

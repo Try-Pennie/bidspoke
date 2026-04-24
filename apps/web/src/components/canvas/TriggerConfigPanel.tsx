@@ -476,26 +476,6 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
           </div>
         )}
 
-        {/* Custom response */}
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-medium text-gray-700">Custom response</p>
-            <p className="text-xs text-gray-400">Use a Response node instead of auto-200</p>
-          </div>
-          <button
-            onClick={() => update({ custom_response: !cfg.custom_response })}
-            className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-              cfg.custom_response ? 'bg-p-blue-dark' : 'bg-gray-200'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                cfg.custom_response ? 'translate-x-4' : 'translate-x-0'
-              }`}
-            />
-          </button>
-        </div>
-
         {/* Duration alert */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Slow execution alert</label>

@@ -51,7 +51,6 @@ export interface TriggerDef {
   config: {
     method: string
     auth_method: 'api_key'
-    custom_response?: boolean
     idempotency?: {
       enabled: boolean
       derive_from_fields?: string[]
