@@ -61,6 +61,9 @@ export interface StatsResponse {
     successful: number
     success_rate: number | null
     avg_duration_ms: number | null
+    avg_duration_completed_ms: number | null
+    avg_duration_successful_ms: number | null
+    avg_duration_failed_ms: number | null
     cost_usd: number
   }>
   by_partner: Array<{

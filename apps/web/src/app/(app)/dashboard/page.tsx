@@ -430,9 +430,24 @@ export default function DashboardPage() {
                           </div>
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total || '—'}</td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{outcomeCompleted || '—'}</td>
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.successful ? 'text-green-600' : 'text-gray-400'}`}>{wf.successful || '—'}</td>
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.failed ? 'text-red-500' : 'text-gray-400'}`}>{wf.failed || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
+                          <div>{outcomeCompleted || '—'}</div>
+                          {outcomeCompleted > 0 && (
+                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_completed_ms)}</div>
+                          )}
+                        </td>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.successful ? 'text-green-600' : 'text-gray-400'}`}>
+                          <div>{wf.successful || '—'}</div>
+                          {wf.successful > 0 && (
+                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_successful_ms)}</div>
+                          )}
+                        </td>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.failed ? 'text-red-500' : 'text-gray-400'}`}>
+                          <div>{wf.failed || '—'}</div>
+                          {wf.failed > 0 && (
+                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_failed_ms)}</div>
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
                         <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
                       </tr>

@@ -83,7 +83,15 @@ stats.get('/', async (c) => {
   }))
 
   // 4. By workflow — production for counts/durations; cost includes test runs
-  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; successful: number; duration_sum: number; duration_count: number; cost_sum: number }
+  type WfStat = {
+    name: string
+    total: number; completed: number; failed: number; exited: number; successful: number
+    duration_sum: number; duration_count: number
+    completed_duration_sum: number; completed_duration_count: number
+    successful_duration_sum: number; successful_duration_count: number
+    failed_duration_sum: number; failed_duration_count: number
+    cost_sum: number
+  }
   const wfStats: Record<string, WfStat> = {}
   const workflowMap: Record<string, string> = {}
   for (const r of rollup) {
@@ -92,7 +100,11 @@ stats.get('/', async (c) => {
       wfStats[r.workflow_id] = {
         name: r.workflow_name,
         total: 0, completed: 0, failed: 0, exited: 0, successful: 0,
-        duration_sum: 0, duration_count: 0, cost_sum: 0,
+        duration_sum: 0, duration_count: 0,
+        completed_duration_sum: 0, completed_duration_count: 0,
+        successful_duration_sum: 0, successful_duration_count: 0,
+        failed_duration_sum: 0, failed_duration_count: 0,
+        cost_sum: 0,
       }
     }
     const s = wfStats[r.workflow_id]
@@ -105,6 +117,21 @@ stats.get('/', async (c) => {
     if (r.outcome === 'successful') s.successful += r.run_count
     s.duration_sum += r.duration_ms_sum
     s.duration_count += r.duration_ms_count
+
+    // Per-outcome duration buckets. "completed" here means outcome='completed'
+    // (didn't reach a success node), distinct from status='completed' which
+    // includes successful runs.
+    if (r.outcome === 'completed') {
+      s.completed_duration_sum += r.duration_ms_sum
+      s.completed_duration_count += r.duration_ms_count
+    } else if (r.outcome === 'successful') {
+      s.successful_duration_sum += r.duration_ms_sum
+      s.successful_duration_count += r.duration_ms_count
+    }
+    if (r.status === 'failed') {
+      s.failed_duration_sum += r.duration_ms_sum
+      s.failed_duration_count += r.duration_ms_count
+    }
   }
 
   const by_workflow = Object.entries(wfStats)
@@ -118,6 +145,9 @@ stats.get('/', async (c) => {
       successful: s.successful,
       success_rate: s.total > 0 ? Math.round((s.completed / s.total) * 100) : null,
       avg_duration_ms: s.duration_count > 0 ? Math.round(s.duration_sum / s.duration_count) : null,
+      avg_duration_completed_ms: s.completed_duration_count > 0 ? Math.round(s.completed_duration_sum / s.completed_duration_count) : null,
+      avg_duration_successful_ms: s.successful_duration_count > 0 ? Math.round(s.successful_duration_sum / s.successful_duration_count) : null,
+      avg_duration_failed_ms: s.failed_duration_count > 0 ? Math.round(s.failed_duration_sum / s.failed_duration_count) : null,
       cost_usd: s.cost_sum,
     }))
     .sort((a, b) => b.total - a.total || b.cost_usd - a.cost_usd)
