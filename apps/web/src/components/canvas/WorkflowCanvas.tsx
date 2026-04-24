@@ -430,27 +430,33 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   // Mark nodes that aren't reachable from the trigger so the renderers + minimap
   // can dim them. Also clears manualPosition once a node becomes reachable
-  // again — auto-layout takes back over. Runs whenever the edge graph changes.
+  // again and re-runs layoutWorkflow so wires line up cleanly — auto-layout
+  // takes back over. Runs whenever the edge graph changes.
   useEffect(() => {
     const reachable = reachableFromTrigger(nodes, edges)
+    const clearManualIds = new Set<string>()
+    let dataNeedsUpdate = false
+    for (const n of nodes) {
+      const d = n.data as unknown as CanvasNodeData
+      const isReachable = reachable.has(n.id)
+      if (d.isReachable !== isReachable) dataNeedsUpdate = true
+      if (isReachable && d.manualPosition === true) {
+        clearManualIds.add(n.id)
+        dataNeedsUpdate = true
+      }
+    }
+    if (!dataNeedsUpdate) return
     setNodes((ns) => {
-      let changed = false
-      const next = ns.map((n) => {
+      const updated = ns.map((n) => {
         const d = n.data as unknown as CanvasNodeData
         const isReachable = reachable.has(n.id)
-        const clearManual = isReachable && d.manualPosition === true
-        if (d.isReachable === isReachable && !clearManual) return n
-        changed = true
-        return {
-          ...n,
-          data: {
-            ...(n.data as object),
-            isReachable,
-            ...(clearManual ? { manualPosition: undefined } : {}),
-          },
-        }
+        const shouldClear = clearManualIds.has(n.id)
+        if (d.isReachable === isReachable && !shouldClear) return n
+        const nextData = { ...(n.data as object), isReachable } as Record<string, unknown>
+        if (shouldClear) nextData.manualPosition = undefined
+        return { ...n, data: nextData }
       })
-      return changed ? next : ns
+      return clearManualIds.size > 0 ? layoutWorkflow(updated, edges) : updated
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edges, nodes.length])
