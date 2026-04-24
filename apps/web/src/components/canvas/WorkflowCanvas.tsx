@@ -13,6 +13,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useViewport,
   type Node,
   type Edge,
   type Connection,
@@ -286,6 +287,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
+  const viewport = useViewport()
 
   const initEdges = defToEdges(migrateParallelEdges(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? []))
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -315,6 +317,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [showOverflow, setShowOverflow] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null)
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
   const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return 320
     const saved = Number.parseInt(window.localStorage.getItem('bidspoke.sidePanelWidth') ?? '', 10)
@@ -1486,6 +1489,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
+            onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
+            onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
             isValidConnection={isValidConnection}
             onNodeClick={(e, node) => {
               // Shift / Cmd click → add to multi-selection (handled by React Flow);
@@ -1612,6 +1617,31 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               </button>
             </div>
           )}
+
+          {mode === 'edit' && hoveredEdgeId && (() => {
+            const edge = edges.find((e) => e.id === hoveredEdgeId)
+            if (!edge) return null
+            const src = nodes.find((n) => n.id === edge.source)
+            const tgt = nodes.find((n) => n.id === edge.target)
+            if (!src || !tgt) return null
+            const midFlowX = ((src.position.x + NODE_W / 2) + (tgt.position.x + NODE_W / 2)) / 2
+            const midFlowY = ((src.position.y + nodeHeight(src.type)) + tgt.position.y) / 2
+            const left = midFlowX * viewport.zoom + viewport.x
+            const top = midFlowY * viewport.zoom + viewport.y
+            return (
+              <button
+                type="button"
+                onMouseEnter={() => setHoveredEdgeId(hoveredEdgeId)}
+                onMouseLeave={() => setHoveredEdgeId(null)}
+                onClick={() => { deleteEdge(hoveredEdgeId); setHoveredEdgeId(null) }}
+                style={{ left, top, transform: 'translate(-50%, -50%)' }}
+                className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
+                title="Disconnect"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )
+          })()}
           </div>
         </div>
 
