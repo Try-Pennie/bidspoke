@@ -773,17 +773,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     (connection: { source: string | null; sourceHandle?: string | null; target?: string | null }) => {
       const reconnectingId = reconnectingEdgeIdRef.current
       const relevantEdges = reconnectingId ? edges.filter((e) => e.id !== reconnectingId) : edges
-      // Trigger can only have one outgoing edge
+      let result: boolean
       if (connection.source === 'trigger') {
-        return !relevantEdges.some((e) => e.source === 'trigger')
-      }
-      // Each source handle can only connect to one target
-      if (connection.source && connection.sourceHandle) {
-        return !relevantEdges.some(
+        result = !relevantEdges.some((e) => e.source === 'trigger')
+      } else if (connection.source && connection.sourceHandle) {
+        result = !relevantEdges.some(
           (e) => e.source === connection.source && e.sourceHandle === connection.sourceHandle
         )
+      } else {
+        result = true
       }
-      return true
+      console.log('[canvas] isValidConnection', { connection, reconnectingId, result })
+      return result
     },
     [edges]
   )
@@ -808,6 +809,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // Y of each remaining chain is preserved.
   const onReconnect = useCallback(
     (oldEdge: Edge, newConnection: Connection) => {
+      console.log('[canvas] onReconnect fired', { oldEdge: oldEdge.id, from: `${oldEdge.source}->${oldEdge.target}`, newConnection })
       snapshot()
       let next = edges.filter((e) => e.id !== oldEdge.id)
       next = addEdge({ ...newConnection, id: uid() }, next)
@@ -1591,8 +1593,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             onReconnect={mode === 'edit' ? onReconnect : undefined}
-            onReconnectStart={mode === 'edit' ? (_, edge) => { reconnectingEdgeIdRef.current = edge.id } : undefined}
-            onReconnectEnd={mode === 'edit' ? () => { reconnectingEdgeIdRef.current = null } : undefined}
+            onReconnectStart={mode === 'edit' ? (_, edge, handleType) => {
+              console.log('[canvas] onReconnectStart', { edgeId: edge.id, handleType })
+              reconnectingEdgeIdRef.current = edge.id
+            } : undefined}
+            onReconnectEnd={mode === 'edit' ? (_, edge, handleType, state) => {
+              console.log('[canvas] onReconnectEnd', { edgeId: edge.id, handleType, isValid: state?.isValid, toHandle: state?.toHandle })
+              reconnectingEdgeIdRef.current = null
+            } : undefined}
             reconnectRadius={24}
             connectionRadius={60}
             onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
