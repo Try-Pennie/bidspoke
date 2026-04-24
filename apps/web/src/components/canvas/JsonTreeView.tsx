@@ -9,7 +9,7 @@ function JsonNode({ label, value, path, depth }: {
   path: string
   depth: number
 }) {
-  const [expanded, setExpanded] = useState(depth < 2)
+  const [expanded, setExpanded] = useState(true)
   const [copiedKey, setCopiedKey] = useState<'path' | 'value' | null>(null)
 
   function copyTo(text: string, key: 'path' | 'value') {

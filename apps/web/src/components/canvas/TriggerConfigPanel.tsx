@@ -91,22 +91,53 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
     } catch {/* surface later */}
   }
 
-  function copyUrl() {
-    navigator.clipboard.writeText(webhookUrl)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+  async function writeToClipboard(text: string): Promise<boolean> {
+    // Modern path. If it rejects (permission, insecure context, etc.) fall
+    // through to the execCommand fallback instead of silently failing.
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return true
+      }
+    } catch (err) {
+      console.warn('clipboard.writeText failed, trying execCommand fallback', err)
+    }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      return ok
+    } catch (err) {
+      console.error('clipboard fallback failed', err)
+      return false
+    }
   }
 
-  function copyCustomUrl(url: string) {
-    navigator.clipboard.writeText(url)
-    setCopiedCustom(url)
-    setTimeout(() => setCopiedCustom(null), 1500)
+  async function copyUrl() {
+    if (await writeToClipboard(webhookUrl)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    }
+  }
+
+  async function copyCustomUrl(url: string) {
+    if (await writeToClipboard(url)) {
+      setCopiedCustom(url)
+      setTimeout(() => setCopiedCustom(null), 1500)
+    }
   }
 
   async function copyKey(key: string) {
-    await navigator.clipboard.writeText(key)
-    setCopiedKey(key)
-    setTimeout(() => setCopiedKey(null), 1500)
+    if (await writeToClipboard(key)) {
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey(null), 1500)
+    }
   }
 
   function toggleReveal(key: string) {
@@ -139,24 +170,26 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
       <div className="flex-1 overflow-y-auto text-sm">
       <div className={`p-4 space-y-5 ${readOnly ? 'pointer-events-none' : ''}`}>
 
-        {/* Webhook URL */}
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</label>
-          <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-beige pl-2.5 pr-1.5 py-1.5">
-            <span className="flex-1 break-all font-mono text-xs text-gray-700">{webhookUrl}</span>
-            <button
-              type="button"
-              onClick={copyUrl}
-              className="mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
-              title="Copy URL"
-            >
-              {copied
-                ? <Check className="h-3.5 w-3.5 text-green-500" />
-                : <Copy className="h-3.5 w-3.5" />
-              }
-            </button>
+        {/* Generic webhook URL — hidden when a custom endpoint is mapped */}
+        {customEndpoints.length === 0 && (
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</label>
+            <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-beige pl-2.5 pr-1.5 py-1.5">
+              <span className="flex-1 break-all font-mono text-xs text-gray-700">{webhookUrl}</span>
+              <button
+                type="button"
+                onClick={copyUrl}
+                className="mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+                title="Copy URL"
+              >
+                {copied
+                  ? <Check className="h-3.5 w-3.5 text-green-500" />
+                  : <Copy className="h-3.5 w-3.5" />
+                }
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Custom endpoints mapped to this workflow */}
         <div>
