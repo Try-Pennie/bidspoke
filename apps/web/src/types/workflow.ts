@@ -15,7 +15,7 @@ export type NodeType =
 
 export interface EdgeCondition {
   field: string
-  operator: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'not_contains' | 'exists' | 'not_exists'
+  operator: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'not_contains' | 'is_true' | 'is_false' | 'exists' | 'not_exists'
   value?: unknown
 }
 

@@ -17,6 +17,12 @@ interface BranchEntry {
 
 interface BranchConfig {
   branches?: BranchEntry[]
+  // tri-state, back-compat with the old use_else boolean:
+  //  - 'output' (default): fire an 'else' route
+  //  - 'none':  no else handle; walk stops if no branch matches
+  //  - 'error': throw a permanent error when no branch matches
+  else_behavior?: 'output' | 'none' | 'error'
+  use_else?: boolean
 }
 
 export function executeBranchNode(
@@ -31,6 +37,15 @@ export function executeBranchNode(
         output: { matched_branch: branch.label, _route: branch.label },
       }
     }
+  }
+
+  const behavior: 'output' | 'none' | 'error' =
+    config.else_behavior ?? (config.use_else === false ? 'none' : 'output')
+
+  if (behavior === 'error') {
+    const err = new Error(`Branch "${node.namespace}" didn't match any branch (else=error)`)
+    ;(err as { permanent?: boolean }).permanent = true
+    throw err
   }
 
   return {

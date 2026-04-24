@@ -14,7 +14,11 @@ export function classifyHttpError(status: number): ErrorType {
   return 'permanent'
 }
 
-export function classifyTransportError(_err: unknown): ErrorType {
+export function classifyTransportError(err: unknown): ErrorType {
+  // Caller-marked permanent errors (e.g. Branch node's else=error case) skip retry
+  if (err && typeof err === 'object' && (err as { permanent?: boolean }).permanent === true) {
+    return 'permanent'
+  }
   // Network failures, timeouts, DNS errors are always transient
   return 'transient'
 }

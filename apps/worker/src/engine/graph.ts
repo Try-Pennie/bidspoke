@@ -59,6 +59,8 @@ function evaluateCondition(
     case 'lte':      return (actual as number) <= (condition.value as number)
     case 'contains': return String(actual).includes(String(condition.value))
     case 'not_contains': return !String(actual).includes(String(condition.value))
+    case 'is_true':  return actual === true
+    case 'is_false': return actual === false
     case 'exists':   return actual !== undefined && actual !== null
     case 'not_exists': return actual === undefined || actual === null
     default:         return false

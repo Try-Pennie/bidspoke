@@ -512,7 +512,8 @@ function BranchConfig({
   refs: string[]
 }) {
   const branches = (config.branches as Array<{ label: string; condition: { groups: ConditionGroup[]; logic: 'AND' | 'OR' } }> | undefined) ?? []
-  const useElse = (config.use_else as boolean | undefined) ?? true
+  const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
+    ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
 
   function addBranch() {
     onChange({
@@ -565,24 +566,29 @@ function BranchConfig({
         <Plus className="h-3.5 w-3.5" />
         Add branch
       </button>
-      <div className="flex items-center justify-between pt-1">
-        <div>
-          <p className="text-xs font-medium text-gray-700">Else output</p>
-          <p className="text-xs text-gray-400">Fires when no branch matches</p>
+      <div className="pt-1">
+        <p className="text-xs font-medium text-gray-700">When no branch matches</p>
+        <div className="mt-1.5 flex overflow-hidden rounded-lg border border-gray-200 text-xs">
+          {([
+            { key: 'output', label: 'Else output', hint: 'Fires an else edge' },
+            { key: 'none',   label: 'Do nothing',  hint: 'Workflow ends silently' },
+            { key: 'error',  label: 'Throw error', hint: 'Marks the run failed' },
+          ] as const).map((opt, i) => (
+            <button
+              key={opt.key}
+              type="button"
+              onClick={() => onChange({ else_behavior: opt.key, use_else: opt.key === 'output' })}
+              title={opt.hint}
+              className={`flex-1 px-2 py-1.5 transition-colors ${i > 0 ? 'border-l border-gray-200' : ''} ${
+                elseBehavior === opt.key
+                  ? 'bg-p-blue-light text-p-blue-dark font-medium'
+                  : 'bg-white text-gray-500 hover:bg-gray-50'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-        <button
-          type="button"
-          onClick={() => onChange({ use_else: !useElse })}
-          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-            useElse ? 'bg-p-blue-dark' : 'bg-gray-200'
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-              useElse ? 'translate-x-4' : 'translate-x-0'
-            }`}
-          />
-        </button>
       </div>
     </section>
   )

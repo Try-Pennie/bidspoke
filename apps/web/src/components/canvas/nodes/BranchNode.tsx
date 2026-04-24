@@ -10,16 +10,19 @@ interface BranchEntry { label: string }
 export function BranchNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
-  const useElse = (config.use_else as boolean | undefined) ?? true
+  const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
+    ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
   const outputPreview = getOutputPreview(executionStep)
 
-  // All handles: one per branch label, plus else if enabled
-  const handles = [...branches.map((b) => b.label), ...(useElse ? ['else'] : [])]
+  // All handles: one per branch label, plus else when behavior is 'output'
+  const handles = [...branches.map((b) => b.label), ...(elseBehavior === 'output' ? ['else'] : [])]
   const handleCount = handles.length
 
   const description = branches.length === 0
     ? 'No branches'
-    : useElse ? 'branches + else' : 'branches'
+    : elseBehavior === 'output' ? 'branches + else'
+    : elseBehavior === 'error' ? 'branches (else errors)'
+    : 'branches'
 
   return (
     <div
@@ -44,7 +47,7 @@ export function BranchNode({ data, selected }: NodeProps) {
         )}
       </div>
       {handles.length > 0 && (
-        <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
+        <div className="flex justify-evenly border-t border-gray-100 px-2 py-2 text-xs">
           {handles.map((h) => (
             <span key={h} className={h === 'else' ? 'text-slate-400' : 'text-purple-600'}>
               ↓ {h}

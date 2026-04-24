@@ -13,11 +13,13 @@ const OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
   { value: 'lte', label: '≤' },
   { value: 'contains', label: 'contains' },
   { value: 'not_contains', label: 'not contains' },
+  { value: 'is_true', label: 'is true' },
+  { value: 'is_false', label: 'is false' },
   { value: 'exists', label: 'exists' },
   { value: 'not_exists', label: 'not exists' },
 ]
 
-const VALUE_LESS_OPERATORS = new Set<EdgeCondition['operator']>(['exists', 'not_exists'])
+const VALUE_LESS_OPERATORS = new Set<EdgeCondition['operator']>(['exists', 'not_exists', 'is_true', 'is_false'])
 
 interface Props {
   groups: ConditionGroup[]
