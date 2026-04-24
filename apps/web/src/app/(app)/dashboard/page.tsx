@@ -404,7 +404,6 @@ export default function DashboardPage() {
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Completed</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Successful</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Failed</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Avg</th>
                     <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Est. cost</th>
                   </tr>
                 </thead>
@@ -429,7 +428,12 @@ export default function DashboardPage() {
                             </Link>
                           </div>
                         </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
+                          <div>{wf.total || '—'}</div>
+                          {wf.total > 0 && (
+                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_ms)}</div>
+                          )}
+                        </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
                           <div>{outcomeCompleted || '—'}</div>
                           {outcomeCompleted > 0 && (
@@ -448,7 +452,6 @@ export default function DashboardPage() {
                             <div className="text-xs text-gray-400">{fmt(wf.avg_duration_failed_ms)}</div>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
                         <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
                       </tr>
                     )
