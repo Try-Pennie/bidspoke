@@ -7,11 +7,13 @@ import { api } from '@/lib/api'
 interface Props {
   /** Auto-focus the name input on mount. */
   autoFocus?: boolean
+  /** When set, the new key is immediately assigned to this workflow. */
+  assignWorkflowId?: string
   onCreated: (source: { name: string; api_key: string }) => void
   onCancel: () => void
 }
 
-export default function SourceCreateForm({ autoFocus = false, onCreated, onCancel }: Props) {
+export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, onCreated, onCancel }: Props) {
   const [name, setName] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +32,7 @@ export default function SourceCreateForm({ autoFocus = false, onCreated, onCance
     setSaving(true)
     setError(null)
     try {
-      const created = await api.sources.create(name.trim())
+      const created = await api.sources.create(name.trim(), assignWorkflowId)
       onCreated(created)
       setName('')
     } catch (e) {

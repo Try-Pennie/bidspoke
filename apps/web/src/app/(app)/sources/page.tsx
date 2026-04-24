@@ -4,9 +4,10 @@ export const runtime = 'edge'
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import type { WorkflowSummary } from '@/types/workflow'
 import NavLayout from '@/components/NavLayout'
 import SourceCreateForm from '@/components/forms/SourceCreateForm'
-import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal } from 'lucide-react'
+import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal, X } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'https://your-worker.workers.dev'
@@ -19,6 +20,8 @@ interface Source {
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([])
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([])
+  const [assignments, setAssignments] = useState<{ source_name: string; workflow_id: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -38,12 +41,37 @@ export default function SourcesPage() {
 
   async function load() {
     try {
-      const data = await api.sources.list() as unknown as Source[]
-      setSources(data)
+      const [srcs, wfs, asns] = await Promise.all([
+        api.sources.list(),
+        api.workflows.list(),
+        api.sources.listAssignments(),
+      ])
+      setSources(srcs as unknown as Source[])
+      setWorkflows(wfs)
+      setAssignments(asns)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load sources')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleAssign(sourceName: string, workflowId: string) {
+    try {
+      await api.sources.assignWorkflow(sourceName, workflowId)
+      setAssignments((prev) => [...prev, { source_name: sourceName, workflow_id: workflowId }])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to assign')
+    }
+  }
+
+  async function handleUnassign(sourceName: string, workflowId: string) {
+    setAssignments((prev) => prev.filter((a) => !(a.source_name === sourceName && a.workflow_id === workflowId)))
+    try {
+      await api.sources.unassignWorkflow(sourceName, workflowId)
+    } catch (e) {
+      setAssignments((prev) => [...prev, { source_name: sourceName, workflow_id: workflowId }])
+      setError(e instanceof Error ? e.message : 'Failed to unassign')
     }
   }
 
@@ -278,6 +306,57 @@ export default function SourcesPage() {
                         {copiedKey === source.api_key ? 'Copied!' : 'Copy'}
                       </button>
                     </div>
+
+                    {/* Assigned workflows */}
+                    {(() => {
+                      const assigned = assignments.filter((a) => a.source_name === source.name)
+                      const assignedIds = new Set(assigned.map((a) => a.workflow_id))
+                      const unassigned = workflows.filter((w) => !assignedIds.has(w.id))
+                      return (
+                        <div className="mt-3 border-t border-gray-100 pt-3" onClick={(e) => e.stopPropagation()}>
+                          <div className="mb-1.5 flex items-center justify-between">
+                            <span className="text-xs font-medium text-gray-500">
+                              {assigned.length === 0 ? 'Works on any workflow' : 'Locked to these workflows'}
+                            </span>
+                            {unassigned.length > 0 && (
+                              <select
+                                value=""
+                                onChange={(e) => { if (e.target.value) handleAssign(source.name, e.target.value) }}
+                                className="rounded border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 focus:border-p-blue-dark focus:outline-none"
+                              >
+                                <option value="">+ Assign workflow…</option>
+                                {unassigned.map((w) => (
+                                  <option key={w.id} value={w.id}>{w.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                          {assigned.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5">
+                              {assigned.map((a) => {
+                                const wf = workflows.find((w) => w.id === a.workflow_id)
+                                return (
+                                  <span
+                                    key={a.workflow_id}
+                                    className="inline-flex items-center gap-1 rounded-full border border-p-blue-light bg-p-blue-light px-2 py-0.5 text-xs text-p-blue-dark"
+                                  >
+                                    {wf?.name ?? a.workflow_id}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleUnassign(source.name, a.workflow_id)}
+                                      className="ml-0.5 rounded-full p-0.5 hover:bg-white/60"
+                                      title="Unassign"
+                                    >
+                                      <X className="h-3 w-3" />
+                                    </button>
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 ))}
               </div>

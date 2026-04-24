@@ -298,13 +298,22 @@ export const api = {
 
   sources: {
     list: () => req<{ name: string; api_key: string; created_at: string }[]>('/api/sources'),
-    create: (name: string) =>
+    create: (name: string, assignWorkflowId?: string) =>
       req<{ name: string; api_key: string }>('/api/sources', {
         method: 'POST',
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(assignWorkflowId ? { name, assign_workflow_id: assignWorkflowId } : { name }),
       }),
     delete: (name: string) =>
       req<{ ok: boolean }>(`/api/sources/${name}`, { method: 'DELETE' }),
+    listAssignments: () =>
+      req<{ source_name: string; workflow_id: string }[]>('/api/sources/assignments'),
+    assignWorkflow: (name: string, workflowId: string) =>
+      req<{ ok: boolean }>(`/api/sources/${name}/workflows`, {
+        method: 'POST',
+        body: JSON.stringify({ workflow_id: workflowId }),
+      }),
+    unassignWorkflow: (name: string, workflowId: string) =>
+      req<{ ok: boolean }>(`/api/sources/${name}/workflows/${workflowId}`, { method: 'DELETE' }),
   },
 
   partners: {

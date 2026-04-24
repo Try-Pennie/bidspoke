@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
-import { executeWorkflow } from '../engine/index'
+import { executeWorkflow, SourceNotAuthorizedError } from '../engine/index'
 import { createSupabaseClient } from '../lib/supabase'
 
 const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -28,6 +28,7 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
         source,
         idempotencyKeyHeader: idempotencyKey,
         isTest: false,
+        enforceSourceAssignment: true,
       },
       c.env,
       supabase,
@@ -43,6 +44,10 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
 
     return c.json(result.response, result.status as 200 | 409 | 500, headers)
   } catch (err) {
+    if (err instanceof SourceNotAuthorizedError) {
+      return c.json({ error: err.message }, 403)
+    }
+
     const message = err instanceof Error ? err.message : 'Internal error'
 
     // 404 for unknown/inactive workflows

@@ -49,6 +49,8 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   const [addingEndpoint, setAddingEndpoint] = useState(false)
   const [sources, setSources] = useState<Source[]>([])
   const [addingSource, setAddingSource] = useState(false)
+  const [assigningExisting, setAssigningExisting] = useState(false)
+  const [assignments, setAssignments] = useState<{ source_name: string; workflow_id: string }[]>([])
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const webhookUrl = `${WORKER_URL}/webhooks/${workflowId}`
@@ -60,10 +62,34 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   }, [workflowId])
 
   useEffect(() => {
-    api.sources.list()
-      .then((data) => setSources(data as unknown as Source[]))
+    Promise.all([api.sources.list(), api.sources.listAssignments()])
+      .then(([srcs, asns]) => {
+        setSources(srcs as unknown as Source[])
+        setAssignments(asns)
+      })
       .catch(() => {/* non-critical */})
   }, [])
+
+  const assignedSourceNames = new Set(
+    assignments.filter((a) => a.workflow_id === workflowId).map((a) => a.source_name)
+  )
+  const assignedSources = sources.filter((s) => assignedSourceNames.has(s.name))
+  const unassignedSources = sources.filter((s) => !assignedSourceNames.has(s.name))
+
+  async function handleAssignExisting(sourceName: string) {
+    try {
+      await api.sources.assignWorkflow(sourceName, workflowId)
+      setAssignments((prev) => [...prev, { source_name: sourceName, workflow_id: workflowId }])
+      setAssigningExisting(false)
+    } catch {/* surface later */}
+  }
+
+  async function handleUnassign(sourceName: string) {
+    try {
+      await api.sources.unassignWorkflow(sourceName, workflowId)
+      setAssignments((prev) => prev.filter((a) => !(a.source_name === sourceName && a.workflow_id === workflowId)))
+    } catch {/* surface later */}
+  }
 
   function copyUrl() {
     navigator.clipboard.writeText(webhookUrl)
@@ -221,30 +247,52 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
           </select>
         </div>
 
-        {/* API keys */}
+        {/* API keys assigned to this workflow */}
         {cfg.auth_method === 'api_key' && (
           <div>
             <div className="mb-1.5 flex items-center justify-between">
               <label className="block text-xs font-medium text-gray-500">API keys</label>
-              {!readOnly && !addingSource && (
-                <button
-                  type="button"
-                  onClick={() => setAddingSource(true)}
-                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
-                >
-                  <Plus className="h-3 w-3" /> New key
-                </button>
+              {!readOnly && !addingSource && !assigningExisting && (
+                <div className="flex items-center gap-1">
+                  {unassignedSources.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setAssigningExisting(true)}
+                      className="rounded px-1.5 py-0.5 text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-graphite"
+                    >
+                      Assign existing
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setAddingSource(true)}
+                    className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
+                  >
+                    <Plus className="h-3 w-3" /> New key
+                  </button>
+                </div>
               )}
             </div>
-            {sources.length > 0 && (
+
+            {assignedSources.length > 0 ? (
               <div className="space-y-1.5">
-                {sources.map((s) => {
+                {assignedSources.map((s) => {
                   const revealed = revealedKeys.has(s.api_key)
                   const display = revealed ? s.api_key : `${s.api_key.slice(0, 8)}${'•'.repeat(16)}`
                   return (
                     <div key={s.name} className="rounded border border-gray-200 bg-white p-2">
-                      <div className="mb-1 flex items-center justify-between">
+                      <div className="mb-1 flex items-center justify-between gap-2">
                         <span className="font-mono text-xs font-semibold text-graphite">{s.name}</span>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            onClick={() => handleUnassign(s.name)}
+                            className="rounded px-1 py-0.5 text-xs text-gray-400 hover:bg-red-50 hover:text-red-500"
+                            title="Unassign from this workflow"
+                          >
+                            Remove
+                          </button>
+                        )}
                       </div>
                       <div className="flex items-center gap-1">
                         <code className="flex-1 truncate rounded border border-gray-100 bg-gray-50 px-2 py-1 font-mono text-xs text-gray-700">
@@ -274,17 +322,61 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   )
                 })}
               </div>
+            ) : (
+              !addingSource && !assigningExisting && (
+                <p className="text-xs text-gray-400">
+                  No keys assigned. Any valid key works until you assign one here — then only assigned keys can trigger this workflow.
+                </p>
+              )
             )}
-            {sources.length === 0 && !addingSource && (
-              <p className="text-xs text-gray-400">No API keys yet. Create one to authenticate callers.</p>
-            )}
+
+            {/* Assign existing picker */}
+            <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${assigningExisting ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+              <div className="min-h-0 overflow-hidden">
+                <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3" inert={!assigningExisting || undefined}>
+                  {unassignedSources.length === 0 ? (
+                    <p className="text-xs text-gray-500">No unassigned keys in this org. Create a new one instead.</p>
+                  ) : (
+                    <>
+                      <p className="mb-2 text-xs font-medium text-gray-600">Assign an existing key</p>
+                      <div className="space-y-1">
+                        {unassignedSources.map((s) => (
+                          <button
+                            key={s.name}
+                            type="button"
+                            onClick={() => handleAssignExisting(s.name)}
+                            className="flex w-full items-center justify-between rounded border border-gray-200 px-2 py-1.5 text-left hover:border-p-blue-light hover:bg-p-blue-light"
+                          >
+                            <span className="font-mono text-xs text-graphite">{s.name}</span>
+                            <span className="text-xs text-p-blue-dark">Assign →</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={() => setAssigningExisting(false)}
+                      className="text-xs text-gray-500 hover:text-graphite"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Create new key (auto-assigns) */}
             <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingSource ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
               <div className="min-h-0 overflow-hidden">
                 <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3" inert={!addingSource || undefined}>
                   <SourceCreateForm
                     autoFocus={addingSource}
+                    assignWorkflowId={workflowId}
                     onCreated={(src) => {
                       setSources((prev) => [...prev, { ...src, created_at: new Date().toISOString() }])
+                      setAssignments((prev) => [...prev, { source_name: src.name, workflow_id: workflowId }])
                       setAddingSource(false)
                     }}
                     onCancel={() => setAddingSource(false)}
