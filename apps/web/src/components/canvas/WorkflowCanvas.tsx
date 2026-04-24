@@ -618,10 +618,47 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     )
   }, [executionSteps, liveSteps]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Walk a plain-object/array value to produce dotted suggestion paths up to
+  // a bounded depth. Used to enumerate nested fields on step outputs / the
+  // trigger payload so autocomplete offers paths like
+  // steps.foo.output.body.lead_id, not just steps.foo.
+  const walkPaths = useCallback((value: unknown, prefix: string, sink: string[], depth: number) => {
+    if (depth <= 0 || value === null || value === undefined) return
+    if (typeof value !== 'object') return
+    if (Array.isArray(value)) return // don't enumerate array indices — noisy
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const next = `${prefix}.${key}`
+      sink.push(next)
+      if (child && typeof child === 'object' && !Array.isArray(child)) {
+        walkPaths(child, next, sink, depth - 1)
+      }
+    }
+  }, [])
+
+  const nestedRefs = useMemo(() => {
+    const out: string[] = []
+    // Trigger payload fields from the current/most-recent execution payload.
+    if (executionPayload && typeof executionPayload === 'object') {
+      walkPaths(executionPayload, 'trigger.payload', out, 5)
+    }
+    // Step outputs — prefer live test-run steps, fall back to the viewed execution.
+    const source = Object.keys(liveSteps).length > 0
+      ? liveSteps
+      : (executionSteps ?? {})
+    for (const [ns, step] of Object.entries(source)) {
+      const output = (step as { output?: unknown }).output
+      if (output && typeof output === 'object' && !Array.isArray(output)) {
+        walkPaths(output, `steps.${ns}.output`, out, 5)
+      }
+    }
+    return out
+  }, [executionPayload, liveSteps, executionSteps, walkPaths])
+
   const refs = [
     'trigger.payload',
     'trigger.source',
     ...nodeNamespaces.map((ns) => `steps.${ns}`),
+    ...nestedRefs,
     ...envKeys.map((k) => `env.${k}`),
   ]
 
