@@ -5,6 +5,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 interface ParallelChildResult {
   namespace: string
@@ -12,7 +13,7 @@ interface ParallelChildResult {
 }
 
 export function ParallelEndNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
 
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
 
@@ -41,6 +42,7 @@ export function ParallelEndNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
       style={getExecutionStyle(effectiveStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       {/* Single target handle accepts edges from all children */}
       <Handle type="target" position={Position.Top} id="input" />
 

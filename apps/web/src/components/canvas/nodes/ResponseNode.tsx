@@ -3,9 +3,10 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 export function ResponseNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
   const outputPreview = getOutputPreview(executionStep)
 
@@ -16,6 +17,7 @@ export function ResponseNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
       {/* Terminal node — no source handle */}
 

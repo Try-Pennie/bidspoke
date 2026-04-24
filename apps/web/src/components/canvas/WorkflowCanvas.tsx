@@ -439,6 +439,26 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     )
   }, [executionSteps, setNodes])
 
+  // Sync data.isSuccessNode based on the trigger's success_node_namespaces so
+  // the node renderers can draw a badge. Runs whenever the trigger config
+  // changes or the node set changes.
+  useEffect(() => {
+    const successSet = new Set(triggerRef.current.config.success_node_namespaces ?? [])
+    setNodes((ns) => {
+      let changed = false
+      const next = ns.map((n) => {
+        if (n.id === 'trigger') return n
+        const d = n.data as unknown as CanvasNodeData
+        const isSuccessNode = successSet.has(d.namespace)
+        if (d.isSuccessNode === isSuccessNode) return n
+        changed = true
+        return { ...n, data: { ...(n.data as object), isSuccessNode } }
+      })
+      return changed ? next : ns
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerVersion, nodes.length])
+
   // Mark nodes that aren't reachable from the trigger so the renderers + minimap
   // can dim them. Also clears manualPosition once a node becomes reachable
   // again and re-runs layoutWorkflow so wires line up cleanly — auto-layout
@@ -1886,7 +1906,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               workflowId={workflow.id}
               workflowName={workflow.name}
               trigger={triggerRef.current}
-              nodeNamespaces={nodeNamespaces.filter((n) => n !== 'trigger')}
+              nodeNamespaces={nodeNamespaces.filter((n): n is string => typeof n === 'string' && n.length > 0 && n !== 'trigger')}
               onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
               width={sidePanelWidth}
@@ -1938,6 +1958,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             workflowId={workflow.id}
             workflowName={workflow.name}
             trigger={triggerRef.current}
+            nodeNamespaces={nodeNamespaces.filter((n): n is string => typeof n === 'string' && n.length > 0 && n !== 'trigger')}
             onChange={() => {}}
             onClose={() => setSelectedNodeId(null)}
             width={sidePanelWidth}

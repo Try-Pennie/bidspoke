@@ -280,31 +280,47 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               </div>
             </div>
           </div>
-          {nodeNamespaces.length === 0 ? (
-            <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
-          ) : (
-            <div className="space-y-1">
-              {nodeNamespaces.map((ns) => {
-                const picked = (cfg.success_node_namespaces ?? []).includes(ns)
-                return (
-                  <label key={ns} className="flex cursor-pointer items-center gap-2 rounded border border-gray-100 px-2 py-1 hover:bg-gray-50">
-                    <input
-                      type="checkbox"
-                      checked={picked}
-                      onChange={() => {
-                        const cur = cfg.success_node_namespaces ?? []
-                        const next = picked ? cur.filter((n) => n !== ns) : [...cur, ns]
-                        update({ success_node_namespaces: next })
-                      }}
-                      disabled={readOnly}
-                      className="h-3.5 w-3.5 accent-p-blue-dark"
-                    />
-                    <span className="font-mono text-xs text-graphite">{ns}</span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
+          {(() => {
+            const picked = cfg.success_node_namespaces ?? []
+            if (readOnly) {
+              if (picked.length === 0) {
+                return <p className="text-xs text-gray-400">No success nodes chosen.</p>
+              }
+              return (
+                <div className="flex flex-wrap gap-1">
+                  {picked.map((ns) => (
+                    <span key={ns} className="inline-flex items-center rounded border border-p-blue-light bg-p-blue-light px-2 py-0.5 font-mono text-xs text-p-blue-dark">
+                      {ns}
+                    </span>
+                  ))}
+                </div>
+              )
+            }
+            if (nodeNamespaces.length === 0) {
+              return <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
+            }
+            return (
+              <div className="space-y-1">
+                {nodeNamespaces.map((ns) => {
+                  const isPicked = picked.includes(ns)
+                  return (
+                    <label key={ns} className="flex cursor-pointer items-center gap-2 rounded border border-gray-100 px-2 py-1 hover:bg-gray-50">
+                      <input
+                        type="checkbox"
+                        checked={isPicked}
+                        onChange={() => {
+                          const next = isPicked ? picked.filter((n) => n !== ns) : [...picked, ns]
+                          update({ success_node_namespaces: next })
+                        }}
+                        className="h-3.5 w-3.5 accent-p-blue-dark"
+                      />
+                      <span className="font-mono text-xs text-graphite">{ns}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            )
+          })()}
         </div>
 
         {/* Auth method */}

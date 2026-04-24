@@ -5,6 +5,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Cloud } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 const OPERATION_LABELS: Record<string, string> = {
   create: 'Create',
@@ -15,7 +16,7 @@ const OPERATION_LABELS: Record<string, string> = {
 }
 
 export function SalesforceNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
 
   const operation = (config.operation as string | undefined) ?? 'create'
   const object = (config.object as string | undefined) ?? ''
@@ -35,6 +36,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">

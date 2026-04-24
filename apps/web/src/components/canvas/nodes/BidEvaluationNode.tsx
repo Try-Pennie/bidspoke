@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Trophy } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 interface BidEvaluationOutput {
   winner: { partner: string; bid: number | null; is_fallback?: boolean } | null
@@ -11,7 +12,7 @@ interface BidEvaluationOutput {
 }
 
 export function BidEvaluationNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const strategy = (config.strategy as string | undefined) ?? 'highest_bid'
   const strategyLabel = strategy === 'weighted_score' ? 'weighted' : 'highest bid'
 
@@ -36,6 +37,7 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-rose-50 border-b border-rose-100 px-3 py-2">

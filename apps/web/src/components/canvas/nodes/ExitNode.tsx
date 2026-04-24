@@ -3,9 +3,10 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { LogOut } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 export function ExitNode({ data, selected }: NodeProps) {
-  const { namespace, label, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
@@ -15,6 +16,7 @@ export function ExitNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
       {/* Terminal node — no source handle */}
 

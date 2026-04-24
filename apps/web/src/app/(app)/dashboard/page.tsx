@@ -233,6 +233,7 @@ export default function DashboardPage() {
   const s = data?.summary
   const animatedRate = useCountUp(s?.success_rate ?? null)
   const animatedTotal = useCountUp(s?.total ?? null)
+  const totalCost = data?.by_workflow.reduce((sum, wf) => sum + (wf.cost_usd ?? 0), 0) ?? 0
 
   return (
     <NavLayout>
@@ -287,8 +288,8 @@ export default function DashboardPage() {
                 <Skeleton className="mb-4 h-14 w-32" />
                 <Skeleton className="h-4 w-52" />
               </div>
-              <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
-                {[0, 1].map((i) => (
+              <div className="grid grid-cols-3 gap-4 lg:flex lg:flex-col">
+                {[0, 1, 2].map((i) => (
                   <div key={i} className="rounded-xl border border-gray-200 bg-white p-5">
                     <Skeleton className="mb-2 h-3 w-20" />
                     <Skeleton className="h-8 w-16" />
@@ -331,7 +332,7 @@ export default function DashboardPage() {
               </div>
 
               {/* Secondary stats */}
-              <div className="grid grid-cols-2 gap-4 lg:flex lg:flex-col">
+              <div className="grid grid-cols-3 gap-4 lg:flex lg:flex-col">
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Total runs</p>
                   <p className="mt-1.5 text-3xl font-bold tabular-nums text-graphite">{animatedTotal ?? s?.total ?? 0}</p>
@@ -339,6 +340,10 @@ export default function DashboardPage() {
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
                   <p className="text-xs text-gray-400">Avg duration</p>
                   <p className="mt-1.5 text-3xl font-bold text-graphite">{fmt(s?.avg_duration_ms ?? null)}</p>
+                </div>
+                <div className="rounded-xl border border-gray-200 bg-white p-5">
+                  <p className="text-xs text-gray-400">Est. cost</p>
+                  <p className="mt-1.5 text-3xl font-bold tabular-nums text-graphite">{fmtCost(totalCost)}</p>
                 </div>
               </div>
             </>
@@ -396,47 +401,43 @@ export default function DashboardPage() {
                   <tr>
                     <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500">Workflow</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Success</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Successful</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Completed</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Failed</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Avg</th>
                     <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Est. cost</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {data.by_workflow.map((wf) => (
-                    <tr key={wf.workflow_id} className="hover:bg-beige">
-                      <td className="px-5 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
-                            wf.success_rate == null ? 'bg-gray-300' :
-                            wf.success_rate >= 95 ? 'bg-green-500' :
-                            wf.success_rate >= 80 ? 'bg-amber-400' :
-                            'bg-red-500'
-                          }`} />
-                          <Link
-                            href={`/workflows/${wf.workflow_id}`}
-                            className="font-medium text-graphite hover:text-p-blue-dark"
-                          >
-                            {wf.name}
-                          </Link>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total || '—'}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {wf.success_rate == null ? (
-                          <span className="text-gray-400">—</span>
-                        ) : (
-                          <span className={`font-medium ${
-                            wf.success_rate >= 95 ? 'text-green-600' :
-                            wf.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'
-                          }`}>
-                            {wf.success_rate}%
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
-                      <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
-                    </tr>
-                  ))}
+                  {data.by_workflow.map((wf) => {
+                    const outcomeCompleted = Math.max(0, (wf.completed ?? 0) - (wf.successful ?? 0))
+                    return (
+                      <tr key={wf.workflow_id} className="hover:bg-beige">
+                        <td className="px-5 py-2.5">
+                          <div className="flex items-center gap-2">
+                            <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
+                              wf.success_rate == null ? 'bg-gray-300' :
+                              wf.success_rate >= 95 ? 'bg-green-500' :
+                              wf.success_rate >= 80 ? 'bg-amber-400' :
+                              'bg-red-500'
+                            }`} />
+                            <Link
+                              href={`/workflows/${wf.workflow_id}`}
+                              className="font-medium text-graphite hover:text-p-blue-dark"
+                            >
+                              {wf.name}
+                            </Link>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{wf.total || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-green-600">{wf.successful || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{outcomeCompleted || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-red-500">{wf.failed || '—'}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{fmt(wf.avg_duration_ms)}</td>
+                        <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             )}

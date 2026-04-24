@@ -3,9 +3,10 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Code } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 export function CodeNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const script = config.script as string | undefined
   const scriptPreview = script?.trim().split('\n')[0]?.slice(0, 40) || undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -17,6 +18,7 @@ export function CodeNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 

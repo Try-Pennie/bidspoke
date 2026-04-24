@@ -153,6 +153,9 @@ export interface CanvasNodeData {
   // running dagre on it. Cleared automatically when the node becomes
   // reachable from the trigger again.
   manualPosition?: boolean
+  // true when this node's namespace is in the trigger's success_node_namespaces.
+  // Drives the trophy-style badge on the canvas. Canvas-only bookkeeping.
+  isSuccessNode?: boolean
   // For parallel start/end pairs: the React Flow ID of the other half of the pair.
   // Not serialized to the workflow definition — canvas-only bookkeeping.
   _pairId?: string

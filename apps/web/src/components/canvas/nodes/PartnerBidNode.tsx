@@ -5,6 +5,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { DollarSign } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { SuccessBadge } from './SuccessBadge'
 
 interface PartnerBidOutput {
   partner: string
@@ -15,7 +16,7 @@ interface PartnerBidOutput {
 }
 
 export function PartnerBidNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
 
   const partnerName = (config.partner_name as string | undefined) ?? (config.partner_id ? '…' : null)
 
@@ -38,6 +39,7 @@ export function PartnerBidNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
+      <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-sky-50 border-b border-sky-100 px-3 py-2">
