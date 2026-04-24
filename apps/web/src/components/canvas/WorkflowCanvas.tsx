@@ -209,6 +209,14 @@ function defaultNamespace(type: NodeType, existing: string[]): string {
   return `${base}_${i}`
 }
 
+/** Return `suggested` if free, else `suggested_2`, `suggested_3`, ... */
+function dedupNamespace(suggested: string, existing: string[]): string {
+  if (!existing.includes(suggested)) return suggested
+  let i = 2
+  while (existing.includes(`${suggested}_${i}`)) i++
+  return `${suggested}_${i}`
+}
+
 function defaultNodeConfig(type: NodeType): Record<string, unknown> {
   if (type === 'branch') {
     return {
@@ -1169,8 +1177,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   )
 
   // Shared logic for paste and duplicate
-  function pasteNode(cb: { type: NodeType; config: Record<string, unknown>; variables: Record<string, unknown>; position: { x: number; y: number } }) {
-    const ns = defaultNamespace(cb.type, nodeNamespaces)
+  function pasteNode(cb: {
+    type: NodeType
+    config: Record<string, unknown>
+    variables: Record<string, unknown>
+    position: { x: number; y: number }
+    /** Preferred namespace (e.g. "return_response_copy"); falls back to type default if collision-unrecoverable. */
+    namespace?: string
+    /** Preferred label (e.g. "Return Response (copy)"). */
+    label?: string
+  }) {
+    const ns = cb.namespace
+      ? dedupNamespace(cb.namespace, nodeNamespaces)
+      : defaultNamespace(cb.type, nodeNamespaces)
     const newId = uid()
     snapshot()
     setNodes((prev) => {
@@ -1183,6 +1202,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         position,
         data: {
           namespace: ns,
+          ...(cb.label ? { label: cb.label } : {}),
           config: JSON.parse(JSON.stringify(cb.config)),
           variables: JSON.parse(JSON.stringify(cb.variables)),
         } satisfies CanvasNodeData,
@@ -1194,11 +1214,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   function duplicateNode(node: Node) {
     const d = node.data as unknown as CanvasNodeData
+    const origLabel = d.label && d.label.length > 0 ? d.label : d.namespace
     pasteNode({
       type: node.type as NodeType,
       config: d.config ?? {},
       variables: d.variables ?? {},
       position: node.position,
+      namespace: `${d.namespace}_copy`,
+      label: `${origLabel} (copy)`,
     })
   }
 
