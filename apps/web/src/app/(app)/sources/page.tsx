@@ -5,7 +5,8 @@ export const runtime = 'edge'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal, Loader2 } from 'lucide-react'
+import SourceCreateForm from '@/components/forms/SourceCreateForm'
+import { Copy, Plus, Key, KeyRound, Check, Eye, EyeOff, Terminal } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'https://your-worker.workers.dev'
@@ -22,8 +23,6 @@ export default function SourcesPage() {
   const [error, setError] = useState<string | null>(null)
 
   const [adding, setAdding] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [saving, setSaving] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [copiedCurl, setCopiedCurl] = useState(false)
   const [copyCurlCount, setCopyCurlCount] = useState(0)
@@ -33,17 +32,9 @@ export default function SourcesPage() {
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [selectedSourceName, setSelectedSourceName] = useState<string | null>(null)
   const revokeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const nameInputRef = useRef<HTMLInputElement | null>(null)
   const keySpanRef = useRef<HTMLSpanElement | null>(null)
   const [displayedKey, setDisplayedKey] = useState('your_api_key')
   const prevExampleKeyRef = useRef('your_api_key')
-
-  useEffect(() => {
-    if (adding) {
-      const frame = requestAnimationFrame(() => nameInputRef.current?.focus())
-      return () => cancelAnimationFrame(frame)
-    }
-  }, [adding])
 
   async function load() {
     try {
@@ -89,23 +80,6 @@ export default function SourcesPage() {
     }
     return () => out.cancel()
   }, [exampleKey])
-
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault()
-    if (!newName.trim()) return
-    setSaving(true)
-    setError(null)
-    try {
-      await api.sources.create(newName.trim())
-      setNewName('')
-      setAdding(false)
-      await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create source')
-    } finally {
-      setSaving(false)
-    }
-  }
 
   function requestRevoke(name: string) {
     if (revokeTimerRef.current) clearTimeout(revokeTimerRef.current)
@@ -200,36 +174,15 @@ export default function SourcesPage() {
           <div className="min-h-0 overflow-hidden">
             <div className="mb-6 max-w-md rounded-xl border border-gray-200 bg-white p-5" inert={!adding || undefined}>
               <p className="mb-4 text-sm font-medium text-gray-400">New source</p>
-              <form onSubmit={handleAdd} className="space-y-4">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
-                  <input
-                    ref={nameInputRef}
-                    className="input w-full font-mono"
-                    placeholder="wallet_owl"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value.toLowerCase().replace(/\s/g, '_'))}
-                    required
-                  />
-                  <p className="mt-1 text-xs text-gray-400">Lowercase letters, numbers, underscores. Used as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflows.</p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="submit"
-                    disabled={saving}
-                    className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
-                  >
-                    {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</> : 'Generate key'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setAdding(false); setNewName('') }}
-                    className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
+              <SourceCreateForm
+                autoFocus={adding}
+                onCreated={(src) => {
+                  setSources((prev) => [...prev, { ...src, created_at: new Date().toISOString() }])
+                  setSelectedSourceName(src.name)
+                  setAdding(false)
+                }}
+                onCancel={() => setAdding(false)}
+              />
             </div>
           </div>
         </div>

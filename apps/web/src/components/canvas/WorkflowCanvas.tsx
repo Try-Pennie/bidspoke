@@ -1559,6 +1559,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           {selectedNode && mode === 'edit' && selectedNode.id === 'trigger' && !showTest && (
             <TriggerConfigPanel
               workflowId={workflow.id}
+              workflowName={workflow.name}
               trigger={triggerRef.current}
               onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
@@ -1597,6 +1598,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <TriggerConfigPanel
             readOnly
             workflowId={workflow.id}
+            workflowName={workflow.name}
             trigger={triggerRef.current}
             onChange={() => {}}
             onClose={() => setSelectedNodeId(null)}

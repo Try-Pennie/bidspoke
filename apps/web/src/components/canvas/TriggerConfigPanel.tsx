@@ -1,17 +1,26 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Plus, Trash2, HelpCircle, Copy, Check } from 'lucide-react'
+import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
 import type { TriggerDef } from '@/types/workflow'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
+import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
+import SourceCreateForm from '@/components/forms/SourceCreateForm'
 import RailResizeHandle from './RailResizeHandle'
+
+interface Source {
+  name: string
+  api_key: string
+  created_at: string
+}
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
 const HOOK_BASE = 'https://hook.trypennie.dev'
 
 interface Props {
   workflowId: string
+  workflowName?: string
   trigger: TriggerDef
   onChange: (trigger: TriggerDef) => void
   onClose: () => void
@@ -20,7 +29,7 @@ interface Props {
   onResize?: (width: number) => void
 }
 
-export default function TriggerConfigPanel({ workflowId, trigger, onChange, onClose, readOnly = false, width, onResize }: Props) {
+export default function TriggerConfigPanel({ workflowId, workflowName, trigger, onChange, onClose, readOnly = false, width, onResize }: Props) {
   const effectiveWidth = width ?? 320
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
@@ -37,6 +46,11 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
   const [copied, setCopied] = useState(false)
   const [copiedCustom, setCopiedCustom] = useState<string | null>(null)
   const [customEndpoints, setCustomEndpoints] = useState<WebhookEndpoint[]>([])
+  const [addingEndpoint, setAddingEndpoint] = useState(false)
+  const [sources, setSources] = useState<Source[]>([])
+  const [addingSource, setAddingSource] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const webhookUrl = `${WORKER_URL}/webhooks/${workflowId}`
 
   useEffect(() => {
@@ -44,6 +58,12 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
       .then((eps) => setCustomEndpoints(eps.filter((e) => e.workflow_id === workflowId && e.is_active)))
       .catch(() => {/* non-critical */})
   }, [workflowId])
+
+  useEffect(() => {
+    api.sources.list()
+      .then((data) => setSources(data as unknown as Source[]))
+      .catch(() => {/* non-critical */})
+  }, [])
 
   function copyUrl() {
     navigator.clipboard.writeText(webhookUrl)
@@ -55,6 +75,20 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
     navigator.clipboard.writeText(url)
     setCopiedCustom(url)
     setTimeout(() => setCopiedCustom(null), 1500)
+  }
+
+  async function copyKey(key: string) {
+    await navigator.clipboard.writeText(key)
+    setCopiedKey(key)
+    setTimeout(() => setCopiedKey(null), 1500)
+  }
+
+  function toggleReveal(key: string) {
+    setRevealedKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
   }
 
   return (
@@ -99,9 +133,20 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
         </div>
 
         {/* Custom endpoints mapped to this workflow */}
-        {customEndpoints.length > 0 && (
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-gray-500">Custom endpoints</label>
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <label className="block text-xs font-medium text-gray-500">Custom endpoints</label>
+            {!readOnly && !addingEndpoint && (
+              <button
+                type="button"
+                onClick={() => setAddingEndpoint(true)}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
+              >
+                <Plus className="h-3 w-3" /> Add
+              </button>
+            )}
+          </div>
+          {customEndpoints.length > 0 && (
             <div className="space-y-1.5">
               {customEndpoints.map((ep) => {
                 const url = `${HOOK_BASE}/${ep.subdomain}${ep.path}`
@@ -123,8 +168,30 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
                 )
               })}
             </div>
+          )}
+          {customEndpoints.length === 0 && !addingEndpoint && (
+            <p className="text-xs text-gray-400">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner/bidding</span>.</p>
+          )}
+          <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingEndpoint ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+            <div className="min-h-0 overflow-hidden">
+              <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3" inert={!addingEndpoint || undefined}>
+                <EndpointCreateForm
+                  workflowId={workflowId}
+                  workflowName={workflowName}
+                  lockWorkflow
+                  autoFocus={addingEndpoint}
+                  onCreated={(ep) => {
+                    if (ep.workflow_id === workflowId && ep.is_active) {
+                      setCustomEndpoints((prev) => [...prev, ep])
+                    }
+                    setAddingEndpoint(false)
+                  }}
+                  onCancel={() => setAddingEndpoint(false)}
+                />
+              </div>
+            </div>
           </div>
-        )}
+        </div>
 
         {/* Method */}
         <div>
@@ -153,6 +220,80 @@ export default function TriggerConfigPanel({ workflowId, trigger, onChange, onCl
             <option value="none">None</option>
           </select>
         </div>
+
+        {/* API keys */}
+        {cfg.auth_method === 'api_key' && (
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="block text-xs font-medium text-gray-500">API keys</label>
+              {!readOnly && !addingSource && (
+                <button
+                  type="button"
+                  onClick={() => setAddingSource(true)}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
+                >
+                  <Plus className="h-3 w-3" /> New key
+                </button>
+              )}
+            </div>
+            {sources.length > 0 && (
+              <div className="space-y-1.5">
+                {sources.map((s) => {
+                  const revealed = revealedKeys.has(s.api_key)
+                  const display = revealed ? s.api_key : `${s.api_key.slice(0, 8)}${'•'.repeat(16)}`
+                  return (
+                    <div key={s.name} className="rounded border border-gray-200 bg-white p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="font-mono text-xs font-semibold text-graphite">{s.name}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <code className="flex-1 truncate rounded border border-gray-100 bg-gray-50 px-2 py-1 font-mono text-xs text-gray-700">
+                          {display}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => toggleReveal(s.api_key)}
+                          className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          title={revealed ? 'Hide' : 'Reveal'}
+                        >
+                          {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyKey(s.api_key)}
+                          className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          title="Copy key"
+                        >
+                          {copiedKey === s.api_key
+                            ? <Check className="h-3.5 w-3.5 text-green-500" />
+                            : <Copy className="h-3.5 w-3.5" />
+                          }
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            {sources.length === 0 && !addingSource && (
+              <p className="text-xs text-gray-400">No API keys yet. Create one to authenticate callers.</p>
+            )}
+            <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingSource ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+              <div className="min-h-0 overflow-hidden">
+                <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3" inert={!addingSource || undefined}>
+                  <SourceCreateForm
+                    autoFocus={addingSource}
+                    onCreated={(src) => {
+                      setSources((prev) => [...prev, { ...src, created_at: new Date().toISOString() }])
+                      setAddingSource(false)
+                    }}
+                    onCancel={() => setAddingSource(false)}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Custom response */}
         <div className="flex items-center justify-between">
