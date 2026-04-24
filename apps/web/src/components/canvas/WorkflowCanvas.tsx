@@ -649,13 +649,22 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setIsDirty(true)
   }, [snapshot, edges, setEdges, setNodes])
 
-  // Inject the edge delete handler into each edge's data so DeletableEdge
-  // can call it directly. Omitted in view/readonly mode.
+  // Track which edge the mouse is over so DeletableEdge can render the X button
+  // only on the hovered edge. We use ReactFlow's native edge hover callbacks
+  // rather than a wide invisible hit-path, so node clicks and right-clicks
+  // aren't intercepted.
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+
+  // Inject the edge delete handler + hover state into each edge's data so
+  // DeletableEdge can call/read them. Omitted in view/readonly mode.
   const edgesWithHandlers = useMemo(
     () => mode === 'edit'
-      ? edges.map((e) => ({ ...e, data: { ...(e.data ?? {}), onDelete: deleteEdge } }))
+      ? edges.map((e) => ({
+          ...e,
+          data: { ...(e.data ?? {}), onDelete: deleteEdge, hovered: e.id === hoveredEdgeId },
+        }))
       : edges,
-    [edges, deleteEdge, mode]
+    [edges, deleteEdge, hoveredEdgeId, mode]
   )
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
@@ -1521,6 +1530,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             onReconnect={mode === 'edit' ? onReconnect : undefined}
+            onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
+            onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
             isValidConnection={isValidConnection}
             onNodeClick={(e, node) => {
               // Shift / Cmd click → add to multi-selection (handled by React Flow);

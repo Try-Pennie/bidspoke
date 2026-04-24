@@ -1,45 +1,32 @@
 'use client'
 
-import { useState } from 'react'
 import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react'
 import { X } from 'lucide-react'
 
 /**
- * Default edge with a hover-revealed delete button at the midpoint.
- * On delete, calls data.onDelete(edgeId) — wired by WorkflowCanvas via
- * per-edge data injection, so there's one handler and edges stay serializable.
+ * Default edge that renders a delete button at the midpoint when hovered.
+ * Hover is tracked by the parent canvas via onEdgeMouseEnter/Leave on ReactFlow
+ * and passed in as data.hovered — that way we don't add any invisible DOM
+ * paths that would steal pointer events from nodes or the edge itself.
  */
 export default function DeletableEdge(props: EdgeProps) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, data } = props
   const [path, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
-  const onDelete = (data as { onDelete?: (id: string) => void } | undefined)?.onDelete
-  const [hover, setHover] = useState(false)
+  const d = data as { onDelete?: (id: string) => void; hovered?: boolean } | undefined
+  const onDelete = d?.onDelete
+  const hovered = d?.hovered === true
 
   return (
     <>
       <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
-      {/* Wider invisible hit target so the thin edge line reveals the button on hover */}
-      <path
-        d={path}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={20}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        style={{ cursor: 'pointer' }}
-      />
-      {onDelete && (
+      {onDelete && hovered && (
         <EdgeLabelRenderer>
           <div
             className="absolute"
             style={{
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-              pointerEvents: hover ? 'auto' : 'none',
-              opacity: hover ? 1 : 0,
-              transition: 'opacity 120ms ease-out',
+              pointerEvents: 'auto',
             }}
-            onMouseEnter={() => setHover(true)}
-            onMouseLeave={() => setHover(false)}
           >
             <button
               type="button"
