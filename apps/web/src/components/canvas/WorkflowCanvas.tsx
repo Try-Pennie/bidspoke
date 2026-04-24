@@ -766,8 +766,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // All other nodes are unrestricted (filter/branch already split via separate handles).
   // Tracks the edge id currently being reconnected so isValidConnection can
   // ignore it (otherwise it sees the still-attached original edge and rejects
-  // the reconnect as a "source handle already in use" conflict).
+  // the reconnect as a "source handle already in use" conflict). Set by
+  // React Flow's onReconnectStart when the user grabs an edge endpoint, and
+  // by our onConnectStart shim when the user starts a drag from a source
+  // handle that already has a wire (intuitive "grab where the wire comes
+  // out" gesture — we promote that to a reconnect).
   const reconnectingEdgeIdRef = useRef<string | null>(null)
+  // When a drag starts from an already-wired source handle, this holds the
+  // edge being implicitly reconnected. onConnect drops it and adds the new
+  // edge in its place; onConnectEnd clears it if the drop failed.
+  const implicitReconnectEdgeRef = useRef<Edge | null>(null)
 
   const isValidConnection = useCallback(
     (connection: { source: string | null; sourceHandle?: string | null; target?: string | null }) => {
@@ -794,13 +802,52 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const onConnect: OnConnect = useCallback(
     (connection: Connection) => {
       snapshot()
-      const newEdges = addEdge({ ...connection, id: uid() }, edges)
-      setEdges(newEdges)
-      setNodes((ns) => layoutWorkflow(ns, newEdges))
+      let next = edges
+      const implicit = implicitReconnectEdgeRef.current
+      if (implicit) {
+        console.log('[canvas] implicit reconnect: dropping old edge', implicit.id)
+        next = next.filter((e) => e.id !== implicit.id)
+        implicitReconnectEdgeRef.current = null
+        reconnectingEdgeIdRef.current = null
+      }
+      next = addEdge({ ...connection, id: uid() }, next)
+      const shifted = shiftDisconnectedRight(next)
+      setEdges(next)
+      setNodes(layoutWorkflow(shifted, next))
       setIsDirty(true)
     },
-    [snapshot, edges, setEdges, setNodes]
+    [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes]
   )
+
+  // Start a drag from a source handle that already has a wire → treat as
+  // reconnect of that wire. Clears the implicit-reconnect ref if the drop
+  // misses everything, so the original wire stays put.
+  const onConnectStart = useCallback(
+    (_: unknown, params: { nodeId: string | null; handleId: string | null; handleType: 'source' | 'target' | null }) => {
+      if (params.handleType !== 'source' || !params.nodeId) {
+        implicitReconnectEdgeRef.current = null
+        return
+      }
+      const existing = edges.find(
+        (e) => e.source === params.nodeId && (e.sourceHandle ?? null) === (params.handleId ?? null)
+      )
+      if (existing) {
+        console.log('[canvas] implicit reconnect start', existing.id)
+        implicitReconnectEdgeRef.current = existing
+        reconnectingEdgeIdRef.current = existing.id
+      } else {
+        implicitReconnectEdgeRef.current = null
+      }
+    },
+    [edges]
+  )
+
+  const onConnectEnd = useCallback(() => {
+    // Drag ended. If onConnect fired, the refs were already cleared. If the
+    // user dropped on empty space, clear them here so the original wire stays.
+    implicitReconnectEdgeRef.current = null
+    reconnectingEdgeIdRef.current = null
+  }, [])
 
   // Edge reconnect: drag an existing edge's endpoint to a different handle.
   // Typical use: drop the target end onto a disconnected node to slot it in.
@@ -1592,6 +1639,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
+            onConnectStart={mode === 'edit' ? onConnectStart : undefined}
+            onConnectEnd={mode === 'edit' ? onConnectEnd : undefined}
             onReconnect={mode === 'edit' ? onReconnect : undefined}
             onReconnectStart={mode === 'edit' ? (_, edge, handleType) => {
               console.log('[canvas] onReconnectStart', { edgeId: edge.id, handleType })
