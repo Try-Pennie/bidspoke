@@ -27,6 +27,7 @@ export function nodeHeight(type: string | undefined) {
 }
 
 const NODE_GAP = 24 // minimum clear space between any two nodes
+export const DISCONNECTED_GAP = 280 // horizontal gap between the main flow and a disconnected subgraph
 
 /** Returns true if placing a node of `type` at `pos` would overlap any existing node (excluding `excludeId`). */
 export function overlapsAny(
@@ -217,7 +218,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
-  const EXTRA_DISCONNECTED_GAP = 280
+  const EXTRA_DISCONNECTED_GAP = DISCONNECTED_GAP
   const adj = new Map<string, Set<string>>()
   for (const n of nodes) adj.set(n.id, new Set())
   for (const e of edges) {

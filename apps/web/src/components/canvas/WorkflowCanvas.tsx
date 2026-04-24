@@ -41,7 +41,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
-import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight } from '@/lib/layout'
+import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
@@ -645,27 +645,60 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setContextMenu(null)
   }, [snapshot, edges, setEdges, setNodes])
 
+  // Given an edge set that leaves some nodes orphaned, BFS from any node that
+  // lost all incoming edges and shift the resulting subgraph right of the
+  // main flow. Marks each shifted node manualPosition so layout keeps them
+  // in place (no auto-re-alignment to the trigger row).
+  const shiftDisconnectedRight = useCallback((newEdges: Edge[]): Node[] => {
+    const reachable = reachableFromTrigger(nodes, newEdges)
+    const orphanIds = new Set(nodes.filter((n) => !reachable.has(n.id) && n.id !== 'trigger').map((n) => n.id))
+    if (orphanIds.size === 0) return nodes
+
+    const mainMaxX = Math.max(
+      0,
+      ...nodes.filter((n) => !orphanIds.has(n.id)).map((n) => n.position.x + NODE_W)
+    )
+    const orphansMinX = Math.min(
+      Infinity,
+      ...nodes.filter((n) => orphanIds.has(n.id)).map((n) => n.position.x)
+    )
+    const shift = Math.max(0, mainMaxX + DISCONNECTED_GAP - orphansMinX)
+
+    return nodes.map((n) => {
+      if (!orphanIds.has(n.id)) return n
+      const d = n.data as unknown as CanvasNodeData
+      return {
+        ...n,
+        position: { x: n.position.x + shift, y: n.position.y },
+        data: d.manualPosition === true ? n.data : { ...(n.data as object), manualPosition: true },
+      }
+    })
+  }, [nodes])
+
   // Disconnect: cut only the node's incoming edges. The node and its entire
   // downstream subgraph float away as a disconnected cluster (still internally
-  // connected), dimmed by the reachability effect.
+  // connected), dimmed by the reachability effect and shifted right of the
+  // main flow while keeping its current Y.
   const disconnectNode = useCallback((nodeId: string) => {
     snapshot()
     const newEdges = edges.filter((e) => e.target !== nodeId)
+    const shifted = shiftDisconnectedRight(newEdges)
     setEdges(newEdges)
-    setNodes((ns) => layoutWorkflow(ns, newEdges))
+    setNodes(layoutWorkflow(shifted, newEdges))
     setIsDirty(true)
     setContextMenu(null)
-  }, [snapshot, edges, setEdges, setNodes])
+  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
 
   // Disconnect a single edge — used by the right-click menu on edges.
   const deleteEdge = useCallback((edgeId: string) => {
     snapshot()
     const newEdges = edges.filter((e) => e.id !== edgeId)
+    const shifted = shiftDisconnectedRight(newEdges)
     setEdges(newEdges)
-    setNodes((ns) => layoutWorkflow(ns, newEdges))
+    setNodes(layoutWorkflow(shifted, newEdges))
     setIsDirty(true)
     setEdgeContextMenu(null)
-  }, [snapshot, edges, setEdges, setNodes])
+  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
 
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
