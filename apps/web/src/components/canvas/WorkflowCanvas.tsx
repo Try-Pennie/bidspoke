@@ -14,6 +14,8 @@ import {
   useEdgesState,
   useReactFlow,
   useViewport,
+  getBezierPath,
+  Position,
   type Node,
   type Edge,
   type Connection,
@@ -815,12 +817,17 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       next = addEdge({ ...connection, id: uid() }, next)
 
-      // Splice-in heuristic: if we were implicitly reconnecting and the user
-      // dropped onto a disconnected node (unreachable from the trigger
-      // before the change) that has no outgoing edges of its own, bridge
-      // that node to the original target so the old downstream chain stays
-      // wired. Matches the "drop Return Response onto the wire between
-      // Prospect Trades and Patch Prospect Body" gesture.
+      // Heuristics on top of the replace-edge default:
+      //
+      // Splice-IN: drop onto a disconnected leaf (no outgoing edges) →
+      //   also bridge that node to the old target so the chain stays wired.
+      //   (Drop Return Response onto Prospect Trades → Patch Prospect Body.)
+      //
+      // Splice-OUT: the old target is now orphaned AND had an outgoing edge
+      //   to the new target → remove it. Matches "drag the wire past a
+      //   currently-connected node to bypass it." Without this, the bypassed
+      //   node's leftover edge creates a diamond (two parents pointing to
+      //   the new target) and dagre fans the layout into two columns.
       if (implicit && oldTarget && connection.target && connection.target !== oldTarget) {
         const reachableBefore = reachableFromTrigger(nodes, edges)
         const dropTargetWasDisconnected = !reachableBefore.has(connection.target)
@@ -831,6 +838,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             ...next,
             { id: uid(), source: connection.target, target: oldTarget, sourceHandle: 'output' } as Edge,
           ]
+        } else {
+          const oldTargetHasIncoming = next.some((e) => e.target === oldTarget)
+          const bypassEdge = next.find((e) => e.source === oldTarget && e.target === connection.target)
+          if (!oldTargetHasIncoming && bypassEdge) {
+            console.log('[canvas] splice-out: removing bypass edge', bypassEdge.id)
+            next = next.filter((e) => e.id !== bypassEdge.id)
+          }
         }
       }
 
@@ -1809,10 +1823,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             const src = nodes.find((n) => n.id === edge.source)
             const tgt = nodes.find((n) => n.id === edge.target)
             if (!src || !tgt) return null
-            const midFlowX = ((src.position.x + NODE_W / 2) + (tgt.position.x + NODE_W / 2)) / 2
-            const midFlowY = ((src.position.y + nodeHeight(src.type)) + tgt.position.y) / 2
-            const left = midFlowX * viewport.zoom + viewport.x
-            const top = midFlowY * viewport.zoom + viewport.y
+            // Use React Flow's own bezier midpoint so the X sits on the
+            // actual curve, not the straight-line midpoint (which drifts off
+            // the wire when source and target aren't in the same column).
+            const [, labelX, labelY] = getBezierPath({
+              sourceX: src.position.x + NODE_W / 2,
+              sourceY: src.position.y + nodeHeight(src.type),
+              sourcePosition: Position.Bottom,
+              targetX: tgt.position.x + NODE_W / 2,
+              targetY: tgt.position.y,
+              targetPosition: Position.Top,
+            })
+            const left = labelX * viewport.zoom + viewport.x
+            const top = labelY * viewport.zoom + viewport.y
             return (
               <button
                 type="button"

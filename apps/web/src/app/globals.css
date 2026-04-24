@@ -85,20 +85,9 @@
   z-index: 10;
 }
 
-/* React Flow edge-reconnect anchors: make them discoverable.
-   Defaults are fill/stroke: transparent so users can't see where to grab.
-   Show a subtle dot on whichever edge the cursor is on, plus a hover
-   state to signal the grab zone. */
-.react-flow__edge:hover .react-flow__edgeupdater {
-  fill: #9ca3af; /* gray-400 */
-  stroke: #ffffff;
-  stroke-width: 1.5;
-  r: 5;
-  cursor: grab;
-}
-.react-flow__edgeupdater:hover {
-  fill: #439FE1 !important; /* p-blue-dark */
-  r: 6 !important;
+/* React Flow edge-reconnect anchors stay invisible (default) — the grab zone
+   still works via pointer events; we don't need to show dots. */
+.react-flow__edgeupdater {
   cursor: grab;
 }
 .react-flow__edgeupdater:active {
