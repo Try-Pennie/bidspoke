@@ -273,7 +273,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         <div>
           <div className="mb-1.5 flex items-center gap-1.5">
             <label className="block text-xs font-medium text-gray-500">Success nodes</label>
-            <div className="group relative">
+            <div className="group pointer-events-auto relative">
               <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
               <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
                 Runs that end on one of these nodes are marked <span className="font-medium">Successful</span>. Clean runs that end elsewhere are marked <span className="font-medium">Completed</span>. Leave empty and no runs get the Successful label.
@@ -519,7 +519,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <p className="text-xs font-medium text-gray-700">Idempotency</p>
-              <div className="group relative">
+              <div className="group pointer-events-auto relative">
                 <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
                 <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
                   When the same lead comes in twice, only run the workflow once. The second call gets back whatever the first run returned. Pick the fields that define &quot;same lead&quot; below (e.g. <code className="rounded bg-gray-100 px-1 font-mono">body.leadUuid</code>), or send an <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> header on the request.
