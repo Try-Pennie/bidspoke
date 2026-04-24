@@ -13,8 +13,8 @@ export function ResponseNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative w-52 rounded-lg border bg-green-50 shadow-sm ${
-        selected ? 'border-green-400 ring-2 ring-green-200' : 'border-green-200'
+      className={`relative w-52 rounded-lg border bg-white shadow-sm ${
+        selected ? 'border-green-400 ring-2 ring-green-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
