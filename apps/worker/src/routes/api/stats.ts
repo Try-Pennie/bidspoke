@@ -7,24 +7,25 @@ type Variables = AuthVariables
 
 const stats = new Hono<{ Bindings: Env; Variables: Variables }>()
 
+type RollupRow = {
+  workflow_id: string
+  workflow_name: string
+  status: string
+  outcome: string | null
+  day: string
+  is_test: boolean
+  run_count: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  cost_usd_sum: number | string
+}
+
 stats.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
   const windowDays = Math.min(30, Math.max(1, Number(c.req.query('window') ?? '7')))
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString()
-
-  // 1. Workflow IDs + names for this org
-  const { data: workflows } = await supabase
-    .from('workflows')
-    .select('id, name')
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-
-  const workflowIds = (workflows ?? []).map((w) => w.id)
-  const workflowMap: Record<string, string> = Object.fromEntries(
-    (workflows ?? []).map((w) => [w.id, w.name])
-  )
 
   const empty = {
     window_days: windowDays,
@@ -35,106 +36,75 @@ stats.get('/', async (c) => {
     recent_failures: [] as unknown[],
   }
 
-  if (workflowIds.length === 0) return c.json(empty)
+  // 1. Pre-aggregated rollup (grouped by workflow / status / outcome / day / is_test)
+  const { data: rollupRaw, error: rollupError } = await supabase.rpc('workflow_stats_rollup', {
+    p_org_id: orgId,
+    p_since: since,
+  })
+  if (rollupError) return c.json({ error: rollupError.message }, 500)
+  const rollup = (rollupRaw ?? []) as RollupRow[]
+  if (rollup.length === 0) return c.json(empty)
 
-  // 2. All real executions in window (production only — health / volume / duration)
-  // Supabase's default row cap is 1000. A single high-volume workflow can fill
-  // that, truncating quieter workflows off the tail. Bump the limit so the
-  // by-workflow aggregation sees everything in the window.
-  const { data: executions, error } = await supabase
-    .from('workflow_executions')
-    .select('id, workflow_id, status, outcome, duration_ms, started_at, error_message, source, trace_id, cost_usd')
-    .in('workflow_id', workflowIds)
-    .gte('started_at', since)
-    .eq('is_test', false)
-    .order('started_at', { ascending: false })
-    .limit(100000)
-
-  if (error) return c.json({ error: error.message }, 500)
-
-  const rows = executions ?? []
-
-  // 2b. Cost attribution includes test runs — we pay for them too.
-  const { data: costRows } = await supabase
-    .from('workflow_executions')
-    .select('workflow_id, cost_usd')
-    .in('workflow_id', workflowIds)
-    .gte('started_at', since)
-    .not('cost_usd', 'is', null)
-    .limit(100000)
-
-  const costByWorkflow: Record<string, number> = {}
-  for (const r of costRows ?? []) {
-    const wf = r.workflow_id as string
-    costByWorkflow[wf] = (costByWorkflow[wf] ?? 0) + Number(r.cost_usd)
+  // 2. Summary (production runs only — is_test=false)
+  let total = 0, completed = 0, failed = 0, exited = 0, successful = 0
+  let durationSum = 0, durationCount = 0
+  for (const r of rollup) {
+    if (r.is_test) continue
+    total += r.run_count
+    if (r.status === 'completed') completed += r.run_count
+    else if (r.status === 'failed') failed += r.run_count
+    else if (r.status === 'exited') exited += r.run_count
+    if (r.outcome === 'successful') successful += r.run_count
+    durationSum += r.duration_ms_sum
+    durationCount += r.duration_ms_count
   }
-
-  // 3. Summary
-  const total = rows.length
-  const completed = rows.filter((r) => r.status === 'completed').length
-  const failed = rows.filter((r) => r.status === 'failed').length
-  const exited = rows.filter((r) => r.status === 'exited').length
-  const successful = rows.filter((r) => r.outcome === 'successful').length
-  const durations = rows
-    .filter((r) => r.duration_ms != null)
-    .map((r) => r.duration_ms as number)
-    .sort((a, b) => a - b)
-  const avg_duration_ms = durations.length
-    ? Math.round(durations.reduce((s, d) => s + d, 0) / durations.length)
-    : null
-  const p95_duration_ms = durations.length
-    ? (durations[Math.floor(durations.length * 0.95)] ?? null)
-    : null
+  const avg_duration_ms = durationCount > 0 ? Math.round(durationSum / durationCount) : null
+  const p95_duration_ms = null // not computed at rollup level; dashboard doesn't render it
   const success_rate = total > 0 ? Math.round((completed / total) * 100) : 0
 
-  // 4. By day — fill every day in range (including zeros)
+  // 3. By day — production runs only
   const dayMap: Record<string, { completed: number; failed: number; exited: number }> = {}
   for (let i = windowDays - 1; i >= 0; i--) {
     const key = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10)
     dayMap[key] = { completed: 0, failed: 0, exited: 0 }
   }
-  for (const r of rows) {
-    const key = (r.started_at as string).slice(0, 10)
-    if (dayMap[key]) {
-      if (r.status === 'completed') dayMap[key].completed++
-      else if (r.status === 'failed') dayMap[key].failed++
-      else if (r.status === 'exited') dayMap[key].exited++
-    }
+  for (const r of rollup) {
+    if (r.is_test) continue
+    const day = dayMap[r.day]
+    if (!day) continue
+    if (r.status === 'completed') day.completed += r.run_count
+    else if (r.status === 'failed') day.failed += r.run_count
+    else if (r.status === 'exited') day.exited += r.run_count
   }
-  const by_day = Object.entries(dayMap).map(([date, c]) => ({
+  const by_day = Object.entries(dayMap).map(([date, d]) => ({
     date,
-    ...c,
-    total: c.completed + c.failed + c.exited,
+    ...d,
+    total: d.completed + d.failed + d.exited,
   }))
 
-  // 5. By workflow — production-only runs/success/avg; cost includes test runs.
-  // Workflows with zero production runs still appear (cost-only row) as long as
-  // they have cost attribution in the window.
-  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; successful: number; durations: number[] }
+  // 4. By workflow — production for counts/durations; cost includes test runs
+  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; successful: number; duration_sum: number; duration_count: number; cost_sum: number }
   const wfStats: Record<string, WfStat> = {}
-  for (const r of rows) {
+  const workflowMap: Record<string, string> = {}
+  for (const r of rollup) {
+    workflowMap[r.workflow_id] = r.workflow_name
     if (!wfStats[r.workflow_id]) {
       wfStats[r.workflow_id] = {
-        name: workflowMap[r.workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, successful: 0, durations: [],
+        name: r.workflow_name,
+        total: 0, completed: 0, failed: 0, exited: 0, successful: 0,
+        duration_sum: 0, duration_count: 0, cost_sum: 0,
       }
     }
-    wfStats[r.workflow_id].total++
-    if (r.status === 'completed') wfStats[r.workflow_id].completed++
-    else if (r.status === 'failed') wfStats[r.workflow_id].failed++
-    else if (r.status === 'exited') wfStats[r.workflow_id].exited++
-    if (r.outcome === 'successful') wfStats[r.workflow_id].successful++
-    if (r.duration_ms != null) wfStats[r.workflow_id].durations.push(r.duration_ms as number)
-  }
-
-  // Ensure test-only workflows surface so the cost column still shows.
-  for (const workflow_id of Object.keys(costByWorkflow)) {
-    if (!wfStats[workflow_id]) {
-      wfStats[workflow_id] = {
-        name: workflowMap[workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, successful: 0, durations: [],
-      }
-    }
+    const s = wfStats[r.workflow_id]
+    s.cost_sum += Number(r.cost_usd_sum) // includes test runs
+    if (r.is_test) continue
+    s.total += r.run_count
+    if (r.status === 'completed') s.completed += r.run_count
+    else if (r.status === 'failed') s.failed += r.run_count
+    else if (r.status === 'exited') s.exited += r.run_count
+    if (r.outcome === 'successful') s.successful += r.run_count
+    s.duration_sum += r.duration_ms_sum
+    s.duration_count += r.duration_ms_count
   }
 
   const by_workflow = Object.entries(wfStats)
@@ -147,29 +117,49 @@ stats.get('/', async (c) => {
       exited: s.exited,
       successful: s.successful,
       success_rate: s.total > 0 ? Math.round((s.completed / s.total) * 100) : null,
-      avg_duration_ms: s.durations.length
-        ? Math.round(s.durations.reduce((a, b) => a + b, 0) / s.durations.length)
-        : null,
-      cost_usd: costByWorkflow[workflow_id] ?? 0,
+      avg_duration_ms: s.duration_count > 0 ? Math.round(s.duration_sum / s.duration_count) : null,
+      cost_usd: s.cost_sum,
     }))
     .sort((a, b) => b.total - a.total || b.cost_usd - a.cost_usd)
 
-  // 6. Recent failures (latest 10)
-  const recent_failures = rows
-    .filter((r) => r.status === 'failed')
-    .slice(0, 10)
-    .map((r) => ({
-      id: r.id,
-      workflow_id: r.workflow_id,
-      workflow_name: workflowMap[r.workflow_id] ?? 'Unknown',
-      error_message: r.error_message,
-      started_at: r.started_at,
-      source: r.source,
-      trace_id: r.trace_id,
-    }))
+  // 5. Recent failures (latest 10) — small row fetch, no cap risk
+  const workflowIds = Object.keys(workflowMap)
+  const { data: failureRows } = workflowIds.length > 0
+    ? await supabase
+        .from('workflow_executions')
+        .select('id, workflow_id, error_message, started_at, source, trace_id')
+        .in('workflow_id', workflowIds)
+        .gte('started_at', since)
+        .eq('is_test', false)
+        .eq('status', 'failed')
+        .order('started_at', { ascending: false })
+        .limit(10)
+    : { data: [] as Array<{ id: string; workflow_id: string; error_message: string | null; started_at: string; source: string | null; trace_id: string | null }> }
 
-  // 7. By partner — aggregate partner_bid steps across all executions in window
-  const executionIds = rows.map((r) => r.id)
+  const recent_failures = (failureRows ?? []).map((r) => ({
+    id: r.id,
+    workflow_id: r.workflow_id,
+    workflow_name: workflowMap[r.workflow_id] ?? 'Unknown',
+    error_message: r.error_message,
+    started_at: r.started_at,
+    source: r.source,
+    trace_id: r.trace_id,
+  }))
+
+  // 6. By partner — aggregate partner_bid steps across production executions in window.
+  // Scoped to the latest 5k execution IDs (more than enough for a 30-day window;
+  // bid volume is far below total exec volume).
+  const { data: execIdRows } = workflowIds.length > 0
+    ? await supabase
+        .from('workflow_executions')
+        .select('id')
+        .in('workflow_id', workflowIds)
+        .gte('started_at', since)
+        .eq('is_test', false)
+        .order('started_at', { ascending: false })
+        .limit(5000)
+    : { data: [] as Array<{ id: string }> }
+  const executionIds = (execIdRows ?? []).map((r) => r.id)
   let by_partner: unknown[] = []
 
   if (executionIds.length > 0) {
@@ -178,6 +168,7 @@ stats.get('/', async (c) => {
       .select('output, status')
       .in('execution_id', executionIds)
       .eq('step_type', 'partner_bid')
+      .limit(100000)
 
     const { data: partnerConfigs } = await supabase
       .from('partner_configs')
