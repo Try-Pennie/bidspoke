@@ -256,6 +256,13 @@ export async function executeWorkflow(
     log({ event: 'execution_failed', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId, duration_ms: durationMs, error_message: errorMessage, error_type: failedErrorType, step_namespace: failedStep })
   }
 
+  const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
+  const successNamespaces = definition.trigger.config.success_node_namespaces ?? []
+  const outcome: 'successful' | 'completed' | 'failed' =
+    executionStatus === 'failed'
+      ? 'failed'
+      : (finalNodeNamespace && successNamespaces.includes(finalNodeNamespace)) ? 'successful' : 'completed'
+
   // Update execution record (fire-and-forget). Wait for the walk to finish
   // so continueExecution flows include post-response steps in the cost
   // rollup; the tail consumer adds the main-Worker CPU slice on top once
@@ -266,6 +273,8 @@ export async function executeWorkflow(
         const cost = estimateStepBasedCost(stepLogQueue)
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: executionStatus,
+          outcome,
+          final_node_namespace: finalNodeNamespace,
           completed_at: completedAt,
           duration_ms: durationMs,
           response_body: response,

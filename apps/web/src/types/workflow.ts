@@ -58,8 +58,16 @@ export interface TriggerDef {
       ttl_seconds?: number
     }
     duration_alert_ms?: number
+    /**
+     * Node namespaces that count as "successful" when the walk ends on one
+     * of them. Empty or missing = no runs are marked Successful; everything
+     * non-failed goes to Completed.
+     */
+    success_node_namespaces?: string[]
   }
 }
+
+export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 
 export interface WorkflowDef {
   nodes: NodeDef[]

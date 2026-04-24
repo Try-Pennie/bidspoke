@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { CheckCircle, XCircle, Loader2 } from 'lucide-react'
+import { CheckCircle, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { WorkflowVersion } from '@/types/workflow'
@@ -10,6 +10,8 @@ import type { WorkflowVersion } from '@/types/workflow'
 type ExecRow = {
   id: string
   status: string
+  outcome: 'successful' | 'completed' | 'failed' | null
+  final_node_namespace: string | null
   source: string
   started_at: string
   duration_ms: number | null
@@ -49,10 +51,16 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
-const STATUS_ICON: Record<string, { icon: React.ElementType; color: string }> = {
-  completed: { icon: CheckCircle, color: 'text-green-500' },
-  failed:    { icon: XCircle,     color: 'text-red-500'   },
-  running:   { icon: Loader2,     color: 'text-amber-400' },
+const OUTCOME_ICON: Record<string, { icon: React.ElementType; color: string }> = {
+  successful: { icon: CheckCircle2, color: 'text-green-500' },
+  completed:  { icon: CheckCircle,  color: 'text-gray-400'  },
+  failed:     { icon: XCircle,      color: 'text-red-500'   },
+}
+const RUNNING_ICON = { icon: Loader2, color: 'text-amber-400' }
+
+function iconFor(exec: { status: string; outcome: string | null }) {
+  if (exec.status === 'running') return RUNNING_ICON
+  return OUTCOME_ICON[exec.outcome ?? exec.status] ?? OUTCOME_ICON.failed
 }
 
 interface Props {
@@ -62,19 +70,20 @@ interface Props {
   refreshSignal?: number
 }
 
-type StatusFilter = 'all' | 'failed' | 'completed'
+type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed'
 
-const FILTER_TABS: { key: StatusFilter; label: string }[] = [
-  { key: 'all',       label: 'All'       },
-  { key: 'failed',    label: 'Failed'    },
-  { key: 'completed', label: 'Completed' },
+const FILTER_TABS: { key: OutcomeFilter; label: string }[] = [
+  { key: 'all',        label: 'All'        },
+  { key: 'successful', label: 'Successful' },
+  { key: 'completed',  label: 'Completed'  },
+  { key: 'failed',     label: 'Failed'     },
 ]
 
 export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<StatusFilter>('all')
+  const [filter, setFilter] = useState<OutcomeFilter>('all')
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
 
   function toggleError(id: string, e: React.MouseEvent) {
@@ -119,7 +128,9 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     }
   }, [refreshSignal, load, loadVersions])
 
-  const filtered = filter === 'all' ? executions : executions.filter((e) => e.status === filter)
+  const filtered = filter === 'all'
+    ? executions
+    : executions.filter((e) => (e.outcome ?? (e.status === 'failed' ? 'failed' : null)) === filter)
   const items = buildItems(filtered, versions)
 
   return (
@@ -197,7 +208,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
               }
 
               const exec = item.exec
-              const cfg = STATUS_ICON[exec.status] ?? STATUS_ICON['failed']
+              const cfg = iconFor(exec)
               const Icon = cfg.icon
               const isSelected = exec.id === selectedId
               return (

@@ -12,7 +12,7 @@ const executions = new Hono<{ Bindings: Env; Variables: Variables }>()
 executions.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { workflow_id, status, source, from, to } = c.req.query()
+  const { workflow_id, status, outcome, source, from, to } = c.req.query()
 
   // Resolve the set of workflow IDs this org owns (optionally scoped to one)
   let workflowIds: string[]
@@ -37,13 +37,14 @@ executions.get('/', async (c) => {
 
   let query = supabase
     .from('workflow_executions')
-    .select('id, workflow_id, status, source, started_at, duration_ms, error_message')
+    .select('id, workflow_id, status, outcome, final_node_namespace, source, started_at, duration_ms, error_message')
     .in('workflow_id', workflowIds)
     .eq('is_test', false)
     .order('started_at', { ascending: false })
     .limit(100)
 
   if (status) query = query.eq('status', status)
+  if (outcome) query = query.eq('outcome', outcome)
   if (source) query = query.eq('source', source)
   if (from) query = query.gte('started_at', from)
   if (to) query = query.lte('started_at', to)

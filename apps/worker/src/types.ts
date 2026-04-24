@@ -37,8 +37,11 @@ export interface TriggerConfig {
       ttl_seconds?: number
     }
     duration_alert_ms?: number
+    success_node_namespaces?: string[]
   }
 }
+
+export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 
 export interface NodeDefinition {
   id: string
@@ -101,6 +104,8 @@ export interface ExecutionContext {
   }
   steps: Record<string, StepOutput>  // keyed by node namespace
   env: Record<string, string>
+  /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
+  lastCompletedNamespace?: string
 }
 
 export interface StepOutput {

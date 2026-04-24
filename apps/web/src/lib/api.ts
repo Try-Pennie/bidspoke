@@ -247,17 +247,24 @@ export const api = {
         id: string
         workflow_id: string
         status: string
+        outcome: 'successful' | 'completed' | 'failed' | null
+        final_node_namespace: string | null
         started_at: string
       }>>('/api/executions'),
-    list: (workflowId: string) =>
-      req<Array<{
+    list: (workflowId: string, opts?: { outcome?: 'successful' | 'completed' | 'failed' }) => {
+      const params = new URLSearchParams({ workflow_id: workflowId })
+      if (opts?.outcome) params.set('outcome', opts.outcome)
+      return req<Array<{
         id: string
         status: string
+        outcome: 'successful' | 'completed' | 'failed' | null
+        final_node_namespace: string | null
         source: string
         started_at: string
         duration_ms: number | null
         error_message: string | null
-      }>>(`/api/executions?workflow_id=${workflowId}`),
+      }>>(`/api/executions?${params.toString()}`)
+    },
     get: (id: string) =>
       req<{
         id: string

@@ -28,7 +28,7 @@ stats.get('/', async (c) => {
 
   const empty = {
     window_days: windowDays,
-    summary: { total: 0, completed: 0, failed: 0, exited: 0, avg_duration_ms: null as number | null, p95_duration_ms: null as number | null, success_rate: 0 },
+    summary: { total: 0, completed: 0, failed: 0, exited: 0, successful: 0, avg_duration_ms: null as number | null, p95_duration_ms: null as number | null, success_rate: 0 },
     by_day: [] as unknown[],
     by_workflow: [] as unknown[],
     by_partner: [] as unknown[],
@@ -40,7 +40,7 @@ stats.get('/', async (c) => {
   // 2. All real executions in window (production only — health / volume / duration)
   const { data: executions, error } = await supabase
     .from('workflow_executions')
-    .select('id, workflow_id, status, duration_ms, started_at, error_message, source, trace_id, cost_usd')
+    .select('id, workflow_id, status, outcome, duration_ms, started_at, error_message, source, trace_id, cost_usd')
     .in('workflow_id', workflowIds)
     .gte('started_at', since)
     .eq('is_test', false)
@@ -69,6 +69,7 @@ stats.get('/', async (c) => {
   const completed = rows.filter((r) => r.status === 'completed').length
   const failed = rows.filter((r) => r.status === 'failed').length
   const exited = rows.filter((r) => r.status === 'exited').length
+  const successful = rows.filter((r) => r.outcome === 'successful').length
   const durations = rows
     .filter((r) => r.duration_ms != null)
     .map((r) => r.duration_ms as number)
@@ -104,19 +105,20 @@ stats.get('/', async (c) => {
   // 5. By workflow — production-only runs/success/avg; cost includes test runs.
   // Workflows with zero production runs still appear (cost-only row) as long as
   // they have cost attribution in the window.
-  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; durations: number[] }
+  type WfStat = { name: string; total: number; completed: number; failed: number; exited: number; successful: number; durations: number[] }
   const wfStats: Record<string, WfStat> = {}
   for (const r of rows) {
     if (!wfStats[r.workflow_id]) {
       wfStats[r.workflow_id] = {
         name: workflowMap[r.workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, durations: [],
+        total: 0, completed: 0, failed: 0, exited: 0, successful: 0, durations: [],
       }
     }
     wfStats[r.workflow_id].total++
     if (r.status === 'completed') wfStats[r.workflow_id].completed++
     else if (r.status === 'failed') wfStats[r.workflow_id].failed++
     else if (r.status === 'exited') wfStats[r.workflow_id].exited++
+    if (r.outcome === 'successful') wfStats[r.workflow_id].successful++
     if (r.duration_ms != null) wfStats[r.workflow_id].durations.push(r.duration_ms as number)
   }
 
@@ -125,7 +127,7 @@ stats.get('/', async (c) => {
     if (!wfStats[workflow_id]) {
       wfStats[workflow_id] = {
         name: workflowMap[workflow_id] ?? 'Unknown',
-        total: 0, completed: 0, failed: 0, exited: 0, durations: [],
+        total: 0, completed: 0, failed: 0, exited: 0, successful: 0, durations: [],
       }
     }
   }
@@ -138,6 +140,7 @@ stats.get('/', async (c) => {
       completed: s.completed,
       failed: s.failed,
       exited: s.exited,
+      successful: s.successful,
       success_rate: s.total > 0 ? Math.round((s.completed / s.total) * 100) : null,
       avg_duration_ms: s.durations.length
         ? Math.round(s.durations.reduce((a, b) => a + b, 0) / s.durations.length)
@@ -221,7 +224,7 @@ stats.get('/', async (c) => {
 
   return c.json({
     window_days: windowDays,
-    summary: { total, completed, failed, exited, avg_duration_ms, p95_duration_ms, success_rate },
+    summary: { total, completed, failed, exited, successful, avg_duration_ms, p95_duration_ms, success_rate },
     by_day,
     by_workflow,
     by_partner,

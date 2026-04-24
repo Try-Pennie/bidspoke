@@ -93,6 +93,8 @@ export async function updateExecutionRecord(
   started_at: string,
   update: {
     status: string
+    outcome?: string
+    final_node_namespace?: string | null
     completed_at: string
     duration_ms: number
     response_body?: unknown

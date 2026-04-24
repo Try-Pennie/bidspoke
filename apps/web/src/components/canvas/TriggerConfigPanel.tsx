@@ -22,6 +22,8 @@ interface Props {
   workflowId: string
   workflowName?: string
   trigger: TriggerDef
+  /** Namespaces of non-trigger nodes currently on the canvas, used for the success-node picker. */
+  nodeNamespaces?: string[]
   onChange: (trigger: TriggerDef) => void
   onClose: () => void
   readOnly?: boolean
@@ -29,7 +31,7 @@ interface Props {
   onResize?: (width: number) => void
 }
 
-export default function TriggerConfigPanel({ workflowId, workflowName, trigger, onChange, onClose, readOnly = false, width, onResize }: Props) {
+export default function TriggerConfigPanel({ workflowId, workflowName, trigger, nodeNamespaces = [], onChange, onClose, readOnly = false, width, onResize }: Props) {
   const effectiveWidth = width ?? 320
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
@@ -265,6 +267,44 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             <option value="PUT">PUT</option>
             <option value="PATCH">PATCH</option>
           </select>
+        </div>
+
+        {/* Success nodes */}
+        <div>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <label className="block text-xs font-medium text-gray-500">Success nodes</label>
+            <div className="group relative">
+              <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
+              <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+                Runs that end on one of these nodes are marked <span className="font-medium">Successful</span>. Clean runs that end elsewhere are marked <span className="font-medium">Completed</span>. Leave empty and no runs get the Successful label.
+              </div>
+            </div>
+          </div>
+          {nodeNamespaces.length === 0 ? (
+            <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
+          ) : (
+            <div className="space-y-1">
+              {nodeNamespaces.map((ns) => {
+                const picked = (cfg.success_node_namespaces ?? []).includes(ns)
+                return (
+                  <label key={ns} className="flex cursor-pointer items-center gap-2 rounded border border-gray-100 px-2 py-1 hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={picked}
+                      onChange={() => {
+                        const cur = cfg.success_node_namespaces ?? []
+                        const next = picked ? cur.filter((n) => n !== ns) : [...cur, ns]
+                        update({ success_node_namespaces: next })
+                      }}
+                      disabled={readOnly}
+                      className="h-3.5 w-3.5 accent-p-blue-dark"
+                    />
+                    <span className="font-mono text-xs text-graphite">{ns}</span>
+                  </label>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* Auth method */}

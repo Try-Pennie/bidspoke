@@ -82,6 +82,9 @@ export function recordStepOutput(
   result: StepOutput
 ): void {
   ctx.steps[namespace] = result
+  if (result.status === 'completed') {
+    ctx.lastCompletedNamespace = namespace
+  }
 }
 
 function getPath(obj: unknown, parts: string[]): unknown {

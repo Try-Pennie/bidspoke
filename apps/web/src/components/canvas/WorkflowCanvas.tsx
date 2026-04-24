@@ -1566,6 +1566,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               workflowId={workflow.id}
               workflowName={workflow.name}
               trigger={triggerRef.current}
+              nodeNamespaces={nodeNamespaces.filter((n) => n !== 'trigger')}
               onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
               width={sidePanelWidth}
