@@ -250,19 +250,24 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       }
       return { minX, maxX }
     }
-    const mainBox = bbox(mainComp)
-    for (let c = 0; c < compIdx; c++) {
-      if (c === mainComp) continue
+    const shiftComp = (comp: number, dx: number) => {
+      for (const [id, c] of component) {
+        if (c !== comp) continue
+        const p = pos.get(id)
+        if (p) p.x += dx
+      }
+    }
+    // Walk components left-to-right by their current min-x and keep pushing
+    // each one past everything already placed. Main always anchors first.
+    const others = Array.from({ length: compIdx }, (_, i) => i).filter((c) => c !== mainComp)
+    others.sort((a, b) => bbox(a).minX - bbox(b).minX)
+    let cursor = bbox(mainComp).maxX
+    for (const c of others) {
       const box = bbox(c)
       if (!Number.isFinite(box.minX)) continue
-      const overlaps = box.minX < mainBox.maxX + EXTRA_DISCONNECTED_GAP
-      if (!overlaps) continue
-      const shift = mainBox.maxX + EXTRA_DISCONNECTED_GAP - box.minX
-      for (const [id, other] of component) {
-        if (other !== c) continue
-        const p = pos.get(id)
-        if (p) p.x += shift
-      }
+      const minAllowed = cursor + EXTRA_DISCONNECTED_GAP
+      if (box.minX < minAllowed) shiftComp(c, minAllowed - box.minX)
+      cursor = bbox(c).maxX
     }
   }
 
