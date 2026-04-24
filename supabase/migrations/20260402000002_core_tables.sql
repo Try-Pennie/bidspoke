@@ -125,6 +125,7 @@ CREATE TABLE execution_steps (
   PRIMARY KEY (id, started_at),
   FOREIGN KEY (execution_id, execution_started_at)
     REFERENCES workflow_executions(id, started_at)
+    ON DELETE CASCADE
 ) PARTITION BY RANGE (started_at);
 
 -- ============================================================
