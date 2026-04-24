@@ -68,11 +68,13 @@ export interface ExecuteResult {
   status: number
   traceId: string
   idempotentReplay?: boolean
+  responseHeaders?: Record<string, string>
 }
 
 export interface WalkGraphResult {
   body: unknown
   status: number
+  headers?: Record<string, string>
 }
 
 export async function executeWorkflow(
@@ -172,6 +174,7 @@ export async function executeWorkflow(
   const stepLogQueue: StepLogEntry[] = []
 
   let walkStatus = 200
+  let walkHeaders: Record<string, string> | undefined
 
   // Respond-early mechanics: when a code node returns continueExecution:true,
   // walkGraph signals the response is ready via onRespondEarly. We race that
@@ -192,13 +195,13 @@ export async function executeWorkflow(
 
   // Race: whichever resolves first becomes the response to the caller.
   const raceResult = await Promise.race([
-    earlyResponsePromise.then((r) => ({ kind: 'early' as const, body: r.body, status: r.status })),
+    earlyResponsePromise.then((r) => ({ kind: 'early' as const, body: r.body, status: r.status, headers: r.headers })),
     walkPromiseCaught.then((r) => {
       if (r && typeof r === 'object' && '__error' in r) {
         return { kind: 'error' as const, err: (r as { __error: unknown }).__error }
       }
       const walkRes = r as WalkGraphResult
-      return { kind: 'complete' as const, body: walkRes.body, status: walkRes.status }
+      return { kind: 'complete' as const, body: walkRes.body, status: walkRes.status, headers: walkRes.headers }
     }),
   ])
 
@@ -206,10 +209,12 @@ export async function executeWorkflow(
   if (raceResult.kind === 'early') {
     response = raceResult.body
     walkStatus = raceResult.status
+    walkHeaders = raceResult.headers
     hasContinuation = true
   } else if (raceResult.kind === 'complete') {
     response = raceResult.body
     walkStatus = raceResult.status
+    walkHeaders = raceResult.headers
   } else {
     const err = raceResult.err
     executionStatus = 'failed'
@@ -326,6 +331,7 @@ export async function executeWorkflow(
     response,
     status: executionStatus === 'completed' ? walkStatus : 500,
     traceId,
+    responseHeaders: walkHeaders,
   }
 }
 
@@ -363,6 +369,10 @@ export async function walkGraph(
       const priorOutput = priorStep.output
       lastOutput = priorOutput
       if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
+        if (node.type === 'response' && priorOutput !== null && typeof priorOutput === 'object' && 'body' in (priorOutput as object)) {
+          const r = priorOutput as { status_code?: number; headers?: Record<string, string>; body?: unknown }
+          return { body: r.body ?? null, status: r.status_code ?? 200, headers: r.headers }
+        }
         return { body: priorOutput, status: 200 }
       }
       const resumeEdges = outgoingEdges(node.id, definition.edges)
@@ -642,7 +652,7 @@ export async function walkGraph(
         logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, null, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder)
         loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
-          pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status }
+          pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status, headers: result.earlyResponse.headers }
           // Signal to the outer handler that the response is ready now; the
           // remaining walk continues here but the caller doesn't have to wait
           // for it (outer pushes the continuation into ctx.waitUntil).
@@ -650,7 +660,7 @@ export async function walkGraph(
           // fall through — continue walking the graph
         } else {
           if (result.earlyResponse) {
-            return { body: result.earlyResponse.body, status: result.earlyResponse.status }
+            return { body: result.earlyResponse.body, status: result.earlyResponse.status, headers: result.earlyResponse.headers }
           }
           return { body: output, status: 200 }
         }
@@ -719,6 +729,10 @@ export async function walkGraph(
     // above already fired the HTTP response and we keep walking the graph
     // (mirrors the code-node continueExecution sentinel).
     if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
+      if (node.type === 'response' && output !== null && typeof output === 'object' && 'body' in (output as object)) {
+        const r = output as { status_code?: number; headers?: Record<string, string>; body?: unknown }
+        return { body: r.body ?? null, status: r.status_code ?? 200, headers: r.headers }
+      }
       return { body: output, status: 200 }
     }
 

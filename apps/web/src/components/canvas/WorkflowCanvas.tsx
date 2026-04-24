@@ -235,8 +235,9 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
 // The primary output handle to use when auto-connecting FROM an existing node.
 // Returns null for terminal nodes (nothing comes after them) and branch nodes
 // (ambiguous — the user should connect those manually).
-function primarySourceHandle(type: string): string | null {
-  if (type === 'response' || type === 'exit') return null
+function primarySourceHandle(type: string, config?: Record<string, unknown>): string | null {
+  if (type === 'exit') return null
+  if (type === 'response') return config?.continue_after_response ? 'output' : null
   if (type === 'branch') return null  // N-way split — no sensible default
   if (type === 'bid_evaluation') return null  // winner/no_winner — ambiguous default
   if (type === 'parallel') return null  // fan-out configured via picker, not auto-connect
@@ -998,7 +999,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const snapTo = (v: number) => Math.round(v / 20) * 20
       const dropPos = { x: snapTo(rawPos.x), y: snapTo(rawPos.y) }
       const sourceNode = findDropSource(nodes, dropPos)
-      const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+      const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '', sourceNode.data?.config as Record<string, unknown> | undefined) : null
       const existingOutEdge = (sourceNode && sourceHandle)
         ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
         : null
@@ -1655,7 +1656,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                 if (!isConnected) {
                   // SLOT-IN: isolated node dragged near the workflow → auto-connect
                   const sourceNode = findDropSource(otherNodes, finalPos)
-                  const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
+                  const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '', sourceNode.data?.config as Record<string, unknown> | undefined) : null
                   const existingOutEdge = (sourceNode && sourceHandle)
                     ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
                     : null
@@ -1687,7 +1688,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                 } else {
                   // REORDER: connected node dragged to a new position in the flow
                   const newSource = findDropSource(otherNodes, finalPos)
-                  const newSourceHandle = newSource ? primarySourceHandle(newSource.type ?? '') : null
+                  const newSourceHandle = newSource ? primarySourceHandle(newSource.type ?? '', newSource.data?.config as Record<string, unknown> | undefined) : null
 
                   // No valid target, or target is the same node, or target can't have outgoing edges → snap back
                   const inEdges = edges.filter((e) => e.target === change.id)

@@ -669,6 +669,31 @@ function ResponseConfig({
         : JSON.stringify(config.body, null, 2)
       : ''
 
+  const headers = (config.headers as Record<string, string> | undefined) ?? {}
+  const headerRows = Object.entries(headers)
+
+  function updateHeader(index: number, key: string, value: string) {
+    const next: Record<string, string> = {}
+    headerRows.forEach(([k, v], i) => {
+      if (i === index) {
+        if (key) next[key] = value
+      } else {
+        next[k] = v
+      }
+    })
+    onChange({ headers: Object.keys(next).length > 0 ? next : undefined })
+  }
+  function addHeader() {
+    onChange({ headers: { ...headers, '': '' } })
+  }
+  function removeHeader(index: number) {
+    const next: Record<string, string> = {}
+    headerRows.forEach(([k, v], i) => {
+      if (i !== index) next[k] = v
+    })
+    onChange({ headers: Object.keys(next).length > 0 ? next : undefined })
+  }
+
   return (
     <section className="space-y-3">
       <Field label="Status code">
@@ -695,6 +720,50 @@ function ResponseConfig({
           refs={refs}
         />
       </Field>
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-xs font-medium text-gray-600">Headers</label>
+          <button
+            type="button"
+            onClick={addHeader}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            + Add
+          </button>
+        </div>
+        {headerRows.length === 0 ? (
+          <p className="text-xs text-gray-400">
+            Defaults to <code className="rounded bg-gray-100 px-1">Content-Type: application/json</code>. Add custom headers to override or set things like <code className="rounded bg-gray-100 px-1">Cache-Control</code>, <code className="rounded bg-gray-100 px-1">Location</code>, CORS, etc.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {headerRows.map(([key, value], i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                  value={key}
+                  onChange={(e) => updateHeader(i, e.target.value, value)}
+                  placeholder="Header"
+                />
+                <input
+                  className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                  value={value}
+                  onChange={(e) => updateHeader(i, key, e.target.value)}
+                  placeholder="Value"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeHeader(i)}
+                  className="text-xs text-gray-400 hover:text-red-600"
+                  aria-label="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       <label className="flex items-start gap-2 text-xs text-gray-700">
         <input
           type="checkbox"

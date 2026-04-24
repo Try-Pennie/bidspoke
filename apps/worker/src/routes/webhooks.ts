@@ -36,10 +36,19 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
     )
 
     const headers: Record<string, string> = {
+      ...(result.responseHeaders ?? {}),
       'X-Trace-Id': result.traceId,
     }
     if (result.idempotentReplay) {
       headers['X-Idempotent-Replay'] = 'true'
+    }
+
+    // If the workflow set a non-JSON Content-Type, send the body as-is via c.body().
+    // Otherwise default to c.json() which auto-sets application/json.
+    const ct = headers['Content-Type'] ?? headers['content-type']
+    if (ct && !ct.toLowerCase().startsWith('application/json')) {
+      const body = typeof result.response === 'string' ? result.response : JSON.stringify(result.response)
+      return c.body(body, result.status as 200 | 409 | 500, headers)
     }
 
     return c.json(result.response, result.status as 200 | 409 | 500, headers)
