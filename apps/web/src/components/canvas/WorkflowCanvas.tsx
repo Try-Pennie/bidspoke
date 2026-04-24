@@ -135,12 +135,21 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     return {
       id: n.id,
       type: n.type,
-      position: { x: 0, y: 0 }, // overridden by layoutWorkflow
+      position: n.position ?? { x: 0, y: 0 },
       data: { namespace: n.namespace, label: n.label, config, variables: n.variables ?? {} } satisfies CanvasNodeData,
     }
   })
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
-  return layoutWorkflow(allNodes, defToEdges(migratedEdges))
+  const flowEdges = defToEdges(migratedEdges)
+  // Mark unreachable-from-trigger nodes as manualPosition so layoutWorkflow
+  // preserves their stored positions — otherwise dagre re-aligns disconnected
+  // subgraphs to the top on every page load.
+  const reachable = reachableFromTrigger(allNodes, flowEdges)
+  const withManual = allNodes.map((n) => {
+    if (n.id === 'trigger' || reachable.has(n.id)) return n
+    return { ...n, data: { ...(n.data as object), manualPosition: true } }
+  })
+  return layoutWorkflow(withManual, flowEdges)
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
@@ -1575,6 +1584,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             onReconnect={mode === 'edit' ? onReconnect : undefined}
+            reconnectRadius={24}
+            connectionRadius={60}
             onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
             onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
             isValidConnection={isValidConnection}
