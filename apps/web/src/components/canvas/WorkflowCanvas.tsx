@@ -764,15 +764,22 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   // The trigger node has a single output — it can only connect to one downstream node.
   // All other nodes are unrestricted (filter/branch already split via separate handles).
+  // Tracks the edge id currently being reconnected so isValidConnection can
+  // ignore it (otherwise it sees the still-attached original edge and rejects
+  // the reconnect as a "source handle already in use" conflict).
+  const reconnectingEdgeIdRef = useRef<string | null>(null)
+
   const isValidConnection = useCallback(
     (connection: { source: string | null; sourceHandle?: string | null; target?: string | null }) => {
+      const reconnectingId = reconnectingEdgeIdRef.current
+      const relevantEdges = reconnectingId ? edges.filter((e) => e.id !== reconnectingId) : edges
       // Trigger can only have one outgoing edge
       if (connection.source === 'trigger') {
-        return !edges.some((e) => e.source === 'trigger')
+        return !relevantEdges.some((e) => e.source === 'trigger')
       }
       // Each source handle can only connect to one target
       if (connection.source && connection.sourceHandle) {
-        return !edges.some(
+        return !relevantEdges.some(
           (e) => e.source === connection.source && e.sourceHandle === connection.sourceHandle
         )
       }
@@ -1584,6 +1591,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             }}
             onConnect={onConnect}
             onReconnect={mode === 'edit' ? onReconnect : undefined}
+            onReconnectStart={mode === 'edit' ? (_, edge) => { reconnectingEdgeIdRef.current = edge.id } : undefined}
+            onReconnectEnd={mode === 'edit' ? () => { reconnectingEdgeIdRef.current = null } : undefined}
             reconnectRadius={24}
             connectionRadius={60}
             onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}

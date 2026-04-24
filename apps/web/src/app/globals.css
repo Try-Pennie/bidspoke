@@ -85,6 +85,26 @@
   z-index: 10;
 }
 
+/* React Flow edge-reconnect anchors: make them discoverable.
+   Defaults are fill/stroke: transparent so users can't see where to grab.
+   Show a subtle dot on whichever edge the cursor is on, plus a hover
+   state to signal the grab zone. */
+.react-flow__edge:hover .react-flow__edgeupdater {
+  fill: #9ca3af; /* gray-400 */
+  stroke: #ffffff;
+  stroke-width: 1.5;
+  r: 5;
+  cursor: grab;
+}
+.react-flow__edgeupdater:hover {
+  fill: #439FE1 !important; /* p-blue-dark */
+  r: 6 !important;
+  cursor: grab;
+}
+.react-flow__edgeupdater:active {
+  cursor: grabbing;
+}
+
 @layer components {
   .input {
     @apply w-full rounded border border-gray-200 px-2.5 py-1.5 text-sm text-graphite placeholder-gray-400 focus:border-p-blue-dark focus:outline-none focus:ring-1 focus:ring-p-blue-light disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 disabled:opacity-100;
