@@ -47,6 +47,7 @@ import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Settings,
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
+import TriggerExecutionPanel from './TriggerExecutionPanel'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
@@ -271,12 +272,15 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
   executionPayload?: unknown
+  executionSource?: string | null
+  executionTraceId?: string | null
+  executionStartedAt?: string | null
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
@@ -404,14 +408,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     return () => document.removeEventListener('mousedown', handler)
   }, [showOverflow])
 
-  // Inject execution step data into node.data when an execution is active
+  // Sync node.data.executionStep with the current execution. When executionSteps
+  // is cleared (e.g. user clicked Clear), this also strips executionStep from
+  // every node so colors revert to default.
   useEffect(() => {
-    if (!executionSteps) return
     setNodes((ns) =>
       ns.map((n) => {
         if (n.id === 'trigger') return n
         const namespace = (n.data as unknown as CanvasNodeData).namespace
-        const step = executionSteps[namespace] ?? null
+        const step = executionSteps ? (executionSteps[namespace] ?? null) : undefined
         return { ...n, data: { ...(n.data as object), executionStep: step } }
       })
     )
@@ -1586,7 +1591,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             />
           )}
         </div>
-        {selectedNode && mode === 'view' && executionId && (
+        {selectedNode && mode === 'view' && executionId && selectedNode.id === 'trigger' && (
+          <TriggerExecutionPanel
+            workflowId={workflow.id}
+            payload={executionPayload}
+            source={executionSource}
+            traceId={executionTraceId}
+            startedAt={executionStartedAt}
+            onClose={() => setSelectedNodeId(null)}
+            width={sidePanelWidth}
+            onResize={setSidePanelWidth}
+          />
+        )}
+        {selectedNode && mode === 'view' && executionId && selectedNode.id !== 'trigger' && (
           <ExecutionStepPanel
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
@@ -1648,12 +1665,18 @@ export default function WorkflowCanvas({
   executionId,
   executionSteps,
   executionPayload,
+  executionSource,
+  executionTraceId,
+  executionStartedAt,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
   executionPayload?: unknown
+  executionSource?: string | null
+  executionTraceId?: string | null
+  executionStartedAt?: string | null
 }) {
   return (
     <ReactFlowProvider>
@@ -1663,6 +1686,9 @@ export default function WorkflowCanvas({
         executionId={executionId}
         executionSteps={executionSteps}
         executionPayload={executionPayload}
+        executionSource={executionSource}
+        executionTraceId={executionTraceId}
+        executionStartedAt={executionStartedAt}
       />
     </ReactFlowProvider>
   )
