@@ -804,19 +804,42 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       snapshot()
       let next = edges
       const implicit = implicitReconnectEdgeRef.current
+      const oldTarget = implicit?.target ?? null
+
       if (implicit) {
         console.log('[canvas] implicit reconnect: dropping old edge', implicit.id)
         next = next.filter((e) => e.id !== implicit.id)
         implicitReconnectEdgeRef.current = null
         reconnectingEdgeIdRef.current = null
       }
+
       next = addEdge({ ...connection, id: uid() }, next)
+
+      // Splice-in heuristic: if we were implicitly reconnecting and the user
+      // dropped onto a disconnected node (unreachable from the trigger
+      // before the change) that has no outgoing edges of its own, bridge
+      // that node to the original target so the old downstream chain stays
+      // wired. Matches the "drop Return Response onto the wire between
+      // Prospect Trades and Patch Prospect Body" gesture.
+      if (implicit && oldTarget && connection.target && connection.target !== oldTarget) {
+        const reachableBefore = reachableFromTrigger(nodes, edges)
+        const dropTargetWasDisconnected = !reachableBefore.has(connection.target)
+        const dropTargetHasOutgoing = next.some((e) => e.source === connection.target)
+        if (dropTargetWasDisconnected && !dropTargetHasOutgoing) {
+          console.log('[canvas] splice-in: bridging', connection.target, '->', oldTarget)
+          next = [
+            ...next,
+            { id: uid(), source: connection.target, target: oldTarget, sourceHandle: 'output' } as Edge,
+          ]
+        }
+      }
+
       const shifted = shiftDisconnectedRight(next)
       setEdges(next)
       setNodes(layoutWorkflow(shifted, next))
       setIsDirty(true)
     },
-    [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes]
+    [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes]
   )
 
   // Start a drag from a source handle that already has a wire → treat as
