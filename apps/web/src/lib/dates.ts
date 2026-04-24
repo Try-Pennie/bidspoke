@@ -23,12 +23,13 @@ export function formatDate(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
-/** "2:34 PM" — for execution list sidebar timestamps */
+/** "2:34:12 PM" — for execution list sidebar timestamps. Seconds matter when many runs fire in the same minute. */
 export function formatTime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-US', {
     timeZone: ET,
     hour: 'numeric',
     minute: '2-digit',
+    second: '2-digit',
     hour12: true,
   }).format(new Date(dateStr))
 }
