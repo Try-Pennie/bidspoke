@@ -5,14 +5,14 @@ import { LogOut } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ExitNode({ data, selected }: NodeProps) {
-  const { namespace, label, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
       className={`relative w-52 rounded-lg border bg-red-50 shadow-sm ${
         selected ? 'border-red-400 ring-2 ring-red-200' : 'border-red-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

@@ -215,6 +215,57 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // ── Post-process: extra gap between the main (trigger) component and any
+  // disconnected subgraphs so it's visually obvious they aren't wired up.
+  const EXTRA_DISCONNECTED_GAP = 120
+  const adj = new Map<string, Set<string>>()
+  for (const n of nodes) adj.set(n.id, new Set())
+  for (const e of edges) {
+    adj.get(e.source)?.add(e.target)
+    adj.get(e.target)?.add(e.source)
+  }
+  const component = new Map<string, number>()
+  let compIdx = 0
+  for (const n of nodes) {
+    if (component.has(n.id)) continue
+    const queue = [n.id]
+    while (queue.length) {
+      const id = queue.shift() as string
+      if (component.has(id)) continue
+      component.set(id, compIdx)
+      for (const next of adj.get(id) ?? []) queue.push(next)
+    }
+    compIdx++
+  }
+  const mainComp = component.get('trigger')
+  if (mainComp !== undefined && compIdx > 1) {
+    const bbox = (comp: number) => {
+      let minX = Infinity, maxX = -Infinity
+      for (const [id, c] of component) {
+        if (c !== comp) continue
+        const p = pos.get(id)
+        if (!p) continue
+        minX = Math.min(minX, p.x - NODE_W / 2)
+        maxX = Math.max(maxX, p.x + NODE_W / 2)
+      }
+      return { minX, maxX }
+    }
+    const mainBox = bbox(mainComp)
+    for (let c = 0; c < compIdx; c++) {
+      if (c === mainComp) continue
+      const box = bbox(c)
+      if (!Number.isFinite(box.minX)) continue
+      const overlaps = box.minX < mainBox.maxX + EXTRA_DISCONNECTED_GAP
+      if (!overlaps) continue
+      const shift = mainBox.maxX + EXTRA_DISCONNECTED_GAP - box.minX
+      for (const [id, other] of component) {
+        if (other !== c) continue
+        const p = pos.get(id)
+        if (p) p.x += shift
+      }
+    }
+  }
+
   return nodes.map((node) => {
     const p = pos.get(node.id)
     if (!p) return node

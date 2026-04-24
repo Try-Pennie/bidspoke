@@ -12,7 +12,7 @@ interface ParallelChildResult {
 }
 
 export function ParallelNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
 
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const children = (config.children as string[] | undefined) ?? []
@@ -41,7 +41,7 @@ export function ParallelNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-slate-400 ring-2 ring-slate-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
-      } ${getNodeClasses(effectiveStep, hasError)}`}
+      } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
       style={getExecutionStyle(effectiveStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

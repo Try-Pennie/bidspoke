@@ -5,14 +5,14 @@ import { Box } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
-  const { namespace, label, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-gray-400 ring-2 ring-gray-200' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

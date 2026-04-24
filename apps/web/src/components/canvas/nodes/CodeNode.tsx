@@ -5,7 +5,7 @@ import { Code } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function CodeNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const script = config.script as string | undefined
   const scriptPreview = script?.trim().split('\n')[0]?.slice(0, 40) || undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -14,7 +14,7 @@ export function CodeNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-amber-400 ring-2 ring-amber-200' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

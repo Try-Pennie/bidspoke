@@ -15,7 +15,7 @@ const OPERATION_LABELS: Record<string, string> = {
 }
 
 export function SalesforceNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
 
   const operation = (config.operation as string | undefined) ?? 'create'
   const object = (config.object as string | undefined) ?? ''
@@ -32,7 +32,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-blue-400 ring-2 ring-blue-100' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

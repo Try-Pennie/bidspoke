@@ -15,7 +15,7 @@ interface PartnerBidOutput {
 }
 
 export function PartnerBidNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
 
   const partnerName = (config.partner_name as string | undefined) ?? (config.partner_id ? '…' : null)
 
@@ -35,7 +35,7 @@ export function PartnerBidNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-sky-400 ring-2 ring-sky-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />

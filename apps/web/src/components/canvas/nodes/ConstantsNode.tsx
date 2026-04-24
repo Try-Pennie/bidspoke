@@ -5,7 +5,7 @@ import { Package } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 
 export function ConstantsNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const dataObj = config.data as Record<string, unknown> | undefined
   const keyCount = dataObj ? Object.keys(dataObj).length : 0
   const outputPreview = getOutputPreview(executionStep)
@@ -23,7 +23,7 @@ export function ConstantsNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-indigo-400 ring-2 ring-indigo-200' : 'border-gray-200'
-      } ${getNodeClasses(execForStyle, hasError)}`}
+      } ${getNodeClasses(execForStyle, hasError, isReachable)}`}
       style={getExecutionStyle(execForStyle)}
     >
       <Handle type="target" position={Position.Top} id="input" />

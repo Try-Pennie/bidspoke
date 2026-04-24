@@ -145,6 +145,9 @@ export interface CanvasNodeData {
   executionStep?: ExecutionStep | null
   // true = node is attached and missing required config; shown as amber ring in edit mode
   hasError?: boolean
+  // false = not reachable from the trigger via edges; dimmed on the canvas.
+  // undefined/true = part of the live flow. Canvas-only bookkeeping.
+  isReachable?: boolean
   // For parallel start/end pairs: the React Flow ID of the other half of the pair.
   // Not serialized to the workflow definition — canvas-only bookkeeping.
   _pairId?: string

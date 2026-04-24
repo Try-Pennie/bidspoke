@@ -48,6 +48,8 @@ import { validateWorkflow, type ValidationError } from '@/lib/workflow-validatio
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
+import { reachableFromTrigger } from './reachability'
+import DeletableEdge from './DeletableEdge'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
@@ -72,6 +74,8 @@ const nodeTypes: NodeTypes = {
   constants: ConstantsNode,
   salesforce: SalesforceNode,
 }
+
+const edgeTypes = { default: DeletableEdge }
 
 function makeTriggerNode(trigger: WorkflowDef['trigger']): Node {
   return {
@@ -422,6 +426,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     )
   }, [executionSteps, setNodes])
 
+  // Mark nodes that aren't reachable from the trigger so the renderers + minimap
+  // can dim them. Runs whenever the edge graph changes.
+  useEffect(() => {
+    const reachable = reachableFromTrigger(nodes, edges)
+    setNodes((ns) => {
+      let changed = false
+      const next = ns.map((n) => {
+        const isReachable = reachable.has(n.id)
+        const current = (n.data as unknown as CanvasNodeData).isReachable
+        if (current === isReachable) return n
+        changed = true
+        return { ...n, data: { ...(n.data as object), isReachable } }
+      })
+      return changed ? next : ns
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edges, nodes.length])
+
   const handleTestStart = useCallback((_execId: string) => {
     setLiveSteps({})
     setTestRunning(true)
@@ -606,6 +628,36 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setContextMenu(null)
   }, [snapshot, edges, setEdges, setNodes])
 
+  // Disconnect: cut only the node's incoming edges. The node and its entire
+  // downstream subgraph float away as a disconnected cluster (still internally
+  // connected), dimmed by the reachability effect.
+  const disconnectNode = useCallback((nodeId: string) => {
+    snapshot()
+    const newEdges = edges.filter((e) => e.target !== nodeId)
+    setEdges(newEdges)
+    setNodes((ns) => layoutWorkflow(ns, newEdges))
+    setIsDirty(true)
+    setContextMenu(null)
+  }, [snapshot, edges, setEdges, setNodes])
+
+  // Delete a single edge — used by the hover-X on custom edges.
+  const deleteEdge = useCallback((edgeId: string) => {
+    snapshot()
+    const newEdges = edges.filter((e) => e.id !== edgeId)
+    setEdges(newEdges)
+    setNodes((ns) => layoutWorkflow(ns, newEdges))
+    setIsDirty(true)
+  }, [snapshot, edges, setEdges, setNodes])
+
+  // Inject the edge delete handler into each edge's data so DeletableEdge
+  // can call it directly. Omitted in view/readonly mode.
+  const edgesWithHandlers = useMemo(
+    () => mode === 'edit'
+      ? edges.map((e) => ({ ...e, data: { ...(e.data ?? {}), onDelete: deleteEdge } }))
+      : edges,
+    [edges, deleteEdge, mode]
+  )
+
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -685,6 +737,33 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const newEdges = addEdge({ ...connection, id: uid() }, edges)
       setEdges(newEdges)
       setNodes((ns) => layoutWorkflow(ns, newEdges))
+      setIsDirty(true)
+    },
+    [snapshot, edges, setEdges, setNodes]
+  )
+
+  // Edge reconnect (dragging an edge endpoint to a different node). Replaces
+  // the old edge with a new one. If the drag bypasses a single node (old
+  // target had one outgoing edge to the new target, and losing this incoming
+  // leaves it orphaned), also drop that outgoing edge so the bypassed node
+  // is fully disconnected — matches Dan's "drag wire from constants to
+  // validate should remove parse_name but keep the rest intact" example.
+  const onReconnect = useCallback(
+    (oldEdge: Edge, newConnection: Connection) => {
+      snapshot()
+      let nextEdges = edges.filter((e) => e.id !== oldEdge.id)
+      const oldTarget = oldEdge.target
+      const newTarget = newConnection.target
+      const isBypass =
+        newTarget && newTarget !== oldTarget &&
+        !nextEdges.some((e) => e.target === oldTarget) &&
+        nextEdges.some((e) => e.source === oldTarget && e.target === newTarget)
+      if (isBypass) {
+        nextEdges = nextEdges.filter((e) => !(e.source === oldTarget && e.target === newTarget))
+      }
+      nextEdges = addEdge({ ...newConnection, id: uid() }, nextEdges)
+      setEdges(nextEdges)
+      setNodes((ns) => layoutWorkflow(ns, nextEdges))
       setIsDirty(true)
     },
     [snapshot, edges, setEdges, setNodes]
@@ -1309,7 +1388,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
             nodes={nodes}
-            edges={edges}
+            edges={edgesWithHandlers}
             onNodesChange={(changes) => {
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
@@ -1441,6 +1520,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               }
             }}
             onConnect={onConnect}
+            onReconnect={mode === 'edit' ? onReconnect : undefined}
             isValidConnection={isValidConnection}
             onNodeClick={(e, node) => {
               // Shift / Cmd click → add to multi-selection (handled by React Flow);
@@ -1459,6 +1539,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               setContextMenu({ nodeId: node.id, x: e.clientX, y: e.clientY })
             } : undefined}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
@@ -1485,6 +1566,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             )}
             <MiniMap
               nodeColor={(n) => {
+                const data = n.data as unknown as CanvasNodeData | undefined
+                if (data?.isReachable === false) return '#d1d5db' // gray-300
                 const colorMap: Record<string, string> = {
                   trigger:        '#439FE1', // indigo
                   filter:         '#3b82f6', // blue
@@ -1509,17 +1592,29 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           {contextMenu && (() => {
             const cmInEdges = edges.filter((e) => e.target === contextMenu.nodeId)
             const cmOutEdges = edges.filter((e) => e.source === contextMenu.nodeId && e.sourceHandle === 'output')
-            const isInChain = cmInEdges.length > 0 || cmOutEdges.length > 0
+            const hasInEdges = cmInEdges.length > 0
+            const isInChain = hasInEdges || cmOutEdges.length > 0
             return (
               <div
-                className="fixed z-50 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
+                className="fixed z-50 min-w-[200px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                 style={{ left: contextMenu.x, top: contextMenu.y }}
                 onContextMenu={(e) => e.preventDefault()}
               >
+                {hasInEdges && (
+                  <button
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
+                    onClick={() => disconnectNode(contextMenu.nodeId)}
+                    title="Detach this node and its downstream subgraph from the main flow"
+                  >
+                    <X className="h-3.5 w-3.5 text-gray-400" />
+                    Disconnect
+                  </button>
+                )}
                 {isInChain && (
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
                     onClick={() => removeFromChain(contextMenu.nodeId)}
+                    title="Splice this single node out; the chain reconnects around it"
                   >
                     <X className="h-3.5 w-3.5 text-gray-400" />
                     Remove from chain

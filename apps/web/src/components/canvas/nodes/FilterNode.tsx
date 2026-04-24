@@ -11,7 +11,7 @@ const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
 }
 
 export function FilterNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
   const condition = config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -30,7 +30,7 @@ export function FilterNode({ data, selected }: NodeProps) {
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
         selected ? 'border-p-blue-dark ring-2 ring-p-blue-light' : 'border-gray-200'
-      } ${getNodeClasses(executionStep, hasError)}`}
+      } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
       <Handle type="target" position={Position.Top} id="input" />
