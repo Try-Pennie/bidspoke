@@ -21,6 +21,11 @@ import { resolveValue } from '../context'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
+interface ExpectedError {
+  code: string
+  message_contains?: string
+}
+
 interface SalesforceConfig {
   operation: SalesforceOperation
   object?: string       // SObject API name, e.g. Prospect__c
@@ -30,6 +35,9 @@ interface SalesforceConfig {
   external_id_value?: string  // upsert: template-enabled external ID value
   soql?: string         // template-enabled SOQL query string
   apex_path?: string    // apex: relative path, e.g. /services/apexrest/prospect-trades
+  expected_errors?: ExpectedError[]  // SF rejections treated as business rejections, not failures.
+                                     // Matched by errorCode AND optional message substring.
+                                     // Step logs as completed and the workflow exits here.
 }
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
@@ -172,8 +180,55 @@ export async function executeSalesforceNode(
     if (res.status === 401) {
       await env.WORKFLOW_CACHE.delete(`sf-token-${ctx.trigger.org_id}`)
     }
+
+    // Expected-error short-circuit: if the SF error matches a configured
+    // business rejection (e.g. dedup validation), exit the workflow here with
+    // the step marked completed instead of failing the execution.
+    const expected = config.expected_errors ?? []
+    if (expected.length > 0) {
+      const errorCode = extractSalesforceErrorCode(parsedBody)
+      const message = extractSalesforceErrorMessage(parsedBody)
+      const matched = expected.find((e) => {
+        if (!errorCode || e.code !== errorCode) return false
+        const needle = e.message_contains?.trim()
+        if (!needle) return true
+        return (message ?? '').includes(needle)
+      })
+      if (matched) {
+        console.log(`[salesforce] expected rejection ${errorCode} — exiting workflow (trace=${ctx.trigger.trace_id})`)
+        return {
+          output: { status: res.status, ok: false, errorCode, message, body: parsedBody },
+          earlyExit: true,
+        }
+      }
+    }
+
     throw new Error(`Salesforce API error (${res.status}): ${responseText}`)
   }
 
   return { output: { status: res.status, body: parsedBody } }
+}
+
+function extractSalesforceErrorCode(body: unknown): string | null {
+  if (Array.isArray(body) && body.length > 0) {
+    const first = body[0] as { errorCode?: unknown } | undefined
+    if (first && typeof first.errorCode === 'string') return first.errorCode
+  }
+  if (body && typeof body === 'object' && 'errorCode' in body) {
+    const code = (body as { errorCode?: unknown }).errorCode
+    if (typeof code === 'string') return code
+  }
+  return null
+}
+
+function extractSalesforceErrorMessage(body: unknown): string | null {
+  if (Array.isArray(body) && body.length > 0) {
+    const first = body[0] as { message?: unknown } | undefined
+    if (first && typeof first.message === 'string') return first.message
+  }
+  if (body && typeof body === 'object' && 'message' in body) {
+    const msg = (body as { message?: unknown }).message
+    if (typeof msg === 'string') return msg
+  }
+  return null
 }

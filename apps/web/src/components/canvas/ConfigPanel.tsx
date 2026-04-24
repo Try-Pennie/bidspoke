@@ -1408,10 +1408,29 @@ function SalesforceConfig({
   const extValue  = (config.external_id_value as string | undefined) ?? ''
   const soql      = (config.soql as string | undefined) ?? ''
   const apexPath  = (config.apex_path as string | undefined) ?? ''
+  const expectedErrors = (config.expected_errors as { code: string; message_contains?: string }[] | undefined) ?? []
 
   const [bodyText, setBodyText] = useState(() =>
     body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body, null, 2)) : ''
   )
+
+  function updateExpectedError(index: number, patch: Partial<{ code: string; message_contains: string }>) {
+    const next = [...expectedErrors]
+    const current = next[index] ?? { code: '' }
+    next[index] = { ...current, ...patch }
+    // Clean empty message_contains so it serializes as undefined
+    if (next[index].message_contains !== undefined && next[index].message_contains!.trim() === '') {
+      delete next[index].message_contains
+    }
+    onChange({ expected_errors: next })
+  }
+  function addExpectedError() {
+    onChange({ expected_errors: [...expectedErrors, { code: '' }] })
+  }
+  function removeExpectedError(index: number) {
+    const next = expectedErrors.filter((_, i) => i !== index)
+    onChange({ expected_errors: next.length > 0 ? next : undefined })
+  }
 
   function saveBody(raw: string) {
     setBodyText(raw)
@@ -1550,6 +1569,62 @@ function SalesforceConfig({
           <p className="mt-1 text-xs text-gray-400">Use <code className="rounded bg-gray-100 px-1">{`{{steps.x.output.field}}`}</code> to reference prior step output.</p>
         </div>
       )}
+
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-xs font-medium text-gray-600">Expected errors</label>
+          <button
+            type="button"
+            onClick={addExpectedError}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            + Add
+          </button>
+        </div>
+        {expectedErrors.length === 0 ? (
+          <p className="text-xs text-gray-400">
+            Treat matching Salesforce errors as business rejections. Step completes and the workflow exits here instead of failing.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {expectedErrors.map((err, i) => (
+              <div key={i} className="rounded border border-gray-200 p-2">
+                <div className="mb-2 flex items-start gap-2">
+                  <div className="flex-1">
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">errorCode</label>
+                    <input
+                      className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                      value={err.code}
+                      onChange={(e) => updateExpectedError(i, { code: e.target.value })}
+                      placeholder="FIELD_CUSTOM_VALIDATION_EXCEPTION"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeExpectedError(i)}
+                    className="mt-4 text-xs text-gray-400 hover:text-red-600"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div>
+                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Message contains (optional)</label>
+                  <input
+                    className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                    value={err.message_contains ?? ''}
+                    onChange={(e) => updateExpectedError(i, { message_contains: e.target.value })}
+                    placeholder="Social Security Number was created in the last 60 days"
+                  />
+                </div>
+              </div>
+            ))}
+            <p className="text-xs text-gray-400">
+              Both errorCode and message substring must match. Leave message blank to match any message with that errorCode.
+            </p>
+          </div>
+        )}
+      </div>
     </section>
   )
 }
