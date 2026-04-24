@@ -272,6 +272,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
 
   return nodes.map((node) => {
+    // Respect manually-positioned nodes — user dragged them somewhere
+    // specific and expects that position to stick through re-layouts.
+    const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
+    if (manual) return node
     const p = pos.get(node.id)
     if (!p) return node
     return {

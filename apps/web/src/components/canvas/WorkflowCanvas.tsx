@@ -429,17 +429,26 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   }, [executionSteps, setNodes])
 
   // Mark nodes that aren't reachable from the trigger so the renderers + minimap
-  // can dim them. Runs whenever the edge graph changes.
+  // can dim them. Also clears manualPosition once a node becomes reachable
+  // again — auto-layout takes back over. Runs whenever the edge graph changes.
   useEffect(() => {
     const reachable = reachableFromTrigger(nodes, edges)
     setNodes((ns) => {
       let changed = false
       const next = ns.map((n) => {
+        const d = n.data as unknown as CanvasNodeData
         const isReachable = reachable.has(n.id)
-        const current = (n.data as unknown as CanvasNodeData).isReachable
-        if (current === isReachable) return n
+        const clearManual = isReachable && d.manualPosition === true
+        if (d.isReachable === isReachable && !clearManual) return n
         changed = true
-        return { ...n, data: { ...(n.data as object), isReachable } }
+        return {
+          ...n,
+          data: {
+            ...(n.data as object),
+            isReachable,
+            ...(clearManual ? { manualPosition: undefined } : {}),
+          },
+        }
       })
       return changed ? next : ns
     })
@@ -1370,6 +1379,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               const isGroupDrag = finishedPositionChanges.length > 1
               if (isGroupDrag) return
 
+              const reachableIds = finishedPositionChanges.length > 0
+                ? reachableFromTrigger(nodes, edges)
+                : null
+
               for (const change of changes) {
                 if (change.type !== 'position' || change.dragging !== false) continue
                 // Don't let the trigger node be reordered
@@ -1380,6 +1393,21 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
                 const node = nodes.find((n) => n.id === change.id)
                 if (!node) continue
+
+                // Disconnected subgraphs get free positioning: no slot-in,
+                // no reorder, and mark the node manualPosition so layout
+                // passes don't stomp on the user's placement.
+                if (reachableIds && !reachableIds.has(change.id)) {
+                  const d = node.data as unknown as CanvasNodeData
+                  if (d.manualPosition !== true) {
+                    setNodes((ns) => ns.map((n) => n.id === change.id
+                      ? { ...n, data: { ...(n.data as object), manualPosition: true } }
+                      : n
+                    ))
+                  }
+                  continue
+                }
+
                 const finalPos = (change as { position?: { x: number; y: number } }).position ?? node.position
                 const otherNodes = nodes.filter((n) => n.id !== change.id)
                 const isConnected = edges.some((e) => e.source === change.id || e.target === change.id)

@@ -148,6 +148,11 @@ export interface CanvasNodeData {
   // false = not reachable from the trigger via edges; dimmed on the canvas.
   // undefined/true = part of the live flow. Canvas-only bookkeeping.
   isReachable?: boolean
+  // Set when the user drags a disconnected node to a specific spot. While
+  // true, layoutWorkflow preserves the node's current position instead of
+  // running dagre on it. Cleared automatically when the node becomes
+  // reachable from the trigger again.
+  manualPosition?: boolean
   // For parallel start/end pairs: the React Flow ID of the other half of the pair.
   // Not serialized to the workflow definition — canvas-only bookkeeping.
   _pairId?: string
