@@ -1400,52 +1400,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                 const node = nodes.find((n) => n.id === change.id)
                 if (!node) continue
 
-                // Disconnected subgraphs: if the drop lands on a reachable
-                // source, slot-in (append or insert-between). Otherwise mark
-                // as manualPosition so layout doesn't move it around.
+                // Disconnected subgraphs get pure free-drag: no auto-connect
+                // on proximity. Wiring back in happens by dragging the wire
+                // or connecting handles explicitly.
                 if (reachableIds && !reachableIds.has(change.id)) {
-                  const finalPos = (change as { position?: { x: number; y: number } }).position ?? node.position
-                  const otherNodes = nodes.filter((n) => n.id !== change.id)
-                  const sourceNode = findDropSource(otherNodes, finalPos)
-                  const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '') : null
-                  const sourceReachable = sourceNode ? reachableIds.has(sourceNode.id) : false
-
-                  if (sourceNode && sourceHandle && sourceReachable) {
-                    const existingOutEdge = edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
-                    if (!existingOutEdge) {
-                      // Append: connect drop-source → this node. Its own
-                      // existing outgoing edges pull the rest of the cluster
-                      // along automatically once manualPosition clears.
-                      const newEdges = [...edges, { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }]
-                      setEdges(newEdges)
-                      setIsDirty(true)
-                    } else {
-                      // Insert between: remove source→oldTarget, add
-                      // source→this. If this already has an outgoing edge to
-                      // that old target, don't duplicate; otherwise add the
-                      // this→oldTarget edge too.
-                      const alreadyGoesToOldTarget = edges.some(
-                        (e) => e.source === change.id && e.target === existingOutEdge.target
-                      )
-                      const added: Edge[] = [
-                        { id: uid(), source: sourceNode.id, target: change.id, sourceHandle },
-                      ]
-                      if (!alreadyGoesToOldTarget) {
-                        added.push({ id: uid(), source: change.id, target: existingOutEdge.target, sourceHandle: 'output' })
-                      }
-                      const newEdges = [
-                        ...edges.filter((e) => e.id !== existingOutEdge.id),
-                        ...added,
-                      ]
-                      setEdges(newEdges)
-                      setIsDirty(true)
-                    }
-                    // Layout will re-run via the reachability effect once
-                    // manualPosition clears, so skip the inline layout here.
-                    continue
-                  }
-
-                  // No valid slot — free-drag, mark manual.
                   const d = node.data as unknown as CanvasNodeData
                   if (d.manualPosition !== true) {
                     setNodes((ns) => ns.map((n) => n.id === change.id
