@@ -788,6 +788,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       if (meta && e.key === 's') { e.preventDefault(); handleSave() }
       if (e.key === 'Escape') { setContextMenu(null); setEdgeContextMenu(null) }
 
+      // Cmd/Ctrl+Shift+L — force re-layout the main (trigger-reachable) flow.
+      // Clears manualPosition on reachable nodes so a stale flag can't hold
+      // a node off-grid. Disconnected subgraphs keep their positions.
+      if (meta && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+        e.preventDefault()
+        snapshot()
+        const reachable = reachableFromTrigger(nodes, edges)
+        setNodes((ns) => {
+          const cleared = ns.map((n) => {
+            const d = n.data as unknown as CanvasNodeData
+            if (!reachable.has(n.id) || d.manualPosition !== true) return n
+            return { ...n, data: { ...(n.data as object), manualPosition: undefined } }
+          })
+          return layoutWorkflow(cleared, edges)
+        })
+        setIsDirty(true)
+      }
+
       // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
       // This covers Monaco and all other inputs in those panels without relying on
       // fragile element-type checks.
