@@ -70,7 +70,7 @@ export async function sendFailureAlert(
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: '⚠️ Workflow Execution Failed', emoji: true },
+      text: { type: 'plain_text', text: 'Workflow Execution Failed', emoji: false },
     },
     {
       type: 'section',
@@ -125,7 +125,7 @@ export async function sendDurationAlert(
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: '🐢 Slow Execution', emoji: true },
+      text: { type: 'plain_text', text: 'Slow Execution', emoji: false },
     },
     {
       type: 'section',
@@ -166,8 +166,8 @@ export async function sendCircuitAlert(
       type: 'header',
       text: {
         type: 'plain_text',
-        text: isOpen ? '🔴 Circuit Breaker Opened' : '🟢 Circuit Breaker Recovered',
-        emoji: true,
+        text: isOpen ? 'Circuit Breaker Opened' : 'Circuit Breaker Recovered',
+        emoji: false,
       },
     },
     {

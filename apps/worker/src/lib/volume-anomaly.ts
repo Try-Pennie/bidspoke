@@ -3,14 +3,18 @@
  *
  * Runs on a scheduled cron trigger (daily at 09:00 UTC).
  * For each org that has Slack configured, compares yesterday's execution
- * volume to the 7-day rolling baseline. If volume dropped below 50% or
- * spiked above 200%, sends a Slack alert.
+ * volume to a same-day-type rolling baseline (weekend vs weekday). If volume
+ * dropped below 50% or spiked above 200%, sends a Slack alert.
+ *
+ * Day-type matching: Saturdays/Sundays are compared only against prior
+ * weekend days; Mon-Fri are compared only against prior weekdays. This
+ * avoids false drops when a low-traffic weekend lands next to busy weekdays.
  *
  * Thresholds:
  *   low_threshold_pct  — alert if yesterday < baseline * (low/100).  Default: 50
  *   high_threshold_pct — alert if yesterday > baseline * (high/100). Default: 200
  *
- * At least 3 days of baseline data is required before anomalies are flagged.
+ * At least 3 same-day-type baseline days are required before anomalies are flagged.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -25,6 +29,12 @@ export interface AnomalyResult {
   yesterday_count: number
   baseline_avg: number
   kind: 'drop' | 'spike'
+}
+
+// Treat a YYYY-MM-DD string as UTC noon to avoid TZ ambiguity at day boundaries.
+function isWeekend(dateStr: string): boolean {
+  const day = new Date(`${dateStr}T12:00:00Z`).getUTCDay()
+  return day === 0 || day === 6
 }
 
 /**
@@ -43,15 +53,16 @@ export function detectAnomaly(
   highPct = DEFAULT_HIGH_THRESHOLD_PCT
 ): { yesterdayCount: number; baselineAvg: number; kind: 'drop' | 'spike' } | null {
   const yesterdayCount = dailyCounts[yesterday] ?? 0
+  const yesterdayIsWeekend = isWeekend(yesterday)
 
-  // Baseline = all days in the map except yesterday, sorted ascending
+  // Baseline = same-day-type prior days (weekend vs weekday), sorted ascending
   const baselineDays = Object.entries(dailyCounts)
-    .filter(([day]) => day !== yesterday)
+    .filter(([day]) => day !== yesterday && isWeekend(day) === yesterdayIsWeekend)
     .sort(([a], [b]) => a.localeCompare(b))
 
-  if (baselineDays.length < MIN_BASELINE_DAYS) return null  // not enough data
+  if (baselineDays.length < MIN_BASELINE_DAYS) return null  // not enough same-day-type data
 
-  // Use only the 7 days immediately before yesterday
+  // Use the most recent matching days (7 weekdays ≈ 1.5 work-weeks; 7 weekend days ≈ 3.5 weekends)
   const priorDays = baselineDays.slice(-7)
   const baselineAvg = priorDays.reduce((sum, [, n]) => sum + n, 0) / priorDays.length
 
@@ -72,8 +83,7 @@ export function detectAnomaly(
  * Called from the Worker scheduled handler.
  */
 export async function runVolumeAnomalyCheck(
-  supabase: SupabaseClient,
-  appUrl: string
+  supabase: SupabaseClient
 ): Promise<void> {
   // 1. Find orgs with Slack connections
   const { data: slackConnections } = await supabase
@@ -105,13 +115,13 @@ export async function runVolumeAnomalyCheck(
   const allWorkflowIds = Object.keys(wfToOrg)
   if (allWorkflowIds.length === 0) return
 
-  // 3. Query 8 days of execution records
-  const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString()
+  // 3. Query 22 days of execution records — covers ~3 weekends so weekend baselines have enough samples
+  const lookbackStart = new Date(Date.now() - 22 * 24 * 60 * 60 * 1000).toISOString()
   const { data: executions } = await supabase
     .from('workflow_executions')
     .select('workflow_id, started_at')
     .in('workflow_id', allWorkflowIds)
-    .gte('started_at', eightDaysAgo)
+    .gte('started_at', lookbackStart)
     .eq('is_test', false)
 
   // 4. Group by org + day
@@ -135,34 +145,36 @@ export async function runVolumeAnomalyCheck(
     const connection = await getSlackConnection(supabase, orgId)
     if (!connection) continue
 
-    await sendVolumeAlert(connection, orgId, anomaly.kind, anomaly.yesterdayCount, anomaly.baselineAvg, appUrl)
+    const dayType = isWeekend(yesterday) ? 'weekend' : 'weekday'
+    await sendVolumeAlert(connection, anomaly.kind, anomaly.yesterdayCount, anomaly.baselineAvg, dayType)
   }
 }
 
 async function sendVolumeAlert(
   connection: { bot_token: string; default_channel: string },
-  _orgId: string,
   kind: 'drop' | 'spike',
   yesterdayCount: number,
   baselineAvg: number,
-  _appUrl: string
+  dayType: 'weekend' | 'weekday'
 ): Promise<void> {
   const isDrop = kind === 'drop'
   const pct = baselineAvg > 0 ? Math.round((yesterdayCount / baselineAvg) * 100) : 0
 
-  const header = isDrop ? '📉 Execution Volume Drop Detected' : '📈 Execution Volume Spike Detected'
+  const header = isDrop ? 'Execution Volume Drop Detected' : 'Execution Volume Spike Detected'
+  const baselineLabel = `${dayType} baseline`
   const description = isDrop
-    ? `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the 7-day baseline* (avg ${baselineAvg}). This may indicate an upstream source outage.`
-    : `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the 7-day baseline* (avg ${baselineAvg}). This may indicate unexpected traffic.`
+    ? `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the ${baselineLabel}* (avg ${baselineAvg}). This may indicate an upstream source outage.`
+    : `Yesterday's execution count (${yesterdayCount}) was *${pct}% of the ${baselineLabel}* (avg ${baselineAvg}). This may indicate unexpected traffic.`
 
+  const baselineFieldLabel = dayType === 'weekend' ? 'Weekend baseline' : 'Weekday baseline'
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: header, emoji: true } },
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: description } },
     {
       type: 'section',
       fields: [
         { type: 'mrkdwn', text: `*Yesterday:* ${yesterdayCount} executions` },
-        { type: 'mrkdwn', text: `*7-day baseline:* ${baselineAvg} executions/day` },
+        { type: 'mrkdwn', text: `*${baselineFieldLabel}:* ${baselineAvg} executions/day` },
       ],
     },
   ]

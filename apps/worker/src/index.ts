@@ -97,7 +97,7 @@ export default {
     const supabase = createSupabaseClient(env)
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
-        runVolumeAnomalyCheck(supabase, env.APP_URL)
+        runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
     } else if (event.cron === '* * * * *') {

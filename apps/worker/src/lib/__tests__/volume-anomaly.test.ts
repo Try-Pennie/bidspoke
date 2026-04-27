@@ -88,27 +88,81 @@ describe('detectAnomaly()', () => {
   })
 
   it('rounds baselineAvg in the result', () => {
-    // 3 + 3 + 4 = 10 / 3 days = 3.33 → rounded to 3
+    // 3 weekdays (Wed/Thu/Fri before YESTERDAY=Tue): 3+3+4 = 10 / 3 = 3.33 → rounded to 3
     const counts: Record<string, number> = {
-      '2026-04-04': 3,
-      '2026-04-05': 3,
-      '2026-04-06': 4,
-      [YESTERDAY]: 0,  // will trigger drop
+      '2026-04-01': 3,  // Wed
+      '2026-04-02': 3,  // Thu
+      '2026-04-03': 4,  // Fri
+      [YESTERDAY]: 0,   // Tue — triggers drop
     }
     const result = detectAnomaly(counts, YESTERDAY)
     expect(result?.baselineAvg).toBe(Math.round((3 + 3 + 4) / 3))
   })
 
-  it('uses only the 7 most recent baseline days when more data is available', () => {
-    // 8 baseline days (indices 0-7); yesterday is the measured day
+  it('uses only the 7 most recent same-day-type days when more data is available', () => {
+    // YESTERDAY=2026-04-07 (Tue). The 8 most recent weekdays before it:
+    //   Apr 6 Mon, Apr 3 Fri, Apr 2 Thu, Apr 1 Wed, Mar 31 Tue, Mar 30 Mon, Mar 27 Fri, Mar 26 Thu
+    // The 8th-most-recent (Mar 26) should be excluded from the 7-day baseline window.
+    const weekdays = ['2026-03-26', '2026-03-27', '2026-03-30', '2026-03-31', '2026-04-01', '2026-04-02', '2026-04-03', '2026-04-06']
     const counts: Record<string, number> = {}
-    for (let i = 8; i >= 1; i--) {
-      const d = new Date(new Date(YESTERDAY).getTime() - i * 86400000).toISOString().slice(0, 10)
-      counts[d] = i === 8 ? 9999 : 100  // day-8 has outlier; should be excluded from 7-day window
-    }
+    weekdays.forEach((d, idx) => {
+      counts[d] = idx === 0 ? 9999 : 100  // earliest day is the outlier
+    })
     counts[YESTERDAY] = 40  // drop vs 100 baseline
     const result = detectAnomaly(counts, YESTERDAY)
     expect(result?.kind).toBe('drop')
-    expect(result?.baselineAvg).toBe(100)  // outlier day-8 excluded
+    expect(result?.baselineAvg).toBe(100)  // outlier excluded
+  })
+
+  it('compares weekend days against weekend baseline only', () => {
+    const SUNDAY = '2026-04-12'  // Sun
+    // 4 prior weekend days (low traffic) + 5 prior weekdays (high traffic)
+    const counts: Record<string, number> = {
+      // weekends — baseline should use these
+      '2026-03-28': 10,  // Sat
+      '2026-03-29': 12,  // Sun
+      '2026-04-04': 8,   // Sat
+      '2026-04-05': 14,  // Sun
+      // weekdays — should be ignored when YESTERDAY is a weekend
+      '2026-04-06': 200,
+      '2026-04-07': 200,
+      '2026-04-08': 200,
+      '2026-04-09': 200,
+      '2026-04-10': 200,
+      [SUNDAY]: 11,  // ~within weekend baseline avg of 11 → no anomaly
+    }
+    expect(detectAnomaly(counts, SUNDAY)).toBeNull()
+  })
+
+  it('does not alert on a low-traffic weekend when only weekdays are in baseline', () => {
+    const SATURDAY = '2026-04-11'
+    // Only weekday baseline data — insufficient same-day-type data → null
+    const counts: Record<string, number> = {
+      '2026-04-06': 200,  // Mon
+      '2026-04-07': 210,  // Tue
+      '2026-04-08': 190,  // Wed
+      '2026-04-09': 200,  // Thu
+      '2026-04-10': 200,  // Fri
+      [SATURDAY]: 5,
+    }
+    expect(detectAnomaly(counts, SATURDAY)).toBeNull()
+  })
+
+  it('detects a drop on a weekday relative to weekday-only baseline', () => {
+    // YESTERDAY=Tue. Mix in weekend days that should be ignored.
+    const counts: Record<string, number> = {
+      '2026-03-30': 100,  // Mon
+      '2026-03-31': 100,  // Tue
+      '2026-04-01': 100,  // Wed
+      '2026-04-02': 100,  // Thu
+      '2026-04-03': 100,  // Fri
+      '2026-04-04': 5,    // Sat — would drag baseline down if included
+      '2026-04-05': 5,    // Sun — same
+      '2026-04-06': 100,  // Mon
+      [YESTERDAY]: 30,    // 30% of weekday baseline 100 → drop
+    }
+    const result = detectAnomaly(counts, YESTERDAY)
+    expect(result?.kind).toBe('drop')
+    expect(result?.baselineAvg).toBe(100)
   })
 })
