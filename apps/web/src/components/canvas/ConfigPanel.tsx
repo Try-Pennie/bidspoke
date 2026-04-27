@@ -1498,6 +1498,8 @@ function SalesforceConfig({
   const soql      = (config.soql as string | undefined) ?? ''
   const apexPath  = (config.apex_path as string | undefined) ?? ''
   const expectedErrors = (config.expected_errors as { code: string; message_contains?: string }[] | undefined) ?? []
+  const addTraceLink   = config.add_trace_link !== false
+  const traceLinkField = (config.trace_link_field as string | undefined) ?? 'ProspectTraceId__c'
 
   const [bodyText, setBodyText] = useState(() =>
     body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body, null, 2)) : ''
@@ -1621,6 +1623,36 @@ function SalesforceConfig({
             refs={refs}
             placeholder="SELECT Id FROM Prospect__c WHERE Lead_UUID__c = '{{trigger.payload.leadUuid}}'"
           />
+        </div>
+      )}
+
+      {operation === 'create' && (
+        <div className="rounded border border-gray-200 p-3">
+          <label className="flex cursor-pointer items-start gap-2">
+            <input
+              type="checkbox"
+              checked={addTraceLink}
+              onChange={(e) => onChange({ add_trace_link: e.target.checked })}
+              className="mt-0.5"
+            />
+            <div className="flex-1">
+              <div className="text-xs font-medium text-gray-700">Attach Bidspoke run link</div>
+              <p className="text-xs text-gray-500">
+                Adds a link to this execution on the created record so it&apos;s easy to jump from Salesforce back to the run.
+              </p>
+            </div>
+          </label>
+          {addTraceLink && (
+            <div className="mt-2 pl-6">
+              <label className="mb-1 block text-[10px] font-medium uppercase text-gray-400">Field</label>
+              <input
+                className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                value={traceLinkField}
+                onChange={(e) => onChange({ trace_link_field: e.target.value })}
+                placeholder="ProspectTraceId__c"
+              />
+            </div>
+          )}
         </div>
       )}
 

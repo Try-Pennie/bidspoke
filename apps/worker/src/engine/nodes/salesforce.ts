@@ -38,7 +38,11 @@ interface SalesforceConfig {
   expected_errors?: ExpectedError[]  // SF rejections treated as business rejections, not failures.
                                      // Matched by errorCode AND optional message substring.
                                      // Step logs as completed and the workflow exits here.
+  add_trace_link?: boolean   // create: inject Bidspoke execution deeplink into the body. Default true.
+  trace_link_field?: string  // create: SObject field to receive the deeplink. Default 'ProspectTraceId__c'.
 }
+
+const DEFAULT_TRACE_LINK_FIELD = 'ProspectTraceId__c'
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
@@ -113,7 +117,8 @@ export async function executeSalesforceNode(
     url = baseUrl
     method = 'POST'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(resolvedBody)
+    const withTraceLink = injectTraceLink(resolvedBody, config, ctx, env)
+    bodyStr = JSON.stringify(withTraceLink)
   } else if (operation === 'update') {
     const recordId = String(resolveValue(config.record_id ?? '', enrichedCtx) ?? '')
     if (!recordId) throw new Error('Salesforce update requires record_id')
@@ -207,6 +212,25 @@ export async function executeSalesforceNode(
   }
 
   return { output: { status: res.status, body: parsedBody } }
+}
+
+function injectTraceLink(
+  body: unknown,
+  config: SalesforceConfig,
+  ctx: ExecutionContext,
+  env: Env
+): unknown {
+  if (config.add_trace_link === false) return body
+  const executionId = ctx.trigger.execution_id
+  const workflowId = ctx.trigger.workflow_id
+  const appUrl = (env.APP_URL ?? '').replace(/\/$/, '')
+  if (!executionId || !workflowId || !appUrl) return body
+  const field = (config.trace_link_field ?? DEFAULT_TRACE_LINK_FIELD).trim() || DEFAULT_TRACE_LINK_FIELD
+  const url = `${appUrl}/workflows/${workflowId}?execution=${executionId}`
+  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+    return { ...(body as Record<string, unknown>), [field]: url }
+  }
+  return { [field]: url }
 }
 
 function extractSalesforceErrorCode(body: unknown): string | null {

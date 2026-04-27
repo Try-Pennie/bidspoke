@@ -491,7 +491,7 @@ workflows.post('/:id/test-node', async (c) => {
 
   // Reconstruct execution context
   const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase)
-  const ctx = buildContext(exec.trigger_payload, exec.source as string, id, exec.trace_id as string, envVars, orgId)
+  const ctx = buildContext(exec.trigger_payload, exec.source as string, id, exec.trace_id as string, envVars, orgId, body.execution_id)
   ctx.steps = ctxSteps
 
   const started = Date.now()

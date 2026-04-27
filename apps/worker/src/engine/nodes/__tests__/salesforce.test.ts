@@ -16,7 +16,7 @@ function makeNode(config: Record<string, unknown>): NodeDefinition {
   return { id: 'sf1', namespace: 'create_prospect', type: 'salesforce', config }
 }
 
-function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<string, unknown>; orgId?: string } = {}): ExecutionContext {
+function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<string, unknown>; orgId?: string; executionId?: string } = {}): ExecutionContext {
   const stepMap: ExecutionContext['steps'] = {}
   for (const [ns, output] of Object.entries(overrides.steps ?? {})) {
     stepMap[ns] = { output, status: 'completed' }
@@ -28,6 +28,7 @@ function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<strin
       workflow_id: 'wf-1',
       org_id: overrides.orgId ?? 'org-1',
       trace_id: 'tr-1',
+      execution_id: overrides.executionId ?? 'exec-1',
     },
     steps: stepMap,
     env: overrides.env ?? {
@@ -49,6 +50,7 @@ function makeEnv(secrets: Record<string, string> = {}): Env {
     SALESFORCE_CLIENT_ID: 'client-id',
     SALESFORCE_CLIENT_SECRET: 'client-secret',
     SALESFORCE_INSTANCE_URL: INSTANCE,
+    APP_URL: 'https://bidspoke.trypennie.dev',
     ...secrets,
   } as unknown as Env
 }
@@ -371,6 +373,72 @@ describe('executeSalesforceNode', () => {
     )
 
     expect(fetchMock.mock.calls[0][1].headers['Authorization']).toBe('Bearer my-sf-token')
+  })
+
+  // ── Bidspoke trace link injection ───────────────────────────────────────────
+
+  it('create: injects ProspectTraceId__c deeplink by default', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: { First_Name__c: 'John' } }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.ProspectTraceId__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
+    expect(sent.First_Name__c).toBe('John')
+  })
+
+  it('create: omits the trace link when add_trace_link is false', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: { First_Name__c: 'John' }, add_trace_link: false }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.ProspectTraceId__c).toBeUndefined()
+    expect(sent.First_Name__c).toBe('John')
+  })
+
+  it('create: respects a custom trace_link_field', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Account', body: { Name: 'Acme' }, trace_link_field: 'BidspokeRunUrl__c' }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.BidspokeRunUrl__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
+    expect(sent.ProspectTraceId__c).toBeUndefined()
+  })
+
+  it('update: never injects the trace link', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(204, ''))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-1', body: { Status__c: 'Active' } }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.ProspectTraceId__c).toBeUndefined()
+    expect(sent.Status__c).toBe('Active')
   })
 
   // ── X-Trace-Id propagation ──────────────────────────────────────────────────

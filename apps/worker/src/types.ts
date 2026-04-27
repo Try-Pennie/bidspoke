@@ -100,6 +100,7 @@ export interface ExecutionContext {
     workflow_id: string
     trace_id: string
     org_id: string
+    execution_id?: string
   }
   steps: Record<string, StepOutput>  // keyed by node namespace
   env: Record<string, string>
