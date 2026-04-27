@@ -188,6 +188,11 @@ export const api = {
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name }) }),
     save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
       req<Workflow & { deploy_errors?: { namespace: string; error: string }[] }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    draftChangelog: (id: string, definition: WorkflowDef) =>
+      req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
+        `/api/workflows/${id}/draft-changelog`,
+        { method: 'POST', body: JSON.stringify({ definition }) }
+      ),
     delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
     duplicate: async (id: string) => {
       const wf = await req<Workflow>(`/api/workflows/${id}`)
@@ -424,5 +429,19 @@ export const api = {
         errored: number
         results: { id: string; name: string; status: string; error?: string; node_count?: number }[]
       }>('/api/admin/migrate-code-workers', { method: 'POST' }),
+  },
+
+  settings: {
+    getAnthropicKey: () =>
+      req<{ configured: boolean; updated_at?: string; updated_by_email?: string }>(
+        '/api/settings/anthropic-key'
+      ),
+    setAnthropicKey: (key: string) =>
+      req<{ configured: boolean }>('/api/settings/anthropic-key', {
+        method: 'PUT',
+        body: JSON.stringify({ key }),
+      }),
+    clearAnthropicKey: () =>
+      req<{ configured: boolean }>('/api/settings/anthropic-key', { method: 'DELETE' }),
   },
 }

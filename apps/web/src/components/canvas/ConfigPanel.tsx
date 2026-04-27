@@ -160,7 +160,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <div className="border-t border-gray-100 px-4 py-3">
             <button
               onClick={() => setShowAdvanced((s: boolean) => !s)}
-              className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+              className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
               Advanced
@@ -250,7 +250,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         <div>
           <button
             onClick={() => setShowAdvanced((s: boolean) => !s)}
-            className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+            className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
           >
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
             Advanced

@@ -8,6 +8,7 @@ export type AuditEntityType =
   | 'user_allowlist'
   | 'workflow'
   | 'circuit_breaker'
+  | 'app_setting'
 
 export type AuditAction =
   | 'created'

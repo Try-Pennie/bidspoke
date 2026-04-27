@@ -49,6 +49,10 @@ export interface Env {
   // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO
   GITHUB_TOKEN?: string
   GITHUB_REPO?: string
+
+  // Anthropic API — used to draft changelog summaries on workflow save
+  // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
+  ANTHROPIC_API_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()

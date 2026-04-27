@@ -10,6 +10,7 @@ import { executeNode } from '../../engine/nodes/index'
 import { buildContext } from '../../engine/context'
 import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes } from '../../lib/code-node-deployer'
+import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 
 type Variables = AuthVariables
@@ -189,6 +190,70 @@ workflows.put('/:id', async (c) => {
   })
 
   return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined })
+})
+
+// POST /api/workflows/:id/draft-changelog — AI-drafted summary of pending changes for the save popover
+workflows.post('/:id/draft-changelog', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+
+  let body: { definition?: WorkflowDefinition }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400)
+  }
+  if (!body.definition) return c.json({ error: 'definition required' }, 400)
+
+  const apiKey = await getAnthropicKey(c.env, supabase, orgId)
+  if (!apiKey) {
+    return c.json({ draft: null, reason: 'unavailable' as const })
+  }
+
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('id, name')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (!wf) return c.json({ error: 'Workflow not found' }, 404)
+
+  const { data: lastVersion } = await supabase
+    .from('workflow_versions')
+    .select('definition')
+    .eq('workflow_id', id)
+    .order('version_number', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (!lastVersion?.definition) {
+    return c.json({ draft: null, reason: 'no_previous_version' as const })
+  }
+
+  const hash = await hashDefinition(body.definition)
+  const cacheKey = `changelog-draft:${id}:${hash}`
+  const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
+  if (cached) return c.json({ draft: cached, cached: true })
+
+  const diff = computeDiff(lastVersion.definition as WorkflowDefinition, body.definition)
+  if (diffIsEmpty(diff)) {
+    return c.json({ draft: null, reason: 'no_changes' as const })
+  }
+
+  try {
+    const draft = await draftChangelog(apiKey, diff, wf.name as string)
+    if (draft) {
+      c.executionCtx.waitUntil(
+        c.env.WORKFLOW_CACHE.put(cacheKey, draft, { expirationTtl: 3600 })
+      )
+    }
+    return c.json({ draft })
+  } catch (e) {
+    console.error('[changelog-draft] failed:', e)
+    return c.json({ draft: null, reason: 'error' as const })
+  }
 })
 
 // PATCH /api/workflows/:id — lightweight field updates (is_active) without creating a version snapshot

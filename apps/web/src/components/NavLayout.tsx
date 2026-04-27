@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, Shield, LayoutDashboard, Globe } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, LayoutDashboard, Globe } from 'lucide-react'
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -62,15 +62,15 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
         </div>
         <div className="border-t border-white/10 px-2 py-4 space-y-0.5">
           <Link
-            href="/access"
+            href="/settings"
             className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-              pathname === '/access'
+              pathname === '/settings' || pathname.startsWith('/settings/')
                 ? 'bg-white/10 text-white'
                 : 'text-white/50 hover:bg-white/5 hover:text-white/80'
             }`}
           >
-            <Shield className={`h-4 w-4 ${pathname === '/access' ? 'text-p-blue' : 'text-white/40'}`} />
-            Access
+            <Settings className={`h-4 w-4 ${pathname === '/settings' || pathname.startsWith('/settings/') ? 'text-p-blue' : 'text-white/40'}`} />
+            Settings
           </Link>
           <button
             onClick={handleSignOut}

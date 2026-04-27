@@ -320,6 +320,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
+  const [showCommitMenu, setShowCommitMenu] = useState(false)
+  const [commitMessage, setCommitMessage] = useState('')
+  const [draftLoading, setDraftLoading] = useState(false)
+  const aiDraftKeyRef = useRef<string | null>(null)
+  const draftReqIdRef = useRef(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
   const [showImport, setShowImport] = useState(false)
@@ -789,7 +794,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const meta = e.metaKey || e.ctrlKey
       if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
       if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
-      if (meta && e.key === 's') { e.preventDefault(); handleSave() }
+      if (meta && e.key === 's') { e.preventDefault(); openSaveMenu() }
       if (e.key === 'Escape') { setContextMenu(null); setEdgeContextMenu(null) }
 
       // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
@@ -1261,7 +1266,47 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   // ── Save ────────────────────────────────────────────────────────────────────
 
-  async function handleSave() {
+  async function openSaveMenu() {
+    if (!isDirty || saving) return
+    if (workflow.is_active && validationErrors.size > 0) {
+      const names = Array.from(validationErrors.values())
+        .map((e) => e.label || e.namespace)
+        .join(', ')
+      setSaveError(`Can't save a live workflow with unconfigured nodes: ${names}. Fix them or disable the workflow first.`)
+      return
+    }
+    setSaveError(null)
+    setShowCommitMenu(true)
+
+    const def = flowToDef(nodes, edges, triggerRef.current)
+    const defKey = JSON.stringify(def)
+
+    // Skip the draft fetch if the textarea already has the right content.
+    // - AI draft for this exact definition → leave it.
+    // - User-typed message (aiDraftKeyRef cleared, commitMessage non-empty) → leave it.
+    if (aiDraftKeyRef.current === defKey && commitMessage) return
+    if (aiDraftKeyRef.current === null && commitMessage) return
+
+    const reqId = ++draftReqIdRef.current
+    setDraftLoading(true)
+    try {
+      const { draft } = await api.workflows.draftChangelog(workflow.id, def)
+      if (reqId !== draftReqIdRef.current) return
+      if (draft) {
+        setCommitMessage(draft)
+        aiDraftKeyRef.current = defKey
+      } else {
+        aiDraftKeyRef.current = null
+      }
+    } catch {
+      // Silent fail — user can still type their own message.
+      if (reqId === draftReqIdRef.current) aiDraftKeyRef.current = null
+    } finally {
+      if (reqId === draftReqIdRef.current) setDraftLoading(false)
+    }
+  }
+
+  async function handleSave(message?: string) {
     // Block saving a live workflow that has unconfigured nodes
     if (workflow.is_active && validationErrors.size > 0) {
       const names = Array.from(validationErrors.values())
@@ -1273,14 +1318,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setSaving(true)
     setSaveError(null)
     setSavedOk(false)
+    setShowCommitMenu(false)
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
+      const trimmed = message?.trim()
       const result = await api.workflows.save(workflow.id, {
         name,
         definition,
         slack_channel: slackChannel || null,
+        ...(trimmed ? { message: trimmed } : {}),
       })
       setIsDirty(false)
+      setCommitMessage('')
+      aiDraftKeyRef.current = null
       if (result.deploy_errors?.length) {
         const msg = result.deploy_errors
           .map((e) => `${e.namespace}: ${e.error}`)
@@ -1481,23 +1531,87 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
           {/* Group: State */}
           {mode === 'edit' && (
-            <button
-              onClick={handleSave}
-              disabled={saving || !isDirty}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
-                saving    ? 'bg-p-blue-dark' :
-                savedOk   ? 'bg-green-600 hover:bg-green-700' :
-                isDirty   ? 'bg-amber-500 hover:bg-amber-600' :
-                            'bg-gray-300 cursor-default'
-              }`}
-            >
-              {savedOk ? (
-                <Check className="h-3.5 w-3.5" />
-              ) : (
-                <Save className="h-3.5 w-3.5" />
+            <div className="relative">
+              <button
+                onClick={openSaveMenu}
+                disabled={saving || !isDirty}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
+                  saving    ? 'bg-p-blue-dark' :
+                  savedOk   ? 'bg-green-600 hover:bg-green-700' :
+                  isDirty   ? 'bg-amber-500 hover:bg-amber-600' :
+                              'bg-gray-300 cursor-default'
+                }`}
+              >
+                {savedOk ? (
+                  <Check className="h-3.5 w-3.5" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+                {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save'}
+              </button>
+              {showCommitMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowCommitMenu(false)}
+                  />
+                  <div className="absolute right-0 top-full z-50 mt-1.5 w-80 rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
+                    <p className="mb-2 text-xs font-medium text-gray-700">What changed? <span className="font-normal text-gray-400">(optional)</span></p>
+                    {draftLoading ? (
+                      <div className="flex h-[68px] flex-col justify-center rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5">
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Drafting summary…
+                        </div>
+                        <div className="mt-2 space-y-1.5">
+                          <div className="h-1.5 w-3/4 animate-pulse rounded bg-gray-200" />
+                          <div className="h-1.5 w-1/2 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                    ) : (
+                      <textarea
+                        autoFocus
+                        value={commitMessage}
+                        onChange={(e) => {
+                          setCommitMessage(e.target.value)
+                          aiDraftKeyRef.current = null
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            e.preventDefault()
+                            setShowCommitMenu(false)
+                          } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                            e.preventDefault()
+                            handleSave(commitMessage)
+                          }
+                        }}
+                        placeholder="Describe these changes…"
+                        rows={3}
+                        className="w-full resize-none rounded-md border border-gray-200 px-2.5 py-1.5 text-xs leading-relaxed text-gray-700 focus:border-p-blue-dark focus:outline-none focus:ring-1 focus:ring-p-blue-dark"
+                      />
+                    )}
+                    <div className="mt-2.5 flex items-center justify-between">
+                      <span className="text-[11px] text-gray-400">⌘↵ to save</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowCommitMenu(false)}
+                          className="rounded-md px-2.5 py-1 text-xs font-medium text-gray-500 hover:bg-gray-100"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => handleSave(commitMessage)}
+                          disabled={draftLoading}
+                          className="rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
-              {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save'}
-            </button>
+            </div>
           )}
         </div>
       </header>
@@ -1789,6 +1903,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
             minZoom={0.2}
             maxZoom={1.5}
+            zoomOnDoubleClick={false}
             multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
             selectionKeyCode="Shift"
             selectNodesOnDrag={false}
