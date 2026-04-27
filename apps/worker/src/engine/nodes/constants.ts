@@ -27,6 +27,7 @@ export async function executeConstantsNode(
     output: {
       ...data,
       subAccountIdsMap: partnerData.subAccountIdsMap,
+      activeBidding: partnerData.activeBidding,
       ...partnerFlat,
     },
   }

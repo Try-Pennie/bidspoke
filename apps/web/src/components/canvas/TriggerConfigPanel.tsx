@@ -29,9 +29,12 @@ interface Props {
   readOnly?: boolean
   width?: number
   onResize?: (width: number) => void
+  /** Workflow-level Slack channel override. Empty string falls back to the org default. */
+  slackChannel?: string
+  onSlackChannelChange?: (value: string) => void
 }
 
-export default function TriggerConfigPanel({ workflowId, workflowName, trigger, nodeNamespaces = [], onChange, onClose, readOnly = false, width, onResize }: Props) {
+export default function TriggerConfigPanel({ workflowId, workflowName, trigger, nodeNamespaces = [], onChange, onClose, readOnly = false, width, onResize, slackChannel, onSlackChannelChange }: Props) {
   const effectiveWidth = width ?? 320
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
@@ -487,12 +490,29 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               placeholder="Off"
               value={cfg.duration_alert_ms ? cfg.duration_alert_ms / 1000 : ''}
               onChange={(e) => update({ duration_alert_ms: e.target.value ? Math.round(Number(e.target.value) * 1000) : undefined })}
+              disabled={readOnly}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             />
             <span className="text-xs text-gray-400 whitespace-nowrap">seconds</span>
           </div>
           <p className="mt-1 text-xs text-gray-400">Send a Slack alert if any execution takes longer than this. Leave blank to disable.</p>
         </div>
+
+        {/* Slack channel override */}
+        {onSlackChannelChange && (
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-gray-500">Slack channel override</label>
+            <input
+              type="text"
+              placeholder="#alerts"
+              value={slackChannel ?? ''}
+              onChange={(e) => onSlackChannelChange(e.target.value)}
+              disabled={readOnly}
+              className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
+            />
+            <p className="mt-1 text-xs text-gray-400">Routes this workflow&#39;s alerts to a specific channel. Leave blank to use the org default.</p>
+          </div>
+        )}
 
         {/* Idempotency */}
         <div className="rounded-lg border border-gray-200 p-3 space-y-3">

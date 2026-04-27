@@ -16,11 +16,13 @@ function makeNode(config: Record<string, unknown>): NodeDefinition {
   return { id: 'sf1', namespace: 'create_prospect', type: 'salesforce', config }
 }
 
-function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<string, unknown>; orgId?: string; executionId?: string } = {}): ExecutionContext {
+function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<string, unknown>; orgId?: string; executionId?: string | undefined } = {}): ExecutionContext {
   const stepMap: ExecutionContext['steps'] = {}
   for (const [ns, output] of Object.entries(overrides.steps ?? {})) {
     stepMap[ns] = { output, status: 'completed' }
   }
+  const executionId = 'executionId' in overrides ? overrides.executionId : 'exec-1'
+  const bidspokeLink = executionId ? `https://bidspoke.trypennie.dev/workflows/wf-1?execution=${executionId}` : undefined
   return {
     trigger: {
       payload: { leadUuid: 'lead-123', firstName: 'John' },
@@ -28,7 +30,7 @@ function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<strin
       workflow_id: 'wf-1',
       org_id: overrides.orgId ?? 'org-1',
       trace_id: 'tr-1',
-      execution_id: overrides.executionId ?? 'exec-1',
+      execution_id: executionId,
     },
     steps: stepMap,
     env: overrides.env ?? {
@@ -36,6 +38,7 @@ function makeCtx(overrides: { env?: Record<string, string>; steps?: Record<strin
       SALESFORCE_CLIENT_SECRET: 'client-secret',
       SALESFORCE_INSTANCE_URL: INSTANCE,
     },
+    execution: { workflow_id: 'wf-1', trace_id: 'tr-1', execution_id: executionId, bidspoke_link: bidspokeLink },
   } as unknown as ExecutionContext
 }
 
@@ -342,6 +345,89 @@ describe('executeSalesforceNode', () => {
     expect((err as Error).message).toContain('Service Unavailable')
   })
 
+  // ── Retry classification: permanent vs transient ───────────────────────────
+
+  it.each([400, 401, 403, 404, 422])('marks %i as permanent so the engine skips retry', async (status) => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(status, '{"message":"err"}'))
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+  })
+
+  it.each([429, 500, 502, 503, 504])('leaves %i as transient so the engine retries', async (status) => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(status, 'oops'))
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
+  })
+
+  // ── expected_errors with custom response shape ─────────────────────────────
+
+  it('expected_error with response_body returns earlyResponse + earlyExit', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    const sfError = JSON.stringify([{ errorCode: 'FIELD_CUSTOM_VALIDATION_EXCEPTION', message: 'A Prospect with this Social Security Number was created in the last 60 days. Creation is blocked.' }])
+    fetchMock.mockResolvedValue(mockResponse(400, sfError))
+
+    const result = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        expected_errors: [{
+          code: 'FIELD_CUSTOM_VALIDATION_EXCEPTION',
+          message_contains: 'Social Security Number was created in the last 60 days',
+          response_status: 200,
+          response_body: { lead_id: '{{trigger.payload.leadUuid}}', status: 'rejected', reason: 'duplicated lead' },
+        }],
+      }),
+      makeCtx(),
+      env
+    )
+
+    expect(result.earlyExit).toBe(true)
+    expect(result.earlyResponse).toEqual({
+      status: 200,
+      body: { lead_id: 'lead-123', status: 'rejected', reason: 'duplicated lead' },
+    })
+  })
+
+  it('expected_error without response_body returns bare earlyExit (legacy behavior)', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    const sfError = JSON.stringify([{ errorCode: 'DUPLICATE_VALUE', message: 'whatever' }])
+    fetchMock.mockResolvedValue(mockResponse(400, sfError))
+
+    const result = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        expected_errors: [{ code: 'DUPLICATE_VALUE' }],
+      }),
+      makeCtx(),
+      env
+    )
+
+    expect(result.earlyExit).toBe(true)
+    expect(result.earlyResponse).toBeUndefined()
+    expect((result.output as { errorCode: string }).errorCode).toBe('DUPLICATE_VALUE')
+  })
+
   // ── 204 No Content ──────────────────────────────────────────────────────────
 
   it('returns null body for 204 No Content', async () => {
@@ -375,9 +461,54 @@ describe('executeSalesforceNode', () => {
     expect(fetchMock.mock.calls[0][1].headers['Authorization']).toBe('Bearer my-sf-token')
   })
 
-  // ── Bidspoke trace link injection ───────────────────────────────────────────
+  // ── injected_fields ─────────────────────────────────────────────────────────
 
-  it('create: injects ProspectTraceId__c deeplink by default', async () => {
+  it('create: merges injected_fields into the body with template resolution', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: { First_Name__c: 'John' },
+        injected_fields: {
+          ProspectTraceId__c: '{{execution.bidspoke_link}}',
+          Source__c: 'Engine',
+        },
+      }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.First_Name__c).toBe('John')
+    expect(sent.ProspectTraceId__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
+    expect(sent.Source__c).toBe('Engine')
+  })
+
+  it('create: injected_fields override body on key collision', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: { Source__c: 'Body wins?' },
+        injected_fields: { Source__c: 'Engine' },
+      }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.Source__c).toBe('Engine')
+  })
+
+  it('create: no injected_fields = no merge, body untouched', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
     fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
@@ -389,56 +520,74 @@ describe('executeSalesforceNode', () => {
     )
 
     const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-    expect(sent.ProspectTraceId__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
-    expect(sent.First_Name__c).toBe('John')
+    expect(sent).toEqual({ First_Name__c: 'John' })
   })
 
-  it('create: omits the trace link when add_trace_link is false', async () => {
-    const env = makeEnv()
-    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
-    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
-
-    await executeSalesforceNode(
-      makeNode({ operation: 'create', object: 'Prospect__c', body: { First_Name__c: 'John' }, add_trace_link: false }),
-      makeCtx(),
-      env
-    )
-
-    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-    expect(sent.ProspectTraceId__c).toBeUndefined()
-    expect(sent.First_Name__c).toBe('John')
-  })
-
-  it('create: respects a custom trace_link_field', async () => {
-    const env = makeEnv()
-    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
-    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
-
-    await executeSalesforceNode(
-      makeNode({ operation: 'create', object: 'Account', body: { Name: 'Acme' }, trace_link_field: 'BidspokeRunUrl__c' }),
-      makeCtx(),
-      env
-    )
-
-    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-    expect(sent.BidspokeRunUrl__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
-    expect(sent.ProspectTraceId__c).toBeUndefined()
-  })
-
-  it('update: never injects the trace link', async () => {
+  it('update: applies injected_fields on patch', async () => {
     const env = makeEnv()
     vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
     fetchMock.mockResolvedValue(mockResponse(204, ''))
 
     await executeSalesforceNode(
-      makeNode({ operation: 'update', object: 'Prospect__c', record_id: 'SF-1', body: { Status__c: 'Active' } }),
+      makeNode({
+        operation: 'update',
+        object: 'Prospect__c',
+        record_id: 'SF-1',
+        body: { Status__c: 'Active' },
+        injected_fields: { LastBidspokeRun__c: '{{execution.bidspoke_link}}' },
+      }),
       makeCtx(),
       env
     )
 
     const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-    expect(sent.ProspectTraceId__c).toBeUndefined()
     expect(sent.Status__c).toBe('Active')
+    expect(sent.LastBidspokeRun__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
+  })
+
+  it('upsert: applies injected_fields on patch', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(204, ''))
+
+    await executeSalesforceNode(
+      makeNode({
+        operation: 'upsert',
+        object: 'Prospect__c',
+        external_id_field: 'LeadUUID__c',
+        external_id_value: 'lead-123',
+        body: { First_Name__c: 'John' },
+        injected_fields: { LastBidspokeRun__c: '{{execution.bidspoke_link}}' },
+      }),
+      makeCtx(),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(sent.First_Name__c).toBe('John')
+    expect(sent.LastBidspokeRun__c).toBe('https://bidspoke.trypennie.dev/workflows/wf-1?execution=exec-1')
+  })
+
+  it('execution.bidspoke_link is undefined when execution_id is missing', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: { First_Name__c: 'John' },
+        injected_fields: { ProspectTraceId__c: '{{execution.bidspoke_link}}' },
+      }),
+      makeCtx({ executionId: undefined }),
+      env
+    )
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    // Undefined values get dropped by JSON.stringify — field is omitted entirely.
+    expect(sent.ProspectTraceId__c).toBeUndefined()
+    expect(sent.First_Name__c).toBe('John')
   })
 
   // ── X-Trace-Id propagation ──────────────────────────────────────────────────

@@ -131,7 +131,31 @@ describe('loadPartnerConstants', () => {
 
     const result = await loadPartnerConstants(ORG, kv, sb as never)
 
-    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {} })
+    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {} })
+  })
+
+  it('builds activeBidding from partner_configs.is_active', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [
+      { slug: 'sofi',       is_active: true,  sell_off_offer_title: null, sell_off_offer_details: null, click_url: null },
+      { slug: 'nerdwallet', is_active: false, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null },
+      { slug: 'dot818',     is_active: true,  sell_off_offer_title: null, sell_off_offer_details: null, click_url: null },
+    ])
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result.activeBidding).toEqual({ sofi: true, nerdwallet: false, dot818: true })
+  })
+
+  it('treats null/missing is_active as inactive (safe-by-default)', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [
+      { slug: 'partial', is_active: null, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null },
+    ])
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result.activeBidding.partial).toBe(false)
   })
 })
 

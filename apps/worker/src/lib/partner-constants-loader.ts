@@ -7,6 +7,8 @@ export interface PartnerConstants {
   subAccountIdsMap: Record<string, string>
   sellOff: Record<string, { title: string; details: string }>
   clickUrls: Record<string, string>
+  /** Bidding active per partner slug. Missing slug = inactive (safe-by-default). */
+  activeBidding: Record<string, boolean>
 }
 
 export async function loadPartnerConstants(
@@ -24,7 +26,7 @@ export async function loadPartnerConstants(
       .eq('org_id', orgId),
     supabase
       .from('partner_configs')
-      .select('slug, sell_off_offer_title, sell_off_offer_details, click_url')
+      .select('slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active')
       .eq('organization_id', orgId),
   ])
 
@@ -35,6 +37,7 @@ export async function loadPartnerConstants(
 
   const sellOff: Record<string, { title: string; details: string }> = {}
   const clickUrls: Record<string, string> = {}
+  const activeBidding: Record<string, boolean> = {}
   for (const row of partnerRows ?? []) {
     if (row.sell_off_offer_title || row.sell_off_offer_details) {
       sellOff[row.slug] = {
@@ -45,9 +48,10 @@ export async function loadPartnerConstants(
     if (row.click_url) {
       clickUrls[row.slug] = row.click_url
     }
+    activeBidding[row.slug] = row.is_active === true
   }
 
-  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls }
+  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding }
   await kv.put(cacheKey(orgId), JSON.stringify(result), { expirationTtl: TTL })
   return result
 }

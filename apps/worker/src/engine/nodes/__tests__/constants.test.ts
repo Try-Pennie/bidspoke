@@ -37,6 +37,7 @@ function makeConstants(overrides: Partial<PartnerConstants> = {}): PartnerConsta
     subAccountIdsMap: {},
     sellOff: {},
     clickUrls: {},
+    activeBidding: {},
     ...overrides,
   }
 }
@@ -55,6 +56,14 @@ describe('executeConstantsNode', () => {
 
     const { output } = await executeConstantsNode(makeNode(), makeCtx(), mockEnv, mockSupabase)
     expect((output as Record<string, unknown>).subAccountIdsMap).toEqual(map)
+  })
+
+  it('includes activeBidding at top level of output for per-source toggles', async () => {
+    const activeBidding = { sofi: true, nerdwallet: false, dot818: true }
+    vi.mocked(loadPartnerConstants).mockResolvedValue(makeConstants({ activeBidding }))
+
+    const { output } = await executeConstantsNode(makeNode(), makeCtx(), mockEnv, mockSupabase)
+    expect((output as Record<string, unknown>).activeBidding).toEqual(activeBidding)
   })
 
   it('merges node.config.data static values into output', async () => {

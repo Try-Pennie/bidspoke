@@ -104,6 +104,14 @@ export interface ExecutionContext {
   }
   steps: Record<string, StepOutput>  // keyed by node namespace
   env: Record<string, string>
+  /** Derived per-run metadata exposed to templates as {{execution.*}}. Populated by buildContext. */
+  execution?: {
+    workflow_id: string
+    trace_id: string
+    execution_id?: string
+    /** Deeplink to this run in the Bidspoke UI. Undefined if APP_URL or execution_id is missing. */
+    bidspoke_link?: string
+  }
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
 }

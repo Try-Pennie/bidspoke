@@ -1497,15 +1497,37 @@ function SalesforceConfig({
   const extValue  = (config.external_id_value as string | undefined) ?? ''
   const soql      = (config.soql as string | undefined) ?? ''
   const apexPath  = (config.apex_path as string | undefined) ?? ''
-  const expectedErrors = (config.expected_errors as { code: string; message_contains?: string }[] | undefined) ?? []
-  const addTraceLink   = config.add_trace_link !== false
-  const traceLinkField = (config.trace_link_field as string | undefined) ?? 'ProspectTraceId__c'
+  const expectedErrors = (config.expected_errors as { code: string; message_contains?: string; response_body?: unknown; response_status?: number }[] | undefined) ?? []
+  const injectedFields = (config.injected_fields as Record<string, string> | undefined) ?? {}
+  const injectedRows = Object.entries(injectedFields)
+
+  function updateInjectedField(index: number, key: string, value: string) {
+    const next: Record<string, string> = {}
+    injectedRows.forEach(([k, v], i) => {
+      if (i === index) {
+        if (key) next[key] = value
+      } else {
+        next[k] = v
+      }
+    })
+    onChange({ injected_fields: Object.keys(next).length > 0 ? next : undefined })
+  }
+  function addInjectedField() {
+    onChange({ injected_fields: { ...injectedFields, '': '' } })
+  }
+  function removeInjectedField(index: number) {
+    const next: Record<string, string> = {}
+    injectedRows.forEach(([k, v], i) => {
+      if (i !== index) next[k] = v
+    })
+    onChange({ injected_fields: Object.keys(next).length > 0 ? next : undefined })
+  }
 
   const [bodyText, setBodyText] = useState(() =>
     body !== undefined ? (typeof body === 'string' ? body : JSON.stringify(body, null, 2)) : ''
   )
 
-  function updateExpectedError(index: number, patch: Partial<{ code: string; message_contains: string }>) {
+  function updateExpectedError(index: number, patch: Partial<{ code: string; message_contains: string; response_body: unknown; response_status: number }>) {
     const next = [...expectedErrors]
     const current = next[index] ?? { code: '' }
     next[index] = { ...current, ...patch }
@@ -1626,31 +1648,49 @@ function SalesforceConfig({
         </div>
       )}
 
-      {operation === 'create' && (
-        <div className="rounded border border-gray-200 p-3">
-          <label className="flex cursor-pointer items-start gap-2">
-            <input
-              type="checkbox"
-              checked={addTraceLink}
-              onChange={(e) => onChange({ add_trace_link: e.target.checked })}
-              className="mt-0.5"
-            />
-            <div className="flex-1">
-              <div className="text-xs font-medium text-gray-700">Attach Bidspoke run link</div>
-              <p className="text-xs text-gray-500">
-                Adds a link to this execution on the created record so it&apos;s easy to jump from Salesforce back to the run.
-              </p>
-            </div>
-          </label>
-          {addTraceLink && (
-            <div className="mt-2 pl-6">
-              <label className="mb-1 block text-[10px] font-medium uppercase text-gray-400">Field</label>
-              <input
-                className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
-                value={traceLinkField}
-                onChange={(e) => onChange({ trace_link_field: e.target.value })}
-                placeholder="ProspectTraceId__c"
-              />
+      {(operation === 'create' || operation === 'update' || operation === 'upsert') && (
+        <div>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="block text-xs font-medium text-gray-600">Injected fields</label>
+            <button
+              type="button"
+              onClick={addInjectedField}
+              className="text-xs font-medium text-blue-600 hover:text-blue-700"
+            >
+              + Add
+            </button>
+          </div>
+          {injectedRows.length === 0 ? (
+            <p className="text-xs text-gray-400">
+              Always-merge fields. Override the body on key collision. Use <code className="rounded bg-gray-100 px-1">{'{{execution.bidspoke_link}}'}</code> for the run deeplink.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {injectedRows.map(([key, value], i) => (
+                <div key={i} className="flex items-center gap-1.5">
+                  <input
+                    className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                    value={key}
+                    onChange={(e) => updateInjectedField(i, e.target.value, value)}
+                    placeholder="Field__c"
+                  />
+                  <TemplateTextarea
+                    value={value}
+                    onChange={(v) => updateInjectedField(i, key, v)}
+                    refs={refs}
+                    placeholder="{{execution.bidspoke_link}}"
+                    className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeInjectedField(i)}
+                    className="text-xs text-gray-400 hover:text-red-600"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -1738,10 +1778,41 @@ function SalesforceConfig({
                     placeholder="Social Security Number was created in the last 60 days"
                   />
                 </div>
+                <div className="mt-2 grid grid-cols-[80px_1fr] gap-2">
+                  <div>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Response status</label>
+                    <input
+                      type="number"
+                      min={100}
+                      max={599}
+                      className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                      value={err.response_status ?? ''}
+                      onChange={(e) => updateExpectedError(i, { response_status: e.target.value ? parseInt(e.target.value) : undefined as unknown as number })}
+                      placeholder="200"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Response body (JSON, optional)</label>
+                    <TemplateTextarea
+                      className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none min-h-[60px] resize-y"
+                      value={err.response_body !== undefined ? (typeof err.response_body === 'string' ? err.response_body : JSON.stringify(err.response_body)) : ''}
+                      onChange={(v) => {
+                        if (v.trim() === '') {
+                          updateExpectedError(i, { response_body: undefined })
+                          return
+                        }
+                        try { updateExpectedError(i, { response_body: JSON.parse(v) }) }
+                        catch { updateExpectedError(i, { response_body: v }) }
+                      }}
+                      refs={refs}
+                      placeholder='{ "lead_id": "{{trigger.payload.leadUuid}}", "status": "rejected", "reason": "duplicated lead" }'
+                    />
+                  </div>
+                </div>
               </div>
             ))}
             <p className="text-xs text-gray-400">
-              Both errorCode and message substring must match. Leave message blank to match any message with that errorCode.
+              Both errorCode and message substring must match. Leave message blank to match any message with that errorCode. If a response body is set, it&apos;s returned to the caller instead of the raw SF error structure.
             </p>
           </div>
         )}

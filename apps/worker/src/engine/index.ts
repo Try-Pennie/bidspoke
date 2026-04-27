@@ -154,7 +154,7 @@ export async function executeWorkflow(
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
   // Build execution context
-  const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId)
+  const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL)
 
   // If resuming, pre-populate completed steps
   if (options.resumeFromExecutionId) {
@@ -225,6 +225,21 @@ export async function executeWorkflow(
       failedSuppressAlert = err.suppressAlert
     }
     response = { error: errorMessage, trace_id: traceId }
+  }
+
+  // Code-node sentinel responses with status >= 500 are real failures even
+  // though the walk completed normally (the node logged itself as failed but
+  // doesn't throw). Promote the most recent failed step to execution-level so
+  // the failure alert path fires. Mirrors Pipedream's slack_alert step which
+  // fired on any non-200 response.
+  if (executionStatus === 'completed' && walkStatus >= 500) {
+    const lastFailedStep = [...stepLogQueue].reverse().find((e) => e.status === 'failed')
+    if (lastFailedStep) {
+      executionStatus = 'failed'
+      failedStep = lastFailedStep.step_namespace
+      failedErrorType = lastFailedStep.error_type ?? 'permanent'
+      errorMessage = lastFailedStep.error_message ?? `Workflow returned HTTP ${walkStatus}`
+    }
   }
 
   // Flush accumulated step logs. Must await the execution-record insert

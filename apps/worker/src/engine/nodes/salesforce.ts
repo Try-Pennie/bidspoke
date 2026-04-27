@@ -24,6 +24,11 @@ type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 interface ExpectedError {
   code: string
   message_contains?: string
+  /** When set, returns this body as the workflow response instead of letting
+   * the bare error structure leak through. Template-enabled. */
+  response_body?: unknown
+  /** HTTP status for the response_body. Defaults to 200. */
+  response_status?: number
 }
 
 interface SalesforceConfig {
@@ -38,11 +43,10 @@ interface SalesforceConfig {
   expected_errors?: ExpectedError[]  // SF rejections treated as business rejections, not failures.
                                      // Matched by errorCode AND optional message substring.
                                      // Step logs as completed and the workflow exits here.
-  add_trace_link?: boolean   // create: inject Bidspoke execution deeplink into the body. Default true.
-  trace_link_field?: string  // create: SObject field to receive the deeplink. Default 'ProspectTraceId__c'.
+  injected_fields?: Record<string, string>  // create / update / upsert: SF field → template value, merged into body.
+                                            // Overrides body on key collision. Resolved per-execution.
+                                            // Use {{execution.bidspoke_link}} for the run deeplink.
 }
-
-const DEFAULT_TRACE_LINK_FIELD = 'ProspectTraceId__c'
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
@@ -117,15 +121,14 @@ export async function executeSalesforceNode(
     url = baseUrl
     method = 'POST'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    const withTraceLink = injectTraceLink(resolvedBody, config, ctx, env)
-    bodyStr = JSON.stringify(withTraceLink)
+    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
   } else if (operation === 'update') {
     const recordId = String(resolveValue(config.record_id ?? '', enrichedCtx) ?? '')
     if (!recordId) throw new Error('Salesforce update requires record_id')
     url = `${baseUrl}/${recordId}`
     method = 'PATCH'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(resolvedBody)
+    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
   } else if (operation === 'upsert') {
     const extField = config.external_id_field ?? ''
     const extValue = String(resolveValue(config.external_id_value ?? '', enrichedCtx) ?? '')
@@ -133,7 +136,7 @@ export async function executeSalesforceNode(
     url = `${baseUrl}/${extField}/${extValue}`
     method = 'PATCH'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(resolvedBody)
+    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
   } else if (operation === 'query') {
     const soql = String(resolveValue(config.soql ?? '', enrichedCtx) ?? '')
     if (!soql) throw new Error('Salesforce query requires soql')
@@ -201,36 +204,50 @@ export async function executeSalesforceNode(
       })
       if (matched) {
         console.log(`[salesforce] expected rejection ${errorCode} — exiting workflow (trace=${ctx.trigger.trace_id})`)
-        return {
-          output: { status: res.status, ok: false, errorCode, message, body: parsedBody },
-          earlyExit: true,
+        const output = { status: res.status, ok: false, errorCode, message, body: parsedBody }
+        if (matched.response_body !== undefined) {
+          // Custom response shape configured — return it to the consumer instead of the raw SF error.
+          // Template-resolved against the current execution context.
+          const resolvedBody = resolveValue(matched.response_body, enrichedCtx)
+          return {
+            output,
+            earlyResponse: { status: matched.response_status ?? 200, body: resolvedBody },
+            earlyExit: true,
+          }
         }
+        return { output, earlyExit: true }
       }
     }
 
-    throw new Error(`Salesforce API error (${res.status}): ${responseText}`)
+    // Tag transient vs permanent so the engine's retry logic can skip non-retryable
+    // SF errors. Mirrors Pipedream's makeRequestWithRetry classification:
+    // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
+    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean }
+    const isTransient = res.status === 429 || res.status >= 500
+    if (!isTransient) err.permanent = true
+    throw err
   }
 
   return { output: { status: res.status, body: parsedBody } }
 }
 
-function injectTraceLink(
+function applyInjectedFields(
   body: unknown,
   config: SalesforceConfig,
-  ctx: ExecutionContext,
-  env: Env
+  ctx: ExecutionContext
 ): unknown {
-  if (config.add_trace_link === false) return body
-  const executionId = ctx.trigger.execution_id
-  const workflowId = ctx.trigger.workflow_id
-  const appUrl = (env.APP_URL ?? '').replace(/\/$/, '')
-  if (!executionId || !workflowId || !appUrl) return body
-  const field = (config.trace_link_field ?? DEFAULT_TRACE_LINK_FIELD).trim() || DEFAULT_TRACE_LINK_FIELD
-  const url = `${appUrl}/workflows/${workflowId}?execution=${executionId}`
-  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
-    return { ...(body as Record<string, unknown>), [field]: url }
+  const fields = config.injected_fields
+  if (!fields) return body ?? {}
+  const resolved: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(fields)) {
+    if (!k) continue
+    resolved[k] = resolveValue(v, ctx)
   }
-  return { [field]: url }
+  if (Object.keys(resolved).length === 0) return body ?? {}
+  if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+    return { ...(body as Record<string, unknown>), ...resolved }
+  }
+  return resolved
 }
 
 function extractSalesforceErrorCode(body: unknown): string | null {

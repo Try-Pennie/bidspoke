@@ -7,12 +7,18 @@ export function buildContext(
   traceId: string,
   envVars: Record<string, string>,
   orgId: string,
-  executionId?: string
+  executionId?: string,
+  appUrl?: string
 ): ExecutionContext {
+  const trimmedAppUrl = (appUrl ?? '').replace(/\/$/, '')
+  const bidspokeLink = trimmedAppUrl && executionId
+    ? `${trimmedAppUrl}/workflows/${workflowId}?execution=${executionId}`
+    : undefined
   return {
     trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId, org_id: orgId, execution_id: executionId },
     steps: {},
     env: envVars,
+    execution: { workflow_id: workflowId, trace_id: traceId, execution_id: executionId, bidspoke_link: bidspokeLink },
   }
 }
 
@@ -48,6 +54,10 @@ function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
   }
   if (parts[0] === 'trigger') {
     return getPath(ctx.trigger, parts.slice(1))
+  }
+  if (parts[0] === 'execution') {
+    if (parts.length === 1) return ctx.execution
+    return getPath(ctx.execution, parts.slice(1))
   }
   if (parts[0] === 'steps' && parts[1]) {
     const step = ctx.steps[parts[1]]

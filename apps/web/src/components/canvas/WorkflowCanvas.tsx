@@ -46,7 +46,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Settings, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import ExecutionStepPanel from './ExecutionStepPanel'
@@ -321,7 +321,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  const [showSettings, setShowSettings] = useState(false)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
   const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
@@ -666,6 +665,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const refs = [
     'trigger.payload',
     'trigger.source',
+    'execution.bidspoke_link',
+    'execution.workflow_id',
+    'execution.execution_id',
+    'execution.trace_id',
     ...nodeNamespaces.map((ns) => `steps.${ns}`),
     ...nestedRefs,
     ...envKeys.map((k) => `env.${k}`),
@@ -1442,25 +1445,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <Clock className="h-4 w-4" />
           </button>
 
-          {/* Overflow menu — Settings, Import */}
-          <div ref={overflowRef} className="relative">
-            <button
-              onClick={() => setShowOverflow((s) => !s)}
-              className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showOverflow ? 'bg-gray-100 text-gray-600' : ''}`}
-              title="More options"
-            >
-              <MoreHorizontal className="h-4 w-4" />
-            </button>
-            {showOverflow && (
-              <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                <button
-                  onClick={() => { setShowSettings((s) => !s); setShowOverflow(false) }}
-                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-beige ${showSettings ? 'font-medium text-graphite' : 'text-gray-700'}`}
-                >
-                  <Settings className="h-4 w-4 text-gray-400" />
-                  Settings
-                </button>
-                {mode === 'edit' && (
+          {/* Overflow menu — Import */}
+          {mode === 'edit' && (
+            <div ref={overflowRef} className="relative">
+              <button
+                onClick={() => setShowOverflow((s) => !s)}
+                className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showOverflow ? 'bg-gray-100 text-gray-600' : ''}`}
+                title="More options"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {showOverflow && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                   <button
                     onClick={() => { setShowImport(true); setShowOverflow(false) }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
@@ -1468,10 +1464,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                     <Upload className="h-4 w-4 text-gray-400" />
                     Import from Pipedream
                   </button>
-                )}
-              </div>
-            )}
-          </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
 
@@ -1588,19 +1584,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
               <AlertCircle className="h-3.5 w-3.5" />
               {saveError}
-            </div>
-          )}
-
-          {showSettings && (
-            <div className="flex items-center gap-4 border-b border-gray-200 bg-beige px-4 py-2 text-xs">
-              <span className="font-medium text-gray-500">Slack channel override</span>
-              <input
-                className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
-                placeholder="#alerts (leave empty to use org default)"
-                value={slackChannel}
-                onChange={(e) => { setSlackChannel(e.target.value); setIsDirty(true) }}
-              />
-              <span className="text-gray-400">Overrides the default channel for this workflow&#39;s alerts.</span>
             </div>
           )}
 
@@ -1972,6 +1955,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onClose={() => setSelectedNodeId(null)}
               width={sidePanelWidth}
               onResize={setSidePanelWidth}
+              slackChannel={slackChannel}
+              onSlackChannelChange={(value) => { setSlackChannel(value); setIsDirty(true) }}
             />
           )}
           {selectedNode && mode === 'edit' && selectedNode.id !== 'trigger' && (
@@ -2024,6 +2009,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             onClose={() => setSelectedNodeId(null)}
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
+            slackChannel={slackChannel}
           />
         )}
         {selectedNode && mode === 'view' && !executionId && selectedNode.id !== 'trigger' && (
