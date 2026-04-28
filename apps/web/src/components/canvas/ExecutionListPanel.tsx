@@ -17,6 +17,7 @@ type ExecRow = {
   duration_ms: number | null
   error_message: string | null
   parent_execution_id: string | null
+  has_children: boolean
 }
 
 type ListItem =
@@ -132,12 +133,6 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   const filtered = executions
   const items = buildItems(filtered, versions)
-  // Rows that some other row in the list points at as its parent — i.e.
-  // executions that have been replayed at least once and whose replay is
-  // visible in the current page.
-  const replayedSourceIds = new Set(
-    executions.map((e) => e.parent_execution_id).filter((id): id is string => !!id)
-  )
 
   return (
     <aside className="flex w-72 flex-col border-r border-gray-200 bg-white">
@@ -236,7 +231,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                         <RotateCcw className="h-3 w-3" />
                       </span>
                     )}
-                    {replayedSourceIds.has(exec.id) && (
+                    {exec.has_children && (
                       <span title="Replayed" className="flex items-center text-gray-400">
                         <RotateCcw className="h-3 w-3 -scale-x-100" />
                       </span>

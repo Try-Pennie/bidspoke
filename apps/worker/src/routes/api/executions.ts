@@ -51,7 +51,21 @@ executions.get('/', async (c) => {
 
   const { data, error } = await query
   if (error) return c.json({ error: error.message }, 500)
-  return c.json(data)
+  if (!data || data.length === 0) return c.json([])
+
+  // Resolve which rows have been replayed at least once. We only ever care
+  // about parents of the rows in this page — the page is at most 100 ids,
+  // so the IN list stays small. This makes the "replayed" marker accurate
+  // even when the replay row scrolled off the visible page.
+  const pageIds = data.map((r) => r.id)
+  const { data: parents } = await supabase
+    .from('workflow_executions')
+    .select('parent_execution_id')
+    .in('parent_execution_id', pageIds)
+  const replayedIds = new Set((parents ?? []).map((p) => p.parent_execution_id))
+
+  const enriched = data.map((row) => ({ ...row, has_children: replayedIds.has(row.id) }))
+  return c.json(enriched)
 })
 
 // GET /api/executions/:id

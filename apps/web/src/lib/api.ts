@@ -273,6 +273,7 @@ export const api = {
         duration_ms: number | null
         error_message: string | null
         parent_execution_id: string | null
+        has_children: boolean
       }>>(`/api/executions?${params.toString()}`)
     },
     get: (id: string) =>
