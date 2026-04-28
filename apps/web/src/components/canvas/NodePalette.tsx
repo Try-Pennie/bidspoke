@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, Trophy, ArrowLeftRight, Plug, GitFork, DollarSign, Package, Cloud } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -49,13 +49,6 @@ const NODES: PaletteNode[] = [
     color: 'text-red-500',
   },
   {
-    type: 'bid_evaluation',
-    label: 'Bid Evaluation',
-    description: 'Select winning bid',
-    icon: Trophy,
-    color: 'text-yellow-500',
-  },
-  {
     type: 'transform',
     label: 'Transform',
     description: 'Reshape & rename fields',
@@ -75,13 +68,6 @@ const NODES: PaletteNode[] = [
     description: 'Run branches concurrently',
     icon: GitFork,
     color: 'text-slate-500',
-  },
-  {
-    type: 'partner_bid',
-    label: 'Partner Bid',
-    description: 'Request a partner bid',
-    icon: DollarSign,
-    color: 'text-sky-500',
   },
   {
     type: 'constants',
