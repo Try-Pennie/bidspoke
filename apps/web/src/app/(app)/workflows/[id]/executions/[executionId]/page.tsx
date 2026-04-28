@@ -63,10 +63,12 @@ function buildReport(execution: Execution): string {
       lines.push(`Error: ${step.error_message}${step.error_type ? ` (${step.error_type})` : ''}`)
     }
     lines.push('')
-    lines.push('Input:')
-    lines.push('```json')
-    lines.push(JSON.stringify(step.input, null, 2))
-    lines.push('```')
+    if (step.input !== null) {
+      lines.push('Input:')
+      lines.push('```json')
+      lines.push(JSON.stringify(step.input, null, 2))
+      lines.push('```')
+    }
     lines.push('Output:')
     lines.push('```json')
     lines.push(JSON.stringify(step.output, null, 2))
@@ -286,11 +288,13 @@ export default function ExecutionDetailPage() {
                         </div>
                       )}
 
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <p className="mb-1 text-xs font-medium text-gray-500">Input</p>
-                          <JsonBlock value={step.input} />
-                        </div>
+                      <div className={`grid gap-3 ${step.input !== null ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                        {step.input !== null && (
+                          <div>
+                            <p className="mb-1 text-xs font-medium text-gray-500">Input</p>
+                            <JsonBlock value={step.input} />
+                          </div>
+                        )}
                         <div>
                           <p className="mb-1 text-xs font-medium text-gray-500">Output</p>
                           <JsonBlock value={step.output} />
