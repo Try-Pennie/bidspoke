@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff, Search } from 'lucide-react'
 import type { TriggerDef } from '@/types/workflow'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
@@ -283,47 +283,12 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               </div>
             </div>
           </div>
-          {(() => {
-            const picked = cfg.success_node_namespaces ?? []
-            if (readOnly) {
-              if (picked.length === 0) {
-                return <p className="text-xs text-gray-400">No success nodes chosen.</p>
-              }
-              return (
-                <div className="flex flex-wrap gap-1">
-                  {picked.map((ns) => (
-                    <span key={ns} className="inline-flex items-center rounded border border-p-blue-light bg-p-blue-light px-2 py-0.5 font-mono text-xs text-p-blue-dark">
-                      {ns}
-                    </span>
-                  ))}
-                </div>
-              )
-            }
-            if (nodeNamespaces.length === 0) {
-              return <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
-            }
-            return (
-              <div className="space-y-1">
-                {nodeNamespaces.map((ns) => {
-                  const isPicked = picked.includes(ns)
-                  return (
-                    <label key={ns} className="flex cursor-pointer items-center gap-2 rounded border border-gray-100 px-2 py-1 hover:bg-gray-50">
-                      <input
-                        type="checkbox"
-                        checked={isPicked}
-                        onChange={() => {
-                          const next = isPicked ? picked.filter((n) => n !== ns) : [...picked, ns]
-                          update({ success_node_namespaces: next })
-                        }}
-                        className="h-3.5 w-3.5 accent-p-blue-dark"
-                      />
-                      <span className="font-mono text-xs text-graphite">{ns}</span>
-                    </label>
-                  )
-                })}
-              </div>
-            )
-          })()}
+          <SuccessNodePicker
+            picked={cfg.success_node_namespaces ?? []}
+            available={nodeNamespaces}
+            readOnly={readOnly ?? false}
+            onChange={(next) => update({ success_node_namespaces: next })}
+          />
         </div>
 
         {/* Auth method */}
@@ -614,5 +579,120 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
       </div>
       </div>
     </aside>
+  )
+}
+
+function SuccessNodePicker({ picked, available, readOnly, onChange }: {
+  picked: string[]
+  available: string[]
+  readOnly: boolean
+  onChange: (next: string[]) => void
+}) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  // Close the dropdown when clicking outside the picker
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  if (readOnly) {
+    if (picked.length === 0) return <p className="text-xs text-gray-400">No success nodes chosen.</p>
+    // Render in graph order when available, falling back to picked order for
+    // any namespaces that no longer exist in the definition.
+    const ordered = [
+      ...available.filter((ns) => picked.includes(ns)),
+      ...picked.filter((ns) => !available.includes(ns)),
+    ]
+    return (
+      <div className="flex flex-wrap gap-1">
+        {ordered.map((ns) => (
+          <span key={ns} className="inline-flex items-center rounded border border-p-blue-light bg-p-blue-light px-2 py-0.5 font-mono text-xs text-p-blue-dark">
+            {ns}
+          </span>
+        ))}
+      </div>
+    )
+  }
+
+  if (available.length === 0) {
+    return <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
+  }
+
+  // Pills shown to the user are graph-ordered too.
+  const orderedPicked = [
+    ...available.filter((ns) => picked.includes(ns)),
+    ...picked.filter((ns) => !available.includes(ns)),
+  ]
+
+  const q = query.trim().toLowerCase()
+  const suggestions = available.filter((ns) =>
+    !picked.includes(ns) && (q === '' || ns.toLowerCase().includes(q))
+  )
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {orderedPicked.length > 0 && (
+        <div className="mb-1.5 flex flex-wrap gap-1">
+          {orderedPicked.map((ns) => (
+            <span key={ns} className="inline-flex items-center gap-1 rounded border border-p-blue-light bg-p-blue-light px-2 py-0.5 font-mono text-xs text-p-blue-dark">
+              {ns}
+              <button
+                type="button"
+                onClick={() => onChange(picked.filter((n) => n !== ns))}
+                className="text-p-blue-dark/60 hover:text-p-blue-dark"
+                aria-label={`Remove ${ns}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-300" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          placeholder={picked.length === 0 ? 'Search nodes…' : 'Add another…'}
+          className="w-full rounded border border-gray-200 bg-white py-1.5 pl-7 pr-2 text-sm focus:border-p-blue-dark focus:outline-none"
+        />
+      </div>
+      {open && (
+        <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+          {suggestions.length === 0 ? (
+            <p className="px-2.5 py-2 text-xs text-gray-400">
+              {q ? 'No matching nodes.' : 'All nodes selected.'}
+            </p>
+          ) : (
+            suggestions.map((ns) => (
+              <button
+                key={ns}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onChange([...picked, ns])
+                  setQuery('')
+                }}
+                className="block w-full truncate border-b border-gray-50 px-2.5 py-1.5 text-left font-mono text-xs text-graphite last:border-b-0 hover:bg-p-blue-light hover:text-p-blue-dark"
+              >
+                {ns}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   )
 }

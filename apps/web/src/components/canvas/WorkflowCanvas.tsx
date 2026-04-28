@@ -373,6 +373,38 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
+  // Namespaces in graph order — BFS from trigger following edges in their
+  // current array order. Disconnected nodes are appended at the end so they
+  // remain selectable. Used by the trigger config's success-node picker so
+  // the list mirrors the visual flow instead of node-creation order.
+  const orderedNamespaces = (() => {
+    const result: string[] = []
+    const seen = new Set<string>()
+    const adj = new Map<string, string[]>()
+    for (const e of edges) {
+      const list = adj.get(e.source) ?? []
+      list.push(e.target)
+      adj.set(e.source, list)
+    }
+    const queue = ['trigger']
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      if (seen.has(id)) continue
+      seen.add(id)
+      const node = nodes.find((n) => n.id === id)
+      if (node) {
+        const ns = (node.data as unknown as CanvasNodeData).namespace
+        if (typeof ns === 'string' && ns.length > 0 && ns !== 'trigger') result.push(ns)
+      }
+      for (const next of adj.get(id) ?? []) queue.push(next)
+    }
+    for (const n of nodes) {
+      if (seen.has(n.id)) continue
+      const ns = (n.data as unknown as CanvasNodeData).namespace
+      if (typeof ns === 'string' && ns.length > 0 && ns !== 'trigger') result.push(ns)
+    }
+    return result
+  })()
   const nodeOptions = nodes
     .filter((n) => n.id !== 'trigger' && n.type !== 'parallel_end')
     .map((n) => {
@@ -2100,7 +2132,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               workflowId={workflow.id}
               workflowName={workflow.name}
               trigger={triggerRef.current}
-              nodeNamespaces={nodeNamespaces.filter((n): n is string => typeof n === 'string' && n.length > 0 && n !== 'trigger')}
+              nodeNamespaces={orderedNamespaces}
               onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
               width={sidePanelWidth}
