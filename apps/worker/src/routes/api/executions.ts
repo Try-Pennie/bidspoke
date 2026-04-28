@@ -37,7 +37,7 @@ executions.get('/', async (c) => {
 
   let query = supabase
     .from('workflow_executions')
-    .select('id, workflow_id, status, outcome, final_node_namespace, source, started_at, duration_ms, error_message')
+    .select('id, workflow_id, status, outcome, final_node_namespace, source, started_at, duration_ms, error_message, parent_execution_id')
     .in('workflow_id', workflowIds)
     .eq('is_test', false)
     .order('started_at', { ascending: false })

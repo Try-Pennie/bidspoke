@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { CheckCircle, CheckCircle2, XCircle, Loader2 } from 'lucide-react'
+import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-react'
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { WorkflowVersion } from '@/types/workflow'
@@ -16,6 +16,7 @@ type ExecRow = {
   started_at: string
   duration_ms: number | null
   error_message: string | null
+  parent_execution_id: string | null
 }
 
 type ListItem =
@@ -131,6 +132,12 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   const filtered = executions
   const items = buildItems(filtered, versions)
+  // Rows that some other row in the list points at as its parent — i.e.
+  // executions that have been replayed at least once and whose replay is
+  // visible in the current page.
+  const replayedSourceIds = new Set(
+    executions.map((e) => e.parent_execution_id).filter((id): id is string => !!id)
+  )
 
   return (
     <aside className="flex w-72 flex-col border-r border-gray-200 bg-white">
@@ -224,6 +231,16 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
                       {exec.source}
                     </span>
+                    {exec.parent_execution_id && (
+                      <span title="Replay" className="flex items-center text-gray-400">
+                        <RotateCcw className="h-3 w-3" />
+                      </span>
+                    )}
+                    {replayedSourceIds.has(exec.id) && (
+                      <span title="Replayed" className="flex items-center text-gray-400">
+                        <RotateCcw className="h-3 w-3 -scale-x-100" />
+                      </span>
+                    )}
                     <span className="ml-auto text-xs text-gray-400">{formatTime(exec.started_at)}</span>
                   </div>
                   <p className="mt-0.5 text-xs text-gray-400">
