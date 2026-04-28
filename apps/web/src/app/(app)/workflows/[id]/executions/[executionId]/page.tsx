@@ -224,6 +224,41 @@ export default function ExecutionDetailPage() {
               <StatusBadge status={execution.status} />
             </div>
 
+            {/* Replay lineage */}
+            {(execution.parent_execution_id || (execution.child_executions?.length ?? 0) > 0) && (
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-gray-200 bg-beige px-4 py-3 text-xs text-gray-600">
+                {execution.parent_execution_id && (
+                  <span className="flex items-center gap-1.5">
+                    <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
+                    <span>Replay of</span>
+                    <button
+                      onClick={() => router.push(`/workflows/${workflowId}/executions/${execution.parent_execution_id}`)}
+                      className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
+                    >
+                      {execution.parent_execution_id.slice(0, 8)}…
+                    </button>
+                  </span>
+                )}
+                {(execution.child_executions?.length ?? 0) > 0 && (
+                  <span className="flex items-center gap-1.5">
+                    <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
+                    <span>{execution.child_executions.length === 1 ? 'Replayed once:' : `Replayed ${execution.child_executions.length} times:`}</span>
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {execution.child_executions.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => router.push(`/workflows/${workflowId}/executions/${c.id}`)}
+                          className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
+                        >
+                          {c.id.slice(0, 8)}…
+                        </button>
+                      ))}
+                    </span>
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* Metadata */}
             <div className="grid grid-cols-2 gap-4 rounded-xl border border-gray-200 bg-white p-5 sm:grid-cols-4">
               <div>

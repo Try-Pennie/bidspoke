@@ -279,6 +279,7 @@ export const api = {
         id: string
         workflow_id: string
         status: string
+        outcome: string | null
         source: string
         trace_id: string
         started_at: string
@@ -286,6 +287,14 @@ export const api = {
         duration_ms: number | null
         error_message: string | null
         trigger_payload: unknown
+        parent_execution_id: string | null
+        child_executions: Array<{
+          id: string
+          started_at: string
+          status: string
+          outcome: string | null
+          source: string
+        }>
         steps: Array<{
           id: string
           step_namespace: string
@@ -303,8 +312,23 @@ export const api = {
           step_order: number
         }>
       }>(`/api/executions/${id}`),
-    replay: (id: string) =>
-      req<{ ok?: boolean; error?: string }>(`/api/executions/${id}/replay`, { method: 'POST' }),
+    replay: async (id: string): Promise<{ executionId: string | null; response: unknown }> => {
+      let headers: HeadersInit
+      try {
+        headers = await authHeaders()
+      } catch {
+        redirectToLogin()
+        throw new Error('Not authenticated')
+      }
+      const res = await fetch(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', headers })
+      if (res.status === 401) {
+        redirectToLogin()
+        throw new Error('Not authenticated')
+      }
+      const newId = res.headers.get('X-Execution-Id')
+      const body = await res.json().catch(() => null)
+      return { executionId: newId, response: body }
+    },
   },
 
   circuit: {

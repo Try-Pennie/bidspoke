@@ -56,6 +56,9 @@ export interface ExecuteOptions {
   source: string
   idempotencyKeyHeader?: string
   resumeFromExecutionId?: string
+  /** Set on a fresh replay so parent_execution_id is populated without
+   *  triggering the resume-context preload. */
+  parentExecutionId?: string
   isTest?: boolean
   executionId?: string
   definitionOverride?: WorkflowDefinition
@@ -64,6 +67,7 @@ export interface ExecuteOptions {
 }
 
 export interface ExecuteResult {
+  executionId: string
   response: unknown
   status: number
   traceId: string
@@ -124,10 +128,10 @@ export async function executeWorkflow(
   if (idempotencyCached) {
     if (idempotencyCached.status === 'processing') {
       log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'processing' })
-      return { response: { error: 'Duplicate request in progress' }, status: 409, traceId }
+      return { executionId, response: { error: 'Duplicate request in progress' }, status: 409, traceId }
     }
     log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'replay' })
-    return { response: idempotencyCached.response, status: 200, traceId, idempotentReplay: true }
+    return { executionId, response: idempotencyCached.response, status: 200, traceId, idempotentReplay: true }
   }
 
   // Fire the idempotency-processing KV write and the execution-record insert
@@ -148,7 +152,7 @@ export async function executeWorkflow(
     trace_id: traceId,
     started_at: startedAt,
     is_test: options.isTest ?? false,
-    parent_execution_id: options.resumeFromExecutionId,
+    parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
   })
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
@@ -383,6 +387,7 @@ export async function executeWorkflow(
   }
 
   return {
+    executionId,
     response,
     status: executionStatus === 'completed' ? walkStatus : 500,
     traceId,

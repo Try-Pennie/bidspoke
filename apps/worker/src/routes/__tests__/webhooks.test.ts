@@ -78,7 +78,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: { ok: true },
         status: 200,
-        traceId: 'trace-abc',
+        executionId: 'exec-test', traceId: 'trace-abc',
         idempotentReplay: false,
       })
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
@@ -118,7 +118,7 @@ describe('POST /webhooks/:workflow_id', () => {
   describe('source-to-workflow assignment', () => {
     it('passes enforceSourceAssignment: true to the engine', async () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
-        response: {}, status: 200, traceId: 'trace-1', idempotentReplay: false,
+        executionId: 'exec-test', response: {}, status: 200, traceId: 'trace-1', idempotentReplay: false,
       })
       await request('wf-1', { apiKey: 'sk_test_key' })
       expect(vi.mocked(executeWorkflow)).toHaveBeenCalledWith(
@@ -143,7 +143,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: { accepted: true, id: 'lead-123' },
         status: 200,
-        traceId: 'trace-xyz',
+        executionId: 'exec-test', traceId: 'trace-xyz',
         idempotentReplay: false,
       })
       const res = await request('wf-1', { apiKey: 'sk_test_key', body: { lead: 'data' } })
@@ -156,7 +156,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: {},
         status: 200,
-        traceId: 'trace-abc123',
+        executionId: 'exec-test', traceId: 'trace-abc123',
         idempotentReplay: false,
       })
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
@@ -167,7 +167,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: { cached: true },
         status: 200,
-        traceId: 'trace-replay',
+        executionId: 'exec-test', traceId: 'trace-replay',
         idempotentReplay: true,
       })
       const res = await request('wf-1', {
@@ -181,7 +181,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: {},
         status: 200,
-        traceId: 'trace-1',
+        executionId: 'exec-test', traceId: 'trace-1',
         idempotentReplay: false,
       })
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
@@ -192,7 +192,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: {},
         status: 200,
-        traceId: 'trace-1',
+        executionId: 'exec-test', traceId: 'trace-1',
         idempotentReplay: false,
       })
       await request('wf-1', { apiKey: 'sk_test_key', body: { x: 1 } })
@@ -208,7 +208,7 @@ describe('POST /webhooks/:workflow_id', () => {
       vi.mocked(executeWorkflow).mockResolvedValue({
         response: {},
         status: 200,
-        traceId: 'trace-1',
+        executionId: 'exec-test', traceId: 'trace-1',
         idempotentReplay: false,
       })
       const payload = { lead_id: 'L42', score: 750 }

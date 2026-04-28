@@ -78,14 +78,26 @@ executions.get('/:id', async (c) => {
 
   if (ownerError) return c.json({ error: 'Execution not found' }, 404)
 
-  // Fetch steps
-  const { data: steps } = await supabase
-    .from('execution_steps')
-    .select('*')
-    .eq('execution_id', id)
-    .order('step_order', { ascending: true })
+  // Fetch steps + any executions that reference this one as parent (replays
+  // and resumes both set parent_execution_id, so both surface as children).
+  const [stepsRes, childrenRes] = await Promise.all([
+    supabase
+      .from('execution_steps')
+      .select('*')
+      .eq('execution_id', id)
+      .order('step_order', { ascending: true }),
+    supabase
+      .from('workflow_executions')
+      .select('id, started_at, status, outcome, source')
+      .eq('parent_execution_id', id)
+      .order('started_at', { ascending: true }),
+  ])
 
-  return c.json({ ...execution, steps: steps ?? [] })
+  return c.json({
+    ...execution,
+    steps: stepsRes.data ?? [],
+    child_executions: childrenRes.data ?? [],
+  })
 })
 
 // POST /api/executions/:id/resume
@@ -149,19 +161,25 @@ executions.post('/:id/replay', async (c) => {
 
   if (ownerError) return c.json({ error: 'Execution not found' }, 404)
 
-  // Replay = fresh execution from start with original payload
+  // Replay = fresh execution from start with original payload, linked back
+  // to the original via parent_execution_id so both rows can show the
+  // relationship in the UI.
   const result = await executeWorkflow(
     {
       workflowId: execution.workflow_id,
       payload: execution.trigger_payload,
       source: execution.source ?? 'replay',
+      parentExecutionId: id,
     },
     c.env,
     supabase,
     c.executionCtx
   )
 
-  return c.json(result.response, result.status as 200 | 500, { 'X-Trace-Id': result.traceId })
+  return c.json(result.response, result.status as 200 | 500, {
+    'X-Trace-Id': result.traceId,
+    'X-Execution-Id': result.executionId,
+  })
 })
 
 export default executions

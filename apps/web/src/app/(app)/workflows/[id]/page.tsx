@@ -20,6 +20,8 @@ function WorkflowEditorInner() {
   const [executionSource, setExecutionSource] = useState<string | null>(null)
   const [executionTraceId, setExecutionTraceId] = useState<string | null>(null)
   const [executionStartedAt, setExecutionStartedAt] = useState<string | null>(null)
+  const [executionParentId, setExecutionParentId] = useState<string | null>(null)
+  const [executionChildren, setExecutionChildren] = useState<Array<{ id: string; started_at: string; status: string }>>([])
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -35,6 +37,8 @@ function WorkflowEditorInner() {
       setExecutionSource(null)
       setExecutionTraceId(null)
       setExecutionStartedAt(null)
+      setExecutionParentId(null)
+      setExecutionChildren([])
       return
     }
     api.executions.get(executionId).then((exec) => {
@@ -42,6 +46,8 @@ function WorkflowEditorInner() {
       setExecutionSource(exec.source)
       setExecutionTraceId(exec.trace_id)
       setExecutionStartedAt(exec.started_at)
+      setExecutionParentId(exec.parent_execution_id ?? null)
+      setExecutionChildren(exec.child_executions ?? [])
       const map: Record<string, ExecutionStep> = {}
       for (const step of exec.steps) {
         map[step.step_namespace] = {
@@ -84,6 +90,8 @@ function WorkflowEditorInner() {
       executionSource={executionSource}
       executionTraceId={executionTraceId}
       executionStartedAt={executionStartedAt}
+      executionParentId={executionParentId}
+      executionChildren={executionChildren}
     />
   )
 }

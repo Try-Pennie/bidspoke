@@ -295,7 +295,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
@@ -304,6 +304,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   executionSource?: string | null
   executionTraceId?: string | null
   executionStartedAt?: string | null
+  executionParentId?: string | null
+  executionChildren?: Array<{ id: string; started_at: string; status: string }>
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
@@ -1669,8 +1671,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   onClick={async () => {
                     setReplaying(true)
                     try {
-                      await api.executions.replay(executionId)
+                      const { executionId: newId } = await api.executions.replay(executionId)
                       setRefreshSignal((s) => s + 1)
+                      if (newId) router.push(`/workflows/${workflow.id}?execution=${newId}`)
                     } finally {
                       setReplaying(false)
                     }
@@ -1691,6 +1694,38 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   Clear
                 </button>
               </div>
+            </div>
+          )}
+
+          {mode === 'view' && executionId && (executionParentId || (executionChildren && executionChildren.length > 0)) && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-gray-100 bg-beige px-4 py-1.5 text-xs text-gray-600">
+              {executionParentId && (
+                <span className="flex items-center gap-1.5">
+                  <RotateCcw className="h-3 w-3 text-gray-400" />
+                  <span>Replay of</span>
+                  <button
+                    onClick={() => router.push(`/workflows/${workflow.id}?execution=${executionParentId}`)}
+                    className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
+                  >
+                    {executionParentId.slice(0, 8)}…
+                  </button>
+                </span>
+              )}
+              {executionChildren && executionChildren.length > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <RotateCcw className="h-3 w-3 text-gray-400" />
+                  <span>Replayed {executionChildren.length === 1 ? 'as' : `${executionChildren.length} times — latest`}</span>
+                  <button
+                    onClick={() => {
+                      const latest = executionChildren[executionChildren.length - 1]
+                      router.push(`/workflows/${workflow.id}?execution=${latest.id}`)
+                    }}
+                    className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
+                  >
+                    {executionChildren[executionChildren.length - 1].id.slice(0, 8)}…
+                  </button>
+                </span>
+              )}
             </div>
           )}
 
@@ -2172,6 +2207,8 @@ export default function WorkflowCanvas({
   executionSource,
   executionTraceId,
   executionStartedAt,
+  executionParentId,
+  executionChildren,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -2181,6 +2218,8 @@ export default function WorkflowCanvas({
   executionSource?: string | null
   executionTraceId?: string | null
   executionStartedAt?: string | null
+  executionParentId?: string | null
+  executionChildren?: Array<{ id: string; started_at: string; status: string }>
 }) {
   return (
     <ReactFlowProvider>
@@ -2193,6 +2232,8 @@ export default function WorkflowCanvas({
         executionSource={executionSource}
         executionTraceId={executionTraceId}
         executionStartedAt={executionStartedAt}
+        executionParentId={executionParentId}
+        executionChildren={executionChildren}
       />
     </ReactFlowProvider>
   )

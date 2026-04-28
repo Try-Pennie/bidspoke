@@ -235,7 +235,7 @@ describe('POST /executions/:id/replay', () => {
     vi.mocked(executeWorkflow).mockResolvedValue({
       response: { ok: true },
       status: 200,
-      traceId: 'trace-replay',
+      executionId: 'exec-test', traceId: 'trace-replay',
       idempotentReplay: false,
     })
 
@@ -260,7 +260,7 @@ describe('POST /executions/:id/replay', () => {
     vi.mocked(executeWorkflow).mockResolvedValue({
       response: { ok: true },
       status: 200,
-      traceId: 'trace-replay-123',
+      executionId: 'exec-test', traceId: 'trace-replay-123',
       idempotentReplay: false,
     })
 
@@ -291,7 +291,7 @@ describe('POST /executions/:id/resume', () => {
     vi.mocked(executeWorkflow).mockResolvedValue({
       response: { ok: true },
       status: 200,
-      traceId: 'trace-resume',
+      executionId: 'exec-test', traceId: 'trace-resume',
       idempotentReplay: false,
     })
 
