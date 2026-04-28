@@ -76,12 +76,21 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     expect((init as RequestInit).method).toBe('POST')
   })
 
-  it('matrix resolver: throws BidResolverConfigError until Slice 2 ships', async () => {
+  it('matrix resolver: requires a Supabase client', async () => {
     const partner = makePartner({
       bid_resolver_type: 'matrix',
       bid_resolver_config: { bid_config_id: 'abc' },
     })
     await expect(resolveBid(partner, makeCtx(), env)).rejects.toThrow(BidResolverConfigError)
+  })
+
+  it('matrix resolver: errors when bid_config_id is missing', async () => {
+    const partner = makePartner({
+      bid_resolver_type: 'matrix',
+      bid_resolver_config: {},
+    })
+    const fakeSupabase = { from: () => ({}) } as never
+    await expect(resolveBid(partner, makeCtx(), env, fakeSupabase)).rejects.toThrow(/bid_config_id/)
   })
 
   it('legacy fallback: api_endpoint set + no resolver_type -> api', async () => {

@@ -153,7 +153,7 @@ export async function executePartnerBidNode(
   const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
 
   try {
-    const result = await resolveBid(p, ctx, env)
+    const result = await resolveBid(p, ctx, env, supabase)
     if (result.rejected) {
       return {
         output: {

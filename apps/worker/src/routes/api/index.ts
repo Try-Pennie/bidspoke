@@ -9,6 +9,7 @@ import circuit from './circuit'
 import integrations from './integrations'
 import sources from './sources'
 import partners from './partners'
+import partnerBidConfigs from './partner-bid-configs'
 import access from './access'
 import servicePresets from './service-presets'
 import stats from './stats'
@@ -32,6 +33,7 @@ api.route('/circuit', circuit)
 api.route('/integrations', integrations)
 api.route('/sources', sources)
 api.route('/partners', partners)
+api.route('/partner-bid-configs', partnerBidConfigs)
 api.route('/access', access)
 api.route('/service-presets', servicePresets)
 api.route('/stats', stats)

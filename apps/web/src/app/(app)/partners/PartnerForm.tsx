@@ -1,9 +1,11 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
+import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
+import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
@@ -20,6 +22,7 @@ type SignalRules = Record<SignalCategory, Rule[]>
 interface FormSnapshot {
   name: string; apiEndpoint: string; cfSecretKey: string; clickUrl: string; isActive: boolean
   priority: string; dailyCap: string; minBid: string; bidFormula: string
+  resolverType: BidResolverType; resolverConfig: Record<string, unknown>
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
@@ -362,6 +365,9 @@ export default function PartnerForm({
   const [dailyCap, setDailyCap] = useState(partner?.daily_cap != null ? String(partner.daily_cap) : '')
   const [minBid, setMinBid] = useState(partner?.min_bid != null ? String(partner.min_bid) : '')
   const [bidFormula, setBidFormula] = useState(partner?.bid_formula ?? '')
+  const [resolverType, setResolverType] = useState<BidResolverType>(partner?.bid_resolver_type ?? 'api')
+  const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(partner?.bid_resolver_config ?? {})
+  const [bidConfigs, setBidConfigs] = useState<PartnerBidConfig[]>([])
   const [dedupEndpoint, setDedupEndpoint] = useState(partner?.dedup_endpoint ?? '')
 
   const [circuitEnabled, setCircuitEnabled] = useState(partner?.circuit_enabled ?? true)
@@ -392,6 +398,9 @@ export default function PartnerForm({
     api.partnerUuids.list()
       .then((all) => setUuids(all.filter((u) => u.partner_slug === partner.slug)))
       .catch(() => {})
+    api.partnerBidConfigs.list(partner.id)
+      .then(setBidConfigs)
+      .catch(() => {})
   }, [partner])
 
   // Undo countdown
@@ -407,13 +416,14 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
     setName(snap.name); setApiEndpoint(snap.apiEndpoint); setCfSecretKey(snap.cfSecretKey)
     setClickUrl(snap.clickUrl); setIsActive(snap.isActive); setPriority(snap.priority)
     setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
+    setResolverType(snap.resolverType); setResolverConfig(snap.resolverConfig)
     setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
@@ -447,6 +457,8 @@ export default function PartnerForm({
         daily_cap: dailyCap ? parseInt(dailyCap) : null,
         min_bid: minBid ? parseFloat(minBid) : null,
         bid_formula: bidFormula || null,
+        bid_resolver_type: resolverType,
+        bid_resolver_config: resolverConfig,
         dedup_endpoint: dedupEndpoint || null,
         circuit_enabled: circuitEnabled,
         circuit_error_threshold: parseInt(circuitThreshold) || 5,
@@ -587,24 +599,46 @@ export default function PartnerForm({
           </div>
         </Section>
 
-        {partnerType === 'buyer' && <Section title="API">
-          <Field
-            label="API endpoint"
-            hint="URL to POST bids to. Leave blank for formula-only partners (e.g. Tripoint)."
-          >
-            <Input value={apiEndpoint} onChange={setApiEndpoint} placeholder="https://api.partner.com/bids" />
-          </Field>
+        {partnerType === 'buyer' && <Section title="Bid resolution">
+          <BidResolverEditor
+            resolverType={resolverType}
+            resolverConfig={resolverConfig}
+            bidFormula={bidFormula}
+            apiEndpoint={apiEndpoint}
+            cfSecretKey={cfSecretKey}
+            bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
+            onTypeChange={setResolverType}
+            onFormulaChange={setBidFormula}
+            onApiEndpointChange={setApiEndpoint}
+            onCfSecretKeyChange={setCfSecretKey}
+            onConfigChange={setResolverConfig}
+          />
+          {resolverType === 'matrix' && partner && (
+            <div className="mt-4 border-t border-gray-100 pt-4">
+              <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
+              <BidMatrixViewer
+                partnerId={partner.id}
+                partnerSlug={partner.slug}
+                configs={bidConfigs}
+                onConfigsChange={setBidConfigs}
+                selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
+                onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
+              />
+            </div>
+          )}
+          {resolverType === 'matrix' && !partner && (
+            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-400">
+              Save the partner first to attach a bid matrix.
+            </p>
+          )}
+        </Section>}
+
+        {partnerType === 'buyer' && <Section title="Endpoints">
           <Field
             label="Click URL"
             hint="Landing page URL for leads routed to this partner. Exposed as {Slug}ClickUrl in the Constants node."
           >
             <Input value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" />
-          </Field>
-          <Field
-            label="Auth secret name"
-            hint="Name of the Cloudflare Workers secret holding this partner's API key, e.g. TRIPOINT_API_KEY."
-          >
-            <Input value={cfSecretKey} onChange={setCfSecretKey} placeholder="TRIPOINT_API_KEY" mono />
           </Field>
           <Field
             label="Dedup endpoint"
@@ -614,7 +648,7 @@ export default function PartnerForm({
           </Field>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Bidding">
+        {partnerType === 'buyer' && <Section title="Bidding limits">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Daily cap" hint="Max leads per day. Leave blank for unlimited.">
               <Input value={dailyCap} onChange={setDailyCap} type="number" placeholder="∞" />
@@ -623,18 +657,6 @@ export default function PartnerForm({
               <Input value={minBid} onChange={setMinBid} type="number" placeholder="0.00" />
             </Field>
           </div>
-          <Field
-            label="Bid formula"
-            hint="Arithmetic expression for the bid price. Use any numeric field from trigger.payload by name (e.g. debt_amount * 0.65). Supports standard operators (+, -, *, /, **) and Math functions (Math.floor, Math.min, Math.max, Math.round, Math.abs, Math.sqrt)."
-          >
-            <textarea
-              value={bidFormula}
-              onChange={(e) => setBidFormula(e.target.value)}
-              placeholder="debt_amount * 0.65"
-              rows={2}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-            />
-          </Field>
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Circuit breaker">

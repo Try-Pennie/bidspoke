@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type AuditEntityType =
   | 'partner_config'
+  | 'partner_bid_config'
   | 'environment_variable'
   | 'service_connection'
   | 'service_preset'

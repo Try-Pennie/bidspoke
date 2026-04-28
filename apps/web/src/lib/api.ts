@@ -1,6 +1,8 @@
 import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar } from '@/types/workflow'
 
+export type BidResolverType = 'formula' | 'matrix' | 'api'
+
 export interface Partner {
   id: string
   organization_id: string
@@ -11,6 +13,9 @@ export interface Partner {
   daily_cap: number | null
   min_bid: number | null
   bid_formula: string | null
+  bid_resolver_type: BidResolverType
+  bid_resolver_config: Record<string, unknown>
+  outbound_field_mapping: Record<string, unknown> | null
   dedup_endpoint: string | null
   response_classification: unknown
   alert_config: unknown
@@ -31,6 +36,62 @@ export interface Partner {
 }
 
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email'>>
+
+// ── Partner Bid Configs (matrix definitions) ──────────────────────────────────
+
+export interface BidConfigDimension {
+  name: string
+  payload_field: string
+  column: 'row' | 'range'
+}
+
+export interface PartnerBidConfig {
+  id: string
+  partner_id: string
+  slug: string
+  name: string
+  is_default: boolean
+  is_active: boolean
+  sync_source: 'salesforce' | 'manual'
+  sf_object: string | null
+  sf_filters: Record<string, unknown> | null
+  dimensions: BidConfigDimension[]
+  last_synced_at: string | null
+  last_sync_error: string | null
+  created_at: string
+  updated_at: string
+  updated_by_email: string | null
+  updated_by_name: string | null
+}
+
+export interface BidMatrixRow {
+  id: string
+  is_sell_off: boolean
+  row_id: string | null
+  row_low: number | null
+  row_high: number | null
+  range_low: number | null
+  range_high: number | null
+  bid_amount: number
+  source_synced_at: string | null
+}
+
+export interface PartnerBidConfigDetail {
+  config: PartnerBidConfig
+  rows: BidMatrixRow[]
+}
+
+export interface SyncResult {
+  config_id: string
+  config_slug: string
+  rows_fetched: number
+  rows_upserted: number
+  rows_deleted: number
+  last_synced_at: string
+}
+
+export type PartnerBidConfigBody = Partial<Omit<PartnerBidConfig,
+  'id' | 'last_synced_at' | 'last_sync_error' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name'>>
 
 export interface PartnerUuid {
   id: string
@@ -370,6 +431,24 @@ export const api = {
       req<{ ok: boolean }>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string }>(`/api/partners/${id}/cap-count`),
+  },
+
+  partnerBidConfigs: {
+    list: (partnerId?: string) =>
+      req<PartnerBidConfig[]>(`/api/partner-bid-configs${partnerId ? `?partner_id=${partnerId}` : ''}`),
+    get: (id: string) => req<PartnerBidConfigDetail>(`/api/partner-bid-configs/${id}`),
+    create: (body: PartnerBidConfigBody) =>
+      req<PartnerBidConfig>('/api/partner-bid-configs', { method: 'POST', body: JSON.stringify(body) }),
+    update: (id: string, body: PartnerBidConfigBody) =>
+      req<PartnerBidConfig>(`/api/partner-bid-configs/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/partner-bid-configs/${id}`, { method: 'DELETE' }),
+    sync: (id: string) =>
+      req<SyncResult>(`/api/partner-bid-configs/${id}/sync`, { method: 'POST' }),
+    history: (id: string) =>
+      req<Array<{ id: string; changed_at: string; source: string; diff: Record<string, unknown> }>>(
+        `/api/partner-bid-configs/${id}/history`
+      ),
   },
 
   partnerUuids: {

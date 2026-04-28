@@ -5,6 +5,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { prewarmKvCaches } from './lib/cache-prewarm'
+import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
@@ -103,6 +104,12 @@ export default {
       ctx.waitUntil(
         runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
+      )
+    } else if (event.cron === '0 * * * *') {
+      ctx.waitUntil(
+        syncAllSalesforceConfigs(env, supabase)
+          .then((r) => console.log(`[bid-matrix-sync] ${r.successes.length} succeeded, ${r.failures.length} failed`))
+          .catch((e) => console.error('[bid-matrix-sync] failed:', e))
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(

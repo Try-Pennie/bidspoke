@@ -11,11 +11,13 @@
  * case here; nothing in Partner Bid or workflow definitions changes.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext } from '../types'
 import type { Env } from '../index'
 import type { ResponseClassificationConfig, AlertConfig } from './error-classifier'
 import { evaluateResponseClassification, shouldSuppressAlert } from './error-classifier'
 import { PartnerApiError } from './partner-bid-error'
+import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 
@@ -35,6 +37,13 @@ export interface BidResolverResult {
   bid: number | null
   raw: unknown
   rejected?: boolean
+  matrix?: {
+    config_id: string
+    matched_row_id: string | null
+    last_synced_at: string | null
+    is_sell_off?: boolean
+    reason?: string
+  }
 }
 
 export class BidResolverConfigError extends Error {
@@ -47,7 +56,8 @@ export class BidResolverConfigError extends Error {
 export async function resolveBid(
   partner: PartnerForResolver,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  supabase?: SupabaseClient
 ): Promise<BidResolverResult> {
   const type = effectiveResolverType(partner)
 
@@ -62,9 +72,31 @@ export async function resolveBid(
       return callBidApi(partner, ctx, env)
     }
     case 'matrix': {
-      throw new BidResolverConfigError(
-        `Partner ${partner.slug} uses matrix resolver but matrix lookup is not yet implemented (Slice 2)`
-      )
+      if (!supabase) {
+        throw new BidResolverConfigError(
+          `Partner ${partner.slug} uses matrix resolver but no Supabase client was supplied`
+        )
+      }
+      const cfg = partner.bid_resolver_config
+      const configId = typeof cfg?.bid_config_id === 'string' ? cfg.bid_config_id : null
+      if (!configId) {
+        throw new BidResolverConfigError(
+          `Partner ${partner.slug} uses matrix resolver but bid_resolver_config.bid_config_id is missing`
+        )
+      }
+      const useSellOff = typeof cfg?.use_sell_off === 'boolean' ? cfg.use_sell_off : false
+      const result = await lookupMatrixBid(configId, ctx, supabase, { use_sell_off: useSellOff })
+      return {
+        bid: result.bid,
+        raw: null,
+        matrix: {
+          config_id: result.config_id,
+          matched_row_id: result.matched_row?.id ?? null,
+          last_synced_at: result.last_synced_at,
+          is_sell_off: result.matched_row?.is_sell_off,
+          reason: result.reason,
+        },
+      }
     }
   }
 }

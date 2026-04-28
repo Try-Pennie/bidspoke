@@ -57,12 +57,13 @@ GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow defini
 
 # Scheduled cron triggers:
 #   "0 9 * * *"     daily 09:00 UTC — volume anomaly check
-#   "* * * * *"     every 1 min    — pre-warm KV + outbound connection pool
-#                                   (SF token fetch exercises the SF HTTPS pool;
-#                                   CF's outbound keep-alive times out at ~60-90s
-#                                   so a 1-min cadence keeps it warm)
+#   "0 * * * *"     hourly          — sync partner_bid_configs from Salesforce
+#   "* * * * *"     every 1 min     — pre-warm KV + outbound connection pool
+#                                    (SF token fetch exercises the SF HTTPS pool;
+#                                    CF's outbound keep-alive times out at ~60-90s
+#                                    so a 1-min cadence keeps it warm)
 [triggers]
-crons = ["0 9 * * *", "* * * * *"]
+crons = ["0 9 * * *", "0 * * * *", "* * * * *"]
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
