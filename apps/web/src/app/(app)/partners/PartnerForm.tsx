@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
+import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
@@ -23,6 +24,7 @@ interface FormSnapshot {
   name: string; apiEndpoint: string; cfSecretKey: string; clickUrl: string; isActive: boolean
   priority: string; dailyCap: string; minBid: string; bidFormula: string
   resolverType: BidResolverType; resolverConfig: Record<string, unknown>
+  outboundMapping: Record<string, unknown> | null
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
@@ -367,6 +369,7 @@ export default function PartnerForm({
   const [bidFormula, setBidFormula] = useState(partner?.bid_formula ?? '')
   const [resolverType, setResolverType] = useState<BidResolverType>(partner?.bid_resolver_type ?? 'api')
   const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(partner?.bid_resolver_config ?? {})
+  const [outboundMapping, setOutboundMapping] = useState<Record<string, unknown> | null>(partner?.outbound_field_mapping ?? null)
   const [bidConfigs, setBidConfigs] = useState<PartnerBidConfig[]>([])
   const [dedupEndpoint, setDedupEndpoint] = useState(partner?.dedup_endpoint ?? '')
 
@@ -416,7 +419,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -424,6 +427,7 @@ export default function PartnerForm({
     setClickUrl(snap.clickUrl); setIsActive(snap.isActive); setPriority(snap.priority)
     setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
     setResolverType(snap.resolverType); setResolverConfig(snap.resolverConfig)
+    setOutboundMapping(snap.outboundMapping)
     setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
@@ -459,6 +463,7 @@ export default function PartnerForm({
         bid_formula: bidFormula || null,
         bid_resolver_type: resolverType,
         bid_resolver_config: resolverConfig,
+        outbound_field_mapping: outboundMapping,
         dedup_endpoint: dedupEndpoint || null,
         circuit_enabled: circuitEnabled,
         circuit_error_threshold: parseInt(circuitThreshold) || 5,
@@ -646,6 +651,10 @@ export default function PartnerForm({
           >
             <Input value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" />
           </Field>
+        </Section>}
+
+        {partnerType === 'buyer' && <Section title="Outbound field mapping">
+          <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Bidding limits">

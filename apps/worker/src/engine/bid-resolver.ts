@@ -18,6 +18,7 @@ import type { ResponseClassificationConfig, AlertConfig } from './error-classifi
 import { evaluateResponseClassification, shouldSuppressAlert } from './error-classifier'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
+import { applyOutboundMapping } from '../lib/field-mapper'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 
@@ -29,6 +30,7 @@ export interface PartnerForResolver {
   bid_formula: string | null
   bid_resolver_type: BidResolverType | null
   bid_resolver_config: Record<string, unknown> | null
+  outbound_field_mapping?: Record<string, unknown> | null
   response_classification: ResponseClassificationConfig | null
   alert_config: AlertConfig | null
 }
@@ -138,7 +140,9 @@ async function callBidApi(
     }
   }
 
-  const body = JSON.stringify(ctx.trigger.payload)
+  // Apply per-partner outbound field mapping (TODO 4.9). Null mapping = identity.
+  const wireBody = applyOutboundMapping(ctx.trigger.payload, partner.outbound_field_mapping ?? null)
+  const body = JSON.stringify(wireBody)
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
 
