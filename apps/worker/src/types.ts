@@ -9,6 +9,7 @@ export type NodeType =
   | 'parallel'
   | 'parallel_end'
   | 'partner_bid'
+  | 'bid_group'
   | 'webhook'
   | 'transform'
   | 'bid_evaluation'

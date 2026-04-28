@@ -32,6 +32,7 @@ import { ExitNode } from './nodes/ExitNode'
 import { TriggerNode } from './nodes/TriggerNode'
 import { GenericNode } from './nodes/GenericNode'
 import { BidEvaluationNode } from './nodes/BidEvaluationNode'
+import { BidGroupNode } from './nodes/BidGroupNode'
 import { TransformNode } from './nodes/TransformNode'
 import { IntegrationNode } from './nodes/IntegrationNode'
 import { PartnerBidNode } from './nodes/PartnerBidNode'
@@ -73,6 +74,7 @@ const nodeTypes: NodeTypes = {
   parallel: ParallelNode,
   parallel_end: ParallelEndNode,
   bid_evaluation: BidEvaluationNode,
+  bid_group: BidGroupNode,
   constants: ConstantsNode,
   salesforce: SalesforceNode,
 }
@@ -227,6 +229,13 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
   if (type === 'constants') {
     return { data: {} }
   }
+  if (type === 'bid_group') {
+    return {
+      mode: 'highest_bid',
+      partner_ids: [],
+      no_winner_behavior: 'fail',
+    }
+  }
   return {}
 }
 
@@ -240,6 +249,7 @@ function primarySourceHandle(type: string, config?: Record<string, unknown>): st
   if (type === 'response') return config?.continue_after_response ? 'output' : null
   if (type === 'branch') return null  // N-way split — no sensible default
   if (type === 'bid_evaluation') return null  // winner/no_winner — ambiguous default
+  if (type === 'bid_group') return null  // winner/no_winner — ambiguous default
   if (type === 'parallel') return null  // fan-out configured via picker, not auto-connect
   if (type === 'filter') return 'pass'
   return 'output'

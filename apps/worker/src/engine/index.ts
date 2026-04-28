@@ -8,6 +8,9 @@ import { buildContext, recordStepOutput } from './context'
 import { executeNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult } from './nodes/parallel'
+import { executeBidGroupNode } from './nodes/bid-group'
+import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
+import { executePartnerBidNode } from './nodes/partner-bid'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -556,6 +559,128 @@ export async function walkGraph(
       }
       // Advance past the whole parallel block (parallel_start + children + parallel_end)
       stepOrder = parallelEndOrder + 1
+      continue
+    }
+
+    // ── Bid Group node — fan out to N partners and pick a winner ─────────────
+    if (node.type === 'bid_group') {
+      const groupStartedAt = new Date().toISOString()
+      log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
+
+      // Allocate a step_order block:
+      //   group_start, attempt_0, attempt_1, ..., (potential fallback)
+      const groupStartOrder = stepOrder
+      const attemptOrderBase = stepOrder + 1
+      const config = node.config as Record<string, unknown>
+      const partnerIds = (config.partner_ids as string[] | undefined) ?? []
+      const fallbackId = config.fallback_partner_id as string | null | undefined
+      const maxAttempts = partnerIds.length + (fallbackId ? 1 : 0)
+      const groupEndOrder = attemptOrderBase + maxAttempts
+
+      // Pre-load partner slugs in one query so the synthesized namespaces use the slug
+      // instead of the UUID — much friendlier in the test panel.
+      const allIds = Array.from(new Set([...partnerIds, ...(fallbackId ? [fallbackId] : [])]))
+      const slugByPartnerId = new Map<string, string>()
+      if (allIds.length > 0) {
+        const { data: rows } = await supabase
+          .from('partner_configs')
+          .select('id, slug')
+          .in('id', allIds)
+        for (const r of (rows ?? []) as { id: string; slug: string }[]) {
+          slugByPartnerId.set(r.id, r.slug)
+        }
+      }
+
+      const runAttempt = async ({ partner_id, attemptIndex }: { partner_id: string; attemptIndex: number }): Promise<BidGroupAttempt> => {
+        const slug = slugByPartnerId.get(partner_id) ?? `partner-${attemptIndex}`
+        const childNamespace = `${node.namespace}.${slug}`
+        const childNode: NodeDefinition = {
+          id: `${node.id}::${slug}`,
+          namespace: childNamespace,
+          type: 'partner_bid',
+          config: { partner_id },
+        }
+        const attemptStart = new Date().toISOString()
+        const attemptStartMs = Date.now()
+
+        let attemptStatus: StepStatus = 'completed'
+        let attemptError: string | undefined
+        let attemptErrorType: ErrorType = null
+        let attemptOutput: import('./nodes/partner-bid').PartnerBidOutput | null = null
+
+        try {
+          const result = await executePartnerBidNode(childNode, ctx, env, supabase)
+          attemptOutput = result.output as import('./nodes/partner-bid').PartnerBidOutput
+        } catch (err) {
+          attemptStatus = 'failed'
+          attemptError = err instanceof Error ? err.message : String(err)
+          if (err instanceof PartnerApiError) attemptErrorType = err.errorType
+          else if (err instanceof Response) attemptErrorType = classifyHttpError(err.status)
+          else attemptErrorType = classifyTransportError(err)
+        }
+
+        recordStepOutput(ctx, childNamespace, { output: attemptOutput, status: attemptStatus, error: attemptError, error_type: attemptErrorType })
+        logStep(stepLogQueue, executionId, executionStartedAt, childNode, attemptStatus, { partner_id }, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
+
+        const attemptStatusLog = attemptStatus === 'completed' ? 'step_complete' : 'step_error'
+        log({ event: attemptStatusLog, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: childNamespace, step_type: 'partner_bid', duration_ms: Date.now() - attemptStartMs, error_message: attemptError, error_type: attemptErrorType })
+
+        return {
+          namespace: childNamespace,
+          partner_id,
+          output: attemptOutput,
+          status: attemptStatus,
+          error: attemptError,
+          error_type: attemptErrorType,
+          started_at: attemptStart,
+          duration_ms: Date.now() - attemptStartMs,
+        }
+      }
+
+      let groupOutput: BidGroupOutput | null = null
+      let groupStatus: StepStatus = 'completed'
+      let groupErrorMessage: string | undefined
+      try {
+        groupOutput = await executeBidGroupNode(node, ctx, env, supabase, runAttempt)
+      } catch (err) {
+        groupStatus = 'failed'
+        groupErrorMessage = err instanceof Error ? err.message : String(err)
+      }
+
+      const groupDurationMs = Date.now() - new Date(groupStartedAt).getTime()
+      if (groupStatus === 'completed' && groupOutput) {
+        log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: groupDurationMs })
+      } else {
+        log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: groupDurationMs, error_message: groupErrorMessage })
+      }
+
+      recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: null })
+      logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, null, groupOutput, groupErrorMessage, null, 0, groupStartedAt, groupStartOrder)
+
+      lastOutput = groupOutput
+
+      if (groupStatus === 'failed') {
+        throw new StepFailureError(groupErrorMessage!, node.namespace, null)
+      }
+
+      // no_winner_behavior: 'exit' short-circuits the workflow with the group's output.
+      if (groupOutput && groupOutput._route === 'no_winner') {
+        const noWinnerBehavior = (config.no_winner_behavior as string | undefined) ?? 'fail'
+        if (noWinnerBehavior === 'exit') {
+          stepOrder = groupEndOrder + 1
+          return { body: groupOutput, status: 200 }
+        }
+      }
+
+      // Pick the outgoing edge by _route (winner / no_winner). Falls back to
+      // the first matching condition if no _route handle is wired (older configs).
+      const outEdges = outgoingEdges(node.id, definition.edges)
+      const route = groupOutput?._route
+      let nextEdge = route ? outEdges.find((e) => e.source_handle === route) : undefined
+      if (!nextEdge) nextEdge = outEdges.find((e) => evaluateEdge(e, ctx))
+      current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+
+      stepOrder = groupEndOrder + 1
       continue
     }
 
