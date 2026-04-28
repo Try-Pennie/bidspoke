@@ -574,12 +574,15 @@ export async function walkGraph(
       const config = node.config as Record<string, unknown>
       const partnerIds = (config.partner_ids as string[] | undefined) ?? []
       const fallbackId = config.fallback_partner_id as string | null | undefined
-      const maxAttempts = partnerIds.length + (fallbackId ? 1 : 0)
+      const tiers = (config.tiers as Array<{ partner_ids?: string[] }> | undefined) ?? []
+      const tieredPartnerCount = tiers.reduce((sum, t) => sum + (t.partner_ids?.length ?? 0), 0)
+      const maxAttempts = (config.mode === 'tiered' ? tieredPartnerCount : partnerIds.length) + (fallbackId ? 1 : 0)
       const groupEndOrder = attemptOrderBase + maxAttempts
 
       // Pre-load partner slugs in one query so the synthesized namespaces use the slug
       // instead of the UUID — much friendlier in the test panel.
-      const allIds = Array.from(new Set([...partnerIds, ...(fallbackId ? [fallbackId] : [])]))
+      const tieredPartnerIds = tiers.flatMap((t) => t.partner_ids ?? [])
+      const allIds = Array.from(new Set([...partnerIds, ...tieredPartnerIds, ...(fallbackId ? [fallbackId] : [])]))
       const slugByPartnerId = new Map<string, string>()
       if (allIds.length > 0) {
         const { data: rows } = await supabase

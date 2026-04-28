@@ -241,7 +241,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
-        {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} />}
+        {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} edges={edges} onEdgesChange={onEdgesChange} />}
@@ -1475,12 +1475,22 @@ function PartnerBidConfig({
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
 
+interface BidGroupTier {
+  id: string
+  label?: string
+  mode: 'cascade' | 'highest_bid'
+  partner_ids: string[]
+  advance_condition?: { groups: ConditionGroup[]; logic: 'AND' | 'OR' }
+}
+
 function BidGroupConfig({
   config,
   onChange,
+  refs,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
 }) {
   const [partners, setPartners] = useState<Partner[]>([])
 
@@ -1525,11 +1535,9 @@ function BidGroupConfig({
               key={m}
               type="button"
               onClick={() => setMode(m)}
-              disabled={m === 'tiered'}
-              title={m === 'tiered' ? 'Tiered mode ships in Slice 4b' : undefined}
               className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 mode === m ? 'bg-graphite text-white' : 'text-gray-600 hover:text-graphite'
-              } ${m === 'tiered' ? 'cursor-not-allowed opacity-40' : ''}`}
+              }`}
             >
               {m === 'cascade' ? 'Cascade' : m === 'highest_bid' ? 'Highest bid' : 'Tiered'}
             </button>
@@ -1538,11 +1546,11 @@ function BidGroupConfig({
         <p className="mt-1 text-xs text-gray-400">
           {mode === 'cascade' && 'Try partners in order. Stop at the first one that accepts.'}
           {mode === 'highest_bid' && 'Run all partners in parallel. Pick the highest accepted bid.'}
-          {mode === 'tiered' && 'Tiered groups ship in the next slice.'}
+          {mode === 'tiered' && 'Cascade between tiers. Each tier runs its own partners in cascade or highest-bid mode. Tiers can be gated by a rule.'}
         </p>
       </div>
 
-      <Field label={mode === 'cascade' ? 'Partners (in cascade order)' : 'Partners'} hint={mode === 'cascade' ? 'Drag the arrows to reorder. Earlier partners are tried first.' : 'Pick which partners to query in parallel.'}>
+      {mode !== 'tiered' && <Field label={mode === 'cascade' ? 'Partners (in cascade order)' : 'Partners'} hint={mode === 'cascade' ? 'Drag the arrows to reorder. Earlier partners are tried first.' : 'Pick which partners to query in parallel.'}>
         <div className="space-y-1.5">
           {partnerIds.length === 0 && (
             <p className="rounded-md border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
@@ -1588,7 +1596,16 @@ function BidGroupConfig({
             ))}
           </div>
         </details>
-      </Field>
+      </Field>}
+
+      {mode === 'tiered' && (
+        <TieredEditor
+          tiers={(config.tiers as BidGroupTier[] | undefined) ?? []}
+          buyerPartners={buyerPartners}
+          refs={refs}
+          onChange={(tiers) => onChange({ tiers })}
+        />
+      )}
 
       <Field label="Minimum bid ($)" hint="Bids below this threshold count as rejected.">
         <input
@@ -1647,6 +1664,152 @@ function BidGroupConfig({
         </Field>
       )}
     </section>
+  )
+}
+
+function TieredEditor({
+  tiers,
+  buyerPartners,
+  refs,
+  onChange,
+}: {
+  tiers: BidGroupTier[]
+  buyerPartners: Partner[]
+  refs: string[]
+  onChange: (next: BidGroupTier[]) => void
+}) {
+  const partnerById = new Map(buyerPartners.map((p) => [p.id, p]))
+
+  function update(i: number, patch: Partial<BidGroupTier>) {
+    onChange(tiers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)))
+  }
+  function remove(i: number) {
+    onChange(tiers.filter((_, idx) => idx !== i))
+  }
+  function move(i: number, dir: -1 | 1) {
+    const next = [...tiers]
+    const target = i + dir
+    if (target < 0 || target >= next.length) return
+    ;[next[i], next[target]] = [next[target], next[i]]
+    onChange(next)
+  }
+  function add() {
+    onChange([...tiers, { id: `tier_${Math.random().toString(36).slice(2, 8)}`, mode: 'highest_bid', partner_ids: [] }])
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Tiers</p>
+      {tiers.length === 0 && (
+        <p className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
+          No tiers yet. Tiers run in order — each tier&apos;s mode determines how its partners are queried.
+        </p>
+      )}
+      {tiers.map((tier, i) => {
+        const cond = tier.advance_condition
+        const hasGate = !!cond && cond.groups && cond.groups.length > 0
+        return (
+          <div key={tier.id} className="rounded-lg border border-gray-200 bg-white p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-500">{i + 1}</span>
+              <input
+                value={tier.label ?? ''}
+                onChange={(e) => update(i, { label: e.target.value })}
+                placeholder={`Tier ${i + 1}`}
+                className="flex-1 rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-gray-400 focus:outline-none"
+              />
+              <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5">
+                {(['cascade', 'highest_bid'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => update(i, { mode: m })}
+                    className={`rounded px-2 py-0.5 text-xs font-medium ${
+                      tier.mode === m ? 'bg-graphite text-white' : 'text-gray-600 hover:text-graphite'
+                    }`}
+                  >
+                    {m === 'cascade' ? 'Cascade' : 'Highest'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-col">
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move up">
+                  <ChevronUp className="h-3 w-3" />
+                </button>
+                <button type="button" onClick={() => move(i, 1)} disabled={i === tiers.length - 1} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move down">
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+              </div>
+              <button type="button" onClick={() => remove(i)} className="text-gray-300 hover:text-red-400">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-medium text-gray-600">Partners</p>
+              <div className="space-y-1">
+                {tier.partner_ids.length === 0 && (
+                  <p className="rounded-md border border-dashed border-gray-200 px-2 py-1.5 text-xs text-gray-400">No partners selected.</p>
+                )}
+                {tier.partner_ids.map((id) => {
+                  const p = partnerById.get(id)
+                  return (
+                    <div key={id} className="flex items-center gap-1.5 rounded-md border border-gray-200 px-2 py-1">
+                      <span className="flex-1 truncate text-xs text-graphite">{p?.name ?? id.slice(0, 8)}</span>
+                      <button type="button" onClick={() => update(i, { partner_ids: tier.partner_ids.filter((x) => x !== id) })} className="text-gray-300 hover:text-red-400">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+              <details className="mt-1.5">
+                <summary className="cursor-pointer text-xs text-p-blue-dark hover:text-navy">Add partners…</summary>
+                <div className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-200 p-1.5">
+                  {buyerPartners.filter((p) => !tier.partner_ids.includes(p.id)).map((p) => (
+                    <button key={p.id} type="button" onClick={() => update(i, { partner_ids: [...tier.partner_ids, p.id] })} className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs hover:bg-gray-50">
+                      <span>{p.name}{!p.is_active && <span className="ml-2 text-gray-400">(inactive)</span>}</span>
+                      <Plus className="h-3 w-3 text-gray-400" />
+                    </button>
+                  ))}
+                </div>
+              </details>
+            </div>
+
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <p className="text-xs font-medium text-gray-600">Advance condition</p>
+                {hasGate ? (
+                  <button type="button" onClick={() => update(i, { advance_condition: undefined })} className="text-xs text-gray-400 hover:text-red-400">Remove gate</button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => update(i, { advance_condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } })}
+                    className="text-xs text-p-blue-dark hover:text-navy"
+                  >
+                    Add gate
+                  </button>
+                )}
+              </div>
+              {hasGate ? (
+                <RuleBuilder
+                  groups={cond.groups}
+                  logic={cond.logic}
+                  onChange={(groups, logic) => update(i, { advance_condition: { groups, logic } })}
+                  fieldSuggestions={refs}
+                />
+              ) : (
+                <p className="text-xs text-gray-400">Always run this tier when no winner yet.</p>
+              )}
+            </div>
+          </div>
+        )
+      })}
+      <button onClick={add} className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy">
+        <Plus className="h-3.5 w-3.5" />
+        Add tier
+      </button>
+    </div>
   )
 }
 

@@ -240,13 +240,136 @@ describe('BidGroup edge cases', () => {
     expect(runAttempt).not.toHaveBeenCalled()
   })
 
-  it('tiered mode (Slice 4b) returns clear no_winner reason', async () => {
+  it('tiered with no tiers configured returns no_tiers_configured', async () => {
     const runAttempt = vi.fn()
     const result = await executeBidGroupNode(
-      makeNode({ mode: 'tiered', tiers: [{ id: 't1', mode: 'cascade', partner_ids: ['p1'] }] }),
+      makeNode({ mode: 'tiered', tiers: [] }),
       makeCtx(), env, supabase, runAttempt as never
     )
     expect(result.winner).toBeNull()
-    expect(result.reason).toContain('tiered_mode_not_implemented')
+    expect(result.reason).toBe('no_tiers_configured')
+  })
+})
+
+describe('BidGroup tiered mode', () => {
+  it('tier 1 has a winner -> stops, tier 2 not run', async () => {
+    const seen: string[] = []
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      seen.push(partner_id)
+      return attempt(partner_id, { partner: partner_id, bid: 50, accepted: true })
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'highest_bid', partner_ids: ['p1', 'p2'] },
+          { id: 't2', mode: 'cascade', partner_ids: ['p3', 'p4'] },
+        ],
+      }),
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(seen.sort()).toEqual(['p1', 'p2'])
+    expect(result.winner).not.toBeNull()
+    expect(result.tier_winner).toBe('t1')
+    expect(result.reason).toBe('tier_winner')
+  })
+
+  it('tier 1 all reject -> tier 2 runs and wins', async () => {
+    const seen: string[] = []
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      seen.push(partner_id)
+      if (partner_id === 'p3') return attempt('p3', { partner: 'p3', bid: 25, accepted: true })
+      return attempt(partner_id, { partner: partner_id, skipped: true, skip_reason: 'rejected' })
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'highest_bid', partner_ids: ['p1', 'p2'] },
+          { id: 't2', mode: 'cascade', partner_ids: ['p3', 'p4'] },
+        ],
+      }),
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(result.tier_winner).toBe('t2')
+    expect(result.winner?.partner).toBe('p3')
+    // t1 ran in parallel; t2 cascade short-circuits at p3
+    expect(seen.sort()).toEqual(['p1', 'p2', 'p3'])
+    expect(result.all_bids).toHaveLength(3)
+  })
+
+  it('advance_condition false -> tier skipped, recorded in tiers_skipped', async () => {
+    const seen: string[] = []
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      seen.push(partner_id)
+      return attempt(partner_id, { partner: partner_id, bid: 30, accepted: true })
+    }
+    const ctxWithState = {
+      trigger: { payload: { state: 'CA' }, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 't' },
+      steps: {},
+      env: {},
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'cascade', partner_ids: ['p1'], advance_condition: {
+            groups: [{ conditions: [{ field: 'trigger.payload.state', operator: 'eq', value: 'NY' }], logic: 'AND' }],
+            logic: 'AND',
+          } },
+          { id: 't2', mode: 'cascade', partner_ids: ['p2'] },
+        ],
+      }),
+      ctxWithState, env, supabase, runAttempt
+    )
+    expect(seen).toEqual(['p2'])
+    expect(result.winner?.partner).toBe('p2')
+    expect(result.tiers_skipped).toEqual(['t1'])
+    expect(result.tier_winner).toBe('t2')
+  })
+
+  it('all tiers skipped -> no_winner with reason all_tiers_skipped', async () => {
+    const runAttempt = vi.fn()
+    const ctxWithState = {
+      trigger: { payload: { state: 'NY' }, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 't' },
+      steps: {},
+      env: {},
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'cascade', partner_ids: ['p1'], advance_condition: {
+            groups: [{ conditions: [{ field: 'trigger.payload.state', operator: 'eq', value: 'CA' }], logic: 'AND' }],
+            logic: 'AND',
+          } },
+        ],
+      }),
+      ctxWithState, env, supabase, runAttempt as never
+    )
+    expect(runAttempt).not.toHaveBeenCalled()
+    expect(result.winner).toBeNull()
+    expect(result.reason).toBe('all_tiers_skipped')
+    expect(result.tiers_skipped).toEqual(['t1'])
+  })
+
+  it('all tiers exhausted -> group-level fallback fires', async () => {
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      if (partner_id === 'fb') return attempt('fb', { partner: 'fb', bid: 5, accepted: true })
+      return attempt(partner_id, { partner: partner_id, skipped: true, skip_reason: 'rejected' })
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'cascade', partner_ids: ['p1'] },
+          { id: 't2', mode: 'cascade', partner_ids: ['p2'] },
+        ],
+        fallback_partner_id: 'fb',
+      }),
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(result.winner?.partner).toBe('fb')
+    expect(result.reason).toBe('fallback_won')
   })
 })
