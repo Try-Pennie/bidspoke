@@ -31,17 +31,20 @@ function WorkflowEditorInner() {
   }, [id])
 
   useEffect(() => {
-    if (!executionId) {
-      setExecutionSteps(undefined)
-      setExecutionPayload(undefined)
-      setExecutionSource(null)
-      setExecutionTraceId(null)
-      setExecutionStartedAt(null)
-      setExecutionParentId(null)
-      setExecutionChildren([])
-      return
-    }
+    // Always reset before kicking off the new fetch so the canvas/banners
+    // never render the previous execution's data alongside a newer id.
+    setExecutionSteps(undefined)
+    setExecutionPayload(undefined)
+    setExecutionSource(null)
+    setExecutionTraceId(null)
+    setExecutionStartedAt(null)
+    setExecutionParentId(null)
+    setExecutionChildren([])
+    if (!executionId) return
+
+    let cancelled = false
     api.executions.get(executionId).then((exec) => {
+      if (cancelled) return
       setExecutionPayload(exec.trigger_payload)
       setExecutionSource(exec.source)
       setExecutionTraceId(exec.trace_id)
@@ -62,6 +65,7 @@ function WorkflowEditorInner() {
       }
       setExecutionSteps(map)
     }).catch(() => {})
+    return () => { cancelled = true }
   }, [executionId])
 
   if (error) {
