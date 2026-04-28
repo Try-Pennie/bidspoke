@@ -226,21 +226,25 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-gray-800">
                       {exec.source}
                     </span>
-                    {exec.parent_execution_id && (
-                      <span title="Replay" className="flex items-center text-gray-400">
-                        <RotateCcw className="h-3 w-3" />
-                      </span>
-                    )}
-                    {exec.has_children && (
-                      <span title="Replayed" className="flex items-center text-gray-400">
-                        <RotateCcw className="h-3 w-3 -scale-x-100" />
-                      </span>
-                    )}
                     <span className="ml-auto text-xs text-gray-400">{formatTime(exec.started_at)}</span>
                   </div>
-                  <p className="mt-0.5 text-xs text-gray-400">
-                    {exec.duration_ms !== null ? formatDuration(exec.duration_ms) : ' '}
-                  </p>
+                  <div className="mt-0.5 flex items-center justify-between gap-2">
+                    <p className="text-xs text-gray-400">
+                      {exec.duration_ms !== null ? formatDuration(exec.duration_ms) : ' '}
+                    </p>
+                    {exec.parent_execution_id && (
+                      <span className="flex items-center gap-1 rounded-full bg-p-blue-light px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-p-blue-dark">
+                        <RotateCcw className="h-3 w-3" />
+                        Replay
+                      </span>
+                    )}
+                    {exec.has_children && !exec.parent_execution_id && (
+                      <span className="flex items-center gap-1 rounded-full bg-p-blue-light px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-p-blue-dark">
+                        <RotateCcw className="h-3 w-3 -scale-x-100" />
+                        Replayed
+                      </span>
+                    )}
+                  </div>
                   {exec.status === 'failed' && exec.error_message && (
                     <p
                       onClick={(e) => toggleError(exec.id, e)}
