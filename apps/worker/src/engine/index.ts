@@ -251,10 +251,13 @@ export async function executeWorkflow(
   // Also: if we returned early due to continueExecution, the remaining walk
   // is still running. Chain the flush AFTER the walk fully completes so
   // post-response steps get their logs written too.
-  const flushPromise = walkPromiseCaught
+  const flushPromise: Promise<string | null> = walkPromiseCaught
     .then(() => executionRecordPromise)
     .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? ''))
-    .catch((e) => console.error('[step-logger] flush failed:', e))
+    .catch((e) => {
+      console.error('[step-logger] flush failed:', e)
+      return e instanceof Error ? e.message : String(e)
+    })
 
   if (options.isTest) {
     // Test mode: wait for everything so the UI sees a complete step list.
@@ -287,24 +290,57 @@ export async function executeWorkflow(
   // The tail consumer adds the main-Worker CPU slice on top once Cloudflare
   // reports true cpuTime for the invocation.
   executionCtx.waitUntil(
-    walkPromiseCaught
-      .then(async () => {
+    Promise.all([walkPromiseCaught, flushPromise])
+      .then(async ([, flushError]) => {
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
+
+        // Backstop: a "completed" execution that never advanced past the
+        // trigger (no node recorded a successful output) or whose step rows
+        // were rejected by Postgres (e.g. missing-column migration drift) is
+        // not actually a success — we have no audit trail and the workflow
+        // body did not visibly run. Promote to failed so the dashboard,
+        // Slack alert, and outcome all reflect reality.
+        let finalStatus = executionStatus
+        let finalErrorMessage = errorMessage
+        if (finalStatus === 'completed' && flushError) {
+          finalStatus = 'failed'
+          failedErrorType = failedErrorType ?? 'permanent'
+          finalErrorMessage = `Step logs failed to persist: ${flushError}`
+        } else if (finalStatus === 'completed' && finalNodeNamespace == null) {
+          finalStatus = 'failed'
+          failedErrorType = failedErrorType ?? 'permanent'
+          finalErrorMessage = 'Execution did not advance past the trigger — no step completed.'
+        }
+
         const outcome: 'successful' | 'completed' | 'failed' =
-          executionStatus === 'failed'
+          finalStatus === 'failed'
             ? 'failed'
             : (finalNodeNamespace && successNamespaces.includes(finalNodeNamespace)) ? 'successful' : 'completed'
         const cost = estimateStepBasedCost(stepLogQueue)
         await updateExecutionRecord(supabase, executionId, startedAt, {
-          status: executionStatus,
+          status: finalStatus,
           outcome,
           final_node_namespace: finalNodeNamespace,
           completed_at: completedAt,
           duration_ms: durationMs,
           response_body: response,
-          error_message: errorMessage,
+          error_message: finalErrorMessage,
           cost_usd: cost,
         })
+
+        if (finalStatus === 'failed' && executionStatus === 'completed' && !options.isTest) {
+          executionCtx.waitUntil(
+            sendFailureAlert(supabase, org_id, slack_channel, {
+              workflow_id: workflowId,
+              workflow_name,
+              execution_id: executionId,
+              step_namespace: failedStep,
+              error_message: finalErrorMessage ?? 'Unknown error',
+              error_type: failedErrorType ?? 'permanent',
+              timestamp: completedAt,
+            }, env.APP_URL).catch((e) => console.error('[slack] backstop alert failed:', e))
+          )
+        }
       })
       .catch((e) => console.error('[execution] failed to update execution record:', e))
   )

@@ -45,12 +45,14 @@ export async function writeStepLog(
 
 // Batch-insert an accumulated queue of step logs. Used at end of execution
 // to flush all step logs in a single round-trip instead of one-per-step.
+// Returns the Postgres error message when the insert is rejected so callers
+// can downgrade the execution outcome instead of silently completing.
 export async function flushStepLogs(
   supabase: SupabaseClient,
   queue: StepLogEntry[],
   piiFieldsRaw: string
-): Promise<void> {
-  if (queue.length === 0) return
+): Promise<string | null> {
+  if (queue.length === 0) return null
   const piiFields = parsePiiFields(piiFieldsRaw)
   const rows = queue.map((entry) => ({
     ...entry,
@@ -64,7 +66,9 @@ export async function flushStepLogs(
       execution_id: queue[0]?.execution_id,
       error,
     })
+    return error.message
   }
+  return null
 }
 
 export async function createExecutionRecord(
