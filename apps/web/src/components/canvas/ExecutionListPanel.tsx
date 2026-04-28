@@ -227,9 +227,9 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     </span>
                     <span className="ml-auto text-xs text-gray-400">{formatTime(exec.started_at)}</span>
                   </div>
-                  {exec.duration_ms !== null && (
-                    <p className="mt-0.5 text-xs text-gray-400">{formatDuration(exec.duration_ms)}</p>
-                  )}
+                  <p className="mt-0.5 text-xs text-gray-400">
+                    {exec.duration_ms !== null ? formatDuration(exec.duration_ms) : ' '}
+                  </p>
                   {exec.status === 'failed' && exec.error_message && (
                     <p
                       onClick={(e) => toggleError(exec.id, e)}
