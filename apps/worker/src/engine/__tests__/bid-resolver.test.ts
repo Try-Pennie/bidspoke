@@ -1,0 +1,160 @@
+/**
+ * Bid resolver — dispatch tests for formula / api / matrix.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { resolveBid, evaluateFormula, BidResolverConfigError } from '../bid-resolver'
+import type { PartnerForResolver } from '../bid-resolver'
+import type { ExecutionContext } from '../../types'
+import type { Env } from '../../index'
+
+function makeCtx(payload: Record<string, unknown> = {}): ExecutionContext {
+  return {
+    trigger: { payload, source: 'test', workflow_id: 'wf-1', org_id: '', trace_id: 'trace-1' },
+    steps: {},
+    env: {},
+  }
+}
+
+function makePartner(overrides: Partial<PartnerForResolver> = {}): PartnerForResolver {
+  return {
+    id: 'p-1',
+    slug: 'test-partner',
+    api_endpoint: null,
+    cf_secret_key: null,
+    bid_formula: null,
+    bid_resolver_type: null,
+    bid_resolver_config: null,
+    response_classification: null,
+    alert_config: null,
+    ...overrides,
+  }
+}
+
+const env = {} as Env
+
+describe('resolveBid — dispatch by bid_resolver_type', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('formula resolver: reads bid_resolver_config.formula', async () => {
+    const partner = makePartner({
+      bid_resolver_type: 'formula',
+      bid_resolver_config: { formula: 'debt_amount * 0.5' },
+    })
+    const result = await resolveBid(partner, makeCtx({ debt_amount: 1000 }), env)
+    expect(result.bid).toBe(500)
+    expect(result.raw).toBeNull()
+  })
+
+  it('formula resolver: falls back to legacy bid_formula when config missing', async () => {
+    const partner = makePartner({
+      bid_resolver_type: 'formula',
+      bid_resolver_config: null,
+      bid_formula: 'debt_amount * 0.65',
+    })
+    const result = await resolveBid(partner, makeCtx({ debt_amount: 100 }), env)
+    expect(result.bid).toBe(65)
+  })
+
+  it('api resolver: POSTs to api_endpoint and reads bid', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ bid: 42 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://partner.example/bid',
+    })
+    const result = await resolveBid(partner, makeCtx({ debt: 5000 }), env)
+    expect(result.bid).toBe(42)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    const [url, init] = fetchSpy.mock.calls[0]
+    expect(url).toBe('https://partner.example/bid')
+    expect((init as RequestInit).method).toBe('POST')
+  })
+
+  it('matrix resolver: throws BidResolverConfigError until Slice 2 ships', async () => {
+    const partner = makePartner({
+      bid_resolver_type: 'matrix',
+      bid_resolver_config: { bid_config_id: 'abc' },
+    })
+    await expect(resolveBid(partner, makeCtx(), env)).rejects.toThrow(BidResolverConfigError)
+  })
+
+  it('legacy fallback: api_endpoint set + no resolver_type -> api', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ bid: 99 }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: null,
+      api_endpoint: 'https://x',
+      bid_formula: 'debt_amount * 1', // ignored because api_endpoint wins
+    })
+    const result = await resolveBid(partner, makeCtx({ debt_amount: 1 }), env)
+    expect(result.bid).toBe(99)
+  })
+
+  it('legacy fallback: bid_formula set + no api -> formula', async () => {
+    const partner = makePartner({
+      bid_resolver_type: null,
+      api_endpoint: null,
+      bid_formula: 'debt_amount * 2',
+    })
+    const result = await resolveBid(partner, makeCtx({ debt_amount: 50 }), env)
+    expect(result.bid).toBe(100)
+  })
+
+  it('formula resolver: empty formula returns null bid', async () => {
+    const partner = makePartner({
+      bid_resolver_type: 'formula',
+      bid_resolver_config: { formula: '   ' },
+    })
+    const result = await resolveBid(partner, makeCtx({ debt_amount: 100 }), env)
+    expect(result.bid).toBeNull()
+  })
+
+  it('api resolver: rejection signal returns rejected:true', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ status: 'rejected' }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://x',
+      response_classification: {
+        rejection_signals: [{ field: 'status', equals: 'rejected' }],
+      },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.rejected).toBe(true)
+    expect(result.bid).toBeNull()
+  })
+})
+
+describe('evaluateFormula', () => {
+  it('arithmetic with payload field', () => {
+    expect(evaluateFormula('debt_amount * 0.65', makeCtx({ debt_amount: 10000 }))).toBe(6500)
+  })
+
+  it('Math.floor', () => {
+    expect(evaluateFormula('Math.floor(debt_amount / 100)', makeCtx({ debt_amount: 12345 }))).toBe(123)
+  })
+
+  it('missing field -> NaN -> null', () => {
+    expect(evaluateFormula('missing * 2', makeCtx({}))).toBeNull()
+  })
+
+  it('whitespace-only formula returns null', () => {
+    expect(evaluateFormula('   ', makeCtx({}))).toBeNull()
+  })
+
+  it('string number coerced', () => {
+    expect(evaluateFormula('debt * 2', makeCtx({ debt: '50' }))).toBe(100)
+  })
+
+  it('invalid expression returns null instead of throwing', () => {
+    expect(evaluateFormula('this is not js', makeCtx({}))).toBeNull()
+  })
+})

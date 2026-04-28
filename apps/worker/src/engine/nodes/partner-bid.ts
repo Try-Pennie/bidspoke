@@ -6,7 +6,7 @@
  *   2. Circuit breaker check → skip if open
  *   3. Daily cap check → skip if exceeded
  *   4. Dedup endpoint check → skip if duplicate
- *   5. API call (if api_endpoint set) OR formula evaluation
+ *   5. Resolve bid via resolveBid() — formula / api / matrix per partner config
  *   6. Classify response → accepted / rejected / error
  *   7. Report outcome back to circuit breaker
  *   8. Return bid result
@@ -22,12 +22,15 @@ import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
-import {
-  classifyHttpError,
-  evaluateResponseClassification,
-  shouldSuppressAlert,
-} from '../error-classifier'
+import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
+import type { BidResolverType } from '../bid-resolver'
+import { resolveBid } from '../bid-resolver'
+import { PartnerApiError } from '../partner-bid-error'
+
+// Re-exports — keep external imports stable.
+export { PartnerApiError } from '../partner-bid-error'
+export { evaluateFormula } from '../bid-resolver'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +46,9 @@ interface PartnerConfig {
   daily_cap: number | null
   min_bid: number | null
   bid_formula: string | null
+  bid_resolver_type: BidResolverType | null
+  bid_resolver_config: Record<string, unknown> | null
+  outbound_field_mapping: Record<string, unknown> | null
   dedup_endpoint: string | null
   response_classification: ResponseClassificationConfig | null
   alert_config: AlertConfig | null
@@ -51,21 +57,6 @@ interface PartnerConfig {
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
   is_active: boolean
-}
-
-/**
- * Thrown by the partner-bid node when a partner API call fails.
- * Carries the pre-determined error classification and alert suppression flag
- * so the engine doesn't need to re-classify or look up the partner config.
- */
-export class PartnerApiError extends Error {
-  constructor(
-    message: string,
-    public readonly errorType: ErrorType,
-    public readonly suppressAlert: boolean
-  ) {
-    super(message)
-  }
 }
 
 type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected'
@@ -82,6 +73,13 @@ export interface PartnerBidOutput {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
+const PARTNER_SELECT =
+  'id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, ' +
+  'bid_resolver_type, bid_resolver_config, outbound_field_mapping, ' +
+  'dedup_endpoint, response_classification, alert_config, ' +
+  'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
+  'circuit_enabled, is_active'
+
 export async function executePartnerBidNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
@@ -97,7 +95,7 @@ export async function executePartnerBidNode(
   // 1. Load partner config
   const { data: partner, error } = await supabase
     .from('partner_configs')
-    .select('id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, dedup_endpoint, response_classification, alert_config, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, circuit_enabled, is_active')
+    .select(PARTNER_SELECT)
     .eq('id', config.partner_id)
     .single()
 
@@ -105,7 +103,7 @@ export async function executePartnerBidNode(
     throw new Error(`Partner config not found: ${config.partner_id}`)
   }
 
-  const p = partner as PartnerConfig
+  const p = partner as unknown as PartnerConfig
 
   // 2. Inactive check
   if (!p.is_active) {
@@ -149,33 +147,28 @@ export async function executePartnerBidNode(
     }
   }
 
-  // 6. Get bid — formula or API call
+  // 6. Resolve bid via the bid-resolver abstraction
   let bid: number | null = null
   let rawResponse: unknown = null
   const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
 
   try {
-    if (p.api_endpoint) {
-      const result = await callBidApi(p, ctx, env)
-      if (result.rejected) {
-        // Rejection signal matched — valid business outcome, not an error
-        return {
-          output: {
-            partner: p.slug,
-            bid: null,
-            accepted: false,
-            skipped: true,
-            skip_reason: 'rejected' as const,
-            raw_response: result.raw,
-            cap_count: capCount,
-          },
-        }
+    const result = await resolveBid(p, ctx, env)
+    if (result.rejected) {
+      return {
+        output: {
+          partner: p.slug,
+          bid: null,
+          accepted: false,
+          skipped: true,
+          skip_reason: 'rejected' as const,
+          raw_response: result.raw,
+          cap_count: capCount,
+        },
       }
-      bid = result.bid
-      rawResponse = result.raw
-    } else if (p.bid_formula) {
-      bid = evaluateFormula(p.bid_formula, ctx)
     }
+    bid = result.bid
+    rawResponse = result.raw
 
     if (cb) cb.recordSuccess().catch(() => {})
   } catch (err) {
@@ -239,93 +232,6 @@ function skip(slug: string, reason: SkipReason): StepExecutionResult {
   return { output }
 }
 
-async function callBidApi(
-  partner: PartnerConfig,
-  ctx: ExecutionContext,
-  env: Env
-): Promise<{ bid: number | null; raw: unknown; rejected?: boolean }> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-Trace-Id': ctx.trigger.trace_id,
-  }
-
-  // Load partner auth secret if configured
-  if (partner.cf_secret_key) {
-    const secretValue = (env as unknown as Record<string, string | undefined>)[partner.cf_secret_key]
-    if (secretValue) {
-      headers['Authorization'] = `Bearer ${secretValue}`
-    }
-  }
-
-  const body = JSON.stringify(ctx.trigger.payload)
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 15000)
-
-  let res: Response
-  try {
-    res = await fetch(partner.api_endpoint!, {
-      method: 'POST',
-      headers,
-      body,
-      signal: controller.signal,
-    })
-  } finally {
-    clearTimeout(timeout)
-  }
-
-  const raw = await res.json().catch(() => null)
-
-  // Collect response headers for signal evaluation
-  const resHeaders: Record<string, string> = {}
-  res.headers.forEach((v, k) => { resHeaders[k] = v })
-
-  // Apply per-partner classification overrides (§11.2)
-  if (partner.response_classification) {
-    const override = evaluateResponseClassification(
-      partner.response_classification,
-      res.status,
-      raw,
-      resHeaders
-    )
-    if (override === 'rejection') {
-      return { bid: null, raw, rejected: true }
-    }
-    if (override === 'transient' || override === 'permanent') {
-      // Override the default classification — throw PartnerApiError directly
-      const suppress = shouldSuppressAlert(partner.alert_config, override)
-      throw new PartnerApiError(
-        `Partner API returned ${res.status} (classified as ${override} by override)`,
-        override,
-        suppress
-      )
-    }
-  }
-
-  if (!res.ok) {
-    throw new Error(`Partner API returned ${res.status}`)
-  }
-
-  // Check rejection signals on successful responses too (e.g., 200 with {status: "rejected"})
-  // Already handled above via evaluateResponseClassification, but double-check extractBid
-  const bid = extractBid(raw)
-  return { bid, raw }
-}
-
-function extractBid(raw: unknown): number | null {
-  if (typeof raw !== 'object' || raw === null) return null
-  const r = raw as Record<string, unknown>
-  // Common field names for bid amounts
-  for (const field of ['bid', 'bid_amount', 'amount', 'price', 'offer']) {
-    const val = r[field]
-    if (typeof val === 'number') return val
-    if (typeof val === 'string') {
-      const n = parseFloat(val)
-      if (!isNaN(n)) return n
-    }
-  }
-  return null
-}
-
 async function checkDedup(
   endpoint: string,
   ctx: ExecutionContext
@@ -338,60 +244,9 @@ async function checkDedup(
     })
     if (!res.ok) return false
     const data = await res.json() as Record<string, unknown>
-    // Truthy `duplicate` or `is_duplicate` field = this lead is a dup
     return !!(data.duplicate || data.is_duplicate)
   } catch {
-    // Dedup endpoint failure — treat as not duplicate (don't skip bids due to infra issues)
     return false
   }
 }
 
-/**
- * Evaluate a bid formula string against the execution context.
- * Only arithmetic and dot-path field references are supported.
- * Formula is user-authored (authenticated user), so Function constructor is safe here.
- *
- * Example: "debt_amount * 0.65" with ctx.trigger.payload.debt_amount = 10000 → 6500
- */
-export function evaluateFormula(formula: string, ctx: ExecutionContext): number | null {
-  if (!formula.trim()) return null
-
-  // Extract all identifier tokens (potential field references)
-  const identifiers = Array.from(
-    new Set(formula.match(/[a-zA-Z_][a-zA-Z0-9_.]*/g) ?? [])
-  ).filter((id) => !/^(Math|floor|ceil|round|min|max|abs|sqrt|pow)$/.test(id))
-
-  // Build variable bindings from trigger.payload
-  const vars: Record<string, number> = {}
-  const payload = ctx.trigger.payload
-  for (const id of identifiers) {
-    const val = getPath(payload, id.split('.'))
-    if (typeof val === 'number') vars[id] = val
-    else if (typeof val === 'string') {
-      const n = parseFloat(val)
-      if (!isNaN(n)) vars[id] = n
-    }
-  }
-
-  try {
-    // Create a restricted function with only Math and the resolved variables
-    const paramNames = ['Math', ...Object.keys(vars)]
-    const paramValues = [Math, ...Object.values(vars)]
-    // eslint-disable-next-line no-new-func
-    const fn = new Function(...paramNames, `return (${formula})`)
-    const result = fn(...paramValues)
-    if (typeof result !== 'number' || !isFinite(result)) return null
-    return result
-  } catch {
-    return null
-  }
-}
-
-function getPath(obj: unknown, parts: string[]): unknown {
-  let cur = obj
-  for (const part of parts) {
-    if (cur === null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[part]
-  }
-  return cur
-}
