@@ -143,7 +143,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
           <button
             key={tab.key}
             onClick={() => setFilter(tab.key)}
-            className={`flex-1 py-1.5 text-xs transition-colors ${
+            className={`flex-1 py-1.5 text-center text-xs transition-colors ${
               filter === tab.key
                 ? 'border-b-2 border-p-blue-dark font-semibold text-p-blue-dark'
                 : 'text-gray-400 hover:text-gray-600'
