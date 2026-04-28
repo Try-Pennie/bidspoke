@@ -97,12 +97,13 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   const load = useCallback((silent = false) => {
     if (!silent) setLoading(true)
+    const opts = filter === 'all' ? undefined : { outcome: filter }
     api.executions
-      .list(workflowId)
+      .list(workflowId, opts)
       .then(setExecutions)
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [workflowId])
+  }, [workflowId, filter])
 
   const loadVersions = useCallback(() => {
     api.versions.list(workflowId).then(setVersions).catch(() => {})
@@ -128,9 +129,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     }
   }, [refreshSignal, load, loadVersions])
 
-  const filtered = filter === 'all'
-    ? executions
-    : executions.filter((e) => (e.outcome ?? (e.status === 'failed' ? 'failed' : null)) === filter)
+  const filtered = executions
   const items = buildItems(filtered, versions)
 
   return (
