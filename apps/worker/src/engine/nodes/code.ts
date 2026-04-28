@@ -87,16 +87,29 @@ export async function executeCodeNode(
   const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body)
   const text = await res.text()
 
+  // Parse the response, then unwrap the {__bsv: 1, output, logs} envelope if
+  // present. Older bundles deployed before envelope support return bare output;
+  // the envelope flag lets us tell them apart unambiguously without any
+  // collision risk against user-returned objects shaped like {output, logs}.
+  let parsed: unknown = null
+  if (text !== '' && text !== 'undefined') {
+    try { parsed = JSON.parse(text) } catch { parsed = text }
+  }
+  const envelope = isEnvelope(parsed) ? parsed : null
+
   if (!res.ok) {
-    let detail = text
-    try {
-      const parsed = JSON.parse(text) as { error?: string }
-      if (parsed?.error) detail = parsed.error
-    } catch { /* keep raw text */ }
-    throw new Error(detail)
+    const detail = envelope
+      ? (envelope.error ?? text)
+      : extractLegacyError(text)
+    const err = new Error(detail) as Error & { logs?: import('../../types').StepLogEntry[] }
+    if (envelope && Array.isArray(envelope.logs)) err.logs = envelope.logs as import('../../types').StepLogEntry[]
+    throw err
   }
 
-  const output: unknown = text === '' || text === 'undefined' ? null : JSON.parse(text)
+  const output: unknown = envelope ? (envelope.output ?? null) : parsed
+  const logs = envelope && Array.isArray(envelope.logs)
+    ? (envelope.logs as import('../../types').StepLogEntry[])
+    : undefined
 
   // Detect early-exit sentinels emitted by translated Pipedream code:
   //   $.respond({...})  → return { response: { status, body, headers? } }
@@ -106,16 +119,28 @@ export async function executeCodeNode(
     if ('response' in obj && obj.response !== null && typeof obj.response === 'object') {
       const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
       if (obj.continueExecution === true) {
-        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true }
+        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true, logs }
       }
-      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers } }
+      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, logs }
     }
     if (obj.exit === true) {
-      return { output, earlyExit: true }
+      return { output, earlyExit: true, logs }
     }
   }
 
-  return { output }
+  return { output, logs }
+}
+
+function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string } {
+  return v !== null && typeof v === 'object' && (v as { __bsv?: unknown }).__bsv === 1
+}
+
+function extractLegacyError(text: string): string {
+  try {
+    const p = JSON.parse(text) as { error?: string }
+    if (p?.error) return p.error
+  } catch { /* keep raw text */ }
+  return text
 }
 
 /**

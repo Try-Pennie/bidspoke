@@ -123,6 +123,12 @@ export interface StepOutput {
   error_type?: ErrorType
 }
 
+export interface StepLogEntry {
+  level: 'log' | 'info' | 'warn' | 'error' | 'debug'
+  message: string
+  ts: string
+}
+
 export interface StepExecutionResult {
   output: unknown
   error?: string
@@ -130,6 +136,7 @@ export interface StepExecutionResult {
   earlyResponse?: { status: number; body: unknown; headers?: Record<string, string> }
   earlyExit?: true
   continueAfterResponse?: true  // respond but keep walking (mirrors Pipedream $.respond() without $.flow.exit())
+  logs?: StepLogEntry[]
 }
 
 export interface LoadedWorkflow {

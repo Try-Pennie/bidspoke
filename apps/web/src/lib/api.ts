@@ -293,6 +293,7 @@ export const api = {
           status: string
           input: unknown
           output: unknown
+          logs: Array<{ level: string; message: string; ts: string }> | null
           error_message: string | null
           error_type: string | null
           retries_used: number

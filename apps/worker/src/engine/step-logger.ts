@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { StepStatus, ErrorType } from '../types'
+import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
 import { redactPii, parsePiiFields } from './pii-redactor'
 
 export interface StepLogEntry {
@@ -10,6 +10,7 @@ export interface StepLogEntry {
   status: StepStatus
   input: unknown
   output: unknown
+  logs?: StepLogLine[]
   error_message?: string
   error_type?: ErrorType
   retries_used: number

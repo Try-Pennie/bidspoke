@@ -12,6 +12,14 @@ import { Skeleton } from '@/components/ui/Skeleton'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
 
+const LOG_LEVEL_CLASS: Record<string, string> = {
+  error: 'text-red-300',
+  warn: 'text-yellow-300',
+  info: 'text-blue-300',
+  log: 'text-gray-100',
+  debug: 'text-gray-400',
+}
+
 const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: string; text: string }> = {
   completed:            { icon: <CheckCircle className="h-4 w-4" />, label: 'Completed',   bg: 'bg-green-50',  text: 'text-green-700' },
   failed:               { icon: <XCircle className="h-4 w-4" />,    label: 'Failed',       bg: 'bg-red-50',    text: 'text-red-700'   },
@@ -300,6 +308,21 @@ export default function ExecutionDetailPage() {
                           <JsonBlock value={step.output} />
                         </div>
                       </div>
+
+                      {step.logs && step.logs.length > 0 && (
+                        <div className="mt-3">
+                          <p className="mb-1 text-xs font-medium text-gray-500">Logs</p>
+                          <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-3 text-xs text-gray-100">
+                            {step.logs.map((entry, j) => (
+                              <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
+                                <span className="text-gray-500">{entry.ts.slice(11, 23)}</span>{' '}
+                                <span className="font-semibold">{entry.level}</span>{' '}
+                                {entry.message}
+                              </div>
+                            ))}
+                          </pre>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

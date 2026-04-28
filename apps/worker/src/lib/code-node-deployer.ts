@@ -38,7 +38,7 @@ export function codeWorkerName(workflowId: string, namespace: string): string {
 export function buildBundledWorkerScript(scripts: Array<{ namespace: string; script: string }>): string {
   const entries = scripts.map(({ namespace, script }) => {
     const indented = script.split('\n').map((l) => `      ${l}`).join('\n')
-    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution) => {
+    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution, console) => {
       const trigger = { payload }
       const process = { env }
 ${indented}
@@ -49,11 +49,55 @@ ${indented}
 ${entries}
 }
 
-// Run a single registered script by namespace.
+// Per-call console capture. Each invocation gets its own buffer; the user's
+// console.{log,info,warn,error,debug} calls are captured here, then returned
+// alongside the script result so the engine can persist them to the step row.
+// Capped at 200 entries / 50KB to keep step-row writes bounded — anything past
+// the cap drops with a single [truncated] marker.
+const LOG_MAX_ENTRIES = 200
+const LOG_MAX_BYTES = 50000
+function makeConsole() {
+  const entries = []
+  let bytes = 0
+  let truncated = false
+  function fmt(arg) {
+    if (arg === undefined) return 'undefined'
+    if (arg === null) return 'null'
+    if (typeof arg === 'string') return arg
+    try { return JSON.stringify(arg) } catch { return String(arg) }
+  }
+  function push(level, args) {
+    if (truncated) return
+    const message = Array.from(args).map(fmt).join(' ')
+    const entry = { level, message, ts: new Date().toISOString() }
+    const size = message.length + 30
+    if (entries.length >= LOG_MAX_ENTRIES || bytes + size > LOG_MAX_BYTES) {
+      entries.push({ level: 'warn', message: '[truncated: console output exceeded limit]', ts: new Date().toISOString() })
+      truncated = true
+      return
+    }
+    entries.push(entry)
+    bytes += size
+  }
+  return {
+    captured: entries,
+    api: {
+      log:   function () { push('log',   arguments) },
+      info:  function () { push('info',  arguments) },
+      warn:  function () { push('warn',  arguments) },
+      error: function () { push('error', arguments) },
+      debug: function () { push('debug', arguments) },
+    },
+  }
+}
+
+// Run a single registered script by namespace, capturing its console output.
 async function runOne(ns, payload, steps, env, execution) {
   const fn = scripts[ns]
   if (!fn) throw new Error('script not found: ' + ns)
-  return await fn(payload, steps, env, execution)
+  const c = makeConsole()
+  const output = await fn(payload, steps, env, execution, c.api)
+  return { output, logs: c.captured }
 }
 
 // Detect a code-node sentinel in a returned value. Matches the engine's
@@ -84,21 +128,24 @@ export default {
       const stepsCtx = steps ?? {}
       for (const { namespace } of chain) {
         const startMs = Date.now()
+        const c = makeConsole()
         try {
-          const output = await runOne(namespace, payload, stepsCtx, env, execution)
+          const fn = scripts[namespace]
+          if (!fn) throw new Error('script not found: ' + namespace)
+          const output = await fn(payload, stepsCtx, env, execution, c.api)
           const durationMs = Date.now() - startMs
           const sentinel = detectSentinel(output)
           stepsCtx[namespace] = { output: output ?? null, status: 'completed' }
-          results.push({ namespace, status: 'completed', output: output ?? null, durationMs, sentinel })
+          results.push({ namespace, status: 'completed', output: output ?? null, logs: c.captured, durationMs, sentinel })
           // Stop the chain on any sentinel — main worker decides what happens next
           if (sentinel) break
         } catch (err) {
           const durationMs = Date.now() - startMs
-          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), durationMs })
+          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), logs: c.captured, durationMs })
           break
         }
       }
-      return Response.json({ results })
+      return Response.json({ __bsv: 1, results })
     }
 
     const match = url.pathname.match(/^\\/execute\\/([^/]+)$/)
@@ -111,15 +158,16 @@ export default {
       return new Response(JSON.stringify({ error: 'script not found: ' + ns }), { status: 404, headers: { 'Content-Type': 'application/json' } })
     }
     const { payload, steps, env, execution } = await request.json()
+    const c = makeConsole()
     try {
-      const result = await fn(payload, steps, env, execution)
-      return Response.json(result ?? null)
+      const output = await fn(payload, steps, env, execution, c.api)
+      return Response.json({ __bsv: 1, output: output ?? null, logs: c.captured })
     } catch (err) {
       // Surface the real script error as a 500 JSON response so the engine's
       // dispatchWithFallback treats it as bundle-present-with-error and reports
       // the actual message, not a misleading "Worker not found" fallback miss.
       const message = err && err.message ? err.message : String(err)
-      return new Response(JSON.stringify({ error: message }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+      return new Response(JSON.stringify({ __bsv: 1, error: message, logs: c.captured }), { status: 500, headers: { 'Content-Type': 'application/json' } })
     }
   }
 }`
