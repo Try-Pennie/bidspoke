@@ -32,9 +32,10 @@ interface Props {
   onRerun?: (namespace: string) => void
   width?: number
   onResize?: (width: number) => void
+  workflowId?: string
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, width, onResize }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, width, onResize, workflowId }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -167,21 +168,14 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             </button>
             {showAdvanced && (
               <div className="mt-3 space-y-3">
-                <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
-                  <div className="flex items-center gap-2">
-                    <input type="number" className="input" placeholder="30000"
-                      value={(data.config.timeout_ms as number | undefined) ?? ''}
-                      onChange={(e) => updateConfig({ timeout_ms: e.target.value ? parseInt(e.target.value) : undefined })}
-                    />
-                    <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
-                  </div>
-                </Field>
+                <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} />
                 <Field label="Retries" hint="How many times to retry on temporary failures. Max 5.">
                   <input type="number" className="input" placeholder="0" min={0} max={5}
                     value={(data.config.retries as number | undefined) ?? ''}
                     onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
                   />
                 </Field>
+                <CircuitBreakerServiceField config={data.config} updateConfig={updateConfig} nodeType={type} />
                 <Field label="If this step fails">
                   <select className="input"
                     value={(data.config.on_error as string | undefined) ?? 'fail'}
@@ -257,18 +251,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             Advanced
           </button>
           {showAdvanced && <div className="mt-3 space-y-3">
-            <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  className="input"
-                  placeholder="30000"
-                  value={(data.config.timeout_ms as number | undefined) ?? ''}
-                  onChange={(e) => updateConfig({ timeout_ms: e.target.value ? parseInt(e.target.value) : undefined })}
-                />
-                <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
-              </div>
-            </Field>
+            <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} />
             <Field label="Retries" hint="How many times to retry on temporary failures (network errors, 429, 502–504). Max 5.">
               <input
                 type="number"
@@ -280,6 +263,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
               />
             </Field>
+            <CircuitBreakerServiceField config={data.config} updateConfig={updateConfig} nodeType={type} />
             <Field label="If this step fails">
               <select
                 className="input"
@@ -2549,6 +2533,149 @@ function ConstantsConfig({
         </p>
       </div>
     </section>
+  )
+}
+
+// ── Timeout field with historical stats ──────────────────────────────────────
+
+type StepStats = {
+  p50: number | null
+  p95: number | null
+  p99: number | null
+  max_ms: number | null
+  sample_size: number
+  suggested_ms: number | null
+  window_days: number
+}
+
+function TimeoutField({
+  config,
+  updateConfig,
+  workflowId,
+  namespace,
+}: {
+  config: Record<string, unknown>
+  updateConfig: (patch: Record<string, unknown>) => void
+  workflowId?: string
+  namespace?: string
+}) {
+  const [stats, setStats] = useState<StepStats | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!workflowId || !namespace) return
+    let cancelled = false
+    setLoading(true)
+    api.executions.stepDurationStats(workflowId, namespace)
+      .then((s) => { if (!cancelled) setStats(s) })
+      .catch(() => { if (!cancelled) setStats(null) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workflowId, namespace])
+
+  const current = config.timeout_ms as number | undefined
+  const effective = current ?? 30000
+
+  let warning: { tone: 'red' | 'amber' | 'blue'; text: string } | null = null
+  if (stats && stats.sample_size >= 10 && stats.p99 != null && stats.max_ms != null && stats.suggested_ms != null) {
+    if (effective < stats.max_ms) {
+      warning = {
+        tone: 'red',
+        text: `A real run took ${stats.max_ms.toLocaleString()}ms — this timeout would have killed it. Past p99 is ${stats.p99.toLocaleString()}ms.`,
+      }
+    } else if (effective < stats.suggested_ms) {
+      warning = {
+        tone: 'amber',
+        text: `Works today, but no headroom. Past p99 is ${stats.p99.toLocaleString()}ms; minor latency spikes will time out.`,
+      }
+    } else if (effective > stats.suggested_ms * 3) {
+      warning = {
+        tone: 'blue',
+        text: `Past p99 is only ${stats.p99.toLocaleString()}ms. You could safely lower this to ~${stats.suggested_ms.toLocaleString()}ms to fail faster on real outages.`,
+      }
+    }
+  }
+
+  return (
+    <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          className="input"
+          placeholder="30000"
+          value={current ?? ''}
+          onChange={(e) => updateConfig({ timeout_ms: e.target.value ? parseInt(e.target.value) : undefined })}
+        />
+        <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
+      </div>
+      {workflowId && namespace && (
+        <div className="mt-1.5 space-y-1">
+          {loading && <p className="text-xs text-gray-400">Loading past runs…</p>}
+          {!loading && stats && stats.sample_size < 10 && (
+            <p className="text-xs text-gray-400">
+              Need more runs to suggest a value (only {stats.sample_size} in last {stats.window_days}d).
+            </p>
+          )}
+          {!loading && stats && stats.sample_size >= 10 && stats.suggested_ms != null && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+              <span>
+                Past {stats.window_days}d: p50 {stats.p50?.toLocaleString()}ms · p99 {stats.p99?.toLocaleString()}ms · n={stats.sample_size.toLocaleString()}
+              </span>
+              <button
+                type="button"
+                onClick={() => updateConfig({ timeout_ms: stats.suggested_ms ?? undefined })}
+                className="rounded border border-p-blue-light bg-p-blue-light px-1.5 py-0.5 text-p-blue-dark hover:border-p-blue-dark"
+              >
+                Use {stats.suggested_ms.toLocaleString()}ms
+              </button>
+            </div>
+          )}
+          {warning && (
+            <p
+              className={
+                warning.tone === 'red'
+                  ? 'rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700'
+                  : warning.tone === 'amber'
+                  ? 'rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800'
+                  : 'rounded border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700'
+              }
+            >
+              {warning.text}
+            </p>
+          )}
+        </div>
+      )}
+    </Field>
+  )
+}
+
+// ── Circuit breaker service tag ──────────────────────────────────────────────
+
+function CircuitBreakerServiceField({
+  config,
+  updateConfig,
+  nodeType,
+}: {
+  config: Record<string, unknown>
+  updateConfig: (patch: Record<string, unknown>) => void
+  nodeType: NodeType
+}) {
+  // Partner Bid nodes already wire their own breaker keyed on the partner slug.
+  // Integration nodes set `service` via their own type picker. Skip both.
+  if (nodeType === 'partner_bid' || nodeType === 'webhook') return null
+  const value = (config.service as string | undefined) ?? ''
+  return (
+    <Field
+      label="Circuit breaker service"
+      hint="Tag this node with the upstream it calls (e.g. equifax, tripoint). When repeated transient failures cross the threshold, the breaker opens and short-circuits all nodes with the same tag. Leave blank to skip."
+    >
+      <input
+        className="input"
+        placeholder="e.g. equifax"
+        value={value}
+        onChange={(e) => updateConfig({ service: e.target.value || undefined })}
+      />
+    </Field>
   )
 }
 

@@ -312,6 +312,18 @@ export const api = {
   },
 
   executions: {
+    stepDurationStats: (workflowId: string, namespace: string) => {
+      const params = new URLSearchParams({ workflow_id: workflowId, namespace })
+      return req<{
+        p50: number | null
+        p95: number | null
+        p99: number | null
+        max_ms: number | null
+        sample_size: number
+        suggested_ms: number | null
+        window_days: number
+      }>(`/api/executions/step-duration-stats?${params.toString()}`)
+    },
     listRecent: () =>
       req<Array<{
         id: string

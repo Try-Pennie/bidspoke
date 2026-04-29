@@ -2172,6 +2172,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               onRerun={handleNodeRerun}
               width={sidePanelWidth}
               onResize={setSidePanelWidth}
+              workflowId={workflow.id}
             />
           )}
         </div>

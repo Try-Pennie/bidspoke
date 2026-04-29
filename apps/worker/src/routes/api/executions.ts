@@ -68,6 +68,66 @@ executions.get('/', async (c) => {
   return c.json(enriched)
 })
 
+// GET /api/executions/step-duration-stats?workflow_id=X&namespace=Y
+//
+// Returns p50/p95/p99/max/sample_size for completed (non-test) runs of one
+// step over the last 7 days. Used by the config panel to suggest a sensible
+// timeout. Cached in KV for 30 minutes.
+//
+// Must be declared BEFORE `/:id` so the literal segment isn't matched as an id.
+executions.get('/step-duration-stats', async (c) => {
+  const { orgId } = c.get('user')
+  const workflowId = c.req.query('workflow_id')
+  const namespace = c.req.query('namespace')
+  if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
+
+  const cacheKey = `step-stats:${workflowId}:${namespace}`
+  const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
+  if (cached) return c.json(JSON.parse(cached))
+
+  const supabase = createSupabaseClient(c.env)
+
+  // Verify org owns the workflow before exposing any stats
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', workflowId)
+    .eq('organization_id', orgId)
+    .single()
+  if (!wf) return c.json({ error: 'Workflow not found' }, 404)
+
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const { data, error } = await supabase.rpc('step_duration_percentiles', {
+    p_workflow_id: workflowId,
+    p_namespace: namespace,
+    p_since: since,
+  })
+  if (error) return c.json({ error: error.message }, 500)
+
+  const row = (data ?? [])[0] as
+    | { p50: number | null; p95: number | null; p99: number | null; max_ms: number | null; sample_size: number }
+    | undefined
+
+  const sampleSize = Number(row?.sample_size ?? 0)
+  const p99 = row?.p99 ?? null
+  const suggestedMs = p99 != null ? Math.ceil((p99 * 1.5) / 250) * 250 : null
+
+  const payload = {
+    p50: row?.p50 ?? null,
+    p95: row?.p95 ?? null,
+    p99,
+    max_ms: row?.max_ms ?? null,
+    sample_size: sampleSize,
+    suggested_ms: suggestedMs,
+    window_days: 7,
+  }
+
+  // 30-minute KV cache
+  await c.env.WORKFLOW_CACHE.put(cacheKey, JSON.stringify(payload), { expirationTtl: 1800 })
+
+  return c.json(payload)
+})
+
 // GET /api/executions/:id
 executions.get('/:id', async (c) => {
   const { orgId } = c.get('user')
