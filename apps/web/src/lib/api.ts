@@ -483,8 +483,8 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),
-    listSlackChannels: () =>
-      req<{ channels: Array<{ id: string; name: string }> }>('/api/integrations/slack/channels'),
+    searchSlackChannels: (q: string) =>
+      req<{ channels: Array<{ id: string; name: string }> }>(`/api/integrations/slack/channels?q=${encodeURIComponent(q)}`),
     deleteSlack: () =>
       req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },

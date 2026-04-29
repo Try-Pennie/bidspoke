@@ -120,11 +120,16 @@ integrations.get('/slack', async (c) => {
   })
 })
 
-// GET /api/integrations/slack/channels — list channels using the stored bot token,
-// so the user can pick a new default channel without re-pasting credentials.
+// GET /api/integrations/slack/channels?q=foo — search channels by name substring.
+// Requires q (>= 3 chars). Slack's conversations.list has no native query param,
+// so we paginate through the workspace and filter server-side. Capped at 50 matches
+// to keep the UI responsive on large workspaces.
 integrations.get('/slack/channels', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
+
+  const q = (c.req.query('q') ?? '').trim().toLowerCase()
+  if (q.length < 3) return c.json({ channels: [] })
 
   const { data } = await supabase
     .from('service_connections')
@@ -137,23 +142,42 @@ integrations.get('/slack/channels', async (c) => {
   const token = typeof cfg?.bot_token === 'string' ? cfg.bot_token : null
   if (!token) return c.json({ error: 'Slack is not connected' }, 404)
 
-  const chanRes = await fetch(
-    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  const chanData = await chanRes.json() as {
-    ok: boolean
-    channels?: Array<{ id: string; name: string }>
-    error?: string
+  const matches: Array<{ id: string; name: string }> = []
+  const MAX_MATCHES = 50
+  const MAX_PAGES = 20  // 20 pages × 1000 = 20k channels ceiling
+  let cursor: string | undefined
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = new URL('https://slack.com/api/conversations.list')
+    url.searchParams.set('types', 'public_channel,private_channel')
+    url.searchParams.set('exclude_archived', 'true')
+    url.searchParams.set('limit', '1000')
+    if (cursor) url.searchParams.set('cursor', cursor)
+
+    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    const chanData = await res.json() as {
+      ok: boolean
+      channels?: Array<{ id: string; name: string }>
+      response_metadata?: { next_cursor?: string }
+      error?: string
+    }
+
+    if (!chanData.ok) return c.json({ error: `Slack API error: ${chanData.error ?? 'unknown'}` }, 502)
+
+    for (const ch of chanData.channels ?? []) {
+      if (ch.name.toLowerCase().includes(q)) {
+        matches.push({ id: ch.id, name: ch.name })
+        if (matches.length >= MAX_MATCHES) break
+      }
+    }
+
+    if (matches.length >= MAX_MATCHES) break
+    cursor = chanData.response_metadata?.next_cursor
+    if (!cursor) break
   }
 
-  if (!chanData.ok) return c.json({ error: `Slack API error: ${chanData.error ?? 'unknown'}` }, 502)
-
-  const channels = (chanData.channels ?? [])
-    .map((ch) => ({ id: ch.id, name: ch.name }))
-    .sort((a, b) => a.name.localeCompare(b.name))
-
-  return c.json({ channels })
+  matches.sort((a, b) => a.name.localeCompare(b.name))
+  return c.json({ channels: matches })
 })
 
 // PATCH /api/integrations/slack/settings — toggle alert preferences or change the

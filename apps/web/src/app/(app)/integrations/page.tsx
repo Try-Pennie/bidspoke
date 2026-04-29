@@ -42,12 +42,44 @@ export default function IntegrationsPage() {
   const [resolved, setResolved] = useState<ResolvedSlack | null>(null)
   const [selectedChannel, setSelectedChannel] = useState('')
 
-  // Inline channel editor (shown only when Slack is already connected)
+  // Inline channel editor (shown only when Slack is already connected).
+  // Type-to-search: query Slack only after >= 3 chars, debounced.
   const [editingChannel, setEditingChannel] = useState(false)
-  const [availableChannels, setAvailableChannels] = useState<Array<{ id: string; name: string }> | null>(null)
-  const [loadingChannels, setLoadingChannels] = useState(false)
-  const [pendingChannel, setPendingChannel] = useState('')
+  const [channelQuery, setChannelQuery] = useState('')
+  const [channelResults, setChannelResults] = useState<Array<{ id: string; name: string }>>([])
+  const [searchingChannels, setSearchingChannels] = useState(false)
+  const [pendingChannel, setPendingChannel] = useState('')  // selected #name to save
   const [savingChannel, setSavingChannel] = useState(false)
+  const channelInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!editingChannel) return
+    const q = channelQuery.trim()
+    if (q.length < 3) {
+      setChannelResults([])
+      setSearchingChannels(false)
+      return
+    }
+    setSearchingChannels(true)
+    const t = setTimeout(async () => {
+      try {
+        const data = await api.integrations.searchSlackChannels(q)
+        setChannelResults(data.channels)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Channel search failed')
+      } finally {
+        setSearchingChannels(false)
+      }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [channelQuery, editingChannel])
+
+  useEffect(() => {
+    if (editingChannel) {
+      const frame = requestAnimationFrame(() => channelInputRef.current?.focus())
+      return () => cancelAnimationFrame(frame)
+    }
+  }, [editingChannel])
 
   // Service presets
   const [presets, setPresets] = useState<ServicePreset[]>([])
@@ -266,73 +298,89 @@ export default function IntegrationsPage() {
                   <p className="text-gray-600">Workspace: <span className="font-medium text-graphite">{slack.workspace_name}</span></p>
                 )}
                 {editingChannel ? (
-                  <div className="mt-1 flex items-center gap-2">
-                    <span className="text-gray-600">Default channel:</span>
-                    {loadingChannels ? (
-                      <span className="text-xs text-gray-400">Loading channels…</span>
-                    ) : (
-                      <>
-                        <select
-                          className="input flex-1 py-1 text-sm"
-                          value={pendingChannel}
-                          onChange={(e) => setPendingChannel(e.target.value)}
-                          disabled={savingChannel}
-                        >
-                          {(availableChannels ?? []).map((ch) => (
-                            <option key={ch.id} value={`#${ch.name}`}>#{ch.name}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={async () => {
-                            if (!pendingChannel) return
-                            setSavingChannel(true)
-                            const prev = slack.default_channel
-                            setSlack((s) => (s ? { ...s, default_channel: pendingChannel } : s))
-                            try {
-                              await api.integrations.updateSlackSettings({ default_channel: pendingChannel })
-                              setEditingChannel(false)
-                            } catch (e) {
-                              setSlack((s) => (s ? { ...s, default_channel: prev } : s))
-                              setError(e instanceof Error ? e.message : 'Failed to update channel')
-                            } finally {
-                              setSavingChannel(false)
-                            }
-                          }}
-                          disabled={savingChannel || loadingChannels}
-                          className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
-                        >
-                          {savingChannel ? 'Saving…' : 'Save'}
-                        </button>
-                        <button
-                          onClick={() => setEditingChannel(false)}
-                          disabled={savingChannel}
-                          className="text-xs text-gray-400 hover:text-gray-600"
-                        >
-                          Cancel
-                        </button>
-                      </>
+                  <div className="mt-1 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-600">Default channel:</span>
+                      <input
+                        ref={channelInputRef}
+                        className="input flex-1 py-1 text-sm"
+                        placeholder="Type at least 3 characters to search"
+                        value={channelQuery}
+                        onChange={(e) => {
+                          setChannelQuery(e.target.value)
+                          setPendingChannel('')
+                        }}
+                        disabled={savingChannel}
+                      />
+                      <button
+                        onClick={async () => {
+                          if (!pendingChannel) return
+                          setSavingChannel(true)
+                          const prev = slack.default_channel
+                          setSlack((s) => (s ? { ...s, default_channel: pendingChannel } : s))
+                          try {
+                            await api.integrations.updateSlackSettings({ default_channel: pendingChannel })
+                            setEditingChannel(false)
+                            setChannelQuery('')
+                            setChannelResults([])
+                          } catch (e) {
+                            setSlack((s) => (s ? { ...s, default_channel: prev } : s))
+                            setError(e instanceof Error ? e.message : 'Failed to update channel')
+                          } finally {
+                            setSavingChannel(false)
+                          }
+                        }}
+                        disabled={!pendingChannel || savingChannel}
+                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                      >
+                        {savingChannel ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setEditingChannel(false)
+                          setChannelQuery('')
+                          setChannelResults([])
+                          setPendingChannel('')
+                        }}
+                        disabled={savingChannel}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {channelQuery.trim().length >= 3 && (
+                      <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                        {searchingChannels ? (
+                          <p className="px-3 py-2 text-xs text-gray-400">Searching…</p>
+                        ) : channelResults.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-gray-400">No channels match.</p>
+                        ) : (
+                          <ul className="divide-y divide-gray-100">
+                            {channelResults.map((ch) => {
+                              const value = `#${ch.name}`
+                              const selected = pendingChannel === value
+                              return (
+                                <li key={ch.id}>
+                                  <button
+                                    onClick={() => setPendingChannel(value)}
+                                    className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50 ${selected ? 'bg-p-blue-light/10 text-p-blue-dark' : 'text-graphite'}`}
+                                  >
+                                    <span>#{ch.name}</span>
+                                    {selected && <CheckCircle className="h-3.5 w-3.5" />}
+                                  </button>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                      </div>
                     )}
                   </div>
                 ) : (
                   <p className="text-gray-600">
                     Default channel: <span className="font-medium text-graphite">{slack.default_channel}</span>
                     <button
-                      onClick={async () => {
-                        setEditingChannel(true)
-                        setPendingChannel(slack.default_channel ?? '')
-                        if (!availableChannels) {
-                          setLoadingChannels(true)
-                          try {
-                            const data = await api.integrations.listSlackChannels()
-                            setAvailableChannels(data.channels)
-                          } catch (e) {
-                            setError(e instanceof Error ? e.message : 'Failed to load channels')
-                            setEditingChannel(false)
-                          } finally {
-                            setLoadingChannels(false)
-                          }
-                        }
-                      }}
+                      onClick={() => setEditingChannel(true)}
                       className="ml-2 text-xs text-p-blue-dark hover:underline"
                     >
                       Change
