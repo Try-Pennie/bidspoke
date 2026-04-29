@@ -2576,31 +2576,39 @@ function TimeoutField({
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
 
-  let warning: { tone: 'red' | 'amber' | 'blue'; text: string } | null = null
+  let warning: { tone: 'red' | 'amber' | 'blue'; lead: string; body: string } | null = null
   if (stats && stats.sample_size >= 10 && stats.p99 != null && stats.max_ms != null && stats.suggested_ms != null) {
     if (effective < stats.max_ms) {
       warning = {
         tone: 'red',
-        text: `A real run took ${stats.max_ms.toLocaleString()}ms — this timeout would have killed it. Past p99 is ${stats.p99.toLocaleString()}ms.`,
+        lead: `Heads up — one real run took ${formatMs(stats.max_ms)}.`,
+        body: 'This timeout would have ended it early.',
       }
     } else if (effective < stats.suggested_ms) {
       warning = {
         tone: 'amber',
-        text: `Works today, but no headroom. Past p99 is ${stats.p99.toLocaleString()}ms; minor latency spikes will time out.`,
+        lead: 'Cutting it close.',
+        body: 'Most runs finish in time, but a slower one will get cut off.',
       }
     } else if (effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2) {
-      // Only suggest lowering if there's real headroom over both p99-based suggestion AND the observed max.
-      // Without the max guard, a step with a fat tail (p99=1s but max=28s) would get told to lower to ~1.5s
-      // and kill the real long-tail runs.
+      // Only suggest lowering if there's real headroom over both the p99-based
+      // suggestion AND the observed max. Without the max guard, a step with a
+      // fat tail (p99=1s but max=28s) gets told to lower to ~1.5s and that
+      // would kill real long-tail runs.
       warning = {
         tone: 'blue',
-        text: `Past p99 is only ${stats.p99.toLocaleString()}ms (max ${stats.max_ms.toLocaleString()}ms). You could safely lower this to fail faster on real outages.`,
+        lead: 'Plenty of room.',
+        body: `You could safely lower this to ${formatMs(stats.suggested_ms)} so failures show up faster.`,
       }
     }
   }
 
+  const showStats = !loading && stats && stats.sample_size >= 10
+  const showThin = !loading && stats && stats.sample_size < 10
+
   return (
-    <Field label="Timeout" hint="How long to wait before giving up on this step. Default 30s.">
+    <Field label="Timeout">
+      {/* Input */}
       <div className="flex items-center gap-2">
         <input
           type="number"
@@ -2611,45 +2619,68 @@ function TimeoutField({
         />
         <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
       </div>
+
+      {/* Plain-language description sits right under the input */}
+      <p className="mt-1.5 text-xs text-gray-500">
+        How long to wait before giving up on this step. Default 30s.
+      </p>
+
+      {/* Past-run context — quieter, conversational */}
       {workflowId && namespace && (
-        <div className="mt-1.5 space-y-1">
-          {loading && <p className="text-xs text-gray-400">Loading past runs…</p>}
-          {!loading && stats && stats.sample_size < 10 && (
+        <div className="mt-3">
+          {loading && <p className="text-xs text-gray-400">Checking past runs…</p>}
+
+          {showThin && (
             <p className="text-xs text-gray-400">
-              Need more runs to suggest a value (only {stats.sample_size} in last {stats.window_days}d).
+              Not enough runs yet to suggest a value ({stats!.sample_size} in the last week).
             </p>
           )}
-          {!loading && stats && stats.sample_size >= 10 && stats.suggested_ms != null && (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-              <span>
-                Past {stats.window_days}d: p50 {stats.p50?.toLocaleString()}ms · p99 {stats.p99?.toLocaleString()}ms · n={stats.sample_size.toLocaleString()}
-              </span>
-              <button
-                type="button"
-                onClick={() => updateConfig({ timeout_ms: stats.suggested_ms ?? undefined })}
-                className="rounded border border-p-blue-light bg-p-blue-light px-1.5 py-0.5 text-p-blue-dark hover:border-p-blue-dark"
-              >
-                Use {stats.suggested_ms.toLocaleString()}ms
-              </button>
-            </div>
+
+          {showStats && (
+            <p className="text-xs leading-relaxed text-gray-600">
+              This step usually finishes in{' '}
+              <strong className="font-semibold text-gray-800">{formatMs(stats!.p50!)}</strong>
+              {' '}and rarely takes more than{' '}
+              <strong className="font-semibold text-gray-800">{formatMs(stats!.p99!)}</strong>
+              <span className="text-gray-400"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
+              {stats!.suggested_ms != null && current !== stats!.suggested_ms && (
+                <>
+                  {' '}
+                  <button
+                    type="button"
+                    onClick={() => updateConfig({ timeout_ms: stats!.suggested_ms ?? undefined })}
+                    className="font-medium text-p-blue-dark underline-offset-2 hover:underline"
+                  >
+                    Try {formatMs(stats!.suggested_ms)}
+                  </button>
+                </>
+              )}
+            </p>
           )}
+
           {warning && (
-            <p
+            <div
               className={
-                warning.tone === 'red'
-                  ? 'rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700'
+                'mt-2.5 text-xs leading-relaxed ' +
+                (warning.tone === 'red'
+                  ? 'rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-red-800'
                   : warning.tone === 'amber'
-                  ? 'rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800'
-                  : 'rounded border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700'
+                  ? 'rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-amber-900'
+                  : 'border-l-2 border-sky-300 pl-2.5 text-sky-800')
               }
             >
-              {warning.text}
-            </p>
+              <strong className="font-semibold">{warning.lead}</strong> {warning.body}
+            </div>
           )}
         </div>
       )}
     </Field>
   )
+}
+
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms.toLocaleString()}ms`
+  return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`
 }
 
 // ── Circuit breaker service tag ──────────────────────────────────────────────
