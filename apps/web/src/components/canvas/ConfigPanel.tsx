@@ -2358,6 +2358,32 @@ function ParallelEndConfig({
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+type ConstantType = 'string' | 'number' | 'boolean' | 'array'
+
+function detectType(value: unknown): ConstantType {
+  if (Array.isArray(value)) return 'array'
+  if (typeof value === 'number') return 'number'
+  if (typeof value === 'boolean') return 'boolean'
+  return 'string'
+}
+
+function coerceForType(raw: string, type: ConstantType): unknown {
+  switch (type) {
+    case 'number': {
+      if (raw.trim() === '') return ''
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : raw
+    }
+    case 'boolean':
+      return raw === 'true'
+    case 'array':
+      return raw.split(',').map((s) => s.trim()).filter(Boolean)
+    case 'string':
+    default:
+      return raw
+  }
+}
+
 function ConstantsConfig({
   config,
   onChange,
@@ -2381,9 +2407,16 @@ function ConstantsConfig({
   }
 
   function setValue(key: string, raw: string) {
-    const isStates = key === 'states' || Array.isArray(data[key])
-    const parsed = isStates ? raw.split(',').map((s) => s.trim()).filter(Boolean) : raw
-    updateData({ ...data, [key]: parsed })
+    const type = detectType(data[key])
+    updateData({ ...data, [key]: coerceForType(raw, type) })
+  }
+
+  function setType(key: string, nextType: ConstantType) {
+    // Convert the existing value into the new type. Round-trip via string so
+    // every transition is predictable: number 200 → "200" → boolean false; etc.
+    const current = data[key]
+    const asString = Array.isArray(current) ? current.join(', ') : String(current ?? '')
+    updateData({ ...data, [key]: coerceForType(asString, nextType) })
   }
 
   function removeKey(key: string) {
@@ -2422,8 +2455,10 @@ function ConstantsConfig({
         ) : (
           <div className="space-y-1.5">
             {entries.map(([key, value]) => {
-              const isArray = Array.isArray(value)
-              const displayValue = isArray ? (value as string[]).join(', ') : String(value ?? '')
+              const type = detectType(value)
+              const displayValue = Array.isArray(value)
+                ? value.join(', ')
+                : String(value ?? '')
               return (
                 <div key={key} className="flex items-center gap-1.5">
                   <input
@@ -2432,12 +2467,39 @@ function ConstantsConfig({
                     onChange={(e) => setKeyName(key, e.target.value)}
                     placeholder="key"
                   />
-                  <input
-                    className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-                    value={displayValue}
-                    onChange={(e) => setValue(key, e.target.value)}
-                    placeholder={key === 'states' ? 'AL, AZ, CA, ...' : 'value'}
-                  />
+                  <select
+                    className="flex-shrink-0 rounded border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                    value={type}
+                    onChange={(e) => setType(key, e.target.value as ConstantType)}
+                    title="Value type"
+                  >
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="boolean">boolean</option>
+                    <option value="array">array</option>
+                  </select>
+                  {type === 'boolean' ? (
+                    <select
+                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                      value={value === true ? 'true' : 'false'}
+                      onChange={(e) => setValue(key, e.target.value)}
+                    >
+                      <option value="true">true</option>
+                      <option value="false">false</option>
+                    </select>
+                  ) : (
+                    <input
+                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                      value={displayValue}
+                      onChange={(e) => setValue(key, e.target.value)}
+                      placeholder={
+                        type === 'array' ? 'item1, item2, item3'
+                          : type === 'number' ? '0'
+                          : 'value'
+                      }
+                      inputMode={type === 'number' ? 'decimal' : 'text'}
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => removeKey(key)}
@@ -2451,7 +2513,7 @@ function ConstantsConfig({
           </div>
         )}
         <p className="mt-2 text-xs text-gray-400">
-          For array values (e.g. &ldquo;states&rdquo;), enter comma-separated items.
+          For array values, enter comma-separated items.
         </p>
       </div>
 
