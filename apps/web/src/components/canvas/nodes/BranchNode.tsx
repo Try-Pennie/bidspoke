@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { nodeWidth } from '@/lib/layout'
 
 interface BranchEntry { label: string }
 
@@ -12,11 +13,16 @@ export function BranchNode({ data, selected }: NodeProps) {
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
     ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
+  const elseLabel = (config.else_label as string | undefined) || 'else'
   const outputPreview = getOutputPreview(executionStep)
 
-  // All handles: one per branch label, plus else when behavior is 'output'
-  const handles = [...branches.map((b) => b.label), ...(elseBehavior === 'output' ? ['else'] : [])]
+  // Handle id stays 'else' (engine + edges depend on it); only the rendered label is customizable.
+  const handles: { id: string; label: string; isElse: boolean }[] = [
+    ...branches.map((b) => ({ id: b.label, label: b.label, isElse: false })),
+    ...(elseBehavior === 'output' ? [{ id: 'else', label: elseLabel, isElse: true }] : []),
+  ]
   const handleCount = handles.length
+  const width = nodeWidth('branch', data)
 
   const description = branches.length === 0
     ? 'No branches'
@@ -26,10 +32,10 @@ export function BranchNode({ data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative w-52 rounded-lg border bg-white shadow-sm ${
+      className={`relative rounded-lg border bg-white shadow-sm ${
         selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
-      style={getExecutionStyle(executionStep)}
+      style={{ ...getExecutionStyle(executionStep), width }}
     >
       <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
@@ -47,10 +53,10 @@ export function BranchNode({ data, selected }: NodeProps) {
         )}
       </div>
       {handles.length > 0 && (
-        <div className="flex justify-evenly border-t border-gray-100 px-2 py-2 text-xs">
+        <div className="flex justify-evenly gap-2 border-t border-gray-100 px-2 py-2 text-xs">
           {handles.map((h) => (
-            <span key={h} className={h === 'else' ? 'text-slate-400' : 'text-purple-600'}>
-              ↓ {h}
+            <span key={h.id} className={`whitespace-nowrap ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}>
+              ↓ {h.label}
             </span>
           ))}
         </div>
@@ -58,10 +64,10 @@ export function BranchNode({ data, selected }: NodeProps) {
 
       {handles.map((h, i) => (
         <Handle
-          key={h}
+          key={h.id}
           type="source"
           position={Position.Bottom}
-          id={h}
+          id={h.id}
           style={{ left: `${((i + 1) / (handleCount + 1)) * 100}%` }}
         />
       ))}

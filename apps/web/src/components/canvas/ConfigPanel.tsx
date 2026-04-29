@@ -41,7 +41,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const isCode = type === 'code'
   const effectiveWidth = width ?? (isCode ? 540 : 320)
 
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(true)
   const [showMeta, setShowMeta] = useState(true)
   const nsManuallyEdited = useRef(false)
 
@@ -515,6 +515,7 @@ function BranchConfig({
   const branches = (config.branches as Array<{ label: string; condition: { groups: ConditionGroup[]; logic: 'AND' | 'OR' } }> | undefined) ?? []
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
     ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
+  const elseLabel = (config.else_label as string | undefined) ?? ''
 
   function addBranch() {
     onChange({
@@ -590,6 +591,17 @@ function BranchConfig({
             </button>
           ))}
         </div>
+        {elseBehavior === 'output' && (
+          <div className="mt-2">
+            <input
+              className="input w-full text-xs"
+              placeholder="else"
+              value={elseLabel}
+              onChange={(e) => onChange({ else_label: e.target.value })}
+            />
+            <p className="mt-1 text-xs text-gray-400">Display label for the else path. Defaults to &ldquo;else&rdquo;.</p>
+          </div>
+        )}
       </div>
     </section>
   )
@@ -2392,6 +2404,11 @@ function ConstantsConfig({
   onChange: (patch: Record<string, unknown>) => void
 }) {
   const data = (config.data ?? {}) as Record<string, unknown>
+  const [typeOverrides, setTypeOverrides] = useState<Record<string, ConstantType>>({})
+
+  function effectiveType(key: string): ConstantType {
+    return typeOverrides[key] ?? detectType(data[key])
+  }
 
   function updateData(updatedData: Record<string, unknown>) {
     onChange({ data: updatedData })
@@ -2404,16 +2421,19 @@ function ConstantsConfig({
       updated[k === oldKey ? newKey : k] = v
     }
     updateData(updated)
+    setTypeOverrides((m) => {
+      if (!(oldKey in m)) return m
+      const { [oldKey]: t, ...rest } = m
+      return { ...rest, [newKey]: t }
+    })
   }
 
   function setValue(key: string, raw: string) {
-    const type = detectType(data[key])
-    updateData({ ...data, [key]: coerceForType(raw, type) })
+    updateData({ ...data, [key]: coerceForType(raw, effectiveType(key)) })
   }
 
   function setType(key: string, nextType: ConstantType) {
-    // Convert the existing value into the new type. Round-trip via string so
-    // every transition is predictable: number 200 → "200" → boolean false; etc.
+    setTypeOverrides((m) => ({ ...m, [key]: nextType }))
     const current = data[key]
     const asString = Array.isArray(current) ? current.join(', ') : String(current ?? '')
     updateData({ ...data, [key]: coerceForType(asString, nextType) })
@@ -2423,6 +2443,11 @@ function ConstantsConfig({
     const updated = { ...data }
     delete updated[key]
     updateData(updated)
+    setTypeOverrides((m) => {
+      if (!(key in m)) return m
+      const { [key]: _, ...rest } = m
+      return rest
+    })
   }
 
   function addKey() {
@@ -2455,7 +2480,7 @@ function ConstantsConfig({
         ) : (
           <div className="space-y-1.5">
             {entries.map(([key, value]) => {
-              const type = detectType(value)
+              const type = effectiveType(key)
               const displayValue = Array.isArray(value)
                 ? value.join(', ')
                 : String(value ?? '')

@@ -226,7 +226,7 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     }
   }
   if (type === 'constants') {
-    return { data: {} }
+    return { data: {}, timeout_ms: 5000, retries: 2 }
   }
   if (type === 'bid_group') {
     return {

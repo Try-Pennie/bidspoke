@@ -26,6 +26,33 @@ export function nodeHeight(type: string | undefined) {
   return NODE_H[type ?? 'default'] ?? NODE_H.default
 }
 
+/**
+ * Branch nodes grow horizontally to fit all handle labels in the footer row.
+ * Other types use the shared NODE_W. Keep this in sync with the rendered
+ * width in BranchNode.tsx so dagre reserves the same horizontal slot.
+ */
+export function nodeWidth(type: string | undefined, data: unknown): number {
+  if (type !== 'branch') return NODE_W
+  type BranchData = {
+    config?: {
+      branches?: { label: string }[]
+      else_behavior?: 'output' | 'none' | 'error'
+      use_else?: boolean
+      else_label?: string
+    }
+  }
+  const cfg = (data as BranchData | undefined)?.config
+  const branches = cfg?.branches ?? []
+  const elseBehavior = cfg?.else_behavior ?? (cfg?.use_else === false ? 'none' : 'output')
+  const elseLabel = cfg?.else_label || 'else'
+  const handles = [...branches.map((b) => b.label), ...(elseBehavior === 'output' ? [elseLabel] : [])]
+  if (handles.length === 0) return NODE_W
+  // text-xs (~12px) avg ~6.5px/char; "↓ " prefix ~12px; px-2 row padding (16px); 16px gap between handles
+  const labelsPx = handles.reduce((sum, h) => sum + 12 + h.length * 6.5, 0)
+  const totalPx = 16 + labelsPx + 16 * Math.max(0, handles.length - 1)
+  return Math.max(NODE_W, Math.ceil(totalPx))
+}
+
 const NODE_GAP = 24 // minimum clear space between any two nodes
 export const DISCONNECTED_GAP = 280 // horizontal gap between the main flow and a disconnected subgraph
 
@@ -131,7 +158,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   g.setGraph({ rankdir: 'TB', ranksep: 32, nodesep: 48, marginx: 60, marginy: 60 })
 
   for (const node of nodes) {
-    g.setNode(node.id, { width: NODE_W, height: nodeHeight(node.type) })
+    g.setNode(node.id, { width: nodeWidth(node.type, node.data), height: nodeHeight(node.type) })
   }
 
   // Build a quick lookup so we can resolve node type/data for each edge source
