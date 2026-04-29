@@ -2596,7 +2596,9 @@ function TimeoutField({
   if (stats && stats.sample_size >= 10 && stats.p99 != null && stats.max_ms != null && stats.suggested_ms != null) {
     if (effective < stats.max_ms) {
       tone = 'red'
-      actionLeading = `But one real run took ${formatMs(stats.max_ms)}, which would have been cut off.`
+      actionLeading = 'Your timeout would have cut that off — try'
+      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionTrailing = 'for safety.'
     } else if (effective < stats.suggested_ms) {
       tone = 'amber'
       actionLeading = 'Slower runs will get cut off — try'
@@ -2670,6 +2672,14 @@ function TimeoutField({
               <strong className="font-semibold">{formatMs(stats!.p50!)}</strong>
               {' '}and rarely take{stats!.source === 'similar' ? '' : 's'} more than{' '}
               <strong className="font-semibold">{formatMs(stats!.p99!)}</strong>
+              {/* Surface max when the tail is meaningful, so users see why they
+                  can't safely lower the timeout below it. */}
+              {stats!.max_ms != null && stats!.p99 != null && stats!.max_ms > stats!.p99 * 1.2 && (
+                <>
+                  {', though one run took '}
+                  <strong className="font-semibold">{formatMs(stats!.max_ms)}</strong>
+                </>
+              )}
               <span className="opacity-70"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
               {actionLeading && current !== actionLink?.ms && (
                 <>
