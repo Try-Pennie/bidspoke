@@ -469,12 +469,18 @@ export const api = {
       connected: boolean
       workspace_name?: string | null
       default_channel?: string | null
+      volume_alerts_enabled?: boolean
       updated_at?: string
       updated_by_email?: string | null
     }>('/api/integrations/slack'),
     saveSlack: (data: { bot_token: string; default_channel: string; workspace_name?: string }) =>
       req<{ ok: boolean }>('/api/integrations/slack', {
         method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    updateSlackSettings: (data: { volume_alerts_enabled?: boolean }) =>
+      req<{ ok: boolean }>('/api/integrations/slack/settings', {
+        method: 'PATCH',
         body: JSON.stringify(data),
       }),
     deleteSlack: () =>

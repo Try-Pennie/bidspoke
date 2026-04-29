@@ -107,15 +107,52 @@ integrations.get('/slack', async (c) => {
 
   if (!data) return c.json({ connected: false })
 
-  const cfg = data.config as Record<string, string> | null
+  const cfg = data.config as Record<string, unknown> | null
   return c.json({
     connected: true,
-    workspace_name: cfg?.workspace_name ?? null,
-    default_channel: cfg?.default_channel ?? null,
+    workspace_name: (cfg?.workspace_name as string | undefined) ?? null,
+    default_channel: (cfg?.default_channel as string | undefined) ?? null,
+    // Default true so existing connections keep getting volume alerts.
+    volume_alerts_enabled: cfg?.volume_alerts_enabled !== false,
     // never return the token
     updated_at: data.updated_at,
     updated_by_email: data.updated_by_email,
   })
+})
+
+// PATCH /api/integrations/slack/settings — toggle alert preferences without re-uploading the bot token
+integrations.patch('/slack/settings', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ volume_alerts_enabled?: boolean }>()
+
+  const { data: existing } = await supabase
+    .from('service_connections')
+    .select('id, config')
+    .eq('organization_id', orgId)
+    .eq('service_type', 'slack')
+    .maybeSingle()
+
+  if (!existing) return c.json({ error: 'Slack is not connected' }, 404)
+
+  const nextConfig = {
+    ...((existing.config as Record<string, unknown> | null) ?? {}),
+    ...(body.volume_alerts_enabled !== undefined ? { volume_alerts_enabled: body.volume_alerts_enabled } : {}),
+  }
+
+  const { error } = await supabase
+    .from('service_connections')
+    .update({ config: nextConfig, updated_by: userId })
+    .eq('id', existing.id)
+
+  if (error) return c.json({ error: error.message }, 500)
+
+  await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'updated', userId, {
+    service_type: 'slack',
+    volume_alerts_enabled: body.volume_alerts_enabled,
+  })
+
+  return c.json({ ok: true })
 })
 
 integrations.delete('/slack', async (c) => {

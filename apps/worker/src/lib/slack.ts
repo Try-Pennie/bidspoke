@@ -8,6 +8,7 @@ export interface SlackConnection {
   bot_token: string
   default_channel: string
   workspace_name?: string
+  volume_alerts_enabled: boolean
 }
 
 export interface FailureAlertPayload {
@@ -41,12 +42,16 @@ export async function getSlackConnection(
     .maybeSingle()
 
   if (!data?.config) return null
-  const cfg = data.config as Record<string, string>
-  if (!cfg.bot_token || !cfg.default_channel) return null
+  const cfg = data.config as Record<string, unknown>
+  const botToken = typeof cfg.bot_token === 'string' ? cfg.bot_token : null
+  const defaultChannel = typeof cfg.default_channel === 'string' ? cfg.default_channel : null
+  if (!botToken || !defaultChannel) return null
   return {
-    bot_token: cfg.bot_token,
-    default_channel: cfg.default_channel,
-    workspace_name: cfg.workspace_name,
+    bot_token: botToken,
+    default_channel: defaultChannel,
+    workspace_name: typeof cfg.workspace_name === 'string' ? cfg.workspace_name : undefined,
+    // Default true so existing connections keep alerting; opt-out only.
+    volume_alerts_enabled: cfg.volume_alerts_enabled !== false,
   }
 }
 

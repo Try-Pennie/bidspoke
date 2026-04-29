@@ -17,6 +17,7 @@ interface SlackStatus {
   connected: boolean
   workspace_name?: string | null
   default_channel?: string | null
+  volume_alerts_enabled?: boolean
   updated_at?: string
   updated_by_email?: string | null
 }
@@ -262,8 +263,29 @@ export default function IntegrationsPage() {
                   <p className="mt-1 text-xs text-gray-400">Connected by {slack.updated_by_email}</p>
                 )}
               </div>
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3">
+                <div className="text-sm">
+                  <p className="font-medium text-graphite">Volume anomaly alerts</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Daily check for unexpectedly high or low execution volume. Turn off during testing or low-traffic periods.
+                  </p>
+                </div>
+                <SlackToggle
+                  checked={slack.volume_alerts_enabled !== false}
+                  onChange={async (next) => {
+                    setSlack((s) => (s ? { ...s, volume_alerts_enabled: next } : s))
+                    try {
+                      await api.integrations.updateSlackSettings({ volume_alerts_enabled: next })
+                    } catch (e) {
+                      setSlack((s) => (s ? { ...s, volume_alerts_enabled: !next } : s))
+                      setError(e instanceof Error ? e.message : 'Failed to update setting')
+                    }
+                  }}
+                  label="Volume anomaly alerts"
+                />
+              </div>
               <p className="text-xs text-gray-500">
-                Alerts fire on transient + permanent errors. Business rejections never alert.
+                Failure alerts fire on transient + permanent errors. Business rejections never alert.
                 Override channel per-workflow in the canvas editor.
               </p>
               {confirmingDisconnect ? (
@@ -538,5 +560,23 @@ export default function IntegrationsPage() {
 
       </div>
     </NavLayout>
+  )
+}
+
+function SlackToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 ${checked ? 'bg-p-blue-dark' : 'bg-gray-200'}`}
+    >
+      <span className="sr-only">{label}</span>
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-150 ${checked ? 'translate-x-4' : 'translate-x-0'}`}
+      />
+    </button>
   )
 }
