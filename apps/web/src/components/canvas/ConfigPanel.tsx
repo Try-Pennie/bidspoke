@@ -2661,12 +2661,12 @@ function TimeoutField({
           {warning && (
             <div
               className={
-                'mt-2.5 text-xs leading-relaxed ' +
+                'mt-2.5 rounded-md border px-2.5 py-1.5 text-xs leading-relaxed ' +
                 (warning.tone === 'red'
-                  ? 'rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-red-800'
+                  ? 'border-red-200 bg-red-50 text-red-800'
                   : warning.tone === 'amber'
-                  ? 'rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-amber-900'
-                  : 'border-l-2 border-sky-300 pl-2.5 text-sky-800')
+                  ? 'border-amber-200 bg-amber-50 text-amber-900'
+                  : 'border-sky-200 bg-sky-50 text-sky-800')
               }
             >
               <strong className="font-semibold">{warning.lead}</strong> {warning.body}
