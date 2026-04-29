@@ -89,7 +89,8 @@ executions.get('/step-duration-stats', async (c) => {
   const subtype = c.req.query('subtype')
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  const cacheKey = `step-stats:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
+  // v2 prefix: bump when the suggestion math changes so stale entries expire.
+  const cacheKey = `step-stats:v2:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -143,7 +144,19 @@ executions.get('/step-duration-stats', async (c) => {
 
   const sampleSize = Number(row?.sample_size ?? 0)
   const p99 = row?.p99 ?? null
-  const suggestedMs = p99 != null ? Math.ceil((p99 * 1.5) / 250) * 250 : null
+  const maxMs = row?.max_ms ?? null
+  // Suggestion = max(p99 × 1.5, max × 1.05) rounded up to 250ms.
+  // The max-floor guarantees that clicking the suggestion never lands in the red
+  // zone (i.e. below the longest observed real run). Without it a step with a
+  // small p99 but a fat-tail max — e.g. p99 16ms, max 315ms — gets recommended
+  // 250ms, which is below max and would start failing real runs.
+  const suggestedMs =
+    p99 != null && maxMs != null
+      ? Math.max(
+          Math.ceil((p99 * 1.5) / 250) * 250,
+          Math.ceil((maxMs * 1.05) / 250) * 250,
+        )
+      : null
 
   const payload = {
     p50: row?.p50 ?? null,
