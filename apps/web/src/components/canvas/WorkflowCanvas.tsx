@@ -50,7 +50,6 @@ import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
-import ExecutionStepPanel from './ExecutionStepPanel'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
 import { reachableFromTrigger } from './reachability'
 import ExecutionListPanel from './ExecutionListPanel'
@@ -2189,9 +2188,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           />
         )}
         {selectedNode && mode === 'view' && executionId && selectedNode.id !== 'trigger' && (
-          <ExecutionStepPanel
+          <ConfigPanel
+            readOnly
             node={selectedNode}
             onClose={() => setSelectedNodeId(null)}
+            nodeNamespaces={nodeNamespaces}
+            nodeOptions={nodeOptions}
+            refs={refs}
+            edges={edges}
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
           />
