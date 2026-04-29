@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# supabase/setup-cli@v1 still ships Node.js 20, which GitHub deprecated.
+# Force Node 24 across all JS actions until upstream publishes a v24-native release.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   verify:
     name: Verify
