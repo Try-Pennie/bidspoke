@@ -822,7 +822,10 @@ export async function walkGraph(
         // rendering it green is confusing ("step succeeded but gave me an error").
         // 2xx/3xx sentinels stay 'completed' (the happy respond-and-exit path).
         const respStatus = result.earlyResponse?.status
-        const sentinelFailed = respStatus !== undefined && respStatus >= 400
+        // `expected: true` opts out of fail-on-4xx/5xx — mirrors the Salesforce
+        // expected_errors path. Step stays `completed` (no Slack, green border)
+        // while the response body still carries the error status to the caller.
+        const sentinelFailed = respStatus !== undefined && respStatus >= 400 && !result.expected
         const earlyStepStatus: StepStatus = sentinelFailed ? 'failed' : 'completed'
         const earlyErrorMessage = sentinelFailed
           ? `Code returned error response: HTTP ${respStatus}${

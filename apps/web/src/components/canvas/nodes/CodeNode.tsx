@@ -10,6 +10,11 @@ export function CodeNode({ data, selected }: NodeProps) {
   const script = config.script as string | undefined
   const scriptPreview = script?.trim().split('\n')[0]?.slice(0, 40) || undefined
   const outputPreview = getOutputPreview(executionStep)
+  // Surface a 4xx/5xx response sentinel (typically an `expected: true` error)
+  // as a red pill, mirroring SalesforceNode's expected_errors rendering.
+  const execOutput = executionStep?.output as { response?: { status?: number } } | null | undefined
+  const sentinelStatus = execOutput?.response?.status
+  const showStatusPill = sentinelStatus !== undefined && sentinelStatus >= 400
 
   return (
     <div
@@ -32,7 +37,9 @@ export function CodeNode({ data, selected }: NodeProps) {
         <p className="mt-0.5 truncate font-mono text-xs text-slate-400">
           {scriptPreview ?? 'No script written'}
         </p>
-        {outputPreview && (
+        {showStatusPill ? (
+          <p className="mt-1 truncate rounded bg-red-50 px-1.5 py-0.5 font-mono text-xs text-red-700">{sentinelStatus}</p>
+        ) : outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}
       </div>

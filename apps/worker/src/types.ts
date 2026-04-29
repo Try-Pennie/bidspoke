@@ -137,6 +137,7 @@ export interface StepExecutionResult {
   earlyResponse?: { status: number; body: unknown; headers?: Record<string, string> }
   earlyExit?: true
   continueAfterResponse?: true  // respond but keep walking (mirrors Pipedream $.respond() without $.flow.exit())
+  expected?: true  // expected error: keep step status `completed` and skip Slack even if earlyResponse is 4xx/5xx
   logs?: StepLogEntry[]
 }
 

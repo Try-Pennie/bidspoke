@@ -562,6 +562,20 @@ workflows.post('/:id/test-node', async (c) => {
   const started = Date.now()
   try {
     const result = await executeNode(node, ctx, c.env, supabase)
+    // Mirror the engine's sentinel-failed check (engine/index.ts:825): a code
+    // node that returns { response: { status: 4xx/5xx } } is signaling its own
+    // failure. Without this, Re-run shows green for error responses.
+    const respStatus = result.earlyResponse?.status
+    const sentinelFailed = respStatus !== undefined && respStatus >= 400 && !result.expected
+    if (sentinelFailed) {
+      const bodyPreview = result.earlyResponse?.body
+        ? ` — ${(typeof result.earlyResponse.body === 'string'
+            ? result.earlyResponse.body
+            : JSON.stringify(result.earlyResponse.body)
+          ).slice(0, 300)}`
+        : ''
+      return c.json({ output: result.output, status: 'failed', error_message: `Code returned error response: HTTP ${respStatus}${bodyPreview}`, duration_ms: Date.now() - started, deploy: deployResult })
+    }
     return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started, deploy: deployResult })
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
