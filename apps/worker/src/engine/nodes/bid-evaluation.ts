@@ -48,6 +48,7 @@ export interface BidEvaluationOutput {
   excluded: BidCandidate[]
   reason: string
   _route: 'winner' | 'no_winner'
+  metrics_warning?: string  // present only when weighted_score scoring fell back to defaults due to a metrics fetch failure
 }
 
 // ── Metrics for weighted scoring ──────────────────────────────────────────────
@@ -145,17 +146,18 @@ export async function executeBidEvaluationNode(
   }
 
   // Select winner
-  const { winner, reason } =
+  const selection =
     strategy === 'weighted_score'
       ? await selectWeighted(qualifying, config, tiebreaker, supabase)
       : selectHighestBid(qualifying, tiebreaker)
 
   const output: BidEvaluationOutput = {
-    winner,
+    winner: selection.winner,
     all_bids,
     excluded,
-    reason,
+    reason: selection.reason,
     _route: 'winner',
+    ...(selection.metrics_warning ? { metrics_warning: selection.metrics_warning } : {}),
   }
   return { output }
 }
@@ -165,7 +167,7 @@ export async function executeBidEvaluationNode(
 function selectHighestBid(
   candidates: BidCandidate[],
   tiebreaker: 'partner_priority' | 'fastest_response'
-): { winner: BidCandidate; reason: string } {
+): { winner: BidCandidate; reason: string; metrics_warning?: string } {
   const sorted = [...candidates].sort((a, b) => {
     const diff = (b.bid ?? 0) - (a.bid ?? 0)
     if (diff !== 0) return diff
@@ -184,12 +186,12 @@ async function selectWeighted(
   config: BidEvaluationConfig,
   tiebreaker: 'partner_priority' | 'fastest_response',
   supabase?: SupabaseClient
-): Promise<{ winner: BidCandidate; reason: string }> {
+): Promise<{ winner: BidCandidate; reason: string; metrics_warning?: string }> {
   const wBid = config.weight_bid ?? 1.0
   const wAcceptance = config.weight_acceptance ?? 0.5
   const wSpeed = config.weight_speed ?? 0.1
 
-  const metrics = await fetchPartnerMetrics(candidates.map((c) => c.partner), supabase)
+  const { metrics, warning } = await fetchPartnerMetrics(candidates.map((c) => c.partner), supabase)
 
   const scored: BidCandidate[] = candidates.map((c) => {
     const m = metrics[c.partner] ?? { acceptance_rate: 0.5, avg_response_ms: 5000 }
@@ -202,7 +204,11 @@ async function selectWeighted(
     return diff !== 0 ? diff : 0  // equal scores: preserve order (partner_priority)
   })
 
-  return { winner: scored[0], reason: tiebreaker === 'partner_priority' ? 'weighted_score' : 'weighted_score_fastest_response' }
+  return {
+    winner: scored[0],
+    reason: tiebreaker === 'partner_priority' ? 'weighted_score' : 'weighted_score_fastest_response',
+    ...(warning ? { metrics_warning: warning } : {}),
+  }
 }
 
 // ── Metrics fetching ──────────────────────────────────────────────────────────
@@ -210,19 +216,24 @@ async function selectWeighted(
 async function fetchPartnerMetrics(
   partnerSlugs: string[],
   supabase?: SupabaseClient
-): Promise<Record<string, PartnerMetrics>> {
-  if (!supabase || partnerSlugs.length === 0) return {}
+): Promise<{ metrics: Record<string, PartnerMetrics>; warning?: string }> {
+  if (!supabase || partnerSlugs.length === 0) return { metrics: {} }
 
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
   try {
-    const { data: steps } = await supabase
+    const { data: steps, error } = await supabase
       .from('execution_steps')
       .select('output, duration_ms')
       .eq('step_type', 'partner_bid')
       .gte('started_at', thirtyDaysAgo)
 
-    if (!steps || steps.length === 0) return {}
+    if (error) {
+      const msg = `metrics query failed: ${error.message}`
+      console.error('[bid-evaluation] fetchPartnerMetrics query failed — scoring will fall back to defaults:', error.message)
+      return { metrics: {}, warning: msg }
+    }
+    if (!steps || steps.length === 0) return { metrics: {} }
 
     const groups: Record<string, { total: number; accepted: number; totalMs: number }> = {}
 
@@ -246,9 +257,10 @@ async function fetchPartnerMetrics(
         avg_response_ms: g.totalMs / g.total,
       }
     }
-    return result
-  } catch {
-    // Metrics unavailable — callers fall back to defaults
-    return {}
+    return { metrics: result }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error('[bid-evaluation] fetchPartnerMetrics threw — scoring will fall back to defaults:', msg)
+    return { metrics: {}, warning: `metrics fetch threw: ${msg}` }
   }
 }
