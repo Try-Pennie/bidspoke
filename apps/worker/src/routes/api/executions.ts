@@ -87,10 +87,14 @@ executions.get('/step-duration-stats', async (c) => {
   const namespace = c.req.query('namespace')
   const nodeType = c.req.query('node_type')
   const subtype = c.req.query('subtype')
+  // Retries change the safety profile of a timeout: with retries, a long-tail
+  // outlier just retries instead of failing permanently, so the suggestion can
+  // be tighter. Default to the engine's default of 2.
+  const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v3 prefix: bump when the suggestion math changes so stale entries expire.
-  const cacheKey = `step-stats:v3:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
+  // v4 prefix: bump when the suggestion math changes so stale entries expire.
+  const cacheKey = `step-stats:v4:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -145,18 +149,19 @@ executions.get('/step-duration-stats', async (c) => {
   const sampleSize = Number(row?.sample_size ?? 0)
   const p99 = row?.p99 ?? null
   const maxMs = row?.max_ms ?? null
-  // Suggestion = max(p99 × 1.5, max × 1.05, 10ms hard floor).
-  // The max-floor guarantees clicking the suggestion never lands in the red
-  // zone (below the longest observed real run). The 10ms hard floor avoids
-  // recommending 0ms when percentiles round to zero (sub-ms in-memory steps:
-  // constants, transform, branch, filter). 10ms still fails fast on a runaway
-  // hang while sitting comfortably above realistic execution time.
-  // Rounding scales with magnitude: 5ms steps under 100ms (so a 10ms suggestion
-  // doesn't get bumped to 250ms), 50ms under 1s, 250ms above.
+  // Suggestion math depends on whether the step retries on failure:
+  //   retries == 0: must clear max × 1.05 — a single timeout = permanent fail.
+  //   retries >= 1: drop the max-clamp; a long-tail outlier just retries.
+  //                 Use p99 × 1.5 as the baseline (most calls succeed first try).
+  // 10ms hard floor across both cases: avoids recommending 0ms when percentiles
+  // round to zero for sub-ms in-memory steps. Magnitude-aware rounding keeps
+  // sub-100ms suggestions readable (5ms steps), sub-1s at 50ms, above at 250ms.
   const SUGGESTION_FLOOR_MS = 10
   const rawSuggested =
     p99 != null && maxMs != null
-      ? Math.max(p99 * 1.5, maxMs * 1.05, SUGGESTION_FLOOR_MS)
+      ? retries >= 1
+        ? Math.max(p99 * 1.5, SUGGESTION_FLOOR_MS)
+        : Math.max(p99 * 1.5, maxMs * 1.05, SUGGESTION_FLOOR_MS)
       : null
   const suggestedMs = rawSuggested != null ? roundUpSmart(rawSuggested) : null
 
@@ -170,6 +175,7 @@ executions.get('/step-duration-stats', async (c) => {
     window_days: 7,
     source,
     subtype: resolvedSubtype,
+    retries_assumed: retries,
   }
 
   // 30-minute KV cache

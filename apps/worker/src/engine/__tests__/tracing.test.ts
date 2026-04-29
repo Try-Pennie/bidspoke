@@ -157,7 +157,9 @@ describe('trace_id propagation — structured logs', () => {
   it('failed step emits step_error with error_type and error_message', async () => {
     vi.mocked(executeNode)
       .mockResolvedValueOnce({ output: { ok: true } })           // step_a succeeds
-      .mockRejectedValueOnce(new Error('upstream timeout'))       // step_b fails
+      // step_b fails on every attempt — retries default to 2 now, so all
+      // three attempts must reject for the step to terminate as failed.
+      .mockRejectedValue(new Error('upstream timeout'))
 
     const def = chain(
       node('a', 'step_a', 'code'),

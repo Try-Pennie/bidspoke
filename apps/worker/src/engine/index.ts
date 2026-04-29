@@ -767,8 +767,13 @@ export async function walkGraph(
     let retriesUsed = 0
 
     const retryConfig = {
-      retries: (node.config.retries as number) ?? 0,
-      backoff: (node.config.retry_backoff as 'linear' | 'exponential') ?? 'linear',
+      // Default retries=2 so transient blips (timeouts, 5xx, network) self-heal
+      // without manual config. Non-transient errors (business 4xx) still don't
+      // retry — see classifyHttpError / classifyTransportError.
+      retries: (node.config.retries as number) ?? 2,
+      // Exponential backoff (500ms, 1s, 2s) gives downstream services breathing
+      // room when they're under stress; linear retries pile on instead.
+      backoff: (node.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
       timeout_ms: (node.config.timeout_ms as number) ?? 30000,
     }
 
@@ -1032,8 +1037,8 @@ async function runParallelChild(
   log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type })
 
   const retryConfig = {
-    retries: (child.config.retries as number) ?? 0,
-    backoff: (child.config.retry_backoff as 'linear' | 'exponential') ?? 'linear',
+    retries: (child.config.retries as number) ?? 2,
+    backoff: (child.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
     timeout_ms: (child.config.timeout_ms as number) ?? 30000,
   }
 

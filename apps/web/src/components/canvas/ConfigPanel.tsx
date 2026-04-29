@@ -2548,6 +2548,7 @@ type StepStats = {
   window_days: number
   source: 'history' | 'similar'
   subtype: string | null
+  retries_assumed: number
 }
 
 // Module-level cache so reopening the same node panel within the server-side
@@ -2555,8 +2556,8 @@ type StepStats = {
 // worker's KV TTL.
 const STEP_STATS_TTL_MS = 30 * 60 * 1000
 const stepStatsCache = new Map<string, { stats: StepStats; fetchedAt: number }>()
-function statsCacheKey(workflowId: string, namespace: string, nodeType?: string, subtype?: string) {
-  return `${workflowId}|${namespace}|${nodeType ?? ''}|${subtype ?? ''}`
+function statsCacheKey(workflowId: string, namespace: string, nodeType?: string, subtype?: string, retries?: number) {
+  return `${workflowId}|${namespace}|${nodeType ?? ''}|${subtype ?? ''}|${retries ?? ''}`
 }
 
 function TimeoutField({
@@ -2578,10 +2579,15 @@ function TimeoutField({
     ? ((config.operation as string | undefined) || 'create')
     : undefined
 
+  // Mirror the engine's retries default (2) so the suggestion math knows
+  // whether to clamp against max (no retries → must clear it) or just p99
+  // (retries → long tail self-heals).
+  const retries = (config.retries as number | undefined) ?? 2
+
   // Seed from the module cache so reopening the same panel within 30 min skips
   // the loading flash entirely.
   const cached = workflowId && namespace
-    ? stepStatsCache.get(statsCacheKey(workflowId, namespace, nodeType, subtype))
+    ? stepStatsCache.get(statsCacheKey(workflowId, namespace, nodeType, subtype, retries))
     : undefined
   const isFresh = cached && Date.now() - cached.fetchedAt < STEP_STATS_TTL_MS
   const [stats, setStats] = useState<StepStats | null>(isFresh ? cached.stats : null)
@@ -2589,7 +2595,7 @@ function TimeoutField({
 
   useEffect(() => {
     if (!workflowId || !namespace) return
-    const key = statsCacheKey(workflowId, namespace, nodeType, subtype)
+    const key = statsCacheKey(workflowId, namespace, nodeType, subtype, retries)
     const hit = stepStatsCache.get(key)
     if (hit && Date.now() - hit.fetchedAt < STEP_STATS_TTL_MS) {
       setStats(hit.stats)
@@ -2598,7 +2604,7 @@ function TimeoutField({
     }
     let cancelled = false
     setLoading(true)
-    api.executions.stepDurationStats(workflowId, namespace, { node_type: nodeType, subtype })
+    api.executions.stepDurationStats(workflowId, namespace, { node_type: nodeType, subtype, retries })
       .then((s) => {
         if (cancelled) return
         setStats(s)
@@ -2607,7 +2613,7 @@ function TimeoutField({
       .catch(() => { if (!cancelled) setStats(null) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workflowId, namespace, nodeType, subtype])
+  }, [workflowId, namespace, nodeType, subtype, retries])
 
   // Pick a single unit (ms or s) for every value rendered inside the callout
   // so we don't mix '766ms' and '7.5s' in the same sentence.
@@ -2630,20 +2636,34 @@ function TimeoutField({
   let actionLink: { text: string; ms: number } | null = null
   let actionTrailing: string | null = null
   if (stats && stats.sample_size >= 10 && stats.p99 != null && stats.max_ms != null && stats.suggested_ms != null) {
-    if (effective < stats.max_ms) {
+    const hasRetries = stats.retries_assumed >= 1
+    // Red threshold: with retries, only flag when most calls would time out
+    // (current below p99 means typical calls fail and burn retries every time).
+    // Without retries, anything below max means a real run would have failed.
+    const redThreshold = hasRetries ? stats.p99 : stats.max_ms
+    // Blue threshold: with retries we can suggest lowering even when current
+    // sits between p99 and max, since outliers self-heal. Without retries
+    // we still need both checks (suggested * 3 AND max * 2) so we don't push
+    // a fat-tail step below its observed max.
+    const blueThreshold = hasRetries
+      ? effective > stats.suggested_ms * 3
+      : effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2
+
+    if (effective < redThreshold) {
       tone = 'red'
-      actionLeading = 'Your timeout would have cut that off — try'
+      actionLeading = hasRetries
+        ? 'Most runs would time out at this value — try'
+        : 'Your timeout would have cut that off — try'
       actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
       actionTrailing = 'for safety.'
     } else if (effective < stats.suggested_ms) {
       tone = 'amber'
-      actionLeading = 'Slower runs will get cut off — try'
+      actionLeading = hasRetries
+        ? 'Some runs will time out and burn retries — try'
+        : 'Slower runs will get cut off — try'
       actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
       actionTrailing = 'for more headroom.'
-    } else if (effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2) {
-      // Only suggest lowering if there's real headroom over both the p99-based
-      // suggestion AND the observed max. Without the max guard a fat-tailed
-      // step (p99=1s but max=28s) gets told to lower to ~1.5s.
+    } else if (blueThreshold) {
       tone = 'blue'
       actionLeading = 'You could safely lower this to'
       actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
