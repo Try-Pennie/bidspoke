@@ -312,8 +312,14 @@ export const api = {
   },
 
   executions: {
-    stepDurationStats: (workflowId: string, namespace: string) => {
+    stepDurationStats: (
+      workflowId: string,
+      namespace: string,
+      opts?: { node_type?: string; subtype?: string }
+    ) => {
       const params = new URLSearchParams({ workflow_id: workflowId, namespace })
+      if (opts?.node_type) params.set('node_type', opts.node_type)
+      if (opts?.subtype) params.set('subtype', opts.subtype)
       return req<{
         p50: number | null
         p95: number | null
@@ -322,6 +328,8 @@ export const api = {
         sample_size: number
         suggested_ms: number | null
         window_days: number
+        source: 'history' | 'similar'
+        subtype: string | null
       }>(`/api/executions/step-duration-stats?${params.toString()}`)
     },
     listRecent: () =>

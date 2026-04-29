@@ -168,7 +168,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             </button>
             {showAdvanced && (
               <div className="mt-3 space-y-3">
-                <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} />
+                <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} nodeType={type} />
                 <Field label="Retries" hint="How many times to retry on temporary failures. Max 5.">
                   <input type="number" className="input" placeholder="0" min={0} max={5}
                     value={(data.config.retries as number | undefined) ?? ''}
@@ -251,7 +251,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             Advanced
           </button>
           {showAdvanced && <div className="mt-3 space-y-3">
-            <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} />
+            <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} nodeType={type} />
             <Field label="Retries" hint="How many times to retry on temporary failures (network errors, 429, 502–504). Max 5.">
               <input
                 type="number"
@@ -2546,6 +2546,8 @@ type StepStats = {
   sample_size: number
   suggested_ms: number | null
   window_days: number
+  source: 'history' | 'similar'
+  subtype: string | null
 }
 
 function TimeoutField({
@@ -2553,25 +2555,32 @@ function TimeoutField({
   updateConfig,
   workflowId,
   namespace,
+  nodeType,
 }: {
   config: Record<string, unknown>
   updateConfig: (patch: Record<string, unknown>) => void
   workflowId?: string
   namespace?: string
+  nodeType?: NodeType
 }) {
   const [stats, setStats] = useState<StepStats | null>(null)
   const [loading, setLoading] = useState(false)
+  // Salesforce executor defaults operation to 'create' when absent; mirror that here so
+  // a fresh create-prospect node can match historical create rows in the typed fallback.
+  const subtype = nodeType === 'salesforce'
+    ? ((config.operation as string | undefined) || 'create')
+    : undefined
 
   useEffect(() => {
     if (!workflowId || !namespace) return
     let cancelled = false
     setLoading(true)
-    api.executions.stepDurationStats(workflowId, namespace)
+    api.executions.stepDurationStats(workflowId, namespace, { node_type: nodeType, subtype })
       .then((s) => { if (!cancelled) setStats(s) })
       .catch(() => { if (!cancelled) setStats(null) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [workflowId, namespace])
+  }, [workflowId, namespace, nodeType, subtype])
 
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
@@ -2638,9 +2647,10 @@ function TimeoutField({
 
           {showStats && (
             <p className="text-xs leading-relaxed text-gray-600">
-              This step usually finishes in{' '}
+              {stats!.source === 'similar' ? 'Similar steps in your other workflows' : 'This step'} usually{' '}
+              {stats!.source === 'similar' ? 'finish' : 'finishes'} in{' '}
               <strong className="font-semibold text-gray-800">{formatMs(stats!.p50!)}</strong>
-              {' '}and rarely takes more than{' '}
+              {' '}and rarely take{stats!.source === 'similar' ? '' : 's'} more than{' '}
               <strong className="font-semibold text-gray-800">{formatMs(stats!.p99!)}</strong>
               <span className="text-gray-400"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
               {stats!.suggested_ms != null && current !== stats!.suggested_ms && (

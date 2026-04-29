@@ -7,6 +7,7 @@ export interface StepLogEntry {
   execution_started_at: string
   step_namespace: string
   step_type: string
+  step_subtype?: string
   status: StepStatus
   input: unknown
   output: unknown

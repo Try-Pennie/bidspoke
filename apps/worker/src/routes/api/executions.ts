@@ -68,20 +68,28 @@ executions.get('/', async (c) => {
   return c.json(enriched)
 })
 
-// GET /api/executions/step-duration-stats?workflow_id=X&namespace=Y
+// GET /api/executions/step-duration-stats?workflow_id=X&namespace=Y[&node_type=Z&subtype=W]
 //
 // Returns p50/p95/p99/max/sample_size for completed (non-test) runs of one
 // step over the last 7 days. Used by the config panel to suggest a sensible
 // timeout. Cached in KV for 30 minutes.
+//
+// When the per-step query returns fewer than 10 samples (a fresh workflow,
+// say), and node_type is provided AND falls into one of the categories where
+// duration is roughly stable across workflows, the route falls back to a
+// cross-workflow aggregate keyed by step type (+ optional subtype). The
+// response carries `source: 'history' | 'similar'` so the UI can change copy.
 //
 // Must be declared BEFORE `/:id` so the literal segment isn't matched as an id.
 executions.get('/step-duration-stats', async (c) => {
   const { orgId } = c.get('user')
   const workflowId = c.req.query('workflow_id')
   const namespace = c.req.query('namespace')
+  const nodeType = c.req.query('node_type')
+  const subtype = c.req.query('subtype')
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  const cacheKey = `step-stats:${workflowId}:${namespace}`
+  const cacheKey = `step-stats:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -97,16 +105,41 @@ executions.get('/step-duration-stats', async (c) => {
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const { data, error } = await supabase.rpc('step_duration_percentiles', {
+  const SAMPLE_FLOOR = 10
+
+  // 1. Per-step history (preferred when there's enough data)
+  const { data: specificData, error: specificError } = await supabase.rpc('step_duration_percentiles', {
     p_workflow_id: workflowId,
     p_namespace: namespace,
     p_since: since,
   })
-  if (error) return c.json({ error: error.message }, 500)
+  if (specificError) return c.json({ error: specificError.message }, 500)
+  const specificRow = pctRow(specificData)
+  const specificSample = Number(specificRow?.sample_size ?? 0)
 
-  const row = (data ?? [])[0] as
-    | { p50: number | null; p95: number | null; p99: number | null; max_ms: number | null; sample_size: number }
-    | undefined
+  // 2. Cross-workflow fallback when per-step data is thin and the type qualifies
+  let row = specificRow
+  let source: 'history' | 'similar' = 'history'
+  let resolvedSubtype: string | null = null
+
+  if (specificSample < SAMPLE_FLOOR && nodeType && qualifiesForSimilarFallback(nodeType, subtype)) {
+    const subtypeArg = subtypeRequired(nodeType) ? subtype! : null
+    const { data: typedData, error: typedError } = await supabase.rpc('step_duration_percentiles_typed', {
+      p_org_id: orgId,
+      p_step_type: nodeType,
+      p_step_subtype: subtypeArg,
+      p_since: since,
+    })
+    if (!typedError) {
+      const typedRow = pctRow(typedData)
+      const typedSample = Number(typedRow?.sample_size ?? 0)
+      if (typedSample >= SAMPLE_FLOOR) {
+        row = typedRow
+        source = 'similar'
+        resolvedSubtype = subtypeArg
+      }
+    }
+  }
 
   const sampleSize = Number(row?.sample_size ?? 0)
   const p99 = row?.p99 ?? null
@@ -120,6 +153,8 @@ executions.get('/step-duration-stats', async (c) => {
     sample_size: sampleSize,
     suggested_ms: suggestedMs,
     window_days: 7,
+    source,
+    subtype: resolvedSubtype,
   }
 
   // 30-minute KV cache
@@ -127,6 +162,30 @@ executions.get('/step-duration-stats', async (c) => {
 
   return c.json(payload)
 })
+
+type PctRow = { p50: number | null; p95: number | null; p99: number | null; max_ms: number | null; sample_size: number } | undefined
+function pctRow(data: unknown): PctRow {
+  return ((data ?? []) as PctRow[])[0]
+}
+
+// Node types whose duration distribution is consistent enough across workflows
+// that a cross-workflow aggregate is a useful fallback when a fresh workflow
+// has no prior runs. Excludes `code`, `partner_bid`, `bid_group`, and `webhook`
+// — those are too workflow-specific (custom script / partner / external API).
+const SIMILAR_FALLBACK_STABLE = new Set([
+  'constants', 'transform', 'branch', 'filter', 'exit', 'response',
+  'parallel', 'parallel_end', 'bid_evaluation',
+])
+const SIMILAR_FALLBACK_BY_SUBTYPE = new Set(['salesforce'])
+
+function qualifiesForSimilarFallback(nodeType: string, subtype?: string): boolean {
+  if (SIMILAR_FALLBACK_STABLE.has(nodeType)) return true
+  if (SIMILAR_FALLBACK_BY_SUBTYPE.has(nodeType) && subtype) return true
+  return false
+}
+function subtypeRequired(nodeType: string): boolean {
+  return SIMILAR_FALLBACK_BY_SUBTYPE.has(nodeType)
+}
 
 // GET /api/executions/:id
 executions.get('/:id', async (c) => {

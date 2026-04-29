@@ -985,6 +985,7 @@ function logStep(
     execution_started_at: executionStartedAt,
     step_namespace: node.namespace,
     step_type: node.type,
+    step_subtype: deriveStepSubtype(node),
     status,
     input,
     output,
@@ -998,6 +999,18 @@ function logStep(
     step_order: stepOrder,
     parallel_group_id: parallelGroupId,
   })
+}
+
+// Discriminator that powers the cross-workflow timeout-suggestion fallback.
+// Salesforce: the op (create/update/query/etc.) is the only thing that meaningfully
+// changes the duration distribution between two workflows.
+function deriveStepSubtype(node: NodeDefinition): string | undefined {
+  if (node.type === 'salesforce') {
+    // Mirrors the Salesforce node executor's default — see apps/worker/src/engine/nodes/salesforce.ts.
+    const op = node.config?.operation
+    return typeof op === 'string' && op ? op : 'create'
+  }
+  return undefined
 }
 
 // Execute a single child node within a parallel group — simplified version of
