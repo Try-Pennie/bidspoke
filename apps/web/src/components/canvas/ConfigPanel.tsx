@@ -2550,6 +2550,15 @@ type StepStats = {
   subtype: string | null
 }
 
+// Module-level cache so reopening the same node panel within the server-side
+// 30-min KV window doesn't re-fetch and flicker the callout. TTL matches the
+// worker's KV TTL.
+const STEP_STATS_TTL_MS = 30 * 60 * 1000
+const stepStatsCache = new Map<string, { stats: StepStats; fetchedAt: number }>()
+function statsCacheKey(workflowId: string, namespace: string, nodeType?: string, subtype?: string) {
+  return `${workflowId}|${namespace}|${nodeType ?? ''}|${subtype ?? ''}`
+}
+
 function TimeoutField({
   config,
   updateConfig,
@@ -2563,24 +2572,51 @@ function TimeoutField({
   namespace?: string
   nodeType?: NodeType
 }) {
-  const [stats, setStats] = useState<StepStats | null>(null)
-  const [loading, setLoading] = useState(false)
   // Salesforce executor defaults operation to 'create' when absent; mirror that here so
   // a fresh create-prospect node can match historical create rows in the typed fallback.
   const subtype = nodeType === 'salesforce'
     ? ((config.operation as string | undefined) || 'create')
     : undefined
 
+  // Seed from the module cache so reopening the same panel within 30 min skips
+  // the loading flash entirely.
+  const cached = workflowId && namespace
+    ? stepStatsCache.get(statsCacheKey(workflowId, namespace, nodeType, subtype))
+    : undefined
+  const isFresh = cached && Date.now() - cached.fetchedAt < STEP_STATS_TTL_MS
+  const [stats, setStats] = useState<StepStats | null>(isFresh ? cached.stats : null)
+  const [loading, setLoading] = useState(!isFresh)
+
   useEffect(() => {
     if (!workflowId || !namespace) return
+    const key = statsCacheKey(workflowId, namespace, nodeType, subtype)
+    const hit = stepStatsCache.get(key)
+    if (hit && Date.now() - hit.fetchedAt < STEP_STATS_TTL_MS) {
+      setStats(hit.stats)
+      setLoading(false)
+      return
+    }
     let cancelled = false
     setLoading(true)
     api.executions.stepDurationStats(workflowId, namespace, { node_type: nodeType, subtype })
-      .then((s) => { if (!cancelled) setStats(s) })
+      .then((s) => {
+        if (cancelled) return
+        setStats(s)
+        stepStatsCache.set(key, { stats: s, fetchedAt: Date.now() })
+      })
       .catch(() => { if (!cancelled) setStats(null) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [workflowId, namespace, nodeType, subtype])
+
+  // Pick a single unit (ms or s) for every value rendered inside the callout
+  // so we don't mix '766ms' and '7.5s' in the same sentence.
+  const fmt = makeUnitFormatter([
+    stats?.p50 ?? null,
+    stats?.p99 ?? null,
+    stats?.max_ms ?? null,
+    stats?.suggested_ms ?? null,
+  ])
 
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
@@ -2597,12 +2633,12 @@ function TimeoutField({
     if (effective < stats.max_ms) {
       tone = 'red'
       actionLeading = 'Your timeout would have cut that off — try'
-      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
       actionTrailing = 'for safety.'
     } else if (effective < stats.suggested_ms) {
       tone = 'amber'
       actionLeading = 'Slower runs will get cut off — try'
-      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
       actionTrailing = 'for more headroom.'
     } else if (effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2) {
       // Only suggest lowering if there's real headroom over both the p99-based
@@ -2610,7 +2646,7 @@ function TimeoutField({
       // step (p99=1s but max=28s) gets told to lower to ~1.5s.
       tone = 'blue'
       actionLeading = 'You could safely lower this to'
-      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
       actionTrailing = 'so failures show up faster.'
     }
   }
@@ -2669,15 +2705,15 @@ function TimeoutField({
             <div className={`rounded-md border px-2.5 py-1.5 text-xs leading-relaxed ${calloutClasses}`}>
               {stats!.source === 'similar' ? 'Similar steps in your other workflows' : 'This step'} usually{' '}
               {stats!.source === 'similar' ? 'finish' : 'finishes'} in{' '}
-              <strong className="font-semibold">{formatMs(stats!.p50!)}</strong>
+              <strong className="font-semibold">{fmt(stats!.p50!)}</strong>
               {' '}and rarely take{stats!.source === 'similar' ? '' : 's'} more than{' '}
-              <strong className="font-semibold">{formatMs(stats!.p99!)}</strong>
+              <strong className="font-semibold">{fmt(stats!.p99!)}</strong>
               {/* Surface max when the tail is meaningful, so users see why they
                   can't safely lower the timeout below it. */}
               {stats!.max_ms != null && stats!.p99 != null && stats!.max_ms > stats!.p99 * 1.2 && (
                 <>
                   {', though one run took '}
-                  <strong className="font-semibold">{formatMs(stats!.max_ms)}</strong>
+                  <strong className="font-semibold">{fmt(stats!.max_ms)}</strong>
                 </>
               )}
               <span className="opacity-70"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
@@ -2712,6 +2748,25 @@ function formatMs(ms: number): string {
   if (ms < 1) return '<1ms'
   if (ms < 1000) return `${ms.toLocaleString()}ms`
   return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`
+}
+
+// Used inside the timeout callout where multiple values appear in one sentence
+// and unit-mixing reads badly ("…rarely takes more than 766ms… lower this to 7.5s").
+// Picks one unit for the whole set based on the largest value in the callout.
+function makeUnitFormatter(values: (number | null)[]): (ms: number) => string {
+  const present = values.filter((v): v is number => v != null)
+  const useSeconds = present.some((v) => v >= 1000)
+  return (ms: number) => {
+    if (!useSeconds) {
+      if (ms < 1) return '<1ms'
+      return `${ms.toLocaleString()}ms`
+    }
+    if (ms < 10) return '<0.01s'
+    const s = ms / 1000
+    if (s < 1) return `${s.toFixed(2)}s`
+    const oneDecimal = s.toFixed(1)
+    return oneDecimal.endsWith('.0') ? `${oneDecimal.slice(0, -2)}s` : `${oneDecimal}s`
+  }
 }
 
 // ── Circuit breaker service tag ──────────────────────────────────────────────
