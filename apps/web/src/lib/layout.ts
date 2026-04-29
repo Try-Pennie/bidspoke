@@ -312,8 +312,9 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         if (c !== comp) continue
         const p = pos.get(id)
         if (!p) continue
-        minX = Math.min(minX, p.x - NODE_W / 2)
-        maxX = Math.max(maxX, p.x + NODE_W / 2)
+        const w = nodeWidth(nodeMap.get(id)?.type, nodeMap.get(id)?.data)
+        minX = Math.min(minX, p.x - w / 2)
+        maxX = Math.max(maxX, p.x + w / 2)
       }
       return { minX, maxX }
     }
@@ -382,7 +383,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return {
       ...node,
       position: {
-        x: p.x - NODE_W / 2,
+        x: p.x - nodeWidth(node.type, node.data) / 2,
         y: p.y - nodeHeight(node.type) / 2,
       },
     }
