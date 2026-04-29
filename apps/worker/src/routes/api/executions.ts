@@ -89,8 +89,8 @@ executions.get('/step-duration-stats', async (c) => {
   const subtype = c.req.query('subtype')
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v2 prefix: bump when the suggestion math changes so stale entries expire.
-  const cacheKey = `step-stats:v2:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
+  // v3 prefix: bump when the suggestion math changes so stale entries expire.
+  const cacheKey = `step-stats:v3:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -145,18 +145,20 @@ executions.get('/step-duration-stats', async (c) => {
   const sampleSize = Number(row?.sample_size ?? 0)
   const p99 = row?.p99 ?? null
   const maxMs = row?.max_ms ?? null
-  // Suggestion = max(p99 × 1.5, max × 1.05) rounded up to 250ms.
-  // The max-floor guarantees that clicking the suggestion never lands in the red
-  // zone (i.e. below the longest observed real run). Without it a step with a
-  // small p99 but a fat-tail max — e.g. p99 16ms, max 315ms — gets recommended
-  // 250ms, which is below max and would start failing real runs.
-  const suggestedMs =
+  // Suggestion = max(p99 × 1.5, max × 1.05, 10ms hard floor).
+  // The max-floor guarantees clicking the suggestion never lands in the red
+  // zone (below the longest observed real run). The 10ms hard floor avoids
+  // recommending 0ms when percentiles round to zero (sub-ms in-memory steps:
+  // constants, transform, branch, filter). 10ms still fails fast on a runaway
+  // hang while sitting comfortably above realistic execution time.
+  // Rounding scales with magnitude: 5ms steps under 100ms (so a 10ms suggestion
+  // doesn't get bumped to 250ms), 50ms under 1s, 250ms above.
+  const SUGGESTION_FLOOR_MS = 10
+  const rawSuggested =
     p99 != null && maxMs != null
-      ? Math.max(
-          Math.ceil((p99 * 1.5) / 250) * 250,
-          Math.ceil((maxMs * 1.05) / 250) * 250,
-        )
+      ? Math.max(p99 * 1.5, maxMs * 1.05, SUGGESTION_FLOOR_MS)
       : null
+  const suggestedMs = rawSuggested != null ? roundUpSmart(rawSuggested) : null
 
   const payload = {
     p50: row?.p50 ?? null,
@@ -179,6 +181,15 @@ executions.get('/step-duration-stats', async (c) => {
 type PctRow = { p50: number | null; p95: number | null; p99: number | null; max_ms: number | null; sample_size: number } | undefined
 function pctRow(data: unknown): PctRow {
   return ((data ?? []) as PctRow[])[0]
+}
+
+// Round suggestions to readable increments that scale with magnitude. Without
+// this a sub-100ms value would get rounded to 250ms (defeating the hard floor)
+// and a 30s value would have noisy 250ms granularity.
+function roundUpSmart(ms: number): number {
+  if (ms <= 100) return Math.ceil(ms / 5) * 5
+  if (ms <= 1000) return Math.ceil(ms / 50) * 50
+  return Math.ceil(ms / 250) * 250
 }
 
 // Node types whose duration distribution is consistent enough across workflows

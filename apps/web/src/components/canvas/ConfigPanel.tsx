@@ -2709,6 +2709,7 @@ function TimeoutField({
 }
 
 function formatMs(ms: number): string {
+  if (ms < 1) return '<1ms'
   if (ms < 1000) return `${ms.toLocaleString()}ms`
   return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`
 }
