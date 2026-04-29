@@ -28,7 +28,7 @@ AS $$
     count(*)                                                            AS sample_size
   FROM execution_steps es
   JOIN workflow_executions we ON we.id = es.execution_id
-  WHERE es.workflow_id = p_workflow_id
+  WHERE we.workflow_id = p_workflow_id
     AND es.step_namespace = p_namespace
     AND es.status = 'completed'
     AND es.duration_ms IS NOT NULL

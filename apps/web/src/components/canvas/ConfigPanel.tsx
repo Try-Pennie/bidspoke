@@ -2588,10 +2588,13 @@ function TimeoutField({
         tone: 'amber',
         text: `Works today, but no headroom. Past p99 is ${stats.p99.toLocaleString()}ms; minor latency spikes will time out.`,
       }
-    } else if (effective > stats.suggested_ms * 3) {
+    } else if (effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2) {
+      // Only suggest lowering if there's real headroom over both p99-based suggestion AND the observed max.
+      // Without the max guard, a step with a fat tail (p99=1s but max=28s) would get told to lower to ~1.5s
+      // and kill the real long-tail runs.
       warning = {
         tone: 'blue',
-        text: `Past p99 is only ${stats.p99.toLocaleString()}ms. You could safely lower this to ~${stats.suggested_ms.toLocaleString()}ms to fail faster on real outages.`,
+        text: `Past p99 is only ${stats.p99.toLocaleString()}ms (max ${stats.max_ms.toLocaleString()}ms). You could safely lower this to fail faster on real outages.`,
       }
     }
   }
