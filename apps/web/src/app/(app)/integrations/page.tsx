@@ -42,6 +42,13 @@ export default function IntegrationsPage() {
   const [resolved, setResolved] = useState<ResolvedSlack | null>(null)
   const [selectedChannel, setSelectedChannel] = useState('')
 
+  // Inline channel editor (shown only when Slack is already connected)
+  const [editingChannel, setEditingChannel] = useState(false)
+  const [availableChannels, setAvailableChannels] = useState<Array<{ id: string; name: string }> | null>(null)
+  const [loadingChannels, setLoadingChannels] = useState(false)
+  const [pendingChannel, setPendingChannel] = useState('')
+  const [savingChannel, setSavingChannel] = useState(false)
+
   // Service presets
   const [presets, setPresets] = useState<ServicePreset[]>([])
   const [presetsLoading, setPresetsLoading] = useState(true)
@@ -258,7 +265,80 @@ export default function IntegrationsPage() {
                 {slack.workspace_name && (
                   <p className="text-gray-600">Workspace: <span className="font-medium text-graphite">{slack.workspace_name}</span></p>
                 )}
-                <p className="text-gray-600">Default channel: <span className="font-medium text-graphite">{slack.default_channel}</span></p>
+                {editingChannel ? (
+                  <div className="mt-1 flex items-center gap-2">
+                    <span className="text-gray-600">Default channel:</span>
+                    {loadingChannels ? (
+                      <span className="text-xs text-gray-400">Loading channels…</span>
+                    ) : (
+                      <>
+                        <select
+                          className="input flex-1 py-1 text-sm"
+                          value={pendingChannel}
+                          onChange={(e) => setPendingChannel(e.target.value)}
+                          disabled={savingChannel}
+                        >
+                          {(availableChannels ?? []).map((ch) => (
+                            <option key={ch.id} value={`#${ch.name}`}>#{ch.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={async () => {
+                            if (!pendingChannel) return
+                            setSavingChannel(true)
+                            const prev = slack.default_channel
+                            setSlack((s) => (s ? { ...s, default_channel: pendingChannel } : s))
+                            try {
+                              await api.integrations.updateSlackSettings({ default_channel: pendingChannel })
+                              setEditingChannel(false)
+                            } catch (e) {
+                              setSlack((s) => (s ? { ...s, default_channel: prev } : s))
+                              setError(e instanceof Error ? e.message : 'Failed to update channel')
+                            } finally {
+                              setSavingChannel(false)
+                            }
+                          }}
+                          disabled={savingChannel || loadingChannels}
+                          className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                        >
+                          {savingChannel ? 'Saving…' : 'Save'}
+                        </button>
+                        <button
+                          onClick={() => setEditingChannel(false)}
+                          disabled={savingChannel}
+                          className="text-xs text-gray-400 hover:text-gray-600"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-gray-600">
+                    Default channel: <span className="font-medium text-graphite">{slack.default_channel}</span>
+                    <button
+                      onClick={async () => {
+                        setEditingChannel(true)
+                        setPendingChannel(slack.default_channel ?? '')
+                        if (!availableChannels) {
+                          setLoadingChannels(true)
+                          try {
+                            const data = await api.integrations.listSlackChannels()
+                            setAvailableChannels(data.channels)
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : 'Failed to load channels')
+                            setEditingChannel(false)
+                          } finally {
+                            setLoadingChannels(false)
+                          }
+                        }
+                      }}
+                      className="ml-2 text-xs text-p-blue-dark hover:underline"
+                    >
+                      Change
+                    </button>
+                  </p>
+                )}
                 {slack.updated_by_email && (
                   <p className="mt-1 text-xs text-gray-400">Connected by {slack.updated_by_email}</p>
                 )}

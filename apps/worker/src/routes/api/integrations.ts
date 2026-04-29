@@ -120,11 +120,48 @@ integrations.get('/slack', async (c) => {
   })
 })
 
-// PATCH /api/integrations/slack/settings — toggle alert preferences without re-uploading the bot token
+// GET /api/integrations/slack/channels — list channels using the stored bot token,
+// so the user can pick a new default channel without re-pasting credentials.
+integrations.get('/slack/channels', async (c) => {
+  const { orgId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+
+  const { data } = await supabase
+    .from('service_connections')
+    .select('config')
+    .eq('organization_id', orgId)
+    .eq('service_type', 'slack')
+    .maybeSingle()
+
+  const cfg = data?.config as Record<string, unknown> | null
+  const token = typeof cfg?.bot_token === 'string' ? cfg.bot_token : null
+  if (!token) return c.json({ error: 'Slack is not connected' }, 404)
+
+  const chanRes = await fetch(
+    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
+  const chanData = await chanRes.json() as {
+    ok: boolean
+    channels?: Array<{ id: string; name: string }>
+    error?: string
+  }
+
+  if (!chanData.ok) return c.json({ error: `Slack API error: ${chanData.error ?? 'unknown'}` }, 502)
+
+  const channels = (chanData.channels ?? [])
+    .map((ch) => ({ id: ch.id, name: ch.name }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  return c.json({ channels })
+})
+
+// PATCH /api/integrations/slack/settings — toggle alert preferences or change the
+// default channel without re-uploading the bot token.
 integrations.patch('/slack/settings', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ volume_alerts_enabled?: boolean }>()
+  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string }>()
 
   const { data: existing } = await supabase
     .from('service_connections')
@@ -138,6 +175,7 @@ integrations.patch('/slack/settings', async (c) => {
   const nextConfig = {
     ...((existing.config as Record<string, unknown> | null) ?? {}),
     ...(body.volume_alerts_enabled !== undefined ? { volume_alerts_enabled: body.volume_alerts_enabled } : {}),
+    ...(body.default_channel ? { default_channel: body.default_channel } : {}),
   }
 
   const { error } = await supabase
@@ -150,6 +188,7 @@ integrations.patch('/slack/settings', async (c) => {
   await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'updated', userId, {
     service_type: 'slack',
     volume_alerts_enabled: body.volume_alerts_enabled,
+    default_channel: body.default_channel,
   })
 
   return c.json({ ok: true })

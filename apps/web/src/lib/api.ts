@@ -478,11 +478,13 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    updateSlackSettings: (data: { volume_alerts_enabled?: boolean }) =>
+    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string }) =>
       req<{ ok: boolean }>('/api/integrations/slack/settings', {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),
+    listSlackChannels: () =>
+      req<{ channels: Array<{ id: string; name: string }> }>('/api/integrations/slack/channels'),
     deleteSlack: () =>
       req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
