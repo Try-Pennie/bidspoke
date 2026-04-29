@@ -2805,17 +2805,26 @@ function CircuitBreakerServiceField({
   if (nodeType === 'partner_bid' || nodeType === 'webhook') return null
   const value = (config.service as string | undefined) ?? ''
   return (
-    <Field
-      label="Circuit breaker service"
-      hint="Tag this node with the upstream it calls (e.g. equifax, tripoint). When repeated transient failures cross the threshold, the breaker opens and short-circuits all nodes with the same tag. Leave blank to skip."
-    >
+    <div>
+      <label className="mb-1 block text-xs font-medium text-gray-600">Circuit breaker service</label>
       <input
         className="input"
         placeholder="e.g. equifax"
         value={value}
         onChange={(e) => updateConfig({ service: e.target.value || undefined })}
       />
-    </Field>
+      <div className="mt-1.5 space-y-1.5 text-xs text-gray-500 leading-relaxed">
+        <p>
+          When the upstream goes down, the breaker stops every tagged node from waiting through its own timeout. Saves wall-clock during outages and gives the upstream time to recover.
+        </p>
+        <p>
+          Tag every node — across all your workflows — that calls the same service. After <strong className="text-gray-700">5 transient failures within 60 seconds</strong>, calls fail in milliseconds for 5 minutes, then one probe attempt re-checks.
+        </p>
+        <p className="text-gray-400">
+          Example: if Equifax is down and 50 leads come in, only the first 5 wait 30s each. The other 45 fail instantly. Tag `equifax` on every node that calls Equifax.
+        </p>
+      </div>
+    </div>
   )
 }
 
