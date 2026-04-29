@@ -2585,35 +2585,53 @@ function TimeoutField({
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
 
-  let warning: { tone: 'red' | 'amber' | 'blue'; lead: string; body: string } | null = null
+  // One callout, always shown when we have data. Tone defaults to neutral.
+  // Action sentence is appended only when there's a recommendation to make,
+  // and the numeric value inside it is the click target.
+  type Tone = 'red' | 'amber' | 'blue' | 'neutral'
+  let tone: Tone = 'neutral'
+  let actionLeading: string | null = null
+  let actionLink: { text: string; ms: number } | null = null
+  let actionTrailing: string | null = null
   if (stats && stats.sample_size >= 10 && stats.p99 != null && stats.max_ms != null && stats.suggested_ms != null) {
     if (effective < stats.max_ms) {
-      warning = {
-        tone: 'red',
-        lead: `Heads up — one real run took ${formatMs(stats.max_ms)}.`,
-        body: 'This timeout would have ended it early.',
-      }
+      tone = 'red'
+      actionLeading = `But one real run took ${formatMs(stats.max_ms)}, which would have been cut off.`
     } else if (effective < stats.suggested_ms) {
-      warning = {
-        tone: 'amber',
-        lead: 'Cutting it close.',
-        body: 'Most runs finish in time, but a slower one will get cut off.',
-      }
+      tone = 'amber'
+      actionLeading = 'Slower runs will get cut off — try'
+      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionTrailing = 'for more headroom.'
     } else if (effective > stats.suggested_ms * 3 && effective > stats.max_ms * 2) {
       // Only suggest lowering if there's real headroom over both the p99-based
-      // suggestion AND the observed max. Without the max guard, a step with a
-      // fat tail (p99=1s but max=28s) gets told to lower to ~1.5s and that
-      // would kill real long-tail runs.
-      warning = {
-        tone: 'blue',
-        lead: 'Plenty of room.',
-        body: `You could safely lower this to ${formatMs(stats.suggested_ms)} so failures show up faster.`,
-      }
+      // suggestion AND the observed max. Without the max guard a fat-tailed
+      // step (p99=1s but max=28s) gets told to lower to ~1.5s.
+      tone = 'blue'
+      actionLeading = 'You could safely lower this to'
+      actionLink = { text: formatMs(stats.suggested_ms), ms: stats.suggested_ms }
+      actionTrailing = 'so failures show up faster.'
     }
   }
 
   const showStats = !loading && stats && stats.sample_size >= 10
   const showThin = !loading && stats && stats.sample_size < 10
+
+  const calloutClasses =
+    tone === 'red'
+      ? 'border-red-200 bg-red-50 text-red-800'
+      : tone === 'amber'
+      ? 'border-amber-200 bg-amber-50 text-amber-900'
+      : tone === 'blue'
+      ? 'border-sky-200 bg-sky-50 text-sky-800'
+      : 'border-gray-200 bg-gray-50 text-gray-700'
+  const linkClasses =
+    tone === 'red'
+      ? 'font-semibold text-red-900 underline-offset-2 hover:underline'
+      : tone === 'amber'
+      ? 'font-semibold text-amber-900 underline-offset-2 hover:underline'
+      : tone === 'blue'
+      ? 'font-semibold text-sky-900 underline-offset-2 hover:underline'
+      : 'font-semibold text-gray-900 underline-offset-2 hover:underline'
 
   return (
     <Field label="Timeout">
@@ -2634,7 +2652,7 @@ function TimeoutField({
         How long to wait before giving up on this step. Default 30s.
       </p>
 
-      {/* Past-run context — quieter, conversational */}
+      {/* Single callout: stats + optional action sentence */}
       {workflowId && namespace && (
         <div className="mt-3">
           {loading && <p className="text-xs text-gray-400">Checking past runs…</p>}
@@ -2646,40 +2664,32 @@ function TimeoutField({
           )}
 
           {showStats && (
-            <p className="text-xs leading-relaxed text-gray-600">
+            <div className={`rounded-md border px-2.5 py-1.5 text-xs leading-relaxed ${calloutClasses}`}>
               {stats!.source === 'similar' ? 'Similar steps in your other workflows' : 'This step'} usually{' '}
               {stats!.source === 'similar' ? 'finish' : 'finishes'} in{' '}
-              <strong className="font-semibold text-gray-800">{formatMs(stats!.p50!)}</strong>
+              <strong className="font-semibold">{formatMs(stats!.p50!)}</strong>
               {' '}and rarely take{stats!.source === 'similar' ? '' : 's'} more than{' '}
-              <strong className="font-semibold text-gray-800">{formatMs(stats!.p99!)}</strong>
-              <span className="text-gray-400"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
-              {stats!.suggested_ms != null && current !== stats!.suggested_ms && (
+              <strong className="font-semibold">{formatMs(stats!.p99!)}</strong>
+              <span className="opacity-70"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
+              {actionLeading && current !== actionLink?.ms && (
                 <>
                   {' '}
-                  <button
-                    type="button"
-                    onClick={() => updateConfig({ timeout_ms: stats!.suggested_ms ?? undefined })}
-                    className="font-medium text-p-blue-dark underline-offset-2 hover:underline"
-                  >
-                    Try {formatMs(stats!.suggested_ms)}
-                  </button>
+                  {actionLeading}
+                  {actionLink && (
+                    <>
+                      {' '}
+                      <button
+                        type="button"
+                        onClick={() => updateConfig({ timeout_ms: actionLink!.ms })}
+                        className={linkClasses}
+                      >
+                        {actionLink.text}
+                      </button>
+                    </>
+                  )}
+                  {actionTrailing && <> {actionTrailing}</>}
                 </>
               )}
-            </p>
-          )}
-
-          {warning && (
-            <div
-              className={
-                'mt-2.5 rounded-md border px-2.5 py-1.5 text-xs leading-relaxed ' +
-                (warning.tone === 'red'
-                  ? 'border-red-200 bg-red-50 text-red-800'
-                  : warning.tone === 'amber'
-                  ? 'border-amber-200 bg-amber-50 text-amber-900'
-                  : 'border-sky-200 bg-sky-50 text-sky-800')
-              }
-            >
-              <strong className="font-semibold">{warning.lead}</strong> {warning.body}
             </div>
           )}
         </div>
