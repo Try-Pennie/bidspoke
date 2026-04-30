@@ -136,7 +136,7 @@ export function findFreePosition(
  * order. Returns null for nodes that don't have multi-output semantics (or
  * have only a single output, in which case the layout never branches).
  */
-function configuredHandleIds(node: Node): string[] | null {
+export function configuredHandleIds(node: Node): string[] | null {
   const type = node.type
   const config = (node.data as { config?: Record<string, unknown> } | undefined)?.config
   if (type === 'branch') {

@@ -44,7 +44,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
-import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, DISCONNECTED_GAP } from '@/lib/layout'
+import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
@@ -285,8 +285,9 @@ function chooseSourceHandle(
     const ids: string[] = typeof slots[0] === 'string'
       ? (slots as string[]).map((_, i) => `child-${i}`)
       : (slots as Array<{ id: string }>).map((s) => s.id)
+    const w = nodeWidth('parallel', source.data)
     return nearestHandleId(
-      ids.map((id, i) => ({ id, x: source.position.x + (NODE_W * (i + 0.5)) / ids.length })),
+      ids.map((id, i) => ({ id, x: source.position.x + (w * (i + 0.5)) / ids.length })),
       dropX
     )
   }
@@ -338,19 +339,38 @@ function nearestHandleId(handles: { id: string; x: number }[], dropX: number): s
 }
 
 // Find the best candidate to auto-connect FROM given a drop position.
-// Returns the node whose bottom edge is highest above the drop point,
-// within a generous horizontal tolerance.
-function findDropSource(nodes: Node[], dropPos: { x: number; y: number }): Node | null {
+// First preference: a multi-output source whose unfilled slot aligns
+// horizontally with the drop. Otherwise, the node whose bottom edge is
+// highest above the drop point, within a generous horizontal tolerance.
+function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: number }): Node | null {
   const H_TOLERANCE = 160 // px — drop doesn't need to be pixel-perfect
+  const SLOT_TOLERANCE = 90 // px — how close the drop X must be to a slot's center
 
   const candidates = nodes.filter((n) => {
     const nh = nodeHeight(n.type)
-    const centerX = n.position.x + NODE_W / 2
+    const w = nodeWidth(n.type, n.data)
+    const centerX = n.position.x + w / 2
     return (
       dropPos.y > n.position.y + nh / 2 &&     // drop is below the node center
-      Math.abs(dropPos.x - centerX) <= NODE_W / 2 + H_TOLERANCE
+      Math.abs(dropPos.x - centerX) <= w / 2 + H_TOLERANCE
     )
   })
+
+  // Multi-output preference: if the drop X aligns with an unfilled slot on
+  // any candidate, that node wins regardless of stacking order. Lets the user
+  // drop past an interposing node (e.g. a parallel_end sitting between the
+  // parallel start and the drop point) and still attach to the slot.
+  for (const candidate of candidates) {
+    const handles = configuredHandleIds(candidate)
+    if (!handles || handles.length === 0) continue
+    const w = nodeWidth(candidate.type, candidate.data)
+    for (let i = 0; i < handles.length; i++) {
+      const handleX = candidate.position.x + (w * (i + 0.5)) / handles.length
+      if (Math.abs(dropPos.x - handleX) > SLOT_TOLERANCE) continue
+      const occupied = edges.some((e) => e.source === candidate.id && e.sourceHandle === handles[i])
+      if (!occupied) return candidate
+    }
+  }
 
   if (candidates.length === 0) return null
 
@@ -1132,7 +1152,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const rawPos = screenToFlowPosition({ x: e.clientX, y: e.clientY })
       const snapTo = (v: number) => Math.round(v / 20) * 20
       const dropPos = { x: snapTo(rawPos.x), y: snapTo(rawPos.y) }
-      const sourceNode = findDropSource(nodes, dropPos)
+      const sourceNode = findDropSource(nodes, edges, dropPos)
       const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, dropPos.x) : null
       const existingOutEdge = (sourceNode && sourceHandle)
         ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
@@ -1938,7 +1958,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
                 if (!isConnected) {
                   // SLOT-IN: isolated node dragged near the workflow → auto-connect
-                  const sourceNode = findDropSource(otherNodes, finalPos)
+                  const sourceNode = findDropSource(otherNodes, edges, finalPos)
                   const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, finalPos.x) : null
                   const existingOutEdge = (sourceNode && sourceHandle)
                     ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
@@ -1970,7 +1990,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   }
                 } else {
                   // REORDER: connected node dragged to a new position in the flow
-                  const newSource = findDropSource(otherNodes, finalPos)
+                  const newSource = findDropSource(otherNodes, edges, finalPos)
                   const newSourceHandle = newSource ? chooseSourceHandle(newSource, finalPos.x) : null
 
                   // No valid target, or target is the same node, or target can't have outgoing edges → snap back
