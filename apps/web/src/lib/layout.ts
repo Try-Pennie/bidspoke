@@ -112,6 +112,29 @@ export function findFreePosition(
  * bid_evaluation: winner=0, no_winner=1
  * branch:         branch labels in order + else last
  */
+/**
+ * Returns the configured handle ids on a multi-output node, in left-to-right
+ * order. Returns null for nodes that don't have multi-output semantics (or
+ * have only a single output, in which case the layout never branches).
+ */
+function configuredHandleIds(node: Node): string[] | null {
+  const type = node.type
+  const config = (node.data as { config?: Record<string, unknown> } | undefined)?.config
+  if (type === 'branch') {
+    const branches = (config?.branches as { label: string }[] | undefined) ?? []
+    const elseBehavior =
+      (config?.else_behavior as 'output' | 'none' | 'error' | undefined) ??
+      ((config?.use_else as boolean | undefined) === false ? 'none' : 'output')
+    return [
+      ...branches.map((b) => b.label),
+      ...(elseBehavior === 'output' ? ['else'] : []),
+    ]
+  }
+  if (type === 'filter') return ['pass', 'exit']
+  if (type === 'bid_evaluation' || type === 'bid_group') return ['winner', 'no_winner']
+  return null
+}
+
 function handleSortIndex(
   nodeType: string | undefined,
   handleId: string | null | undefined,
@@ -243,6 +266,29 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // ── Post-process: children of multi-output nodes sit at the X they would
+  // occupy if every configured handle had a child attached. This keeps a
+  // 1-of-N child directly under its specific handle (instead of centered),
+  // and lays out 2-of-3 cases without collapsing the gap left by the unused
+  // middle handle.
+  const SIBLING_SPACING = NODE_W + 48 // matches dagre's nodesep above
+  for (const [sourceId, outEdges] of outEdgesBySource) {
+    const src = nodeMap.get(sourceId)
+    if (!src) continue
+    const handles = configuredHandleIds(src)
+    if (!handles || handles.length < 2) continue
+    const parentPos = pos.get(sourceId)
+    if (!parentPos) continue
+    for (const e of outEdges) {
+      if (!e.sourceHandle) continue
+      const idx = handles.indexOf(e.sourceHandle)
+      if (idx < 0) continue
+      const childPos = pos.get(e.target)
+      if (!childPos) continue
+      childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
+    }
+  }
+
   // ── Post-process: x-align single-child linear chains with their parent.
   //
   // Dagre's network-simplex layout will sometimes pull a downstream chain
@@ -273,6 +319,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const parentId = inE[0].source
       const parentOut = outEdgesBySource.get(parentId) ?? []
       if (parentOut.length !== 1) continue
+      const parent = nodeMap.get(parentId)
+      // Multi-output parents already had their child placed at the handle's
+      // X above; don't snap it back to the parent's center.
+      if (parent && configuredHandleIds(parent)) continue
       const childPos = pos.get(node.id)
       const parentPos = pos.get(parentId)
       if (!childPos || !parentPos) continue
