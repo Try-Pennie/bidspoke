@@ -240,63 +240,18 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
 
 // ── Auto-connect helpers ─────────────────────────────────────────────────────
 
-// Picks the bottom source handle on `source` whose horizontal position is
-// closest to `dropX` (a flow-coordinate x). Returns null for terminal nodes
-// and for parallel (which uses a separate child-picker UI).
-function chooseSourceHandle(
-  source: Node,
-  dropX: number
-): string | null {
-  const type = source.type ?? ''
-  const config = (source.data as { config?: Record<string, unknown> } | undefined)?.config
+// The primary output handle to use when auto-connecting FROM an existing node.
+// Returns null for terminal nodes (nothing comes after them) and branch nodes
+// (ambiguous — the user should connect those manually).
+function primarySourceHandle(type: string, config?: Record<string, unknown>): string | null {
   if (type === 'exit') return null
-  if (type === 'parallel') return null
   if (type === 'response') return config?.continue_after_response ? 'output' : null
-
-  if (type === 'branch') {
-    const branches = (config?.branches as { label: string }[] | undefined) ?? []
-    const elseBehavior =
-      (config?.else_behavior as 'output' | 'none' | 'error' | undefined) ??
-      ((config?.use_else as boolean | undefined) === false ? 'none' : 'output')
-    const ids = [
-      ...branches.map((b) => b.label),
-      ...(elseBehavior === 'output' ? ['else'] : []),
-    ]
-    if (ids.length === 0) return null
-    const w = nodeWidth('branch', source.data)
-    return nearestHandleId(
-      ids.map((id, i) => ({ id, x: source.position.x + (w * (i + 0.5)) / ids.length })),
-      dropX
-    )
-  }
-
-  if (type === 'filter') {
-    return nearestHandleId(
-      [
-        { id: 'pass', x: source.position.x + NODE_W * 0.3 },
-        { id: 'exit', x: source.position.x + NODE_W * 0.7 },
-      ],
-      dropX
-    )
-  }
-
-  if (type === 'bid_evaluation' || type === 'bid_group') {
-    return nearestHandleId(
-      [
-        { id: 'winner', x: source.position.x + NODE_W * 0.3 },
-        { id: 'no_winner', x: source.position.x + NODE_W * 0.7 },
-      ],
-      dropX
-    )
-  }
-
+  if (type === 'branch') return null  // N-way split — no sensible default
+  if (type === 'bid_evaluation') return null  // winner/no_winner — ambiguous default
+  if (type === 'bid_group') return null  // winner/no_winner — ambiguous default
+  if (type === 'parallel') return null  // fan-out configured via picker, not auto-connect
+  if (type === 'filter') return 'pass'
   return 'output'
-}
-
-function nearestHandleId(handles: { id: string; x: number }[], dropX: number): string {
-  return handles.reduce((best, h) =>
-    Math.abs(h.x - dropX) < Math.abs(best.x - dropX) ? h : best
-  ).id
 }
 
 // Find the best candidate to auto-connect FROM given a drop position.
@@ -1095,7 +1050,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const snapTo = (v: number) => Math.round(v / 20) * 20
       const dropPos = { x: snapTo(rawPos.x), y: snapTo(rawPos.y) }
       const sourceNode = findDropSource(nodes, dropPos)
-      const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, dropPos.x) : null
+      const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '', sourceNode.data?.config as Record<string, unknown> | undefined) : null
       const existingOutEdge = (sourceNode && sourceHandle)
         ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
         : null
@@ -1896,7 +1851,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                 if (!isConnected) {
                   // SLOT-IN: isolated node dragged near the workflow → auto-connect
                   const sourceNode = findDropSource(otherNodes, finalPos)
-                  const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, finalPos.x) : null
+                  const sourceHandle = sourceNode ? primarySourceHandle(sourceNode.type ?? '', sourceNode.data?.config as Record<string, unknown> | undefined) : null
                   const existingOutEdge = (sourceNode && sourceHandle)
                     ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
                     : null
@@ -1928,7 +1883,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                 } else {
                   // REORDER: connected node dragged to a new position in the flow
                   const newSource = findDropSource(otherNodes, finalPos)
-                  const newSourceHandle = newSource ? chooseSourceHandle(newSource, finalPos.x) : null
+                  const newSourceHandle = newSource ? primarySourceHandle(newSource.type ?? '', newSource.data?.config as Record<string, unknown> | undefined) : null
 
                   // No valid target, or target is the same node, or target can't have outgoing edges → snap back
                   const inEdges = edges.filter((e) => e.target === change.id)
