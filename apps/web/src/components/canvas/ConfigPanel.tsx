@@ -239,8 +239,9 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
 
-        {/* Common: retry + error handling */}
-        <div>
+        {/* Common: retry + error handling. Hidden for parallel_end — that node
+            is a passive join marker, all retry/error config sits on the start. */}
+        {type !== 'parallel_end' && <div>
           <button
             onClick={() => setShowAdvanced((s: boolean) => !s)}
             className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
@@ -287,7 +288,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
               </Field>
             )}
           </div>}
-        </div>
+        </div>}
       </div>
       </div>
       )}

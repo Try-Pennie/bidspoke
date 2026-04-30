@@ -125,17 +125,18 @@ function configuredHandleIds(node: Node): string[] | null {
     const elseBehavior =
       (config?.else_behavior as 'output' | 'none' | 'error' | undefined) ??
       ((config?.use_else as boolean | undefined) === false ? 'none' : 'output')
-    return [
+    const ids = [
       ...branches.map((b) => b.label),
       ...(elseBehavior === 'output' ? ['else'] : []),
     ]
+    return ids.length > 0 ? ids : null
   }
   if (type === 'filter') return ['pass', 'exit']
   if (type === 'bid_evaluation' || type === 'bid_group') return ['winner', 'no_winner']
   if (type === 'parallel') {
     const raw = config?.children
-    if (!Array.isArray(raw)) return null
-    if (raw.length > 0 && typeof raw[0] === 'string') {
+    if (!Array.isArray(raw) || raw.length === 0) return null
+    if (typeof raw[0] === 'string') {
       return (raw as string[]).map((_, i) => `child-${i}`)
     }
     return (raw as { id: string }[]).map((s) => s.id)
