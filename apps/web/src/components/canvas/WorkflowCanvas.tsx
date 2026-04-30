@@ -44,7 +44,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
-import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, DISCONNECTED_GAP } from '@/lib/layout'
+import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
@@ -1129,9 +1129,25 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const handleNodeUpdate = useCallback(
     (id: string, patch: Partial<CanvasNodeData>) => {
       setNodes((ns) =>
-        ns.map((n) =>
-          n.id === id ? { ...n, data: { ...(n.data as object), ...patch } } : n
-        )
+        ns.map((n) => {
+          if (n.id !== id) return n
+          const nextData = { ...(n.data as object), ...patch }
+          // Branch node width depends on its labels. When labels change, keep the
+          // node's horizontal center fixed so upstream edges stay aligned with the
+          // top input handle.
+          if (n.type === 'branch') {
+            const oldW = nodeWidth('branch', n.data)
+            const newW = nodeWidth('branch', nextData)
+            if (oldW !== newW) {
+              return {
+                ...n,
+                data: nextData,
+                position: { x: n.position.x + (oldW - newW) / 2, y: n.position.y },
+              }
+            }
+          }
+          return { ...n, data: nextData }
+        })
       )
       setIsDirty(true)
     },
