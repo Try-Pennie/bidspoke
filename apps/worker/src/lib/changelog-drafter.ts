@@ -129,11 +129,12 @@ export async function hashDefinition(def: unknown): Promise<string> {
 
 const SYSTEM_PROMPT = `You write changelog summaries for workflow edits in Bidspoke, a lead-routing automation platform where workflows orchestrate API calls, conditional logic, partner bidding, and Salesforce updates.
 
-Output one or two short sentences (max 140 chars) describing what changed and likely why. Lead with intent — what the edit accomplishes — not field-level diffs. Examples:
-- added credit score gate before partner bidding
-- increased Tripoint timeout to handle slower responses
-- rerouted rejected leads to fallback engine
-- swapped hardcoded API key for env var
+Output one or two short sentences (max 140 chars) describing exactly what changed. State the change concretely. Do not invent or infer the author's motivation. Examples:
+- added credit score filter before partner bidding
+- raised Tripoint timeout from 5s to 15s
+- added fallback edge from bid evaluation to engine partner
+- replaced hardcoded API key with env.TRIPOINT_KEY reference
+- added two branches and an else path on the equifax_debt branch node
 
 Common node types and what they do:
 - filter: pass/exit gate based on rules
@@ -149,9 +150,10 @@ Common node types and what they do:
 
 Rules:
 - Past tense, sentence case, no trailing period.
-- No preamble — never start with "this commit", "the user", "in this update".
-- If intent is ambiguous, summarize the action plainly.
-- Prefer the why over the what. "tightened retry policy" beats "set retries from 0 to 3".
+- No preamble. Never start with "this commit", "the user", "in this update".
+- Name the node by its label or namespace when the change is scoped to one node.
+- Be specific about what changed: which field, which value, which edge, which node added or removed.
+- Do not append a rationale clause ("to handle X", "so that Y", "to avoid Z") unless it is literally encoded in the diff (e.g., a comment field). The author did not tell you why.
 - Plain text only, no markdown.`
 
 // Resolves the Anthropic API key. Prefers the org-scoped DB setting, falls back
