@@ -16,7 +16,7 @@ const NODE_H: Record<string, number> = {
   code:          144,  // header + body + optional output preview pill
   response:      144,  // header + body + optional output preview pill
   exit:           96,
-  parallel:      120,
+  parallel:      156,  // header + body + slot label row (when slots > 0)
   parallel_end:  100,
   salesforce:    164,  // header + body + Update tag + optional status code preview pill
   default:       120,
