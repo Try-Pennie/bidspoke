@@ -32,25 +32,44 @@ export function nodeHeight(type: string | undefined) {
  * width in BranchNode.tsx so dagre reserves the same horizontal slot.
  */
 export function nodeWidth(type: string | undefined, data: unknown): number {
-  if (type !== 'branch') return NODE_W
-  type BranchData = {
-    config?: {
-      branches?: { label: string }[]
-      else_behavior?: 'output' | 'none' | 'error'
-      use_else?: boolean
-      else_label?: string
+  if (type === 'branch') {
+    type BranchData = {
+      config?: {
+        branches?: { label: string }[]
+        else_behavior?: 'output' | 'none' | 'error'
+        use_else?: boolean
+        else_label?: string
+      }
     }
+    const cfg = (data as BranchData | undefined)?.config
+    const branches = cfg?.branches ?? []
+    const elseBehavior = cfg?.else_behavior ?? (cfg?.use_else === false ? 'none' : 'output')
+    const elseLabel = cfg?.else_label || 'else'
+    const labels = [...branches.map((b) => b.label), ...(elseBehavior === 'output' ? [elseLabel] : [])]
+    return widthForFooterLabels(labels)
   }
-  const cfg = (data as BranchData | undefined)?.config
-  const branches = cfg?.branches ?? []
-  const elseBehavior = cfg?.else_behavior ?? (cfg?.use_else === false ? 'none' : 'output')
-  const elseLabel = cfg?.else_label || 'else'
-  const handles = [...branches.map((b) => b.label), ...(elseBehavior === 'output' ? [elseLabel] : [])]
-  if (handles.length === 0) return NODE_W
-  // text-xs (~12px) avg ~6.5px/char; "↓ " prefix ~12px; px-2 row padding (16px); 16px gap between handles
-  const labelsPx = handles.reduce((sum, h) => sum + 12 + h.length * 6.5, 0)
-  const totalPx = 16 + labelsPx + 16 * Math.max(0, handles.length - 1)
-  return Math.max(NODE_W, Math.ceil(totalPx))
+  if (type === 'parallel') {
+    type ParallelData = { config?: { children?: Array<{ label: string }> | string[] } }
+    const raw = (data as ParallelData | undefined)?.config?.children
+    if (!Array.isArray(raw) || raw.length === 0) return NODE_W
+    const labels = typeof raw[0] === 'string'
+      ? (raw as string[]).map((_, i) => `child_${i + 1}`)
+      : (raw as Array<{ label: string }>).map((s) => s.label || '')
+    return widthForFooterLabels(labels)
+  }
+  return NODE_W
+}
+
+// Compute the rendered width needed to fit a row of footer labels (matches
+// the branch / parallel slot row layout: text-xs, ↓ prefix, px-2 row padding,
+// 16px between cells). Cap at a sensible max so labels truncate rather than
+// grow the node forever.
+const NODE_W_MAX = 360
+function widthForFooterLabels(labels: string[]): number {
+  if (labels.length === 0) return NODE_W
+  const labelsPx = labels.reduce((sum, h) => sum + 12 + h.length * 6.5, 0)
+  const totalPx = 16 + labelsPx + 16 * Math.max(0, labels.length - 1)
+  return Math.min(NODE_W_MAX, Math.max(NODE_W, Math.ceil(totalPx)))
 }
 
 const NODE_GAP = 24 // minimum clear space between any two nodes

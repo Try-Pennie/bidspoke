@@ -2242,7 +2242,7 @@ function ParallelConfig({
         </button>
       </div>
 
-      <Field label="Wait for" hint="'All' waits for every slot. 'First' continues as soon as one succeeds.">
+      <Field label="Wait for" hint="'All' waits for every slot. 'First' continues as soon as one succeeds. 'Specific slot' continues as soon as the named slot finishes — siblings keep running but their results are ignored unless they happened to settle in time.">
         <div className="relative">
           <select
             value={waitFor}
@@ -2251,10 +2251,29 @@ function ParallelConfig({
           >
             <option value="all">All slots</option>
             <option value="first">First to succeed</option>
+            <option value="specific">Specific slot</option>
           </select>
           <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
         </div>
       </Field>
+
+      {waitFor === 'specific' && (
+        <Field label="Wait for slot" hint="Parallel proceeds as soon as this slot finishes. If it fails, the parallel fails.">
+          <div className="relative">
+            <select
+              value={(config.wait_for_slot as string | undefined) ?? ''}
+              onChange={(e) => onChange({ wait_for_slot: e.target.value })}
+              className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+            >
+              <option value="">Select a slot...</option>
+              {slots.map((s) => (
+                <option key={s.id} value={s.id}>{s.label || s.id}</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          </div>
+        </Field>
+      )}
 
       <Field label="Timeout (ms)" hint="How long to wait before moving on. Default 15000ms.">
         <input

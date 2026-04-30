@@ -1220,12 +1220,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         ns.map((n) => {
           if (n.id !== id) return n
           const nextData = { ...(n.data as object), ...patch }
-          // Branch node width depends on its labels. When labels change, keep the
-          // node's horizontal center fixed so upstream edges stay aligned with the
-          // top input handle.
-          if (n.type === 'branch') {
-            const oldW = nodeWidth('branch', n.data)
-            const newW = nodeWidth('branch', nextData)
+          // Branch and parallel widths depend on their footer labels. When the
+          // labels change, keep the node's horizontal center fixed so upstream
+          // edges stay aligned with the top input handle.
+          if (n.type === 'branch' || n.type === 'parallel') {
+            const oldW = nodeWidth(n.type, n.data)
+            const newW = nodeWidth(n.type, nextData)
             if (oldW !== newW) {
               return {
                 ...n,

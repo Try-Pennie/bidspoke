@@ -2,12 +2,17 @@
  * Parallel node — PRD Section 5.2
  *
  * Execution modes:
- *   wait_for: 'all'   — Promise.allSettled(); waits for every child.
- *                        on_timeout: 'partial' → continue with settled results;
- *                        on_timeout: 'fail'    → throw if any child unsettled.
- *   wait_for: 'first' — Race; first successful child wins. All children run to
- *                        completion in the background (results discarded except winner).
- *                        Fails if all children reject OR timeout fires first.
+ *   wait_for: 'all'      — Promise.allSettled(); waits for every child.
+ *                          on_timeout: 'partial' → continue with settled results;
+ *                          on_timeout: 'fail'    → throw if any child unsettled.
+ *   wait_for: 'first'    — Race; first successful child wins. All children run to
+ *                          completion in the background (results discarded except winner).
+ *                          Fails if all children reject OR timeout fires first.
+ *   wait_for: 'specific' — Wait for a named slot (config.wait_for_slot). Other
+ *                          slots keep running in the background but are not
+ *                          awaited; their results show as 'timeout' in the
+ *                          output if not yet settled. The named slot's status
+ *                          drives the parallel's success — failure throws.
  *
  * Output: ParallelOutput — array of child results consumed by BidEvaluation node.
  */
@@ -25,7 +30,9 @@ export interface ParallelChildResult {
 export type ParallelOutput = ParallelChildResult[]
 
 interface ParallelConfig {
-  wait_for?: 'all' | 'first'
+  wait_for?: 'all' | 'first' | 'specific'
+  // Slot handle id (e.g. 'child-0') to wait for when wait_for='specific'.
+  wait_for_slot?: string
   timeout_ms?: number
   on_timeout?: 'partial' | 'fail'
   // Default 'fail' — if any child rejects, the parallel step fails and the
@@ -39,7 +46,8 @@ interface ParallelConfig {
 export async function executeParallelNode(
   node: NodeDefinition,
   childNodes: NodeDefinition[],
-  runChild: (child: NodeDefinition, childIndex: number) => Promise<ParallelChildResult>
+  runChild: (child: NodeDefinition, childIndex: number) => Promise<ParallelChildResult>,
+  slotHandleIds: string[] = []
 ): Promise<StepExecutionResult> {
   if (childNodes.length === 0) {
     return { output: [] as ParallelOutput }
@@ -50,6 +58,22 @@ export async function executeParallelNode(
   const timeoutMs = config.timeout_ms ?? 15000
   const onTimeout = config.on_timeout ?? 'partial'
   const onChildError = config.on_child_error ?? 'fail'
+
+  if (waitFor === 'specific') {
+    const targetIdx = slotHandleIds.indexOf(config.wait_for_slot ?? '')
+    if (targetIdx < 0) {
+      throw new Error(`Parallel "specific" wait references slot "${config.wait_for_slot}" which is not connected`)
+    }
+    const output = await runSpecific(childNodes, runChild, timeoutMs, targetIdx)
+    const named = output[targetIdx]
+    if (named && (named.status === 'rejected' || named.status === 'timeout')) {
+      const reason = named.status === 'timeout'
+        ? `slot "${named.namespace}" did not complete in time`
+        : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
+      throw new Error(`Parallel failed — ${reason}`)
+    }
+    return { output }
+  }
 
   const output: ParallelOutput =
     waitFor === 'first'
@@ -106,6 +130,49 @@ async function runAll(
 
   // All children settled within the timeout
   return settled as ParallelChildResult[]
+}
+
+// ── wait_for: 'specific' ──────────────────────────────────────────────────────
+
+async function runSpecific(
+  childNodes: NodeDefinition[],
+  runChild: (child: NodeDefinition, i: number) => Promise<ParallelChildResult>,
+  timeoutMs: number,
+  targetIdx: number
+): Promise<ParallelOutput> {
+  const settled: Array<ParallelChildResult | null> = childNodes.map(() => null)
+
+  // Kick off every child concurrently. Siblings keep running in the background;
+  // we just don't await them.
+  let resolveTarget: (r: ParallelChildResult) => void
+  const targetSettled = new Promise<ParallelChildResult>((res) => { resolveTarget = res })
+  childNodes.forEach((child, i) => {
+    runChild(child, i).then((result) => {
+      settled[i] = result
+      if (i === targetIdx) resolveTarget(result)
+    }).catch((err) => {
+      const result: ParallelChildResult = { namespace: child.namespace, status: 'rejected', error: err instanceof Error ? err.message : String(err) }
+      settled[i] = result
+      if (i === targetIdx) resolveTarget(result)
+    })
+  })
+
+  const timedOut = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), timeoutMs)
+  )
+
+  const winner = await Promise.race([targetSettled.then(() => 'done' as const), timedOut])
+
+  if (winner === 'timeout') {
+    // Mark the target as timeout if it didn't settle; siblings reflect their
+    // current state.
+    const targetChild = childNodes[targetIdx]
+    settled[targetIdx] = settled[targetIdx] ?? { namespace: targetChild.namespace, status: 'timeout' }
+  }
+
+  return childNodes.map((child, i) =>
+    settled[i] ?? ({ namespace: child.namespace, status: 'timeout' } as ParallelChildResult)
+  )
 }
 
 // ── wait_for: 'first' ─────────────────────────────────────────────────────────

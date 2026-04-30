@@ -600,11 +600,16 @@ export async function walkGraph(
       const errorType: ErrorType = null
 
       try {
+        // Slot handle ids parallel to resolvedChildren — needed when wait_for='specific'.
+        const slotHandleIds = slotChildren.length > 0
+          ? slotEdges.map((e) => e.source_handle ?? '')
+          : []
         const result = await executeParallelNode(
           execNode,
           resolvedChildren,
           (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue)
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue),
+          slotHandleIds
         )
         output = result.output
         lastOutput = output
