@@ -33,8 +33,8 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       return null
     }
     case 'parallel': {
-      const children = config.children as string[] | undefined
-      if (!children?.length) return 'No branches selected'
+      const slots = config.children as Array<{ id: string; label: string }> | string[] | undefined
+      if (!slots?.length) return 'No slots defined'
       return null
     }
     case 'partner_bid': {

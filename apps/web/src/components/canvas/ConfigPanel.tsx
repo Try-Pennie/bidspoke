@@ -1,7 +1,6 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useUpdateNodeInternals } from '@xyflow/react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -237,8 +236,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} nodeOptions={nodeOptions} edges={edges} onEdgesChange={onEdgesChange} />}
-        {type === 'parallel_end' && <ParallelEndConfig config={data.config} onChange={updateConfig} />}
+        {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
+        {type === 'parallel_end' && <ParallelEndConfig />}
 
         {/* Common: retry + error handling */}
         <div>
@@ -2164,140 +2163,92 @@ function ParallelConfig({
   config,
   onChange,
   currentNodeId,
-  nodeOptions,
   edges,
   onEdgesChange,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   currentNodeId: string
-  nodeOptions: { id: string; namespace: string; label?: string }[]
   edges: { id: string; source: string; target: string; sourceHandle?: string | null }[]
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }) {
-  const updateNodeInternals = useUpdateNodeInternals()
-  // Queue an edge addition after a node-config change. We can't add the edge in the same
-  // render as config.children changes because React Flow hasn't re-registered the new
-  // child-N handle in nodeInternals yet — the edge would be silently dropped.
-  const [pendingEdge, setPendingEdge] = useState<{
-    add: { id: string; source: string; target: string; sourceHandle: string }[]
-    removeIds: string[]
-  } | null>(null)
-
-  useEffect(() => {
-    if (!pendingEdge) return
-    // Force React Flow to re-scan the parallel node's handles now that the DOM has updated.
-    updateNodeInternals(currentNodeId)
-    onEdgesChange?.(pendingEdge.add, pendingEdge.removeIds)
-    setPendingEdge(null)
-  }, [pendingEdge]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const children = (config.children as string[] | undefined) ?? []
-
-  // BFS ancestors of currentNodeId — nodes that can reach the parallel node going forward.
-  // We exclude these (and the node itself) from the picker so only downstream nodes appear.
-  // This works even when the parallel node has no outgoing edges yet (fresh drop).
-  const ancestors = (() => {
-    const visited = new Set<string>()
-    const queue = [currentNodeId]
-    while (queue.length > 0) {
-      const id = queue.shift()!
-      for (const e of edges) {
-        if (e.target === id && !visited.has(e.source)) {
-          visited.add(e.source)
-          queue.push(e.source)
-        }
-      }
-    }
-    return visited
-  })()
-
-  const available = nodeOptions.filter((n) => !ancestors.has(n.id) && n.id !== currentNodeId)
-
-  function toggleChild(id: string) {
-    if (children.includes(id)) {
-      // Remove: update children array + delete fan-out edge
-      const next = children.filter((c) => c !== id)
-      onChange({ children: next })
-      const removeIds = edges
-        .filter((e) => e.source === currentNodeId && e.target === id && (e.sourceHandle ?? '').startsWith('child-'))
-        .map((e) => e.id)
-      if (removeIds.length > 0) onEdgesChange?.([], removeIds)
-    } else {
-      // Add: append to children array, then queue the fan-out edge for the next render.
-      // The new child-N handle doesn't exist in React Flow's nodeInternals until after
-      // the config change commits to the DOM, so we defer the edge creation via useEffect.
-      const next = [...children, id]
-      const childIndex = next.length - 1
-      onChange({ children: next })
-      const newEdge = {
-        id: `${currentNodeId}-child-${childIndex}-${id}`,
-        source: currentNodeId,
-        target: id,
-        sourceHandle: `child-${childIndex}`,
-      }
-      // Remove any existing non-child-* edge from parallel to this node (avoids double connections)
-      const removeIds = edges
-        .filter((e) => e.source === currentNodeId && e.target === id && !(e.sourceHandle ?? '').startsWith('child-'))
-        .map((e) => e.id)
-      setPendingEdge({ add: [newEdge], removeIds })
-    }
-  }
-
-  return (
-    <section className="space-y-4">
-      <div>
-        <label className="mb-2 block text-xs font-medium text-gray-600">Branches</label>
-        <p className="mb-2 text-xs text-gray-400">Select which steps run in parallel inside this node.</p>
-        {available.length === 0 ? (
-          <p className="text-xs text-gray-400 italic">No downstream steps available yet.</p>
-        ) : (
-          <div className="space-y-1.5 rounded-md border border-gray-200 p-2">
-            {available.map((opt) => (
-              <label key={opt.id} className="flex cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={children.includes(opt.id)}
-                  onChange={() => toggleChild(opt.id)}
-                  className="h-3.5 w-3.5 rounded border-gray-300 accent-slate-600"
-                />
-                <span className="font-mono text-xs text-gray-700">
-                  {opt.label ? `${opt.label} (${opt.namespace})` : opt.namespace}
-                </span>
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
-      <p className="text-xs text-gray-400">Configure wait behavior on the Parallel (end) node.</p>
-    </section>
-  )
-}
-
-// ── Parallel End ───────────────────────────────────────────────────────────────
-
-function ParallelEndConfig({
-  config,
-  onChange,
-}: {
-  config: Record<string, unknown>
-  onChange: (patch: Record<string, unknown>) => void
-}) {
+  const slots = readSlots(config)
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const timeoutMs = (config.timeout_ms as number | undefined) ?? 15000
   const onTimeout = (config.on_timeout as string | undefined) ?? 'partial'
   const onChildError = (config.on_child_error as string | undefined) ?? 'fail'
 
+  function nextSlotId(): string {
+    let n = 0
+    const used = new Set(slots.map((s) => s.id))
+    while (used.has(`child-${n}`)) n++
+    // Also avoid reusing ids that ever appeared on edges (defensive — survives a removed slot's edges).
+    while (edges.some((e) => e.source === currentNodeId && e.sourceHandle === `child-${n}`)) n++
+    return `child-${n}`
+  }
+
+  function addSlot() {
+    const id = nextSlotId()
+    onChange({ children: [...slots, { id, label: `child_${slots.length + 1}` }] })
+  }
+
+  function updateSlotLabel(i: number, label: string) {
+    const next = slots.map((s, idx) => (idx === i ? { ...s, label } : s))
+    onChange({ children: next })
+  }
+
+  function removeSlot(i: number) {
+    const removed = slots[i]
+    const next = slots.filter((_, idx) => idx !== i)
+    onChange({ children: next })
+    // Drop any edges that referenced the removed slot's handle so we don't leave dangling edges.
+    const removeIds = edges
+      .filter((e) => e.source === currentNodeId && e.sourceHandle === removed.id)
+      .map((e) => e.id)
+    if (removeIds.length > 0) onEdgesChange?.([], removeIds)
+  }
+
   return (
     <section className="space-y-4">
-      <Field label="Wait for" hint="'All' waits for every branch. 'First' continues as soon as one succeeds.">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Slots</p>
+        <p className="mt-1 mb-2 text-xs text-gray-400">Each slot fans out to one parallel branch. Drop a node under a slot to wire it up.</p>
+        {slots.map((slot, i) => (
+          <div key={slot.id} className="mb-2 flex items-center gap-2">
+            <input
+              className="input flex-1"
+              placeholder="slot label"
+              value={slot.label}
+              onChange={(e) => updateSlotLabel(i, e.target.value)}
+            />
+            <button
+              type="button"
+              onClick={() => removeSlot(i)}
+              className="text-gray-300 hover:text-red-400"
+              aria-label="Remove slot"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addSlot}
+          className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add slot
+        </button>
+      </div>
+
+      <Field label="Wait for" hint="'All' waits for every slot. 'First' continues as soon as one succeeds.">
         <div className="relative">
           <select
             value={waitFor}
             onChange={(e) => onChange({ wait_for: e.target.value })}
             className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
           >
-            <option value="all">All branches</option>
+            <option value="all">All slots</option>
             <option value="first">First to succeed</option>
           </select>
           <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
@@ -2316,7 +2267,7 @@ function ParallelEndConfig({
       </Field>
 
       {waitFor === 'all' && (
-        <Field label="On timeout" hint="What to do if some branches haven't finished when the timeout fires.">
+        <Field label="On timeout" hint="What to do if some slots haven't finished when the timeout fires.">
           <div className="relative">
             <select
               value={onTimeout}
@@ -2332,7 +2283,7 @@ function ParallelEndConfig({
       )}
 
       {waitFor === 'all' && (
-        <Field label="On child error" hint="What to do when a branch fails. Default is to stop the workflow. Use 'Continue' when a downstream step (e.g. Bid Evaluation) handles rejections in the result array.">
+        <Field label="On child error" hint="What to do when a slot fails. Default is to stop the workflow. Use 'Continue' when a downstream step (e.g. Bid Evaluation) handles rejections in the result array.">
           <div className="relative">
             <select
               value={onChildError}
@@ -2346,6 +2297,27 @@ function ParallelEndConfig({
           </div>
         </Field>
       )}
+    </section>
+  )
+}
+
+function readSlots(config: Record<string, unknown>): { id: string; label: string }[] {
+  const raw = config.children
+  if (!Array.isArray(raw)) return []
+  if (raw.length > 0 && typeof raw[0] === 'string') {
+    return (raw as string[]).map((_, i) => ({ id: `child-${i}`, label: `child_${i + 1}` }))
+  }
+  return raw as { id: string; label: string }[]
+}
+
+// ── Parallel End ───────────────────────────────────────────────────────────────
+
+function ParallelEndConfig() {
+  return (
+    <section className="space-y-2">
+      <p className="text-xs text-gray-500">
+        This is the join point for the parallel above. Slots, wait behavior, and timeout are all configured on the parallel start node.
+      </p>
     </section>
   )
 }

@@ -129,12 +129,44 @@ function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
 
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
   const migratedEdges = migrateParallelEdges(nodes, edges)
+  // Detect if any parallel_end carries the old (pre-2026-04-30) wait_for/timeout
+  // config so we can copy it onto the matching start node before the canvas reads it.
+  const endConfigByPairStart = new Map<string, Record<string, unknown>>()
+  for (const n of nodes) {
+    if (n.type !== 'parallel_end') continue
+    const incoming = migratedEdges.filter((e) => e.target === n.id)
+    const start = incoming.map((e) => nodes.find((x) => x.id === e.source))
+      .find((x) => x?.type === 'parallel')
+    if (!start) continue
+    if (n.config && Object.keys(n.config).length > 0) endConfigByPairStart.set(start.id, n.config)
+  }
+
   const workflowNodes = nodes.map((n) => {
-    // Parallel nodes store children at NodeDef.children (top-level) but the
-    // config panel reads/writes config.children — merge them on load.
-    const config = n.type === 'parallel' && n.children?.length
-      ? { ...n.config, children: n.children }
-      : n.config
+    let config = n.config
+    if (n.type === 'parallel') {
+      // Normalize legacy `NodeDef.children: string[]` and `config.children: string[]`
+      // into the new slot shape `{ id, label }[]`. Slot ids reuse the legacy
+      // child-N positional convention so existing edges continue to match.
+      const rawChildren = (n.config?.children ?? n.children) as unknown
+      let slots: { id: string; label: string }[] = []
+      if (Array.isArray(rawChildren) && rawChildren.length > 0) {
+        if (typeof rawChildren[0] === 'string') {
+          slots = (rawChildren as string[]).map((_, i) => ({ id: `child-${i}`, label: `child_${i + 1}` }))
+        } else {
+          slots = rawChildren as { id: string; label: string }[]
+        }
+      }
+      config = {
+        ...n.config,
+        children: slots,
+        // Backfill the wait_for/timeout config that used to live on the end node.
+        ...(endConfigByPairStart.has(n.id) ? endConfigByPairStart.get(n.id) : {}),
+      }
+    }
+    if (n.type === 'parallel_end') {
+      // Strip end-node config — moved to start. Keep an empty object so editors can write to it.
+      config = {}
+    }
     return {
       id: n.id,
       type: n.type,
@@ -174,10 +206,6 @@ function flowToDef(
     trigger,
     nodes: nodes.filter((n) => n.id !== 'trigger').map((n) => {
       const d = n.data as unknown as CanvasNodeData
-      // For parallel nodes, resolve children from config.children (stored as node IDs)
-      const children = n.type === 'parallel'
-        ? ((d.config.children as string[] | undefined) ?? [])
-        : undefined
       return {
         id: n.id,
         namespace: d.namespace,
@@ -186,7 +214,6 @@ function flowToDef(
         position: n.position,
         config: d.config,
         variables: d.variables,
-        ...(children !== undefined ? { children } : {}),
       }
     }),
     edges: edges.map((e) => ({
@@ -250,8 +277,19 @@ function chooseSourceHandle(
   const type = source.type ?? ''
   const config = (source.data as { config?: Record<string, unknown> } | undefined)?.config
   if (type === 'exit') return null
-  if (type === 'parallel') return null
   if (type === 'response') return config?.continue_after_response ? 'output' : null
+
+  if (type === 'parallel') {
+    const slots = (config?.children as Array<{ id: string }> | string[] | undefined) ?? []
+    if (!Array.isArray(slots) || slots.length === 0) return null
+    const ids: string[] = typeof slots[0] === 'string'
+      ? (slots as string[]).map((_, i) => `child-${i}`)
+      : (slots as Array<{ id: string }>).map((s) => s.id)
+    return nearestHandleId(
+      ids.map((id, i) => ({ id, x: source.position.x + (NODE_W * (i + 0.5)) / ids.length })),
+      dropX
+    )
+  }
 
   if (type === 'branch') {
     const branches = (config?.branches as { label: string }[] | undefined) ?? []
@@ -1112,13 +1150,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           id: newId,
           type: 'parallel' as NodeType,
           position: { x: 0, y: 0 },
-          data: { namespace, config: {}, variables: {}, _pairId: endId } satisfies CanvasNodeData,
+          data: {
+            namespace,
+            config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial', on_child_error: 'fail', children: [] },
+            variables: {},
+            _pairId: endId,
+          } satisfies CanvasNodeData,
         }
         const endNode = {
           id: endId,
           type: 'parallel_end' as NodeType,
           position: { x: 0, y: 0 },
-          data: { namespace: endNamespace, config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial', on_child_error: 'fail' }, variables: {}, _pairId: newId } satisfies CanvasNodeData,
+          data: { namespace: endNamespace, config: {}, variables: {}, _pairId: newId } satisfies CanvasNodeData,
         }
         // Hidden backbone edge so Dagre ranks end below start even before children are wired
         const backboneEdge = { id: uid(), source: newId, target: endId, sourceHandle: 'output', hidden: true }

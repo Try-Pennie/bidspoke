@@ -25,6 +25,11 @@ export interface ConditionGroup {
   logic: 'AND' | 'OR'
 }
 
+export interface ParallelChildSlot {
+  id: string // stable handle id, e.g. 'child-0' — referenced by edges, never changes
+  label: string // user-editable display name shown on the canvas and in logs
+}
+
 export interface NodeDef {
   id: string
   namespace: string
@@ -33,7 +38,12 @@ export interface NodeDef {
   position?: { x: number; y: number }
   config: Record<string, unknown>
   variables?: Record<string, string>
-  children?: string[] // parallel node child IDs
+  /**
+   * @deprecated Old parallel node child-id array. Definitions created on or after
+   * 2026-04-30 store slot metadata at `config.children` as `ParallelChildSlot[]`
+   * and resolve actual child node ids from edges. Loader migrates old shape on load.
+   */
+  children?: string[]
 }
 
 export interface EdgeDef {

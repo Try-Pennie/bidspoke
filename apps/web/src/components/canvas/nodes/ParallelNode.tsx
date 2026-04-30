@@ -2,7 +2,7 @@
 
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import type { CanvasNodeData } from '@/types/workflow'
+import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
@@ -12,16 +12,22 @@ interface ParallelChildResult {
   status: 'fulfilled' | 'rejected' | 'timeout'
 }
 
+function readSlots(config: Record<string, unknown>): ParallelChildSlot[] {
+  const raw = config.children
+  if (!Array.isArray(raw)) return []
+  // Legacy shape: string[] of node ids — synthesize slots so the canvas renders
+  // until the next save migrates the definition forward.
+  if (raw.length > 0 && typeof raw[0] === 'string') {
+    return (raw as string[]).map((_, i) => ({ id: `child-${i}`, label: `child_${i + 1}` }))
+  }
+  return raw as ParallelChildSlot[]
+}
+
 export function ParallelNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
-
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
-  const children = (config.children as string[] | undefined) ?? []
-  const handleCount = children.length
+  const slots = readSlots(config)
 
-  // Surface any child failure on the parallel node itself, regardless of whether
-  // the parallel's own step status is 'completed' (e.g. on_child_error:'continue'
-  // flows always succeed at the parallel level but may contain rejected children).
   let resultLine: string | null = null
   let hasChildFailure = false
   if (executionStep?.output && Array.isArray(executionStep.output)) {
@@ -65,31 +71,36 @@ export function ParallelNode({ data, selected }: NodeProps) {
           </p>
         ) : (
           <p className="mt-0.5 truncate text-xs text-slate-400">
-            {children.length > 0
-              ? `${children.length} branch${children.length !== 1 ? 'es' : ''} (start)`
-              : '(start). No branches.'}
+            {slots.length > 0
+              ? `${slots.length} slot${slots.length !== 1 ? 's' : ''}`
+              : '(start). No slots.'}
           </p>
         )}
       </div>
 
-      {/* Branch-label row — shows each child namespace, matching branch node style */}
-      {children.length > 0 && (
-        <div className="flex justify-around border-t border-gray-100 px-2 py-2 text-xs">
-          {children.map((childId, i) => (
-            <span key={i} className="text-slate-500 truncate">↓</span>
+      {/* Slot label row, mirroring the branch node's footer */}
+      {slots.length > 0 && (
+        <div
+          className="grid border-t border-gray-100 px-2 py-2 text-xs"
+          style={{ gridTemplateColumns: `repeat(${slots.length}, minmax(0, 1fr))` }}
+        >
+          {slots.map((s) => (
+            <span key={s.id} className="truncate text-center text-slate-500">
+              ↓ {s.label}
+            </span>
           ))}
         </div>
       )}
 
-      {/* Fan-out handles: one per child, spread across bottom like branch node */}
-      {children.length > 0 ? (
-        children.map((_, i) => (
+      {/* Source handles — one per slot, centered under its label column */}
+      {slots.length > 0 ? (
+        slots.map((s, i) => (
           <Handle
-            key={i}
+            key={s.id}
             type="source"
             position={Position.Bottom}
-            id={`child-${i}`}
-            style={{ left: `${((i + 1) / (handleCount + 1)) * 100}%` }}
+            id={s.id}
+            style={{ left: `${((i + 0.5) / slots.length) * 100}%` }}
           />
         ))
       ) : (

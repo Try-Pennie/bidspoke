@@ -132,6 +132,14 @@ function configuredHandleIds(node: Node): string[] | null {
   }
   if (type === 'filter') return ['pass', 'exit']
   if (type === 'bid_evaluation' || type === 'bid_group') return ['winner', 'no_winner']
+  if (type === 'parallel') {
+    const raw = config?.children
+    if (!Array.isArray(raw)) return null
+    if (raw.length > 0 && typeof raw[0] === 'string') {
+      return (raw as string[]).map((_, i) => `child-${i}`)
+    }
+    return (raw as { id: string }[]).map((s) => s.id)
+  }
   return null
 }
 

@@ -558,27 +558,41 @@ export async function walkGraph(
     if (node.type === 'parallel') {
       const stepStartedAt = new Date().toISOString()
       log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
-      const childIds = (node.children ?? []) as string[]
-      const childNodes = childIds
-        .map((id) => findNode(id, definition.nodes))
-        .filter((n): n is NodeDefinition => n !== undefined)
+      // Resolve children from edges off the start node — sourceHandle starting
+      // with `child-` indicates a slot. Sort by slot index so logs stay ordered.
+      const slotEdges = outgoingEdges(node.id, definition.edges)
+        .filter((e) => (e.source_handle ?? '').startsWith('child-'))
+        .sort((a, b) => {
+          const ai = parseInt((a.source_handle ?? '').replace('child-', ''), 10)
+          const bi = parseInt((b.source_handle ?? '').replace('child-', ''), 10)
+          return ai - bi
+        })
+      const slotChildren = slotEdges
+        .map((e) => findNode(e.target, definition.nodes))
+        .filter((n): n is NodeDefinition => n !== undefined && n.type !== 'parallel_end')
 
-      // Step-order allocation for the whole parallel block, so the UI renders
-      // the flow in the expected order:
-      //   parallel_start  →  child_0, child_1, ...  →  parallel_end  →  next step
-      // Previous allocation collided (children started at stepOrder + 0, same as
-      // parallel_start; parallel_end shared stepOrder with child_1).
+      // Backwards-compat: pre-2026-04-30 definitions stored child ids on
+      // `NodeDef.children` (top-level) and wait_for/timeout on the matching
+      // parallel_end node. If no slot edges exist, fall back to the legacy form.
+      const resolvedChildren: NodeDefinition[] = slotChildren.length > 0
+        ? slotChildren
+        : ((node.children ?? []) as string[])
+            .map((id) => findNode(id, definition.nodes))
+            .filter((n): n is NodeDefinition => n !== undefined)
+
       const parallelStartOrder = stepOrder
       const childOrderBase = stepOrder + 1
-      const parallelEndOrder = childOrderBase + childNodes.length
+      const parallelEndOrder = childOrderBase + resolvedChildren.length
 
-      // Look ahead: if a parallel_end join node exists, use its config for
-      // wait_for/timeout so those settings live on the end node in the UI.
-      const previewChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
+      // Config now lives on the start node. For legacy definitions whose end
+      // node still holds wait_for/timeout, merge those in as a fallback.
+      const previewChildEdges = resolvedChildren.flatMap((c) => outgoingEdges(c.id, definition.edges))
       const endNodePreview = previewChildEdges
         .map((e) => findNode(e.target, definition.nodes))
         .find((n) => n?.type === 'parallel_end')
-      const execNode = endNodePreview ? { ...node, config: { ...node.config, ...endNodePreview.config } } : node
+      const execNode = endNodePreview && endNodePreview.config && Object.keys(endNodePreview.config).length > 0
+        ? { ...node, config: { ...endNodePreview.config, ...node.config } }
+        : node
 
       let output: unknown = null
       let stepStatus: StepStatus = 'completed'
@@ -588,7 +602,7 @@ export async function walkGraph(
       try {
         const result = await executeParallelNode(
           execNode,
-          childNodes,
+          resolvedChildren,
           (child, childIndex) =>
             runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue)
         )
@@ -602,9 +616,9 @@ export async function walkGraph(
           const timeoutMs = (execNode.config.timeout_ms as number | undefined) ?? 15000
           for (const childResult of output as ParallelChildResult[]) {
             if (childResult.status !== 'timeout') continue
-            const childIndex = childNodes.findIndex((c) => c.namespace === childResult.namespace)
+            const childIndex = resolvedChildren.findIndex((c) => c.namespace === childResult.namespace)
             if (childIndex < 0) continue
-            const child = childNodes[childIndex]
+            const child = resolvedChildren[childIndex]
             const errMsg = `Parallel group timed out after ${timeoutMs}ms before this child completed`
             recordStepOutput(ctx, child.namespace, { output: null, status: 'failed', error: errMsg, error_type: 'transient' })
             logStep(stepLogQueue, executionId, executionStartedAt, child, 'failed', null, null, errMsg, 'transient', 0, stepStartedAt, childOrderBase + childIndex, node.id)
@@ -629,8 +643,8 @@ export async function walkGraph(
       // parallel_end counts. Logged with the same status as the parallel start
       // so the pair renders as a single logical unit on the canvas (green/red/etc.
       // together) even when parallel failed and we throw below.
-      const childIdSet = new Set(childIds)
-      const allChildEdges = childNodes.flatMap((c) => outgoingEdges(c.id, definition.edges))
+      const childIdSet = new Set(resolvedChildren.map((c) => c.id))
+      const allChildEdges = resolvedChildren.flatMap((c) => outgoingEdges(c.id, definition.edges))
       const endNodeId = allChildEdges.map((e) => e.target).find((tid) => {
         const n = findNode(tid, definition.nodes)
         return n?.type === 'parallel_end'
@@ -651,7 +665,7 @@ export async function walkGraph(
         current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
       } else {
         // Backward compat: last child's outgoing edge
-        const lastChild = childNodes.length > 0 ? childNodes[childNodes.length - 1] : null
+        const lastChild = resolvedChildren.length > 0 ? resolvedChildren[resolvedChildren.length - 1] : null
         const contEdges = lastChild
           ? outgoingEdges(lastChild.id, definition.edges).filter((e) => !childIdSet.has(e.target))
           : outgoingEdges(node.id, definition.edges).filter((e) => !childIdSet.has(e.target))

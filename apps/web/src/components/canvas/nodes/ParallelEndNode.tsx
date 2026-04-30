@@ -1,6 +1,5 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps, Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
@@ -13,32 +12,11 @@ interface ParallelChildResult {
   status: 'fulfilled' | 'rejected' | 'timeout'
 }
 
-// Mockup toggle: ?endStyle=pill collapses the end node to a small merge pill.
-// Default (anything else) renders the full node with config UI removed and the
-// label/namespace derived from the paired start node.
-function useEndStyle(): 'pill' | 'node' {
-  const [style, setStyle] = useState<'pill' | 'node'>('node')
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const read = () => {
-      const v = new URLSearchParams(window.location.search).get('endStyle')
-      setStyle(v === 'pill' ? 'pill' : 'node')
-    }
-    read()
-    window.addEventListener('popstate', read)
-    return () => window.removeEventListener('popstate', read)
-  }, [])
-  return style
-}
-
 export function ParallelEndNode({ data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const pairId = (data as { _pairId?: string })._pairId
-  const dataStyle = (data as { _endStyle?: 'node' | 'pill' })._endStyle
-  const urlStyle = useEndStyle()
-  const endStyle = dataStyle ?? urlStyle
 
-  // Look up the paired start node and derive the end node's display.
+  // Look up the paired start node to derive the end node's display.
   const startNode = useStore((s) => {
     if (!pairId) return null
     return (s.nodes as Node[]).find((n) => n.id === pairId) ?? null
@@ -62,26 +40,6 @@ export function ParallelEndNode({ data, selected }: NodeProps) {
   const effectiveStep = hasChildFailure && executionStep
     ? { ...executionStep, status: 'failed' as const }
     : executionStep
-
-  if (endStyle === 'pill') {
-    return (
-      <div
-        className={`relative flex items-center gap-1.5 rounded-full border bg-white shadow-sm px-3 py-1.5 ${
-          selected ? 'border-slate-400 ring-2 ring-slate-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
-        } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
-        style={getExecutionStyle(effectiveStep)}
-      >
-        <SuccessBadge visible={isSuccessNode} />
-        <Handle type="target" position={Position.Top} id="input" />
-        <GitMerge className="h-3.5 w-3.5 text-slate-500" />
-        <span className="text-xs font-medium text-slate-700">{derivedLabel}</span>
-        {failedLine && (
-          <span className="rounded bg-red-50 px-1.5 py-0.5 font-mono text-[10px] text-red-700">{failedLine}</span>
-        )}
-        <Handle type="source" position={Position.Bottom} id="output" />
-      </div>
-    )
-  }
 
   return (
     <div
