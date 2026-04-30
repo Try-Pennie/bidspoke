@@ -4,6 +4,7 @@ import webhooks from './routes/webhooks'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
+import { runSightingsExport } from './lib/sightings-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
@@ -47,6 +48,16 @@ export interface Env {
   // Generate: openssl rand -base64 32 | wrangler secret put SSN_HASH_PEPPER
   // CRITICAL: rotating this secret breaks all dedup lookups (old hashes become unmatchable)
   SSN_HASH_PEPPER: string
+
+  // Snowflake REST API — nightly export of lead_sightings + lead_sighting_bids.
+  // Auth: key-pair JWT. Service user `bidspoke_service` with role `bidspoke_role`.
+  SNOWFLAKE_ACCOUNT: string         // URL prefix, e.g. 'jyc55588.us-east-1'
+  SNOWFLAKE_USER: string
+  SNOWFLAKE_PRIVATE_KEY: string     // RSA PEM (PKCS#1 or PKCS#8)
+  SNOWFLAKE_DATABASE: string
+  SNOWFLAKE_SCHEMA: string
+  SNOWFLAKE_WAREHOUSE: string
+  SNOWFLAKE_ROLE: string
 
   // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
@@ -109,6 +120,11 @@ export default {
       ctx.waitUntil(
         runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
+      )
+      ctx.waitUntil(
+        runSightingsExport(supabase, env)
+          .then((s) => console.log('[sightings-export]', JSON.stringify(s)))
+          .catch((e) => console.error('[sightings-export] failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(
