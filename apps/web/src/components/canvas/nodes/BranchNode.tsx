@@ -53,9 +53,15 @@ export function BranchNode({ data, selected }: NodeProps) {
         )}
       </div>
       {handles.length > 0 && (
-        <div className="flex justify-evenly gap-2 border-t border-gray-100 px-2 py-2 text-xs">
+        <div
+          className="grid border-t border-gray-100 px-2 py-2 text-xs"
+          style={{ gridTemplateColumns: `repeat(${handleCount}, minmax(0, 1fr))` }}
+        >
           {handles.map((h) => (
-            <span key={h.id} className={`whitespace-nowrap ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}>
+            <span
+              key={h.id}
+              className={`truncate text-center ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}
+            >
               ↓ {h.label}
             </span>
           ))}
@@ -68,7 +74,7 @@ export function BranchNode({ data, selected }: NodeProps) {
           type="source"
           position={Position.Bottom}
           id={h.id}
-          style={{ left: `${((i + 1) / (handleCount + 1)) * 100}%` }}
+          style={{ left: `${((i + 0.5) / handleCount) * 100}%` }}
         />
       ))}
     </div>
