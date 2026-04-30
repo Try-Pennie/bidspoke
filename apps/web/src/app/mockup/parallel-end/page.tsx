@@ -2,8 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useMemo, useState } from 'react'
-import { ReactFlow, ReactFlowProvider, Background, Controls } from '@xyflow/react'
+import { ReactFlow, ReactFlowProvider, Background } from '@xyflow/react'
 import type { Node, Edge, NodeTypes } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -17,7 +16,7 @@ const nodeTypes: NodeTypes = {
   code: CodeNode,
 }
 
-const baseEdges: Edge[] = [
+const edges: Edge[] = [
   { id: 'e1', source: 'p1', target: 'c_a', sourceHandle: 'child-0' },
   { id: 'e2', source: 'p1', target: 'c_b', sourceHandle: 'child-1' },
   { id: 'e3', source: 'c_a', target: 'p1_end', sourceHandle: 'output' },
@@ -77,46 +76,44 @@ function buildNodes(endStyle: 'node' | 'pill'): Node[] {
   ]
 }
 
-export default function ParallelEndMockupPage() {
-  const [style, setStyle] = useState<'node' | 'pill'>('node')
-  const nodes = useMemo(() => buildNodes(style), [style])
-
+function Pane({ style, label }: { style: 'node' | 'pill'; label: string }) {
   return (
-    <div className="flex h-screen flex-col bg-gray-50">
-      <header className="flex items-center gap-4 border-b border-gray-200 bg-white px-4 py-3">
-        <span className="font-semibold text-graphite">Parallel end node — mockup</span>
-        <div className="ml-auto flex items-center gap-2 text-sm">
-          <button
-            type="button"
-            onClick={() => setStyle('node')}
-            className={`rounded px-3 py-1 ${style === 'node' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-300'}`}
-          >
-            Full node
-          </button>
-          <button
-            type="button"
-            onClick={() => setStyle('pill')}
-            className={`rounded px-3 py-1 ${style === 'pill' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-300'}`}
-          >
-            Merge pill
-          </button>
-        </div>
-      </header>
+    <div className="flex flex-1 flex-col border-r border-gray-200 last:border-r-0">
+      <div className="border-b border-gray-200 bg-white px-4 py-2 text-sm font-semibold text-graphite">
+        {label}
+      </div>
       <div className="flex-1">
         <ReactFlowProvider>
           <ReactFlow
-            nodes={nodes}
-            edges={baseEdges}
+            nodes={buildNodes(style)}
+            edges={edges}
             nodeTypes={nodeTypes}
             fitView
             nodesDraggable={false}
             nodesConnectable={false}
             elementsSelectable={false}
+            zoomOnScroll={false}
+            panOnScroll={false}
+            preventScrolling={false}
+            proOptions={{ hideAttribution: true }}
           >
             <Background />
-            <Controls showInteractive={false} />
           </ReactFlow>
         </ReactFlowProvider>
+      </div>
+    </div>
+  )
+}
+
+export default function ParallelEndMockupPage() {
+  return (
+    <div className="flex h-screen flex-col bg-gray-50">
+      <header className="border-b border-gray-200 bg-white px-4 py-3">
+        <span className="font-semibold text-graphite">Parallel end node — visual comparison</span>
+      </header>
+      <div className="flex flex-1">
+        <Pane style="node" label="Option A — Full node" />
+        <Pane style="pill" label="Option B — Merge pill" />
       </div>
     </div>
   )
