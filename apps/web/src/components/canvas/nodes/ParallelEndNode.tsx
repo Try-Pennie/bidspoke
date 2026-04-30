@@ -34,7 +34,9 @@ function useEndStyle(): 'pill' | 'node' {
 export function ParallelEndNode({ data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const pairId = (data as { _pairId?: string })._pairId
-  const endStyle = useEndStyle()
+  const dataStyle = (data as { _endStyle?: 'node' | 'pill' })._endStyle
+  const urlStyle = useEndStyle()
+  const endStyle = dataStyle ?? urlStyle
 
   // Look up the paired start node and derive the end node's display.
   const startNode = useStore((s) => {

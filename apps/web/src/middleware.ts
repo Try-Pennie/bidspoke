@@ -30,7 +30,8 @@ export async function middleware(request: NextRequest) {
   const isPublicPath =
     pathname.startsWith('/login') ||
     pathname.startsWith('/auth') ||
-    pathname.startsWith('/access-denied')
+    pathname.startsWith('/access-denied') ||
+    pathname.startsWith('/mockup')
 
   // Allowlist gate — only enforced on protected paths.
   // Public paths (/login, /auth, /access-denied) are exempt so we don't
