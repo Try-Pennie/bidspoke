@@ -8,14 +8,15 @@ export function buildContext(
   envVars: Record<string, string>,
   orgId: string,
   executionId?: string,
-  appUrl?: string
+  appUrl?: string,
+  sightingId?: string
 ): ExecutionContext {
   const trimmedAppUrl = (appUrl ?? '').replace(/\/$/, '')
   const bidspokeLink = trimmedAppUrl && executionId
     ? `${trimmedAppUrl}/workflows/${workflowId}?execution=${executionId}`
     : undefined
   return {
-    trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId, org_id: orgId, execution_id: executionId },
+    trigger: { payload: triggerPayload, source, workflow_id: workflowId, trace_id: traceId, org_id: orgId, execution_id: executionId, sighting_id: sightingId },
     steps: {},
     env: envVars,
     execution: { workflow_id: workflowId, trace_id: traceId, execution_id: executionId, bidspoke_link: bidspokeLink },

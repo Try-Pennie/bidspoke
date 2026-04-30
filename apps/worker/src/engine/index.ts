@@ -18,6 +18,17 @@ import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
+import {
+  insertSighting,
+  upsertPerson,
+  extractSightingFields,
+  extractPersonFields,
+  finalizeSighting,
+  extractEnrichment,
+  deriveRejectReason,
+  extractBidGroupSummary,
+} from './lead-sightings'
+import { formatSsn } from './persons-crypto'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
 import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
 import { log } from '../lib/logger'
@@ -151,8 +162,44 @@ export async function executeWorkflow(
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
+  // Lead sighting trigger boundary: insert in_flight sighting + upsert persons
+  // row before the walk starts. Snowflake mirror is populated nightly. Writes
+  // run in waitUntil; failures don't block the workflow.
+  const sightingId = options.isTest ? undefined : crypto.randomUUID()
+  if (sightingId) {
+    const sightingPayloadFields = extractSightingFields(payload)
+    const personFields = extractPersonFields(payload)
+    const startedAtDate = new Date(startedAt)
+    const sightingWritePromise = (async () => {
+      let personId: string | null = null
+      if (personFields) {
+        personId = await upsertPerson(
+          supabase,
+          { organization_id: org_id, ...personFields },
+          env.SECRET_ENCRYPTION_KEY,
+          env.SSN_HASH_PEPPER,
+        )
+      }
+      await insertSighting(supabase, {
+        id: sightingId,
+        trace_id: traceId,
+        execution_id: executionId,
+        workflow_id: workflowId,
+        workflow_version_id: workflow_version_id ?? null,
+        source_name: source ?? null,
+        is_test: false,
+        execution_started_at_utc: startedAtDate,
+        execution_started_at_et: startedAtDate,
+        payload_fields: sightingPayloadFields,
+        ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
+        person_id: personId,
+      })
+    })().catch((e) => console.error('[lead-sightings] trigger boundary write failed:', e))
+    executionCtx.waitUntil(sightingWritePromise)
+  }
+
   // Build execution context
-  const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL)
+  const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
 
   // If resuming, pre-populate completed steps
   if (options.resumeFromExecutionId) {
@@ -342,6 +389,69 @@ export async function executeWorkflow(
       })
       .catch((e) => console.error('[execution] failed to update execution record:', e))
   )
+
+  // Lead sighting finalize: flip outcome_state to 'finalized', populate
+  // terminal/enrichment/bid summary, derive reject_reason, mark winning bid.
+  // Skipped for test runs (no sighting was inserted at the trigger boundary).
+  if (sightingId && !options.isTest) {
+    const startedAtDate = new Date(startedAt)
+    executionCtx.waitUntil(
+      walkPromiseCaught
+        .then(async () => {
+          const completedAtDate = new Date(completedAt)
+          const finalNs = ctx.lastCompletedNamespace ?? null
+          const terminalNode = finalNs ? definition.nodes.find((n) => n.namespace === finalNs) ?? null : null
+          const terminalStep = finalNs ? ctx.steps[finalNs] : undefined
+          const bidSummary = extractBidGroupSummary(ctx.steps)
+          const enrichment = extractEnrichment(ctx.steps)
+          const responseStatusCode = walkStatus
+          const filterPassed =
+            terminalNode?.type === 'filter' && terminalStep
+              ? Boolean((terminalStep.output as { passed?: unknown } | null)?.passed)
+              : null
+          const bidRoute =
+            terminalNode?.type === 'bid_group' && terminalStep
+              ? ((terminalStep.output as { _route?: string } | null)?._route ?? null)
+              : null
+          const terminalHandle =
+            terminalNode?.type === 'filter' && filterPassed === false ? 'exit'
+            : terminalNode?.type === 'filter' && filterPassed === true ? 'pass'
+            : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
+            : null
+
+          const rejectReason = deriveRejectReason({
+            winning_partner_slug: bidSummary.winner_slug,
+            response_status_code: responseStatusCode,
+            terminal_node_type: terminalNode?.type ?? null,
+            terminal_node_label: terminalNode?.namespace ?? finalNs,
+            terminal_node_handle: terminalHandle,
+            terminal_step_output: terminalStep?.output,
+          })
+
+          await finalizeSighting(supabase, {
+            sighting_id: sightingId,
+            execution_id: executionId,
+            execution_started_at_utc: startedAtDate,
+            execution_finished_at_et: completedAtDate,
+            execution_ended_at_utc: completedAtDate,
+            duration_ms: durationMs,
+            terminal_node_id: terminalNode?.id ?? null,
+            terminal_node_label: terminalNode?.namespace ?? finalNs,
+            response_status_code: responseStatusCode,
+            prospect_id: enrichment.prospect_id,
+            equifax_status: enrichment.equifax_status,
+            equifax_error_type: enrichment.equifax_error_type,
+            equifax_score: enrichment.equifax_score,
+            winning_partner_slug: bidSummary.winner_slug,
+            winning_bid_cents: bidSummary.winner_bid_cents,
+            partners_attempted: bidSummary.attempted,
+            partners_responded: bidSummary.responded,
+            reject_reason: rejectReason,
+          })
+        })
+        .catch((e) => console.error('[lead-sightings] finalize failed:', e))
+    )
+  }
 
   // Send Slack alert on failure (skip business rejections and test runs)
   const durationAlertMs = definition.trigger.config.duration_alert_ms

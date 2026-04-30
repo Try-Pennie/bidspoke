@@ -102,6 +102,7 @@ export interface ExecutionContext {
     trace_id: string
     org_id: string
     execution_id?: string
+    sighting_id?: string
   }
   steps: Record<string, StepOutput>  // keyed by node namespace
   env: Record<string, string>

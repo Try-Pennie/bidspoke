@@ -43,6 +43,11 @@ export interface Env {
   // Generate: openssl rand -base64 32 | wrangler secret put SECRET_ENCRYPTION_KEY
   SECRET_ENCRYPTION_KEY: string
 
+  // SSN hash pepper — used for indexed dedup lookups on persons.ssn_hash
+  // Generate: openssl rand -base64 32 | wrangler secret put SSN_HASH_PEPPER
+  // CRITICAL: rotating this secret breaks all dedup lookups (old hashes become unmatchable)
+  SSN_HASH_PEPPER: string
+
   // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
 

@@ -27,6 +27,7 @@ import type { ResponseClassificationConfig, AlertConfig } from '../error-classif
 import type { BidResolverType } from '../bid-resolver'
 import { resolveBid } from '../bid-resolver'
 import { PartnerApiError } from '../partner-bid-error'
+import { recordBidAttempt } from '../lead-sightings'
 
 // Re-exports — keep external imports stable.
 export { PartnerApiError } from '../partner-bid-error'
@@ -104,9 +105,31 @@ export async function executePartnerBidNode(
   }
 
   const p = partner as unknown as PartnerConfig
+  const attemptedAt = new Date()
+  const logBid = (input: Partial<Parameters<typeof recordBidAttempt>[1]> & { partner_slug: string; attempted_at_utc: Date }) => {
+    if (!ctx.trigger.sighting_id) return
+    void recordBidAttempt(supabase, {
+      sighting_id: ctx.trigger.sighting_id,
+      trace_id: ctx.trigger.trace_id,
+      execution_id: ctx.trigger.execution_id ?? '',
+      partner_slug: input.partner_slug,
+      attempted_at_utc: input.attempted_at_utc,
+      attempted_at_et: input.attempted_at_et ?? input.attempted_at_utc,
+      responded_at_utc: input.responded_at_utc ?? null,
+      responded_at_et: input.responded_at_et ?? input.responded_at_utc ?? null,
+      http_status: input.http_status ?? null,
+      bid_cents: input.bid_cents ?? null,
+      classification: input.classification ?? null,
+      decline_reason: input.decline_reason ?? null,
+      resolver_type: p.bid_resolver_type ?? null,
+      skip_reason: input.skip_reason ?? null,
+      is_test: false,
+    })
+  }
 
   // 2. Inactive check
   if (!p.is_active) {
+    logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'partner_inactive' })
     return skip(p.slug, 'partner_inactive')
   }
 
@@ -116,6 +139,7 @@ export async function executePartnerBidNode(
     const cbCheck = await cb.check()
     if (!cbCheck.allowed) {
       log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug })
+      logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'circuit_open' })
       return skip(p.slug, 'circuit_open')
     }
   }
@@ -135,6 +159,7 @@ export async function executePartnerBidNode(
     capCount = capResult.count
     log({ event: 'cap_check', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, allowed: capResult.allowed, count: capCount, cap: p.daily_cap })
     if (!capResult.allowed) {
+      logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'cap_exceeded' })
       return skip(p.slug, 'cap_exceeded')
     }
   }
@@ -143,6 +168,7 @@ export async function executePartnerBidNode(
   if (p.dedup_endpoint) {
     const isDuplicate = await checkDedup(p.dedup_endpoint, ctx)
     if (isDuplicate) {
+      logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'duplicate' })
       return skip(p.slug, 'duplicate')
     }
   }
@@ -154,7 +180,15 @@ export async function executePartnerBidNode(
 
   try {
     const result = await resolveBid(p, ctx, env, supabase)
+    const respondedAt = new Date()
     if (result.rejected) {
+      logBid({
+        partner_slug: p.slug,
+        attempted_at_utc: attemptedAt,
+        responded_at_utc: respondedAt,
+        classification: 'decline',
+        skip_reason: 'rejected',
+      })
       return {
         output: {
           partner: p.slug,
@@ -171,7 +205,48 @@ export async function executePartnerBidNode(
     rawResponse = result.raw
 
     if (cb) cb.recordSuccess().catch(() => {})
+
+    if (bid !== null && p.min_bid !== null && bid < p.min_bid) {
+      logBid({
+        partner_slug: p.slug,
+        attempted_at_utc: attemptedAt,
+        responded_at_utc: respondedAt,
+        bid_cents: Math.round(bid * 100),
+        classification: 'decline',
+        skip_reason: 'bid_below_min',
+      })
+      const output: PartnerBidOutput = {
+        partner: p.slug,
+        bid: null,
+        accepted: false,
+        skipped: true,
+        skip_reason: 'bid_below_min',
+        raw_response: rawResponse,
+        cap_count: capCount,
+      }
+      return { output }
+    }
+
+    logBid({
+      partner_slug: p.slug,
+      attempted_at_utc: attemptedAt,
+      responded_at_utc: respondedAt,
+      bid_cents: bid !== null ? Math.round(bid * 100) : null,
+      classification: bid !== null ? 'accept' : 'no_bid',
+    })
+
+    const output: PartnerBidOutput = {
+      partner: p.slug,
+      bid,
+      accepted: bid !== null,
+      skipped: false,
+      raw_response: rawResponse,
+      cap_count: capCount,
+    }
+    log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })
+    return { output }
   } catch (err) {
+    const respondedAt = new Date()
     if (cb) cb.recordError({
       error_threshold: p.circuit_error_threshold,
       window_seconds: p.circuit_window_seconds,
@@ -180,43 +255,34 @@ export async function executePartnerBidNode(
 
     // Determine error classification — check if err already carries it
     let errorType: ErrorType
+    let httpStatus: number | null = null
     if (err instanceof PartnerApiError) {
-      throw err  // already classified + alert decision made
+      logBid({
+        partner_slug: p.slug,
+        attempted_at_utc: attemptedAt,
+        responded_at_utc: respondedAt,
+        classification: err.errorType ?? 'transient',
+      })
+      throw err
     } else if (err instanceof Response) {
       errorType = classifyHttpError(err.status)
+      httpStatus = err.status
     } else {
       errorType = 'transient'
     }
+
+    logBid({
+      partner_slug: p.slug,
+      attempted_at_utc: attemptedAt,
+      responded_at_utc: respondedAt,
+      http_status: httpStatus,
+      classification: errorType ?? 'transient',
+    })
 
     const suppress = shouldSuppressAlert(p.alert_config, errorType)
     const message = err instanceof Error ? err.message : String(err)
     throw new PartnerApiError(message, errorType, suppress)
   }
-
-  // 7. Minimum bid filter
-  if (bid !== null && p.min_bid !== null && bid < p.min_bid) {
-    const output: PartnerBidOutput = {
-      partner: p.slug,
-      bid: null,
-      accepted: false,
-      skipped: true,
-      skip_reason: 'bid_below_min',
-      raw_response: rawResponse,
-      cap_count: capCount,
-    }
-    return { output }
-  }
-
-  const output: PartnerBidOutput = {
-    partner: p.slug,
-    bid,
-    accepted: bid !== null,
-    skipped: false,
-    raw_response: rawResponse,
-    cap_count: capCount,
-  }
-  log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })
-  return { output }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
