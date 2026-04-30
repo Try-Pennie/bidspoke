@@ -24,7 +24,7 @@ workflows.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('workflows')
-    .select('id, name, description, is_active, created_at, updated_at, updated_by_email, updated_by_name')
+    .select('id, name, description, is_active, capture_sightings, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
@@ -261,7 +261,7 @@ workflows.patch('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ is_active?: boolean }>()
+  const body = await c.req.json<{ is_active?: boolean; capture_sightings?: boolean }>()
 
   const { error: fetchError } = await supabase
     .from('workflows')
@@ -275,12 +275,13 @@ workflows.patch('/:id', async (c) => {
 
   const updates: Record<string, unknown> = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
   if (body.is_active !== undefined) updates.is_active = body.is_active
+  if (body.capture_sightings !== undefined) updates.capture_sightings = body.capture_sightings
 
   const { data, error } = await supabase
     .from('workflows')
     .update(updates)
     .eq('id', id)
-    .select('id, name, is_active, updated_at')
+    .select('id, name, is_active, capture_sightings, updated_at')
     .single()
 
   if (error) return c.json({ error: error.message }, 500)
@@ -288,6 +289,7 @@ workflows.patch('/:id', async (c) => {
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
     is_active: body.is_active,
+    capture_sightings: body.capture_sightings,
     changed_by_name: email,
   })
 

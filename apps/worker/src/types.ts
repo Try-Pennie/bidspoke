@@ -148,6 +148,7 @@ export interface LoadedWorkflow {
   workflow_name: string
   org_id: string
   slack_channel: string | null
+  capture_sightings: boolean
 }
 
 export interface IdempotencyState {

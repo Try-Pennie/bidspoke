@@ -95,6 +95,7 @@ export interface Workflow {
   name: string
   description?: string | null
   is_active: boolean
+  capture_sightings?: boolean
   definition: WorkflowDef
   slack_channel?: string | null
   test_payloads: SavedTestPayload[]
@@ -109,6 +110,7 @@ export interface WorkflowSummary {
   name: string
   description?: string | null
   is_active: boolean
+  capture_sightings?: boolean
   created_at: string
   updated_at: string
   updated_by_email?: string | null

@@ -267,6 +267,11 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ is_active }),
       }),
+    setCaptureSightings: (id: string, capture_sightings: boolean) =>
+      req<{ id: string; capture_sightings: boolean }>(`/api/workflows/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ capture_sightings }),
+      }),
     test: (id: string, payload: unknown, executionId?: string, definition?: unknown) =>
       req<unknown>(`/api/workflows/${id}/test`, {
         method: 'POST',

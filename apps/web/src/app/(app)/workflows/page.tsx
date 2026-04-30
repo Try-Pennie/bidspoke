@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2 } from 'lucide-react'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff } from 'lucide-react'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -217,6 +217,19 @@ export default function WorkflowsPage() {
       await api.workflows.setActive(wf.id, next)
     } catch (e) {
       setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, is_active: wf.is_active } : w))
+      setError(e instanceof Error ? e.message : 'Failed to update workflow')
+    }
+  }
+
+  async function handleToggleCaptureSightings(wf: WorkflowSummary) {
+    setOpenMenuId(null)
+    const current = wf.capture_sightings ?? true
+    const next = !current
+    setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, capture_sightings: next } : w))
+    try {
+      await api.workflows.setCaptureSightings(wf.id, next)
+    } catch (e) {
+      setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, capture_sightings: current } : w))
       setError(e instanceof Error ? e.message : 'Failed to update workflow')
     }
   }
@@ -531,6 +544,17 @@ export default function WorkflowsPage() {
                               >
                                 <Copy className="h-4 w-4 text-gray-400" />
                                 Duplicate
+                              </button>
+                              <button
+                                onClick={() => handleToggleCaptureSightings(wf)}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                              >
+                                {(wf.capture_sightings ?? true) ? (
+                                  <EyeOff className="h-4 w-4 text-gray-400" />
+                                ) : (
+                                  <Eye className="h-4 w-4 text-gray-400" />
+                                )}
+                                {(wf.capture_sightings ?? true) ? 'Stop capturing' : 'Capture sightings'}
                               </button>
                               <div className="my-1 border-t border-gray-100" />
                               <button

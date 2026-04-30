@@ -97,7 +97,7 @@ export async function executeWorkflow(
 
   // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes)
   const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase)
-  const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
+  const { workflow_version_id, workflow_name, org_id, slack_channel, capture_sightings } = loaded
   const definition = options.definitionOverride ?? loaded.definition
 
   if (options.enforceSourceAssignment) {
@@ -165,7 +165,8 @@ export async function executeWorkflow(
   // Lead sighting trigger boundary: insert in_flight sighting + upsert persons
   // row before the walk starts. Snowflake mirror is populated nightly. Writes
   // run in waitUntil; failures don't block the workflow.
-  const sightingId = options.isTest ? undefined : crypto.randomUUID()
+  // Skipped for test runs and for workflows with capture_sightings=false.
+  const sightingId = (options.isTest || !capture_sightings) ? undefined : crypto.randomUUID()
   if (sightingId) {
     const sightingPayloadFields = extractSightingFields(payload)
     const personFields = extractPersonFields(payload)
