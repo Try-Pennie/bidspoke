@@ -10,7 +10,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2, Info } from 'lucide-react'
+import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
@@ -175,7 +175,6 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                     onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
                   />
                 </Field>
-                <CircuitBreakerServiceField config={data.config} updateConfig={updateConfig} nodeType={type} />
                 <Field label="If this step fails">
                   <select className="input"
                     value={(data.config.on_error as string | undefined) ?? 'fail'}
@@ -263,7 +262,6 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
               />
             </Field>
-            <CircuitBreakerServiceField config={data.config} updateConfig={updateConfig} nodeType={type} />
             <Field label="If this step fails">
               <select
                 className="input"
@@ -2787,68 +2785,6 @@ function makeUnitFormatter(values: (number | null)[]): (ms: number) => string {
     const oneDecimal = s.toFixed(1)
     return oneDecimal.endsWith('.0') ? `${oneDecimal.slice(0, -2)}s` : `${oneDecimal}s`
   }
-}
-
-// ── Circuit breaker service tag ──────────────────────────────────────────────
-
-function CircuitBreakerServiceField({
-  config,
-  updateConfig,
-  nodeType,
-}: {
-  config: Record<string, unknown>
-  updateConfig: (patch: Record<string, unknown>) => void
-  nodeType: NodeType
-}) {
-  // Partner Bid nodes already wire their own breaker keyed on the partner slug.
-  // Integration nodes set `service` via their own type picker. Skip both.
-  if (nodeType === 'partner_bid' || nodeType === 'webhook') return null
-  const value = (config.service as string | undefined) ?? ''
-  return (
-    <div>
-      <div className="mb-1 flex items-center gap-1.5">
-        <label className="text-xs font-medium text-gray-600">Circuit breaker service</label>
-        <span className="group relative inline-flex">
-          <Info className="h-3.5 w-3.5 cursor-help text-gray-400 hover:text-gray-600" tabIndex={0} />
-          <div className="pointer-events-none absolute left-0 top-5 z-20 hidden w-72 rounded-md border border-gray-200 bg-white p-3 text-xs leading-relaxed text-gray-600 shadow-lg group-hover:block group-focus-within:block">
-            <p className="mb-2 font-semibold text-gray-800">How the breaker works</p>
-            <dl className="space-y-1.5">
-              <div>
-                <dt className="font-semibold text-gray-700">Closed (normal)</dt>
-                <dd>Every call goes through. Failures count against a 60-second sliding window.</dd>
-              </div>
-              <div>
-                <dt className="font-semibold text-amber-700">Open (tripped)</dt>
-                <dd>5 transient failures in 60s flip the breaker open. For the next 5 minutes every tagged call fails instantly without touching the upstream.</dd>
-              </div>
-              <div>
-                <dt className="font-semibold text-sky-700">Half-open (probing)</dt>
-                <dd>After 5 minutes, one call is allowed through to test the upstream. If it succeeds, the breaker closes and traffic resumes. If it fails, the breaker re-opens with a longer cooldown (×1.5 each cycle: 5m → 7.5m → 11.25m…).</dd>
-              </div>
-            </dl>
-            <p className="mt-2 text-gray-400">Only transient errors count — business 4xx and validation errors don&apos;t trip it.</p>
-          </div>
-        </span>
-      </div>
-      <input
-        className="input"
-        placeholder="e.g. equifax"
-        value={value}
-        onChange={(e) => updateConfig({ service: e.target.value || undefined })}
-      />
-      <div className="mt-1.5 space-y-1.5 text-xs text-gray-500 leading-relaxed">
-        <p>
-          The breaker is shared <strong className="text-gray-700">across every workflow in your org</strong> — tag the same name (e.g. <code className="rounded bg-gray-100 px-1 font-mono text-[11px]">equifax</code>) on every node that calls the same upstream and they all share one breaker.
-        </p>
-        <p>
-          When 5 transient failures hit within 60 seconds, the breaker opens for 5 minutes. Every tagged node (in this workflow and every other workflow) fails in milliseconds instead of waiting through its own timeout. Saves wall-clock during outages and lets the upstream recover.
-        </p>
-        <p className="text-gray-400">
-          Example: Equifax goes down and 50 leads come in. Only the first 5 wait 30s each. The other 45 fail instantly across whichever workflow handled them.
-        </p>
-      </div>
-    </div>
-  )
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

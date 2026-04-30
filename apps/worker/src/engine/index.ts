@@ -19,7 +19,6 @@ import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './s
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
-import { CircuitBreakerClient } from '../lib/circuit-breaker-client'
 import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
@@ -40,14 +39,6 @@ class StepFailureError extends Error {
     public readonly suppressAlert: boolean = false
   ) {
     super(message)
-  }
-}
-
-// Thrown when a service circuit breaker is open — treated as transient
-class CircuitOpenError extends Error {
-  constructor(service: string, opensAt?: number) {
-    const when = opensAt ? ` (retries after ${new Date(opensAt).toISOString()})` : ''
-    super(`Service "${service}" circuit is open — request skipped${when}`)
   }
 }
 
@@ -777,10 +768,6 @@ export async function walkGraph(
       timeout_ms: (node.config.timeout_ms as number) ?? 30000,
     }
 
-    // Circuit breaker — applies to nodes with config.service set (Webhook nodes, PRD Section 2.5.2)
-    const serviceName = typeof node.config.service === 'string' ? node.config.service : null
-    const cbClient = serviceName ? new CircuitBreakerClient(env, serviceName) : null
-
     // Tracks whether the earlyResponse branch already logged the step so the
     // outer completion path doesn't double-log it.
     let loggedEarly = false
@@ -790,15 +777,6 @@ export async function walkGraph(
     let stepLogs: import('../types').StepLogEntry[] | undefined
 
     try {
-      // Check circuit before attempting the call
-      if (cbClient) {
-        const cbCheck = await cbClient.check()
-        if (!cbCheck.allowed) {
-          log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, partner_id: serviceName ?? undefined })
-          throw new CircuitOpenError(serviceName!, cbCheck.opens_at)
-        }
-      }
-
       const result = await withRetry(
         () => executeNode(node, ctx, env, supabase),
         retryConfig,
@@ -811,9 +789,6 @@ export async function walkGraph(
       stepStatus = 'completed'
       lastOutput = output
       stepLogs = result.logs
-
-      // Record success — closes half-open circuit if probing
-      if (cbClient) cbClient.recordSuccess().catch(() => {})
 
       // Early exit / respond sentinels from translated Pipedream patterns:
       //   { response } alone          → respond + exit ($.respond() + $.flow.exit())
@@ -868,7 +843,7 @@ export async function walkGraph(
       }
 
     } catch (err) {
-      // Classify error type — needed for CB recording and Slack alerting
+      // Classify error type — needed for Slack alerting
       let suppressAlert = false
       // Extract captured console output from code-node errors so a failing
       // script's logs are still persisted (often the most useful debug signal).
@@ -877,18 +852,10 @@ export async function walkGraph(
       if (err instanceof PartnerApiError) {
         errorType = err.errorType
         suppressAlert = err.suppressAlert
-      } else if (err instanceof CircuitOpenError) {
-        errorType = 'transient'
       } else if (err instanceof Response) {
         errorType = classifyHttpError(err.status)
       } else {
         errorType = classifyTransportError(err)
-      }
-
-      // Only transient errors count toward the circuit breaker threshold (PRD Section 2.5.2)
-      // CircuitOpenError itself is not recorded — no request was attempted
-      if (cbClient && errorType === 'transient' && !(err instanceof CircuitOpenError)) {
-        cbClient.recordError().catch(() => {})
       }
 
       errorMessage = err instanceof Error ? err.message : String(err)
