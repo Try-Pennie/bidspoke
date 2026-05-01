@@ -607,7 +607,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // real time. Merged into the rendered list ahead of real nodes; their
   // negative zIndex pushes them to the back.
   const renderedNodes = useMemo(
-    () => [...computeRegionNodes(nodes, edges), ...nodes],
+    () => {
+      const regions = computeRegionNodes(nodes, edges)
+      // eslint-disable-next-line no-console
+      if (typeof window !== 'undefined') console.log('[bidspoke:regions]', { count: regions.length, regions, nodeCount: nodes.length })
+      return [...regions, ...nodes]
+    },
     [nodes, edges]
   )
 
