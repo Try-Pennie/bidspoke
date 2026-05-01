@@ -16,6 +16,7 @@ import {
   upsertPerson,
 } from '../../engine/lead-sightings'
 import { formatSsn } from '../../engine/persons-crypto'
+import { runSightingsExport } from '../../lib/sightings-export'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -295,6 +296,17 @@ admin.post('/backfill-sightings', async (c) => {
     next_cursor: cursor,
     has_more: scanned >= MAX_PER_CALL,
   })
+})
+
+/**
+ * Manually trigger the nightly Snowflake export. Same code path as the
+ * scheduled cron at 09:00 UTC, but callable on demand. Use cases: backfill
+ * verification, demos, or recovery from a failed cron run.
+ */
+admin.post('/run-export-now', async (c) => {
+  const supabase = createSupabaseClient(c.env)
+  const summary = await runSightingsExport(supabase, c.env)
+  return c.json(summary)
 })
 
 export default admin
