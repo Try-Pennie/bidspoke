@@ -453,6 +453,25 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Diagnostic — log parallel cluster positions after layout. Remove after debug.
+  if (typeof window !== 'undefined') {
+    const parallels = nodes.filter((n) => n.type === 'parallel' || n.type === 'parallel_end' || n.type === 'webhook')
+    if (parallels.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log('[bidspoke:layout]', parallels.map((n) => {
+        const p = pos.get(n.id)
+        const r = reachable.has(n.id)
+        const cfgChildren = (n.data as { config?: { children?: unknown } } | undefined)?.config?.children
+        return {
+          id: n.id, type: n.type, ns: (n.data as { namespace?: string } | undefined)?.namespace,
+          dagreCenter: p, reachable: r,
+          configChildren: cfgChildren,
+          existingPos: n.position,
+        }
+      }))
+    }
+  }
+
   return nodes.map((node) => {
     // manualPosition only applies to nodes NOT reachable from the trigger.
     // Active (reachable) nodes always take dagre's position so the main flow
