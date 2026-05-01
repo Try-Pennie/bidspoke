@@ -99,37 +99,46 @@ admin.post('/backfill-sightings', async (c) => {
   }
   const definition = wfRow.definition as WorkflowDefinition
 
-  // Pull executions in the window
-  const { data: executions, error: execErr } = await supabase
-    .from('workflow_executions')
-    .select('id, started_at, completed_at, duration_ms, response_body, trigger_payload, source, trace_id, workflow_version_id, is_test, status')
-    .eq('workflow_id', body.workflow_id)
-    .gte('started_at', body.since_iso)
-    .eq('is_test', false)
-    .order('started_at', { ascending: true })
-    .limit(5000)
-  if (execErr) return c.json({ error: execErr.message }, 500)
-  if (!executions || executions.length === 0) {
-    return c.json({ scanned: 0, inserted: 0, skipped: 0 })
-  }
-
-  // Skip executions that already have a sighting backfilled
-  const execIds = executions.map((e) => e.id as string)
-  const { data: existingSightings } = await supabase
-    .from('lead_sightings')
-    .select('execution_id')
-    .in('execution_id', execIds)
-  const alreadyHave = new Set((existingSightings ?? []).map((r) => r.execution_id as string))
+  // Bounded per-call processing — single Worker invocation has limited CPU
+  // wall time. 1000 executions × ~250ms each = ~4 minutes. Re-run to continue.
+  const MAX_PER_CALL = 1000
+  const PAGE_SIZE = 500
 
   let inserted = 0
   let skipped = 0
   let errors = 0
+  let scanned = 0
+  let cursor = body.since_iso
 
-  for (const exec of executions) {
-    if (alreadyHave.has(exec.id as string)) {
-      skipped++
-      continue
-    }
+  while (scanned < MAX_PER_CALL) {
+    const remaining = MAX_PER_CALL - scanned
+    const pageLimit = Math.min(PAGE_SIZE, remaining)
+
+    const { data: executions, error: execErr } = await supabase
+      .from('workflow_executions')
+      .select('id, started_at, completed_at, duration_ms, response_body, trigger_payload, source, trace_id, workflow_version_id, is_test, status')
+      .eq('workflow_id', body.workflow_id)
+      .gte('started_at', cursor)
+      .eq('is_test', false)
+      .order('started_at', { ascending: true })
+      .limit(pageLimit)
+    if (execErr) return c.json({ error: execErr.message }, 500)
+    if (!executions || executions.length === 0) break
+
+    // Skip executions that already have a sighting backfilled
+    const execIds = executions.map((e) => e.id as string)
+    const { data: existingSightings } = await supabase
+      .from('lead_sightings')
+      .select('execution_id')
+      .in('execution_id', execIds)
+    const alreadyHave = new Set((existingSightings ?? []).map((r) => r.execution_id as string))
+
+    for (const exec of executions) {
+      scanned++
+      if (alreadyHave.has(exec.id as string)) {
+        skipped++
+        continue
+      }
 
     try {
       const payload = exec.trigger_payload as unknown
@@ -268,13 +277,23 @@ admin.post('/backfill-sightings', async (c) => {
       errors++
       console.error(`[backfill] execution ${exec.id} failed:`, e)
     }
+    }
+
+    // Advance cursor — next page starts strictly after the last started_at we saw.
+    // Bump by 1ms so the >= filter doesn't re-fetch the boundary row.
+    const lastStarted = new Date(executions[executions.length - 1].started_at as string)
+    cursor = new Date(lastStarted.getTime() + 1).toISOString()
+
+    if (executions.length < pageLimit) break
   }
 
   return c.json({
-    scanned: executions.length,
+    scanned,
     inserted,
     skipped,
     errors,
+    next_cursor: cursor,
+    has_more: scanned >= MAX_PER_CALL,
   })
 })
 
