@@ -300,37 +300,31 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
   // middle handle.
   const SIBLING_SPACING = NODE_W + 48 // matches dagre's nodesep above
-  for (const [sourceId, outEdges] of outEdgesBySource) {
-    const src = nodeMap.get(sourceId)
-    if (!src) continue
-    const handles = configuredHandleIds(src)
-    if (typeof window !== 'undefined' && src.type === 'parallel') {
-      // eslint-disable-next-line no-console
-      console.log('[bidspoke:override:enter]', { sourceId, srcType: src.type, handles, handlesLen: handles?.length, outEdgesCount: outEdges.length })
-    }
-    if (!handles || handles.length < 2) continue
-    const parentPos = pos.get(sourceId)
-    if (!parentPos) continue
-    for (const e of outEdges) {
-      if (!e.sourceHandle) continue
-      const childPos = pos.get(e.target)
-      if (!childPos) continue
-      const idx = handles.indexOf(e.sourceHandle)
-      const beforeX = childPos.x
-      if (idx >= 0) {
-        childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
-      } else {
-        childPos.x = parentPos.x
-      }
-      if (typeof window !== 'undefined' && src.type === 'parallel') {
-        // eslint-disable-next-line no-console
-        console.log('[bidspoke:override:edge]', {
-          sourceId, target: e.target, sourceHandle: e.sourceHandle, idx,
-          parentPosX: parentPos.x, beforeX, afterX: childPos.x,
-        })
+  const applyMultiOutputOverride = () => {
+    for (const [sourceId, outEdges] of outEdgesBySource) {
+      const src = nodeMap.get(sourceId)
+      if (!src) continue
+      const handles = configuredHandleIds(src)
+      if (!handles || handles.length < 2) continue
+      const parentPos = pos.get(sourceId)
+      if (!parentPos) continue
+      for (const e of outEdges) {
+        if (!e.sourceHandle) continue
+        const childPos = pos.get(e.target)
+        if (!childPos) continue
+        const idx = handles.indexOf(e.sourceHandle)
+        if (idx >= 0) {
+          childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
+        } else {
+          childPos.x = parentPos.x
+        }
       }
     }
   }
+  // First pass — sets multi-output children's x relative to dagre's natural
+  // parent positions, so the linear-chain rule below can propagate from
+  // override'd positions through subsequent chains.
+  applyMultiOutputOverride()
 
   // ── Post-process: x-align single-child linear chains with their parent.
   //
@@ -374,6 +368,12 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       changed = true
     }
   }
+
+  // Second override pass — linear-chain may have moved a multi-output node's
+  // own x (e.g., parallel pulled to its predecessor's column), so re-anchor
+  // its children to the new parent position. The override is idempotent given
+  // the same pos map, so re-running on already-correct nodes is a no-op.
+  applyMultiOutputOverride()
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
@@ -458,25 +458,6 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (reachable.has(id)) continue
       reachable.add(id)
       for (const next of outgoing.get(id) ?? []) queue.push(next)
-    }
-  }
-
-  // Diagnostic — log parallel cluster positions after layout. Remove after debug.
-  if (typeof window !== 'undefined') {
-    const parallels = nodes.filter((n) => n.type === 'parallel' || n.type === 'parallel_end' || n.type === 'webhook')
-    if (parallels.length > 0) {
-      // eslint-disable-next-line no-console
-      console.log('[bidspoke:layout]', parallels.map((n) => {
-        const p = pos.get(n.id)
-        const r = reachable.has(n.id)
-        const cfgChildren = (n.data as { config?: { children?: unknown } } | undefined)?.config?.children
-        return {
-          id: n.id, type: n.type, ns: (n.data as { namespace?: string } | undefined)?.namespace,
-          dagreCenter: p, reachable: r,
-          configChildren: cfgChildren,
-          existingPos: n.position,
-        }
-      }))
     }
   }
 
