@@ -148,21 +148,24 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
   const PAD = 24
   return regions.map((r) => {
     const depth = regions.filter((other) => other.id !== r.id && other.nodeIds.has(r.id)).length
+    const width = r.maxX - r.minX + PAD * 2
+    const height = r.maxY - r.minY + PAD * 2
     return {
       id: `region-${r.id}`,
       type: 'region',
       position: { x: r.minX - PAD, y: r.minY - PAD },
-      data: {
-        width: r.maxX - r.minX + PAD * 2,
-        height: r.maxY - r.minY + PAD * 2,
-        depth,
-        variant: r.variant,
-      },
+      // width / height at the top level so React Flow skips its measurement
+      // step. Without these, React Flow's ResizeObserver would write back
+      // measured dimensions on every render → setNodes → recompute regions →
+      // measure again → infinite loop.
+      width,
+      height,
+      data: { width, height, depth, variant: r.variant },
       draggable: false,
       selectable: false,
-      // Outer regions go further back so inner regions stack on top of them.
-      // Stay non-negative — React Flow's <Background /> is at zIndex 0 and
-      // negative values were hiding the regions behind the dot grid.
+      // Render order in the array (regions first) keeps them visually behind
+      // real nodes when zIndex is unset on real nodes; deeper regions get a
+      // larger zIndex so they stack atop their containing region.
       zIndex: depth,
     } as Node
   })
@@ -607,12 +610,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // real time. Merged into the rendered list ahead of real nodes; their
   // negative zIndex pushes them to the back.
   const renderedNodes = useMemo(
-    () => {
-      const regions = computeRegionNodes(nodes, edges)
-      // eslint-disable-next-line no-console
-      if (typeof window !== 'undefined') console.log('[bidspoke:regions]', { count: regions.length, regions, nodeCount: nodes.length })
-      return [...regions, ...nodes]
-    },
+    () => [...computeRegionNodes(nodes, edges), ...nodes],
     [nodes, edges]
   )
 
