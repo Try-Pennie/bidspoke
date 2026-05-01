@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS lead_sightings (
   equifax_status              VARCHAR,
   equifax_error_type          VARCHAR,
   equifax_score               NUMBER,
+  outcome                     VARCHAR,                 -- 'successful' | 'completed' | 'failed'
 
   winning_partner_slug        VARCHAR,
   winning_bid_cents           NUMBER,

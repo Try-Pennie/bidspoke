@@ -108,6 +108,7 @@ export interface FinalizeSightingInput {
   partners_attempted?: number | null
   partners_responded?: number | null
   reject_reason?: string | null
+  outcome?: string | null   // 'successful' | 'completed' | 'failed' — mirrors workflow_executions.outcome
 }
 
 // ============================================================
@@ -416,6 +417,7 @@ export async function finalizeSighting(
     partners_attempted: fields.partners_attempted ?? null,
     partners_responded: fields.partners_responded ?? null,
     reject_reason: fields.reject_reason ?? null,
+    outcome: fields.outcome ?? null,
     updated_at: new Date().toISOString(),
   }
 

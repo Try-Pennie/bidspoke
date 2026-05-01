@@ -43,6 +43,7 @@ const SIGHTING_COLS: ColSpec[] = [
   { name: 'terminal_node_label', type: 'varchar' },
   { name: 'response_status_code', type: 'number' },
   { name: 'reject_reason', type: 'varchar' },
+  { name: 'outcome', type: 'varchar' },
   { name: 'prospect_id', type: 'varchar' },
   { name: 'equifax_status', type: 'varchar' },
   { name: 'equifax_error_type', type: 'varchar' },

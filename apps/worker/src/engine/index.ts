@@ -429,6 +429,13 @@ export async function executeWorkflow(
             terminal_step_output: terminalStep?.output,
           })
 
+          // Mirror the outcome attribution used for workflow_executions.outcome.
+          // Strict last-node match against the workflow's success_node_namespaces.
+          const sightingOutcome: 'successful' | 'completed' | 'failed' =
+            executionStatus === 'failed'
+              ? 'failed'
+              : (finalNs && successNamespaces.includes(finalNs)) ? 'successful' : 'completed'
+
           await finalizeSighting(supabase, {
             sighting_id: sightingId,
             execution_id: executionId,
@@ -448,6 +455,7 @@ export async function executeWorkflow(
             partners_attempted: bidSummary.attempted,
             partners_responded: bidSummary.responded,
             reject_reason: rejectReason,
+            outcome: sightingOutcome,
           })
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))
