@@ -304,6 +304,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const src = nodeMap.get(sourceId)
     if (!src) continue
     const handles = configuredHandleIds(src)
+    if (typeof window !== 'undefined' && src.type === 'parallel') {
+      // eslint-disable-next-line no-console
+      console.log('[bidspoke:override:enter]', { sourceId, srcType: src.type, handles, handlesLen: handles?.length, outEdgesCount: outEdges.length })
+    }
     if (!handles || handles.length < 2) continue
     const parentPos = pos.get(sourceId)
     if (!parentPos) continue
@@ -312,14 +316,18 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const childPos = pos.get(e.target)
       if (!childPos) continue
       const idx = handles.indexOf(e.sourceHandle)
+      const beforeX = childPos.x
       if (idx >= 0) {
-        // Slot edge — fan-out spacing.
         childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
       } else {
-        // Non-slot edge (e.g., parallel start → parallel_end backbone with
-        // sourceHandle 'output') — center the target directly under the parent
-        // so dagre's sibling-spread doesn't collide it with a slot child.
         childPos.x = parentPos.x
+      }
+      if (typeof window !== 'undefined' && src.type === 'parallel') {
+        // eslint-disable-next-line no-console
+        console.log('[bidspoke:override:edge]', {
+          sourceId, target: e.target, sourceHandle: e.sourceHandle, idx,
+          parentPosX: parentPos.x, beforeX, afterX: childPos.x,
+        })
       }
     }
   }
