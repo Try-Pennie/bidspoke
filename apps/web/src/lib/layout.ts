@@ -230,6 +230,36 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     g.setEdge(edge.source, edge.target)
   }
 
+  // For each parallel, push its paired parallel_end one rank below the slot
+  // children's chains by adding synthetic dagre-only edges from each chain
+  // leaf to the parallel_end. Without this, slot children (e.g., a webhook)
+  // and the parallel_end render at the same y and overlap horizontally —
+  // they're both rank+1 from the parallel start because the only edge into
+  // parallel_end is the backbone. These synthetic edges are not added to
+  // React Flow's edge state; they only influence dagre's rank assignment.
+  for (const node of nodes) {
+    if (node.type !== 'parallel') continue
+    const pairId = (node.data as { _pairId?: string } | undefined)?._pairId
+    if (!pairId) continue
+    const slotEdges = edges.filter(
+      (e) => e.source === node.id && (e.sourceHandle ?? '').startsWith('child-')
+    )
+    for (const slotEdge of slotEdges) {
+      let current = slotEdge.target
+      const visited = new Set<string>([node.id])
+      while (!visited.has(current)) {
+        visited.add(current)
+        if (current === pairId) break
+        const next = edges.find((e) => e.source === current && !visited.has(e.target))
+        if (!next) break
+        current = next.target
+      }
+      if (current !== pairId) {
+        g.setEdge(current, pairId)
+      }
+    }
+  }
+
   dagre.layout(g)
 
   // ── Post-process: guarantee correct left-to-right child ordering ────────────
