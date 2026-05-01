@@ -300,7 +300,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
   // middle handle.
   const SIBLING_SPACING = NODE_W + 48 // matches dagre's nodesep above
-  const applyMultiOutputOverride = () => {
+  const applyMultiOutputOverride = (passLabel: string) => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
       const src = nodeMap.get(sourceId)
       if (!src) continue
@@ -313,18 +313,20 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         const childPos = pos.get(e.target)
         if (!childPos) continue
         const idx = handles.indexOf(e.sourceHandle)
+        const beforeX = childPos.x
         if (idx >= 0) {
           childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
         } else {
           childPos.x = parentPos.x
         }
+        if (typeof window !== 'undefined' && src.type === 'parallel') {
+          // eslint-disable-next-line no-console
+          console.log('[bidspoke:override:' + passLabel + ']', { target: e.target, sourceHandle: e.sourceHandle, idx, parentPosX: parentPos.x, beforeX, afterX: childPos.x })
+        }
       }
     }
   }
-  // First pass — sets multi-output children's x relative to dagre's natural
-  // parent positions, so the linear-chain rule below can propagate from
-  // override'd positions through subsequent chains.
-  applyMultiOutputOverride()
+  applyMultiOutputOverride('first')
 
   // ── Post-process: x-align single-child linear chains with their parent.
   //
@@ -373,7 +375,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // own x (e.g., parallel pulled to its predecessor's column), so re-anchor
   // its children to the new parent position. The override is idempotent given
   // the same pos map, so re-running on already-correct nodes is a no-op.
-  applyMultiOutputOverride()
+  applyMultiOutputOverride('second')
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
