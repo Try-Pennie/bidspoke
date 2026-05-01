@@ -1161,14 +1161,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const autoConnected = !!(sourceNode && sourceHandle && !existingOutEdge)
       // True when we need to INSERT between sourceNode and its current target
       const insertBetween = !!(sourceNode && sourceHandle && existingOutEdge)
-      // Drop diagnostic — visible in browser console; remove after debugging.
-      // eslint-disable-next-line no-console
-      console.log('[bidspoke:drop]', {
-        type, dropPos,
-        sourceNode: sourceNode ? { id: sourceNode.id, type: sourceNode.type, position: sourceNode.position, configChildren: (sourceNode.data as { config?: { children?: unknown } })?.config?.children } : null,
-        sourceHandle, existingOutEdge: existingOutEdge?.id ?? null,
-        autoConnected, insertBetween,
-      })
 
       // Parallel drops create a start+end pair with a placeholder edge between them
       if (type === 'parallel') {
