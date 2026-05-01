@@ -1,6 +1,7 @@
 'use client'
 
-import { Handle, Position } from '@xyflow/react'
+import { useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
@@ -23,10 +24,20 @@ function readSlots(config: Record<string, unknown>): ParallelChildSlot[] {
   return raw as ParallelChildSlot[]
 }
 
-export function ParallelNode({ data, selected }: NodeProps) {
+export function ParallelNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const slots = readSlots(config)
+
+  // Force React Flow to re-scan this node's handles whenever the slot list
+  // changes. Without this, an edge created from a freshly-added slot
+  // (e.g. a webhook auto-attaching right after the user added the slot)
+  // silently fails to render because the new handle isn't in nodeInternals yet.
+  const updateNodeInternals = useUpdateNodeInternals()
+  const slotIdsKey = slots.map((s) => s.id).join(',')
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, slotIdsKey, updateNodeInternals])
 
   let resultLine: string | null = null
   let hasChildFailure = false
