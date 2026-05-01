@@ -239,8 +239,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // React Flow's edge state; they only influence dagre's rank assignment.
   for (const node of nodes) {
     if (node.type !== 'parallel') continue
-    const pairId = (node.data as { _pairId?: string } | undefined)?._pairId
-    if (!pairId) continue
+    // Find the paired parallel_end by walking outgoing edges to a parallel_end
+    // target. Don't rely on data._pairId — that only exists on freshly-dropped
+    // parallels, not on definitions loaded from the DB.
+    const pairEdge = edges.find((e) => {
+      if (e.source !== node.id) return false
+      const target = nodes.find((n) => n.id === e.target)
+      return target?.type === 'parallel_end'
+    })
+    if (!pairEdge) continue
+    const pairId = pairEdge.target
     const slotEdges = edges.filter(
       (e) => e.source === node.id && (e.sourceHandle ?? '').startsWith('child-')
     )
