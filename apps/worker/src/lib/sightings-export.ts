@@ -209,6 +209,13 @@ async function exportTable(
 function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
   const colList = cols.map((c) => c.name).join(', ')
   const sourceColList = cols.map((c) => `s.${c.name}`).join(', ')
+  // UPDATE clause covers every column except id (the join key). Lets us
+  // re-export rows when columns are added or values are corrected upstream
+  // (e.g., outcome backfill).
+  const updateSet = cols
+    .filter((c) => c.name !== 'id')
+    .map((c) => `${c.name} = s.${c.name}`)
+    .join(', ')
   const valuesList = rows
     .map((r) => '(' + cols.map((c) => formatValue(r[c.name], c.type)).join(', ') + ')')
     .join(', ')
@@ -220,6 +227,7 @@ USING (
   SELECT * FROM (VALUES ${valuesList}) AS s${tupleAlias}
 ) s
 ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET ${updateSet}
 WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${sourceColList})
 `.trim()
 }
