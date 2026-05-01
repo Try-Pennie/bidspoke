@@ -36,13 +36,15 @@ export async function executeStatement(
   const privateKey = await importPrivateKey(config.privateKeyPem)
   const jwt = await signSnowflakeJwt(config, privateKey)
   const url = `https://${snowflakeHost(config.account)}/api/v2/statements`
+  // Snowflake stores unquoted identifiers uppercase. Send uppercase to match
+  // regardless of how the secret is set.
   const body: Record<string, unknown> = {
     statement,
     timeout: 60,
-    database: config.database,
-    schema: config.schema,
-    warehouse: config.warehouse,
-    role: config.role,
+    database: config.database.toUpperCase(),
+    schema: config.schema.toUpperCase(),
+    warehouse: config.warehouse.toUpperCase(),
+    role: config.role.toUpperCase(),
   }
   if (bindings && bindings.length > 0) {
     const bindMap: Record<string, { type: string; value: string }> = {}
