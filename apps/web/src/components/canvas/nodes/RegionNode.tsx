@@ -20,7 +20,7 @@ export function RegionNode({ data }: NodeProps) {
       style={{
         width,
         height,
-        background: 'rgba(100, 116, 139, 0.07)',
+        background: 'rgba(239, 68, 68, 0.4)', // diagnostic: bright red so we can see if it renders at all
         borderRadius: 16,
         pointerEvents: 'none',
       }}

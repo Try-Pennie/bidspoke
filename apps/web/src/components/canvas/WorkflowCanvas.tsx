@@ -161,7 +161,9 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       draggable: false,
       selectable: false,
       // Outer regions go further back so inner regions stack on top of them.
-      zIndex: -100 + depth,
+      // Stay non-negative — React Flow's <Background /> is at zIndex 0 and
+      // negative values were hiding the regions behind the dot grid.
+      zIndex: depth,
     } as Node
   })
 }
