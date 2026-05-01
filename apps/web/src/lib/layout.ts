@@ -463,6 +463,29 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Diagnostic — final positions for parallel cluster (temp).
+  if (typeof window !== 'undefined') {
+    const final = nodes
+      .filter((n) => n.type === 'parallel' || n.type === 'parallel_end' || n.type === 'webhook')
+      .map((n) => {
+        const p = pos.get(n.id)
+        const w = nodeWidth(n.type, n.data)
+        return {
+          ns: (n.data as { namespace?: string } | undefined)?.namespace,
+          type: n.type,
+          posCenterX: p?.x,
+          posCenterY: p?.y,
+          width: w,
+          finalTopLeftX: p ? p.x - w / 2 : null,
+          inputPosX: n.position.x,
+        }
+      })
+    if (final.length > 0) {
+      // eslint-disable-next-line no-console
+      console.log('[bidspoke:final]', final)
+    }
+  }
+
   return nodes.map((node) => {
     // manualPosition only applies to nodes NOT reachable from the trigger.
     // Active (reachable) nodes always take dagre's position so the main flow
