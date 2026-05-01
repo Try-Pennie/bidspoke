@@ -40,6 +40,7 @@ import { ParallelNode } from './nodes/ParallelNode'
 import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
+import { RegionNode } from './nodes/RegionNode'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -76,6 +77,7 @@ const nodeTypes: NodeTypes = {
   bid_group: BidGroupNode,
   constants: ConstantsNode,
   salesforce: SalesforceNode,
+  region: RegionNode,
 }
 
 
@@ -95,6 +97,74 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
+
+// Computes translucent region backdrops for each branch / parallel and the
+// nodes downstream of it. Outer regions get lower zIndex (further behind)
+// than inner regions; both stay behind real nodes (zIndex < 0). Region nodes
+// are pointer-events-none so clicks/drags reach the real graph.
+function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
+  const moNodes = nodes.filter((n) => n.type === 'branch' || n.type === 'parallel')
+  if (moNodes.length === 0) return []
+
+  const adjOut = new Map<string, string[]>()
+  for (const e of edges) {
+    const arr = adjOut.get(e.source) ?? []
+    arr.push(e.target)
+    adjOut.set(e.source, arr)
+  }
+
+  type RegionInfo = { id: string; nodeIds: Set<string>; minX: number; minY: number; maxX: number; maxY: number; variant: 'branch' | 'parallel' }
+  const regions: RegionInfo[] = []
+  for (const mo of moNodes) {
+    const reachable = new Set<string>([mo.id])
+    const queue = [mo.id]
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      for (const next of adjOut.get(cur) ?? []) {
+        if (reachable.has(next)) continue
+        reachable.add(next)
+        queue.push(next)
+      }
+    }
+    if (reachable.size === 1) continue // no descendants — nothing to wrap
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of nodes) {
+      if (!reachable.has(n.id)) continue
+      const w = nodeWidth(n.type, n.data)
+      const h = nodeHeight(n.type)
+      minX = Math.min(minX, n.position.x)
+      minY = Math.min(minY, n.position.y)
+      maxX = Math.max(maxX, n.position.x + w)
+      maxY = Math.max(maxY, n.position.y + h)
+    }
+    regions.push({
+      id: mo.id,
+      nodeIds: reachable,
+      minX, minY, maxX, maxY,
+      variant: mo.type as 'branch' | 'parallel',
+    })
+  }
+
+  const PAD = 24
+  return regions.map((r) => {
+    const depth = regions.filter((other) => other.id !== r.id && other.nodeIds.has(r.id)).length
+    return {
+      id: `region-${r.id}`,
+      type: 'region',
+      position: { x: r.minX - PAD, y: r.minY - PAD },
+      data: {
+        width: r.maxX - r.minX + PAD * 2,
+        height: r.maxY - r.minY + PAD * 2,
+        depth,
+        variant: r.variant,
+      },
+      draggable: false,
+      selectable: false,
+      // Outer regions go further back so inner regions stack on top of them.
+      zIndex: -100 + depth,
+    } as Node
+  })
+}
 
 function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
   const parallelNodes = nodes.filter((n) => n.type === 'parallel' && (n.children?.length ?? 0) > 0)
@@ -528,6 +598,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const validationErrors: Map<string, ValidationError> = useMemo(
     () => (mode === 'edit' ? validateWorkflow(nodes, edges) : new Map()),
     [mode, nodes, edges]
+  )
+
+  // Translucent backdrops behind each branch / parallel cluster. Recomputed
+  // whenever nodes or edges change so they track positions / membership in
+  // real time. Merged into the rendered list ahead of real nodes; their
+  // negative zIndex pushes them to the back.
+  const renderedNodes = useMemo(
+    () => [...computeRegionNodes(nodes, edges), ...nodes],
+    [nodes, edges]
   )
 
   // Inject hasError into node data so nodes can show the amber ring.
@@ -1909,7 +1988,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
           <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
-            nodes={nodes}
+            nodes={renderedNodes}
             edges={edges}
             onNodesChange={(changes) => {
               onNodesChange(changes)
