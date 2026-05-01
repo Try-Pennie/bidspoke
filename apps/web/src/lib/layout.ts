@@ -309,11 +309,18 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (!parentPos) continue
     for (const e of outEdges) {
       if (!e.sourceHandle) continue
-      const idx = handles.indexOf(e.sourceHandle)
-      if (idx < 0) continue
       const childPos = pos.get(e.target)
       if (!childPos) continue
-      childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
+      const idx = handles.indexOf(e.sourceHandle)
+      if (idx >= 0) {
+        // Slot edge — fan-out spacing.
+        childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
+      } else {
+        // Non-slot edge (e.g., parallel start → parallel_end backbone with
+        // sourceHandle 'output') — center the target directly under the parent
+        // so dagre's sibling-spread doesn't collide it with a slot child.
+        childPos.x = parentPos.x
+      }
     }
   }
 
