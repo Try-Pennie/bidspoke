@@ -163,6 +163,11 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       data: { width, height, depth, variant: r.variant },
       draggable: false,
       selectable: false,
+      // Make the wrapper itself pass-through. The inner div is also
+      // pointer-events:none, but React Flow's outer node wrapper still
+      // captures clicks/drags otherwise — so nodes sitting on top of a
+      // region (e.g., webhook inside parallel cluster) become unclickable.
+      style: { pointerEvents: 'none' as const },
       // Render order in the array (regions first) keeps them visually behind
       // real nodes when zIndex is unset on real nodes; deeper regions get a
       // larger zIndex so they stack atop their containing region.
