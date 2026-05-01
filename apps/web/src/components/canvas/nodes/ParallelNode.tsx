@@ -7,6 +7,7 @@ import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { nodeWidth } from '@/lib/layout'
 
 interface ParallelChildResult {
   namespace: string
@@ -54,13 +55,14 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
   const effectiveStep = hasChildFailure && executionStep
     ? { ...executionStep, status: 'failed' as const }
     : executionStep
+  const width = nodeWidth('parallel', data)
 
   return (
     <div
-      className={`relative w-52 rounded-lg border bg-white shadow-sm ${
+      className={`relative rounded-lg border bg-white shadow-sm ${
         selected ? 'border-slate-400 ring-2 ring-slate-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
       } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
-      style={getExecutionStyle(effectiveStep)}
+      style={{ ...getExecutionStyle(effectiveStep), width }}
     >
       <SuccessBadge visible={isSuccessNode} />
       <Handle type="target" position={Position.Top} id="input" />
