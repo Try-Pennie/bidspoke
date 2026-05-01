@@ -58,6 +58,7 @@ export async function executeStatement(
       'Authorization': `Bearer ${jwt}`,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+      'User-Agent': 'bidspoke-worker/1.0',
       'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
     },
     body: JSON.stringify(body),
