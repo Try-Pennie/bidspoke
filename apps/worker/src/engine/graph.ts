@@ -65,6 +65,14 @@ function evaluateCondition(
     case 'not_exists': return actual === undefined || actual === null
     case 'is_null':  return actual === null
     case 'is_not_null': return actual !== null
+    case 'in_array': {
+      const arr = resolveValueOrLiteral(condition.value, ctx)
+      return Array.isArray(arr) && arr.includes(actual)
+    }
+    case 'not_in_array': {
+      const arr = resolveValueOrLiteral(condition.value, ctx)
+      return Array.isArray(arr) && !arr.includes(actual)
+    }
     default: {
       // Surface unhandled operators instead of silently returning false.
       // A new operator added to the type union but not to this switch would
@@ -74,6 +82,16 @@ function evaluateCondition(
       throw new Error(`Unknown condition operator: ${JSON.stringify(op)}`)
     }
   }
+}
+
+// For value sides that can either be a literal or a path reference
+// (e.g. in_array operator pointing at `steps.constants.output.states`).
+// Resolves as a path when the string starts with steps./trigger./env.;
+// otherwise returns the value unchanged so JSON literals still work.
+function resolveValueOrLiteral(value: unknown, ctx: ExecutionContext): unknown {
+  if (typeof value !== 'string') return value
+  if (/^(steps\.|trigger\.|env\.)/.test(value)) return resolveField(value, ctx)
+  return value
 }
 
 function resolveField(field: string, ctx: ExecutionContext): unknown {

@@ -13,6 +13,8 @@ const OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
   { value: 'lte', label: '≤' },
   { value: 'contains', label: 'contains' },
   { value: 'not_contains', label: 'not contains' },
+  { value: 'in_array', label: 'in list' },
+  { value: 'not_in_array', label: 'not in list' },
   { value: 'is_true', label: 'is true' },
   { value: 'is_false', label: 'is false' },
   { value: 'is_null', label: 'is null' },
