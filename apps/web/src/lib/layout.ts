@@ -263,7 +263,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         current = next.target
       }
       if (current !== pairId) {
-        g.setEdge(current, pairId)
+        // Low weight so dagre's rank-optimization doesn't bump shorter slot
+        // chains up to a deeper rank just to keep the synthetic edge short.
+        // The minlen still ensures parallel_end sits below the chain leaf.
+        g.setEdge(current, pairId, { weight: 0.05, minlen: 1 })
       }
     }
   }
@@ -380,35 +383,41 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     list.push(edge)
     inEdgesByTarget.set(edge.target, list)
   }
-  let changed = true
-  let iterations = 0
-  while (changed && iterations < nodes.length) {
-    changed = false
-    iterations++
-    for (const node of nodes) {
-      const inE = inEdgesByTarget.get(node.id) ?? []
-      if (inE.length !== 1) continue
-      const parentId = inE[0].source
-      const parentOut = outEdgesBySource.get(parentId) ?? []
-      if (parentOut.length !== 1) continue
-      const parent = nodeMap.get(parentId)
-      // Multi-output parents already had their child placed at the handle's
-      // X above; don't snap it back to the parent's center.
-      if (parent && configuredHandleIds(parent)) continue
-      const childPos = pos.get(node.id)
-      const parentPos = pos.get(parentId)
-      if (!childPos || !parentPos) continue
-      if (Math.abs(childPos.x - parentPos.x) < 0.5) continue
-      childPos.x = parentPos.x
-      changed = true
+  const applyLinearChain = () => {
+    let changed = true
+    let iterations = 0
+    while (changed && iterations < nodes.length) {
+      changed = false
+      iterations++
+      for (const node of nodes) {
+        const inE = inEdgesByTarget.get(node.id) ?? []
+        if (inE.length !== 1) continue
+        const parentId = inE[0].source
+        const parentOut = outEdgesBySource.get(parentId) ?? []
+        if (parentOut.length !== 1) continue
+        const parent = nodeMap.get(parentId)
+        if (parent && configuredHandleIds(parent)) continue
+        const childPos = pos.get(node.id)
+        const parentPos = pos.get(parentId)
+        if (!childPos || !parentPos) continue
+        if (Math.abs(childPos.x - parentPos.x) < 0.5) continue
+        childPos.x = parentPos.x
+        changed = true
+      }
     }
   }
+  applyLinearChain()
 
   // Second override pass — linear-chain may have moved a multi-output node's
   // own x (e.g., parallel pulled to its predecessor's column), so re-anchor
-  // its children to the new parent position. The override is idempotent given
-  // the same pos map, so re-running on already-correct nodes is a no-op.
+  // its children to the new parent position.
   applyMultiOutputOverride()
+  // Second linear-chain pass — the second override may have shifted the x of
+  // nodes whose chain descendants are still parked at the *first*-override
+  // position (e.g., salesforce sitting under code's old x after code was
+  // re-anchored to the new parallel center). Re-propagate so the chain
+  // catches up.
+  applyLinearChain()
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
