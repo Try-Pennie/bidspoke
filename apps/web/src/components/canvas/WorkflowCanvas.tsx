@@ -12,6 +12,7 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useNodesInitialized,
   useReactFlow,
   useViewport,
   getBezierPath,
@@ -648,6 +649,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
   const viewport = useViewport()
+  const nodesInitialized = useNodesInitialized()
+  const initialFitDoneRef = useRef(false)
 
   const initEdges = defToEdges(migrateParallelEdges(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? []))
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -895,6 +898,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edges, nodes.length])
+
+  // Re-fit the viewport once every node has been measured. The default
+  // `fitView` prop fires on first render, before React Flow has measured node
+  // dimensions, so the bounding box is computed from positions only and the
+  // bottom of the workflow can fall outside the viewport. Refit after
+  // measurement so the entire graph is framed.
+  useEffect(() => {
+    if (!nodesInitialized) return
+    if (initialFitDoneRef.current) return
+    initialFitDoneRef.current = true
+    fitView({ padding: 0.4, maxZoom: 0.5 })
+  }, [nodesInitialized, fitView])
 
   const handleTestStart = useCallback((_execId: string) => {
     setLiveSteps({})
