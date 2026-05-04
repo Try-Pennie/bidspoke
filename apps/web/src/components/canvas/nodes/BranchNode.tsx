@@ -65,14 +65,12 @@ export function BranchNode({ data, selected }: NodeProps) {
         )}
       </div>
       {handles.length > 0 && (
-        <div
-          className="grid border-t border-gray-100 px-2 py-2 text-xs"
-          style={{ gridTemplateColumns: `repeat(${handleCount}, minmax(0, 1fr))` }}
-        >
-          {handles.map((h) => (
+        <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
+          {handles.map((h, i) => (
             <span
               key={h.id}
-              className={`truncate text-center ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}
+              className={`absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center ${h.isElse ? 'text-slate-400' : 'text-purple-600'}`}
+              style={{ left: handleLeftPct(i), maxWidth: `${(100 / handleCount).toFixed(2)}%` }}
             >
               ↓ {h.label}
             </span>

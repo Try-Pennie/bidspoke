@@ -93,23 +93,9 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Slot label row, mirroring the branch node's footer */}
-      {slots.length > 0 && (
-        <div
-          className="grid border-t border-gray-100 px-2 py-2 text-xs"
-          style={{ gridTemplateColumns: `repeat(${slots.length}, minmax(0, 1fr))` }}
-        >
-          {slots.map((s) => (
-            <span key={s.id} className="truncate text-center text-slate-500">
-              ↓ {s.label}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Source handles — one per slot, centered under its label column.
-          Layout-computed _handleOffsets place each handle directly above its
-          child's column when chain widths are asymmetric. */}
+      {/* Slot label row + source handles. Both share `handleLeftPct` so the
+          dot always sits directly under its label, even when layout-computed
+          _handleOffsets place handles above asymmetric child columns. */}
       {slots.length > 0 ? (() => {
         const offsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
         const handleLeftPct = (i: number): string => {
@@ -118,15 +104,30 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
           }
           return `${((i + 0.5) / slots.length) * 100}%`
         }
-        return slots.map((s, i) => (
-          <Handle
-            key={s.id}
-            type="source"
-            position={Position.Bottom}
-            id={s.id}
-            style={{ left: handleLeftPct(i) }}
-          />
-        ))
+        return (
+          <>
+            <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
+              {slots.map((s, i) => (
+                <span
+                  key={s.id}
+                  className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-slate-500"
+                  style={{ left: handleLeftPct(i), maxWidth: `${(100 / slots.length).toFixed(2)}%` }}
+                >
+                  ↓ {s.label}
+                </span>
+              ))}
+            </div>
+            {slots.map((s, i) => (
+              <Handle
+                key={s.id}
+                type="source"
+                position={Position.Bottom}
+                id={s.id}
+                style={{ left: handleLeftPct(i) }}
+              />
+            ))}
+          </>
+        )
       })() : (
         <Handle type="source" position={Position.Bottom} id="output" />
       )}

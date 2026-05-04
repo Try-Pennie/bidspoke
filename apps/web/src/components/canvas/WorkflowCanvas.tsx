@@ -446,23 +446,27 @@ function dedupNamespace(suggested: string, existing: string[]): string {
 }
 
 function defaultNodeConfig(type: NodeType): Record<string, unknown> {
+  // parallel_end is a passive join marker — retry/error config sits on the start
+  const base: Record<string, unknown> = type === 'parallel_end' ? {} : { retries: 2 }
   if (type === 'branch') {
     return {
+      ...base,
       branches: [{ label: 'branch_1', condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } }],
       use_else: true,
     }
   }
   if (type === 'constants') {
-    return { data: {}, timeout_ms: 5000, retries: 2 }
+    return { ...base, data: {}, timeout_ms: 5000 }
   }
   if (type === 'bid_group') {
     return {
+      ...base,
       mode: 'highest_bid',
       partner_ids: [],
       no_winner_behavior: 'fail',
     }
   }
-  return {}
+  return base
 }
 
 // ── Auto-connect helpers ─────────────────────────────────────────────────────
@@ -1391,7 +1395,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           position: { x: 0, y: 0 },
           data: {
             namespace,
-            config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial', on_child_error: 'fail', children: [] },
+            config: { wait_for: 'all', timeout_ms: 15000, on_timeout: 'partial', on_child_error: 'fail', children: [], retries: 2 },
             variables: {},
             _pairId: endId,
           } satisfies CanvasNodeData,
