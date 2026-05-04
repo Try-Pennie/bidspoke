@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { Plug } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 
 // Fallback labels for nodes saved before service_label was stored in config
 const SERVICE_LABELS: Record<string, string> = {
@@ -13,7 +14,7 @@ const SERVICE_LABELS: Record<string, string> = {
 }
 
 export function IntegrationNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const service = (config.service as string | undefined) ?? 'custom'
   const method = ((config.method as string | undefined) ?? 'POST').toUpperCase()
   const url = (config.url as string | undefined) ?? ''
@@ -39,6 +40,7 @@ export function IntegrationNode({ data, selected }: NodeProps) {
       style={getExecutionStyle(executionStep)}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-teal-50 border-b border-teal-100 px-3 py-2">

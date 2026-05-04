@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { Layers } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
 
@@ -15,7 +16,7 @@ interface BidGroupOutput {
 }
 
 export function BidGroupNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const mode = (config.mode as BidGroupMode | undefined) ?? 'highest_bid'
   const partnerIds = (config.partner_ids as string[] | undefined) ?? []
   const tiers = (config.tiers as Array<{ partner_ids?: string[] }> | undefined) ?? []
@@ -43,6 +44,7 @@ export function BidGroupNode({ data, selected }: NodeProps) {
       style={getExecutionStyle(executionStep)}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-rose-50 border-b border-rose-100 px-3 py-2">

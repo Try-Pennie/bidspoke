@@ -4,9 +4,10 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { Box } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 
 export function GenericNode({ data, selected, type }: NodeProps) {
-  const { namespace, label, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const outputPreview = getOutputPreview(executionStep)
 
   return (
@@ -17,6 +18,7 @@ export function GenericNode({ data, selected, type }: NodeProps) {
       style={getExecutionStyle(executionStep)}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 

@@ -251,7 +251,7 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
       id: n.id,
       type: n.type,
       position: n.position ?? { x: 0, y: 0 },
-      data: { namespace: n.namespace, label: n.label, config, variables: n.variables ?? {} } satisfies CanvasNodeData,
+      data: { namespace: n.namespace, label: n.label, note: n.note, config, variables: n.variables ?? {} } satisfies CanvasNodeData,
     }
   })
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
@@ -290,6 +290,7 @@ function flowToDef(
         id: n.id,
         namespace: d.namespace,
         label: d.label || undefined,
+        note: d.note || undefined,
         type: n.type as NodeType,
         position: n.position,
         config: d.config,

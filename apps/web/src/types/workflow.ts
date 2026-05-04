@@ -34,6 +34,8 @@ export interface NodeDef {
   id: string
   namespace: string
   label?: string
+  // Free-form per-step annotation. Surfaced as a small icon on the canvas.
+  note?: string
   type: NodeType
   position?: { x: number; y: number }
   config: Record<string, unknown>
@@ -151,6 +153,8 @@ export interface ExecutionStep {
 export interface CanvasNodeData {
   namespace: string
   label?: string
+  // Free-form per-step annotation. Surfaced as a small icon on the canvas.
+  note?: string
   config: Record<string, unknown>
   variables: Record<string, string>
   // undefined = normal edit mode; null = replay mode but step not reached; object = step ran

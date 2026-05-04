@@ -7,6 +7,7 @@ import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
 
 interface ParallelChildResult {
@@ -26,7 +27,7 @@ function readSlots(config: Record<string, unknown>): ParallelChildSlot[] {
 }
 
 export function ParallelNode({ id, data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const waitFor = (config.wait_for as string | undefined) ?? 'all'
   const slots = readSlots(config)
 
@@ -65,6 +66,7 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
       style={{ ...getExecutionStyle(effectiveStep), width }}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-beige border-b border-gray-100 px-3 py-2">

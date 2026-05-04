@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowLeftRight } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 
 interface TransformMapping {
   source: string
@@ -11,7 +12,7 @@ interface TransformMapping {
 }
 
 export function TransformNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const mappings = (config.mappings as TransformMapping[] | undefined) ?? []
   const count = mappings.length
 
@@ -23,6 +24,7 @@ export function TransformNode({ data, selected }: NodeProps) {
       style={getExecutionStyle(executionStep)}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-orange-50 border-b border-orange-100 px-3 py-2">

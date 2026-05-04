@@ -4,9 +4,10 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
+import { NoteBadge } from './NoteBadge'
 
 export function ResponseNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
   const continueAfter = Boolean(config.continue_after_response)
   const outputPreview = getOutputPreview(executionStep)
@@ -19,6 +20,7 @@ export function ResponseNode({ data, selected }: NodeProps) {
       style={getExecutionStyle(executionStep)}
     >
       <SuccessBadge visible={isSuccessNode} />
+      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
       {continueAfter && <Handle type="source" position={Position.Bottom} id="output" />}
 

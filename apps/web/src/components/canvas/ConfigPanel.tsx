@@ -224,6 +224,16 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           />
         </Field>
 
+        {/* Notes — free-form per-step annotation, surfaced as a small icon on the canvas */}
+        <Field label="Notes" hint="Anything worth knowing about this step. Shows as a small icon on the node when set.">
+          <textarea
+            className="input min-h-[72px] resize-y"
+            placeholder="Notes for future you, or anyone else looking at this step..."
+            value={(data.note as string | undefined) ?? ''}
+            onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
+          />
+        </Field>
+
         {/* Type-specific config */}
         {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} />}
