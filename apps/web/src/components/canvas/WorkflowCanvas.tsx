@@ -576,10 +576,15 @@ function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: n
     }
   }
 
-  if (candidates.length === 0) return null
+  // Drop terminal nodes (exit, response without continue_after_response, etc.)
+  // before picking the deepest candidate — if we don't, a terminal sitting
+  // below the user's intended source steals the auto-connect and the drop
+  // lands free-floating.
+  const connectable = candidates.filter((n) => chooseSourceHandle(n, dropPos.x) !== null)
+  if (connectable.length === 0) return null
 
-  // Among candidates, pick the one whose bottom edge is closest above the drop point
-  return candidates.reduce((best, n) => {
+  // Among connectable candidates, pick the one whose bottom edge is closest above the drop point
+  return connectable.reduce((best, n) => {
     const nBottom = n.position.y + nodeHeight(n.type)
     const bBottom = best.position.y + nodeHeight(best.type)
     return nBottom > bBottom ? n : best
