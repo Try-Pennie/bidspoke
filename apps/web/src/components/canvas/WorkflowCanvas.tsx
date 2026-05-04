@@ -139,14 +139,22 @@ function computeConvergenceEdges(
       }
       if (current === pairId) continue
       if (realEdgeKey.has(`${current}->${pairId}`)) continue
+      // Pick edge routing based on how far apart source and target are
+      // vertically. Adjacent ranks → smoothstep (clean short line). More
+      // than ~1.5 ranks apart → route around the cluster's right edge so
+      // the line doesn't slice through populated columns in between.
+      const sourceNode = nodes.find((n) => n.id === current)
+      const targetNode = nodes.find((n) => n.id === pairId)
+      const sourceY = sourceNode?.position.y ?? 0
+      const targetY = targetNode?.position.y ?? 0
+      const RANK_HEIGHT = 144 + 48 // STANDARD_NODE_H + ranksep
+      const useAround = targetY - sourceY > RANK_HEIGHT * 1.5
       result.push({
         id: `conv-${current}-${pairId}`,
         source: current,
         target: pairId,
         sourceHandle: 'output',
-        // Right-angle routing keeps the edge along the rank lanes rather
-        // than slicing diagonally through other nodes' columns.
-        type: 'smoothstep',
+        type: useAround ? 'aroundCluster' : 'smoothstep',
         style: { stroke: '#94a3b8', strokeDasharray: '4 4' },
       })
     }
@@ -2285,6 +2293,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               setEdgeContextMenu({ edgeId: edge.id, x: e.clientX, y: e.clientY })
             } : undefined}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
