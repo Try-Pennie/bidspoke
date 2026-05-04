@@ -242,6 +242,27 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     g.setEdge(edge.source, edge.target)
   }
 
+  // Phantom children for unconnected multi-output handles. dagre allocates a
+  // column for each phantom, which keeps the empty handle's "lane" of canvas
+  // visible (and reachable for future drops) instead of letting the connected
+  // chain collapse into the whole branch's territory. Phantoms are dagre-only
+  // — never in React Flow's nodes/edges, never rendered, never saved.
+  for (const node of nodes) {
+    const handles = configuredHandleIds(node)
+    if (!handles || handles.length < 2) continue
+    const usedHandles = new Set<string>()
+    for (const e of edges) {
+      if (e.source === node.id && e.sourceHandle) usedHandles.add(e.sourceHandle)
+    }
+    for (const h of handles) {
+      if (usedHandles.has(h)) continue
+      const phantomId = `__phantom_${node.id}_${h}`
+      g.setNode(phantomId, { width: NODE_W, height: STANDARD_NODE_H })
+      // Low weight so the phantom doesn't fight dagre's real edge optimizer.
+      g.setEdge(node.id, phantomId, { weight: 0.05, minlen: 1 })
+    }
+  }
+
   // For each parallel, push its paired parallel_end one rank below the slot
   // children's chains by adding synthetic dagre-only edges from each chain
   // leaf to the parallel_end. Without this, slot children (e.g., a webhook)
