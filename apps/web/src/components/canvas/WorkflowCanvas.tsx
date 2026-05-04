@@ -139,22 +139,16 @@ function computeConvergenceEdges(
       }
       if (current === pairId) continue
       if (realEdgeKey.has(`${current}->${pairId}`)) continue
-      // Pick edge routing based on how far apart source and target are
-      // vertically. Adjacent ranks → smoothstep (clean short line). More
-      // than ~1.5 ranks apart → route around the cluster's right edge so
-      // the line doesn't slice through populated columns in between.
-      const sourceNode = nodes.find((n) => n.id === current)
-      const targetNode = nodes.find((n) => n.id === pairId)
-      const sourceY = sourceNode?.position.y ?? 0
-      const targetY = targetNode?.position.y ?? 0
-      const RANK_HEIGHT = 144 + 48 // STANDARD_NODE_H + ranksep
-      const useAround = targetY - sourceY > RANK_HEIGHT * 1.5
       result.push({
         id: `conv-${current}-${pairId}`,
         source: current,
         target: pairId,
         sourceHandle: 'output',
-        type: useAround ? 'aroundCluster' : 'smoothstep',
+        // Smoothstep keeps things clean for adjacent-rank cases; for chains
+        // with unequal depth the line still reaches the target even if it
+        // grazes other nodes' columns. Around-cluster routing was tried
+        // (commit 4da47a8) and looked worse.
+        type: 'smoothstep',
         style: { stroke: '#94a3b8', strokeDasharray: '4 4' },
       })
     }
@@ -715,13 +709,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [nodes, edges]
   )
 
-  // Convergence edges (chain leaf → parallel_end) were tried in two routings
-  // (smoothstep + around-cluster) and both produced ugly long segments when
-  // chains had unequal depth. The cluster region's tint already signals
-  // "everything in here converges at parallel_end" and the engine behaves
-  // that way, so the explicit visual edges aren't earning their keep.
-  // Keeping the helper around in case Dan wants to revisit.
-  const renderedEdges = edges
+  // Convergence edges from each parallel slot's chain leaf to parallel_end.
+  // Render-only (not in state, not saved, not seen by the engine). Smoothstep
+  // routing + a light dashed stroke makes them read as "implicit" — they
+  // aren't always perfectly clean when chains have unequal depth, but having
+  // *no* edge is worse than slightly imperfect routing.
+  const renderedEdges = useMemo(
+    () => [...edges, ...computeConvergenceEdges(nodes, edges)],
+    [nodes, edges]
+  )
 
   // Inject hasError into node data so nodes can show the amber ring.
   // Auto-focus + select the name input for brand-new workflows so the first action is naming it
