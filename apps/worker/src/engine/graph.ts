@@ -63,6 +63,8 @@ function evaluateCondition(
     case 'is_false': return actual === false
     case 'exists':   return actual !== undefined && actual !== null
     case 'not_exists': return actual === undefined || actual === null
+    case 'is_null':  return actual === null
+    case 'is_not_null': return actual !== null
     default:         return false
   }
 }
