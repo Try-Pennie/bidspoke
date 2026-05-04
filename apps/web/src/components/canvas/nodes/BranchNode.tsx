@@ -1,4 +1,5 @@
-import { Handle, Position } from '@xyflow/react'
+import { useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
@@ -9,7 +10,7 @@ import { nodeWidth } from '@/lib/layout'
 
 interface BranchEntry { label: string }
 
-export function BranchNode({ data, selected }: NodeProps) {
+export function BranchNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
@@ -23,6 +24,16 @@ export function BranchNode({ data, selected }: NodeProps) {
     ...(elseBehavior === 'output' ? [{ id: 'else', label: elseLabel, isElse: true }] : []),
   ]
   const handleCount = handles.length
+
+  // Adding/removing/renaming branches changes the handle list at runtime.
+  // Without this, React Flow's nodeInternals doesn't know about the new
+  // handles and connections silently fail (drag wire doesn't drop, drop
+  // auto-connect can't find an "occupied" edge).
+  const updateNodeInternals = useUpdateNodeInternals()
+  const handleIdsKey = handles.map((h) => h.id).join(',')
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, handleIdsKey, updateNodeInternals])
   const width = nodeWidth('branch', data)
   // Always space labels + handles uniformly across the node, even when the
   // node stretches wide because of asymmetric child subtrees. Layout positions
