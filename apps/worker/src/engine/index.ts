@@ -4,7 +4,7 @@ import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult } from
 import { loadWorkflowDefinition } from './definition-loader'
 import { loadEnvVars } from '../lib/env-loader'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
-import { buildContext, recordStepOutput } from './context'
+import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
 import type { ParallelChildResult } from './nodes/parallel'
@@ -1290,7 +1290,15 @@ async function executeCodeChain(
   }
   const mergedEnv = { ...cfSecrets, ...ctx.env }
 
-  const chainPayload = chain.map((n) => ({ namespace: n.namespace }))
+  const chainPayload = chain.map((n) => {
+    const propsConfig = (n.config?.props ?? []) as Array<{ name: string; source: string }>
+    const props: Record<string, unknown> = {}
+    for (const p of propsConfig) {
+      if (!p?.name || !p?.source) continue
+      props[p.name] = resolveValue(p.source, ctx)
+    }
+    return { namespace: n.namespace, props }
+  })
 
   const body = JSON.stringify({
     chain: chainPayload,

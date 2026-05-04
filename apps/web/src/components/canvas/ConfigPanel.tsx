@@ -644,6 +644,22 @@ return {
 
 }`
 
+interface CodeProp {
+  name: string
+  source: string
+}
+
+// Static analysis: scan the script for `props.X` dot-references. Used to drive
+// the props UI — Pipedream-style, only show prop rows for keys the script
+// actually references. Mirrors the engine-side step-reference scan.
+function extractPropRefs(script: string): Set<string> {
+  const refs = new Set<string>()
+  const re = /\bprops\s*\.\s*([a-zA-Z_$][\w$]*)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(script)) !== null) refs.add(m[1])
+  return refs
+}
+
 function CodeConfig({
   config,
   onChange,
@@ -652,6 +668,29 @@ function CodeConfig({
   onChange: (patch: Record<string, unknown>) => void
 }) {
   const script = (config.script as string | undefined) ?? DEFAULT_SCRIPT
+  const propsConfig = (config.props as CodeProp[] | undefined) ?? []
+  const refs = extractPropRefs(script)
+
+  // Visible rows = referenced names ∪ already-configured names. Sorted by
+  // referenced-first so users see the live ones at the top.
+  const allNames = new Set<string>([...refs, ...propsConfig.map((p) => p.name)])
+  const rows: Array<CodeProp & { referenced: boolean }> = Array.from(allNames).map((name) => {
+    const existing = propsConfig.find((p) => p.name === name)
+    return { name, source: existing?.source ?? '', referenced: refs.has(name) }
+  }).sort((a, b) => {
+    if (a.referenced !== b.referenced) return a.referenced ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+
+  function updateSource(name: string, source: string) {
+    const next = [...propsConfig.filter((p) => p.name !== name)]
+    if (source) next.push({ name, source })
+    onChange({ props: next.length ? next : undefined })
+  }
+
+  function removeUnreferenced(name: string) {
+    onChange({ props: propsConfig.filter((p) => p.name !== name) })
+  }
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
@@ -669,7 +708,8 @@ function CodeConfig({
             monaco.languages.typescript.javascriptDefaults.addExtraLib(
               `declare const payload: Record<string, unknown>;
                declare const steps: Record<string, { output: unknown; status: string }>;
-               declare const env: Record<string, string>;`,
+               declare const env: Record<string, string>;
+               declare const props: Record<string, unknown>;`,
               'bidspoke-code-node-globals.d.ts'
             )
           }}
@@ -689,8 +729,41 @@ function CodeConfig({
           theme="vs"
         />
       </div>
+      {rows.length > 0 && (
+        <div className="border-t border-gray-200 bg-gray-50 px-4 py-3">
+          <p className="mb-2 text-xs font-medium text-gray-600">Props</p>
+          <p className="mb-2 text-xs text-gray-400">
+            Wire each <code className="rounded bg-white px-1 font-mono">props.X</code> reference in the script. Sources can be templates like <code className="rounded bg-white px-1 font-mono">{'{{steps.x.output.y}}'}</code> or <code className="rounded bg-white px-1 font-mono">{'{{payload.field}}'}</code>.
+          </p>
+          <div className="space-y-1.5">
+            {rows.map((row) => (
+              <div key={row.name} className="flex items-center gap-1.5">
+                <span className={`w-32 flex-shrink-0 truncate rounded border px-2 py-1.5 font-mono text-xs ${row.referenced ? 'border-gray-200 bg-white text-gray-800' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                  {row.name}
+                </span>
+                <input
+                  className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                  value={row.source}
+                  onChange={(e) => updateSource(row.name, e.target.value)}
+                  placeholder="{{steps.example.output.field}}"
+                />
+                {!row.referenced && (
+                  <button
+                    type="button"
+                    onClick={() => removeUnreferenced(row.name)}
+                    className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    title="No longer referenced — remove"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
-        Async function body. <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
+        Async function body. <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code>, <code className="rounded bg-gray-100 px-1">props</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
       </p>
     </div>
   )

@@ -242,6 +242,7 @@
   - [x] Code node early-exit sentinel support ($.respond() / $.flow.exit() translated patterns)
   - [x] execution.trace_id passed to code node workers
   - [x] Pipedream importer improvements: steps.$return_value.X → steps.X.output.Y, Salesforce/Equifax/dataStore translations, bare axios import removal
+  - [ ] Keep lender classification as constants/config, not hardcoded literals. Spark port (Phase 5) replaces individual-lender targeting with two FCRA-permissible groups (excluded lenders + credit unions); we want the same Code node to swap groupings via constants edit, not script rewrite. Confirmed in 2026-05-01 team call.
 - [ ] **4.1b Tripoint token Durable Object** — deferred to main flow migration (engine flow calls Brian's existing proxy via TRIPOINT_PROXY_SECRET). See scope §3.1b.
 - [x] **4.2 Partner Bid Config as first-class entity** — `partner_bid_configs` + `bid_matrix_rows` + `bid_config_history` tables shipped 2026-04-29 (Slice 2 of the BidGroup work). `is_default BOOLEAN` with unique partial index. Salesforce stays canonical for editing in v1: hourly cron pulls `BidRangeRow__c` into `bid_matrix_rows`; partner settings page renders a read-only `<BidMatrixViewer>` with "Synced from Salesforce" badge + last-synced + Sync now button. Schema is editable-ready — flip `sync_source` from 'salesforce' to 'manual' and build an editor when the team is ready. Resolver type lives on `partner_configs.bid_resolver_type` ('formula' | 'matrix' | 'api'); no separate Bid Lookup node. See scope §3.2.
 - [ ] **4.2 follow-up: per-partner matrix migration** — for each partner using a matrix today, switch resolver to Matrix in partner settings, add a matrix (defaults pre-fill `sf_object='BidRangeRow__c'` and `Is{Slug}__c` flag), click Sync now, save. Partners: SoFi, NerdWallet, EPCVIP, Dot818, Brainsome, TLG, AmOne, AmOneDirect, Default. Suggest starting with SoFi as the validation case.
@@ -270,6 +271,20 @@
 - [ ] **4.6 Repeat-lead visibility in dashboard** — per-person timeline, per-SSN churn, cross-sub-account overlap. Depends on 4.5.
 - [ ] **4.7 Dynamic bid optimization hooks** — Reese's ML patches matrix cells via `PATCH /api/partner-bid-configs/:slug/rows`. Design-accommodation only; no UI work now.
 - [ ] **4.8 Under 20K remarketing workflow** — fan-out M1 + Tripoint + engine simultaneously; 10-second window for M1/Tripoint; if either responds, route to higher bid and skip engine; fall back to engine (up to 20s) only if neither M1 nor Tripoint respond. Needed for remark/second-look flow on the get-offers landing page. See scope §3.8.
+
+---
+
+## Phase 5: Engine free-leads pipeline (scoped 2026-05-01)
+
+> New upstream relationship with Engine. Pennie gets ~500K/mo leads who didn't click the second-look offer wall, or saw secured/100%+ APR offers. Equifax logic ports to Engine's Spark platform; Bidspoke handles inbound + outreach. Geoff/Bruno own the Spark side; Bidspoke scope below. Branding is **not Penny** — leans Reserve My Loan / Advised by Reserve / Wallet Owl, TBD.
+>
+> All items pending Spark documentation arrival and 2026-05-01 3pm Engine call follow-ups.
+
+- [ ] **5.1 Inbound webhook from Engine/Spark** — receives leads after Spark runs Equifax logic. Likely a custom endpoint on `*.trypennie.dev` with token auth (4.4). Payload shape pending Spark docs.
+- [ ] **5.2 Equifax side-by-side tester workflow** — accepts a live lead, fan-outs to Bidspoke Equifax Code node + Engine's Spark Equifax run, diffs outputs, logs to Snowflake. Lets us validate that grouping refactor doesn't drift from current behavior before cutting Spark over. Geoff floated this as a confidence check.
+- [ ] **5.3 SMS outreach workflow** — Telnyx integration (we already have an account; brand registration pending). Sends opener referencing the offer the lead saw, hands off to booking flow. A2P 10DLC trust score is the rate-limiter — slow ramp on a new domain.
+- [ ] **5.4 Booking handoff** — embed the Penny booking module on the throwaway-brand site. Lead enters Penny's normal post-application flow from there.
+- [ ] **5.5 Source segmentation** — filter incoming Engine leads by upstream source to exclude performance-marketer traffic (low intent / TCPA risk). Lender-direct leads first.
 
 ---
 

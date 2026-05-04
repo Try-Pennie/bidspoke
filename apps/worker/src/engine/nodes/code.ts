@@ -8,6 +8,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput } from '../../types'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
+import { resolveValue } from '../context'
 
 /**
  * Static-analyzes a user script for `steps.X` dot references and returns the
@@ -77,11 +78,22 @@ export async function executeCodeNode(
     stepsToSend = { ...filtered, trigger: { payload: ctx.trigger.payload } }
   }
 
+  // Resolve per-node props (Pipedream-style declared inputs). The script
+  // receives them as a `props` global. Sources are templated against the
+  // execution context (steps.X, payload.Y, env.Z, execution.*).
+  const propsConfig = (node.config?.props ?? []) as Array<{ name: string; source: string }>
+  const resolvedProps: Record<string, unknown> = {}
+  for (const p of propsConfig) {
+    if (!p?.name || !p?.source) continue
+    resolvedProps[p.name] = resolveValue(p.source, ctx)
+  }
+
   const body = JSON.stringify({
     payload: ctx.trigger.payload,
     steps: stepsToSend,
     env: mergedEnv,
     execution: { trace_id: ctx.trigger.trace_id },
+    props: resolvedProps,
   })
 
   const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body)

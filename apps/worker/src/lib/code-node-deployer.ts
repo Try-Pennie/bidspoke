@@ -38,9 +38,10 @@ export function codeWorkerName(workflowId: string, namespace: string): string {
 export function buildBundledWorkerScript(scripts: Array<{ namespace: string; script: string }>): string {
   const entries = scripts.map(({ namespace, script }) => {
     const indented = script.split('\n').map((l) => `      ${l}`).join('\n')
-    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution, console) => {
+    return `    ${JSON.stringify(namespace)}: async (payload, steps, env, execution, console, props) => {
       const trigger = { payload }
       const process = { env }
+      props = props || {}
 ${indented}
     },`
   }).join('\n')
@@ -126,13 +127,15 @@ export default {
       const { chain, payload, steps, env, execution } = await request.json()
       const results = []
       const stepsCtx = steps ?? {}
-      for (const { namespace } of chain) {
+      for (const entry of chain) {
+        const namespace = entry.namespace
+        const props = entry.props || {}
         const startMs = Date.now()
         const c = makeConsole()
         try {
           const fn = scripts[namespace]
           if (!fn) throw new Error('script not found: ' + namespace)
-          const output = await fn(payload, stepsCtx, env, execution, c.api)
+          const output = await fn(payload, stepsCtx, env, execution, c.api, props)
           const durationMs = Date.now() - startMs
           const sentinel = detectSentinel(output)
           stepsCtx[namespace] = { output: output ?? null, status: 'completed' }
@@ -157,10 +160,10 @@ export default {
     if (!fn) {
       return new Response(JSON.stringify({ error: 'script not found: ' + ns }), { status: 404, headers: { 'Content-Type': 'application/json' } })
     }
-    const { payload, steps, env, execution } = await request.json()
+    const { payload, steps, env, execution, props } = await request.json()
     const c = makeConsole()
     try {
-      const output = await fn(payload, steps, env, execution, c.api)
+      const output = await fn(payload, steps, env, execution, c.api, props || {})
       return Response.json({ __bsv: 1, output: output ?? null, logs: c.captured })
     } catch (err) {
       // Surface the real script error as a 500 JSON response so the engine's

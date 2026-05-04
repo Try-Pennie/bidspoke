@@ -41,6 +41,7 @@ import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
 import { RegionNode } from './nodes/RegionNode'
+import { AroundClusterEdge } from './edges/AroundClusterEdge'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -78,6 +79,10 @@ const nodeTypes: NodeTypes = {
   constants: ConstantsNode,
   salesforce: SalesforceNode,
   region: RegionNode,
+}
+
+const edgeTypes = {
+  aroundCluster: AroundClusterEdge,
 }
 
 
