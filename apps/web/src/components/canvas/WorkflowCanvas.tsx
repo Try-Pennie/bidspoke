@@ -1771,7 +1771,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setIsDirty(true)
     setShowImport(false)
     // Fit after the render cycle so the new graph is in view
-    requestAnimationFrame(() => fitView({ padding: 0.3, maxZoom: 0.75 }))
+    requestAnimationFrame(() => fitView({ padding: 0.4, maxZoom: 0.5 }))
   }
 
   // ── Version restore ─────────────────────────────────────────────────────────
@@ -1791,7 +1791,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     setName(updated.name)
     setIsDirty(false)
     setShowVersions(false)
-    requestAnimationFrame(() => fitView({ padding: 0.3, maxZoom: 0.75 }))
+    requestAnimationFrame(() => fitView({ padding: 0.4, maxZoom: 0.5 }))
   }
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -2352,7 +2352,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
             snapToGrid={false}
             fitView
-            fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
+            fitViewOptions={{ padding: 0.4, maxZoom: 0.5 }}
             minZoom={0.2}
             maxZoom={1.5}
             zoomOnDoubleClick={false}
