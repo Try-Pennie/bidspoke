@@ -44,13 +44,13 @@ export function TransformNode({ data, selected }: NodeProps) {
           <p className="mt-0.5 truncate text-xs text-slate-400">No mappings configured</p>
         ) : (
           <div className="mt-1 space-y-0.5">
-            {mappings.slice(0, 3).map((m, i) => (
+            {mappings.slice(0, 2).map((m, i) => (
               <p key={i} className="truncate font-mono text-xs text-gray-500">
                 {m.source} → {m.target}
               </p>
             ))}
-            {count > 3 && (
-              <p className="text-xs text-slate-400">+{count - 3} more</p>
+            {count > 2 && (
+              <p className="text-xs text-slate-400">+{count - 2} more</p>
             )}
           </div>
         )}
