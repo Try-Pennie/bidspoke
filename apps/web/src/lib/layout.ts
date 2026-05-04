@@ -284,6 +284,37 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
   const widthFor = (n: Node) => effectiveWidthByNode.get(n.id) ?? nodeWidth(n.type, n.data)
 
+  // Per-branch convergence nodes — those reachable from every branch handle.
+  // After dagre runs we'll pick the highest-up one (smallest Y) and align it
+  // to the branch's own X so the post-branch flow continues straight down.
+  const convergenceCandidatesByBranch = new Map<string, Set<string>>()
+  for (const n of nodes) {
+    if (n.type !== 'branch') continue
+    const handles = configuredHandleIds(n)
+    if (!handles || handles.length < 2) continue
+    const perHandle = handles.map((h) => {
+      const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
+      if (!slotEdge) return new Set<string>()
+      const s = new Set<string>([slotEdge.target])
+      const q = [slotEdge.target]
+      while (q.length > 0) {
+        const cur = q.shift() as string
+        for (const e of edges) {
+          if (e.source !== cur || s.has(e.target)) continue
+          s.add(e.target)
+          q.push(e.target)
+        }
+      }
+      return s
+    }).filter((s) => s.size > 0)
+    if (perHandle.length < 2) continue
+    const candidates = new Set<string>()
+    for (const id of perHandle[0]) {
+      if (perHandle.every((s) => s.has(id))) candidates.add(id)
+    }
+    if (candidates.size > 0) convergenceCandidatesByBranch.set(n.id, candidates)
+  }
+
   for (const node of nodes) {
     g.setNode(node.id, { width: widthFor(node), height: nodeHeight(node.type) })
   }
@@ -455,6 +486,27 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
           childPos.x = parentPos.x
         }
       }
+    }
+    // For each branch, align its first convergence node (smallest Y among
+    // nodes reachable from every handle) to the branch's own X. Linear-chain
+    // then propagates that X down the post-branch flow, so the "after the
+    // branch" chain sits in the same column as the "before the branch" chain.
+    for (const [branchId, candidates] of convergenceCandidatesByBranch) {
+      const branchPos = pos.get(branchId)
+      if (!branchPos) continue
+      let firstConvId: string | null = null
+      let firstConvY = Infinity
+      for (const id of candidates) {
+        const p = pos.get(id)
+        if (!p) continue
+        if (p.y < firstConvY) {
+          firstConvY = p.y
+          firstConvId = id
+        }
+      }
+      if (!firstConvId) continue
+      const convPos = pos.get(firstConvId)
+      if (convPos) convPos.x = branchPos.x
     }
   }
   applyMultiOutputOverride()
