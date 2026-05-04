@@ -1,4 +1,5 @@
-import { Handle, Position } from '@xyflow/react'
+import { useEffect } from 'react'
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
@@ -6,11 +7,19 @@ import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
 
-export function ResponseNode({ data, selected }: NodeProps) {
+export function ResponseNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const statusCode = (config.status_code as number | undefined) ?? 200
   const continueAfter = Boolean(config.continue_after_response)
   const outputPreview = getOutputPreview(executionStep)
+
+  // Toggling continue_after_response adds/removes the bottom source handle at
+  // runtime. Without this, React Flow's nodeInternals doesn't know about the
+  // new handle and edges from it render as invisible (silent-edge-drop).
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, continueAfter, updateNodeInternals])
 
   return (
     <div
