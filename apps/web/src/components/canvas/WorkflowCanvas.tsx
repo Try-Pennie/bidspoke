@@ -41,7 +41,7 @@ import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
 import { RegionNode } from './nodes/RegionNode'
-import { AroundClusterEdge } from './edges/AroundClusterEdge'
+import { ConvergeEdge } from './edges/ConvergeEdge'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -82,7 +82,7 @@ const nodeTypes: NodeTypes = {
 }
 
 const edgeTypes = {
-  aroundCluster: AroundClusterEdge,
+  converge: ConvergeEdge,
 }
 
 
@@ -144,11 +144,10 @@ function computeConvergenceEdges(
         source: current,
         target: pairId,
         sourceHandle: 'output',
-        // Smoothstep keeps things clean for adjacent-rank cases; for chains
-        // with unequal depth the line still reaches the target even if it
-        // grazes other nodes' columns. Around-cluster routing was tried
-        // (commit 4da47a8) and looked worse.
-        type: 'smoothstep',
+        // Late-bend routing: each chain leaf descends in its own column, then
+        // turns horizontally near parallel_end to converge. Avoids the
+        // mid-canvas horizontal segment that smoothstep produces.
+        type: 'converge',
         style: { stroke: '#94a3b8', strokeDasharray: '4 4' },
       })
     }
