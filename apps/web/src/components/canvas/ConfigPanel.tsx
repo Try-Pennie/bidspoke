@@ -785,8 +785,14 @@ function ResponseConfig({
         : JSON.stringify(config.body, null, 2)
       : ''
 
-  const headers = (config.headers as Record<string, string> | undefined) ?? {}
-  const headerRows = Object.entries(headers)
+  // Display Content-Type: application/json as a pre-populated row when headers
+  // is undefined (untouched). Once the user touches anything, persist to config —
+  // including an empty {} if they clear every row, so the default doesn't reappear.
+  const persistedHeaders = config.headers as Record<string, string> | undefined
+  const isPristine = persistedHeaders === undefined
+  const headerRows: [string, string][] = isPristine
+    ? [['Content-Type', 'application/json']]
+    : Object.entries(persistedHeaders)
 
   function updateHeader(index: number, key: string, value: string) {
     const next: Record<string, string> = {}
@@ -797,17 +803,17 @@ function ResponseConfig({
         next[k] = v
       }
     })
-    onChange({ headers: Object.keys(next).length > 0 ? next : undefined })
+    onChange({ headers: next })
   }
   function addHeader() {
-    onChange({ headers: { ...headers, '': '' } })
+    onChange({ headers: { ...Object.fromEntries(headerRows), '': '' } })
   }
   function removeHeader(index: number) {
     const next: Record<string, string> = {}
     headerRows.forEach(([k, v], i) => {
       if (i !== index) next[k] = v
     })
-    onChange({ headers: Object.keys(next).length > 0 ? next : undefined })
+    onChange({ headers: next })
   }
 
   return (
@@ -849,7 +855,7 @@ function ResponseConfig({
         </div>
         {headerRows.length === 0 ? (
           <p className="text-xs text-gray-400">
-            Defaults to <code className="rounded bg-gray-100 px-1">Content-Type: application/json</code>. Add custom headers to override or set things like <code className="rounded bg-gray-100 px-1">Cache-Control</code>, <code className="rounded bg-gray-100 px-1">Location</code>, CORS, etc.
+            No headers will be sent. Click <span className="font-medium text-blue-600">+ Add</span> to set <code className="rounded bg-gray-100 px-1">Content-Type</code>, <code className="rounded bg-gray-100 px-1">Cache-Control</code>, <code className="rounded bg-gray-100 px-1">Location</code>, CORS, etc.
           </p>
         ) : (
           <div className="space-y-1.5">
