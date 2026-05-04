@@ -1164,7 +1164,12 @@ function IntegrationConfig({
   const method = (config.method as string | undefined) ?? 'POST'
   const auth = (config.auth as Record<string, unknown> | undefined) ?? {}
   const authType = (auth.type as string | undefined) ?? 'none'
-  const headersMap = (config.headers as Record<string, string> | undefined) ?? {}
+  // Display Content-Type: application/json as a pre-populated row when headers
+  // is undefined (untouched). The engine adds the same default; surfacing it
+  // makes it editable/removable instead of an invisible behavior.
+  const persistedHeaders = config.headers as Record<string, string> | undefined
+  const headersMap: Record<string, string> =
+    persistedHeaders ?? { 'Content-Type': 'application/json' }
   const headerRows = Object.entries(headersMap)
 
   const [userPresets, setUserPresets] = useState<ServicePreset[]>([])
