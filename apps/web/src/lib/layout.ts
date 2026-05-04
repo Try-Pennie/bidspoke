@@ -373,7 +373,23 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // 1-of-N child directly under its specific handle (instead of centered),
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
   // middle handle.
-  const SIBLING_SPACING = NODE_W + 48 // matches dagre's nodesep above
+  const NODESEP = 48
+  // For each child handle of a multi-output node, find the widest node in
+  // the chain rooted at that handle. The wide-side child needs more space
+  // around it than a default `NODE_W` allowance — otherwise a narrow
+  // sibling's column lands inside the wider chain's downstream territory.
+  const maxDescendantWidth = (startId: string, visited: Set<string>): number => {
+    if (visited.has(startId)) return 0
+    visited.add(startId)
+    const n = nodeMap.get(startId)
+    let maxW = n ? nodeWidth(n.type, n.data) : NODE_W
+    for (const e of edges) {
+      if (e.source !== startId) continue
+      const childMax = maxDescendantWidth(e.target, visited)
+      if (childMax > maxW) maxW = childMax
+    }
+    return maxW
+  }
   const applyMultiOutputOverride = () => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
       const src = nodeMap.get(sourceId)
@@ -382,13 +398,30 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!handles || handles.length < 2) continue
       const parentPos = pos.get(sourceId)
       if (!parentPos) continue
+      // Width budget per handle = the widest node in that handle's chain,
+      // floored at NODE_W so unfilled handles still get a standard column.
+      const widthsByHandle = handles.map((h) => {
+        const slotEdge = outEdges.find((e) => e.sourceHandle === h)
+        if (!slotEdge) return NODE_W
+        return Math.max(NODE_W, maxDescendantWidth(slotEdge.target, new Set([sourceId])))
+      })
+      // Place children adjacent to each other with NODESEP between, centered
+      // around the parent. Each child gets its own width, so an asymmetric
+      // mix of chain widths spaces each side correctly.
+      const totalSpan = widthsByHandle.reduce((sum, w) => sum + w, 0) + NODESEP * (widthsByHandle.length - 1)
+      let cursor = -totalSpan / 2
+      const offsetByHandle = widthsByHandle.map((w) => {
+        const center = cursor + w / 2
+        cursor += w + NODESEP
+        return center
+      })
       for (const e of outEdges) {
         if (!e.sourceHandle) continue
         const childPos = pos.get(e.target)
         if (!childPos) continue
         const idx = handles.indexOf(e.sourceHandle)
         if (idx >= 0) {
-          childPos.x = parentPos.x + (idx - (handles.length - 1) / 2) * SIBLING_SPACING
+          childPos.x = parentPos.x + offsetByHandle[idx]
         } else {
           childPos.x = parentPos.x
         }
