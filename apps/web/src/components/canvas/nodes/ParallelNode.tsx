@@ -93,17 +93,12 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Slot label row + source handles. Both share `handleLeftPct` so the
-          dot always sits directly under its label, even when layout-computed
-          _handleOffsets place handles above asymmetric child columns. */}
+      {/* Slot label row + source handles. Both share `handleLeftPct` and use
+          uniform spacing across the node, so labels stay evenly spread even
+          when the node is stretched wide by an asymmetric child subtree. */}
       {slots.length > 0 ? (() => {
-        const offsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-        const handleLeftPct = (i: number): string => {
-          if (offsets && offsets[i] !== undefined) {
-            return `${((offsets[i] + width / 2) / width) * 100}%`
-          }
-          return `${((i + 0.5) / slots.length) * 100}%`
-        }
+        const handleLeftPct = (i: number): string =>
+          `${((i + 0.5) / slots.length) * 100}%`
         return (
           <>
             <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>

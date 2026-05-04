@@ -24,16 +24,12 @@ export function BranchNode({ data, selected }: NodeProps) {
   ]
   const handleCount = handles.length
   const width = nodeWidth('branch', data)
-  // Layout-computed per-handle offsets (canvas coords from the branch's
-  // center). When set, render each handle directly above its child's column
-  // so the wire goes straight down. Falls back to uniform spacing.
-  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
-  const handleLeftPct = (i: number): string => {
-    if (handleOffsets && handleOffsets[i] !== undefined) {
-      return `${((handleOffsets[i] + width / 2) / width) * 100}%`
-    }
-    return `${((i + 0.5) / handleCount) * 100}%`
-  }
+  // Always space labels + handles uniformly across the node, even when the
+  // node stretches wide because of asymmetric child subtrees. Layout positions
+  // children under their handles via this same uniform formula, so wires stay
+  // straight without needing to skew the labels toward narrow children.
+  const handleLeftPct = (i: number): string =>
+    `${((i + 0.5) / handleCount) * 100}%`
 
   const description = branches.length === 0
     ? 'No branches'
