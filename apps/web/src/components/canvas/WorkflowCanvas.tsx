@@ -265,15 +265,21 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
     })
   }
 
+  // Inner padding (around content) is what makes the backdrop feel like a
+  // container; gap subtracted on each side keeps sibling region edges from
+  // touching, so two adjacent branches read as separate clusters even though
+  // their subtrees sit 48px apart (NODESEP_PRE) at the layout level.
   const PAD = 24
+  const SIBLING_GAP = 16
   return regions.map((r) => {
     const depth = regions.filter((other) => other.id !== r.id && other.nodeIds.has(r.id)).length
-    const width = r.maxX - r.minX + PAD * 2
+    const inset = SIBLING_GAP / 2
+    const width = r.maxX - r.minX + PAD * 2 - inset * 2
     const height = r.maxY - r.minY + PAD * 2
     return {
       id: `region-${r.id}`,
       type: 'region',
-      position: { x: r.minX - PAD, y: r.minY - PAD },
+      position: { x: r.minX - PAD + inset, y: r.minY - PAD },
       // width / height at the top level so React Flow skips its measurement
       // step. Without these, React Flow's ResizeObserver would write back
       // measured dimensions on every render → setNodes → recompute regions →
