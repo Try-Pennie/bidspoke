@@ -107,18 +107,27 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Source handles — one per slot, centered under its label column */}
-      {slots.length > 0 ? (
-        slots.map((s, i) => (
+      {/* Source handles — one per slot, centered under its label column.
+          Layout-computed _handleOffsets place each handle directly above its
+          child's column when chain widths are asymmetric. */}
+      {slots.length > 0 ? (() => {
+        const offsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
+        const handleLeftPct = (i: number): string => {
+          if (offsets && offsets[i] !== undefined) {
+            return `${((offsets[i] + width / 2) / width) * 100}%`
+          }
+          return `${((i + 0.5) / slots.length) * 100}%`
+        }
+        return slots.map((s, i) => (
           <Handle
             key={s.id}
             type="source"
             position={Position.Bottom}
             id={s.id}
-            style={{ left: `${((i + 0.5) / slots.length) * 100}%` }}
+            style={{ left: handleLeftPct(i) }}
           />
         ))
-      ) : (
+      })() : (
         <Handle type="source" position={Position.Bottom} id="output" />
       )}
     </div>

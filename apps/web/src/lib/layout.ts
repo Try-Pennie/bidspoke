@@ -44,6 +44,12 @@ export function nodeHeight(type: string | undefined) {
  * width in BranchNode.tsx so dagre reserves the same horizontal slot.
  */
 export function nodeWidth(type: string | undefined, data: unknown): number {
+  // Layout writes a `_spanWidth` onto multi-output nodes whose children's
+  // total span exceeds the label-based width. Honor it so the rendered DOM
+  // matches dagre's reservation (and handles can be placed over their
+  // children's actual columns).
+  const spanW = (data as { _spanWidth?: number } | undefined)?._spanWidth
+  if (typeof spanW === 'number' && spanW > 0) return spanW
   if (type === 'branch') {
     type BranchData = {
       config?: {
@@ -220,12 +226,67 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   g.setDefaultEdgeLabel(() => ({}))
   g.setGraph({ rankdir: 'TB', ranksep: 48, nodesep: 48, marginx: 60, marginy: 60 })
 
-  for (const node of nodes) {
-    g.setNode(node.id, { width: nodeWidth(node.type, node.data), height: nodeHeight(node.type) })
-  }
-
   // Build a quick lookup so we can resolve node type/data for each edge source
   const nodeMap = new Map(nodes.map((n) => [n.id, n]))
+
+  // Effective width per node — for branch/parallel/etc. with asymmetric child
+  // chain widths, the node should render wide enough to put each handle
+  // directly above its child's column. Otherwise, the wire from a handle to
+  // a far-offset child cuts diagonally and clips the sibling chain's region.
+  const NODESEP_PRE = 48
+  const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>): number => {
+    if (visited.has(startId)) return 0
+    visited.add(startId)
+    const n = nodeMap.get(startId)
+    if (!n) return NODE_W
+    const ownWidth = nodeWidth(n.type, n.data)
+    const handles = configuredHandleIds(n)
+    if (handles && handles.length >= 2) {
+      const slotWidths = handles.map((h) => {
+        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h)
+        if (!slotEdge) return NODE_W
+        return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited)))
+      })
+      const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
+      return Math.max(ownWidth, fanOutWidth)
+    }
+    let maxBelow = 0
+    for (const e of edges) {
+      if (e.source !== startId) continue
+      const sub = effectiveSubtreeWidthPre(e.target, new Set(visited))
+      if (sub > maxBelow) maxBelow = sub
+    }
+    return Math.max(ownWidth, maxBelow)
+  }
+  const effectiveWidthByNode = new Map<string, number>()
+  const handleOffsetsByNode = new Map<string, number[]>()
+  for (const n of nodes) {
+    const handles = configuredHandleIds(n)
+    if (!handles || handles.length < 2) continue
+    const slotWidths = handles.map((h) => {
+      const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
+      if (!slotEdge) return NODE_W
+      return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set([n.id])))
+    })
+    const totalSpan = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
+    const labelW = nodeWidth(n.type, n.data)
+    const effW = Math.max(labelW, totalSpan)
+    effectiveWidthByNode.set(n.id, effW)
+    // Per-handle offset from the node's center, used for child placement and
+    // for rendering each handle above its child's column.
+    let cursor = -totalSpan / 2
+    const offsets = slotWidths.map((w) => {
+      const center = cursor + w / 2
+      cursor += w + NODESEP_PRE
+      return center
+    })
+    handleOffsetsByNode.set(n.id, offsets)
+  }
+  const widthFor = (n: Node) => effectiveWidthByNode.get(n.id) ?? nodeWidth(n.type, n.data)
+
+  for (const node of nodes) {
+    g.setNode(node.id, { width: widthFor(node), height: nodeHeight(node.type) })
+  }
 
   // Sort edges from the same source by handle position before feeding dagre.
   // Dagre's crossing-minimisation starts from the initial node order, so adding
@@ -373,40 +434,6 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // 1-of-N child directly under its specific handle (instead of centered),
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
   // middle handle.
-  const NODESEP = 48
-  // For each child handle of a multi-output node, compute the widest *rank*
-  // of any node in the chain rooted at that handle. A nested multi-output
-  // node spreads its own children at the next rank, and that rank's total
-  // width (sum of slot widths + nodesep gaps) often exceeds any single
-  // node's width — so a wide chain's footprint is wider than just its
-  // widest individual node.
-  const effectiveSubtreeWidth = (startId: string, visited: Set<string>): number => {
-    if (visited.has(startId)) return 0
-    visited.add(startId)
-    const n = nodeMap.get(startId)
-    if (!n) return NODE_W
-    const ownWidth = nodeWidth(n.type, n.data)
-    const handles = configuredHandleIds(n)
-    if (handles && handles.length >= 2) {
-      // Rank below this multi-output spreads N children. The rank's width is
-      // the sum of each slot's effective sub-chain width plus nodesep gaps.
-      const slotWidths = handles.map((h) => {
-        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h)
-        if (!slotEdge) return NODE_W
-        return Math.max(NODE_W, effectiveSubtreeWidth(slotEdge.target, new Set(visited)))
-      })
-      const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP * (slotWidths.length - 1)
-      return Math.max(ownWidth, fanOutWidth)
-    }
-    // Single-output: walk further down the chain.
-    let maxBelow = 0
-    for (const e of edges) {
-      if (e.source !== startId) continue
-      const sub = effectiveSubtreeWidth(e.target, new Set(visited))
-      if (sub > maxBelow) maxBelow = sub
-    }
-    return Math.max(ownWidth, maxBelow)
-  }
   const applyMultiOutputOverride = () => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
       const src = nodeMap.get(sourceId)
@@ -415,31 +442,15 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!handles || handles.length < 2) continue
       const parentPos = pos.get(sourceId)
       if (!parentPos) continue
-      // Width budget per handle = the widest *rank* in that handle's chain
-      // (so a nested multi-output's fan-out is accounted for), floored at
-      // NODE_W so unfilled handles still get a standard column.
-      const widthsByHandle = handles.map((h) => {
-        const slotEdge = outEdges.find((e) => e.sourceHandle === h)
-        if (!slotEdge) return NODE_W
-        return Math.max(NODE_W, effectiveSubtreeWidth(slotEdge.target, new Set([sourceId])))
-      })
-      // Place children adjacent to each other with NODESEP between, centered
-      // around the parent. Each child gets its own width, so an asymmetric
-      // mix of chain widths spaces each side correctly.
-      const totalSpan = widthsByHandle.reduce((sum, w) => sum + w, 0) + NODESEP * (widthsByHandle.length - 1)
-      let cursor = -totalSpan / 2
-      const offsetByHandle = widthsByHandle.map((w) => {
-        const center = cursor + w / 2
-        cursor += w + NODESEP
-        return center
-      })
+      const offsets = handleOffsetsByNode.get(sourceId)
+      if (!offsets) continue
       for (const e of outEdges) {
         if (!e.sourceHandle) continue
         const childPos = pos.get(e.target)
         if (!childPos) continue
         const idx = handles.indexOf(e.sourceHandle)
         if (idx >= 0) {
-          childPos.x = parentPos.x + offsetByHandle[idx]
+          childPos.x = parentPos.x + offsets[idx]
         } else {
           childPos.x = parentPos.x
         }
@@ -599,13 +610,25 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
     const isReachable = reachable.has(node.id)
     const hasExistingPos = node.position.x !== 0 || node.position.y !== 0
-    if (!isReachable && (manual || hasExistingPos)) return node
+    // Layout-computed canvas-only data: effective width (so multi-output nodes
+    // render wide enough to cover their children's span) and per-handle
+    // offsets (so handles render above each child's actual column).
+    const effW = effectiveWidthByNode.get(node.id)
+    const offsets = handleOffsetsByNode.get(node.id)
+    const layoutData = (effW || offsets)
+      ? { ...(node.data as object), _spanWidth: effW, _handleOffsets: offsets }
+      : node.data
+    if (!isReachable && (manual || hasExistingPos)) {
+      return layoutData === node.data ? node : { ...node, data: layoutData }
+    }
     const p = pos.get(node.id)
-    if (!p) return node
+    if (!p) return layoutData === node.data ? node : { ...node, data: layoutData }
+    const w = effW ?? nodeWidth(node.type, node.data)
     return {
       ...node,
+      data: layoutData,
       position: {
-        x: p.x - nodeWidth(node.type, node.data) / 2,
+        x: p.x - w / 2,
         y: p.y - nodeHeight(node.type) / 2,
       },
     }
