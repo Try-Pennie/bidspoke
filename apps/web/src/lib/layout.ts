@@ -9,17 +9,29 @@ export const NODE_W = 208
 // When actual rendered height exceeds the declared value, adjacent nodes
 // appear to have uneven spacing (because dagre lays out as if the node were
 // shorter, then the DOM pushes past the reserved slot into the next rank).
+// Nodes within a rank are centered vertically, so a height delta between
+// siblings shows up as a top-edge offset. Use a single declared height for
+// every standard "header + body" node type so siblings (e.g., a code node
+// next to a webhook in a parallel slot) align at the top. Nodes with extra
+// rows (branch labels, parallel slots, salesforce update tag) stay larger.
+const STANDARD_NODE_H = 144
 const NODE_H: Record<string, number> = {
-  trigger:       120,
-  filter:        144,  // header + body + optional _route output preview pill
-  branch:        164,  // header + body + branch labels row + optional _route output preview pill
-  code:          144,  // header + body + optional output preview pill
-  response:      144,  // header + body + optional output preview pill
-  exit:           96,
-  parallel:      156,  // header + body + slot label row (when slots > 0)
-  parallel_end:  100,
-  salesforce:    164,  // header + body + Update tag + optional status code preview pill
-  default:       120,
+  trigger:       STANDARD_NODE_H,
+  filter:        STANDARD_NODE_H,
+  branch:        164,             // adds the branch labels row
+  code:          STANDARD_NODE_H,
+  response:      STANDARD_NODE_H,
+  exit:          STANDARD_NODE_H,
+  parallel:      156,             // adds the slot label row (when slots > 0)
+  parallel_end:  STANDARD_NODE_H,
+  salesforce:    164,             // adds the Update tag row
+  webhook:       STANDARD_NODE_H,
+  partner_bid:   STANDARD_NODE_H,
+  transform:     STANDARD_NODE_H,
+  bid_evaluation: STANDARD_NODE_H,
+  bid_group:     STANDARD_NODE_H,
+  constants:     STANDARD_NODE_H,
+  default:       STANDARD_NODE_H,
 }
 
 export function nodeHeight(type: string | undefined) {
