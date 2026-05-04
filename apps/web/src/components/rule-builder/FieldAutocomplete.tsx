@@ -8,9 +8,10 @@ interface Props {
   suggestions: string[]   // e.g. ["steps.credit", "steps.enrich", "trigger.payload", "env.KEY"]
   placeholder?: string
   className?: string
+  wrapperClassName?: string
 }
 
-export default function FieldAutocomplete({ value, onChange, suggestions, placeholder, className }: Props) {
+export default function FieldAutocomplete({ value, onChange, suggestions, placeholder, className, wrapperClassName }: Props) {
   const [open, setOpen] = useState(false)
   const [activeIdx, setActiveIdx] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -62,10 +63,10 @@ export default function FieldAutocomplete({ value, onChange, suggestions, placeh
   const shouldShow = open && filtered.length > 0
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className={`relative${wrapperClassName ? ' ' + wrapperClassName : ''}`}>
       <input
         ref={inputRef}
-        className={className}
+        className={`w-full${className ? ' ' + className : ''}`}
         placeholder={placeholder}
         value={value}
         onChange={(e) => { onChange(e.target.value); setOpen(true) }}

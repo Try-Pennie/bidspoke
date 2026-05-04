@@ -113,14 +113,15 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
             {group.conditions.map((cond, ci) => (
               <div key={ci} className="flex items-center gap-1.5">
                 <FieldAutocomplete
-                  className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
+                  wrapperClassName="min-w-0 flex-1"
+                  className="rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                   placeholder="field.path"
                   value={cond.field}
                   onChange={(val) => updateCondition(gi, ci, { ...cond, field: val })}
                   suggestions={fieldSuggestions}
                 />
                 <select
-                  className="rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
+                  className="shrink-0 rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                   value={cond.operator}
                   onChange={(e) =>
                     updateCondition(gi, ci, {
@@ -137,7 +138,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                 </select>
                 {!VALUE_LESS_OPERATORS.has(cond.operator) && (
                   <input
-                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
+                    className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                     placeholder="value"
                     value={cond.value !== undefined ? String(cond.value) : ''}
                     onChange={(e) => updateCondition(gi, ci, { ...cond, value: e.target.value })}
@@ -145,7 +146,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                 )}
                 <button
                   onClick={() => removeCondition(gi, ci)}
-                  className="text-gray-300 hover:text-red-400"
+                  className="shrink-0 text-gray-300 hover:text-red-400"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
