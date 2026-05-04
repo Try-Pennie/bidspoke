@@ -139,6 +139,9 @@ function computeConvergenceEdges(
         source: current,
         target: pairId,
         sourceHandle: 'output',
+        // Right-angle routing keeps the edge along the rank lanes rather
+        // than slicing diagonally through other nodes' columns.
+        type: 'smoothstep',
         style: { stroke: '#94a3b8', strokeDasharray: '4 4' },
       })
     }
