@@ -65,7 +65,14 @@ function evaluateCondition(
     case 'not_exists': return actual === undefined || actual === null
     case 'is_null':  return actual === null
     case 'is_not_null': return actual !== null
-    default:         return false
+    default: {
+      // Surface unhandled operators instead of silently returning false.
+      // A new operator added to the type union but not to this switch would
+      // otherwise quietly evaluate every condition as false — branches just
+      // wouldn't fire and the user would have no idea why.
+      const op = (condition as { operator: string }).operator
+      throw new Error(`Unknown condition operator: ${JSON.stringify(op)}`)
+    }
   }
 }
 

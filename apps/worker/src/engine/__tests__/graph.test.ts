@@ -115,9 +115,10 @@ describe('evaluateConditionGroups — all operators', () => {
   })
 
   describe('unknown operator', () => {
-    it('returns false for unrecognized operators', () => {
+    it('throws so a missing engine case surfaces immediately instead of every condition silently evaluating false', () => {
       // Cast needed — runtime guard for values outside the known union
-      expect(single('trigger.payload.x', 'unknown_op' as EdgeCondition['operator'], 1, { x: 1 })).toBe(false)
+      expect(() => single('trigger.payload.x', 'unknown_op' as EdgeCondition['operator'], 1, { x: 1 }))
+        .toThrow(/Unknown condition operator/)
     })
   })
 })
