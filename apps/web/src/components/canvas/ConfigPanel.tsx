@@ -43,6 +43,11 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 
   const [showAdvanced, setShowAdvanced] = useState(true)
   const [showMeta, setShowMeta] = useState(true)
+  // Notes default to expanded if the node already has one, collapsed otherwise.
+  // Re-init when the user clicks a different node so each node gets its own
+  // initial state.
+  const [showNotes, setShowNotes] = useState<boolean>(!!data.note)
+  useEffect(() => { setShowNotes(!!data.note) }, [node.id]) // eslint-disable-line react-hooks/exhaustive-deps
   const nsManuallyEdited = useRef(false)
 
   useEffect(() => { nsManuallyEdited.current = false }, [node.id])
@@ -131,35 +136,45 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMeta ? '' : '-rotate-90'}`} />
             </button>
             {showMeta && (
-              <div className="space-y-3 px-4 pb-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <p className="mb-1 text-xs font-medium text-gray-500">Display name</p>
-                    <input
-                      className="input"
-                      placeholder={data.namespace}
-                      value={data.label ?? ''}
-                      onChange={(e) => handleLabelChange(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
-                    <input
-                      className="input font-mono"
-                      value={data.namespace}
-                      onChange={(e) => handleNamespaceChange(e.target.value)}
-                    />
-                  </div>
-                </div>
+              <div className="grid grid-cols-2 gap-3 px-4 pb-3">
                 <div>
-                  <p className="mb-1 text-xs font-medium text-gray-500">Notes</p>
-                  <textarea
-                    className="input min-h-[60px] resize-y"
-                    placeholder="Notes for future you, or anyone else looking at this step..."
-                    value={(data.note as string | undefined) ?? ''}
-                    onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
+                  <p className="mb-1 text-xs font-medium text-gray-500">Display name</p>
+                  <input
+                    className="input"
+                    placeholder={data.namespace}
+                    value={data.label ?? ''}
+                    onChange={(e) => handleLabelChange(e.target.value)}
                   />
                 </div>
+                <div>
+                  <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
+                  <input
+                    className="input font-mono"
+                    value={data.namespace}
+                    onChange={(e) => handleNamespaceChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          {/* Notes — its own collapsible so users can hide it without hiding step settings */}
+          <div className="border-b border-gray-100">
+            <button
+              type="button"
+              onClick={() => setShowNotes((s) => !s)}
+              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-600"
+            >
+              <span className="uppercase tracking-wide">Notes</span>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showNotes ? '' : '-rotate-90'}`} />
+            </button>
+            {showNotes && (
+              <div className="px-4 pb-3">
+                <textarea
+                  className="input min-h-[60px] resize-y"
+                  placeholder="Notes for future you, or anyone else looking at this step..."
+                  value={(data.note as string | undefined) ?? ''}
+                  onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
+                />
               </div>
             )}
           </div>
@@ -236,14 +251,26 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         </Field>
 
         {/* Notes — free-form per-step annotation, surfaced as a small icon on the canvas */}
-        <Field label="Notes" hint="Anything worth knowing about this step. Shows as a small icon on the node when set.">
-          <textarea
-            className="input min-h-[72px] resize-y"
-            placeholder="Notes for future you, or anyone else looking at this step..."
-            value={(data.note as string | undefined) ?? ''}
-            onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
-          />
-        </Field>
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowNotes((s) => !s)}
+            className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+          >
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showNotes ? '' : '-rotate-90'}`} />
+            Notes
+          </button>
+          {showNotes && (
+            <div className="mt-2">
+              <textarea
+                className="input min-h-[72px] resize-y"
+                placeholder="Notes for future you, or anyone else looking at this step..."
+                value={(data.note as string | undefined) ?? ''}
+                onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
+              />
+            </div>
+          )}
+        </div>
 
         {/* Type-specific config */}
         {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
