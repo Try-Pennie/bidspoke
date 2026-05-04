@@ -282,6 +282,21 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     })
     handleOffsetsByNode.set(n.id, offsets)
   }
+  // Parallel_end inherits its paired parallel start's effective width so the
+  // join visually closes the cluster instead of staying NODE_W under a wider
+  // parallel start.
+  for (const n of nodes) {
+    if (n.type !== 'parallel_end') continue
+    const pairEdge = edges.find((e) => {
+      if (e.target !== n.id) return false
+      const src = nodeMap.get(e.source)
+      return src?.type === 'parallel'
+    })
+    if (!pairEdge) continue
+    const startW = effectiveWidthByNode.get(pairEdge.source)
+    if (startW) effectiveWidthByNode.set(n.id, startW)
+  }
+
   const widthFor = (n: Node) => effectiveWidthByNode.get(n.id) ?? nodeWidth(n.type, n.data)
 
   // Per-branch convergence nodes — those reachable from every branch handle.
