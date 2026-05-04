@@ -1443,6 +1443,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         }
         setEdges(newEdges)
         setNodes((ns) => layoutWorkflow([...ns, startNode, endNode], newEdges))
+        setSelectedNodeId(newId)
         setIsDirty(true)
         return
       }
@@ -1472,6 +1473,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         // No suitable source found — drop free-floating at the cursor position
         setNodes((ns) => [...ns, { ...newNode, position: dropPos, draggable: true }])
       }
+      setSelectedNodeId(newId)
       setIsDirty(true)
     },
     [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition]
