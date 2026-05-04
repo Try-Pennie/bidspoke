@@ -98,6 +98,55 @@ const DEFAULT_TRIGGER: WorkflowDef['trigger'] = {
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
 
+// Computes render-only convergence edges from each slot child's chain leaf
+// to the paired parallel_end. Not added to canvas state — they don't get
+// saved or fed to the engine — but they make the visual model match the
+// engine's behavior (chains converge at parallel_end). One edge per slot.
+function computeConvergenceEdges(
+  nodes: Node[],
+  edges: Edge[]
+): Edge[] {
+  const result: Edge[] = []
+  const realEdgeKey = new Set(edges.map((e) => `${e.source}->${e.target}`))
+
+  for (const parallel of nodes) {
+    if (parallel.type !== 'parallel') continue
+    const pairEdge = edges.find((e) => {
+      if (e.source !== parallel.id) return false
+      const target = nodes.find((n) => n.id === e.target)
+      return target?.type === 'parallel_end'
+    })
+    if (!pairEdge) continue
+    const pairId = pairEdge.target
+
+    const slotEdges = edges.filter(
+      (e) => e.source === parallel.id && (e.sourceHandle ?? '').startsWith('child-')
+    )
+    for (const slotEdge of slotEdges) {
+      let current = slotEdge.target
+      const visited = new Set<string>([parallel.id])
+      while (!visited.has(current)) {
+        visited.add(current)
+        if (current === pairId) break
+        const next = edges.find((e) => e.source === current && !visited.has(e.target))
+        if (!next) break
+        current = next.target
+      }
+      if (current === pairId) continue
+      if (realEdgeKey.has(`${current}->${pairId}`)) continue
+      result.push({
+        id: `conv-${current}-${pairId}`,
+        source: current,
+        target: pairId,
+        sourceHandle: 'output',
+        style: { stroke: '#94a3b8', strokeDasharray: '4 4' },
+      })
+    }
+  }
+
+  return result
+}
+
 // Computes translucent region backdrops for each branch / parallel and the
 // nodes downstream of it. Outer regions get lower zIndex (further behind)
 // than inner regions; both stay behind real nodes (zIndex < 0). Region nodes
@@ -617,6 +666,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // negative zIndex pushes them to the back.
   const renderedNodes = useMemo(
     () => [...computeRegionNodes(nodes, edges), ...nodes],
+    [nodes, edges]
+  )
+
+  // Convergence edges from each parallel slot's chain leaf to parallel_end.
+  // Render-only (not in state, not saved, not seen by the engine) — visual
+  // matches the engine's actual converge-at-end behavior.
+  const renderedEdges = useMemo(
+    () => [...edges, ...computeConvergenceEdges(nodes, edges)],
     [nodes, edges]
   )
 
@@ -2000,7 +2057,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
           <ReactFlow
             nodes={renderedNodes}
-            edges={edges}
+            edges={renderedEdges}
             onNodesChange={(changes) => {
               onNodesChange(changes)
               if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
