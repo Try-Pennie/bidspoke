@@ -374,21 +374,38 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // and lays out 2-of-3 cases without collapsing the gap left by the unused
   // middle handle.
   const NODESEP = 48
-  // For each child handle of a multi-output node, find the widest node in
-  // the chain rooted at that handle. The wide-side child needs more space
-  // around it than a default `NODE_W` allowance — otherwise a narrow
-  // sibling's column lands inside the wider chain's downstream territory.
-  const maxDescendantWidth = (startId: string, visited: Set<string>): number => {
+  // For each child handle of a multi-output node, compute the widest *rank*
+  // of any node in the chain rooted at that handle. A nested multi-output
+  // node spreads its own children at the next rank, and that rank's total
+  // width (sum of slot widths + nodesep gaps) often exceeds any single
+  // node's width — so a wide chain's footprint is wider than just its
+  // widest individual node.
+  const effectiveSubtreeWidth = (startId: string, visited: Set<string>): number => {
     if (visited.has(startId)) return 0
     visited.add(startId)
     const n = nodeMap.get(startId)
-    let maxW = n ? nodeWidth(n.type, n.data) : NODE_W
+    if (!n) return NODE_W
+    const ownWidth = nodeWidth(n.type, n.data)
+    const handles = configuredHandleIds(n)
+    if (handles && handles.length >= 2) {
+      // Rank below this multi-output spreads N children. The rank's width is
+      // the sum of each slot's effective sub-chain width plus nodesep gaps.
+      const slotWidths = handles.map((h) => {
+        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h)
+        if (!slotEdge) return NODE_W
+        return Math.max(NODE_W, effectiveSubtreeWidth(slotEdge.target, new Set(visited)))
+      })
+      const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP * (slotWidths.length - 1)
+      return Math.max(ownWidth, fanOutWidth)
+    }
+    // Single-output: walk further down the chain.
+    let maxBelow = 0
     for (const e of edges) {
       if (e.source !== startId) continue
-      const childMax = maxDescendantWidth(e.target, visited)
-      if (childMax > maxW) maxW = childMax
+      const sub = effectiveSubtreeWidth(e.target, new Set(visited))
+      if (sub > maxBelow) maxBelow = sub
     }
-    return maxW
+    return Math.max(ownWidth, maxBelow)
   }
   const applyMultiOutputOverride = () => {
     for (const [sourceId, outEdges] of outEdgesBySource) {
@@ -398,12 +415,13 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!handles || handles.length < 2) continue
       const parentPos = pos.get(sourceId)
       if (!parentPos) continue
-      // Width budget per handle = the widest node in that handle's chain,
-      // floored at NODE_W so unfilled handles still get a standard column.
+      // Width budget per handle = the widest *rank* in that handle's chain
+      // (so a nested multi-output's fan-out is accounted for), floored at
+      // NODE_W so unfilled handles still get a standard column.
       const widthsByHandle = handles.map((h) => {
         const slotEdge = outEdges.find((e) => e.sourceHandle === h)
         if (!slotEdge) return NODE_W
-        return Math.max(NODE_W, maxDescendantWidth(slotEdge.target, new Set([sourceId])))
+        return Math.max(NODE_W, effectiveSubtreeWidth(slotEdge.target, new Set([sourceId])))
       })
       // Place children adjacent to each other with NODESEP between, centered
       // around the parent. Each child gets its own width, so an asymmetric
