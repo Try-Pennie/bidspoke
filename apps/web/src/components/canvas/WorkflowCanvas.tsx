@@ -193,40 +193,40 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       })
       if (pairEdge) pairId = pairEdge.target
     } else {
-      // Explicit branch_end paired via the hidden backbone edge — use it as
-      // the join marker, same way parallel does. Falls back to dynamic
-      // convergence detection (intersection of per-handle reachable sets) for
-      // legacy branches without an explicit end node.
+      // Both signals can apply for branches:
+      //  - Explicit branch_end paired via the hidden backbone edge — used as
+      //    a hard join marker (BFS includes it but doesn't recurse past).
+      //  - Dynamic convergence — any node reachable from EVERY handle, kept
+      //    as a stopAt set so the region also closes at the natural rejoin
+      //    point even when the backfilled branch_end isn't wired up yet.
       const pairData = mo.data as { _pairId?: string }
       const explicitEnd = pairData._pairId
         ? nodes.find((n) => n.id === pairData._pairId && n.type === 'branch_end')
         : null
-      if (explicitEnd) {
-        pairId = explicitEnd.id
-      } else {
-        const handles = configuredHandleIds(mo)
-        if (handles && handles.length >= 2) {
-          const perHandle = handles.map((h) => {
-            const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
-            if (!slotEdge) return new Set<string>()
-            const set = new Set<string>([slotEdge.target])
-            const q = [slotEdge.target]
-            while (q.length > 0) {
-              const cur = q.shift() as string
-              for (const next of adjOut.get(cur) ?? []) {
-                if (set.has(next)) continue
-                set.add(next)
-                q.push(next)
-              }
+      if (explicitEnd) pairId = explicitEnd.id
+
+      const handles = configuredHandleIds(mo)
+      if (handles && handles.length >= 2) {
+        const perHandle = handles.map((h) => {
+          const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
+          if (!slotEdge) return new Set<string>()
+          const set = new Set<string>([slotEdge.target])
+          const q = [slotEdge.target]
+          while (q.length > 0) {
+            const cur = q.shift() as string
+            for (const next of adjOut.get(cur) ?? []) {
+              if (set.has(next)) continue
+              set.add(next)
+              q.push(next)
             }
-            return set
-          }).filter((s) => s.size > 0)
-          if (perHandle.length >= 2) {
-            // Convergence = nodes in *every* handle's reachable set.
-            stopAt = new Set<string>()
-            for (const id of perHandle[0]) {
-              if (perHandle.every((s) => s.has(id))) stopAt.add(id)
-            }
+          }
+          return set
+        }).filter((s) => s.size > 0)
+        if (perHandle.length >= 2) {
+          // Convergence = nodes in *every* handle's reachable set.
+          stopAt = new Set<string>()
+          for (const id of perHandle[0]) {
+            if (perHandle.every((s) => s.has(id))) stopAt.add(id)
           }
         }
       }
@@ -348,7 +348,7 @@ function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
 }
 
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
-  const migratedEdges = migrateParallelEdges(nodes, edges)
+  let migratedEdges = migrateParallelEdges(nodes, edges)
   // Detect if any parallel_end carries the old (pre-2026-04-30) wait_for/timeout
   // config so we can copy it onto the matching start node before the canvas reads it.
   const endConfigByPairStart = new Map<string, Record<string, unknown>>()
@@ -360,6 +360,49 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     if (!start) continue
     if (n.config && Object.keys(n.config).length > 0) endConfigByPairStart.set(start.id, n.config)
   }
+
+  // Backfill branch_end nodes for any branch that doesn't already have one.
+  // Mirrors the parallel start/end pattern. The synthesized backbone edge is
+  // hidden but persists through save → load round-trips so the pairing
+  // sticks; the engine never traverses backbone edges (branch routing requires
+  // a `_route`-matched named handle), so this is safe for live workflows.
+  const branchesNeedingEnd = nodes.filter((n) => {
+    if (n.type !== 'branch') return false
+    const incomingToEnds = migratedEdges
+      .filter((e) => e.source === n.id)
+      .map((e) => nodes.find((x) => x.id === e.target))
+    return !incomingToEnds.some((t) => t?.type === 'branch_end')
+  })
+  const synthesizedNodes: NodeDef[] = []
+  const synthesizedEdges: EdgeDef[] = []
+  if (branchesNeedingEnd.length > 0) {
+    const usedNamespaces = new Set(nodes.map((n) => n.namespace))
+    for (const branch of branchesNeedingEnd) {
+      const baseNs = `${branch.namespace}_end`
+      let ns = baseNs
+      let i = 2
+      while (usedNamespaces.has(ns)) ns = `${baseNs}_${i++}`
+      usedNamespaces.add(ns)
+      const endId = crypto.randomUUID()
+      synthesizedNodes.push({
+        id: endId,
+        namespace: ns,
+        type: 'branch_end',
+        position: { x: 0, y: 0 }, // dagre will place it on the next layout pass
+        config: {},
+        variables: {},
+      })
+      synthesizedEdges.push({
+        id: crypto.randomUUID(),
+        source: branch.id,
+        target: endId,
+        source_handle: 'output',
+      })
+    }
+    nodes = [...nodes, ...synthesizedNodes]
+    migratedEdges = [...migratedEdges, ...synthesizedEdges]
+  }
+
   // Re-derive `_pairId` for every parallel_end / branch_end pair so end nodes
   // can look up their start to render the derived label after reload.
   // Pair = the start node with a direct (often hidden) edge into the end node.
