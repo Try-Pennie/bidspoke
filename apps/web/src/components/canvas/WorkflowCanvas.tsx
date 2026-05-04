@@ -186,6 +186,23 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       maxX = Math.max(maxX, n.position.x + w)
       maxY = Math.max(maxY, n.position.y + h)
     }
+    // Extend the region to cover all configured handle columns, even unused
+    // ones. Without this, an unfilled branch handle (e.g. `trades_missing`
+    // with no children) leaves no visual trace, and the connected chain
+    // appears to occupy the whole branch's territory. With the extension,
+    // the region's right (or left) edge stretches into the empty column,
+    // making it clear at a glance that one side has nothing on it.
+    const handles = configuredHandleIds(mo)
+    if (handles && handles.length >= 2) {
+      const moW = nodeWidth(mo.type, mo.data)
+      const moCenterX = mo.position.x + moW / 2
+      const SIBLING_SPACING_PX = NODE_W + 48
+      const halfSpan = ((handles.length - 1) / 2) * SIBLING_SPACING_PX
+      const fullColumnLeft = moCenterX - halfSpan - NODE_W / 2
+      const fullColumnRight = moCenterX + halfSpan + NODE_W / 2
+      minX = Math.min(minX, fullColumnLeft)
+      maxX = Math.max(maxX, fullColumnRight)
+    }
     regions.push({
       id: mo.id,
       nodeIds: reachable,
