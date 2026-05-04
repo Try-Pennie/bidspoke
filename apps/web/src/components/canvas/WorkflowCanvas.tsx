@@ -583,11 +583,17 @@ function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: n
   const connectable = candidates.filter((n) => chooseSourceHandle(n, dropPos.x) !== null)
   if (connectable.length === 0) return null
 
-  // Among connectable candidates, pick the one whose bottom edge is closest above the drop point
+  // Pick the candidate with the deepest bottom edge above the drop. Break ties
+  // (parallel chains end at the same y) by horizontal proximity to dropX so a
+  // drop near one column doesn't get stolen by an adjacent column whose node
+  // happens to come first in the nodes array.
   return connectable.reduce((best, n) => {
     const nBottom = n.position.y + nodeHeight(n.type)
     const bBottom = best.position.y + nodeHeight(best.type)
-    return nBottom > bBottom ? n : best
+    if (nBottom !== bBottom) return nBottom > bBottom ? n : best
+    const nDx = Math.abs(dropPos.x - (n.position.x + nodeWidth(n.type, n.data) / 2))
+    const bDx = Math.abs(dropPos.x - (best.position.x + nodeWidth(best.type, best.data) / 2))
+    return nDx < bDx ? n : best
   })
 }
 
