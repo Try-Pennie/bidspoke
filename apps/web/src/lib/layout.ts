@@ -408,16 +408,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
   applyLinearChain()
 
-  // Second override pass — linear-chain may have moved a multi-output node's
-  // own x (e.g., parallel pulled to its predecessor's column), so re-anchor
-  // its children to the new parent position.
-  applyMultiOutputOverride()
-  // Second linear-chain pass — the second override may have shifted the x of
-  // nodes whose chain descendants are still parked at the *first*-override
-  // position (e.g., salesforce sitting under code's old x after code was
-  // re-anchored to the new parallel center). Re-propagate so the chain
-  // catches up.
-  applyLinearChain()
+  // Each (override → linear-chain) pair settles one more level of nesting.
+  // 2 pairs covers 2 levels; arbitrary depth needs an iteration. Both
+  // operations are idempotent given a stable pos map, so extra passes are
+  // free — break early when nothing changes.
+  const snapshot = () => Array.from(pos.entries(), ([id, p]) => `${id}:${p.x}`).join('|')
+  for (let i = 0; i < 8; i++) {
+    const before = snapshot()
+    applyMultiOutputOverride()
+    applyLinearChain()
+    if (snapshot() === before) break
+  }
 
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
