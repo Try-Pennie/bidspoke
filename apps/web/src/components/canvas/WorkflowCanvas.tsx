@@ -347,8 +347,51 @@ function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
   return result
 }
 
+// Backfill branch_end nodes for any branch that doesn't already have one.
+// Mirrors the parallel start/end pattern. The synthesized backbone edge is
+// hidden but persists through save → load round-trips so the pairing
+// sticks; the engine never traverses backbone edges (branch routing requires
+// a `_route`-matched named handle), so this is safe for live workflows.
+function backfillBranchEnds(nodes: NodeDef[], edges: EdgeDef[]): { nodes: NodeDef[]; edges: EdgeDef[] } {
+  const branchesNeedingEnd = nodes.filter((n) => {
+    if (n.type !== 'branch') return false
+    const incomingToEnds = edges
+      .filter((e) => e.source === n.id)
+      .map((e) => nodes.find((x) => x.id === e.target))
+    return !incomingToEnds.some((t) => t?.type === 'branch_end')
+  })
+  if (branchesNeedingEnd.length === 0) return { nodes, edges }
+
+  const usedNamespaces = new Set(nodes.map((n) => n.namespace))
+  const newNodes: NodeDef[] = []
+  const newEdges: EdgeDef[] = []
+  for (const branch of branchesNeedingEnd) {
+    const baseNs = `${branch.namespace}_end`
+    let ns = baseNs
+    let i = 2
+    while (usedNamespaces.has(ns)) ns = `${baseNs}_${i++}`
+    usedNamespaces.add(ns)
+    const endId = crypto.randomUUID()
+    newNodes.push({
+      id: endId,
+      namespace: ns,
+      type: 'branch_end',
+      position: { x: 0, y: 0 }, // dagre will place it on the next layout pass
+      config: {},
+      variables: {},
+    })
+    newEdges.push({
+      id: crypto.randomUUID(),
+      source: branch.id,
+      target: endId,
+      source_handle: 'output',
+    })
+  }
+  return { nodes: [...nodes, ...newNodes], edges: [...edges, ...newEdges] }
+}
+
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
-  let migratedEdges = migrateParallelEdges(nodes, edges)
+  const migratedEdges = migrateParallelEdges(nodes, edges)
   // Detect if any parallel_end carries the old (pre-2026-04-30) wait_for/timeout
   // config so we can copy it onto the matching start node before the canvas reads it.
   const endConfigByPairStart = new Map<string, Record<string, unknown>>()
@@ -359,48 +402,6 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
       .find((x) => x?.type === 'parallel')
     if (!start) continue
     if (n.config && Object.keys(n.config).length > 0) endConfigByPairStart.set(start.id, n.config)
-  }
-
-  // Backfill branch_end nodes for any branch that doesn't already have one.
-  // Mirrors the parallel start/end pattern. The synthesized backbone edge is
-  // hidden but persists through save → load round-trips so the pairing
-  // sticks; the engine never traverses backbone edges (branch routing requires
-  // a `_route`-matched named handle), so this is safe for live workflows.
-  const branchesNeedingEnd = nodes.filter((n) => {
-    if (n.type !== 'branch') return false
-    const incomingToEnds = migratedEdges
-      .filter((e) => e.source === n.id)
-      .map((e) => nodes.find((x) => x.id === e.target))
-    return !incomingToEnds.some((t) => t?.type === 'branch_end')
-  })
-  const synthesizedNodes: NodeDef[] = []
-  const synthesizedEdges: EdgeDef[] = []
-  if (branchesNeedingEnd.length > 0) {
-    const usedNamespaces = new Set(nodes.map((n) => n.namespace))
-    for (const branch of branchesNeedingEnd) {
-      const baseNs = `${branch.namespace}_end`
-      let ns = baseNs
-      let i = 2
-      while (usedNamespaces.has(ns)) ns = `${baseNs}_${i++}`
-      usedNamespaces.add(ns)
-      const endId = crypto.randomUUID()
-      synthesizedNodes.push({
-        id: endId,
-        namespace: ns,
-        type: 'branch_end',
-        position: { x: 0, y: 0 }, // dagre will place it on the next layout pass
-        config: {},
-        variables: {},
-      })
-      synthesizedEdges.push({
-        id: crypto.randomUUID(),
-        source: branch.id,
-        target: endId,
-        source_handle: 'output',
-      })
-    }
-    nodes = [...nodes, ...synthesizedNodes]
-    migratedEdges = [...migratedEdges, ...synthesizedEdges]
   }
 
   // Re-derive `_pairId` for every parallel_end / branch_end pair so end nodes
@@ -739,9 +740,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const nodesInitialized = useNodesInitialized()
   const initialFitDoneRef = useRef(false)
 
-  const initEdges = defToEdges(migrateParallelEdges(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? []))
+  // Backfill any legacy branches with a paired branch_end + hidden backbone
+  // BEFORE both nodes and edges are computed so the synthesized edges land
+  // in the React Flow edge state, not just the node state.
+  const backfilled = backfillBranchEnds(
+    workflow.definition?.nodes ?? [],
+    workflow.definition?.edges ?? []
+  )
+  const initEdges = defToEdges(migrateParallelEdges(backfilled.nodes, backfilled.edges))
   const [nodes, setNodes, onNodesChange] = useNodesState(
-    defToNodes(workflow.definition?.nodes ?? [], workflow.definition?.edges ?? [], workflow.definition?.trigger)
+    defToNodes(backfilled.nodes, backfilled.edges, workflow.definition?.trigger)
   )
   const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
   const [name, setName] = useState(workflow.name)
