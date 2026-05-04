@@ -24,6 +24,7 @@ const NODE_H: Record<string, number> = {
   exit:          STANDARD_NODE_H,
   parallel:      156,             // adds the slot label row (when slots > 0)
   parallel_end:  STANDARD_NODE_H,
+  branch_end:    STANDARD_NODE_H,
   salesforce:    164,             // adds the Update tag row
   webhook:       STANDARD_NODE_H,
   partner_bid:   STANDARD_NODE_H,
@@ -282,15 +283,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     })
     handleOffsetsByNode.set(n.id, offsets)
   }
-  // Parallel_end inherits its paired parallel start's effective width so the
-  // join visually closes the cluster instead of staying NODE_W under a wider
-  // parallel start.
+  // Parallel_end / branch_end inherit their paired start node's effective
+  // width so the join visually closes the cluster instead of staying NODE_W
+  // under a wider start.
   for (const n of nodes) {
-    if (n.type !== 'parallel_end') continue
+    if (n.type !== 'parallel_end' && n.type !== 'branch_end') continue
+    const startType = n.type === 'parallel_end' ? 'parallel' : 'branch'
     const pairEdge = edges.find((e) => {
       if (e.target !== n.id) return false
       const src = nodeMap.get(e.source)
-      return src?.type === 'parallel'
+      return src?.type === startType
     })
     if (!pairEdge) continue
     const startW = effectiveWidthByNode.get(pairEdge.source)

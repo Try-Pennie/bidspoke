@@ -41,6 +41,12 @@ export async function executeNode(
       throw new Error('Bid Group node must be executed through walkGraph, not executeNode directly')
     case 'parallel_end':
       throw new Error('Parallel End node must be executed through walkGraph, not executeNode directly')
+    case 'branch_end':
+      // Passive convergence node — passthrough. The engine routes to whichever
+      // path the branch's selected handle led down; once that chain reaches
+      // branch_end, this returns the prior step's output and the main walk
+      // continues to branch_end's successor.
+      return executeBranchEndNode(node, ctx)
     case 'webhook':
       return executeIntegrationNode(node, ctx, env)
     case 'transform':
@@ -61,4 +67,13 @@ function executeExitNode(node: NodeDefinition): StepExecutionResult {
   return {
     output: (node.config.response as unknown) ?? null,
   }
+}
+
+function executeBranchEndNode(_node: NodeDefinition, ctx: ExecutionContext): StepExecutionResult {
+  // Whichever branch handle's chain led here, the most recent step's output
+  // is what we want to surface as branch_end's output. Mirrors how
+  // parallel_end inherits the parallel's output, but here we pass through
+  // the single winning chain instead of an array of fan-out results.
+  const lastStep = Object.values(ctx.steps).at(-1)
+  return { output: lastStep?.output ?? null }
 }

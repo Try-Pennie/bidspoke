@@ -27,6 +27,7 @@ import '@xyflow/react/dist/style.css'
 
 import { FilterNode } from './nodes/FilterNode'
 import { BranchNode } from './nodes/BranchNode'
+import { BranchEndNode } from './nodes/BranchEndNode'
 import { CodeNode } from './nodes/CodeNode'
 import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
@@ -67,6 +68,7 @@ const nodeTypes: NodeTypes = {
   trigger: TriggerNode,
   filter: FilterNode,
   branch: BranchNode,
+  branch_end: BranchEndNode,
   code: CodeNode,
   response: ResponseNode,
   exit: ExitNode,
@@ -191,28 +193,40 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       })
       if (pairEdge) pairId = pairEdge.target
     } else {
-      const handles = configuredHandleIds(mo)
-      if (handles && handles.length >= 2) {
-        const perHandle = handles.map((h) => {
-          const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
-          if (!slotEdge) return new Set<string>()
-          const set = new Set<string>([slotEdge.target])
-          const q = [slotEdge.target]
-          while (q.length > 0) {
-            const cur = q.shift() as string
-            for (const next of adjOut.get(cur) ?? []) {
-              if (set.has(next)) continue
-              set.add(next)
-              q.push(next)
+      // Explicit branch_end paired via the hidden backbone edge — use it as
+      // the join marker, same way parallel does. Falls back to dynamic
+      // convergence detection (intersection of per-handle reachable sets) for
+      // legacy branches without an explicit end node.
+      const pairData = mo.data as { _pairId?: string }
+      const explicitEnd = pairData._pairId
+        ? nodes.find((n) => n.id === pairData._pairId && n.type === 'branch_end')
+        : null
+      if (explicitEnd) {
+        pairId = explicitEnd.id
+      } else {
+        const handles = configuredHandleIds(mo)
+        if (handles && handles.length >= 2) {
+          const perHandle = handles.map((h) => {
+            const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
+            if (!slotEdge) return new Set<string>()
+            const set = new Set<string>([slotEdge.target])
+            const q = [slotEdge.target]
+            while (q.length > 0) {
+              const cur = q.shift() as string
+              for (const next of adjOut.get(cur) ?? []) {
+                if (set.has(next)) continue
+                set.add(next)
+                q.push(next)
+              }
             }
-          }
-          return set
-        }).filter((s) => s.size > 0)
-        if (perHandle.length >= 2) {
-          // Convergence = nodes in *every* handle's reachable set.
-          stopAt = new Set<string>()
-          for (const id of perHandle[0]) {
-            if (perHandle.every((s) => s.has(id))) stopAt.add(id)
+            return set
+          }).filter((s) => s.size > 0)
+          if (perHandle.length >= 2) {
+            // Convergence = nodes in *every* handle's reachable set.
+            stopAt = new Set<string>()
+            for (const id of perHandle[0]) {
+              if (perHandle.every((s) => s.has(id))) stopAt.add(id)
+            }
           }
         }
       }
@@ -346,6 +360,22 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
     if (!start) continue
     if (n.config && Object.keys(n.config).length > 0) endConfigByPairStart.set(start.id, n.config)
   }
+  // Re-derive `_pairId` for every parallel_end / branch_end pair so end nodes
+  // can look up their start to render the derived label after reload.
+  // Pair = the start node with a direct (often hidden) edge into the end node.
+  const pairByEnd = new Map<string, string>()
+  const pairByStart = new Map<string, string>()
+  for (const n of nodes) {
+    if (n.type !== 'parallel_end' && n.type !== 'branch_end') continue
+    const startType = n.type === 'parallel_end' ? 'parallel' : 'branch'
+    const incoming = migratedEdges.filter((e) => e.target === n.id)
+    const start = incoming
+      .map((e) => nodes.find((x) => x.id === e.source))
+      .find((x) => x?.type === startType)
+    if (!start) continue
+    pairByEnd.set(n.id, start.id)
+    pairByStart.set(start.id, n.id)
+  }
 
   const workflowNodes = nodes.map((n) => {
     let config = n.config
@@ -373,11 +403,19 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
       // Strip end-node config — moved to start. Keep an empty object so editors can write to it.
       config = {}
     }
+    const pairId = pairByEnd.get(n.id) ?? pairByStart.get(n.id)
     return {
       id: n.id,
       type: n.type,
       position: n.position ?? { x: 0, y: 0 },
-      data: { namespace: n.namespace, label: n.label, note: n.note, config, variables: n.variables ?? {} } satisfies CanvasNodeData,
+      data: {
+        namespace: n.namespace,
+        label: n.label,
+        note: n.note,
+        config,
+        variables: n.variables ?? {},
+        ...(pairId ? { _pairId: pairId } : {}),
+      } satisfies CanvasNodeData,
     }
   })
   const allNodes = [makeTriggerNode(trigger ?? DEFAULT_TRIGGER), ...workflowNodes]
@@ -453,8 +491,8 @@ function dedupNamespace(suggested: string, existing: string[]): string {
 }
 
 function defaultNodeConfig(type: NodeType): Record<string, unknown> {
-  // parallel_end is a passive join marker — retry/error config sits on the start
-  const base: Record<string, unknown> = type === 'parallel_end' ? {} : { retries: 2 }
+  // parallel_end / branch_end are passive join markers — retry/error config sits on the start
+  const base: Record<string, unknown> = type === 'parallel_end' || type === 'branch_end' ? {} : { retries: 2 }
   if (type === 'branch') {
     return {
       ...base,
@@ -1433,6 +1471,51 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       const autoConnected = !!(sourceNode && sourceHandle && !existingOutEdge)
       // True when we need to INSERT between sourceNode and its current target
       const insertBetween = !!(sourceNode && sourceHandle && existingOutEdge)
+
+      // Branch drops create a start+end pair. The end node is a passive
+      // convergence marker — chains from each branch handle terminate either
+      // by exiting or by feeding into branch_end. Mirrors the parallel
+      // start/end pattern but the end's input is fan-in from any subset of
+      // the branch's handles, not a hard join.
+      if (type === 'branch') {
+        const endId = uid()
+        const endNamespace = defaultNamespace('branch_end', [...nodeNamespaces, namespace])
+        const startNode = {
+          id: newId,
+          type: 'branch' as NodeType,
+          position: { x: 0, y: 0 },
+          data: {
+            namespace,
+            config: defaultNodeConfig('branch'),
+            variables: {},
+            _pairId: endId,
+          } satisfies CanvasNodeData,
+        }
+        const endNode = {
+          id: endId,
+          type: 'branch_end' as NodeType,
+          position: { x: 0, y: 0 },
+          data: { namespace: endNamespace, config: {}, variables: {}, _pairId: newId } satisfies CanvasNodeData,
+        }
+        // Hidden backbone edge so Dagre ranks end below start before any handle is wired
+        const backboneEdge = { id: uid(), source: newId, target: endId, sourceHandle: 'output', hidden: true }
+        let newEdges = [...edges, backboneEdge]
+        if (autoConnected) {
+          newEdges = [...newEdges, { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! }]
+        } else if (insertBetween) {
+          newEdges = [
+            ...edges.filter((e) => e.id !== existingOutEdge!.id),
+            backboneEdge,
+            { id: uid(), source: sourceNode!.id, target: newId, sourceHandle: sourceHandle! },
+            { id: uid(), source: endId, target: existingOutEdge!.target, sourceHandle: 'output' },
+          ]
+        }
+        setEdges(newEdges)
+        setNodes((ns) => layoutWorkflow([...ns, startNode, endNode], newEdges))
+        setSelectedNodeId(newId)
+        setIsDirty(true)
+        return
+      }
 
       // Parallel drops create a start+end pair with a placeholder edge between them
       if (type === 'parallel') {

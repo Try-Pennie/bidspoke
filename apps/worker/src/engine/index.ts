@@ -1047,8 +1047,11 @@ export async function walkGraph(
     }
 
     // Follow the appropriate outgoing edge.
-    // Filter/branch nodes signal their chosen output via output._route which
-    // maps to edge source_handle. Fall through to condition evaluation otherwise.
+    // Filter/branch/bid_evaluation nodes signal their chosen output via
+    // output._route which maps to edge source_handle. Branches additionally
+    // carry a hidden backbone edge to their paired branch_end (source_handle
+    // 'output'); for branch routing only, we skip non-route edges so the
+    // backbone never short-circuits an unwired handle.
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
@@ -1056,6 +1059,13 @@ export async function walkGraph(
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)
+      // For branches, an unwired handle terminates the chain — don't fall
+      // back to evaluateEdge or the backbone edge would steal the routing.
+      if (!nextEdge && node.type === 'branch') {
+        current = undefined
+        stepOrder++
+        continue
+      }
     }
 
     if (!nextEdge) {

@@ -286,10 +286,11 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
+        {type === 'branch_end' && <BranchEndConfig />}
 
-        {/* Common: retry + error handling. Hidden for parallel_end — that node
-            is a passive join marker, all retry/error config sits on the start. */}
-        {type !== 'parallel_end' && <div>
+        {/* Common: retry + error handling. Hidden for parallel_end / branch_end —
+            those nodes are passive join markers, all retry/error config sits on the start. */}
+        {type !== 'parallel_end' && type !== 'branch_end' && <div>
           <button
             onClick={() => setShowAdvanced((s: boolean) => !s)}
             className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
@@ -2469,6 +2470,16 @@ function ParallelEndConfig() {
     <section className="space-y-2">
       <p className="text-xs text-gray-500">
         This is the join point for the parallel above. Slots, wait behavior, and timeout are all configured on the parallel start node.
+      </p>
+    </section>
+  )
+}
+
+function BranchEndConfig() {
+  return (
+    <section className="space-y-2">
+      <p className="text-xs text-gray-500">
+        Convergence point for the branch above. Wire the end of any branch path into this node and the chain continues from here. Branches that exit early don&apos;t need to feed in.
       </p>
     </section>
   )

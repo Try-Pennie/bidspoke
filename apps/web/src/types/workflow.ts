@@ -1,6 +1,7 @@
 export type NodeType =
   | 'filter'
   | 'branch'
+  | 'branch_end'
   | 'code'
   | 'response'
   | 'exit'

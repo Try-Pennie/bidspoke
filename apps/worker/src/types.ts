@@ -6,6 +6,7 @@ export type NodeType =
   | 'code'
   | 'filter'
   | 'branch'
+  | 'branch_end'
   | 'parallel'
   | 'parallel_end'
   | 'partner_bid'
