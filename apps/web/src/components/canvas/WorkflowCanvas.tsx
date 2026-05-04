@@ -165,10 +165,23 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
   type RegionInfo = { id: string; nodeIds: Set<string>; minX: number; minY: number; maxX: number; maxY: number; variant: 'branch' | 'parallel' }
   const regions: RegionInfo[] = []
   for (const mo of moNodes) {
+    // For parallels, the BFS stops at the paired parallel_end — anything
+    // past the join is downstream of the whole cluster, not inside it.
+    // Branches have no built-in convergence, so they keep BFS'ing to leaves.
+    let pairId: string | null = null
+    if (mo.type === 'parallel') {
+      const pairEdge = edges.find((e) => {
+        if (e.source !== mo.id) return false
+        const target = nodes.find((n) => n.id === e.target)
+        return target?.type === 'parallel_end'
+      })
+      if (pairEdge) pairId = pairEdge.target
+    }
     const reachable = new Set<string>([mo.id])
     const queue = [mo.id]
     while (queue.length > 0) {
       const cur = queue.shift() as string
+      if (cur === pairId) continue // include the parallel_end but don't recurse past it
       for (const next of adjOut.get(cur) ?? []) {
         if (reachable.has(next)) continue
         reachable.add(next)
