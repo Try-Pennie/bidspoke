@@ -131,22 +131,33 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMeta ? '' : '-rotate-90'}`} />
             </button>
             {showMeta && (
-              <div className="grid grid-cols-2 gap-3 px-4 pb-3">
-                <div>
-                  <p className="mb-1 text-xs font-medium text-gray-500">Display name</p>
-                  <input
-                    className="input"
-                    placeholder={data.namespace}
-                    value={data.label ?? ''}
-                    onChange={(e) => handleLabelChange(e.target.value)}
-                  />
+              <div className="space-y-3 px-4 pb-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-gray-500">Display name</p>
+                    <input
+                      className="input"
+                      placeholder={data.namespace}
+                      value={data.label ?? ''}
+                      onChange={(e) => handleLabelChange(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
+                    <input
+                      className="input font-mono"
+                      value={data.namespace}
+                      onChange={(e) => handleNamespaceChange(e.target.value)}
+                    />
+                  </div>
                 </div>
                 <div>
-                  <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
-                  <input
-                    className="input font-mono"
-                    value={data.namespace}
-                    onChange={(e) => handleNamespaceChange(e.target.value)}
+                  <p className="mb-1 text-xs font-medium text-gray-500">Notes</p>
+                  <textarea
+                    className="input min-h-[60px] resize-y"
+                    placeholder="Notes for future you, or anyone else looking at this step..."
+                    value={(data.note as string | undefined) ?? ''}
+                    onChange={(e) => onUpdate(node.id, { note: e.target.value || undefined })}
                   />
                 </div>
               </div>
