@@ -176,8 +176,12 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
   for (const mo of moNodes) {
     // For parallels, the BFS stops at the paired parallel_end — anything
     // past the join is downstream of the whole cluster, not inside it.
-    // Branches have no built-in convergence, so they keep BFS'ing to leaves.
+    // For branches, "convergence" is detected dynamically: any node that's
+    // reachable from EVERY handle marks where both branch paths rejoin
+    // (Pipedream-style "branch end"). Those convergence nodes and their
+    // downstream are excluded from the branch's region.
     let pairId: string | null = null
+    let stopAt: Set<string> | null = null
     if (mo.type === 'parallel') {
       const pairEdge = edges.find((e) => {
         if (e.source !== mo.id) return false
@@ -185,6 +189,32 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
         return target?.type === 'parallel_end'
       })
       if (pairEdge) pairId = pairEdge.target
+    } else {
+      const handles = configuredHandleIds(mo)
+      if (handles && handles.length >= 2) {
+        const perHandle = handles.map((h) => {
+          const slotEdge = edges.find((e) => e.source === mo.id && e.sourceHandle === h)
+          if (!slotEdge) return new Set<string>()
+          const set = new Set<string>([slotEdge.target])
+          const q = [slotEdge.target]
+          while (q.length > 0) {
+            const cur = q.shift() as string
+            for (const next of adjOut.get(cur) ?? []) {
+              if (set.has(next)) continue
+              set.add(next)
+              q.push(next)
+            }
+          }
+          return set
+        }).filter((s) => s.size > 0)
+        if (perHandle.length >= 2) {
+          // Convergence = nodes in *every* handle's reachable set.
+          stopAt = new Set<string>()
+          for (const id of perHandle[0]) {
+            if (perHandle.every((s) => s.has(id))) stopAt.add(id)
+          }
+        }
+      }
     }
     const reachable = new Set<string>([mo.id])
     const queue = [mo.id]
@@ -193,6 +223,7 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       if (cur === pairId) continue // include the parallel_end but don't recurse past it
       for (const next of adjOut.get(cur) ?? []) {
         if (reachable.has(next)) continue
+        if (stopAt && stopAt.has(next)) continue // skip converge-and-beyond entirely
         reachable.add(next)
         queue.push(next)
       }
