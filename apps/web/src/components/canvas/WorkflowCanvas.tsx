@@ -903,13 +903,19 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // `fitView` prop fires on first render, before React Flow has measured node
   // dimensions, so the bounding box is computed from positions only and the
   // bottom of the workflow can fall outside the viewport. Refit after
-  // measurement so the entire graph is framed.
+  // measurement so the entire graph is framed. Only includes nodes reachable
+  // from the trigger so far-flung orphans don't pull the bbox wide and leave
+  // dead space on one side.
   useEffect(() => {
     if (!nodesInitialized) return
     if (initialFitDoneRef.current) return
     initialFitDoneRef.current = true
-    fitView({ padding: 0.4, maxZoom: 0.5 })
-  }, [nodesInitialized, fitView])
+    const reachable = reachableFromTrigger(nodes, edges)
+    const fitNodes = nodes
+      .filter((n) => reachable.has(n.id))
+      .map((n) => ({ id: n.id }))
+    fitView({ padding: 0.4, maxZoom: 0.5, nodes: fitNodes.length > 0 ? fitNodes : undefined })
+  }, [nodesInitialized, fitView, nodes, edges])
 
   const handleTestStart = useCallback((_execId: string) => {
     setLiveSteps({})
