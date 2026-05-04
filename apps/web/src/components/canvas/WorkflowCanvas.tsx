@@ -587,7 +587,7 @@ function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: n
   // (parallel chains end at the same y) by horizontal proximity to dropX so a
   // drop near one column doesn't get stolen by an adjacent column whose node
   // happens to come first in the nodes array.
-  return connectable.reduce((best, n) => {
+  const best = connectable.reduce((best, n) => {
     const nBottom = n.position.y + nodeHeight(n.type)
     const bBottom = best.position.y + nodeHeight(best.type)
     if (nBottom !== bBottom) return nBottom > bBottom ? n : best
@@ -595,6 +595,17 @@ function findDropSource(nodes: Node[], edges: Edge[], dropPos: { x: number; y: n
     const bDx = Math.abs(dropPos.x - (best.position.x + nodeWidth(best.type, best.data) / 2))
     return nDx < bDx ? n : best
   })
+
+  // If the drop is more than one rank below the deepest candidate's bottom,
+  // the user is dropping past the cluster — typically because they want a
+  // free-floating placement (e.g. a manual convergence node below a branch's
+  // grey region). Bail out so the drop lands free-floating rather than getting
+  // soaked up into one of the branch chains.
+  const FAR_DROP_GAP = nodeHeight(best.type) + 48 // ~ranksep + node height
+  if (dropPos.y > best.position.y + nodeHeight(best.type) + FAR_DROP_GAP) {
+    return null
+  }
+  return best
 }
 
 function findRunningNamespace(
