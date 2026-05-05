@@ -402,8 +402,24 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return aIdx - bIdx
   })
 
+  // Backbone edges (branch → branch_end, parallel → parallel_end) get
+  // near-zero weight in dagre. Network simplex would otherwise drag the
+  // entire subtree below the start node downward to minimize the backbone's
+  // length — when the end is deep (because user-wired chains feed into it),
+  // dagre pushes the start (and every descendant) down too. Weight 0.01
+  // means dagre stops optimizing for that edge while still respecting its
+  // rank ordering (target rank ≥ source rank + 1).
   for (const edge of sortedEdges) {
-    g.setEdge(edge.source, edge.target)
+    const src = nodeMap.get(edge.source)
+    const tgt = nodeMap.get(edge.target)
+    const isBackbone =
+      (src?.type === 'branch' && tgt?.type === 'branch_end') ||
+      (src?.type === 'parallel' && tgt?.type === 'parallel_end')
+    if (isBackbone) {
+      g.setEdge(edge.source, edge.target, { weight: 0.01, minlen: 1 })
+    } else {
+      g.setEdge(edge.source, edge.target)
+    }
   }
 
   // Phantom children for unconnected multi-output handles. dagre allocates a
