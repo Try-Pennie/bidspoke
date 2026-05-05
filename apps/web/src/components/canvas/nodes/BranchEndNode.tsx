@@ -1,7 +1,7 @@
 'use client'
 
 import { Handle, Position, useStore } from '@xyflow/react'
-import type { NodeProps, Node } from '@xyflow/react'
+import type { NodeProps, Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
@@ -9,7 +9,7 @@ import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
 
-export function BranchEndNode({ data, selected }: NodeProps) {
+export function BranchEndNode({ id, data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
   const pairId = (data as { _pairId?: string })._pairId
 
@@ -17,10 +17,36 @@ export function BranchEndNode({ data, selected }: NodeProps) {
     if (!pairId) return null
     return (s.nodes as Node[]).find((n) => n.id === pairId) ?? null
   })
+  // Real chains wired into this branch_end (anything other than the hidden
+  // backbone from the paired branch). When there are none, render compact so
+  // a backfilled-but-unused branch_end doesn't stack a wide grey region at
+  // the bottom of the canvas.
+  const hasRealIncoming = useStore((s) => {
+    return (s.edges as Edge[]).some((e) => e.target === id && e.source !== pairId)
+  })
   const startData = startNode?.data as CanvasNodeData | undefined
   const startLabel = startData?.label || startData?.namespace || 'branch'
   const derivedLabel = `${startLabel} End`
   const derivedNamespace = `${startData?.namespace ?? 'branch'}_end`
+
+  if (!hasRealIncoming) {
+    // Compact pill — present and wirable, but visually out of the way until
+    // the user actually feeds a chain into it.
+    return (
+      <div
+        className={`relative inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1 text-xs ${
+          selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-purple-100'
+        } ${getNodeClasses(executionStep, hasError, isReachable)}`}
+        style={getExecutionStyle(executionStep)}
+      >
+        <NoteBadge note={note} />
+        <Handle type="target" position={Position.Top} id="input" />
+        <GitMerge className="h-3 w-3 text-purple-400" />
+        <span className="font-medium text-purple-500">{derivedLabel}</span>
+        <Handle type="source" position={Position.Bottom} id="output" />
+      </div>
+    )
+  }
 
   // Match the paired branch's effective width so the join visually closes the
   // cluster instead of being a narrow box under a wide branch.

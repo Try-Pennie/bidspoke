@@ -343,6 +343,13 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       return src?.type === startType
     })
     if (!pairEdge) continue
+    // Branch_ends with no real chains wired in render as a compact pill in
+    // BranchEndNode — don't inherit the paired branch's wide effective width
+    // since that'd reserve a fat empty horizontal slot for them.
+    if (n.type === 'branch_end') {
+      const hasRealIncoming = edges.some((e) => e.target === n.id && e.source !== pairEdge.source)
+      if (!hasRealIncoming) continue
+    }
     const startW = effectiveWidthByNode.get(pairEdge.source)
     if (startW) effectiveWidthByNode.set(n.id, startW)
   }
@@ -465,7 +472,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // chain to its leaf (including chains that terminate in an exit / response
   // — those nodes can't have a real edge to branch_end, but dagre needs the
   // ranking signal so branch_end sits below the deepest chain leaf instead
-  // of one rank under the branch). Synthetic edges are dagre-only.
+  // of one rank under the branch). Synthetic edges are dagre-only. Skip when
+  // branch_end has no real chains wired in — leave it at rank 2 next to the
+  // branch's chain children so it doesn't accumulate at the bottom of the
+  // canvas as a wide empty stack with every other unused branch_end.
   for (const node of nodes) {
     if (node.type !== 'branch') continue
     const pairEdge = edges.find((e) => {
@@ -475,6 +485,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     })
     if (!pairEdge) continue
     const pairId = pairEdge.target
+    const hasRealIncoming = edges.some((e) => e.target === pairId && e.source !== node.id)
+    if (!hasRealIncoming) continue
     const handles = configuredHandleIds(node) ?? []
     for (const h of handles) {
       const slotEdge = edges.find((e) => e.source === node.id && e.sourceHandle === h)
