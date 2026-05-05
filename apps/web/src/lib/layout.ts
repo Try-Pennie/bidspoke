@@ -686,12 +686,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const ownPos = pos.get(node.id)
     if (!ownPos) continue
     const branch = nodeMap.get(branchId)
-    const branchW = effectiveWidthByNode.get(branchId) ?? nodeWidth(branch?.type, branch?.data)
-    const pillW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
     const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
     if (!hasRealIncoming) {
-      ownPos.x = branchPos.x + branchW / 2 + 24 + pillW / 2
-      ownPos.y = branchPos.y
+      // Center horizontally under the branch, just below its bottom edge.
+      // The pill is much narrower than the branch's effective width so it
+      // sits comfortably inside the branch's region — never overflows into
+      // the next sibling's territory the way pinning to the branch's right
+      // edge did. Vertically tucked above the chain children's row.
+      const branchH = nodeHeight(branch?.type)
+      const pillH = nodeHeight(node.type)
+      ownPos.x = branchPos.x
+      ownPos.y = branchPos.y + branchH / 2 + 16 + pillH / 2
       continue
     }
     // BFS through branch's handles, stop at any nested branch_end. Find the
