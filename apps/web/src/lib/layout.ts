@@ -461,6 +461,42 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Same trick for branches with a paired branch_end. Walk every handle's
+  // chain to its leaf (including chains that terminate in an exit / response
+  // — those nodes can't have a real edge to branch_end, but dagre needs the
+  // ranking signal so branch_end sits below the deepest chain leaf instead
+  // of one rank under the branch). Synthetic edges are dagre-only.
+  for (const node of nodes) {
+    if (node.type !== 'branch') continue
+    const pairEdge = edges.find((e) => {
+      if (e.source !== node.id) return false
+      const target = nodes.find((n) => n.id === e.target)
+      return target?.type === 'branch_end'
+    })
+    if (!pairEdge) continue
+    const pairId = pairEdge.target
+    const handles = configuredHandleIds(node) ?? []
+    for (const h of handles) {
+      const slotEdge = edges.find((e) => e.source === node.id && e.sourceHandle === h)
+      if (!slotEdge) continue
+      let current = slotEdge.target
+      const visited = new Set<string>([node.id])
+      while (!visited.has(current)) {
+        visited.add(current)
+        if (current === pairId) break
+        // Walk forward through the chain. If a node has multiple outgoing
+        // edges, take the first one that isn't already visited (good enough
+        // for ranking — branches don't typically nest branches in slots).
+        const next = edges.find((e) => e.source === current && !visited.has(e.target))
+        if (!next) break
+        current = next.target
+      }
+      if (current !== pairId) {
+        g.setEdge(current, pairId, { weight: 0.05, minlen: 1 })
+      }
+    }
+  }
+
   dagre.layout(g)
 
   // ── Post-process: guarantee correct left-to-right child ordering ────────────
