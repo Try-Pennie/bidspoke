@@ -468,50 +468,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
-  // Same trick for branches with a paired branch_end. Walk every handle's
-  // chain to its leaf (including chains that terminate in an exit / response
-  // — those nodes can't have a real edge to branch_end, but dagre needs the
-  // ranking signal so branch_end sits below the deepest chain leaf instead
-  // of one rank under the branch). Synthetic edges are dagre-only.
-  //
-  // Skip when branch_end has no real chains wired in — otherwise the rank
-  // signal cascades through nested branch_ends and stretches the whole
-  // layout vertically just to host empty backfilled join nodes. Unconnected
-  // branch_ends render as compact pills next to their chain children
-  // (BranchEndNode), which is less visually disruptive than dragging the
-  // entire workflow down by N ranks.
-  for (const node of nodes) {
-    if (node.type !== 'branch') continue
-    const pairEdge = edges.find((e) => {
-      if (e.source !== node.id) return false
-      const target = nodes.find((n) => n.id === e.target)
-      return target?.type === 'branch_end'
-    })
-    if (!pairEdge) continue
-    const pairId = pairEdge.target
-    const hasRealIncoming = edges.some((e) => e.target === pairId && e.source !== node.id)
-    if (!hasRealIncoming) continue
-    const handles = configuredHandleIds(node) ?? []
-    for (const h of handles) {
-      const slotEdge = edges.find((e) => e.source === node.id && e.sourceHandle === h)
-      if (!slotEdge) continue
-      let current = slotEdge.target
-      const visited = new Set<string>([node.id])
-      while (!visited.has(current)) {
-        visited.add(current)
-        if (current === pairId) break
-        // Walk forward through the chain. If a node has multiple outgoing
-        // edges, take the first one that isn't already visited (good enough
-        // for ranking — branches don't typically nest branches in slots).
-        const next = edges.find((e) => e.source === current && !visited.has(e.target))
-        if (!next) break
-        current = next.target
-      }
-      if (current !== pairId) {
-        g.setEdge(current, pairId, { weight: 0.05, minlen: 1 })
-      }
-    }
-  }
+  // Note: branches DON'T get synthetic dagre rank edges to their branch_end.
+  // Tried it (commits f7b6661 / 1aef364) — dagre's rank-balancing pulls the
+  // whole left half of a workflow deep just to minimize a synthetic edge's
+  // length when the right half is more nested. Branch_end positions are
+  // post-processed below dagre instead.
 
   dagre.layout(g)
 
@@ -684,15 +645,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (snapshot() === before) break
   }
 
-  // ── Post-process: anchor unconnected branch_ends right beside their
-  // branch start, at the same y. We don't add synthetic dagre rank edges
-  // for unconnected branch_ends (cascading through nested branches stretches
-  // the layout vertically), so dagre leaves them at rank 2 next to chain
-  // children — hard to find. Pinning them next to the branch keeps them
-  // findable AND keeps connected ancestor branch_ends below all nested
-  // pills (since dagre placed those ancestors below the actual chain leaves,
-  // not relative to the unconnected pill). The pill is small enough that
-  // sitting next to the branch start doesn't crowd the cluster.
+  // ── Post-process: place every branch_end's position relative to its own
+  // branch's cluster, NOT via dagre rank constraints (which cascade through
+  // nested branches and stretch the layout vertically — see commit notes
+  // above). Two modes:
+  //   - Unconnected (only the hidden backbone in): pin beside the branch
+  //     start, same y. Compact pill render, findable, doesn't crowd chains.
+  //   - Connected (real chains wired in): pin centered under the branch at
+  //     deepestY + one rank, where deepestY is from a BFS through the
+  //     branch's handles that stops at nested branch_ends so the cascade
+  //     doesn't apply.
   for (const node of nodes) {
     if (node.type !== 'branch_end') continue
     const pairData = node.data as { _pairId?: string }
@@ -700,19 +662,42 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (!branchId) continue
     const branchPos = pos.get(branchId)
     if (!branchPos) continue
-    const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
-    if (hasRealIncoming) continue // dagre's rank already correct
     const ownPos = pos.get(node.id)
     if (!ownPos) continue
     const branch = nodeMap.get(branchId)
     const branchW = effectiveWidthByNode.get(branchId) ?? nodeWidth(branch?.type, branch?.data)
     const pillW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
-    // Sit to the right of the branch start with a small gap, vertically
-    // centered with it. Pill widths are much smaller than the branch's
-    // effective width so this stays within the cluster's region but visibly
-    // separate from the chain children below.
-    ownPos.x = branchPos.x + branchW / 2 + 24 + pillW / 2
-    ownPos.y = branchPos.y
+    const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
+    if (!hasRealIncoming) {
+      ownPos.x = branchPos.x + branchW / 2 + 24 + pillW / 2
+      ownPos.y = branchPos.y
+      continue
+    }
+    // BFS through branch's handles, stop at any nested branch_end. Find the
+    // deepest y among reachable nodes — that's where the cluster's content
+    // bottoms out. Place this branch_end one rank below that.
+    const handles = branch ? configuredHandleIds(branch) ?? [] : []
+    let deepestY = branchPos.y
+    const visited = new Set<string>([branchId, node.id])
+    const queue: string[] = []
+    for (const h of handles) {
+      const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
+      if (slotEdge) queue.push(slotEdge.target)
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (visited.has(cur)) continue
+      visited.add(cur)
+      const curNode = nodeMap.get(cur)
+      if (curNode?.type === 'branch_end') continue // cascade barrier
+      const curPos = pos.get(cur)
+      if (curPos && curPos.y > deepestY) deepestY = curPos.y
+      for (const e of edges) {
+        if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
+      }
+    }
+    ownPos.x = branchPos.x
+    ownPos.y = deepestY + nodeHeight(node.type) + 48
   }
 
   // ── Post-process: extra gap between the main (trigger) component and any
