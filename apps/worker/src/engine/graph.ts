@@ -111,10 +111,21 @@ function resolveField(field: string, ctx: ExecutionContext): unknown {
 }
 
 function getPath(obj: unknown, parts: string[]): unknown {
-  return parts.reduce<unknown>((cur, key) => {
-    if (cur !== null && typeof cur === 'object') {
-      return (cur as Record<string, unknown>)[key]
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (cur === null || cur === undefined) return undefined
+    // Array index notation: "list[0]" or bare "[0]"
+    const arrMatch = part.match(/^([^[]*)\[(\d+)\]$/)
+    if (arrMatch) {
+      const key = arrMatch[1]
+      const idx = parseInt(arrMatch[2], 10)
+      const base = key ? (cur as Record<string, unknown>)[key] : cur
+      cur = Array.isArray(base) ? base[idx] : undefined
+    } else if (typeof cur === 'object') {
+      cur = (cur as Record<string, unknown>)[part]
+    } else {
+      return undefined
     }
-    return undefined
-  }, obj)
+  }
+  return cur
 }
