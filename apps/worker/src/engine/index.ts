@@ -616,11 +616,16 @@ export async function walkGraph(
         const slotHandleIds = slotChildren.length > 0
           ? slotEdges.map((e) => e.source_handle ?? '')
           : []
+        // Chain-walk children only when a parallel_end is present in the
+        // workflow. Legacy parallel definitions (no parallel_end) rely on
+        // single-node child execution and the parent's last-child-edge
+        // continuation logic; chain walking would double-execute downstream nodes.
+        const chainEndId = endNodePreview?.id
         const result = await executeParallelNode(
           execNode,
           resolvedChildren,
           (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue),
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId),
           slotHandleIds
         )
         output = result.output
@@ -1146,74 +1151,117 @@ async function runParallelChild(
   supabase: SupabaseClient,
   executionId: string,
   executionStartedAt: string,
-  stepOrder: number,
+  baseStepOrder: number,
   parallelGroupId: string,
   workflowVersionId = '',
-  stepLogQueue: StepLogEntry[] = []
+  stepLogQueue: StepLogEntry[] = [],
+  definition?: Pick<WorkflowDefinition, 'nodes' | 'edges'>,
+  // Chain-walking only fires when a parallel_end exists for this parallel.
+  // The walker follows edges until it reaches this node (or runs out).
+  // Legacy parallels (no parallel_end) get single-node behavior.
+  chainEndId?: string
 ): Promise<ParallelChildResult> {
-  const stepStartedAt = new Date().toISOString()
-  log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type })
+  // The slot's identifying namespace is always the FIRST node in the chain.
+  // Bid Evaluation and other downstream consumers key off this namespace.
+  const slotNamespace = child.namespace
 
-  const retryConfig = {
-    retries: (child.config.retries as number) ?? 2,
-    backoff: (child.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
-    timeout_ms: (child.config.timeout_ms as number) ?? 30000,
-  }
+  let current: NodeDefinition | undefined = child
+  let chainIndex = 0
+  let lastOutput: unknown = null
 
-  let output: unknown = null
-  let stepStatus: StepStatus = 'completed'
-  let errorMessage: string | undefined
-  let errorType: ErrorType = null
-  let stepLogs: import('../types').StepLogEntry[] | undefined
+  while (current) {
+    // parallel_end is the parent's responsibility — stop without executing.
+    if (current.type === 'parallel_end') break
 
-  try {
-    const result = await withRetry(
-      () => executeNode(child, ctx, env, supabase),
-      retryConfig,
-      (err) => {
-        if (err instanceof Response) return classifyHttpError(err.status)
-        return classifyTransportError(err)
+    const node = current
+    const stepStartedAt = new Date().toISOString()
+    log({ event: 'step_start', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type })
+
+    const retryConfig = {
+      retries: (node.config.retries as number) ?? 2,
+      backoff: (node.config.retry_backoff as 'linear' | 'exponential') ?? 'exponential',
+      timeout_ms: (node.config.timeout_ms as number) ?? 30000,
+    }
+
+    let output: unknown = null
+    let stepStatus: StepStatus = 'completed'
+    let errorMessage: string | undefined
+    let errorType: ErrorType = null
+    let stepLogs: import('../types').StepLogEntry[] | undefined
+
+    try {
+      const result = await withRetry(
+        () => executeNode(node, ctx, env, supabase),
+        retryConfig,
+        (err) => {
+          if (err instanceof Response) return classifyHttpError(err.status)
+          return classifyTransportError(err)
+        }
+      )
+      output = result.output
+      stepLogs = result.logs
+
+      // Early-response and early-exit sentinels don't make sense inside a
+      // parallel block — you can't respond or exit the workflow while sibling
+      // children are still running.
+      if (result.earlyResponse) {
+        const r = result.earlyResponse
+        const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+        const preview = bodyStr.length > 300 ? bodyStr.slice(0, 300) + '…' : bodyStr
+        throw new Error(`Code returned a respond sentinel (status ${r.status}). Inside a parallel block, respond-and-exit is not meaningful — throw an error instead. Body: ${preview}`)
       }
-    )
-    output = result.output
-    stepLogs = result.logs
+      if (result.earlyExit) {
+        throw new Error('Code returned an exit sentinel inside a parallel block. Early-exit is not supported for parallel children — throw an error instead.')
+      }
+    } catch (err) {
+      stepStatus = 'failed'
+      errorMessage = err instanceof Error ? err.message : String(err)
+      errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
+      const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
+      if (errLogs) stepLogs = errLogs
+    }
 
-    // Early-response and early-exit sentinels don't make sense inside a
-    // parallel block — you can't respond or exit the workflow while sibling
-    // children are still running. Treat them as child failures so the
-    // parallel's on_child_error policy handles them consistently, and so
-    // the step shows the correct failed/red state in the UI instead of
-    // silently looking successful with an error shape in its output.
-    if (result.earlyResponse) {
-      const r = result.earlyResponse
-      const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
-      const preview = bodyStr.length > 300 ? bodyStr.slice(0, 300) + '…' : bodyStr
-      throw new Error(`Code returned a respond sentinel (status ${r.status}). Inside a parallel block, respond-and-exit is not meaningful — throw an error instead. Body: ${preview}`)
+    const nodeDurationMs = Date.now() - new Date(stepStartedAt).getTime()
+    if (stepStatus === 'completed') {
+      log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: nodeDurationMs })
+    } else {
+      log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: nodeDurationMs, error_message: errorMessage, error_type: errorType })
     }
-    if (result.earlyExit) {
-      throw new Error('Code returned an exit sentinel inside a parallel block. Early-exit is not supported for parallel children — throw an error instead.')
+
+    recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
+
+    if (stepStatus === 'failed') {
+      // The slot's result is the FIRST node's namespace — but downstream chain
+      // failures still surface as a slot rejection so executeParallelNode's
+      // on_child_error policy applies.
+      return { namespace: slotNamespace, status: 'rejected', error: errorMessage }
     }
-  } catch (err) {
-    stepStatus = 'failed'
-    errorMessage = err instanceof Error ? err.message : String(err)
-    errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
-    const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
-    if (errLogs) stepLogs = errLogs
+
+    lastOutput = output
+
+    // Walk to the next node in the chain. Stop at parallel_end, terminal
+    // nodes, or when no edge matches. Without a definition or chain-end
+    // anchor we can't walk safely, so the slot ends at this node (legacy
+    // single-node behavior).
+    if (!definition || !chainEndId) break
+    const edges = outgoingEdges(node.id, definition.edges)
+    let nextEdge: import('../types').EdgeDefinition | undefined
+
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') &&
+        output !== null && typeof output === 'object') {
+      const route = (output as Record<string, unknown>)._route as string | undefined
+      if (route) nextEdge = edges.find((e) => e.source_handle === route)
+    }
+    if (!nextEdge) {
+      nextEdge = edges.find((e) => evaluateEdge(e, ctx))
+    }
+
+    current = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
+    chainIndex++
   }
 
-  const childDurationMs = Date.now() - new Date(stepStartedAt).getTime()
-  if (stepStatus === 'completed') {
-    log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type, duration_ms: childDurationMs })
-  } else {
-    log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: child.namespace, step_type: child.type, duration_ms: childDurationMs, error_message: errorMessage, error_type: errorType })
-  }
-
-  recordStepOutput(ctx, child.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-  logStep(stepLogQueue, executionId, executionStartedAt, child, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, stepOrder, parallelGroupId, stepLogs)
-
-  return stepStatus === 'completed'
-    ? { namespace: child.namespace, status: 'fulfilled', output }
-    : { namespace: child.namespace, status: 'rejected', error: errorMessage }
+  return { namespace: slotNamespace, status: 'fulfilled', output: lastOutput }
 }
 
 async function preloadResumeContext(
