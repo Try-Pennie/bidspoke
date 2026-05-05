@@ -244,15 +244,32 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       }
     }
     if (reachable.size === 1) continue // no descendants — nothing to wrap
+    // Identify the paired end node (parallel_end / branch_end via backbone),
+    // if any. The start node and the paired end "cradle" the region —
+    // region top sits at the start node's vertical center and region
+    // bottom sits at the end node's vertical center, so each appears half
+    // inside / half outside the cluster (Pipedream-style).
+    let pairedEndId: string | null = null
+    for (const e of edges) {
+      if (e.source !== mo.id) continue
+      const tgt = nodes.find((n) => n.id === e.target)
+      if (mo.type === 'parallel' && tgt?.type === 'parallel_end') { pairedEndId = e.target; break }
+      if (mo.type === 'branch' && tgt?.type === 'branch_end') { pairedEndId = e.target; break }
+    }
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const n of nodes) {
       if (!reachable.has(n.id)) continue
       const w = nodeWidth(n.type, n.data)
       const h = nodeHeight(n.type)
       minX = Math.min(minX, n.position.x)
-      minY = Math.min(minY, n.position.y)
       maxX = Math.max(maxX, n.position.x + w)
-      maxY = Math.max(maxY, n.position.y + h)
+      // For the start node: only its bottom half contributes to vertical
+      // bbox. For the paired end: only its top half contributes. Other
+      // reachable nodes contribute their full extent.
+      const top = n.id === mo.id ? n.position.y + h / 2 : n.position.y
+      const bottom = n.id === pairedEndId ? n.position.y + h / 2 : n.position.y + h
+      minY = Math.min(minY, top)
+      maxY = Math.max(maxY, bottom)
     }
     // Extend the region to cover all configured handle columns, even unused
     // ones. Without this, an unfilled branch handle (e.g. `trades_missing`
@@ -307,17 +324,19 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
   // container; gap subtracted on each side keeps sibling region edges from
   // touching, so two adjacent branches read as separate clusters even though
   // their subtrees sit 48px apart (NODESEP_PRE) at the layout level.
+  // Vertical PAD is zero — minY/maxY are already the start/end nodes' vertical
+  // centers, so the region's top and bottom sit exactly halfway through them.
   const PAD = 24
   const SIBLING_GAP = 16
   return regions.map((r) => {
     const depth = regions.filter((other) => other.id !== r.id && other.nodeIds.has(r.id)).length
     const inset = SIBLING_GAP / 2
     const width = r.maxX - r.minX + PAD * 2 - inset * 2
-    const height = r.maxY - r.minY + PAD * 2
+    const height = r.maxY - r.minY
     return {
       id: `region-${r.id}`,
       type: 'region',
-      position: { x: r.minX - PAD + inset, y: r.minY - PAD },
+      position: { x: r.minX - PAD + inset, y: r.minY },
       // width / height at the top level so React Flow skips its measurement
       // step. Without these, React Flow's ResizeObserver would write back
       // measured dimensions on every render → setNodes → recompute regions →
