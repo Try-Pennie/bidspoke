@@ -2563,6 +2563,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             } : undefined}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
+            // Default to smoothstep so multi-output handles route their wires
+            // straight down then bend at right angles to reach off-center
+            // children. Bezier curves diagonally and reads as ambiguous on
+            // wide branches with very different slot widths. Aligned
+            // source/target render as a plain vertical line either way.
+            defaultEdgeOptions={{ type: 'smoothstep' }}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
