@@ -24,6 +24,25 @@ const OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
 ]
 
 const VALUE_LESS_OPERATORS = new Set<EdgeCondition['operator']>(['exists', 'not_exists', 'is_true', 'is_false', 'is_null', 'is_not_null'])
+const NUMERIC_OPERATORS = new Set<EdgeCondition['operator']>(['gt', 'gte', 'lt', 'lte'])
+const EQUALITY_OPERATORS = new Set<EdgeCondition['operator']>(['eq', 'neq'])
+
+// Coerce raw input to the right JS type for the given operator, so the engine's
+// strict-equality (`===`) and numeric comparison operators behave correctly.
+// Numeric operators (gt/gte/lt/lte) always store as number. Equality operators
+// (eq/neq) auto-detect numeric strings and store as number; otherwise stay as
+// string. Other operators (contains, in_array, …) stay raw.
+function parseValueForOperator(raw: string, operator: EdgeCondition['operator']): unknown {
+  if (raw === '') return ''
+  if (NUMERIC_OPERATORS.has(operator)) {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : raw
+  }
+  if (EQUALITY_OPERATORS.has(operator) && /^-?\d+(\.\d+)?$/.test(raw.trim())) {
+    return Number(raw)
+  }
+  return raw
+}
 
 interface Props {
   groups: ConditionGroup[]
@@ -127,12 +146,15 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                 <select
                   className="shrink-0 rounded border border-gray-200 px-1.5 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                   value={cond.operator}
-                  onChange={(e) =>
-                    updateCondition(gi, ci, {
-                      ...cond,
-                      operator: e.target.value as EdgeCondition['operator'],
-                    })
-                  }
+                  onChange={(e) => {
+                    const nextOp = e.target.value as EdgeCondition['operator']
+                    // Re-coerce the existing value for the new operator's semantics.
+                    // Avoids stale string values surviving an op change to a numeric op.
+                    const nextValue = cond.value !== undefined
+                      ? parseValueForOperator(String(cond.value), nextOp)
+                      : cond.value
+                    updateCondition(gi, ci, { ...cond, operator: nextOp, value: nextValue })
+                  }}
                 >
                   {OPERATORS.map((op) => (
                     <option key={op.value} value={op.value}>
@@ -145,7 +167,12 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                     className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-xs focus:border-p-blue-dark focus:outline-none"
                     placeholder="value"
                     value={cond.value !== undefined ? String(cond.value) : ''}
-                    onChange={(e) => updateCondition(gi, ci, { ...cond, value: e.target.value })}
+                    onChange={(e) =>
+                      updateCondition(gi, ci, {
+                        ...cond,
+                        value: parseValueForOperator(e.target.value, cond.operator),
+                      })
+                    }
                   />
                 )}
                 <button
