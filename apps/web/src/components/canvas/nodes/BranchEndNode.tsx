@@ -26,10 +26,10 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return (s.edges as Edge[]).some((e) => e.target === id && e.source !== pairId)
   })
 
-  // Every chain from the paired branch terminates in an exit / response —
-  // the branch_end is unreachable. No handle the user can wire to fixes
-  // that, so don't render the pill at all. If the user adds a non-terminal
-  // path later, the condition flips and it reappears.
+  // Every chain from the paired branch terminates in an exit / response that
+  // ends the workflow. There's no path for the user to wire into branch_end,
+  // but the branch's job IS to converge here — we render it as if connected
+  // so the visual still looks complete (full card under the cluster).
   const allChainsTerminate = useStore((s) => {
     if (!pairId) return false
     const allNodes = s.nodes as Node[]
@@ -69,6 +69,11 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return true
   })
 
+  // The branch_end is "effectively connected" when there's a real wire into
+  // it OR every chain ends in a workflow-terminating node — both states mean
+  // the branch's convergence is meaningful, so we render it as the full card.
+  const effectivelyConnected = hasRealIncoming || allChainsTerminate
+
   // The render shape (compact pill vs full card) changes the handle DOM
   // positions. Without re-registering, React Flow's handle position cache
   // stays stuck on the previous shape and a connection drag from the bottom
@@ -77,19 +82,13 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals()
   useEffect(() => {
     updateNodeInternals(id)
-  }, [id, hasRealIncoming, updateNodeInternals])
+  }, [id, effectivelyConnected, updateNodeInternals])
   const startData = startNode?.data as CanvasNodeData | undefined
   const startLabel = startData?.label || startData?.namespace || 'branch'
   const derivedLabel = `${startLabel} End`
   const derivedNamespace = `${startData?.namespace ?? 'branch'}_end`
 
-  if (!hasRealIncoming && allChainsTerminate) {
-    // Branch's chains all terminate (exit / response). branch_end can't be
-    // reached by any path the user could wire — render nothing.
-    return null
-  }
-
-  if (!hasRealIncoming) {
+  if (!effectivelyConnected) {
     // Compact pill — present and wirable, but visually out of the way until
     // the user actually feeds a chain into it.
     return (

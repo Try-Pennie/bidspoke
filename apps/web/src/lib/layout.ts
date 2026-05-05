@@ -339,6 +339,43 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // Parallel_end / branch_end inherit their paired start node's effective
   // width so the join visually closes the cluster instead of staying NODE_W
   // under a wider start.
+  // Helper: a branch_end is "effectively connected" if a chain wires into it
+  // OR every chain leaving the paired branch terminates in an exit / response
+  // (workflow-ending). Mirrors `effectivelyConnected` in BranchEndNode.
+  const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
+    if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
+    const seedTargets: string[] = []
+    for (const e of edges) {
+      if (e.source !== branchId) continue
+      if (!e.sourceHandle || e.sourceHandle === 'output') continue
+      seedTargets.push(e.target)
+    }
+    if (seedTargets.length === 0) return false
+    const visited = new Set<string>()
+    const queue = [...seedTargets]
+    const leaves: string[] = []
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (visited.has(cur)) continue
+      visited.add(cur)
+      const outs = edges.filter((e) => e.source === cur && e.target !== endId)
+      if (outs.length === 0) leaves.push(cur)
+      else for (const o of outs) queue.push(o.target)
+    }
+    if (leaves.length === 0) return false
+    for (const lid of leaves) {
+      const leaf = nodeMap.get(lid)
+      if (!leaf) return false
+      if (leaf.type === 'exit') continue
+      if (leaf.type === 'response') {
+        const cfg = (leaf.data as { config?: { continue_after_response?: boolean } } | undefined)?.config
+        if (!cfg?.continue_after_response) continue
+      }
+      return false
+    }
+    return true
+  }
+
   for (const n of nodes) {
     if (n.type !== 'parallel_end' && n.type !== 'branch_end') continue
     const startType = n.type === 'parallel_end' ? 'parallel' : 'branch'
@@ -348,12 +385,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       return src?.type === startType
     })
     if (!pairEdge) continue
-    // Branch_ends with no real chains wired in render as a compact pill in
-    // BranchEndNode — don't inherit the paired branch's wide effective width
-    // since that'd reserve a fat empty horizontal slot for them.
+    // Branch_ends with no effective incoming render as a compact pill —
+    // don't inherit the paired branch's wide effective width since that'd
+    // reserve a fat empty horizontal slot for them.
     if (n.type === 'branch_end') {
-      const hasRealIncoming = edges.some((e) => e.target === n.id && e.source !== pairEdge.source)
-      if (!hasRealIncoming) continue
+      if (!branchEndIsEffectivelyConnected(n.id, pairEdge.source)) continue
     }
     const startW = effectiveWidthByNode.get(pairEdge.source)
     if (startW) effectiveWidthByNode.set(n.id, startW)
@@ -696,10 +732,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const ownPos = pos.get(node.id)
       if (!ownPos) continue
       const branch = nodeMap.get(branchId)
-      const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
+      const isConnected = branchEndIsEffectivelyConnected(node.id, branchId)
       let newX: number
       let newY: number
-      if (!hasRealIncoming) {
+      if (!isConnected) {
         const branchH = nodeHeight(branch?.type)
         const pillH = nodeHeight(node.type)
         newX = branchPos.x
