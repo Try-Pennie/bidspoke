@@ -42,6 +42,7 @@ import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
 import { RegionNode } from './nodes/RegionNode'
 import { ConvergeEdge } from './edges/ConvergeEdge'
+import { LateBendEdge } from './edges/LateBendEdge'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import ImportDialog from './ImportDialog'
@@ -84,6 +85,7 @@ const nodeTypes: NodeTypes = {
 
 const edgeTypes = {
   converge: ConvergeEdge,
+  lateBend: LateBendEdge,
 }
 
 
@@ -2563,12 +2565,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             } : undefined}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
-            // Default to smoothstep so multi-output handles route their wires
-            // straight down then bend at right angles to reach off-center
-            // children. Bezier curves diagonally and reads as ambiguous on
-            // wide branches with very different slot widths. Aligned
-            // source/target render as a plain vertical line either way.
-            defaultEdgeOptions={{ type: 'smoothstep' }}
+            // Default to a late-bend smoothstep so multi-output handles
+            // keep their wire in the handle's column most of the way down,
+            // bending horizontally only near the target. Avoids diagonals
+            // (bezier) AND avoids early mid-Y bends that cross sibling wires
+            // (default smoothstep). Aligned source/target collapses to a
+            // plain vertical line.
+            defaultEdgeOptions={{ type: 'lateBend' }}
             proOptions={{ hideAttribution: true }}
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
