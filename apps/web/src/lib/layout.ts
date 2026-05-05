@@ -670,60 +670,68 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // branch's cluster, NOT via dagre rank constraints (which cascade through
   // nested branches and stretch the layout vertically — see commit notes
   // above). Two modes:
-  //   - Unconnected (only the hidden backbone in): pin beside the branch
-  //     start, same y. Compact pill render, findable, doesn't crowd chains.
+  //   - Unconnected (only the hidden backbone in): tuck under the branch,
+  //     above the chain children. Compact pill render, findable, doesn't
+  //     overflow into sibling territory.
   //   - Connected (real chains wired in): pin centered under the branch at
-  //     deepestY + one rank, where deepestY is from a BFS through the
-  //     branch's handles that stops at nested branch_ends so the cascade
-  //     doesn't apply.
-  for (const node of nodes) {
-    if (node.type !== 'branch_end') continue
-    const pairData = node.data as { _pairId?: string }
-    const branchId = pairData._pairId
-    if (!branchId) continue
-    const branchPos = pos.get(branchId)
-    if (!branchPos) continue
-    const ownPos = pos.get(node.id)
-    if (!ownPos) continue
-    const branch = nodeMap.get(branchId)
-    const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
-    if (!hasRealIncoming) {
-      // Center horizontally under the branch, just below its bottom edge.
-      // The pill is much narrower than the branch's effective width so it
-      // sits comfortably inside the branch's region — never overflows into
-      // the next sibling's territory the way pinning to the branch's right
-      // edge did. Vertically tucked above the chain children's row.
-      const branchH = nodeHeight(branch?.type)
-      const pillH = nodeHeight(node.type)
-      ownPos.x = branchPos.x
-      ownPos.y = branchPos.y + branchH / 2 + 16 + pillH / 2
-      continue
-    }
-    // BFS through branch's handles, stop at any nested branch_end. Find the
-    // deepest y among reachable nodes — that's where the cluster's content
-    // bottoms out. Place this branch_end one rank below that.
-    const handles = branch ? configuredHandleIds(branch) ?? [] : []
-    let deepestY = branchPos.y
-    const visited = new Set<string>([branchId, node.id])
-    const queue: string[] = []
-    for (const h of handles) {
-      const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
-      if (slotEdge) queue.push(slotEdge.target)
-    }
-    while (queue.length > 0) {
-      const cur = queue.shift() as string
-      if (visited.has(cur)) continue
-      visited.add(cur)
-      const curNode = nodeMap.get(cur)
-      if (curNode?.type === 'branch_end') continue // cascade barrier
-      const curPos = pos.get(cur)
-      if (curPos && curPos.y > deepestY) deepestY = curPos.y
-      for (const e of edges) {
-        if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
+  //     `deepestY + one rank`, where deepestY is from a BFS through the
+  //     branch's handles that DOES include nested branch_ends — but only
+  //     reads their *post-processed* positions, so each outer end ends up
+  //     just below the deepest inner end.
+  //
+  // Iterates until positions stabilize so outer ends can react to inner ends
+  // moving on prior iterations.
+  let branchEndIters = 0
+  let branchEndChanged = true
+  while (branchEndChanged && branchEndIters < 8) {
+    branchEndChanged = false
+    branchEndIters++
+    for (const node of nodes) {
+      if (node.type !== 'branch_end') continue
+      const pairData = node.data as { _pairId?: string }
+      const branchId = pairData._pairId
+      if (!branchId) continue
+      const branchPos = pos.get(branchId)
+      if (!branchPos) continue
+      const ownPos = pos.get(node.id)
+      if (!ownPos) continue
+      const branch = nodeMap.get(branchId)
+      const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
+      let newX: number
+      let newY: number
+      if (!hasRealIncoming) {
+        const branchH = nodeHeight(branch?.type)
+        const pillH = nodeHeight(node.type)
+        newX = branchPos.x
+        newY = branchPos.y + branchH / 2 + 16 + pillH / 2
+      } else {
+        const handles = branch ? configuredHandleIds(branch) ?? [] : []
+        let deepestY = branchPos.y
+        const visited = new Set<string>([branchId, node.id])
+        const queue: string[] = []
+        for (const h of handles) {
+          const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
+          if (slotEdge) queue.push(slotEdge.target)
+        }
+        while (queue.length > 0) {
+          const cur = queue.shift() as string
+          if (visited.has(cur)) continue
+          visited.add(cur)
+          const curPos = pos.get(cur)
+          if (curPos && curPos.y > deepestY) deepestY = curPos.y
+          for (const e of edges) {
+            if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
+          }
+        }
+        newX = branchPos.x
+        newY = deepestY + nodeHeight(node.type) + 48
+      }
+      if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
+        ownPos.x = newX
+        ownPos.y = newY
+        branchEndChanged = true
       }
     }
-    ownPos.x = branchPos.x
-    ownPos.y = deepestY + nodeHeight(node.type) + 48
   }
 
   // ── Post-process: extra gap between the main (trigger) component and any
