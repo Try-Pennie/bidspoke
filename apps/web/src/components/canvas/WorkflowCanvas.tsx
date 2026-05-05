@@ -780,6 +780,23 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+  // Grace period before hiding the edge X button — gives the cursor time to
+  // bridge the gap between the thin wire hover region and the button itself.
+  // Cleared whenever the user re-enters the wire or the button.
+  const edgeHoverHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelEdgeHoverHide = useCallback(() => {
+    if (edgeHoverHideTimerRef.current) {
+      clearTimeout(edgeHoverHideTimerRef.current)
+      edgeHoverHideTimerRef.current = null
+    }
+  }, [])
+  const scheduleEdgeHoverHide = useCallback(() => {
+    cancelEdgeHoverHide()
+    edgeHoverHideTimerRef.current = setTimeout(() => {
+      setHoveredEdgeId(null)
+      edgeHoverHideTimerRef.current = null
+    }, 150)
+  }, [cancelEdgeHoverHide])
   const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return 320
     const saved = Number.parseInt(window.localStorage.getItem('bidspoke.sidePanelWidth') ?? '', 10)
@@ -2482,8 +2499,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             } : undefined}
             reconnectRadius={24}
             connectionRadius={60}
-            onEdgeMouseEnter={mode === 'edit' ? (_, edge) => setHoveredEdgeId(edge.id) : undefined}
-            onEdgeMouseLeave={mode === 'edit' ? () => setHoveredEdgeId(null) : undefined}
+            onEdgeMouseEnter={mode === 'edit' ? (_, edge) => { cancelEdgeHoverHide(); setHoveredEdgeId(edge.id) } : undefined}
+            onEdgeMouseLeave={mode === 'edit' ? () => scheduleEdgeHoverHide() : undefined}
             isValidConnection={isValidConnection}
             onNodeClick={(e, node) => {
               // Shift / Cmd click → add to multi-selection (handled by React Flow);
@@ -2618,14 +2635,28 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             const src = nodes.find((n) => n.id === edge.source)
             const tgt = nodes.find((n) => n.id === edge.target)
             if (!src || !tgt) return null
+            // Resolve the actual source-handle x position. Multi-output nodes
+            // (branch, parallel, filter, bid_evaluation, bid_group) place
+            // handles at uniform `(i + 0.5) / N` across the node's effective
+            // width; all other nodes use the node's center. Without this the
+            // X button drifts wide of the wire on multi-output edges, and the
+            // user's cursor leaves the hover region trying to reach it.
+            const srcW = nodeWidth(src.type, src.data)
+            const tgtW = nodeWidth(tgt.type, tgt.data)
+            const handles = configuredHandleIds(src) ?? null
+            const handleIdx = handles && edge.sourceHandle
+              ? handles.indexOf(edge.sourceHandle)
+              : -1
+            const srcHandleX = handles && handleIdx >= 0
+              ? src.position.x + (srcW * (handleIdx + 0.5)) / handles.length
+              : src.position.x + srcW / 2
             // Use React Flow's own bezier midpoint so the X sits on the
-            // actual curve, not the straight-line midpoint (which drifts off
-            // the wire when source and target aren't in the same column).
+            // actual curve, not the straight-line midpoint.
             const [, labelX, labelY] = getBezierPath({
-              sourceX: src.position.x + NODE_W / 2,
+              sourceX: srcHandleX,
               sourceY: src.position.y + nodeHeight(src.type),
               sourcePosition: Position.Bottom,
-              targetX: tgt.position.x + NODE_W / 2,
+              targetX: tgt.position.x + tgtW / 2,
               targetY: tgt.position.y,
               targetPosition: Position.Top,
             })
@@ -2634,9 +2665,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             return (
               <button
                 type="button"
-                onMouseEnter={() => setHoveredEdgeId(hoveredEdgeId)}
-                onMouseLeave={() => setHoveredEdgeId(null)}
-                onClick={() => { deleteEdge(hoveredEdgeId); setHoveredEdgeId(null) }}
+                onMouseEnter={() => { cancelEdgeHoverHide(); setHoveredEdgeId(hoveredEdgeId) }}
+                onMouseLeave={() => scheduleEdgeHoverHide()}
+                onClick={() => { cancelEdgeHoverHide(); deleteEdge(hoveredEdgeId); setHoveredEdgeId(null) }}
                 style={{ left, top, transform: 'translate(-50%, -50%)' }}
                 className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
                 title="Disconnect"
