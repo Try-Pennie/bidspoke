@@ -27,19 +27,18 @@ export function getExecutionStyle(exec: ExecutionStep | null | undefined): CSSPr
 /**
  * Use instead of getExecutionClasses when validation error state also applies.
  * Execution state always takes precedence over validation indicators.
- * Pass `isReachable` (from node.data.isReachable) to dim nodes not reached
- * from the trigger — applied only when no execution state is active so
- * rerun / test results stay readable.
+ * `isReachable` is accepted for back-compat but no longer dims the node —
+ * we keep all nodes looking uniform regardless of graph context, so the
+ * grey region backdrop is the only visual signal of nesting / orphans.
  */
 export function getNodeClasses(
   exec: ExecutionStep | null | undefined,
   hasError?: boolean,
-  isReachable?: boolean
+  _isReachable?: boolean
 ): string {
   if (exec !== undefined) return getExecutionClasses(exec)
-  const dim = isReachable === false ? ' opacity-50' : ''
-  if (hasError) return `ring-2 ring-amber-400 ring-offset-1${dim}`
-  return dim.trim()
+  if (hasError) return 'ring-2 ring-amber-400 ring-offset-1'
+  return ''
 }
 
 /** Returns a one-line output preview for a completed step, e.g. "status: 200" */
