@@ -225,7 +225,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
 
   const g = new dagre.graphlib.Graph()
   g.setDefaultEdgeLabel(() => ({}))
-  g.setGraph({ rankdir: 'TB', ranksep: 48, nodesep: 48, marginx: 60, marginy: 60 })
+  g.setGraph({ rankdir: 'TB', ranksep: 48, nodesep: 96, marginx: 60, marginy: 60 })
 
   // Build a quick lookup so we can resolve node type/data for each edge source
   const nodeMap = new Map(nodes.map((n) => [n.id, n]))
@@ -234,7 +234,12 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // chain widths, the node should render wide enough to put each handle
   // directly above its child's column. Otherwise, the wire from a handle to
   // a far-offset child cuts diagonally and clips the sibling chain's region.
-  const NODESEP_PRE = 48
+  // Horizontal gap between sibling subtrees of a multi-output node. Bumped
+  // from 48 → 96 on 2026-05-05 because adjacent branch clusters' region
+  // backdrops were touching when one subtree was wide and the next was
+  // also wide (nested branches in adjacent slots). 96 gives a visible gap
+  // even after the region backdrops extend their own padding.
+  const NODESEP_PRE = 96
   // Compute the set of nodes where a multi-output's chain rejoins (convergence
   // points reachable from every handle, plus the paired branch_end/parallel_end
   // via the backbone). Width recursion stops at these so the multi-output's
