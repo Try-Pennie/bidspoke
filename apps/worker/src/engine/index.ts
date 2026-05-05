@@ -598,10 +598,36 @@ export async function walkGraph(
 
       // Config now lives on the start node. For legacy definitions whose end
       // node still holds wait_for/timeout, merge those in as a fallback.
+      // parallel_end is found by checking three sources, in order:
+      //  1. Children's immediate outgoing edges (single-node slot pattern)
+      //  2. The parallel start's `output` handle edge (canvas skeleton edge)
+      //  3. Walk each child's downstream chain looking for parallel_end
       const previewChildEdges = resolvedChildren.flatMap((c) => outgoingEdges(c.id, definition.edges))
-      const endNodePreview = previewChildEdges
+      let endNodePreview = previewChildEdges
         .map((e) => findNode(e.target, definition.nodes))
         .find((n) => n?.type === 'parallel_end')
+      if (!endNodePreview) {
+        const skeletonEdge = outgoingEdges(node.id, definition.edges).find((e) => e.source_handle === 'output')
+        if (skeletonEdge) {
+          const target = findNode(skeletonEdge.target, definition.nodes)
+          if (target?.type === 'parallel_end') endNodePreview = target
+        }
+      }
+      if (!endNodePreview) {
+        // BFS through children's chains looking for parallel_end
+        const seen = new Set<string>()
+        const queue = [...resolvedChildren]
+        while (queue.length > 0) {
+          const cur = queue.shift()!
+          if (seen.has(cur.id)) continue
+          seen.add(cur.id)
+          if (cur.type === 'parallel_end') { endNodePreview = cur; break }
+          for (const e of outgoingEdges(cur.id, definition.edges)) {
+            const t = findNode(e.target, definition.nodes)
+            if (t) queue.push(t)
+          }
+        }
+      }
       const execNode = endNodePreview && endNodePreview.config && Object.keys(endNodePreview.config).length > 0
         ? { ...node, config: { ...endNodePreview.config, ...node.config } }
         : node
@@ -661,17 +687,11 @@ export async function walkGraph(
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
       logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelStartOrder)
 
-      // Locate the parallel_end join node — any edge from a child pointing to a
-      // parallel_end counts. Logged with the same status as the parallel start
-      // so the pair renders as a single logical unit on the canvas (green/red/etc.
-      // together) even when parallel failed and we throw below.
+      // Locate the parallel_end join node. Reuse the same detection logic
+      // used to enable chain walking — children's edges, then the parallel
+      // start's skeleton edge, then BFS through the chain.
       const childIdSet = new Set(resolvedChildren.map((c) => c.id))
-      const allChildEdges = resolvedChildren.flatMap((c) => outgoingEdges(c.id, definition.edges))
-      const endNodeId = allChildEdges.map((e) => e.target).find((tid) => {
-        const n = findNode(tid, definition.nodes)
-        return n?.type === 'parallel_end'
-      })
-      const endNode = endNodeId ? findNode(endNodeId, definition.nodes) : undefined
+      const endNode = endNodePreview
       if (endNode) {
         recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
         logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelEndOrder)
