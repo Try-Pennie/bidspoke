@@ -15,8 +15,6 @@ import {
   useNodesInitialized,
   useReactFlow,
   useViewport,
-  getBezierPath,
-  Position,
   type Node,
   type Edge,
   type Connection,
@@ -2629,53 +2627,15 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             </div>
           )}
 
-          {mode === 'edit' && hoveredEdgeId && (() => {
-            const edge = edges.find((e) => e.id === hoveredEdgeId)
-            if (!edge) return null
-            const src = nodes.find((n) => n.id === edge.source)
-            const tgt = nodes.find((n) => n.id === edge.target)
-            if (!src || !tgt) return null
-            // Resolve the actual source-handle x position. Multi-output nodes
-            // (branch, parallel, filter, bid_evaluation, bid_group) place
-            // handles at uniform `(i + 0.5) / N` across the node's effective
-            // width; all other nodes use the node's center. Without this the
-            // X button drifts wide of the wire on multi-output edges, and the
-            // user's cursor leaves the hover region trying to reach it.
-            const srcW = nodeWidth(src.type, src.data)
-            const tgtW = nodeWidth(tgt.type, tgt.data)
-            const handles = configuredHandleIds(src) ?? null
-            const handleIdx = handles && edge.sourceHandle
-              ? handles.indexOf(edge.sourceHandle)
-              : -1
-            const srcHandleX = handles && handleIdx >= 0
-              ? src.position.x + (srcW * (handleIdx + 0.5)) / handles.length
-              : src.position.x + srcW / 2
-            // Use React Flow's own bezier midpoint so the X sits on the
-            // actual curve, not the straight-line midpoint.
-            const [, labelX, labelY] = getBezierPath({
-              sourceX: srcHandleX,
-              sourceY: src.position.y + nodeHeight(src.type),
-              sourcePosition: Position.Bottom,
-              targetX: tgt.position.x + tgtW / 2,
-              targetY: tgt.position.y,
-              targetPosition: Position.Top,
-            })
-            const left = labelX * viewport.zoom + viewport.x
-            const top = labelY * viewport.zoom + viewport.y
-            return (
-              <button
-                type="button"
-                onMouseEnter={() => { cancelEdgeHoverHide(); setHoveredEdgeId(hoveredEdgeId) }}
-                onMouseLeave={() => scheduleEdgeHoverHide()}
-                onClick={() => { cancelEdgeHoverHide(); deleteEdge(hoveredEdgeId); setHoveredEdgeId(null) }}
-                style={{ left, top, transform: 'translate(-50%, -50%)' }}
-                className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
-                title="Disconnect"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            )
-          })()}
+          {mode === 'edit' && hoveredEdgeId && (
+            <EdgeRemoveButton
+              edgeId={hoveredEdgeId}
+              viewport={viewport}
+              onMouseEnter={cancelEdgeHoverHide}
+              onMouseLeave={scheduleEdgeHoverHide}
+              onClick={() => { cancelEdgeHoverHide(); deleteEdge(hoveredEdgeId); setHoveredEdgeId(null) }}
+            />
+          )}
           </div>
         </div>
 
@@ -2810,6 +2770,68 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         />
       )}
     </div>
+  )
+}
+
+// Hover-reveal button that sits on the rendered SVG path of an edge. We
+// query the actual <path> React Flow rendered for `edgeId` and use
+// `getPointAtLength(totalLength / 2)` so the X lands on the curve no matter
+// how curved (default bezier with handle offsets, smoothstep, the custom
+// converge edge, etc.). Computing a position from source/target points
+// alone misses the curve when the wire bows out — even React Flow's own
+// `labelX/Y` from `getBezierPath` is just the bbox midpoint, which drifts
+// wide on strongly-curved edges.
+function EdgeRemoveButton({
+  edgeId,
+  viewport,
+  onMouseEnter,
+  onMouseLeave,
+  onClick,
+}: {
+  edgeId: string
+  viewport: { x: number; y: number; zoom: number }
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+  onClick: () => void
+}) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    let raf = 0
+    const measure = () => {
+      const pathEl = document.querySelector(
+        `.react-flow__edge[data-id="${edgeId}"] path.react-flow__edge-path`
+      ) as SVGPathElement | null
+      if (!pathEl) {
+        // Edge SVG might not be in the DOM yet on the first paint after hover.
+        // Try again next frame; bail after we get a result.
+        raf = requestAnimationFrame(measure)
+        return
+      }
+      const len = pathEl.getTotalLength()
+      const pt = pathEl.getPointAtLength(len / 2)
+      setPos({ x: pt.x, y: pt.y })
+    }
+    measure()
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [edgeId, viewport.x, viewport.y, viewport.zoom])
+
+  if (!pos) return null
+  const left = pos.x * viewport.zoom + viewport.x
+  const top = pos.y * viewport.zoom + viewport.y
+  return (
+    <button
+      type="button"
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      onClick={onClick}
+      style={{ left, top, transform: 'translate(-50%, -50%)' }}
+      className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
+      title="Disconnect"
+    >
+      <X className="h-3 w-3" />
+    </button>
   )
 }
 
