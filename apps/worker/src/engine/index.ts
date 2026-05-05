@@ -95,8 +95,11 @@ export async function executeWorkflow(
   const { workflowId, payload, source } = options
   const traceId = generateTraceId()
 
-  // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes)
-  const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase)
+  // Load workflow definition (KV-cached), allowing a caller-supplied override (e.g. test runs with unsaved changes).
+  // Test runs bypass the is_active filter so authors can iterate before flipping a workflow live.
+  const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase, {
+    allowInactive: options.isTest === true,
+  })
   const { workflow_version_id, workflow_name, org_id, slack_channel, capture_sightings } = loaded
   const definition = options.definitionOverride ?? loaded.definition
 

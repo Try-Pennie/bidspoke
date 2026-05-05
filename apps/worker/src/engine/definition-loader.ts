@@ -16,16 +16,22 @@ interface CachedDefinition {
 export async function loadWorkflowDefinition(
   workflowId: string,
   kv: KVNamespace,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  options: { allowInactive?: boolean } = {}
 ): Promise<LoadedWorkflow> {
-  // Try KV cache first — avoids Supabase round-trip on every execution
-  const cached = await kv.get<CachedDefinition>(cacheKey(workflowId), 'json')
-  if (cached) {
-    return cached
+  const { allowInactive = false } = options
+
+  // Skip the cache for test runs against inactive workflows so we don't
+  // pollute the cache with definitions that real webhooks shouldn't serve.
+  if (!allowInactive) {
+    const cached = await kv.get<CachedDefinition>(cacheKey(workflowId), 'json')
+    if (cached) {
+      return cached
+    }
   }
 
   // Load from Supabase
-  const { data, error } = await supabase
+  let query = supabase
     .from('workflows')
     .select(`
       id,
@@ -38,14 +44,22 @@ export async function loadWorkflowDefinition(
       workflow_versions (id, version_number)
     `)
     .eq('id', workflowId)
-    .eq('is_active', true)
     .is('deleted_at', null)
     .order('version_number', { referencedTable: 'workflow_versions', ascending: false })
     .limit(1, { referencedTable: 'workflow_versions' })
-    .single()
+
+  if (!allowInactive) {
+    query = query.eq('is_active', true)
+  }
+
+  const { data, error } = await query.single()
 
   if (error || !data) {
-    throw new Error(`Workflow ${workflowId} not found or inactive`)
+    throw new Error(
+      allowInactive
+        ? `Workflow ${workflowId} not found`
+        : `Workflow ${workflowId} not found or inactive`
+    )
   }
 
   const versions = data.workflow_versions as { id: string }[]
@@ -65,9 +79,12 @@ export async function loadWorkflowDefinition(
 
   // Cache for 5min — KV is eventually consistent; invalidation fires on save, and
   // the scheduled pre-warm cron keeps active workflows hot (PRD 2.6).
-  await kv.put(cacheKey(workflowId), JSON.stringify(result), {
-    expirationTtl: CACHE_TTL_SECONDS,
-  })
+  // Don't cache inactive defs — webhook callers must hit the active check.
+  if (!allowInactive) {
+    await kv.put(cacheKey(workflowId), JSON.stringify(result), {
+      expirationTtl: CACHE_TTL_SECONDS,
+    })
+  }
 
   return result
 }
