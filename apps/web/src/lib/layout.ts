@@ -684,6 +684,52 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (snapshot() === before) break
   }
 
+  // ── Post-process: anchor unconnected branch_ends right below their own
+  // chain leaves, centered under the branch start. We don't add synthetic
+  // dagre rank edges for these (it cascades through nested branches and
+  // stretches the layout vertically), so dagre leaves them at rank 2 next to
+  // chain children — hard to find visually. Override their position here so
+  // they sit predictably one rank below the deepest chain leaf of their own
+  // branch (NOT cascaded).
+  for (const node of nodes) {
+    if (node.type !== 'branch_end') continue
+    const pairData = node.data as { _pairId?: string }
+    const branchId = pairData._pairId
+    if (!branchId) continue
+    const branchPos = pos.get(branchId)
+    if (!branchPos) continue
+    const hasRealIncoming = edges.some((e) => e.target === node.id && e.source !== branchId)
+    if (hasRealIncoming) continue // dagre's rank already correct (synthetic edges fired)
+    // Find the deepest y among nodes reachable from any of the branch's
+    // handles (excluding this branch_end and any nested branch_ends).
+    const branch = nodeMap.get(branchId)
+    if (!branch) continue
+    const handles = configuredHandleIds(branch) ?? []
+    let deepestY = branchPos.y
+    for (const h of handles) {
+      const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
+      if (!slotEdge) continue
+      const visited = new Set<string>([branchId, node.id])
+      const queue = [slotEdge.target]
+      while (queue.length > 0) {
+        const cur = queue.shift() as string
+        if (visited.has(cur)) continue
+        visited.add(cur)
+        const curNode = nodeMap.get(cur)
+        if (curNode?.type === 'branch_end') continue // don't recurse past nested ends
+        const curPos = pos.get(cur)
+        if (curPos && curPos.y > deepestY) deepestY = curPos.y
+        for (const e of edges) {
+          if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
+        }
+      }
+    }
+    const ownPos = pos.get(node.id)
+    if (!ownPos) continue
+    ownPos.x = branchPos.x
+    ownPos.y = deepestY + nodeHeight(node.type) / 2 + 48 + nodeHeight(node.type) / 2
+  }
+
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
   const EXTRA_DISCONNECTED_GAP = DISCONNECTED_GAP
