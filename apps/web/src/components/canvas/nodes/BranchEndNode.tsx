@@ -26,6 +26,49 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return (s.edges as Edge[]).some((e) => e.target === id && e.source !== pairId)
   })
 
+  // Every chain from the paired branch terminates in an exit / response —
+  // the branch_end is unreachable. No handle the user can wire to fixes
+  // that, so don't render the pill at all. If the user adds a non-terminal
+  // path later, the condition flips and it reappears.
+  const allChainsTerminate = useStore((s) => {
+    if (!pairId) return false
+    const allNodes = s.nodes as Node[]
+    const allEdges = s.edges as Edge[]
+    const seedTargets: string[] = []
+    for (const e of allEdges) {
+      if (e.source !== pairId) continue
+      if (!e.sourceHandle || e.sourceHandle === 'output') continue
+      seedTargets.push(e.target)
+    }
+    if (seedTargets.length === 0) return false
+    const visited = new Set<string>()
+    const queue = [...seedTargets]
+    const leaves = new Set<string>()
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (visited.has(cur)) continue
+      visited.add(cur)
+      const outs = allEdges.filter((e) => e.source === cur && e.target !== id)
+      if (outs.length === 0) {
+        leaves.add(cur)
+      } else {
+        for (const o of outs) queue.push(o.target)
+      }
+    }
+    if (leaves.size === 0) return false
+    for (const leafId of leaves) {
+      const leaf = allNodes.find((n) => n.id === leafId)
+      if (!leaf) return false
+      if (leaf.type === 'exit') continue
+      if (leaf.type === 'response') {
+        const cfg = (leaf.data as { config?: { continue_after_response?: boolean } } | undefined)?.config
+        if (!cfg?.continue_after_response) continue
+      }
+      return false
+    }
+    return true
+  })
+
   // The render shape (compact pill vs full card) changes the handle DOM
   // positions. Without re-registering, React Flow's handle position cache
   // stays stuck on the previous shape and a connection drag from the bottom
@@ -39,6 +82,12 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
   const startLabel = startData?.label || startData?.namespace || 'branch'
   const derivedLabel = `${startLabel} End`
   const derivedNamespace = `${startData?.namespace ?? 'branch'}_end`
+
+  if (!hasRealIncoming && allChainsTerminate) {
+    // Branch's chains all terminate (exit / response). branch_end can't be
+    // reached by any path the user could wire — render nothing.
+    return null
+  }
 
   if (!hasRealIncoming) {
     // Compact pill — present and wirable, but visually out of the way until
