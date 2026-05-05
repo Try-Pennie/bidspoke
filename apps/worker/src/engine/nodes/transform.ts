@@ -105,7 +105,12 @@ function resolveContextPath(path: string, ctx: ExecutionContext): unknown {
     const step = ctx.steps[ns]
     if (!step) return undefined
     if (segments.length === 2) return step.output
-    return resolvePathOnValue(step.output, segments.slice(2))
+    // Tolerate explicit `.output` — matches graph.ts/context.ts and the
+    // copy-path format from the JSON tree. `steps.X.output.Y` and
+    // `steps.X.Y` resolve identically.
+    const rest = segments[2] === 'output' ? segments.slice(3) : segments.slice(2)
+    if (rest.length === 0) return step.output
+    return resolvePathOnValue(step.output, rest)
   }
   if (segments[0] === 'env') {
     const key = segments[1]
