@@ -92,7 +92,10 @@ export async function executeCodeNode(
     payload: ctx.trigger.payload,
     steps: stepsToSend,
     env: mergedEnv,
-    execution: { trace_id: ctx.trigger.trace_id },
+    // Pass the full execution metadata so scripts can use bidspoke_link,
+    // execution_id, workflow_id alongside trace_id. ctx.execution is
+    // populated by buildContext; if missing, fall back to {trace_id} only.
+    execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
     props: resolvedProps,
   })
 

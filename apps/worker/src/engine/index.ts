@@ -1388,7 +1388,7 @@ async function executeCodeChain(
     // different steps). Send the full context; OK for MVP.
     steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
     env: mergedEnv,
-    execution: { trace_id: ctx.trigger.trace_id },
+    execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
   })
 
   const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(ctx.trigger.workflow_id))
@@ -1420,7 +1420,7 @@ async function executeCodeChain(
           payload: ctx.trigger.payload,
           steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
           env: mergedEnv,
-          execution: { trace_id: ctx.trigger.trace_id },
+          execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
         })
         const perNodeBinding = env.DYNAMIC_WORKER_LOADER.get(codeWorkerName(ctx.trigger.workflow_id, node.namespace))
         const r = await perNodeBinding.fetch('https://worker/execute', {
