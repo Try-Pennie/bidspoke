@@ -443,20 +443,32 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return aIdx - bIdx
   })
 
-  // Backbone edges (branch → branch_end, parallel → parallel_end) get
-  // near-zero weight in dagre. Network simplex would otherwise drag the
-  // entire subtree below the start node downward to minimize the backbone's
-  // length — when the end is deep (because user-wired chains feed into it),
-  // dagre pushes the start (and every descendant) down too. Weight 0.01
-  // means dagre stops optimizing for that edge while still respecting its
-  // rank ordering (target rank ≥ source rank + 1).
+  // Two classes of edges get near-zero dagre weight (0.01) so network
+  // simplex stops optimizing for THEIR length:
+  //
+  //   1. Backbone edges (branch → branch_end, parallel → parallel_end).
+  //      Network simplex would otherwise drag the entire subtree below the
+  //      start downward to make the backbone short.
+  //
+  //   2. Chain-leaf-to-end edges (anything → branch_end / parallel_end other
+  //      than the backbone). User-wired convergence wires. Without low
+  //      weight, dagre drags the chain leaf DOWN to be near the deep
+  //      branch_end (minimizing the convergence wire's length), placing
+  //      simple branch-leaf code nodes at deep ranks instead of right
+  //      below their parent branch.
+  //
+  // Weight 0.01 means dagre stops optimizing for these edges while still
+  // respecting rank ordering (target rank ≥ source rank + 1) via minlen: 1.
   for (const edge of sortedEdges) {
     const src = nodeMap.get(edge.source)
     const tgt = nodeMap.get(edge.target)
     const isBackbone =
       (src?.type === 'branch' && tgt?.type === 'branch_end') ||
       (src?.type === 'parallel' && tgt?.type === 'parallel_end')
-    if (isBackbone) {
+    const isChainToEnd =
+      !isBackbone &&
+      (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end')
+    if (isBackbone || isChainToEnd) {
       g.setEdge(edge.source, edge.target, { weight: 0.01, minlen: 1 })
     } else {
       g.setEdge(edge.source, edge.target)
