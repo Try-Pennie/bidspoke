@@ -277,6 +277,30 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
     })
   }
 
+  // Defensive: parent regions must always encompass nested child regions.
+  // BFS bboxes can go slightly out of sync when nested multi-output nodes
+  // have wider effective widths than their parent's BFS measured (e.g., a
+  // Tripoint Creation branch with 3 phantom slot widths inside a Send To
+  // Winner branch with 2 narrower slots). Without this, the inner region's
+  // backdrop can poke outside the outer region's backdrop.
+  for (const a of regions) {
+    for (const b of regions) {
+      if (a === b) continue
+      // a contains b iff every node in b's reachable is in a's reachable
+      // AND b's start is in a's reachable (the cheap check first).
+      if (!a.nodeIds.has(b.id)) continue
+      let containsAll = true
+      for (const id of b.nodeIds) {
+        if (!a.nodeIds.has(id)) { containsAll = false; break }
+      }
+      if (!containsAll) continue
+      if (b.minX < a.minX) a.minX = b.minX
+      if (b.minY < a.minY) a.minY = b.minY
+      if (b.maxX > a.maxX) a.maxX = b.maxX
+      if (b.maxY > a.maxY) a.maxY = b.maxY
+    }
+  }
+
   // Inner padding (around content) is what makes the backdrop feel like a
   // container; gap subtracted on each side keeps sibling region edges from
   // touching, so two adjacent branches read as separate clusters even though
