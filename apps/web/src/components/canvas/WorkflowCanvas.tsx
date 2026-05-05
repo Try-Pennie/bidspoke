@@ -1921,6 +1921,21 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   }
 
   async function handleSave(message?: string) {
+    // Block saving when two nodes share a Step ID — the engine keys
+    // ctx.steps + step logs by namespace, and downstream references can't
+    // distinguish duplicates. Always block (regardless of is_active) since
+    // the workflow is always broken at runtime.
+    const nsCount = new Map<string, number>()
+    for (const n of nodes) {
+      if (n.id === 'trigger') continue
+      const ns = (n.data as unknown as CanvasNodeData).namespace
+      if (ns) nsCount.set(ns, (nsCount.get(ns) ?? 0) + 1)
+    }
+    const duplicates = Array.from(nsCount.entries()).filter(([, c]) => c > 1).map(([ns]) => ns)
+    if (duplicates.length > 0) {
+      setSaveError(`Step IDs must be unique. Used by multiple nodes: ${duplicates.join(', ')}.`)
+      return
+    }
     // Block saving a live workflow that has unconfigured nodes
     if (workflow.is_active && validationErrors.size > 0) {
       const names = Array.from(validationErrors.values())

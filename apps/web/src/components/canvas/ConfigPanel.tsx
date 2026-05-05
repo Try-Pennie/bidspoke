@@ -149,10 +149,15 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 <div>
                   <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
                   <input
-                    className="input font-mono"
+                    className={`input font-mono ${nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 ? 'border-red-400 ring-1 ring-red-200' : ''}`}
                     value={data.namespace}
                     onChange={(e) => handleNamespaceChange(e.target.value)}
                   />
+                  {nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 && (
+                    <p className="mt-1 text-xs text-red-500">
+                      Already used by another node. Step IDs must be unique.
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -244,10 +249,15 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {/* Namespace */}
         <Field label="Step ID" hint="Unique identifier used to reference this step's output in later steps. E.g. steps.credit_check.score">
           <input
-            className="input"
+            className={`input ${nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 ? 'border-red-400 ring-1 ring-red-200' : ''}`}
             value={data.namespace}
             onChange={(e) => handleNamespaceChange(e.target.value)}
           />
+          {nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 && (
+            <p className="mt-1 text-xs text-red-500">
+              Already used by another node. Step IDs must be unique — references like <code className="rounded bg-red-50 px-1">steps.{data.namespace}</code> would resolve ambiguously.
+            </p>
+          )}
         </Field>
 
         {/* Notes — free-form per-step annotation, surfaced as a small icon on the canvas */}
