@@ -1,6 +1,7 @@
 'use client'
 
-import { Handle, Position, useStore } from '@xyflow/react'
+import { useEffect } from 'react'
+import { Handle, Position, useStore, useUpdateNodeInternals } from '@xyflow/react'
 import type { NodeProps, Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
@@ -24,6 +25,16 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
   const hasRealIncoming = useStore((s) => {
     return (s.edges as Edge[]).some((e) => e.target === id && e.source !== pairId)
   })
+
+  // The render shape (compact pill vs full card) changes the handle DOM
+  // positions. Without re-registering, React Flow's handle position cache
+  // stays stuck on the previous shape and a connection drag from the bottom
+  // handle aims at the wrong screen point — which feels like "I can't
+  // connect branch ends to each other anymore."
+  const updateNodeInternals = useUpdateNodeInternals()
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, hasRealIncoming, updateNodeInternals])
   const startData = startNode?.data as CanvasNodeData | undefined
   const startLabel = startData?.label || startData?.namespace || 'branch'
   const derivedLabel = `${startLabel} End`
