@@ -473,6 +473,13 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // — those nodes can't have a real edge to branch_end, but dagre needs the
   // ranking signal so branch_end sits below the deepest chain leaf instead
   // of one rank under the branch). Synthetic edges are dagre-only.
+  //
+  // Skip when branch_end has no real chains wired in — otherwise the rank
+  // signal cascades through nested branch_ends and stretches the whole
+  // layout vertically just to host empty backfilled join nodes. Unconnected
+  // branch_ends render as compact pills next to their chain children
+  // (BranchEndNode), which is less visually disruptive than dragging the
+  // entire workflow down by N ranks.
   for (const node of nodes) {
     if (node.type !== 'branch') continue
     const pairEdge = edges.find((e) => {
@@ -482,6 +489,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     })
     if (!pairEdge) continue
     const pairId = pairEdge.target
+    const hasRealIncoming = edges.some((e) => e.target === pairId && e.source !== node.id)
+    if (!hasRealIncoming) continue
     const handles = configuredHandleIds(node) ?? []
     for (const h of handles) {
       const slotEdge = edges.find((e) => e.source === node.id && e.sourceHandle === h)
