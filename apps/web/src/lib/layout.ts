@@ -235,18 +235,65 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // directly above its child's column. Otherwise, the wire from a handle to
   // a far-offset child cuts diagonally and clips the sibling chain's region.
   const NODESEP_PRE = 48
-  const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>): number => {
+  // Compute the set of nodes where a multi-output's chain rejoins (convergence
+  // points reachable from every handle, plus the paired branch_end/parallel_end
+  // via the backbone). Width recursion stops at these so the multi-output's
+  // effective width reflects only its own internal territory and not anything
+  // downstream of where the chains converge.
+  const stopAtForMultiOutput = (n: Node, handles: string[]): Set<string> => {
+    const stops = new Set<string>()
+    const perHandle = handles
+      .map((h) => {
+        const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
+        if (!slotEdge) return new Set<string>()
+        const set = new Set<string>([slotEdge.target])
+        const q = [slotEdge.target]
+        while (q.length > 0) {
+          const cur = q.shift() as string
+          for (const e of edges) {
+            if (e.source === cur && !set.has(e.target)) {
+              set.add(e.target)
+              q.push(e.target)
+            }
+          }
+        }
+        return set
+      })
+      .filter((s) => s.size > 0)
+    if (perHandle.length >= 2) {
+      for (const id of perHandle[0]) {
+        if (perHandle.every((s) => s.has(id))) stops.add(id)
+      }
+    }
+    if (n.type === 'branch' || n.type === 'parallel') {
+      const endType = n.type === 'branch' ? 'branch_end' : 'parallel_end'
+      const backbone = edges.find((e) => {
+        if (e.source !== n.id) return false
+        const target = nodeMap.get(e.target)
+        return target?.type === endType
+      })
+      if (backbone) stops.add(backbone.target)
+    }
+    return stops
+  }
+  const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>, outerStopAt?: Set<string>): number => {
     if (visited.has(startId)) return 0
+    if (outerStopAt && outerStopAt.has(startId)) return 0
     visited.add(startId)
     const n = nodeMap.get(startId)
     if (!n) return NODE_W
     const ownWidth = nodeWidth(n.type, n.data)
     const handles = configuredHandleIds(n)
     if (handles && handles.length >= 2) {
+      // Add this multi-output's own convergence + paired end to the stopAt
+      // before walking its slot chains, so each slot's width reflects its
+      // exclusive territory (not any rejoin or post-cluster downstream).
+      const innerStops = stopAtForMultiOutput(n, handles)
+      const merged = outerStopAt ? new Set([...outerStopAt, ...innerStops]) : innerStops
       const slotWidths = handles.map((h) => {
         const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h)
         if (!slotEdge) return NODE_W
-        return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited)))
+        return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited), merged))
       })
       const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
       return Math.max(ownWidth, fanOutWidth)
@@ -254,7 +301,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     let maxBelow = 0
     for (const e of edges) {
       if (e.source !== startId) continue
-      const sub = effectiveSubtreeWidthPre(e.target, new Set(visited))
+      const sub = effectiveSubtreeWidthPre(e.target, new Set(visited), outerStopAt)
       if (sub > maxBelow) maxBelow = sub
     }
     return Math.max(ownWidth, maxBelow)
@@ -264,10 +311,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   for (const n of nodes) {
     const handles = configuredHandleIds(n)
     if (!handles || handles.length < 2) continue
+    const stopAt = stopAtForMultiOutput(n, handles)
     const slotWidths = handles.map((h) => {
       const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
       if (!slotEdge) return NODE_W
-      return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set([n.id])))
+      return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set([n.id]), stopAt))
     })
     const totalSpan = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
     const labelW = nodeWidth(n.type, n.data)
