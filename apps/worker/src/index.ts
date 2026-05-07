@@ -7,6 +7,7 @@ import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runSightingsExport } from './lib/sightings-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
+import { runMatrixAudit } from './lib/sf-matrix-audit'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
@@ -134,6 +135,11 @@ export default {
         syncAllSalesforceConfigs(env, supabase)
           .then((r) => console.log(`[bid-matrix-sync] ${r.successes.length} succeeded, ${r.failures.length} failed`))
           .catch((e) => console.error('[bid-matrix-sync] failed:', e))
+      )
+      ctx.waitUntil(
+        runMatrixAudit(env, supabase)
+          .then((r) => console.log(`[sf-matrix-audit] fetched=${r.rows_fetched} added=${r.rows_added} edited=${r.rows_edited} removed=${r.rows_removed} alerted=${r.alerted}`))
+          .catch((e) => console.error('[sf-matrix-audit] failed:', e))
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(
