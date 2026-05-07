@@ -18,6 +18,7 @@ interface SlackStatus {
   workspace_name?: string | null
   default_channel?: string | null
   volume_alerts_enabled?: boolean
+  matrix_alerts_enabled?: boolean
   matrix_alerts_channel?: string | null
   updated_at?: string
   updated_by_email?: string | null
@@ -430,11 +431,26 @@ export default function IntegrationsPage() {
                 />
               </div>
               <div className="rounded-lg border border-gray-200 p-3">
-                <div className="text-sm">
-                  <p className="font-medium text-graphite">Bid matrix change alerts</p>
-                  <p className="mt-0.5 text-xs text-gray-500">
-                    Posted at the top of every hour when the Salesforce bid matrix has any rows added, edited, or removed since the last sync. Pick a separate channel here, or leave empty to use the default channel.
-                  </p>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="text-sm">
+                    <p className="font-medium text-graphite">Bid matrix change alerts</p>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Posted at the top of every hour when the Salesforce bid matrix has any rows added, edited, or removed since the last sync. Pick a separate channel below, or leave empty to use the default channel.
+                    </p>
+                  </div>
+                  <SlackToggle
+                    checked={slack.matrix_alerts_enabled !== false}
+                    onChange={async (next) => {
+                      setSlack((s) => (s ? { ...s, matrix_alerts_enabled: next } : s))
+                      try {
+                        await api.integrations.updateSlackSettings({ matrix_alerts_enabled: next })
+                      } catch (e) {
+                        setSlack((s) => (s ? { ...s, matrix_alerts_enabled: !next } : s))
+                        setError(e instanceof Error ? e.message : 'Failed to update setting')
+                      }
+                    }}
+                    label="Bid matrix change alerts"
+                  />
                 </div>
                 {editingChannel === 'matrix' ? (
                   <div className="mt-2 space-y-2">

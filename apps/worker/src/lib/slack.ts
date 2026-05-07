@@ -9,6 +9,7 @@ export interface SlackConnection {
   default_channel: string
   workspace_name?: string
   volume_alerts_enabled: boolean
+  matrix_alerts_enabled: boolean
   /** Optional dedicated channel for matrix-change alerts. Falls back to default_channel when null. */
   matrix_alerts_channel: string | null
 }
@@ -54,6 +55,7 @@ export async function getSlackConnection(
     workspace_name: typeof cfg.workspace_name === 'string' ? cfg.workspace_name : undefined,
     // Default true so existing connections keep alerting; opt-out only.
     volume_alerts_enabled: cfg.volume_alerts_enabled !== false,
+    matrix_alerts_enabled: cfg.matrix_alerts_enabled !== false,
     matrix_alerts_channel: typeof cfg.matrix_alerts_channel === 'string' && cfg.matrix_alerts_channel ? cfg.matrix_alerts_channel : null,
   }
 }
@@ -192,6 +194,7 @@ export async function sendMatrixChangeAlert(
 ): Promise<void> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return
+  if (!connection.matrix_alerts_enabled) return
   if (payload.changes.length === 0) return
 
   const channel = channelOverride || connection.matrix_alerts_channel || connection.default_channel
