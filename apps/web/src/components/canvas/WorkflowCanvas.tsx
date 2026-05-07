@@ -14,6 +14,7 @@ import {
   useEdgesState,
   useNodesInitialized,
   useReactFlow,
+  useUpdateNodeInternals,
   useViewport,
   type Node,
   type Edge,
@@ -781,6 +782,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const { screenToFlowPosition, fitView } = useReactFlow()
   const viewport = useViewport()
   const nodesInitialized = useNodesInitialized()
+  const updateNodeInternals = useUpdateNodeInternals()
   const initialFitDoneRef = useRef(false)
   // Once React Flow has measured every node, re-run layoutWorkflow so dagre
   // can use real DOM heights instead of the per-type declared maxima. Until
@@ -1014,15 +1016,26 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // is cleared (e.g. user clicked Clear), this also strips executionStep from
   // every node so colors revert to default.
   useEffect(() => {
-    setNodes((ns) =>
-      ns.map((n) => {
+    let touchedIds: string[] = []
+    setNodes((ns) => {
+      touchedIds = ns.filter((n) => n.id !== 'trigger').map((n) => n.id)
+      return ns.map((n) => {
         if (n.id === 'trigger') return n
         const namespace = (n.data as unknown as CanvasNodeData).namespace
         const step = executionSteps ? (executionSteps[namespace] ?? null) : undefined
         return { ...n, data: { ...(n.data as object), executionStep: step } }
       })
-    )
-  }, [executionSteps, setNodes])
+    })
+    // Several node types (Branch, Filter, Code, etc.) render an output-preview
+    // pill when executionStep is set, which grows the node's height. React
+    // Flow caches handle positions on initial mount, so without a re-measure
+    // wires anchor to the old (smaller) bbox. Defer to next frame so the new
+    // DOM has rendered before measuring.
+    const raf = requestAnimationFrame(() => {
+      touchedIds.forEach((id) => updateNodeInternals(id))
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [executionSteps, setNodes, updateNodeInternals])
 
   // Sync data.isSuccessNode based on the trigger's success_node_namespaces so
   // the node renderers can draw a badge. Runs whenever the trigger config
