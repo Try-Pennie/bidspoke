@@ -31,26 +31,25 @@ function WorkflowEditorInner() {
   }, [id])
 
   useEffect(() => {
-    // Always reset before kicking off the new fetch so the canvas/banners
-    // never render the previous execution's data alongside a newer id.
-    setExecutionSteps(undefined)
-    setExecutionPayload(undefined)
-    setExecutionSource(null)
-    setExecutionTraceId(null)
-    setExecutionStartedAt(null)
-    setExecutionParentId(null)
-    setExecutionChildren([])
-    if (!executionId) return
+    if (!executionId) {
+      // User cleared the execution — wipe to default empty state.
+      setExecutionSteps(undefined)
+      setExecutionPayload(undefined)
+      setExecutionSource(null)
+      setExecutionTraceId(null)
+      setExecutionStartedAt(null)
+      setExecutionParentId(null)
+      setExecutionChildren([])
+      return
+    }
 
+    // Don't reset state before the fetch — keep the previous execution on
+    // screen until the new one arrives, then atomic swap. Resetting first
+    // doubled the render cost when clicking through executions: one render
+    // to clear, another to populate, ~200ms apart.
     let cancelled = false
     api.executions.get(executionId).then((exec) => {
       if (cancelled) return
-      setExecutionPayload(exec.trigger_payload)
-      setExecutionSource(exec.source)
-      setExecutionTraceId(exec.trace_id)
-      setExecutionStartedAt(exec.started_at)
-      setExecutionParentId(exec.parent_execution_id ?? null)
-      setExecutionChildren(exec.child_executions ?? [])
       const map: Record<string, ExecutionStep> = {}
       for (const step of exec.steps) {
         map[step.step_namespace] = {
@@ -63,6 +62,12 @@ function WorkflowEditorInner() {
           retries_used: step.retries_used,
         }
       }
+      setExecutionPayload(exec.trigger_payload)
+      setExecutionSource(exec.source)
+      setExecutionTraceId(exec.trace_id)
+      setExecutionStartedAt(exec.started_at)
+      setExecutionParentId(exec.parent_execution_id ?? null)
+      setExecutionChildren(exec.child_executions ?? [])
       setExecutionSteps(map)
     }).catch(() => {})
     return () => { cancelled = true }

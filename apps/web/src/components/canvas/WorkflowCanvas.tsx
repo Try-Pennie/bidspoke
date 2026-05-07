@@ -1032,7 +1032,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     // wires anchor to the old (smaller) bbox. Defer to next frame so the new
     // DOM has rendered before measuring.
     const raf = requestAnimationFrame(() => {
-      touchedIds.forEach((id) => updateNodeInternals(id))
+      // Pass the whole array in one call — useUpdateNodeInternals accepts
+      // string | string[] and batches internally.
+      if (touchedIds.length > 0) updateNodeInternals(touchedIds)
     })
     return () => cancelAnimationFrame(raf)
   }, [executionSteps, setNodes, updateNodeInternals])
