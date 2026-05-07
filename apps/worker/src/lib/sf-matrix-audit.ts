@@ -84,12 +84,7 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   const startedAt = new Date().toISOString()
 
   const sfRows = await querySalesforceMatrixRows(env)
-  const { data: existingRaw, error: existingErr } = await supabase
-    .from('sf_bid_matrix_audit')
-    .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, partner_flags')
-
-  if (existingErr) throw new Error(`sf_bid_matrix_audit read failed: ${existingErr.message}`)
-  const existing = (existingRaw ?? []) as unknown as AuditSnapshot[]
+  const existing = await readSnapshot(supabase)
 
   const diff = computeAuditDiff(existing, sfRows)
 
@@ -126,6 +121,30 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   }
 
   return result
+}
+
+/**
+ * PostgREST caps result sets at 1,000 rows by default. The matrix has > 1k SF
+ * records (1,230 as of 2026-05-07), so a single SELECT silently truncates and
+ * the diff falsely reports the missing tail as "added" on every run. Page
+ * through with .range() until a short page comes back.
+ */
+async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> {
+  const PAGE_SIZE = 1000
+  const all: AuditSnapshot[] = []
+  let from = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('sf_bid_matrix_audit')
+      .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, partner_flags')
+      .range(from, from + PAGE_SIZE - 1)
+    if (error) throw new Error(`sf_bid_matrix_audit read failed: ${error.message}`)
+    const page = (data ?? []) as unknown as AuditSnapshot[]
+    all.push(...page)
+    if (page.length < PAGE_SIZE) break
+    from += PAGE_SIZE
+  }
+  return all
 }
 
 // ── Diff ──────────────────────────────────────────────────────────────────────
