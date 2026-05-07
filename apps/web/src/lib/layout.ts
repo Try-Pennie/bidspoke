@@ -789,31 +789,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
             if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
           }
         }
-        // Place branch_end so there's exactly 48px between the deepest
-        // descendant's bottom and branch_end's top, regardless of either
-        // height. The previous formula `deepestY + effectiveHeight(node) + 48`
-        // baked in only the branch_end's own height — when the deepest
-        // descendant was much taller (e.g., a Salesforce node above a
-        // compact-pill branch_end) the visible gap blew up.
-        //
-        // Horizontal: align with the chain leaves that actually reach
-        // branch_end. When only one handle's chain converges (e.g. "offer"
-        // goes through, "reject" exits early), centering branch_end under
-        // the branch puts it offset from the leaf and the wire has to jog
-        // horizontally. Use the average X of the feeding leaves (their
-        // direct edges into branch_end), excluding the backbone from the
-        // branch start. Falls back to branchPos.x when no feeding leaves
-        // are found.
-        const feederXs: number[] = []
-        for (const e of edges) {
-          if (e.target !== node.id) continue
-          if (e.source === branchId) continue // skip hidden backbone
-          const fp = pos.get(e.source)
-          if (fp) feederXs.push(fp.x)
-        }
-        newX = feederXs.length > 0
-          ? feederXs.reduce((a, b) => a + b, 0) / feederXs.length
-          : branchPos.x
+        newX = branchPos.x
         newY = deepestY + deepestH / 2 + 48 + effectiveHeight(node) / 2
       }
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
