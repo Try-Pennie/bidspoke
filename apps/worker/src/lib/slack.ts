@@ -162,6 +162,8 @@ export async function sendDurationAlert(
 export interface MatrixChangeAlertPayload {
   changed_at: string
   changes: MatrixConfigChange[]
+  /** Optional one-click link to the matrix list view in SF Lightning. */
+  matrix_url?: string
 }
 
 export interface MatrixConfigChange {
@@ -242,6 +244,13 @@ export async function sendMatrixChangeAlert(
     blocks.push({
       type: 'section',
       text: { type: 'mrkdwn', text: `*${change.partner_slug}* — _${change.config_name}_\n${lines.slice(0, 20).join('\n')}${lines.length > 20 ? `\n_…and ${lines.length - 20} more_` : ''}` },
+    })
+  }
+
+  if (payload.matrix_url) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${payload.matrix_url}|View bid matrix →>` },
     })
   }
 

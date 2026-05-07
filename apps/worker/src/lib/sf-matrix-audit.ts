@@ -79,7 +79,7 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
 
   const rawEnv = env as unknown as Record<string, string | undefined>
   const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
-  const diff = computeAuditDiff(existing, sfRows, instanceUrl)
+  const diff = computeAuditDiff(existing, sfRows)
 
   // Apply state to the snapshot table — upsert all fetched rows, delete missing ones.
   if (sfRows.length > 0) {
@@ -109,7 +109,7 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   }
 
   if (diff) {
-    await notifyAllOrgsWithSlack(supabase, diff, startedAt)
+    await notifyAllOrgsWithSlack(supabase, diff, startedAt, deriveBidMatrixListUrl(instanceUrl))
     result.alerted = true
   }
 
@@ -155,8 +155,7 @@ async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> 
  */
 export function computeAuditDiff(
   existing: AuditSnapshot[],
-  fetched: SalesforceBidRow[],
-  instanceUrl?: string
+  fetched: SalesforceBidRow[]
 ): MatrixConfigChange | null {
   const beforeBuckets = new Map<string, AuditSnapshot[]>()
   for (const e of existing) {
@@ -175,7 +174,7 @@ export function computeAuditDiff(
     const key = identityKey(next)
     const bucket = beforeBuckets.get(key)
     if (!bucket || bucket.length === 0) {
-      added.push(toSummary(next, instanceUrl))
+      added.push(toSummary(next))
       continue
     }
     const prev = bucket.shift()!
@@ -186,13 +185,12 @@ export function computeAuditDiff(
         range: describeRange(next) + flagSuffix(next.partner_flags),
         is_sell_off: next.is_sell_off,
         changes: [{ field: 'bid_amount', before: prev.bid_amount, after: next.bid_amount }],
-        source_url: sfRecordUrl(instanceUrl, next.source_id),
       })
     }
   }
 
   for (const bucket of beforeBuckets.values()) {
-    for (const e of bucket) removed.push(toSummary(e, instanceUrl))
+    for (const e of bucket) removed.push(toSummary(e))
   }
 
   if (added.length === 0 && edited.length === 0 && removed.length === 0) return null
@@ -254,7 +252,8 @@ async function querySalesforceMatrixRows(env: Env): Promise<SalesforceBidRow[]> 
 async function notifyAllOrgsWithSlack(
   supabase: SupabaseClient,
   change: MatrixConfigChange,
-  changedAt: string
+  changedAt: string,
+  matrixUrl: string | undefined
 ): Promise<void> {
   const { data: orgs } = await supabase
     .from('service_connections')
@@ -266,7 +265,7 @@ async function notifyAllOrgsWithSlack(
 
   for (const orgId of orgIds) {
     try {
-      await sendMatrixChangeAlert(supabase, orgId, null, { changed_at: changedAt, changes: [change] })
+      await sendMatrixChangeAlert(supabase, orgId, null, { changed_at: changedAt, changes: [change], matrix_url: matrixUrl })
     } catch (err) {
       console.error(`[sf-matrix-audit] slack alert failed for org ${orgId}:`, err)
     }
@@ -294,13 +293,12 @@ function toSnapshotRow(r: SalesforceBidRow, syncedAt?: string): AuditSnapshot & 
   }
 }
 
-function toSummary(r: AuditSnapshot, instanceUrl?: string): MatrixRowSummary {
+function toSummary(r: AuditSnapshot): MatrixRowSummary {
   return {
     row_id: r.row_id,
     range: describeRange(r) + flagSuffix(r.partner_flags),
     is_sell_off: r.is_sell_off,
     bid_amount: Number(r.bid_amount),
-    source_url: sfRecordUrl(instanceUrl, r.source_id),
   }
 }
 
@@ -309,9 +307,18 @@ function flagSuffix(flags: Record<string, boolean>): string {
   return flagged.length > 0 ? ` [${flagged.join(', ')}]` : ''
 }
 
-function sfRecordUrl(instanceUrl: string | undefined, sourceId: string | null): string | undefined {
-  if (!instanceUrl || !sourceId) return undefined
-  return `${instanceUrl}/${sourceId}`
+/**
+ * Build a Lightning URL for the Bid Matrix list view from the SOAP/REST instance URL.
+ * Pennie uses `<sub>.my.salesforce.com` for OAuth/REST and `<sub>.lightning.force.com`
+ * for the Lightning UI; the subdomain is shared.
+ *
+ *   https://trypennie.my.salesforce.com → https://trypennie.lightning.force.com/lightning/n/Bid_Matrix
+ */
+function deriveBidMatrixListUrl(instanceUrl: string): string | undefined {
+  if (!instanceUrl) return undefined
+  const m = instanceUrl.match(/^https?:\/\/([^.]+)\.my\.salesforce\.com$/)
+  if (!m) return undefined
+  return `https://${m[1]}.lightning.force.com/lightning/n/Bid_Matrix`
 }
 
 function describeRange(r: { row_low: number | null; row_high: number | null; range_low: number | null; range_high: number | null; row_id: string | null }): string {
