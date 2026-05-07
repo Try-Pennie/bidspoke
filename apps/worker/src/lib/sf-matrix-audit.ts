@@ -63,15 +63,6 @@ interface AuditSnapshot {
   partner_flags: Record<string, boolean>
 }
 
-const TRACKED_FIELDS: ReadonlyArray<keyof Omit<AuditSnapshot, 'source_id' | 'partner_flags'>> = [
-  'is_sell_off',
-  'row_low',
-  'row_high',
-  'range_low',
-  'range_high',
-  'bid_amount',
-]
-
 export interface AuditResult {
   rows_fetched: number
   rows_added: number
@@ -149,12 +140,28 @@ async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> 
 
 // ── Diff ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Diff by *content identity* (range bands + sell-off + partner flags) instead
+ * of SF record Id. Salesforce flows/triggers occasionally destroy-and-recreate
+ * rows on edit, giving each "new" row a fresh Id. If we keyed on Id, those
+ * recreate cycles would show up as N added + N removed even though the matrix
+ * logic is unchanged. Identity-keyed diff handles them as no-ops; only the
+ * actual bid-amount change shows as an edit.
+ *
+ * Partner-flag toggles still surface as add+remove (different identities) —
+ * which is correct: removing SoFi from a row IS a real, alert-worthy change.
+ */
 export function computeAuditDiff(
   existing: AuditSnapshot[],
   fetched: SalesforceBidRow[]
 ): MatrixConfigChange | null {
-  const before = new Map<string, AuditSnapshot>()
-  for (const r of existing) before.set(r.source_id, r)
+  const beforeBuckets = new Map<string, AuditSnapshot[]>()
+  for (const e of existing) {
+    const key = identityKey(e)
+    const bucket = beforeBuckets.get(key)
+    if (bucket) bucket.push(e)
+    else beforeBuckets.set(key, [e])
+  }
 
   const added: MatrixRowSummary[] = []
   const edited: MatrixRowEdit[] = []
@@ -162,40 +169,26 @@ export function computeAuditDiff(
 
   for (const r of fetched) {
     const next = toSnapshotRow(r)
-    const prev = before.get(r.Id)
-    if (!prev) {
+    const key = identityKey(next)
+    const bucket = beforeBuckets.get(key)
+    if (!bucket || bucket.length === 0) {
       added.push(toSummary(next))
       continue
     }
-    const changes: MatrixRowEdit['changes'] = []
-    for (const field of TRACKED_FIELDS) {
-      if (!sameValue(prev[field], next[field])) {
-        changes.push({ field, before: prev[field], after: next[field] })
-      }
-    }
-    // Partner-flag changes (e.g. row added to SoFi or removed from EPCVIP).
-    for (const flag of PARTNER_FLAG_FIELDS) {
-      const a = prev.partner_flags?.[flag] === true
-      const b = next.partner_flags[flag] === true
-      if (a !== b) {
-        changes.push({ field: flag, before: a, after: b })
-      }
-    }
-    if (changes.length > 0) {
+    const prev = bucket.shift()!
+    // Identity matches; bid_amount is the only field left to compare.
+    if (!sameValue(prev.bid_amount, next.bid_amount)) {
       edited.push({
         row_id: next.row_id,
         range: describeRange(next),
         is_sell_off: next.is_sell_off,
-        changes,
+        changes: [{ field: 'bid_amount', before: prev.bid_amount, after: next.bid_amount }],
       })
     }
   }
 
-  const fetchedIds = new Set(fetched.map((r) => r.Id))
-  for (const e of existing) {
-    if (!fetchedIds.has(e.source_id)) {
-      removed.push(toSummary(e))
-    }
+  for (const bucket of beforeBuckets.values()) {
+    for (const e of bucket) removed.push(toSummary(e))
   }
 
   if (added.length === 0 && edited.length === 0 && removed.length === 0) return null
@@ -206,6 +199,11 @@ export function computeAuditDiff(
     edited,
     removed,
   }
+}
+
+function identityKey(r: AuditSnapshot): string {
+  const flags = PARTNER_FLAG_FIELDS.map((f) => `${f}=${r.partner_flags?.[f] === true ? 1 : 0}`).join(',')
+  return [r.is_sell_off, r.row_low, r.row_high, r.range_low, r.range_high, flags].join('|')
 }
 
 // ── Salesforce ────────────────────────────────────────────────────────────────

@@ -48,7 +48,7 @@ describe('computeAuditDiff', () => {
     expect(result).not.toBeNull()
     expect(result!.added).toHaveLength(1)
     expect(result!.added[0].range).toContain('500–549')
-    expect(result!.added[0].range).toContain('SoFi')   // partner-flag suffix
+    expect(result!.added[0].range).toContain('SoFi')
   })
 
   it('detects a removed row', () => {
@@ -58,15 +58,54 @@ describe('computeAuditDiff', () => {
     expect(result!.removed).toHaveLength(1)
   })
 
-  it('detects a bid_amount edit', () => {
+  it('detects a bid_amount edit when identity matches', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = computeAuditDiff([snap()] as any, [row({ RangeValue__c: 75 })] as any)
     expect(result).not.toBeNull()
     expect(result!.edited).toHaveLength(1)
     expect(result!.edited[0].changes[0]).toEqual({ field: 'bid_amount', before: 50, after: 75 })
+    expect(result!.added).toHaveLength(0)
+    expect(result!.removed).toHaveLength(0)
   })
 
-  it('detects a partner-flag flip even when the bid is unchanged', () => {
+  it('treats SF destroy-and-recreate as a no-op when content identity matches', () => {
+    // SF flows sometimes destroy-recreate rows on edit, giving each new row a
+    // fresh Id. The audit shouldn't blast Slack with N added + N removed when
+    // nothing actually changed in the matrix logic.
+    const result = computeAuditDiff(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      [snap({ source_id: 'old-id' })] as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      [row({ Id: 'new-id' })] as any
+    )
+    expect(result).toBeNull()
+  })
+
+  it('detects a single bid edit even when SF destroyed and recreated other rows alongside it', () => {
+    // 100 rows destroyed, 100 recreated with new Ids. One of the recreated rows
+    // has a different bid amount. Audit should report exactly 1 edit.
+    const sourceIdsBefore = Array.from({ length: 5 }, (_, i) => `old-${i}`)
+    const before = sourceIdsBefore.map((id, i) =>
+      snap({ source_id: id, row_low: 500 + i * 50, row_high: 549 + i * 50, bid_amount: 50 + i })
+    )
+    const after = sourceIdsBefore.map((_id, i) =>
+      row({
+        Id: `new-${i}`,
+        RowLow__c: 500 + i * 50,
+        RowHigh__c: 549 + i * 50,
+        RangeValue__c: i === 2 ? 999 : 50 + i,  // only row #2's bid changed
+      })
+    )
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = computeAuditDiff(before as any, after as any)
+    expect(result).not.toBeNull()
+    expect(result!.edited).toHaveLength(1)
+    expect(result!.edited[0].changes[0]).toEqual({ field: 'bid_amount', before: 52, after: 999 })
+    expect(result!.added).toHaveLength(0)
+    expect(result!.removed).toHaveLength(0)
+  })
+
+  it('flags a partner-flag toggle as add + remove (different content identity)', () => {
     const result = computeAuditDiff(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       [snap()] as any,
@@ -74,9 +113,8 @@ describe('computeAuditDiff', () => {
       [row({ IsSoFi__c: false, IsEPCVIP__c: true })] as any
     )
     expect(result).not.toBeNull()
-    expect(result!.edited).toHaveLength(1)
-    const fields = result!.edited[0].changes.map((c) => c.field).sort()
-    expect(fields).toEqual(['IsEPCVIP__c', 'IsSoFi__c'])
+    expect(result!.added).toHaveLength(1)
+    expect(result!.removed).toHaveLength(1)
   })
 
   it('coerces NUMERIC strings from postgres so revisits do not false-positive', () => {
@@ -89,12 +127,21 @@ describe('computeAuditDiff', () => {
     expect(result).toBeNull()
   })
 
-  it('produces one bucket of changes (no per-partner sectioning)', () => {
+  it('handles an added + removed + edited mix', () => {
     const result = computeAuditDiff(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      [snap({ source_id: 'sf-1' }), snap({ source_id: 'sf-2', row_low: 600, row_high: 649 })] as any,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      [row({ Id: 'sf-1', RangeValue__c: 75 }), row({ Id: 'sf-3', RowLow__c: 700, RowHigh__c: 749 })] as any
+      [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        snap({ source_id: 'sf-1' }) as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        snap({ source_id: 'sf-2', row_low: 600, row_high: 649, bid_amount: 60 }) as any,
+      ],
+      [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        row({ Id: 'sf-1', RangeValue__c: 75 }) as any,                          // edit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        row({ Id: 'sf-3', RowLow__c: 700, RowHigh__c: 749 }) as any,            // added
+        // sf-2 missing from after = removed
+      ]
     )
     expect(result!.partner_slug).toBe('salesforce_audit')
     expect(result!.added).toHaveLength(1)
