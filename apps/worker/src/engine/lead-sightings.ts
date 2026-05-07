@@ -455,14 +455,19 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
   equifax_score: number | null
 } {
   // Salesforce node namespace 'create_prospect' is the convention in the live
-  // engine workflow. If renamed, update here.
+  // engine workflow. If renamed, update here. The Salesforce executor wraps
+  // the API response under `body`, so the SF record id is at `output.body.id`.
+  // Tolerate `output.id` too in case a different workflow's SF node returns
+  // the id at the top level.
   const sfStep = steps.create_prospect
-  const prospect_id =
-    sfStep && sfStep.status === 'completed'
-      ? ((sfStep.output as { id?: string } | null)?.id ?? null)
-      : null
+  const sfOut = sfStep?.status === 'completed' ? (sfStep.output as Record<string, unknown> | null) : null
+  const sfBody = (sfOut?.body ?? null) as { id?: string } | null
+  const prospect_id = sfBody?.id ?? (sfOut as { id?: string } | null)?.id ?? null
 
   // Equifax code node namespace 'equifax_credit_report' in the live workflow.
+  // The engine workflow's code node returns the raw Equifax JSON, where the
+  // FICO score lives at consumers.equifaxUSConsumerCreditReport[0].models[0].score.
+  // Tolerate flatter shapes (top-level `score` / `fico`) for other workflows.
   const eqxStep = steps.equifax_credit_report
   let equifax_status: string | null = null
   let equifax_error_type: string | null = null
@@ -473,7 +478,9 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
       const out = (eqxStep.output ?? {}) as Record<string, unknown>
       const status = typeof out.status === 'string' ? out.status : 'success'
       equifax_status = status
-      const score = (out.score ?? out.fico ?? null) as number | string | null
+      const consumers = (out.consumers ?? null) as { equifaxUSConsumerCreditReport?: Array<{ models?: Array<{ score?: unknown }> }> } | null
+      const nestedScore = consumers?.equifaxUSConsumerCreditReport?.[0]?.models?.[0]?.score
+      const score = (out.score ?? out.fico ?? nestedScore ?? null) as number | string | null
       equifax_score = typeof score === 'number' ? score : score ? Number(score) : null
       if (Number.isNaN(equifax_score as number)) equifax_score = null
     } else if (eqxStep.status === 'failed') {
