@@ -157,13 +157,15 @@ admin.post('/backfill-sightings', async (c) => {
         )
       }
 
-      // Pull execution_steps for this run to extract terminal info + enrichment + bids
+      // Pull execution_steps for this run to extract terminal info + enrichment + bids.
+      // Order by step_order (monotonic, unique per execution); started_at is too coarse
+      // when many steps share the same second, producing non-deterministic "last step".
       const { data: steps } = await supabase
         .from('execution_steps')
-        .select('step_namespace, step_type, status, output, started_at')
+        .select('step_namespace, step_type, status, output, started_at, step_order')
         .eq('execution_id', exec.id as string)
         .eq('execution_started_at', exec.started_at as string)
-        .order('started_at', { ascending: true })
+        .order('step_order', { ascending: true })
 
       // Build a synthetic ctx.steps map for the extract helpers
       const stepsMap: Record<string, { output: unknown; status: string }> = {}
