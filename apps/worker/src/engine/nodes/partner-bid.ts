@@ -70,6 +70,19 @@ export interface PartnerBidOutput {
   skip_reason?: SkipReason
   raw_response?: unknown
   cap_count?: number      // today's cap count after this request
+  resolver_type?: BidResolverType | null
+  /**
+   * Populated when bid_resolver_type='matrix'. Lets the execution detail page
+   * answer "why didn't this lead get a bid from this partner?" without re-running
+   * the lookup.
+   */
+  matrix?: {
+    config_id: string
+    matched_row_id: string | null
+    last_synced_at: string | null
+    is_sell_off?: boolean
+    reason?: string
+  } | null
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -176,11 +189,13 @@ export async function executePartnerBidNode(
   // 6. Resolve bid via the bid-resolver abstraction
   let bid: number | null = null
   let rawResponse: unknown = null
+  let matrixInfo: PartnerBidOutput['matrix'] = null
   const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
 
   try {
     const result = await resolveBid(p, ctx, env, supabase)
     const respondedAt = new Date()
+    matrixInfo = result.matrix ?? null
     if (result.rejected) {
       logBid({
         partner_slug: p.slug,
@@ -198,6 +213,8 @@ export async function executePartnerBidNode(
           skip_reason: 'rejected' as const,
           raw_response: result.raw,
           cap_count: capCount,
+          resolver_type: p.bid_resolver_type ?? null,
+          matrix: matrixInfo,
         },
       }
     }
@@ -223,6 +240,8 @@ export async function executePartnerBidNode(
         skip_reason: 'bid_below_min',
         raw_response: rawResponse,
         cap_count: capCount,
+        resolver_type: p.bid_resolver_type ?? null,
+        matrix: matrixInfo,
       }
       return { output }
     }
@@ -242,6 +261,8 @@ export async function executePartnerBidNode(
       skipped: false,
       raw_response: rawResponse,
       cap_count: capCount,
+      resolver_type: p.bid_resolver_type ?? null,
+      matrix: matrixInfo,
     }
     log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })
     return { output }

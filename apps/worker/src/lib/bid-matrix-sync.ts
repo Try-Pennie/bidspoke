@@ -15,6 +15,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { sendMatrixChangeAlert } from './slack'
+import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
 
 export interface SyncResult {
   config_id: string
@@ -23,12 +25,35 @@ export interface SyncResult {
   rows_upserted: number
   rows_deleted: number
   last_synced_at: string
+  diff: MatrixConfigChange | null
+  organization_id: string
   error?: string
+}
+
+const TRACKED_FIELDS: ReadonlyArray<keyof MatrixRowSnapshot> = [
+  'is_sell_off',
+  'row_low',
+  'row_high',
+  'range_low',
+  'range_high',
+  'bid_amount',
+]
+
+interface MatrixRowSnapshot {
+  source_id: string | null
+  is_sell_off: boolean
+  row_id: string | null
+  row_low: number | null
+  row_high: number | null
+  range_low: number | null
+  range_high: number | null
+  bid_amount: number
 }
 
 interface BidConfigForSync {
   id: string
   slug: string
+  name: string
   organization_id: string
   sf_object: string | null
   sf_filters: { partner_flag?: string; extra?: string } | null
@@ -54,7 +79,7 @@ export async function syncBidConfig(
 ): Promise<SyncResult> {
   const { data: rawConfig, error: configErr } = await supabase
     .from('partner_bid_configs')
-    .select('id, slug, organization_id, sf_object, sf_filters, sync_source, is_active')
+    .select('id, slug, name, organization_id, sf_object, sf_filters, sync_source, is_active')
     .eq('id', configId)
     .single()
 
@@ -75,27 +100,33 @@ export async function syncBidConfig(
 
   try {
     const rows = await querySalesforceMatrixRows(config, env)
-    const { upserted, deleted } = await applyToDb(configId, rows, startedAt, supabase)
+    const { upserted, deleted, diff } = await applyToDb(config, rows, startedAt, supabase)
 
     await supabase
       .from('partner_bid_configs')
       .update({ last_synced_at: startedAt, last_sync_error: null })
       .eq('id', configId)
 
-    await writeHistory(configId, supabase, {
-      source: 'salesforce_sync',
-      rows_fetched: rows.length,
-      rows_upserted: upserted,
-      rows_deleted: deleted,
-    })
+    if (diff) {
+      await writeHistory(configId, supabase, {
+        rows_fetched: rows.length,
+        rows_upserted: upserted,
+        rows_deleted: deleted,
+        added: diff.added,
+        removed: diff.removed,
+        edited: diff.edited,
+      })
+    }
 
     return {
       config_id: configId,
       config_slug: config.slug,
+      organization_id: config.organization_id,
       rows_fetched: rows.length,
       rows_upserted: upserted,
       rows_deleted: deleted,
       last_synced_at: startedAt,
+      diff,
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -161,15 +192,24 @@ async function querySalesforceMatrixRows(
 }
 
 async function applyToDb(
-  configId: string,
+  config: BidConfigForSync,
   rows: SalesforceBidRow[],
   syncedAt: string,
   supabase: SupabaseClient
-): Promise<{ upserted: number; deleted: number }> {
+): Promise<{ upserted: number; deleted: number; diff: MatrixConfigChange | null }> {
+  // Snapshot existing rows BEFORE the upsert so we can diff against the new state.
+  const { data: existingRaw, error: existingErr } = await supabase
+    .from('bid_matrix_rows')
+    .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount')
+    .eq('config_id', config.id)
+
+  if (existingErr) throw new Error(`existing-row query failed: ${existingErr.message}`)
+  const existing = (existingRaw ?? []) as unknown as MatrixRowSnapshot[]
+
   // Upsert all rows keyed on (config_id, source_id).
   if (rows.length > 0) {
     const records = rows.map((r) => ({
-      config_id: configId,
+      config_id: config.id,
       source_id: r.Id,
       source_synced_at: syncedAt,
       is_sell_off: r.IsSellOff__c === true,
@@ -190,12 +230,14 @@ async function applyToDb(
   // Delete rows that weren't part of this sync (no longer present in SF).
   const { data: stale, error: staleErr } = await supabase
     .from('bid_matrix_rows')
-    .select('id')
-    .eq('config_id', configId)
+    .select('id, source_id')
+    .eq('config_id', config.id)
     .or(`source_synced_at.lt.${syncedAt},source_synced_at.is.null`)
 
   if (staleErr) throw new Error(`stale-row query failed: ${staleErr.message}`)
-  const deleteIds = (stale ?? []).map((r) => (r as { id: string }).id)
+  const staleRows = (stale ?? []) as unknown as { id: string; source_id: string | null }[]
+  const deleteIds = staleRows.map((r) => r.id)
+  const removedSourceIds = new Set(staleRows.map((r) => r.source_id).filter((s): s is string => !!s))
 
   if (deleteIds.length > 0) {
     const { error: delErr } = await supabase
@@ -205,7 +247,103 @@ async function applyToDb(
     if (delErr) throw new Error(`bid_matrix_rows delete failed: ${delErr.message}`)
   }
 
-  return { upserted: rows.length, deleted: deleteIds.length }
+  const diff = computeDiff(config, existing, rows, removedSourceIds)
+  return { upserted: rows.length, deleted: deleteIds.length, diff }
+}
+
+export function computeDiff(
+  config: { slug: string; name: string },
+  existing: MatrixRowSnapshot[],
+  fetched: SalesforceBidRow[],
+  removedSourceIds: Set<string>
+): MatrixConfigChange | null {
+  const before = new Map<string, MatrixRowSnapshot>()
+  for (const r of existing) {
+    if (r.source_id) before.set(r.source_id, r)
+  }
+
+  const added: MatrixRowSummary[] = []
+  const edited: MatrixRowEdit[] = []
+  const removed: MatrixRowSummary[] = []
+
+  for (const r of fetched) {
+    const next: MatrixRowSnapshot = {
+      source_id: r.Id,
+      is_sell_off: r.IsSellOff__c === true,
+      row_id: r.RowId__c,
+      row_low: r.RowLow__c,
+      row_high: r.RowHigh__c,
+      range_low: r.RangeLow__c,
+      range_high: r.RangeHigh__c,
+      bid_amount: Number(r.RangeValue__c),
+    }
+    const prev = before.get(r.Id)
+    if (!prev) {
+      added.push(toSummary(next))
+      continue
+    }
+    const changes: MatrixRowEdit['changes'] = []
+    for (const field of TRACKED_FIELDS) {
+      if (!sameValue(prev[field], next[field])) {
+        changes.push({ field, before: prev[field], after: next[field] })
+      }
+    }
+    if (changes.length > 0) {
+      edited.push({
+        row_id: next.row_id,
+        range: describeRange(next),
+        is_sell_off: next.is_sell_off,
+        changes,
+      })
+    }
+  }
+
+  for (const r of existing) {
+    if (r.source_id && removedSourceIds.has(r.source_id)) {
+      removed.push(toSummary(r))
+    }
+  }
+
+  if (added.length === 0 && edited.length === 0 && removed.length === 0) return null
+  return {
+    partner_slug: config.slug,
+    config_name: config.name,
+    added,
+    edited,
+    removed,
+  }
+}
+
+function toSummary(r: MatrixRowSnapshot): MatrixRowSummary {
+  return {
+    row_id: r.row_id,
+    range: describeRange(r),
+    is_sell_off: r.is_sell_off,
+    bid_amount: Number(r.bid_amount),
+  }
+}
+
+function describeRange(r: MatrixRowSnapshot): string {
+  const row = formatBand(r.row_low, r.row_high)
+  const range = formatBand(r.range_low, r.range_high)
+  if (range && row) return `${row} × ${range}`
+  return row || range || (r.row_id ?? '—')
+}
+
+function formatBand(low: number | null, high: number | null): string {
+  if (low === null && high === null) return ''
+  if (low === null) return `≤${high}`
+  if (high === null) return `≥${low}`
+  return `${low}–${high}`
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === null || b === null) return false
+  if (typeof a === 'number' && typeof b === 'number') return Number(a) === Number(b)
+  if (typeof a === 'string' && typeof b === 'number') return parseFloat(a) === b
+  if (typeof a === 'number' && typeof b === 'string') return a === parseFloat(b)
+  return false
 }
 
 async function writeHistory(
@@ -218,6 +356,29 @@ async function writeHistory(
     source: 'salesforce_sync',
     diff,
   })
+}
+
+async function notifyMatrixChanges(
+  supabase: SupabaseClient,
+  successes: SyncResult[]
+): Promise<void> {
+  const byOrg = new Map<string, MatrixConfigChange[]>()
+  for (const r of successes) {
+    if (!r.diff) continue
+    const list = byOrg.get(r.organization_id) ?? []
+    list.push(r.diff)
+    byOrg.set(r.organization_id, list)
+  }
+  if (byOrg.size === 0) return
+
+  const changedAt = new Date().toISOString()
+  for (const [orgId, changes] of byOrg) {
+    try {
+      await sendMatrixChangeAlert(supabase, orgId, null, { changed_at: changedAt, changes })
+    } catch (err) {
+      console.error(`[bid-matrix-sync] slack alert failed for org ${orgId}:`, err)
+    }
+  }
 }
 
 /**
@@ -248,6 +409,8 @@ export async function syncAllSalesforceConfigs(
       failures.push({ config_id: c.id, error: err instanceof Error ? err.message : String(err) })
     }
   }
+
+  await notifyMatrixChanges(supabase, successes)
 
   return { successes, failures }
 }

@@ -154,6 +154,97 @@ export async function sendDurationAlert(
   )
 }
 
+export interface MatrixChangeAlertPayload {
+  changed_at: string
+  changes: MatrixConfigChange[]
+}
+
+export interface MatrixConfigChange {
+  partner_slug: string
+  config_name: string
+  added: MatrixRowSummary[]
+  removed: MatrixRowSummary[]
+  edited: MatrixRowEdit[]
+}
+
+export interface MatrixRowSummary {
+  row_id: string | null
+  range: string
+  is_sell_off: boolean
+  bid_amount: number
+}
+
+export interface MatrixRowEdit {
+  row_id: string | null
+  range: string
+  is_sell_off: boolean
+  changes: { field: string; before: unknown; after: unknown }[]
+}
+
+export async function sendMatrixChangeAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: MatrixChangeAlertPayload
+): Promise<void> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return
+  if (payload.changes.length === 0) return
+
+  const channel = channelOverride || connection.default_channel
+  const totalAdded = payload.changes.reduce((s, c) => s + c.added.length, 0)
+  const totalRemoved = payload.changes.reduce((s, c) => s + c.removed.length, 0)
+  const totalEdited = payload.changes.reduce((s, c) => s + c.edited.length, 0)
+
+  const summary = [
+    totalAdded > 0 ? `${totalAdded} added` : null,
+    totalEdited > 0 ? `${totalEdited} edited` : null,
+    totalRemoved > 0 ? `${totalRemoved} removed` : null,
+  ].filter(Boolean).join(', ')
+
+  const blocks: unknown[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: 'Bid Matrix Changed', emoji: false },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Synced at:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.changed_at))}` },
+        { type: 'mrkdwn', text: `*Summary:* ${summary || 'no changes'}` },
+      ],
+    },
+  ]
+
+  for (const change of payload.changes) {
+    const lines: string[] = []
+    for (const e of change.edited) {
+      const fields = e.changes.map((c) => `${c.field}: ${formatValue(c.before, c.field)} → ${formatValue(c.after, c.field)}`).join(', ')
+      lines.push(`• Edited ${e.range}${e.is_sell_off ? ' (sell-off)' : ''}: ${fields}`)
+    }
+    for (const a of change.added) {
+      lines.push(`• Added ${a.range}${a.is_sell_off ? ' (sell-off)' : ''}: $${a.bid_amount}`)
+    }
+    for (const r of change.removed) {
+      lines.push(`• Removed ${r.range}${r.is_sell_off ? ' (sell-off)' : ''} (was $${r.bid_amount})`)
+    }
+    if (lines.length === 0) continue
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${change.partner_slug}* — _${change.config_name}_\n${lines.slice(0, 20).join('\n')}${lines.length > 20 ? `\n_…and ${lines.length - 20} more_` : ''}` },
+    })
+  }
+
+  await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)
+}
+
+function formatValue(v: unknown, field: string): string {
+  if (v === null || v === undefined) return '∅'
+  if (typeof v === 'boolean') return v ? 'true' : 'false'
+  if (typeof v === 'number') return field === 'bid_amount' ? `$${v}` : String(v)
+  return String(v)
+}
+
 export async function sendCircuitAlert(
   supabase: SupabaseClient,
   orgId: string,

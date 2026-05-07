@@ -6,11 +6,37 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check } from 'lucide-react'
+import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
+type Step = Execution['steps'][number]
+
+interface BidGroupOutputShape {
+  winner: { partner: string; bid: number } | null
+  all_bids?: PartnerBidOutputShape[]
+  mode?: string
+  reason?: string
+  _route?: 'winner' | 'no_winner'
+}
+
+interface PartnerBidOutputShape {
+  partner: string
+  bid: number | null
+  accepted: boolean
+  skipped: boolean
+  skip_reason?: string
+  cap_count?: number
+  resolver_type?: 'formula' | 'api' | 'matrix' | null
+  matrix?: {
+    config_id: string
+    matched_row_id: string | null
+    last_synced_at: string | null
+    is_sell_off?: boolean
+    reason?: string
+  } | null
+}
 
 const LOG_LEVEL_CLASS: Record<string, string> = {
   error: 'text-red-300',
@@ -84,6 +110,134 @@ function buildReport(execution: Execution): string {
     lines.push('')
   })
   return lines.join('\n')
+}
+
+function describeAttempt(attempt: PartnerBidOutputShape): { result: string; tone: 'green' | 'gray' | 'red' | 'amber'; why: string } {
+  if (attempt.accepted) {
+    return { result: 'Bid', tone: 'green', why: '' }
+  }
+  if (attempt.skipped) {
+    if (attempt.skip_reason === 'duplicate') return { result: 'Skipped', tone: 'gray', why: 'Dedup match' }
+    if (attempt.skip_reason === 'cap_exceeded') return { result: 'Skipped', tone: 'gray', why: `Daily cap${attempt.cap_count !== undefined ? ` (${attempt.cap_count})` : ''}` }
+    if (attempt.skip_reason === 'circuit_open') return { result: 'Skipped', tone: 'amber', why: 'Circuit breaker open' }
+    if (attempt.skip_reason === 'partner_inactive') return { result: 'Skipped', tone: 'gray', why: 'Partner inactive' }
+    if (attempt.skip_reason === 'bid_below_min') return { result: 'No bid', tone: 'amber', why: `Below min${attempt.bid !== null ? ` ($${attempt.bid})` : ''}` }
+    if (attempt.skip_reason === 'rejected') return { result: 'Rejected', tone: 'red', why: 'Partner declined' }
+    return { result: 'Skipped', tone: 'gray', why: attempt.skip_reason ?? '' }
+  }
+  if (attempt.bid === null) {
+    if (attempt.matrix?.reason === 'no_matching_cell') {
+      return { result: 'No bid', tone: 'red', why: 'No matrix row matched the lead' }
+    }
+    if (attempt.matrix?.reason?.startsWith('missing_payload_field:')) {
+      const field = attempt.matrix.reason.split(':')[1]
+      return { result: 'No bid', tone: 'red', why: `Missing payload field: ${field}` }
+    }
+    if (attempt.matrix?.reason === 'config_inactive') {
+      return { result: 'No bid', tone: 'amber', why: 'Matrix config inactive' }
+    }
+    return { result: 'No bid', tone: 'gray', why: attempt.matrix?.reason ?? 'Resolver returned null' }
+  }
+  return { result: 'No bid', tone: 'gray', why: '' }
+}
+
+function describeMode(attempt: PartnerBidOutputShape): string {
+  if (attempt.resolver_type === 'matrix') return attempt.matrix?.is_sell_off ? 'Matrix (sell-off)' : 'Matrix'
+  if (attempt.resolver_type === 'formula') return 'Formula'
+  if (attempt.resolver_type === 'api') return 'API'
+  return '—'
+}
+
+function ToneBadge({ tone, children }: { tone: 'green' | 'gray' | 'red' | 'amber'; children: React.ReactNode }) {
+  const cls = {
+    green: 'bg-green-50 text-green-700',
+    gray: 'bg-gray-100 text-gray-600',
+    red: 'bg-red-50 text-red-700',
+    amber: 'bg-amber-50 text-amber-700',
+  }[tone]
+  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${cls}`}>{children}</span>
+}
+
+function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attemptSteps: Step[] }) {
+  const output = (groupStep.output ?? {}) as BidGroupOutputShape
+  const noWinner = output._route === 'no_winner' || !output.winner
+  const reason = output.reason ?? 'unknown'
+  const mode = output.mode ?? '—'
+
+  // Prefer per-attempt step rows (one per partner) when available, since they carry
+  // per-partner timing and step status. Fall back to the bid_group's all_bids array
+  // for the data we need to render the table.
+  const attempts: PartnerBidOutputShape[] = attemptSteps.length > 0
+    ? attemptSteps.map((s) => (s.output as PartnerBidOutputShape) ?? { partner: s.step_namespace, bid: null, accepted: false, skipped: false })
+    : (output.all_bids ?? [])
+
+  const winnerSlug = output.winner?.partner
+
+  const headerTone = noWinner ? 'border-red-200 bg-red-50/30' : 'border-green-200 bg-green-50/30'
+  const headerIcon = noWinner ? <AlertTriangle className="h-4 w-4 text-red-600" /> : <CheckCircle className="h-4 w-4 text-green-600" />
+
+  return (
+    <div className={`rounded-xl border ${headerTone} p-4`}>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {headerIcon}
+          <h3 className="font-mono text-sm font-semibold text-graphite">{groupStep.step_namespace}</h3>
+          <span className="text-xs text-gray-500">{mode}</span>
+        </div>
+        <div className="text-xs text-gray-600">
+          {noWinner
+            ? <span className="font-medium text-red-700">No winner — {reason.replace(/_/g, ' ')}</span>
+            : <span className="font-medium text-green-700">Winner: {winnerSlug} (${output.winner?.bid ?? 0})</span>}
+        </div>
+      </div>
+
+      {attempts.length === 0 ? (
+        <p className="text-xs text-gray-500">No partner attempts recorded.</p>
+      ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-gray-50 text-gray-500">
+              <tr>
+                <th className="px-3 py-2 font-medium">Partner</th>
+                <th className="px-3 py-2 font-medium">Mode</th>
+                <th className="px-3 py-2 font-medium">Result</th>
+                <th className="px-3 py-2 text-right font-medium">Bid</th>
+                <th className="px-3 py-2 font-medium">Why</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {attempts.map((a, i) => {
+                const d = describeAttempt(a)
+                const isWinner = a.partner === winnerSlug && a.accepted
+                return (
+                  <tr key={`${a.partner}-${i}`} className={isWinner ? 'bg-green-50/40' : undefined}>
+                    <td className="px-3 py-2 font-mono text-graphite">{a.partner}</td>
+                    <td className="px-3 py-2 text-gray-600">{describeMode(a)}</td>
+                    <td className="px-3 py-2"><ToneBadge tone={isWinner ? 'green' : d.tone}>{isWinner ? 'Won' : d.result}</ToneBadge></td>
+                    <td className="px-3 py-2 text-right font-mono text-graphite">{a.bid !== null ? `$${a.bid}` : '—'}</td>
+                    <td className="px-3 py-2 text-gray-600">{d.why || (isWinner ? '' : '—')}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function findBidGroupSummaries(steps: Step[]): Array<{ groupStep: Step; attemptSteps: Step[] }> {
+  const groups: Array<{ groupStep: Step; attemptSteps: Step[] }> = []
+  for (const step of steps) {
+    if (step.step_type !== 'bid_group') continue
+    const nodeId = (step as { step_node_id?: string }).step_node_id
+    const attemptSteps = nodeId
+      ? steps.filter((s) => s.step_type === 'partner_bid' && (s as { parallel_group_id?: string }).parallel_group_id === nodeId)
+      : []
+    groups.push({ groupStep: step, attemptSteps })
+  }
+  return groups
 }
 
 function JsonBlock({ value }: { value: unknown }) {
@@ -294,6 +448,22 @@ export default function ExecutionDetailPage() {
                 <JsonBlock value={execution.trigger_payload} />
               </div>
             </div>
+
+            {/* Bid group summary — surfaced above the steps so "why no bid?" is one click away */}
+            {(() => {
+              const summaries = findBidGroupSummaries(execution.steps)
+              if (summaries.length === 0) return null
+              return (
+                <div>
+                  <h2 className="mb-3 text-sm font-semibold text-gray-700">Bid attempts</h2>
+                  <div className="space-y-3">
+                    {summaries.map(({ groupStep, attemptSteps }) => (
+                      <BidGroupSummary key={groupStep.id} groupStep={groupStep} attemptSteps={attemptSteps} />
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
 
             {/* Steps */}
             <div>
