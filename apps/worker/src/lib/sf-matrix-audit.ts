@@ -321,21 +321,43 @@ function deriveBidMatrixListUrl(instanceUrl: string): string | undefined {
   return `https://${m[1]}.lightning.force.com/lightning/n/Bid_Matrix`
 }
 
+/**
+ * BidRangeRow__c dimensions per Pennie convention:
+ *   Row dimension (RowLow__c/RowHigh__c)     = engine debt in dollars
+ *   Range dimension (RangeLow__c/RangeHigh__c) = Vantage Score band
+ *
+ * Both can be `0–0` (placeholder for "no constraint on this dimension"). Hide
+ * those so the alert reads as just the active band(s).
+ */
 function describeRange(r: { row_low: number | null; row_high: number | null; range_low: number | null; range_high: number | null; row_id: string | null }): string {
-  const row = formatBand(r.row_low, r.row_high)
-  const range = formatBand(r.range_low, r.range_high)
-  if (range && row) return `${row} × ${range}`
-  return row || range || (r.row_id ?? '—')
+  const debt = formatBand(r.row_low, r.row_high)
+  const vantage = formatBand(r.range_low, r.range_high)
+  const debtLabel = debt ? `Debt $${debt}` : ''
+  const vantageLabel = vantage ? `Vantage ${vantage}${vantageTierName(r.range_low, r.range_high)}` : ''
+  if (debtLabel && vantageLabel) return `${debtLabel} × ${vantageLabel}`
+  return debtLabel || vantageLabel || (r.row_id ?? '—')
 }
 
 function formatBand(low: number | null, high: number | null): string {
   if (low === null && high === null) return ''
-  // SF stores `0–0` as a placeholder when a row doesn't gate on this dimension.
-  // Treat it the same as null/null so alerts don't render confusing "0–0 × ..." prefixes.
   if (Number(low) === 0 && Number(high) === 0) return ''
-  if (low === null) return `≤${high}`
-  if (high === null) return `≥${low}`
-  return `${low}–${high}`
+  if (low === null) return `≤${fmtNum(high)}`
+  if (high === null) return `≥${fmtNum(low)}`
+  return `${fmtNum(low)}–${fmtNum(high)}`
+}
+
+function fmtNum(n: number | null): string {
+  return n === null ? '?' : Number(n).toLocaleString('en-US')
+}
+
+/** Standard Vantage Score tier names — append in parens when bounds match exactly. */
+function vantageTierName(low: number | null, high: number | null): string {
+  if (low === 301 && high === 499) return ' (Very Poor)'
+  if (low === 500 && high === 600) return ' (Poor)'
+  if (low === 601 && high === 660) return ' (Fair)'
+  if (low === 661 && high === 780) return ' (Good)'
+  if (low === 781 && high === 850) return ' (Excellent)'
+  return ''
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
