@@ -330,6 +330,9 @@ function describeRange(r: { row_low: number | null; row_high: number | null; ran
 
 function formatBand(low: number | null, high: number | null): string {
   if (low === null && high === null) return ''
+  // SF stores `0–0` as a placeholder when a row doesn't gate on this dimension.
+  // Treat it the same as null/null so alerts don't render confusing "0–0 × ..." prefixes.
+  if (Number(low) === 0 && Number(high) === 0) return ''
   if (low === null) return `≤${high}`
   if (high === null) return `≥${low}`
   return `${low}–${high}`
