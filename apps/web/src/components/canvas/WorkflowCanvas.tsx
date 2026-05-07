@@ -782,6 +782,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const viewport = useViewport()
   const nodesInitialized = useNodesInitialized()
   const initialFitDoneRef = useRef(false)
+  // Once React Flow has measured every node, re-run layoutWorkflow so dagre
+  // can use real DOM heights instead of the per-type declared maxima. Until
+  // that pass completes, the canvas is hidden behind a loader so the user
+  // never sees the layout shift between declared-height and measured-height.
+  const [layoutSettled, setLayoutSettled] = useState(false)
+  const layoutSettleDoneRef = useRef(false)
 
   // Backfill any legacy branches with a paired branch_end + hidden backbone
   // BEFORE both nodes and edges are computed so the synthesized edges land
@@ -929,7 +935,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // aren't always perfectly clean when chains have unequal depth, but having
   // *no* edge is worse than slightly imperfect routing.
   const renderedEdges = useMemo(
-    () => [...edges, ...computeConvergenceEdges(nodes, edges)],
+    () => {
+      // Drop edges that point at a sourceHandle the source node no longer has.
+      // These can survive in the definition when a node's type changes (e.g.,
+      // a single-output node turned into a branch) and React Flow logs a
+      // "Couldn't create edge" warning on every render — which on Main Flow
+      // produced thousands of console writes per load and visibly froze the
+      // canvas. Drop them silently here; the underlying data isn't touched.
+      const nodeMap = new Map(nodes.map((n) => [n.id, n]))
+      const validEdges = edges.filter((e) => {
+        if (!e.sourceHandle) return true
+        const src = nodeMap.get(e.source)
+        if (!src) return true
+        const handles = configuredHandleIds(src)
+        if (!handles) return e.sourceHandle === null || e.sourceHandle === 'output'
+        return handles.includes(e.sourceHandle)
+      })
+      return [...validEdges, ...computeConvergenceEdges(nodes, validEdges)]
+    },
     [nodes, edges]
   )
 
@@ -1054,15 +1077,41 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [edges, nodes.length])
 
-  // Re-fit the viewport once every node has been measured. The default
-  // `fitView` prop fires on first render, before React Flow has measured node
-  // dimensions, so the bounding box is computed from positions only and the
-  // bottom of the workflow can fall outside the viewport. Refit after
-  // measurement so the entire graph is framed. Only includes nodes reachable
-  // from the trigger so far-flung orphans don't pull the bbox wide and leave
-  // dead space on one side.
+  // First measurement pass: re-run layoutWorkflow with real DOM heights so the
+  // gap between adjacent ranks is uniform regardless of how tall a given node
+  // ended up. Runs once when `useNodesInitialized` first flips true.
   useEffect(() => {
     if (!nodesInitialized) return
+    if (layoutSettleDoneRef.current) return
+    layoutSettleDoneRef.current = true
+    setNodes((prev) => layoutWorkflow(prev, edges))
+    requestAnimationFrame(() => setLayoutSettled(true))
+  }, [nodesInitialized, edges, setNodes])
+
+  // Safety net: if `useNodesInitialized` never flips (e.g. ResizeObserver
+  // stuck on a node off-screen), reveal the canvas anyway after 2s so the
+  // user isn't permanently stuck staring at the loader.
+  useEffect(() => {
+    if (layoutSettled) return
+    const t = setTimeout(() => {
+      if (!layoutSettleDoneRef.current) {
+        layoutSettleDoneRef.current = true
+        setNodes((prev) => layoutWorkflow(prev, edges))
+      }
+      setLayoutSettled(true)
+    }, 2000)
+    return () => clearTimeout(t)
+  }, [layoutSettled, edges, setNodes])
+
+  // Re-fit the viewport once layout has settled with measured heights. The
+  // default `fitView` prop fires on first render, before React Flow has
+  // measured node dimensions, so the bounding box is computed from positions
+  // only and the bottom of the workflow can fall outside the viewport. Refit
+  // after measurement so the entire graph is framed. Only includes nodes
+  // reachable from the trigger so far-flung orphans don't pull the bbox wide
+  // and leave dead space on one side.
+  useEffect(() => {
+    if (!layoutSettled) return
     if (initialFitDoneRef.current) return
     initialFitDoneRef.current = true
     const reachable = reachableFromTrigger(nodes, edges)
@@ -1070,7 +1119,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       .filter((n) => reachable.has(n.id))
       .map((n) => ({ id: n.id }))
     fitView({ padding: 0.4, maxZoom: 0.5, nodes: fitNodes.length > 0 ? fitNodes : undefined })
-  }, [nodesInitialized, fitView, nodes, edges])
+  }, [layoutSettled, fitView, nodes, edges])
 
   const handleTestStart = useCallback((_execId: string) => {
     setLiveSteps({})
@@ -2391,6 +2440,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           )}
 
           <div className="relative flex-1 min-h-0" onDrop={mode === 'edit' ? onDrop : undefined} onDragOver={mode === 'edit' ? onDragOver : undefined}>
+          {!layoutSettled && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-white">
+              <div className="flex items-center gap-2 text-sm text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Laying out workflow…
+              </div>
+            </div>
+          )}
+          <div
+            className="h-full w-full"
+            style={layoutSettled ? undefined : { visibility: 'hidden', pointerEvents: 'none' }}
+          >
           <ReactFlow
             nodes={renderedNodes}
             edges={renderedEdges}
@@ -2639,6 +2700,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               maskColor="rgba(243,244,246,0.7)"
             />
           </ReactFlow>
+          </div>
 
           {contextMenu && (() => {
             const cmInEdges = edges.filter((e) => e.target === contextMenu.nodeId)

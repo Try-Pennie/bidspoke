@@ -78,8 +78,11 @@ app.use(
   '*',
   cors({
     origin: (origin) => {
-      const allowed = ['http://localhost:3000', 'https://bidspoke.pages.dev', 'https://bidspoke.trypennie.dev']
-      return allowed.includes(origin) ? origin : null
+      const allowed = ['https://bidspoke.pages.dev', 'https://bidspoke.trypennie.dev']
+      if (allowed.includes(origin)) return origin
+      // Accept any localhost port in dev — Next.js bumps to 3001+ when 3000 is busy
+      if (/^http:\/\/localhost:\d+$/.test(origin)) return origin
+      return null
     },
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],

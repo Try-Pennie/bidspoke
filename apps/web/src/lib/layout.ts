@@ -40,6 +40,19 @@ export function nodeHeight(type: string | undefined) {
 }
 
 /**
+ * The height we should use for layout. Prefers React Flow's measured DOM height
+ * when available so dagre reserves exactly the rendered space — that keeps the
+ * gap between adjacent ranks visually constant regardless of how tall a given
+ * node ends up. Falls back to the declared NODE_H for the very first layout
+ * pass, before nodes have been measured.
+ */
+function effectiveHeight(node: Node): number {
+  const m = (node as { measured?: { height?: number } }).measured
+  if (m?.height != null && m.height > 0) return m.height
+  return nodeHeight(node.type)
+}
+
+/**
  * Branch nodes grow horizontally to fit all handle labels in the footer row.
  * Other types use the shared NODE_W. Keep this in sync with the rendered
  * width in BranchNode.tsx so dagre reserves the same horizontal slot.
@@ -429,7 +442,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
 
   for (const node of nodes) {
-    g.setNode(node.id, { width: widthFor(node), height: nodeHeight(node.type) })
+    g.setNode(node.id, { width: widthFor(node), height: effectiveHeight(node) })
   }
 
   // Sort edges from the same source by handle position before feeding dagre.
@@ -748,13 +761,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       let newX: number
       let newY: number
       if (!isConnected) {
-        const branchH = nodeHeight(branch?.type)
-        const pillH = nodeHeight(node.type)
+        const branchH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
+        const pillH = effectiveHeight(node)
         newX = branchPos.x
         newY = branchPos.y + branchH / 2 + 16 + pillH / 2
       } else {
         const handles = branch ? configuredHandleIds(branch) ?? [] : []
         let deepestY = branchPos.y
+        let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
         const visited = new Set<string>([branchId, node.id])
         const queue: string[] = []
         for (const h of handles) {
@@ -766,13 +780,23 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
           if (visited.has(cur)) continue
           visited.add(cur)
           const curPos = pos.get(cur)
-          if (curPos && curPos.y > deepestY) deepestY = curPos.y
+          const curNode = nodeMap.get(cur)
+          if (curPos && curPos.y > deepestY) {
+            deepestY = curPos.y
+            if (curNode) deepestH = effectiveHeight(curNode)
+          }
           for (const e of edges) {
             if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
           }
         }
+        // Place branch_end so there's exactly 48px between the deepest
+        // descendant's bottom and branch_end's top, regardless of either
+        // height. The previous formula `deepestY + effectiveHeight(node) + 48`
+        // baked in only the branch_end's own height — when the deepest
+        // descendant was much taller (e.g., a Salesforce node above a
+        // compact-pill branch_end) the visible gap blew up.
         newX = branchPos.x
-        newY = deepestY + nodeHeight(node.type) + 48
+        newY = deepestY + deepestH / 2 + 48 + effectiveHeight(node) / 2
       }
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
@@ -896,7 +920,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       data: layoutData,
       position: {
         x: p.x - w / 2,
-        y: p.y - nodeHeight(node.type) / 2,
+        y: p.y - effectiveHeight(node) / 2,
       },
     }
   })
