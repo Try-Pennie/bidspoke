@@ -177,6 +177,8 @@ export interface MatrixRowSummary {
   range: string
   is_sell_off: boolean
   bid_amount: number
+  /** Direct URL to the row in Salesforce — appended as a clickable mrkdwn link when present. */
+  source_url?: string
 }
 
 export interface MatrixRowEdit {
@@ -184,6 +186,8 @@ export interface MatrixRowEdit {
   range: string
   is_sell_off: boolean
   changes: { field: string; before: unknown; after: unknown }[]
+  /** Direct URL to the row in Salesforce — appended as a clickable mrkdwn link when present. */
+  source_url?: string
 }
 
 export async function sendMatrixChangeAlert(
@@ -226,13 +230,13 @@ export async function sendMatrixChangeAlert(
     const lines: string[] = []
     for (const e of change.edited) {
       const fields = e.changes.map((c) => `${c.field}: ${formatValue(c.before, c.field)} → ${formatValue(c.after, c.field)}`).join(', ')
-      lines.push(`• Edited ${e.range}${e.is_sell_off ? ' (sell-off)' : ''}: ${fields}`)
+      lines.push(`• Edited ${e.range}${e.is_sell_off ? ' (sell-off)' : ''}: ${fields}${linkSuffix(e.source_url)}`)
     }
     for (const a of change.added) {
-      lines.push(`• Added ${a.range}${a.is_sell_off ? ' (sell-off)' : ''}: $${a.bid_amount}`)
+      lines.push(`• Added ${a.range}${a.is_sell_off ? ' (sell-off)' : ''}: $${a.bid_amount}${linkSuffix(a.source_url)}`)
     }
     for (const r of change.removed) {
-      lines.push(`• Removed ${r.range}${r.is_sell_off ? ' (sell-off)' : ''} (was $${r.bid_amount})`)
+      lines.push(`• Removed ${r.range}${r.is_sell_off ? ' (sell-off)' : ''} (was $${r.bid_amount})${linkSuffix(r.source_url)}`)
     }
     if (lines.length === 0) continue
     blocks.push({
@@ -242,6 +246,10 @@ export async function sendMatrixChangeAlert(
   }
 
   await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)
+}
+
+function linkSuffix(url: string | undefined): string {
+  return url ? ` · <${url}|view in SF>` : ''
 }
 
 function formatValue(v: unknown, field: string): string {

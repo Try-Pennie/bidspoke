@@ -77,7 +77,9 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   const sfRows = await querySalesforceMatrixRows(env)
   const existing = await readSnapshot(supabase)
 
-  const diff = computeAuditDiff(existing, sfRows)
+  const rawEnv = env as unknown as Record<string, string | undefined>
+  const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
+  const diff = computeAuditDiff(existing, sfRows, instanceUrl)
 
   // Apply state to the snapshot table — upsert all fetched rows, delete missing ones.
   if (sfRows.length > 0) {
@@ -153,7 +155,8 @@ async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> 
  */
 export function computeAuditDiff(
   existing: AuditSnapshot[],
-  fetched: SalesforceBidRow[]
+  fetched: SalesforceBidRow[],
+  instanceUrl?: string
 ): MatrixConfigChange | null {
   const beforeBuckets = new Map<string, AuditSnapshot[]>()
   for (const e of existing) {
@@ -172,7 +175,7 @@ export function computeAuditDiff(
     const key = identityKey(next)
     const bucket = beforeBuckets.get(key)
     if (!bucket || bucket.length === 0) {
-      added.push(toSummary(next))
+      added.push(toSummary(next, instanceUrl))
       continue
     }
     const prev = bucket.shift()!
@@ -180,15 +183,16 @@ export function computeAuditDiff(
     if (!sameValue(prev.bid_amount, next.bid_amount)) {
       edited.push({
         row_id: next.row_id,
-        range: describeRange(next),
+        range: describeRange(next) + flagSuffix(next.partner_flags),
         is_sell_off: next.is_sell_off,
         changes: [{ field: 'bid_amount', before: prev.bid_amount, after: next.bid_amount }],
+        source_url: sfRecordUrl(instanceUrl, next.source_id),
       })
     }
   }
 
   for (const bucket of beforeBuckets.values()) {
-    for (const e of bucket) removed.push(toSummary(e))
+    for (const e of bucket) removed.push(toSummary(e, instanceUrl))
   }
 
   if (added.length === 0 && edited.length === 0 && removed.length === 0) return null
@@ -290,15 +294,24 @@ function toSnapshotRow(r: SalesforceBidRow, syncedAt?: string): AuditSnapshot & 
   }
 }
 
-function toSummary(r: AuditSnapshot): MatrixRowSummary {
-  const flagged = Object.entries(r.partner_flags).filter(([, v]) => v).map(([k]) => k.replace(/^Is/, '').replace(/__c$/, ''))
-  const flagSuffix = flagged.length > 0 ? ` [${flagged.join(', ')}]` : ''
+function toSummary(r: AuditSnapshot, instanceUrl?: string): MatrixRowSummary {
   return {
     row_id: r.row_id,
-    range: describeRange(r) + flagSuffix,
+    range: describeRange(r) + flagSuffix(r.partner_flags),
     is_sell_off: r.is_sell_off,
     bid_amount: Number(r.bid_amount),
+    source_url: sfRecordUrl(instanceUrl, r.source_id),
   }
+}
+
+function flagSuffix(flags: Record<string, boolean>): string {
+  const flagged = Object.entries(flags).filter(([, v]) => v).map(([k]) => k.replace(/^Is/, '').replace(/__c$/, ''))
+  return flagged.length > 0 ? ` [${flagged.join(', ')}]` : ''
+}
+
+function sfRecordUrl(instanceUrl: string | undefined, sourceId: string | null): string | undefined {
+  if (!instanceUrl || !sourceId) return undefined
+  return `${instanceUrl}/${sourceId}`
 }
 
 function describeRange(r: { row_low: number | null; row_high: number | null; range_low: number | null; range_high: number | null; row_id: string | null }): string {
