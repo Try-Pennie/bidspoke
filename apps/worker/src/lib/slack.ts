@@ -241,9 +241,17 @@ export async function sendMatrixChangeAlert(
       lines.push(`• Removed ${r.range}${r.is_sell_off ? ' (sell-off)' : ''} (was $${r.bid_amount})${linkSuffix(r.source_url)}`)
     }
     if (lines.length === 0) continue
+    // The audit job uses partner_slug='salesforce_audit' as a sentinel — there's
+    // only ever one section, so its header is redundant noise. Per-partner sync
+    // alerts (post-cutover) use real partner slugs and benefit from the header.
+    const showHeader = change.partner_slug !== 'salesforce_audit'
+    const body = lines.slice(0, 20).join('\n') + (lines.length > 20 ? `\n_…and ${lines.length - 20} more_` : '')
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*${change.partner_slug}* — _${change.config_name}_\n${lines.slice(0, 20).join('\n')}${lines.length > 20 ? `\n_…and ${lines.length - 20} more_` : ''}` },
+      text: {
+        type: 'mrkdwn',
+        text: showHeader ? `*${change.partner_slug}* — _${change.config_name}_\n${body}` : body,
+      },
     })
   }
 
