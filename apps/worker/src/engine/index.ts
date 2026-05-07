@@ -361,15 +361,22 @@ export async function executeWorkflow(
           finalErrorMessage = 'Execution did not advance past the trigger — no step completed.'
         }
 
+        const passedThroughSuccessNode = successNamespaces.some(
+          (ns) => ctx.steps[ns]?.status === 'completed'
+        )
         const outcome: 'successful' | 'completed' | 'failed' =
           finalStatus === 'failed'
             ? 'failed'
-            : (finalNodeNamespace && successNamespaces.includes(finalNodeNamespace)) ? 'successful' : 'completed'
+            : passedThroughSuccessNode ? 'successful' : 'completed'
         const cost = estimateStepBasedCost(stepLogQueue)
+        const finalNodeId = finalNodeNamespace
+          ? definition.nodes.find((n) => n.namespace === finalNodeNamespace)?.id ?? null
+          : null
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,
           outcome,
           final_node_namespace: finalNodeNamespace,
+          final_node_id: finalNodeId,
           completed_at: completedAt,
           duration_ms: durationMs,
           response_body: response,
@@ -433,11 +440,16 @@ export async function executeWorkflow(
           })
 
           // Mirror the outcome attribution used for workflow_executions.outcome.
-          // Strict last-node match against the workflow's success_node_namespaces.
+          // Any completed step in success_node_namespaces marks the run successful,
+          // even if the workflow continues past it (e.g. branch_end / parallel_end
+          // becomes the actual terminal node).
+          const passedThroughSuccessNs = successNamespaces.some(
+            (ns) => ctx.steps[ns]?.status === 'completed'
+          )
           const sightingOutcome: 'successful' | 'completed' | 'failed' =
             executionStatus === 'failed'
               ? 'failed'
-              : (finalNs && successNamespaces.includes(finalNs)) ? 'successful' : 'completed'
+              : passedThroughSuccessNs ? 'successful' : 'completed'
 
           await finalizeSighting(supabase, {
             sighting_id: sightingId,
@@ -693,7 +705,7 @@ export async function walkGraph(
       const childIdSet = new Set(resolvedChildren.map((c) => c.id))
       const endNode = endNodePreview
       if (endNode) {
-        recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+        recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType }, endNode.type)
         logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelEndOrder)
       }
 
@@ -990,7 +1002,7 @@ export async function walkGraph(
         } else {
           log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
         }
-        recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType })
+        recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType }, node.type)
         logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, null, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
@@ -1036,7 +1048,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
-          recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
+          recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
           logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
           current = fallback
           stepOrder++
@@ -1046,7 +1058,7 @@ export async function walkGraph(
       } else {
         stepStatus = 'failed'
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
-        recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType })
+        recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
@@ -1058,7 +1070,7 @@ export async function walkGraph(
     if (!loggedEarly) {
       const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
-      recordStepOutput(ctx, node.namespace, { output, status: stepStatus })
+      recordStepOutput(ctx, node.namespace, { output, status: stepStatus }, node.type)
       logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
     }
 
@@ -1132,6 +1144,7 @@ function logStep(
     execution_id: executionId,
     execution_started_at: executionStartedAt,
     step_namespace: node.namespace,
+    step_node_id: node.id,
     step_type: node.type,
     step_subtype: deriveStepSubtype(node),
     status,

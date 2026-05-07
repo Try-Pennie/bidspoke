@@ -6,6 +6,7 @@ export interface StepLogEntry {
   execution_id: string
   execution_started_at: string
   step_namespace: string
+  step_node_id?: string
   step_type: string
   step_subtype?: string
   status: StepStatus
@@ -101,6 +102,7 @@ export async function updateExecutionRecord(
     status: string
     outcome?: string
     final_node_namespace?: string | null
+    final_node_id?: string | null
     completed_at: string
     duration_ms: number
     response_body?: unknown

@@ -88,13 +88,19 @@ export function resolveValue(value: unknown, ctx: ExecutionContext): unknown {
   return value
 }
 
+// Synthetic join nodes (branch_end, parallel_end) are excluded from
+// lastCompletedNamespace so terminal-node attribution reflects the last
+// real step, not the join marker the workflow happens to converge through.
+const END_NODE_TYPES = new Set(['branch_end', 'parallel_end'])
+
 export function recordStepOutput(
   ctx: ExecutionContext,
   namespace: string,
-  result: StepOutput
+  result: StepOutput,
+  nodeType?: string
 ): void {
   ctx.steps[namespace] = result
-  if (result.status === 'completed') {
+  if (result.status === 'completed' && !END_NODE_TYPES.has(nodeType ?? '')) {
     ctx.lastCompletedNamespace = namespace
   }
 }
