@@ -497,6 +497,7 @@ export const api = {
       workspace_name?: string | null
       default_channel?: string | null
       volume_alerts_enabled?: boolean
+      matrix_alerts_channel?: string | null
       updated_at?: string
       updated_by_email?: string | null
     }>('/api/integrations/slack'),
@@ -505,7 +506,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string }) =>
+    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_channel?: string | null }) =>
       req<{ ok: boolean }>('/api/integrations/slack/settings', {
         method: 'PATCH',
         body: JSON.stringify(data),

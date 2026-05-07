@@ -114,6 +114,7 @@ integrations.get('/slack', async (c) => {
     default_channel: (cfg?.default_channel as string | undefined) ?? null,
     // Default true so existing connections keep getting volume alerts.
     volume_alerts_enabled: cfg?.volume_alerts_enabled !== false,
+    matrix_alerts_channel: (cfg?.matrix_alerts_channel as string | undefined) ?? null,
     // never return the token
     updated_at: data.updated_at,
     updated_by_email: data.updated_by_email,
@@ -185,7 +186,7 @@ integrations.get('/slack/channels', async (c) => {
 integrations.patch('/slack/settings', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string }>()
+  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_channel?: string | null }>()
 
   const { data: existing } = await supabase
     .from('service_connections')
@@ -200,6 +201,7 @@ integrations.patch('/slack/settings', async (c) => {
     ...((existing.config as Record<string, unknown> | null) ?? {}),
     ...(body.volume_alerts_enabled !== undefined ? { volume_alerts_enabled: body.volume_alerts_enabled } : {}),
     ...(body.default_channel ? { default_channel: body.default_channel } : {}),
+    ...(body.matrix_alerts_channel !== undefined ? { matrix_alerts_channel: body.matrix_alerts_channel || null } : {}),
   }
 
   const { error } = await supabase
@@ -213,6 +215,7 @@ integrations.patch('/slack/settings', async (c) => {
     service_type: 'slack',
     volume_alerts_enabled: body.volume_alerts_enabled,
     default_channel: body.default_channel,
+    matrix_alerts_channel: body.matrix_alerts_channel,
   })
 
   return c.json({ ok: true })

@@ -18,9 +18,12 @@ interface SlackStatus {
   workspace_name?: string | null
   default_channel?: string | null
   volume_alerts_enabled?: boolean
+  matrix_alerts_channel?: string | null
   updated_at?: string
   updated_by_email?: string | null
 }
+
+type ChannelKind = 'default' | 'matrix'
 
 interface ResolvedSlack {
   workspace_name: string
@@ -44,7 +47,8 @@ export default function IntegrationsPage() {
 
   // Inline channel editor (shown only when Slack is already connected).
   // Type-to-search: query Slack only after >= 3 chars, debounced.
-  const [editingChannel, setEditingChannel] = useState(false)
+  // Editing kind tells us which field to save (default vs matrix-alerts override).
+  const [editingChannel, setEditingChannel] = useState<ChannelKind | null>(null)
   const [channelQuery, setChannelQuery] = useState('')
   const [channelResults, setChannelResults] = useState<Array<{ id: string; name: string }>>([])
   const [searchingChannels, setSearchingChannels] = useState(false)
@@ -75,11 +79,45 @@ export default function IntegrationsPage() {
   }, [channelQuery, editingChannel])
 
   useEffect(() => {
-    if (editingChannel) {
+    if (editingChannel !== null) {
       const frame = requestAnimationFrame(() => channelInputRef.current?.focus())
       return () => cancelAnimationFrame(frame)
     }
   }, [editingChannel])
+
+  function exitChannelEditor() {
+    setEditingChannel(null)
+    setChannelQuery('')
+    setChannelResults([])
+    setPendingChannel('')
+  }
+
+  async function saveEditingChannel() {
+    if (!editingChannel || !slack) return
+    const valueToSave = pendingChannel || (editingChannel === 'matrix' ? '' : '')
+    if (editingChannel === 'default' && !valueToSave) return
+    setSavingChannel(true)
+    const prevDefault = slack.default_channel
+    const prevMatrix = slack.matrix_alerts_channel ?? null
+    if (editingChannel === 'default') {
+      setSlack((s) => (s ? { ...s, default_channel: valueToSave } : s))
+    } else {
+      setSlack((s) => (s ? { ...s, matrix_alerts_channel: valueToSave || null } : s))
+    }
+    try {
+      if (editingChannel === 'default') {
+        await api.integrations.updateSlackSettings({ default_channel: valueToSave })
+      } else {
+        await api.integrations.updateSlackSettings({ matrix_alerts_channel: valueToSave || null })
+      }
+      exitChannelEditor()
+    } catch (e) {
+      setSlack((s) => (s ? { ...s, default_channel: prevDefault, matrix_alerts_channel: prevMatrix } : s))
+      setError(e instanceof Error ? e.message : 'Failed to update channel')
+    } finally {
+      setSavingChannel(false)
+    }
+  }
 
   // Service presets
   const [presets, setPresets] = useState<ServicePreset[]>([])
@@ -297,7 +335,7 @@ export default function IntegrationsPage() {
                 {slack.workspace_name && (
                   <p className="text-gray-600">Workspace: <span className="font-medium text-graphite">{slack.workspace_name}</span></p>
                 )}
-                {editingChannel ? (
+                {editingChannel === 'default' ? (
                   <div className="mt-1 space-y-2">
                     <div className="flex items-center gap-2">
                       <span className="text-gray-600">Default channel:</span>
@@ -313,35 +351,14 @@ export default function IntegrationsPage() {
                         disabled={savingChannel}
                       />
                       <button
-                        onClick={async () => {
-                          if (!pendingChannel) return
-                          setSavingChannel(true)
-                          const prev = slack.default_channel
-                          setSlack((s) => (s ? { ...s, default_channel: pendingChannel } : s))
-                          try {
-                            await api.integrations.updateSlackSettings({ default_channel: pendingChannel })
-                            setEditingChannel(false)
-                            setChannelQuery('')
-                            setChannelResults([])
-                          } catch (e) {
-                            setSlack((s) => (s ? { ...s, default_channel: prev } : s))
-                            setError(e instanceof Error ? e.message : 'Failed to update channel')
-                          } finally {
-                            setSavingChannel(false)
-                          }
-                        }}
+                        onClick={saveEditingChannel}
                         disabled={!pendingChannel || savingChannel}
                         className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
                       >
                         {savingChannel ? 'Saving…' : 'Save'}
                       </button>
                       <button
-                        onClick={() => {
-                          setEditingChannel(false)
-                          setChannelQuery('')
-                          setChannelResults([])
-                          setPendingChannel('')
-                        }}
+                        onClick={exitChannelEditor}
                         disabled={savingChannel}
                         className="text-xs text-gray-400 hover:text-gray-600"
                       >
@@ -380,7 +397,7 @@ export default function IntegrationsPage() {
                   <p className="text-gray-600">
                     Default channel: <span className="font-medium text-graphite">{slack.default_channel}</span>
                     <button
-                      onClick={() => setEditingChannel(true)}
+                      onClick={() => setEditingChannel('default')}
                       className="ml-2 text-xs text-p-blue-dark hover:underline"
                     >
                       Change
@@ -411,6 +428,103 @@ export default function IntegrationsPage() {
                   }}
                   label="Volume anomaly alerts"
                 />
+              </div>
+              <div className="rounded-lg border border-gray-200 p-3">
+                <div className="text-sm">
+                  <p className="font-medium text-graphite">Bid matrix change alerts</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Posted at the top of every hour when the Salesforce bid matrix has any rows added, edited, or removed since the last sync. Pick a separate channel here, or leave empty to use the default channel.
+                  </p>
+                </div>
+                {editingChannel === 'matrix' ? (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={channelInputRef}
+                        className="input flex-1 py-1 text-sm"
+                        placeholder="Type at least 3 characters to search"
+                        value={channelQuery}
+                        onChange={(e) => {
+                          setChannelQuery(e.target.value)
+                          setPendingChannel('')
+                        }}
+                        disabled={savingChannel}
+                      />
+                      <button
+                        onClick={saveEditingChannel}
+                        disabled={!pendingChannel || savingChannel}
+                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                      >
+                        {savingChannel ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        onClick={exitChannelEditor}
+                        disabled={savingChannel}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    {channelQuery.trim().length >= 3 && (
+                      <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white">
+                        {searchingChannels ? (
+                          <p className="px-3 py-2 text-xs text-gray-400">Searching…</p>
+                        ) : channelResults.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-gray-400">No channels match.</p>
+                        ) : (
+                          <ul className="divide-y divide-gray-100">
+                            {channelResults.map((ch) => {
+                              const value = `#${ch.name}`
+                              const selected = pendingChannel === value
+                              return (
+                                <li key={ch.id}>
+                                  <button
+                                    onClick={() => setPendingChannel(value)}
+                                    className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm hover:bg-gray-50 ${selected ? 'bg-p-blue-light/10 text-p-blue-dark' : 'text-graphite'}`}
+                                  >
+                                    <span>#{ch.name}</span>
+                                    {selected && <CheckCircle className="h-3.5 w-3.5" />}
+                                  </button>
+                                </li>
+                              )
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                    <span>
+                      {slack.matrix_alerts_channel
+                        ? <>Channel: <span className="font-medium text-graphite">{slack.matrix_alerts_channel}</span></>
+                        : <span className="text-gray-500">Using default channel</span>}
+                    </span>
+                    <button
+                      onClick={() => setEditingChannel('matrix')}
+                      className="text-xs text-p-blue-dark hover:underline"
+                    >
+                      {slack.matrix_alerts_channel ? 'Change' : 'Set channel'}
+                    </button>
+                    {slack.matrix_alerts_channel && (
+                      <button
+                        onClick={async () => {
+                          const prev = slack.matrix_alerts_channel ?? null
+                          setSlack((s) => (s ? { ...s, matrix_alerts_channel: null } : s))
+                          try {
+                            await api.integrations.updateSlackSettings({ matrix_alerts_channel: null })
+                          } catch (e) {
+                            setSlack((s) => (s ? { ...s, matrix_alerts_channel: prev } : s))
+                            setError(e instanceof Error ? e.message : 'Failed to clear channel')
+                          }
+                        }}
+                        className="text-xs text-gray-400 hover:text-gray-600"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <p className="text-xs text-gray-500">
                 Failure alerts fire on transient + permanent errors. Business rejections never alert.
