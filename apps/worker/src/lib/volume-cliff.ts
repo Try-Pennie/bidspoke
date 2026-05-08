@@ -226,7 +226,7 @@ async function sendCliffAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes*. Only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
+        text: `<!here> *${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes*. Only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: checkLine } },
