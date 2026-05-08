@@ -4,6 +4,7 @@ import webhooks from './routes/webhooks'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
+import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runSightingsExport } from './lib/sightings-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
@@ -145,6 +146,10 @@ export default {
       ctx.waitUntil(
         prewarmKvCaches(supabase, env)
           .catch((e) => console.error('[prewarm] failed:', e))
+      )
+      ctx.waitUntil(
+        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
     }
   },
