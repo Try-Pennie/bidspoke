@@ -23,6 +23,19 @@ export const MIN_BASELINE_PER_MIN = 10
 export const BASELINE_WINDOW_MINUTES = 55  // [-60, -5)
 export const RECENT_WINDOW_MINUTES = 5     // [-5, 0)
 
+// External URL we hit when a cliff fires, to confirm the worker is reachable from
+// outside Cloudflare. A 200 here means the issue is upstream of CF (caller stopped
+// sending); a failure means CF/route/DNS/TLS — investigate our side first.
+const SELF_CHECK_URL = 'https://bidspoke-worker.bnelms.workers.dev/'
+const SELF_CHECK_TIMEOUT_MS = 5000
+
+export interface SelfCheckResult {
+  ok: boolean
+  status: number | null
+  latency_ms: number
+  error: string | null
+}
+
 export interface CliffDetection {
   workflow_id: string
   workflow_name: string
@@ -112,6 +125,15 @@ export async function runVolumeCliffCheck(
     if (bucket) bucket[minuteIdx] += 1
   }
 
+  // Run the self-check at most once per cron tick, lazily — only if we're about
+  // to fire at least one alert.
+  let cachedSelfCheck: SelfCheckResult | null = null
+  const getSelfCheck = async (): Promise<SelfCheckResult> => {
+    if (cachedSelfCheck) return cachedSelfCheck
+    cachedSelfCheck = await runSelfCheck()
+    return cachedSelfCheck
+  }
+
   for (const wf of workflows) {
     const wfId = wf.id as string
     const bucket = perWorkflow.get(wfId)
@@ -120,11 +142,21 @@ export async function runVolumeCliffCheck(
     const cliff = detectCliff(bucket)
     if (!cliff) continue
 
+    console.log(`[volume-cliff] detected workflow=${wf.name} workflow_id=${wfId} recent=${cliff.recentCount} baseline_per_min=${cliff.baselinePerMin}`)
+
     const cooldownKey = `volume-cliff-cooldown:${wfId}`
-    if (await kv.get(cooldownKey)) continue
+    if (await kv.get(cooldownKey)) {
+      console.log(`[volume-cliff] suppressed by cooldown workflow_id=${wfId}`)
+      continue
+    }
 
     const slack = await getSlackConnection(supabase, wf.organization_id as string)
-    if (!slack || !slack.volume_alerts_enabled) continue
+    if (!slack || !slack.volume_alerts_enabled) {
+      console.log(`[volume-cliff] no Slack / opted-out org=${wf.organization_id} workflow_id=${wfId}`)
+      continue
+    }
+
+    const selfCheck = await getSelfCheck()
 
     await sendCliffAlert(slack, {
       workflow_id: wfId,
@@ -132,20 +164,45 @@ export async function runVolumeCliffCheck(
       organization_id: wf.organization_id as string,
       recent_count: cliff.recentCount,
       baseline_per_min: cliff.baselinePerMin,
-    }, appUrl)
+    }, appUrl, selfCheck)
 
     await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  }
+}
+
+async function runSelfCheck(): Promise<SelfCheckResult> {
+  const start = Date.now()
+  try {
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), SELF_CHECK_TIMEOUT_MS)
+    const res = await fetch(SELF_CHECK_URL, { method: 'GET', signal: ctrl.signal })
+    clearTimeout(timeout)
+    const latency = Date.now() - start
+    const cfRay = res.headers.get('cf-ray')
+    console.log(`[volume-cliff] self-check status=${res.status} latency=${latency}ms cf-ray=${cfRay} url=${SELF_CHECK_URL}`)
+    return { ok: res.ok, status: res.status, latency_ms: latency, error: null }
+  } catch (e) {
+    const latency = Date.now() - start
+    const errName = e instanceof Error ? e.name : 'unknown'
+    const errMsg = e instanceof Error ? e.message : String(e)
+    console.error(`[volume-cliff] self-check FAILED type=${errName} message=${errMsg} latency=${latency}ms url=${SELF_CHECK_URL}`)
+    return { ok: false, status: null, latency_ms: latency, error: `${errName}: ${errMsg}` }
   }
 }
 
 async function sendCliffAlert(
   slack: { bot_token: string; default_channel: string },
   cliff: CliffDetection,
-  appUrl: string
+  appUrl: string,
+  selfCheck: SelfCheckResult
 ): Promise<void> {
   const expected = cliff.baseline_per_min * RECENT_WINDOW_MINUTES
   const ratePct = expected > 0 ? Math.round((cliff.recent_count / expected) * 100) : 0
   const workflowUrl = `${appUrl}/workflows/${cliff.workflow_id}`
+
+  const checkLine = selfCheck.ok
+    ? `*Self-check:* ${selfCheck.status} OK in ${selfCheck.latency_ms}ms — worker is reachable from outside. The upstream caller isn't sending.`
+    : `*Self-check FAILED:* ${selfCheck.error ?? `HTTP ${selfCheck.status}`} after ${selfCheck.latency_ms}ms — *worker may be unreachable.* Investigate Cloudflare (DNS, route, TLS) first.`
 
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Workflow Volume Cliff', emoji: false } },
@@ -153,9 +210,11 @@ async function sendCliffAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes* — only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.\n\nThis usually means an upstream source stopped sending. <${workflowUrl}|Open workflow →>`,
+        text: `*${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes* — only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
       },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: checkLine } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` } },
   ]
 
   const res = await fetch('https://slack.com/api/chat.postMessage', {
