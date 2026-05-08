@@ -105,23 +105,34 @@ export async function runVolumeCliffCheck(
   const sixtyMinAgo = new Date(now - 60 * 60 * 1000).toISOString()
   const workflowIds = workflows.map((w) => w.id as string)
 
-  const { data: executions } = await supabase
-    .from('workflow_executions')
-    .select('workflow_id, started_at')
-    .in('workflow_id', workflowIds)
-    .gte('started_at', sixtyMinAgo)
-    .eq('is_test', false)
+  // Paginate around PostgREST's 1000-row cap. At ~50 leads/min × 60 min × N workflows,
+  // a single page truncates the baseline window and silently zeroes out medians.
+  const PAGE_SIZE = 1000
+  const executions: { workflow_id: string; started_at: string }[] = []
+  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
+    const { data: page } = await supabase
+      .from('workflow_executions')
+      .select('workflow_id, started_at')
+      .in('workflow_id', workflowIds)
+      .gte('started_at', sixtyMinAgo)
+      .eq('is_test', false)
+      .range(offset, offset + PAGE_SIZE - 1)
+    if (!page || page.length === 0) break
+    executions.push(...(page as { workflow_id: string; started_at: string }[]))
+    if (page.length < PAGE_SIZE) break
+  }
+  console.log(`[volume-cliff] fetched ${executions.length} executions across ${workflows.length} workflows`)
 
   // Bucket per workflow into 60 minute-bins
   const sixtyMinAgoMs = now - 60 * 60 * 1000
   const perWorkflow = new Map<string, number[]>()
   for (const id of workflowIds) perWorkflow.set(id, new Array(60).fill(0))
 
-  for (const exec of executions ?? []) {
-    const startedAt = new Date(exec.started_at as string).getTime()
+  for (const exec of executions) {
+    const startedAt = new Date(exec.started_at).getTime()
     const minuteIdx = Math.floor((startedAt - sixtyMinAgoMs) / 60000)
     if (minuteIdx < 0 || minuteIdx >= 60) continue
-    const bucket = perWorkflow.get(exec.workflow_id as string)
+    const bucket = perWorkflow.get(exec.workflow_id)
     if (bucket) bucket[minuteIdx] += 1
   }
 
