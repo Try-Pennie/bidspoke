@@ -191,7 +191,10 @@ async function runSelfCheck(): Promise<SelfCheckResult> {
     const latency = Date.now() - start
     const cfRay = res.headers.get('cf-ray')
     console.log(`[volume-cliff] self-check status=${res.status} latency=${latency}ms cf-ray=${cfRay} url=${SELF_CHECK_URL}`)
-    return { ok: res.ok, status: res.status, latency_ms: latency, error: null }
+    // Any HTTP response (including 4xx) proves the worker is reachable. Only
+    // network/timeout errors below mean unreachable. 5xx is the one ambiguous
+    // case — treat it as errored (worker up but failing).
+    return { ok: res.status < 500, status: res.status, latency_ms: latency, error: null }
   } catch (e) {
     const latency = Date.now() - start
     const errName = e instanceof Error ? e.name : 'unknown'
@@ -211,9 +214,11 @@ async function sendCliffAlert(
   const ratePct = expected > 0 ? Math.round((cliff.recent_count / expected) * 100) : 0
   const workflowUrl = `${appUrl}/workflows/${cliff.workflow_id}`
 
-  const checkLine = selfCheck.ok
-    ? `*Self-check:* ${selfCheck.status} OK in ${selfCheck.latency_ms}ms — worker is reachable from outside. The upstream caller isn't sending.`
-    : `*Self-check FAILED:* ${selfCheck.error ?? `HTTP ${selfCheck.status}`} after ${selfCheck.latency_ms}ms — *worker may be unreachable.* Investigate Cloudflare (DNS, route, TLS) first.`
+  const checkLine = selfCheck.error
+    ? `*Self-check FAILED:* ${selfCheck.error} after ${selfCheck.latency_ms}ms. *Worker may be unreachable.* Investigate Cloudflare (DNS, route, TLS) first.`
+    : selfCheck.ok
+      ? `*Self-check:* HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms. Worker is reachable. The upstream caller isn't sending.`
+      : `*Self-check:* HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms. Worker responded but errored. Investigate worker health.`
 
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Workflow Volume Cliff', emoji: false } },
@@ -221,7 +226,7 @@ async function sendCliffAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes* — only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
+        text: `*${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes*. Only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: checkLine } },
