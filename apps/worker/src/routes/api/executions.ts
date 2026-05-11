@@ -230,23 +230,19 @@ executions.get('/:id', async (c) => {
   const summary = c.req.query('summary') === '1'
   const supabase = createSupabaseClient(c.env)
 
+  const t0 = Date.now()
+  // Single round-trip: execution + ownership check via inner join on workflows.
+  // RLS already scopes via workflows.organization_id, but we explicitly filter
+  // so a row from another org returns "not found" instead of leaking shape.
   const { data: execution, error } = await supabase
     .from('workflow_executions')
-    .select('*')
+    .select('*, workflows!inner(id)')
     .eq('id', id)
+    .eq('workflows.organization_id', orgId)
     .single()
+  const t1 = Date.now()
 
   if (error || !execution) return c.json({ error: 'Execution not found' }, 404)
-
-  // Verify org ownership via workflow
-  const { error: ownerError } = await supabase
-    .from('workflows')
-    .select('id')
-    .eq('id', execution.workflow_id)
-    .eq('organization_id', orgId)
-    .single()
-
-  if (ownerError) return c.json({ error: 'Execution not found' }, 404)
 
   const stepColumns = summary
     ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order'
@@ -266,6 +262,7 @@ executions.get('/:id', async (c) => {
       .eq('parent_execution_id', id)
       .order('started_at', { ascending: true }),
   ])
+  const t2 = Date.now()
 
   // Inherit completed steps from the parent execution on resumes so the
   // canvas overlay shows skipped upstream steps as completed (green) with
@@ -286,12 +283,13 @@ executions.get('/:id', async (c) => {
       .map((s) => ({ ...s, inherited_from_execution_id: execution.resumed_from_execution_id }))
     steps = [...inherited, ...steps].sort((a, b) => a.step_order - b.step_order)
   }
+  const t3 = Date.now()
 
-  return c.json({
-    ...execution,
-    steps,
-    child_executions: childrenRes.data ?? [],
-  })
+  return c.json(
+    { ...execution, steps, child_executions: childrenRes.data ?? [] },
+    200,
+    { 'Server-Timing': `auth;dur=${t1 - t0},parallel;dur=${t2 - t1},inherit;dur=${t3 - t2}` }
+  )
 })
 
 // GET /api/executions/:id/steps/:stepId

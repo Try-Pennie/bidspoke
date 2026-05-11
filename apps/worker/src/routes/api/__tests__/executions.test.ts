@@ -173,11 +173,12 @@ describe('GET /executions/:id', () => {
   })
 
   it('returns 404 when execution belongs to another org', async () => {
+    // Ownership check is now an inner join on workflows.organization_id —
+    // when the org doesn't match, PostgREST returns no row for the parent.
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        workflow_executions: { single: testExecution },
-        workflows: { single: null }, // ownership check fails
+        workflow_executions: { single: null },
         execution_steps: { list: [] },
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
