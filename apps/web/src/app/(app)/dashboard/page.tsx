@@ -4,6 +4,7 @@ export const runtime = 'edge'
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { StatsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
@@ -203,6 +204,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter()
   const [window, setWindow] = useState<Window>(30)
   const [data, setData] = useState<StatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -484,17 +486,26 @@ export default function DashboardPage() {
             ) : (
               <div className="divide-y divide-gray-100">
                 {data.recent_failures.map((f) => (
-                  <div key={f.id} className="px-5 py-3">
+                  <div
+                    key={f.id}
+                    role="link"
+                    tabIndex={0}
+                    onClick={() => router.push(`/workflows/${f.workflow_id}?execution=${f.id}`)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        router.push(`/workflows/${f.workflow_id}?execution=${f.id}`)
+                      }
+                    }}
+                    className="cursor-pointer px-5 py-3 transition-colors hover:bg-beige focus:bg-beige focus:outline-none"
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 text-red-400" />
-                          <Link
-                            href={`/workflows/${f.workflow_id}`}
-                            className="truncate text-sm font-medium text-graphite hover:text-p-blue-dark"
-                          >
+                          <span className="truncate text-sm font-medium text-graphite">
                             {f.workflow_name}
-                          </Link>
+                          </span>
                           {f.source && (
                             <span className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-500">
                               {f.source}
@@ -509,6 +520,7 @@ export default function DashboardPage() {
                         <span className="text-xs text-gray-400">{formatDatetime(f.started_at)}</span>
                         <Link
                           href={`/workflows/${f.workflow_id}/executions/${f.id}`}
+                          onClick={(e) => e.stopPropagation()}
                           className="flex items-center gap-0.5 text-xs text-p-blue-dark hover:text-p-blue-dark"
                         >
                           View <ArrowRight className="h-3 w-3" />
