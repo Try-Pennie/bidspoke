@@ -1027,17 +1027,30 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // Sync node.data.executionStep with the current execution. When executionSteps
   // is cleared (e.g. user clicked Clear), this also strips executionStep from
   // every node so colors revert to default.
+  //
+  // Reference-equality skip: only touch nodes whose ExecutionStep reference
+  // actually changed. The page builds a fresh object per namespace on summary
+  // load (= all nodes update once, expected), then on lazy step-detail load
+  // only the one updated namespace gets a new reference. Without this skip,
+  // a single step click would re-render all 15-20 nodes and call
+  // updateNodeInternals on every one — visibly slow on engine bidding.
   useEffect(() => {
-    let touchedIds: string[] = []
+    const touchedIds: string[] = []
     setNodes((ns) => {
-      touchedIds = ns.filter((n) => n.id !== 'trigger').map((n) => n.id)
-      return ns.map((n) => {
+      let changed = false
+      const next = ns.map((n) => {
         if (n.id === 'trigger') return n
-        const namespace = (n.data as unknown as CanvasNodeData).namespace
+        const data = n.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
+        const namespace = data.namespace
         const step = executionSteps ? (executionSteps[namespace] ?? null) : undefined
+        if (data.executionStep === step) return n
+        changed = true
+        touchedIds.push(n.id)
         return { ...n, data: { ...(n.data as object), executionStep: step } }
       })
+      return changed ? next : ns
     })
+    if (touchedIds.length === 0) return
     // Several node types (Branch, Filter, Code, etc.) render an output-preview
     // pill when executionStep is set, which grows the node's height. React
     // Flow caches handle positions on initial mount, so without a re-measure
@@ -1046,7 +1059,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     const raf = requestAnimationFrame(() => {
       // Pass the whole array in one call — useUpdateNodeInternals accepts
       // string | string[] and batches internally.
-      if (touchedIds.length > 0) updateNodeInternals(touchedIds)
+      updateNodeInternals(touchedIds)
     })
     return () => cancelAnimationFrame(raf)
   }, [executionSteps, setNodes, updateNodeInternals])
