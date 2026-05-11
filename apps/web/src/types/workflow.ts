@@ -141,6 +141,8 @@ export interface EnvVar {
 
 // Execution step data injected into node.data during replay mode
 export interface ExecutionStep {
+  // Step row id; needed by the canvas to lazy-fetch input/output detail.
+  step_id?: string
   status: 'completed' | 'failed' | 'skipped' | 'running' | 'failed_with_fallback'
   input: unknown
   output: unknown
@@ -148,6 +150,8 @@ export interface ExecutionStep {
   error_type: string | null
   duration_ms: number
   retries_used: number
+  // false until the canvas lazy-loads input/output/logs for this step.
+  detail_loaded?: boolean
 }
 
 // What we store in React Flow node.data

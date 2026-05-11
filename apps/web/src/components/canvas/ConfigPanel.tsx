@@ -371,6 +371,10 @@ function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionSt
   }
   const hasOutput = exec.output !== null && exec.output !== undefined
   const hasInput = exec.input !== null && exec.input !== undefined
+  // detail_loaded=false means summary fetch only — input/output are still
+  // being fetched. Show a skeleton instead of "no output" so the user knows
+  // the step did run, the payload just hasn't arrived yet.
+  const detailPending = exec.detail_loaded === false && (exec.status === 'completed' || exec.status === 'failed' || exec.status === 'failed_with_fallback')
 
   const statusLabel = exec.status === 'completed' ? 'Success'
     : exec.status === 'failed' ? 'Failed'
@@ -417,6 +421,12 @@ function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionSt
               repeating it would be redundant. */}
           {exec.error_message && !hasOutput && (
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-red-100 bg-red-50 p-2 text-xs text-red-700">{exec.error_message}</pre>
+          )}
+          {detailPending && !hasOutput && !hasInput && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-gray-500">Output</p>
+              <div className="h-20 animate-pulse rounded bg-gray-100" />
+            </div>
           )}
           {hasOutput && (
             <div>
@@ -2797,19 +2807,19 @@ function TimeoutField({
       actionLeading = hasRetries
         ? 'Most runs would time out at this value — try'
         : 'Your timeout would have cut that off — try'
-      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'for safety.'
     } else if (effective < stats.suggested_ms) {
       tone = 'amber'
       actionLeading = hasRetries
         ? 'Some runs will time out and burn retries — try'
         : 'Slower runs will get cut off — try'
-      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'for more headroom.'
     } else if (blueThreshold) {
       tone = 'blue'
       actionLeading = 'You could safely lower this to'
-      actionLink = { text: fmt(stats.suggested_ms), ms: stats.suggested_ms }
+      actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'so failures show up faster.'
     }
   }

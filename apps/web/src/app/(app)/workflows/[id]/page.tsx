@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
@@ -30,6 +30,10 @@ function WorkflowEditorInner() {
       .catch((e) => setError(e.message))
   }, [id])
 
+  // Track in-flight per-step detail fetches so rapid clicks across nodes don't
+  // duplicate work. Keyed by step row id; cleared when the execution changes.
+  const inFlightStepDetails = useRef<Set<string>>(new Set())
+
   useEffect(() => {
     if (!executionId) {
       // User cleared the execution — wipe to default empty state.
@@ -40,6 +44,7 @@ function WorkflowEditorInner() {
       setExecutionStartedAt(null)
       setExecutionParentId(null)
       setExecutionChildren([])
+      inFlightStepDetails.current.clear()
       return
     }
 
@@ -48,18 +53,21 @@ function WorkflowEditorInner() {
     // doubled the render cost when clicking through executions: one render
     // to clear, another to populate, ~200ms apart.
     let cancelled = false
-    api.executions.get(executionId).then((exec) => {
+    inFlightStepDetails.current.clear()
+    api.executions.get(executionId, { summary: true }).then((exec) => {
       if (cancelled) return
       const map: Record<string, ExecutionStep> = {}
       for (const step of exec.steps) {
         map[step.step_namespace] = {
+          step_id: step.id,
           status: step.status as ExecutionStep['status'],
-          input: step.input,
-          output: step.output,
+          input: undefined,
+          output: undefined,
           error_message: step.error_message,
           error_type: step.error_type,
           duration_ms: step.duration_ms,
           retries_used: step.retries_used,
+          detail_loaded: false,
         }
       }
       setExecutionPayload(exec.trigger_payload)
@@ -72,6 +80,32 @@ function WorkflowEditorInner() {
     }).catch(() => {})
     return () => { cancelled = true }
   }, [executionId])
+
+  const loadStepDetail = useCallback((namespace: string) => {
+    if (!executionId) return
+    const step = executionSteps?.[namespace]
+    if (!step || !step.step_id || step.detail_loaded) return
+    if (inFlightStepDetails.current.has(step.step_id)) return
+    inFlightStepDetails.current.add(step.step_id)
+    api.executions.getStep(executionId, step.step_id).then((detail) => {
+      setExecutionSteps((prev) => {
+        if (!prev) return prev
+        const existing = prev[namespace]
+        if (!existing) return prev
+        return {
+          ...prev,
+          [namespace]: {
+            ...existing,
+            input: detail.input,
+            output: detail.output,
+            detail_loaded: true,
+          },
+        }
+      })
+    }).catch(() => {}).finally(() => {
+      if (step.step_id) inFlightStepDetails.current.delete(step.step_id)
+    })
+  }, [executionId, executionSteps])
 
   if (error) {
     return (
@@ -101,6 +135,7 @@ function WorkflowEditorInner() {
       executionStartedAt={executionStartedAt}
       executionParentId={executionParentId}
       executionChildren={executionChildren}
+      onLoadStepDetail={loadStepDetail}
     />
   )
 }

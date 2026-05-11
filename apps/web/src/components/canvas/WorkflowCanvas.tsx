@@ -766,7 +766,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
@@ -777,6 +777,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   executionStartedAt?: string | null
   executionParentId?: string | null
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
+  onLoadStepDetail?: (namespace: string) => void
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
@@ -876,6 +877,17 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   const prevErrorIdsRef = useRef<string>('')
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
+
+  // Lazy-load step detail (input/output/logs) for the selected node in view
+  // mode. The summary fetch in the parent page only ships status/duration, so
+  // we pull the heavy payload here on demand.
+  useEffect(() => {
+    if (mode !== 'view' || !executionId || !selectedNode || selectedNode.id === 'trigger') return
+    const namespace = (selectedNode.data as unknown as CanvasNodeData).namespace
+    const step = executionSteps?.[namespace]
+    if (!step || step.detail_loaded || !step.step_id) return
+    onLoadStepDetail?.(namespace)
+  }, [mode, executionId, selectedNode, executionSteps, onLoadStepDetail])
   const nodeNamespaces = nodes.map((n) => (n.data as unknown as CanvasNodeData).namespace)
   // Namespaces in graph order — BFS from trigger following edges in their
   // current array order. Disconnected nodes are appended at the end so they
@@ -2992,6 +3004,7 @@ export default function WorkflowCanvas({
   executionStartedAt,
   executionParentId,
   executionChildren,
+  onLoadStepDetail,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -3003,6 +3016,7 @@ export default function WorkflowCanvas({
   executionStartedAt?: string | null
   executionParentId?: string | null
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
+  onLoadStepDetail?: (namespace: string) => void
 }) {
   return (
     <ReactFlowProvider>
@@ -3017,6 +3031,7 @@ export default function WorkflowCanvas({
         executionStartedAt={executionStartedAt}
         executionParentId={executionParentId}
         executionChildren={executionChildren}
+        onLoadStepDetail={onLoadStepDetail}
       />
     </ReactFlowProvider>
   )

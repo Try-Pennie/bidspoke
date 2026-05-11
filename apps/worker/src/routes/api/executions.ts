@@ -218,9 +218,16 @@ function subtypeRequired(nodeType: string): boolean {
 }
 
 // GET /api/executions/:id
+//
+// `?summary=1` strips input/output/logs from step rows. The canvas execution
+// overlay only needs status/duration/error to color nodes, and lazy-loads
+// input/output via /:id/steps/:stepId when a node is clicked. Heavy step
+// payloads (Equifax response, SF blobs) added up to multi-MB responses on
+// every click before this — see TODO 4.x notes.
 executions.get('/:id', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id') as string
+  const summary = c.req.query('summary') === '1'
   const supabase = createSupabaseClient(c.env)
 
   const { data: execution, error } = await supabase
@@ -241,12 +248,16 @@ executions.get('/:id', async (c) => {
 
   if (ownerError) return c.json({ error: 'Execution not found' }, 404)
 
+  const stepColumns = summary
+    ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order'
+    : '*'
+
   // Fetch steps + any executions that reference this one as parent (replays
   // and resumes both set parent_execution_id, so both surface as children).
   const [stepsRes, childrenRes] = await Promise.all([
     supabase
       .from('execution_steps')
-      .select('*')
+      .select(stepColumns)
       .eq('execution_id', id)
       .order('step_order', { ascending: true }),
     supabase
@@ -261,6 +272,42 @@ executions.get('/:id', async (c) => {
     steps: stepsRes.data ?? [],
     child_executions: childrenRes.data ?? [],
   })
+})
+
+// GET /api/executions/:id/steps/:stepId
+//
+// Returns input/output/logs for a single step. Used by the canvas execution
+// overlay to lazy-load heavy step payloads when the user clicks a node.
+executions.get('/:id/steps/:stepId', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const stepId = c.req.param('stepId') as string
+  const supabase = createSupabaseClient(c.env)
+
+  const { data: execution, error: execError } = await supabase
+    .from('workflow_executions')
+    .select('workflow_id')
+    .eq('id', id)
+    .single()
+  if (execError || !execution) return c.json({ error: 'Execution not found' }, 404)
+
+  const { error: ownerError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', execution.workflow_id)
+    .eq('organization_id', orgId)
+    .single()
+  if (ownerError) return c.json({ error: 'Execution not found' }, 404)
+
+  const { data: step, error: stepError } = await supabase
+    .from('execution_steps')
+    .select('id, step_namespace, input, output, logs')
+    .eq('execution_id', id)
+    .eq('id', stepId)
+    .single()
+  if (stepError || !step) return c.json({ error: 'Step not found' }, 404)
+
+  return c.json(step)
 })
 
 // POST /api/executions/:id/resume

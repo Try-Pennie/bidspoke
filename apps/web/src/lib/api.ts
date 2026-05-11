@@ -364,8 +364,9 @@ export const api = {
         has_children: boolean
       }>>(`/api/executions?${params.toString()}`)
     },
-    get: (id: string) =>
-      req<{
+    get: (id: string, opts?: { summary?: boolean }) => {
+      const qs = opts?.summary ? '?summary=1' : ''
+      return req<{
         id: string
         workflow_id: string
         status: string
@@ -389,6 +390,8 @@ export const api = {
           id: string
           step_namespace: string
           step_type: string
+          step_node_id?: string | null
+          parallel_group_id?: string | null
           status: string
           input: unknown
           output: unknown
@@ -401,7 +404,16 @@ export const api = {
           duration_ms: number
           step_order: number
         }>
-      }>(`/api/executions/${id}`),
+      }>(`/api/executions/${id}${qs}`)
+    },
+    getStep: (id: string, stepId: string) =>
+      req<{
+        id: string
+        step_namespace: string
+        input: unknown
+        output: unknown
+        logs: Array<{ level: string; message: string; ts: string }> | null
+      }>(`/api/executions/${id}/steps/${stepId}`),
     replay: async (id: string): Promise<{ executionId: string | null; response: unknown }> => {
       let headers: HeadersInit
       try {
