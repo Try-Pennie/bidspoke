@@ -362,6 +362,14 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   )
 }
 
+const LOG_LEVEL_CLASS: Record<string, string> = {
+  error: 'text-red-300',
+  warn: 'text-yellow-300',
+  info: 'text-blue-300',
+  log: 'text-gray-100',
+  debug: 'text-gray-400',
+}
+
 // ── Step results section (shown below config after a test run) ─────────────────
 
 function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }: { exec: ExecutionStep; namespace: string; canRerun?: boolean; onRerun?: () => Promise<void>; onRetryFromFailure?: () => Promise<void> }) {
@@ -472,6 +480,20 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
               {showInput && (
                 <JsonTreeView data={exec.input} basePath={`steps.${namespace}.input`} />
               )}
+            </div>
+          )}
+          {exec.logs && exec.logs.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-gray-500">Logs</p>
+              <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-100">
+                {exec.logs.map((entry, j) => (
+                  <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
+                    <span className="text-gray-500">{entry.ts.slice(11, 23)}</span>{' '}
+                    <span className="font-semibold">{entry.level}</span>{' '}
+                    {entry.message}
+                  </div>
+                ))}
+              </pre>
             </div>
           )}
         </div>

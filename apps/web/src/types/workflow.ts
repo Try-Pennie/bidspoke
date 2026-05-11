@@ -146,6 +146,7 @@ export interface ExecutionStep {
   status: 'completed' | 'failed' | 'skipped' | 'running' | 'failed_with_fallback'
   input: unknown
   output: unknown
+  logs?: Array<{ level: string; message: string; ts: string }> | null
   error_message: string | null
   error_type: string | null
   duration_ms: number

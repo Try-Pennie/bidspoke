@@ -98,6 +98,7 @@ function WorkflowEditorInner() {
             ...existing,
             input: detail.input,
             output: detail.output,
+            logs: detail.logs,
             detail_loaded: true,
           },
         }
