@@ -29,12 +29,17 @@ interface Props {
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
   canRerun?: boolean
   onRerun?: (namespace: string) => void
+  // Resume the parent execution from this failed step. Shown as "Retry from
+  // here" when the selected step is failed and we're viewing a real execution
+  // (not a test run). Resume skips completed upstream steps and re-runs the
+  // failed one — so SF prospect creation etc. won't double-fire.
+  onRetryFromFailure?: () => Promise<void>
   width?: number
   onResize?: (width: number) => void
   workflowId?: string
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, width, onResize, workflowId }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, width, onResize, workflowId }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -352,23 +357,33 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       </div>
       )}
 
-      {exec && <StepResults exec={exec} namespace={data.namespace ?? ''} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} />}
+      {exec && <StepResults exec={exec} namespace={data.namespace ?? ''} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} onRetryFromFailure={onRetryFromFailure} />}
     </aside>
   )
 }
 
 // ── Step results section (shown below config after a test run) ─────────────────
 
-function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionStep; namespace: string; canRerun?: boolean; onRerun?: () => Promise<void> }) {
+function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }: { exec: ExecutionStep; namespace: string; canRerun?: boolean; onRerun?: () => Promise<void>; onRetryFromFailure?: () => Promise<void> }) {
   const [open, setOpen] = useState(true)
   const [showInput, setShowInput] = useState(false)
   const [rerunning, setRerunning] = useState(false)
+  const [retrying, setRetrying] = useState(false)
 
   async function handleRerun() {
     if (!onRerun) return
     setRerunning(true)
     try { await onRerun() } finally { setRerunning(false) }
   }
+
+  async function handleRetryFromFailure() {
+    if (!onRetryFromFailure) return
+    setRetrying(true)
+    try { await onRetryFromFailure() } finally { setRetrying(false) }
+  }
+
+  const isFailed = exec.status === 'failed' || exec.status === 'failed_with_fallback'
+  const showRetryButton = isFailed && !!onRetryFromFailure
   const hasOutput = exec.output !== null && exec.output !== undefined
   const hasInput = exec.input !== null && exec.input !== undefined
   // detail_loaded=false means summary fetch only — input/output are still
@@ -407,6 +422,17 @@ function StepResults({ exec, namespace, canRerun, onRerun }: { exec: ExecutionSt
           >
             {rerunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
             Re-run
+          </button>
+        )}
+        {showRetryButton && (
+          <button
+            onClick={handleRetryFromFailure}
+            disabled={retrying}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light disabled:opacity-50"
+            title="Resume the execution from this failed step. Completed upstream steps are skipped, so this re-runs only the failed step (and anything downstream)."
+          >
+            {retrying ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+            Retry from here
           </button>
         )}
       </div>

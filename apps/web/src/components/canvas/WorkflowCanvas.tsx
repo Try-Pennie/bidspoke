@@ -2879,6 +2879,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             edges={edges}
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
+            onRetryFromFailure={async () => {
+              const { executionId: newId } = await api.executions.resume(executionId)
+              setRefreshSignal((s) => s + 1)
+              if (newId) router.push(`/workflows/${workflow.id}?execution=${newId}`)
+            }}
           />
         )}
         {selectedNode && mode === 'view' && !executionId && selectedNode.id === 'trigger' && (

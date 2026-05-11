@@ -345,7 +345,10 @@ executions.post('/:id/resume', async (c) => {
     c.executionCtx
   )
 
-  return c.json(result.response, result.status as 200 | 500, { 'X-Trace-Id': result.traceId })
+  return c.json(result.response, result.status as 200 | 500, {
+    'X-Trace-Id': result.traceId,
+    'X-Execution-Id': result.executionId,
+  })
 })
 
 // POST /api/executions/:id/replay

@@ -431,6 +431,23 @@ export const api = {
       const body = await res.json().catch(() => null)
       return { executionId: newId, response: body }
     },
+    resume: async (id: string): Promise<{ executionId: string | null; response: unknown }> => {
+      let headers: HeadersInit
+      try {
+        headers = await authHeaders()
+      } catch {
+        redirectToLogin()
+        throw new Error('Not authenticated')
+      }
+      const res = await fetch(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', headers })
+      if (res.status === 401) {
+        redirectToLogin()
+        throw new Error('Not authenticated')
+      }
+      const newId = res.headers.get('X-Execution-Id')
+      const body = await res.json().catch(() => null)
+      return { executionId: newId, response: body }
+    },
   },
 
   circuit: {
