@@ -267,9 +267,29 @@ executions.get('/:id', async (c) => {
       .order('started_at', { ascending: true }),
   ])
 
+  // Inherit completed steps from the parent execution on resumes so the
+  // canvas overlay shows skipped upstream steps as completed (green) with
+  // their original outputs. Replays don't get this treatment — they re-run
+  // every step and have their own rows.
+  type StepRow = { step_namespace: string; step_order: number; [k: string]: unknown }
+  let steps = (stepsRes.data ?? []) as unknown as StepRow[]
+  if (execution.resumed_from_execution_id) {
+    const presentNamespaces = new Set(steps.map((s) => s.step_namespace))
+    const { data: parentSteps } = await supabase
+      .from('execution_steps')
+      .select(stepColumns)
+      .eq('execution_id', execution.resumed_from_execution_id)
+      .eq('status', 'completed')
+      .order('step_order', { ascending: true })
+    const inherited = ((parentSteps ?? []) as unknown as StepRow[])
+      .filter((s) => !presentNamespaces.has(s.step_namespace))
+      .map((s) => ({ ...s, inherited_from_execution_id: execution.resumed_from_execution_id }))
+    steps = [...inherited, ...steps].sort((a, b) => a.step_order - b.step_order)
+  }
+
   return c.json({
     ...execution,
-    steps: stepsRes.data ?? [],
+    steps,
     child_executions: childrenRes.data ?? [],
   })
 })
@@ -278,18 +298,28 @@ executions.get('/:id', async (c) => {
 //
 // Returns input/output/logs for a single step. Used by the canvas execution
 // overlay to lazy-load heavy step payloads when the user clicks a node.
+//
+// Org verification goes via the step's own execution_id → workflow → org,
+// not the :id path param. This lets resumed executions lazy-load inherited
+// steps (whose row lives on the parent execution) without a separate route.
 executions.get('/:id/steps/:stepId', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
   const stepId = c.req.param('stepId') as string
   const supabase = createSupabaseClient(c.env)
+
+  const { data: step, error: stepError } = await supabase
+    .from('execution_steps')
+    .select('id, step_namespace, input, output, logs, execution_id')
+    .eq('id', stepId)
+    .single()
+  if (stepError || !step) return c.json({ error: 'Step not found' }, 404)
 
   const { data: execution, error: execError } = await supabase
     .from('workflow_executions')
     .select('workflow_id')
-    .eq('id', id)
+    .eq('id', step.execution_id)
     .single()
-  if (execError || !execution) return c.json({ error: 'Execution not found' }, 404)
+  if (execError || !execution) return c.json({ error: 'Step not found' }, 404)
 
   const { error: ownerError } = await supabase
     .from('workflows')
@@ -297,17 +327,11 @@ executions.get('/:id/steps/:stepId', async (c) => {
     .eq('id', execution.workflow_id)
     .eq('organization_id', orgId)
     .single()
-  if (ownerError) return c.json({ error: 'Execution not found' }, 404)
+  if (ownerError) return c.json({ error: 'Step not found' }, 404)
 
-  const { data: step, error: stepError } = await supabase
-    .from('execution_steps')
-    .select('id, step_namespace, input, output, logs')
-    .eq('execution_id', id)
-    .eq('id', stepId)
-    .single()
-  if (stepError || !step) return c.json({ error: 'Step not found' }, 404)
-
-  return c.json(step)
+  // Don't leak execution_id in the response.
+  const { execution_id: _eid, ...rest } = step
+  return c.json(rest)
 })
 
 // POST /api/executions/:id/resume

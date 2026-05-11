@@ -80,6 +80,7 @@ export async function createExecutionRecord(
     workflow_id: string
     workflow_version_id: string
     parent_execution_id?: string
+    resumed_from_execution_id?: string
     source: string
     trigger_payload: unknown
     trace_id: string

@@ -161,6 +161,7 @@ export async function executeWorkflow(
     started_at: startedAt,
     is_test: options.isTest ?? false,
     parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
+    resumed_from_execution_id: options.resumeFromExecutionId,
   })
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
