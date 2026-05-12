@@ -134,8 +134,24 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
       c.executionCtx
     )
 
-    const headers: Record<string, string> = { 'X-Trace-Id': result.traceId }
+    const headers: Record<string, string> = {
+      ...(result.responseHeaders ?? {}),
+      'X-Trace-Id': result.traceId,
+    }
     if (result.idempotentReplay) headers['X-Idempotent-Replay'] = 'true'
+
+    const bodyStr = JSON.stringify(result.response)
+    console.log(
+      JSON.stringify({
+        event: 'response_emit',
+        trace_id: result.traceId,
+        endpoint: `${partner}${path}`,
+        status: result.status,
+        body_bytes: bodyStr.length,
+        inbound_traceparent: c.req.header('traceparent') ?? null,
+        idempotent_replay: result.idempotentReplay ?? false,
+      })
+    )
 
     return c.json(result.response, result.status as 200 | 409 | 500, headers)
   } catch (err) {
