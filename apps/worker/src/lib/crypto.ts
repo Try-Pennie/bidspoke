@@ -12,12 +12,32 @@ export async function deriveIdempotencyKey(
     .join('')
 }
 
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+
 export function generateTraceId(): string {
-  const bytes = new Uint8Array(16)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  // 27-char base62 ID. Matches Pipedream's requestId format so engine-side
+  // response parsing/validation behaves identically across the two stacks.
+  // Format: 4-byte timestamp prefix (seconds since 2014-05-13 KSUID epoch) +
+  // 16 random bytes, treated as a 160-bit big-endian integer, mod 62^27, then
+  // base62-encoded to fixed 27 chars.
+  const ts = Math.floor(Date.now() / 1000) - 1400000000
+  const bytes = new Uint8Array(20)
+  bytes[0] = (ts >>> 24) & 0xff
+  bytes[1] = (ts >>> 16) & 0xff
+  bytes[2] = (ts >>> 8) & 0xff
+  bytes[3] = ts & 0xff
+  crypto.getRandomValues(bytes.subarray(4))
+
+  let n = 0n
+  for (const b of bytes) n = (n << 8n) | BigInt(b)
+  n %= 62n ** 27n
+
+  const out: string[] = new Array(27)
+  for (let i = 26; i >= 0; i--) {
+    out[i] = BASE62[Number(n % 62n)]
+    n /= 62n
+  }
+  return out.join('')
 }
 
 function getNestedValue(obj: unknown, path: string): unknown {
