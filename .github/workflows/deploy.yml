@@ -62,10 +62,37 @@ jobs:
             exit 1
           fi
 
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      worker: ${{ steps.filter.outputs.worker }}
+      worker_tail: ${{ steps.filter.outputs.worker_tail }}
+      pages: ${{ steps.filter.outputs.pages }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            worker:
+              - 'apps/worker/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+            worker_tail:
+              - 'apps/worker-tail/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+            pages:
+              - 'apps/web/**'
+              - 'pnpm-lock.yaml'
+              - 'package.json'
+
   deploy-worker-tail:
     name: Deploy Worker Tail
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, changes]
+    if: needs.changes.outputs.worker_tail == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -89,7 +116,8 @@ jobs:
   deploy-worker:
     name: Deploy Worker
     runs-on: ubuntu-latest
-    needs: [verify, deploy-worker-tail]
+    needs: [verify, changes]
+    if: needs.changes.outputs.worker == 'true'
     steps:
       - uses: actions/checkout@v6
 
@@ -113,7 +141,8 @@ jobs:
   deploy-pages:
     name: Deploy Pages
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, changes]
+    if: needs.changes.outputs.pages == 'true'
     steps:
       - uses: actions/checkout@v6
 
