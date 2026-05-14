@@ -1,8 +1,20 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-react'
+
+const PAGE_SIZE = 100
+
+function mergeExecs(a: ExecRow[], b: ExecRow[]): ExecRow[] {
+  const map = new Map<string, ExecRow>()
+  for (const e of a) map.set(e.id, e)
+  for (const e of b) map.set(e.id, e)
+  return Array.from(map.values()).sort((x, y) => {
+    if (x.started_at !== y.started_at) return x.started_at < y.started_at ? 1 : -1
+    return x.id < y.id ? 1 : -1
+  })
+}
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { WorkflowVersion } from '@/types/workflow'
@@ -85,8 +97,19 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const [executions, setExecutions] = useState<ExecRow[]>([])
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMore, setHasMore] = useState(true)
   const [filter, setFilter] = useState<OutcomeFilter>('all')
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
+
+  // Refs so the IntersectionObserver callback always sees current state
+  // without re-binding on every executions/hasMore/loadingMore change.
+  const execsRef = useRef<ExecRow[]>([])
+  const hasMoreRef = useRef(true)
+  const loadingMoreRef = useRef(false)
+  useEffect(() => { execsRef.current = executions }, [executions])
+  useEffect(() => { hasMoreRef.current = hasMore }, [hasMore])
+  useEffect(() => { loadingMoreRef.current = loadingMore }, [loadingMore])
 
   function toggleError(id: string, e: React.MouseEvent) {
     e.stopPropagation()
@@ -97,39 +120,96 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     })
   }
 
-  const load = useCallback((silent = false) => {
+  // Fetch the newest page. On initial load it replaces state; on poll it
+  // merges so older pages already loaded via loadMore aren't dropped.
+  const loadFirstPage = useCallback((silent = false) => {
     if (!silent) setLoading(true)
     const opts = filter === 'all' ? undefined : { outcome: filter }
     api.executions
       .list(workflowId, opts)
-      .then(setExecutions)
+      .then((page) => {
+        if (silent) {
+          setExecutions((prev) => mergeExecs(prev, page))
+        } else {
+          setExecutions(page)
+          setHasMore(page.length === PAGE_SIZE)
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
+  }, [workflowId, filter])
+
+  const loadMore = useCallback(() => {
+    if (loadingMoreRef.current || !hasMoreRef.current) return
+    const oldest = execsRef.current[execsRef.current.length - 1]
+    if (!oldest) return
+    setLoadingMore(true)
+    const opts: Parameters<typeof api.executions.list>[1] = {
+      before: oldest.started_at,
+      beforeId: oldest.id,
+    }
+    if (filter !== 'all') opts.outcome = filter
+    api.executions
+      .list(workflowId, opts)
+      .then((page) => {
+        setExecutions((prev) => mergeExecs(prev, page))
+        setHasMore(page.length === PAGE_SIZE)
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false))
   }, [workflowId, filter])
 
   const loadVersions = useCallback(() => {
     api.versions.list(workflowId).then(setVersions).catch(() => {})
   }, [workflowId])
 
+  // Reset list when workflow or filter changes; this triggers a fresh first-page load.
+  useEffect(() => {
+    setExecutions([])
+    setHasMore(true)
+  }, [workflowId, filter])
+
   // Initial load + 1s polling for executions; versions load once (refresh on save signal)
   useEffect(() => {
-    load()
+    loadFirstPage()
     loadVersions()
-    const tick = setInterval(() => { if (!document.hidden) load(true) }, 1000)
-    const onVisible = () => { if (!document.hidden) load(true) }
+    const tick = setInterval(() => { if (!document.hidden) loadFirstPage(true) }, 1000)
+    const onVisible = () => { if (!document.hidden) loadFirstPage(true) }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       clearInterval(tick)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [load, loadVersions])
+  }, [loadFirstPage, loadVersions])
 
   useEffect(() => {
     if (refreshSignal) {
-      load(true)
+      loadFirstPage(true)
       loadVersions()
     }
-  }, [refreshSignal, load, loadVersions])
+  }, [refreshSignal, loadFirstPage, loadVersions])
+
+  // Sentinel ref callback: (re)attaches an IntersectionObserver to the
+  // bottom-of-list element. The scroll container is the parent .overflow-y-auto
+  // div, set as `root` so observation fires only when the sentinel scrolls
+  // into the panel's viewport (not the page's).
+  const scrollRootRef = useRef<HTMLDivElement | null>(null)
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect()
+      observerRef.current = null
+    }
+    if (!node) return
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore()
+      },
+      { root: scrollRootRef.current, rootMargin: '200px' }
+    )
+    obs.observe(node)
+    observerRef.current = obs
+  }, [loadMore])
 
   const filtered = executions
   const items = buildItems(filtered, versions)
@@ -155,7 +235,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollRootRef} className="flex-1 overflow-y-auto">
         {loading ? (
           <div>
             {[...Array(5)].map((_, i) => (
@@ -259,6 +339,13 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                 </button>
               )
             })}
+            {hasMore ? (
+              <div ref={sentinelRef} className="flex justify-center px-3 py-3">
+                {loadingMore && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
+              </div>
+            ) : filtered.length > 0 ? (
+              <p className="px-3 py-3 text-center text-[10px] text-gray-300">End of history</p>
+            ) : null}
           </div>
         )}
       </div>

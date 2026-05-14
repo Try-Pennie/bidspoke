@@ -12,7 +12,7 @@ const executions = new Hono<{ Bindings: Env; Variables: Variables }>()
 executions.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { workflow_id, status, outcome, source, from, to } = c.req.query()
+  const { workflow_id, status, outcome, source, from, to, before, before_id } = c.req.query()
 
   // Resolve the set of workflow IDs this org owns (optionally scoped to one)
   let workflowIds: string[]
@@ -41,6 +41,7 @@ executions.get('/', async (c) => {
     .in('workflow_id', workflowIds)
     .eq('is_test', false)
     .order('started_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(100)
 
   if (status) query = query.eq('status', status)
@@ -48,6 +49,12 @@ executions.get('/', async (c) => {
   if (source) query = query.eq('source', source)
   if (from) query = query.gte('started_at', from)
   if (to) query = query.lte('started_at', to)
+  // Keyset cursor for infinite scroll: load executions strictly older than
+  // (before, before_id). Tiebreak on id when timestamps collide — rare but
+  // possible at high volume.
+  if (before && before_id) {
+    query = query.or(`started_at.lt.${before},and(started_at.eq.${before},id.lt.${before_id})`)
+  }
 
   const { data, error } = await query
   if (error) return c.json({ error: error.message }, 500)
