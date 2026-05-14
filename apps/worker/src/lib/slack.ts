@@ -95,7 +95,15 @@ export async function sendFailureAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Error:*\n\`\`\`${payload.error_message.slice(0, 500)}\`\`\``,
+        // Slack section text caps at 3000 chars; 2000 is well under that and
+        // still fits typical upstream error bodies (Equifax 500 etc.) whole.
+        // Anything longer gets a trailing "…" so the Slack POST doesn't get
+        // rejected outright.
+        text: (() => {
+          const full = payload.error_message
+          const shown = full.length > 2000 ? `${full.slice(0, 2000)}\n…` : full
+          return `*Error:*\n\`\`\`${shown}\`\`\``
+        })(),
       },
     },
     {
