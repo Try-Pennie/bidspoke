@@ -9,66 +9,43 @@ interface Props {
 
 /**
  * Paste-in capture of a representative partner API response. Drives the
- * schema-aware autocomplete in ExtraExtractionEditor without requiring a
- * live probe request (which would need a server-side proxy with the
- * partner's secret). A live "Probe" button can be layered on later as
- * POST /api/partners/:id/probe.
+ * schema-aware autocomplete in ExtraExtractionEditor. Parses on every
+ * change; valid JSON is lifted to the parent immediately, invalid input
+ * stays in the local textarea state with an inline error.
  */
 export function PartnerProbePanel({ value, onChange }: Props) {
-  const initialText = value ? safeStringify(value) : ''
+  const initialText = value === null || value === undefined ? '' : safeStringify(value)
   const [text, setText] = useState(initialText)
   const [error, setError] = useState<string | null>(null)
-  const [savedNotice, setSavedNotice] = useState(false)
 
-  function handleApply() {
+  function handleChange(next: string) {
+    setText(next)
+    if (next.trim() === '') {
+      onChange(null)
+      setError(null)
+      return
+    }
     try {
-      const parsed = JSON.parse(text)
+      const parsed = JSON.parse(next)
       onChange(parsed)
       setError(null)
-      setSavedNotice(true)
-      setTimeout(() => setSavedNotice(false), 1500)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid JSON')
     }
   }
 
-  function handleClear() {
-    setText('')
-    onChange(null)
-    setError(null)
-  }
-
   return (
     <div className="space-y-2">
       <p className="text-xs text-gray-400">
-        Paste a representative response body here. The fields in this JSON populate the autocomplete dropdown when configuring extraction paths below.
+        Paste a representative response body. The fields here populate the autocomplete dropdown when configuring extraction paths below. Valid JSON saves automatically.
       </p>
       <textarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => handleChange(e.target.value)}
         placeholder={'{\n  "ok": true,\n  "data": {\n    "createLead": { "id": "...", "resultCode": 1013 }\n  }\n}'}
         className="min-h-[120px] w-full resize-y rounded-md border border-gray-200 bg-white p-2 font-mono text-xs focus:border-gray-400 focus:outline-none"
       />
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={handleApply}
-          className="rounded-md bg-p-blue-light px-3 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-dark hover:text-white"
-        >
-          Apply sample
-        </button>
-        {value !== null && value !== undefined && (
-          <button
-            type="button"
-            onClick={handleClear}
-            className="text-xs text-gray-400 hover:text-gray-600"
-          >
-            Clear
-          </button>
-        )}
-        {savedNotice && <span className="text-xs text-green-600">Applied.</span>}
-        {error && <span className="text-xs text-red-500">{error}</span>}
-      </div>
+      {error && <p className="text-xs text-red-500">{error}</p>}
     </div>
   )
 }
