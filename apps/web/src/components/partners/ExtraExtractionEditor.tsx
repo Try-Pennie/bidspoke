@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { ArrowRight, Plus, Trash2 } from 'lucide-react'
 import type { ExtraExtractionConfig, ExtraExtractionSpec } from '@/lib/api'
 
@@ -24,15 +24,22 @@ interface Props {
 }
 
 export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props) {
-  const rows = readRows(value)
+  // Local row state. The serialized ExtraExtractionConfig drops empty-key rows
+  // (they can't be expressed as map entries), so rendering off `value` alone
+  // would make a freshly-added blank row disappear before the user could type
+  // into it. Initialize from value on first render; sync down when value
+  // changes externally (e.g. restoreSnapshot / undo).
+  const [rows, setRows] = useState<Row[]>(() => readRows(value))
+  const valueKey = JSON.stringify(value)
+  useEffect(() => {
+    setRows(readRows(value))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [valueKey])
 
   const pathSuggestions = useMemo(() => collectPaths(sampleResponse), [sampleResponse])
 
   function update(next: Row[]) {
-    if (next.length === 0) {
-      onChange(null)
-      return
-    }
+    setRows(next)
     const out: ExtraExtractionConfig = {}
     for (const r of next) {
       if (!r.key) continue
