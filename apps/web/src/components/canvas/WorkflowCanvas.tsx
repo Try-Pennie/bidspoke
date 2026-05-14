@@ -766,7 +766,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail }: {
+function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   executionId?: string
@@ -778,6 +778,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   executionParentId?: string | null
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
   onLoadStepDetail?: (namespace: string) => void
+  onClearExecution?: () => void
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView } = useReactFlow()
@@ -2436,7 +2437,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   Replay
                 </button>
                 <button
-                  onClick={() => router.replace(`/workflows/${workflow.id}?mode=view`)}
+                  onClick={() => {
+                    // Drop the execution view synchronously, then update the URL.
+                    // Going through router first puts the state clear inside the
+                    // App Router transition, which holds the visual update until
+                    // the URL settles — visible as a 1-2s lag on this Clear.
+                    onClearExecution?.()
+                    router.replace(`/workflows/${workflow.id}?mode=view`)
+                  }}
                   className="flex items-center gap-1 text-p-blue-dark hover:text-p-blue-dark"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -3029,6 +3037,7 @@ export default function WorkflowCanvas({
   executionParentId,
   executionChildren,
   onLoadStepDetail,
+  onClearExecution,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -3041,6 +3050,7 @@ export default function WorkflowCanvas({
   executionParentId?: string | null
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
   onLoadStepDetail?: (namespace: string) => void
+  onClearExecution?: () => void
 }) {
   return (
     <ReactFlowProvider>
@@ -3056,6 +3066,7 @@ export default function WorkflowCanvas({
         executionParentId={executionParentId}
         executionChildren={executionChildren}
         onLoadStepDetail={onLoadStepDetail}
+        onClearExecution={onClearExecution}
       />
     </ReactFlowProvider>
   )

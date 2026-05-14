@@ -11,8 +11,14 @@ import type { Workflow, ExecutionStep } from '@/types/workflow'
 function WorkflowEditorInner() {
   const { id } = useParams<{ id: string }>()
   const searchParams = useSearchParams()
-  const executionId = searchParams.get('execution') ?? undefined
+  const urlExecutionId = searchParams.get('execution') ?? undefined
   const mode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
+
+  // Mirror the URL into local state so Clear can drop the execution view
+  // synchronously instead of waiting on the App Router transition. router.replace
+  // happens in the background and will re-sync via the effect below.
+  const [executionId, setExecutionId] = useState<string | undefined>(urlExecutionId)
+  useEffect(() => { setExecutionId(urlExecutionId) }, [urlExecutionId])
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [executionSteps, setExecutionSteps] = useState<Record<string, ExecutionStep> | undefined>(undefined)
@@ -81,6 +87,18 @@ function WorkflowEditorInner() {
     return () => { cancelled = true }
   }, [executionId])
 
+  const clearExecution = useCallback(() => {
+    setExecutionId(undefined)
+    setExecutionSteps(undefined)
+    setExecutionPayload(undefined)
+    setExecutionSource(null)
+    setExecutionTraceId(null)
+    setExecutionStartedAt(null)
+    setExecutionParentId(null)
+    setExecutionChildren([])
+    inFlightStepDetails.current.clear()
+  }, [])
+
   const loadStepDetail = useCallback((namespace: string) => {
     if (!executionId) return
     const step = executionSteps?.[namespace]
@@ -137,6 +155,7 @@ function WorkflowEditorInner() {
       executionParentId={executionParentId}
       executionChildren={executionChildren}
       onLoadStepDetail={loadStepDetail}
+      onClearExecution={clearExecution}
     />
   )
 }
