@@ -3,6 +3,7 @@
 export const runtime = 'edge'
 
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { Partner, PartnerBody } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
@@ -11,6 +12,10 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import PartnerForm from './PartnerForm'
 
 export default function PartnersPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const slugParam = searchParams.get('selected') ?? null
+
   const [partners, setPartners] = useState<Partner[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -34,6 +39,31 @@ export default function PartnersPage() {
 
   useEffect(() => { load() }, [])
 
+  // Hydrate selection from ?selected=<slug> after the list arrives.
+  useEffect(() => {
+    if (!slugParam || partners.length === 0) return
+    if (selected?.slug === slugParam) return
+    const match = partners.find((p) => p.slug === slugParam)
+    if (match) {
+      setSelected(match)
+      setCreating(false)
+    }
+  }, [slugParam, partners, selected?.slug])
+
+  function selectPartner(p: Partner) {
+    setCreating(false)
+    setSelected(p)
+    if (p.slug !== slugParam) {
+      router.replace(`/partners?selected=${encodeURIComponent(p.slug)}`, { scroll: false })
+    }
+  }
+
+  function clearSelection() {
+    setCreating(false)
+    setSelected(null)
+    if (slugParam) router.replace('/partners', { scroll: false })
+  }
+
   function requestDelete(id: string) {
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
     setConfirmDelete(id)
@@ -44,7 +74,7 @@ export default function PartnersPage() {
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
     setConfirmDelete(null)
     const item = partners.find((p) => p.id === id)
-    if (selected?.id === id) setSelected(null)
+    if (selected?.id === id) clearSelection()
     setRemovingId(id)
     removeTimerRef.current = setTimeout(() => {
       setPartners((prev) => prev.filter((p) => p.id !== id))
@@ -64,15 +94,14 @@ export default function PartnersPage() {
     if (id) {
       const updated = await api.partners.update(id, body)
       setPartners((prev) => prev.map((p) => p.id === id ? updated : p))
-      setSelected(updated)
+      selectPartner(updated)
     } else {
       const created = await api.partners.create(body as Required<PartnerBody>)
       if (pendingUuids?.length) {
         await Promise.all(pendingUuids.map((uuid) => api.partnerUuids.create({ partner_slug: created.slug, uuid })))
       }
       setPartners((prev) => [...prev, created])
-      setCreating(false)
-      setSelected(created)
+      selectPartner(created)
     }
   }
 
@@ -87,7 +116,7 @@ export default function PartnersPage() {
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
             <button
-              onClick={() => { setSelected(null); setCreating(true) }}
+              onClick={() => { clearSelection(); setCreating(true) }}
               className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0]"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -110,7 +139,7 @@ export default function PartnersPage() {
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
                 <p className="mt-1 text-xs text-gray-400">Partners are the lenders or buyers your workflows route leads to.</p>
                 <button
-                  onClick={() => { setSelected(null); setCreating(true) }}
+                  onClick={() => { clearSelection(); setCreating(true) }}
                   className="mt-3 text-xs font-medium text-p-blue-dark hover:text-p-blue-dark"
                 >
                   Add your first partner →
@@ -121,7 +150,7 @@ export default function PartnersPage() {
                 {partners.map((partner) => (
                   <button
                     key={partner.id}
-                    onClick={() => { setCreating(false); setSelected(partner) }}
+                    onClick={() => selectPartner(partner)}
                     className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[colors,opacity] duration-150 ${
                       selected?.id === partner.id
                         ? 'bg-gray-100'
@@ -162,7 +191,7 @@ export default function PartnersPage() {
               key={selected?.id ?? 'new'}
               partner={selected ?? undefined}
               onSave={handleSave}
-              onCancel={() => { setCreating(false); setSelected(null) }}
+              onCancel={clearSelection}
               onDelete={selected ? (id) => requestDelete(id) : undefined}
               confirmingDelete={confirmDelete === selected?.id}
               onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
