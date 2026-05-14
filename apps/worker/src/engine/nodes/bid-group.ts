@@ -67,7 +67,13 @@ export interface BidGroupAttempt {
 }
 
 export interface BidGroupOutput {
-  winner: { partner: string; bid: number; raw_response?: unknown } | null
+  winner: {
+    partner: string
+    bid: number
+    raw_response?: unknown
+    /** Partner-specific values from PartnerBidOutput.extra (clickUrl, leadId, etc.). */
+    extra?: Record<string, unknown>
+  } | null
   all_bids: PartnerBidOutput[]
   excluded: PartnerBidOutput[]
   mode: BidGroupMode
@@ -272,6 +278,7 @@ async function runTiered(
           partner: fbAttempt.output.partner,
           bid: fbAttempt.output.bid ?? 0,
           raw_response: fbAttempt.output.raw_response,
+          ...(fbAttempt.output.extra ? { extra: fbAttempt.output.extra } : {}),
         },
         all_bids: allBids,
         excluded: allBids.filter((b) => b.partner !== fbAttempt.output!.partner),
@@ -315,6 +322,7 @@ function winnerOutput(
       partner: winner.partner,
       bid: winner.bid ?? 0,
       raw_response: winner.raw_response,
+      ...(winner.extra ? { extra: winner.extra } : {}),
     },
     all_bids: all,
     excluded: excluded.filter((b) => b.partner !== winner.partner),

@@ -24,6 +24,16 @@ binding = "IDEMPOTENCY"
 id = "741da5a97205465eb7f12437f24a2dd2"
 preview_id = "6f19293c62f84fedb5d0d418fcd5c6ef"
 
+# Data Store — generic workflow-author KV with TTL (PRD: Data Store node).
+# Backs the `data_store` node type. First consumer is the main-flow Submission__c
+# → engine UUID cache (7-day TTL), but the namespace is intentionally generic so
+# any workflow can read/write key/value pairs.
+# Create with: `wrangler kv namespace create SUBMISSIONS` and paste IDs below.
+[[kv_namespaces]]
+binding = "SUBMISSIONS"
+id = "a7c2fdab1ab14b1fa277d71f85174ba7"
+preview_id = "69efde707c3747068059bfd2d3220986"
+
 # Durable Objects — daily caps + circuit breakers
 [[durable_objects.bindings]]
 name = "DAILY_CAP"

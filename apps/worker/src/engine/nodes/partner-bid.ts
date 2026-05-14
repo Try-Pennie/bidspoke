@@ -24,7 +24,7 @@ import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
 import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
-import type { BidResolverType } from '../bid-resolver'
+import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid } from '../bid-resolver'
 import { PartnerApiError } from '../partner-bid-error'
 import { recordBidAttempt } from '../lead-sightings'
@@ -50,6 +50,9 @@ interface PartnerConfig {
   bid_resolver_type: BidResolverType | null
   bid_resolver_config: Record<string, unknown> | null
   outbound_field_mapping: Record<string, unknown> | null
+  bid_mode: BidMode | null
+  bid_comparison_source: BidComparisonSource | null
+  extra_extraction: ExtraExtractionConfig | null
   dedup_endpoint: string | null
   response_classification: ResponseClassificationConfig | null
   alert_config: AlertConfig | null
@@ -72,6 +75,11 @@ export interface PartnerBidOutput {
   cap_count?: number      // today's cap count after this request
   resolver_type?: BidResolverType | null
   /**
+   * Partner-specific values extracted from the API response (clickUrl, leadId,
+   * classifier outputs). Configured via partner_configs.extra_extraction.
+   */
+  extra?: Record<string, unknown>
+  /**
    * Populated when bid_resolver_type='matrix'. Lets the execution detail page
    * answer "why didn't this lead get a bid from this partner?" without re-running
    * the lookup.
@@ -90,6 +98,7 @@ export interface PartnerBidOutput {
 const PARTNER_SELECT =
   'id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, ' +
   'bid_resolver_type, bid_resolver_config, outbound_field_mapping, ' +
+  'bid_mode, bid_comparison_source, extra_extraction, ' +
   'dedup_endpoint, response_classification, alert_config, ' +
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
   'circuit_enabled, is_active'
@@ -190,12 +199,14 @@ export async function executePartnerBidNode(
   let bid: number | null = null
   let rawResponse: unknown = null
   let matrixInfo: PartnerBidOutput['matrix'] = null
+  let extra: Record<string, unknown> | undefined
   const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
 
   try {
     const result = await resolveBid(p, ctx, env, supabase)
     const respondedAt = new Date()
     matrixInfo = result.matrix ?? null
+    extra = result.extra
     if (result.rejected) {
       logBid({
         partner_slug: p.slug,
@@ -214,6 +225,7 @@ export async function executePartnerBidNode(
           raw_response: result.raw,
           cap_count: capCount,
           resolver_type: p.bid_resolver_type ?? null,
+          ...(extra ? { extra } : {}),
           matrix: matrixInfo,
         },
       }
@@ -241,6 +253,7 @@ export async function executePartnerBidNode(
         raw_response: rawResponse,
         cap_count: capCount,
         resolver_type: p.bid_resolver_type ?? null,
+        ...(extra ? { extra } : {}),
         matrix: matrixInfo,
       }
       return { output }
@@ -262,6 +275,7 @@ export async function executePartnerBidNode(
       raw_response: rawResponse,
       cap_count: capCount,
       resolver_type: p.bid_resolver_type ?? null,
+      ...(extra ? { extra } : {}),
       matrix: matrixInfo,
     }
     log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })

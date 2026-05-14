@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -89,6 +89,13 @@ const NODES: PaletteNode[] = [
     description: 'Create, update, or query records',
     icon: Cloud,
     color: 'text-blue-500',
+  },
+  {
+    type: 'data_store',
+    label: 'Data Store',
+    description: 'KV read/write with TTL',
+    icon: Database,
+    color: 'text-cyan-500',
   },
 ]
 

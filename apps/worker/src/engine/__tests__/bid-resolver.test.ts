@@ -140,11 +140,138 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     expect(result.rejected).toBe(true)
     expect(result.bid).toBeNull()
   })
+
+  it('extra_extraction: dot-path values land on result.extra', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { ClickThrough_url: 'https://amone/x', bid: 17 } }), {
+        status: 200,
+      })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://am-one',
+      bid_resolver_config: { bid_path: 'data.bid' },
+      extra_extraction: { clickUrl: 'data.ClickThrough_url' },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.bid).toBe(17)
+    expect(result.extra).toEqual({ clickUrl: 'https://amone/x' })
+  })
+
+  it('bid_path: numeric string is coerced', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { bid: '42.50' } }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://am-one',
+      bid_resolver_config: { bid_path: 'data.bid' },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.bid).toBe(42.5)
+  })
+
+  it('extra_extraction: classifier produces tripoint result label', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, data: { createLead: { id: 'lead-1', resultCode: 1013 } } }),
+        { status: 200 }
+      )
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      extra_extraction: {
+        leadId: 'data.createLead.id',
+        result: { classifier: 'tripoint_result' },
+      },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.extra).toEqual({ leadId: 'lead-1', result: 'Success' })
+  })
+
+  it('extra_extraction: tripoint duplicate code maps to "Duplicate"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, data: { createLead: { id: 'lead-2', resultCode: 1003 } } }),
+        { status: 200 }
+      )
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      extra_extraction: { result: { classifier: 'tripoint_result' } },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect((result.extra as { result: string }).result).toBe('Duplicate')
+  })
+
+  it('bid_comparison_source=formula: API for eligibility, formula for comparison bid', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        // Note: API returns bid=99 — must be ignored when comparison_source=formula
+        JSON.stringify({ ok: true, data: { createLead: { id: 'lead-3', resultCode: 1013, bidValue: 99 } } }),
+        { status: 200 }
+      )
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: { formula: 'finalDebt * 0.10' },
+      extra_extraction: { leadId: 'data.createLead.id' },
+    })
+    const ctx = makeCtx({ finalDebt: 12000 })
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBe(1200)
+    expect((result.extra as { leadId: string }).leadId).toBe('lead-3')
+  })
 })
 
 describe('evaluateFormula', () => {
   it('arithmetic with payload field', () => {
     expect(evaluateFormula('debt_amount * 0.65', makeCtx({ debt_amount: 10000 }))).toBe(6500)
+  })
+
+  it('resolves steps.X.output.Y references', () => {
+    const ctx: ExecutionContext = {
+      trigger: { payload: { finalDebt: 12000 }, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {
+        constants: { status: 'completed', output: { tripointMultiplierLow: 0.10, tripointMultiplierHigh: 0.13 } },
+      },
+      env: {},
+    }
+    expect(
+      evaluateFormula(
+        'finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow',
+        ctx
+      )
+    ).toBeCloseTo(1200, 5)
+  })
+
+  it('high-debt branch uses tripointMultiplierHigh', () => {
+    const ctx: ExecutionContext = {
+      trigger: { payload: { finalDebt: 20000 }, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {
+        constants: { status: 'completed', output: { tripointMultiplierLow: 0.10, tripointMultiplierHigh: 0.13 } },
+      },
+      env: {},
+    }
+    expect(
+      evaluateFormula(
+        'finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow',
+        ctx
+      )
+    ).toBeCloseTo(2600, 5)
+  })
+
+  it('resolves env.X references', () => {
+    const ctx: ExecutionContext = {
+      trigger: { payload: {}, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {},
+      env: { FACTOR: '0.5' },
+    }
+    expect(evaluateFormula('env.FACTOR * 200', ctx)).toBe(100)
   })
 
   it('Math.floor', () => {

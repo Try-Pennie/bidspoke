@@ -22,6 +22,10 @@ interface PartnerBody {
   bid_resolver_type?: 'formula' | 'matrix' | 'api'
   bid_resolver_config?: Record<string, unknown>
   outbound_field_mapping?: Record<string, unknown> | null
+  bid_mode?: 'commit' | 'ping_only'
+  bid_comparison_source?: 'auto' | 'api' | 'formula' | 'matrix'
+  extra_extraction?: Record<string, unknown> | null
+  last_probe_response?: unknown
   dedup_endpoint?: string | null
   response_classification?: unknown
   alert_config?: unknown
@@ -62,7 +66,7 @@ partners.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('partner_configs')
-    .select('id, name, slug, api_endpoint, click_url, daily_cap, min_bid, bid_formula, bid_resolver_type, bid_resolver_config, outbound_field_mapping, is_active, priority, partner_type, sell_off_offer_title, sell_off_offer_details, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
+    .select('id, name, slug, api_endpoint, click_url, daily_cap, min_bid, bid_formula, bid_resolver_type, bid_resolver_config, outbound_field_mapping, bid_mode, bid_comparison_source, extra_extraction, is_active, priority, partner_type, sell_off_offer_title, sell_off_offer_details, circuit_enabled, circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, created_at, updated_at, updated_by_email, updated_by_name')
     .eq('organization_id', orgId)
     .order('priority', { ascending: true })
 
@@ -115,6 +119,10 @@ partners.post('/', async (c) => {
       bid_resolver_type: body.bid_resolver_type ?? deriveResolverType(body),
       bid_resolver_config: body.bid_resolver_config ?? deriveResolverConfig(body),
       outbound_field_mapping: body.outbound_field_mapping ?? null,
+      bid_mode: body.bid_mode ?? 'commit',
+      bid_comparison_source: body.bid_comparison_source ?? 'auto',
+      extra_extraction: body.extra_extraction ?? null,
+      last_probe_response: body.last_probe_response ?? null,
       dedup_endpoint: body.dedup_endpoint ?? null,
       response_classification: body.response_classification ?? null,
       alert_config: body.alert_config ?? null,
@@ -178,6 +186,7 @@ partners.put('/:id', async (c) => {
   const fields: (keyof PartnerBody)[] = [
     'name', 'api_endpoint', 'cf_secret_key', 'daily_cap', 'min_bid',
     'bid_formula', 'bid_resolver_type', 'bid_resolver_config', 'outbound_field_mapping',
+    'bid_mode', 'bid_comparison_source', 'extra_extraction', 'last_probe_response',
     'dedup_endpoint', 'response_classification', 'alert_config',
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'is_active', 'priority',

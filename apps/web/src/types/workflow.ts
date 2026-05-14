@@ -14,6 +14,7 @@ export type NodeType =
   | 'bid_evaluation'
   | 'constants'
   | 'salesforce'
+  | 'data_store'
 
 export interface EdgeCondition {
   field: string

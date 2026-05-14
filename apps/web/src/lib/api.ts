@@ -2,6 +2,14 @@ import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar } from '@/types/workflow'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
+export type BidMode = 'commit' | 'ping_only'
+export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
+
+export type ExtraExtractionSpec =
+  | string
+  | { path?: string; classifier?: string }
+
+export type ExtraExtractionConfig = Record<string, ExtraExtractionSpec>
 
 export interface Partner {
   id: string
@@ -16,6 +24,10 @@ export interface Partner {
   bid_resolver_type: BidResolverType
   bid_resolver_config: Record<string, unknown>
   outbound_field_mapping: Record<string, unknown> | null
+  bid_mode: BidMode
+  bid_comparison_source: BidComparisonSource
+  extra_extraction: ExtraExtractionConfig | null
+  last_probe_response: unknown
   dedup_endpoint: string | null
   response_classification: unknown
   alert_config: unknown

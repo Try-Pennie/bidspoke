@@ -299,6 +299,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'data_store' && <DataStoreConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -1005,6 +1006,104 @@ function ExitConfig({
         refs={refs}
       />
     </Field>
+  )
+}
+
+function DataStoreConfig({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const store = (config.store as string | undefined) ?? 'submissions'
+  const operation = (config.operation as 'set' | 'get' | 'delete' | undefined) ?? 'set'
+  const key = (config.key as string | undefined) ?? ''
+  const ttl = config.ttl_seconds as number | undefined
+  const valueStr =
+    config.value !== undefined
+      ? typeof config.value === 'string'
+        ? config.value
+        : JSON.stringify(config.value, null, 2)
+      : ''
+
+  return (
+    <section className="space-y-4">
+      <Field label="Store" hint="Which KV namespace to target. Only one store today; future stores plug in here.">
+        <div className="relative">
+          <select
+            value={store}
+            onChange={(e) => onChange({ store: e.target.value })}
+            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+          >
+            <option value="submissions">submissions</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+        </div>
+      </Field>
+
+      <Field label="Operation">
+        <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5">
+          {(['set', 'get', 'delete'] as const).map((op) => (
+            <button
+              key={op}
+              type="button"
+              onClick={() => onChange({ operation: op })}
+              className={`rounded px-3 py-1 text-xs font-medium transition ${
+                operation === op
+                  ? 'bg-p-blue-light text-p-blue-dark'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              {op}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Key" hint="Supports {{trigger.*}}, {{steps.*.output.*}}, {{env.*}} templates.">
+        <input
+          className="input"
+          placeholder="{{trigger.payload.Submission__c}}"
+          value={key}
+          onChange={(e) => onChange({ key: e.target.value })}
+        />
+      </Field>
+
+      {operation === 'set' && (
+        <>
+          <Field label="Value (JSON or template)">
+            <TemplateTextarea
+              className="input min-h-[80px] resize-y font-mono text-xs"
+              placeholder={'"{{steps.engine_call.output.uuid}}"'}
+              value={valueStr}
+              onChange={(val) => {
+                try {
+                  onChange({ value: JSON.parse(val) })
+                } catch {
+                  onChange({ value: val })
+                }
+              }}
+              refs={refs}
+            />
+          </Field>
+          <Field label="TTL (seconds)" hint="Minimum 60 (Cloudflare KV floor). 604800 = 7 days.">
+            <input
+              type="number"
+              className="input"
+              placeholder="604800"
+              value={ttl ?? ''}
+              onChange={(e) => {
+                const n = parseInt(e.target.value)
+                onChange({ ttl_seconds: Number.isFinite(n) ? n : undefined })
+              }}
+            />
+          </Field>
+        </>
+      )}
+    </section>
   )
 }
 

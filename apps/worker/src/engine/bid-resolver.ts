@@ -21,6 +21,19 @@ import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { applyOutboundMapping } from '../lib/field-mapper'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
+export type BidMode = 'commit' | 'ping_only'
+export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
+
+/**
+ * Declarative response-extraction config. Keys become entries in `output.extra`.
+ *   string                                  — dot-path into the response body
+ *   { path: string }                        — same, but allows extending the shape later
+ *   { classifier: 'tripoint_result' | ... } — runs a named classifier function on the body
+ */
+export type ExtraExtractionConfig = Record<
+  string,
+  string | { path?: string; classifier?: string }
+>
 
 export interface PartnerForResolver {
   id: string
@@ -33,12 +46,17 @@ export interface PartnerForResolver {
   outbound_field_mapping?: Record<string, unknown> | null
   response_classification: ResponseClassificationConfig | null
   alert_config: AlertConfig | null
+  bid_mode?: BidMode | null
+  bid_comparison_source?: BidComparisonSource | null
+  extra_extraction?: ExtraExtractionConfig | null
 }
 
 export interface BidResolverResult {
   bid: number | null
   raw: unknown
   rejected?: boolean
+  /** Partner-specific extras pulled from the API response (clickUrl, leadId, classification, …). */
+  extra?: Record<string, unknown>
   matrix?: {
     config_id: string
     matched_row_id: string | null
@@ -187,7 +205,88 @@ async function callBidApi(
     throw new Error(`Partner API returned ${res.status}`)
   }
 
-  return { bid: extractBid(raw), raw }
+  const extra = extractExtras(partner.extra_extraction, raw)
+  const comparison = partner.bid_comparison_source ?? 'auto'
+  let bid: number | null
+  if (comparison === 'formula') {
+    const formula = readFormula(partner)
+    bid = formula ? evaluateFormula(formula, ctx) : null
+  } else {
+    const bidPath = readBidPath(partner)
+    bid = bidPath ? coerceNumeric(readPath(raw, bidPath)) : extractBid(raw)
+  }
+
+  return { bid, raw, ...(extra ? { extra } : {}) }
+}
+
+/**
+ * Optional `bid_resolver_config.bid_path` lets a partner point extractBid at a
+ * specific dot-path in the response (e.g. `data.bid` for AmOne) instead of the
+ * default top-level scan over [bid, bid_amount, amount, price, offer].
+ */
+function readBidPath(partner: PartnerForResolver): string | null {
+  const cfg = partner.bid_resolver_config
+  if (cfg && typeof cfg.bid_path === 'string' && cfg.bid_path.trim()) return cfg.bid_path
+  return null
+}
+
+function coerceNumeric(val: unknown): number | null {
+  if (typeof val === 'number' && isFinite(val)) return val
+  if (typeof val === 'string') {
+    const n = parseFloat(val)
+    if (!isNaN(n) && isFinite(n)) return n
+  }
+  return null
+}
+
+// ── Extra extraction ──────────────────────────────────────────────────────────
+
+type Classifier = (body: unknown) => unknown
+
+const CLASSIFIERS: Record<string, Classifier> = {
+  tripoint_result: tripointResult,
+}
+
+function tripointResult(body: unknown): 'Success' | 'Duplicate' | 'Fail' {
+  const code = readPath(body, 'data.createLead.resultCode')
+  if (typeof code !== 'number') return 'Fail'
+  if ((code >= 1002 && code <= 1005) || code === 1020) return 'Duplicate'
+  if (code === 1000 || code === 1001 || (code >= 1013 && code <= 1017)) return 'Success'
+  return 'Fail'
+}
+
+function extractExtras(
+  config: ExtraExtractionConfig | null | undefined,
+  body: unknown
+): Record<string, unknown> | null {
+  if (!config) return null
+  const out: Record<string, unknown> = {}
+  for (const [key, spec] of Object.entries(config)) {
+    if (typeof spec === 'string') {
+      out[key] = readPath(body, spec)
+    } else if (spec && typeof spec === 'object') {
+      if (typeof spec.classifier === 'string') {
+        const fn = CLASSIFIERS[spec.classifier]
+        out[key] = fn ? fn(body) : undefined
+      } else if (typeof spec.path === 'string') {
+        out[key] = readPath(body, spec.path)
+      } else {
+        out[key] = undefined
+      }
+    }
+  }
+  return out
+}
+
+function readPath(obj: unknown, dotPath: string): unknown {
+  if (!dotPath) return undefined
+  const parts = dotPath.split('.').filter(Boolean)
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return cur
 }
 
 function extractBid(raw: unknown): number | null {
@@ -208,40 +307,93 @@ function extractBid(raw: unknown): number | null {
 
 /**
  * Evaluate a bid formula string against the execution context.
- * Only arithmetic and dot-path field references are supported.
- * Formula is user-authored (authenticated user), so Function constructor is safe here.
  *
- * Example: "debt_amount * 0.65" with ctx.trigger.payload.debt_amount = 10000 -> 6500
+ * Reference syntax inside the formula:
+ *   bare_identifier            — resolved against ctx.trigger.payload (back-compat)
+ *   trigger.foo.bar            — resolved against ctx.trigger (e.g. trigger.payload.x)
+ *   steps.ns.output.field      — resolved against the named step's output
+ *   env.KEY                    — resolved against ctx.env
+ *
+ * Examples:
+ *   "debt_amount * 0.65"
+ *   "finalDebt > 12499 ? finalDebt * steps.constants.output.tripointHi
+ *                       : finalDebt * steps.constants.output.tripointLo"
+ *
+ * Only references that resolve to a finite number (or numeric string) are usable.
+ * Formula is user-authored, so the Function constructor is acceptable here.
  */
 export function evaluateFormula(formula: string, ctx: ExecutionContext): number | null {
   if (!formula.trim()) return null
 
-  const identifiers = Array.from(
-    new Set(formula.match(/[a-zA-Z_][a-zA-Z0-9_.]*/g) ?? [])
-  ).filter((id) => !/^(Math|floor|ceil|round|min|max|abs|sqrt|pow)$/.test(id))
+  // First pass: substitute compound path references (steps.x.y, trigger.x.y, env.X) with
+  // generated identifiers. Done before the bare-identifier scan so the regex below
+  // doesn't see `steps`, `trigger`, `env` as bare names.
+  const pathPattern = /\b(?:steps|trigger|env)(?:\.[a-zA-Z0-9_]+)+\b/g
+  const pathVars: Record<string, number> = {}
+  let pathIdx = 0
+  const stage1 = formula.replace(pathPattern, (match) => {
+    const name = `__path${pathIdx++}`
+    const val = resolvePath(match, ctx)
+    const num = toNumber(val)
+    if (num !== null) pathVars[name] = num
+    return name
+  })
 
-  const vars: Record<string, number> = {}
+  const identifiers = Array.from(
+    new Set(stage1.match(/[a-zA-Z_][a-zA-Z0-9_.]*/g) ?? [])
+  ).filter(
+    (id) =>
+      !/^(Math|floor|ceil|round|min|max|abs|sqrt|pow|true|false|null)$/.test(id) &&
+      !(id in pathVars)
+  )
+
+  const payloadVars: Record<string, number> = {}
   const payload = ctx.trigger.payload
   for (const id of identifiers) {
     const val = getPath(payload, id.split('.'))
-    if (typeof val === 'number') vars[id] = val
-    else if (typeof val === 'string') {
-      const n = parseFloat(val)
-      if (!isNaN(n)) vars[id] = n
-    }
+    const num = toNumber(val)
+    if (num !== null) payloadVars[id] = num
   }
 
   try {
-    const paramNames = ['Math', ...Object.keys(vars)]
-    const paramValues = [Math, ...Object.values(vars)]
+    const paramNames = ['Math', ...Object.keys(pathVars), ...Object.keys(payloadVars)]
+    const paramValues = [Math, ...Object.values(pathVars), ...Object.values(payloadVars)]
     // eslint-disable-next-line no-new-func
-    const fn = new Function(...paramNames, `return (${formula})`)
+    const fn = new Function(...paramNames, `return (${stage1})`)
     const result = fn(...paramValues)
     if (typeof result !== 'number' || !isFinite(result)) return null
     return result
   } catch {
     return null
   }
+}
+
+function toNumber(val: unknown): number | null {
+  if (typeof val === 'number' && isFinite(val)) return val
+  if (typeof val === 'string') {
+    const n = parseFloat(val)
+    if (!isNaN(n)) return n
+  }
+  return null
+}
+
+function resolvePath(path: string, ctx: ExecutionContext): unknown {
+  const segments = path.split('.').filter(Boolean)
+  if (segments.length === 0) return undefined
+  const head = segments[0]
+  const rest = segments.slice(1)
+  if (head === 'env') return rest.length ? ctx.env[rest[0]] : undefined
+  if (head === 'trigger') return getPath(ctx.trigger, rest)
+  if (head === 'steps') {
+    const ns = rest[0]
+    if (!ns) return undefined
+    const step = ctx.steps[ns]
+    if (!step) return undefined
+    const tail = rest[1] === 'output' ? rest.slice(2) : rest.slice(1)
+    if (tail.length === 0) return step.output
+    return getPath(step.output, tail)
+  }
+  return undefined
 }
 
 function getPath(obj: unknown, parts: string[]): unknown {

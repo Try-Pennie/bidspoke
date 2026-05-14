@@ -11,6 +11,7 @@ import { executeTransformNode } from './transform'
 import { executeIntegrationNode } from './integration'
 import { executeConstantsNode } from './constants'
 import { executeSalesforceNode } from './salesforce'
+import { executeDataStoreNode } from './data-store'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -58,6 +59,8 @@ export async function executeNode(
       return executeConstantsNode(node, ctx, env, supabase)
     case 'salesforce':
       return executeSalesforceNode(node, ctx, env)
+    case 'data_store':
+      return executeDataStoreNode(node, ctx, env)
     default:
       throw new Error(`Unknown node type: ${(node as NodeDefinition).type}`)
   }

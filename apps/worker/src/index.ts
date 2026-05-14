@@ -18,6 +18,7 @@ export interface Env {
   // KV namespaces
   WORKFLOW_CACHE: KVNamespace
   IDEMPOTENCY: KVNamespace
+  SUBMISSIONS: KVNamespace
 
   // Durable Objects
   DAILY_CAP: DurableObjectNamespace

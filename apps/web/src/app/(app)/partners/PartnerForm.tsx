@@ -1,12 +1,14 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
+import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
+import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
@@ -25,6 +27,8 @@ interface FormSnapshot {
   priority: string; dailyCap: string; minBid: string; bidFormula: string
   resolverType: BidResolverType; resolverConfig: Record<string, unknown>
   outboundMapping: Record<string, unknown> | null
+  bidMode: BidMode; bidComparisonSource: BidComparisonSource
+  extraExtraction: ExtraExtractionConfig | null; lastProbeResponse: unknown
   dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
@@ -370,6 +374,10 @@ export default function PartnerForm({
   const [resolverType, setResolverType] = useState<BidResolverType>(partner?.bid_resolver_type ?? 'api')
   const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>(partner?.bid_resolver_config ?? {})
   const [outboundMapping, setOutboundMapping] = useState<Record<string, unknown> | null>(partner?.outbound_field_mapping ?? null)
+  const [bidMode, setBidMode] = useState<BidMode>(partner?.bid_mode ?? 'commit')
+  const [bidComparisonSource, setBidComparisonSource] = useState<BidComparisonSource>(partner?.bid_comparison_source ?? 'auto')
+  const [extraExtraction, setExtraExtraction] = useState<ExtraExtractionConfig | null>(partner?.extra_extraction ?? null)
+  const [lastProbeResponse, setLastProbeResponse] = useState<unknown>(partner?.last_probe_response ?? null)
   const [bidConfigs, setBidConfigs] = useState<PartnerBidConfig[]>([])
   const [dedupEndpoint, setDedupEndpoint] = useState(partner?.dedup_endpoint ?? '')
 
@@ -419,7 +427,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -428,6 +436,8 @@ export default function PartnerForm({
     setDailyCap(snap.dailyCap); setMinBid(snap.minBid); setBidFormula(snap.bidFormula)
     setResolverType(snap.resolverType); setResolverConfig(snap.resolverConfig)
     setOutboundMapping(snap.outboundMapping)
+    setBidMode(snap.bidMode); setBidComparisonSource(snap.bidComparisonSource)
+    setExtraExtraction(snap.extraExtraction); setLastProbeResponse(snap.lastProbeResponse)
     setDedupEndpoint(snap.dedupEndpoint); setCircuitEnabled(snap.circuitEnabled)
     setCircuitThreshold(snap.circuitThreshold); setCircuitWindow(snap.circuitWindow)
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
@@ -464,6 +474,10 @@ export default function PartnerForm({
         bid_resolver_type: resolverType,
         bid_resolver_config: resolverConfig,
         outbound_field_mapping: outboundMapping,
+        bid_mode: bidMode,
+        bid_comparison_source: bidComparisonSource,
+        extra_extraction: extraExtraction,
+        last_probe_response: lastProbeResponse,
         dedup_endpoint: dedupEndpoint || null,
         circuit_enabled: circuitEnabled,
         circuit_error_threshold: parseInt(circuitThreshold) || 5,
@@ -655,6 +669,56 @@ export default function PartnerForm({
 
         {partnerType === 'buyer' && <Section title="Outbound field mapping">
           <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
+        </Section>}
+
+        {partnerType === 'buyer' && resolverType === 'api' && <Section title="Response handling">
+          <Field label="Bid mode" hint="commit: the API call creates a lead. ping_only: the call is a lightweight bid quote with no side effects.">
+            <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
+              {(['commit', 'ping_only'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setBidMode(m)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors duration-100 ${
+                    bidMode === m ? 'bg-p-blue-dark text-white' : 'text-gray-500 hover:text-graphite'
+                  }`}
+                >
+                  {m === 'commit' ? 'Commit' : 'Ping only'}
+                </button>
+              ))}
+            </div>
+          </Field>
+
+          <Field
+            label="Comparison bid source"
+            hint="Where the comparison bid (used by BidGroup highest-bid mode) comes from. 'formula' is useful when the API gates eligibility but the comparison number lives in the workflow's constants/payload."
+          >
+            <div className="relative">
+              <select
+                value={bidComparisonSource}
+                onChange={(e) => setBidComparisonSource(e.target.value as BidComparisonSource)}
+                className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+              >
+                <option value="auto">auto (extract from API response)</option>
+                <option value="api">api (force extract from response)</option>
+                <option value="formula">formula (evaluate bid_resolver_config.formula)</option>
+              </select>
+            </div>
+          </Field>
+
+          <div className="border-t border-gray-100 pt-4">
+            <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
+            <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
+          </div>
+
+          <div className="border-t border-gray-100 pt-4">
+            <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
+            <ExtraExtractionEditor
+              value={extraExtraction}
+              onChange={setExtraExtraction}
+              sampleResponse={lastProbeResponse}
+            />
+          </div>
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Bidding limits">

@@ -18,6 +18,7 @@ export type NodeType =
   | 'exit'
   | 'constants'
   | 'salesforce'
+  | 'data_store'
 
 export interface WorkflowDefinition {
   id: string
