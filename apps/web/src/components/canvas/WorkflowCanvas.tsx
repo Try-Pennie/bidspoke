@@ -1051,6 +1051,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       return changed ? next : ns
     })
     if (touchedIds.length === 0) return
+    // When clearing the execution view (executionSteps undefined), nodes only
+    // shrink (pill disappears) or lose opacity. React Flow's ResizeObserver
+    // catches shrink-only changes without an explicit re-measure, and skipping
+    // updateNodeInternals on every node here is the difference between
+    // Clear-feels-instant and Clear-takes-a-second on 15-20 node workflows.
+    if (!executionSteps) return
     // Several node types (Branch, Filter, Code, etc.) render an output-preview
     // pill when executionStep is set, which grows the node's height. React
     // Flow caches handle positions on initial mount, so without a re-measure
@@ -2430,7 +2436,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                   Replay
                 </button>
                 <button
-                  onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
+                  onClick={() => router.replace(`/workflows/${workflow.id}?mode=view`)}
                   className="flex items-center gap-1 text-p-blue-dark hover:text-p-blue-dark"
                 >
                   <X className="h-3.5 w-3.5" />
