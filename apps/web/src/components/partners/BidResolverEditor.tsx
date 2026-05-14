@@ -44,7 +44,7 @@ export function BidResolverEditor(p: Props) {
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600">API endpoint</label>
-            <p className="mb-1.5 text-xs text-gray-400">POSTed with the trigger payload. The bid is read from the response (fields: bid, bid_amount, amount, price, offer).</p>
+            <p className="mb-1.5 text-xs text-gray-400">POSTed with the trigger payload. The bid is read from the response (fields: bid, bid_amount, amount, price, offer) unless a bid path is set below.</p>
             <input
               value={p.apiEndpoint}
               onChange={(e) => p.onApiEndpointChange(e.target.value)}
@@ -59,6 +59,21 @@ export function BidResolverEditor(p: Props) {
               value={p.cfSecretKey}
               onChange={(e) => p.onCfSecretKeyChange(e.target.value)}
               placeholder="PARTNER_TOKEN"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">Bid path (optional)</label>
+            <p className="mb-1.5 text-xs text-gray-400">Dot-path into the response when the bid value isn&apos;t at top level. Example: <code className="rounded bg-gray-100 px-1 font-mono">data.bid</code>. Leave blank for the default top-level scan.</p>
+            <input
+              value={typeof p.resolverConfig.bid_path === 'string' ? p.resolverConfig.bid_path : ''}
+              onChange={(e) => {
+                const next = { ...p.resolverConfig }
+                if (e.target.value) next.bid_path = e.target.value
+                else delete next.bid_path
+                p.onConfigChange(next)
+              }}
+              placeholder="data.bid"
               className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </div>
