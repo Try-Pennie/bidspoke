@@ -209,14 +209,95 @@ async function callBidApi(
   const comparison = partner.bid_comparison_source ?? 'auto'
   let bid: number | null
   if (comparison === 'formula') {
-    const formula = readFormula(partner)
-    bid = formula ? evaluateFormula(formula, ctx) : null
+    bid = evaluatePricing(partner, ctx)
   } else {
     const bidPath = readBidPath(partner)
     bid = bidPath ? coerceNumeric(readPath(raw, bidPath)) : extractBid(raw)
   }
 
   return { bid, raw, ...(extra ? { extra } : {}) }
+}
+
+// ── Structured pricing ────────────────────────────────────────────────────────
+
+/**
+ * When bid_comparison_source === 'formula', the resolver dispatches on
+ * bid_resolver_config.pricing_mode:
+ *   'tiered_multiplier'  — declarative: source_field × tier-matched multiplier
+ *   'custom' (or unset)  — falls back to the raw formula string
+ *
+ * Tiered shape:
+ *   {
+ *     pricing_mode: 'tiered_multiplier',
+ *     source_field: 'steps.eligibility.output.final',
+ *     tiers: [{ above: 12499, multiplier: 0.13 }],
+ *     default_multiplier: 0.10
+ *   }
+ * Tiers are evaluated highest-`above` first; first match wins; else default.
+ */
+function evaluatePricing(partner: PartnerForResolver, ctx: ExecutionContext): number | null {
+  const cfg = partner.bid_resolver_config ?? null
+  const mode = cfg && typeof cfg.pricing_mode === 'string' ? cfg.pricing_mode : 'custom'
+  if (mode === 'tiered_multiplier') {
+    return evaluateTieredMultiplier(cfg, ctx)
+  }
+  const formula = readFormula(partner)
+  return formula ? evaluateFormula(formula, ctx) : null
+}
+
+interface PricingTier {
+  above: number
+  multiplier: number
+}
+
+function evaluateTieredMultiplier(
+  cfg: Record<string, unknown> | null,
+  ctx: ExecutionContext
+): number | null {
+  if (!cfg) return null
+  const sourceField = typeof cfg.source_field === 'string' ? cfg.source_field.trim() : ''
+  if (!sourceField) return null
+  const defaultMultiplier = coerceNumeric(cfg.default_multiplier)
+  if (defaultMultiplier === null) return null
+
+  const value = coerceNumeric(resolveFormulaPath(sourceField, ctx))
+  if (value === null) return null
+
+  const tiers = readTiers(cfg.tiers)
+  for (const tier of tiers) {
+    if (value > tier.above) return value * tier.multiplier
+  }
+  return value * defaultMultiplier
+}
+
+function readTiers(raw: unknown): PricingTier[] {
+  if (!Array.isArray(raw)) return []
+  const tiers: PricingTier[] = []
+  for (const t of raw) {
+    if (!t || typeof t !== 'object') continue
+    const obj = t as Record<string, unknown>
+    const above = coerceNumeric(obj.above)
+    const multiplier = coerceNumeric(obj.multiplier)
+    if (above === null || multiplier === null) continue
+    tiers.push({ above, multiplier })
+  }
+  // Highest threshold first — first match wins
+  return tiers.sort((a, b) => b.above - a.above)
+}
+
+/**
+ * Resolve a path like `steps.eligibility.output.final` or `trigger.payload.x`
+ * against the execution context. Bare identifiers (`finalDebt`) fall back to
+ * `trigger.payload.<name>` for parity with evaluateFormula.
+ */
+function resolveFormulaPath(path: string, ctx: ExecutionContext): unknown {
+  if (path.includes('.') || path === 'trigger' || path === 'env' || path === 'steps') {
+    return resolvePath(path, ctx)
+  }
+  // Bare identifier — look up on trigger.payload
+  const payload = ctx.trigger.payload as Record<string, unknown> | null
+  if (payload && typeof payload === 'object') return payload[path]
+  return undefined
 }
 
 /**

@@ -1,6 +1,15 @@
 'use client'
 
 import type { BidResolverType, BidComparisonSource } from '@/lib/api'
+import { TieredMultiplierEditor } from './TieredMultiplierEditor'
+
+type BidValueMode = 'response' | 'tiered' | 'formula'
+
+function readBidValueMode(comparison: BidComparisonSource, cfg: Record<string, unknown>): BidValueMode {
+  if (comparison !== 'formula') return 'response'
+  if (cfg.pricing_mode === 'tiered_multiplier') return 'tiered'
+  return 'formula'
+}
 
 interface Props {
   resolverType: BidResolverType
@@ -65,84 +74,42 @@ export function BidResolverEditor(p: Props) {
             />
           </div>
 
-          <div className="rounded-lg border border-gray-200 bg-beige p-3">
-            <label className="mb-1.5 block text-xs font-medium text-gray-600">Where does the bid value come from?</label>
-            <div className="space-y-1.5">
-              <label className="flex cursor-pointer items-start gap-2">
-                <input
-                  type="radio"
-                  name="bid-value-source"
-                  checked={p.bidComparisonSource !== 'formula'}
-                  onChange={() => {
-                    p.onBidComparisonSourceChange('auto')
-                    const next = { ...p.resolverConfig }
-                    delete next.formula
-                    p.onConfigChange(next)
-                  }}
-                  className="mt-0.5 h-3.5 w-3.5"
-                />
-                <div className="text-xs">
-                  <div className="font-medium text-graphite">The API response</div>
-                  <div className="text-gray-500">Bidspoke reads the bid from the partner&apos;s response.</div>
-                </div>
-              </label>
-              <label className="flex cursor-pointer items-start gap-2">
-                <input
-                  type="radio"
-                  name="bid-value-source"
-                  checked={p.bidComparisonSource === 'formula'}
-                  onChange={() => {
-                    p.onBidComparisonSourceChange('formula')
-                    const next = { ...p.resolverConfig }
-                    delete next.bid_path
-                    p.onConfigChange(next)
-                  }}
-                  className="mt-0.5 h-3.5 w-3.5"
-                />
-                <div className="text-xs">
-                  <div className="font-medium text-graphite">A formula we calculate</div>
-                  <div className="text-gray-500">The API call is for eligibility only. The bid for ranking comes from a formula you write.</div>
-                </div>
-              </label>
-            </div>
-          </div>
-
-          {p.bidComparisonSource !== 'formula' && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
-              <p className="mb-1.5 text-xs text-gray-400">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
-              <input
-                value={typeof p.resolverConfig.bid_path === 'string' ? p.resolverConfig.bid_path : ''}
-                onChange={(e) => {
-                  const next = { ...p.resolverConfig }
-                  if (e.target.value) next.bid_path = e.target.value
-                  else delete next.bid_path
-                  p.onConfigChange(next)
-                }}
-                placeholder="data.bid"
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-              />
-            </div>
-          )}
-
-          {p.bidComparisonSource === 'formula' && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
-              <p className="mb-1.5 text-xs text-gray-400">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
-              <textarea
-                value={typeof p.resolverConfig.formula === 'string' ? p.resolverConfig.formula : ''}
-                onChange={(e) => {
-                  const next = { ...p.resolverConfig }
-                  if (e.target.value) next.formula = e.target.value
-                  else delete next.formula
-                  p.onConfigChange(next)
-                }}
-                placeholder="finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow"
-                rows={3}
-                className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-              />
-            </div>
-          )}
+          <BidValueSourceRadio
+            mode={readBidValueMode(p.bidComparisonSource, p.resolverConfig)}
+            resolverConfig={p.resolverConfig}
+            onSelectMode={(mode) => {
+              if (mode === 'response') {
+                p.onBidComparisonSourceChange('auto')
+                const next = { ...p.resolverConfig }
+                delete next.formula
+                delete next.pricing_mode
+                delete next.source_field
+                delete next.tiers
+                delete next.default_multiplier
+                p.onConfigChange(next)
+              } else if (mode === 'tiered') {
+                p.onBidComparisonSourceChange('formula')
+                const next = { ...p.resolverConfig }
+                delete next.bid_path
+                delete next.formula
+                next.pricing_mode = 'tiered_multiplier'
+                if (next.source_field === undefined) next.source_field = ''
+                if (next.tiers === undefined) next.tiers = []
+                if (next.default_multiplier === undefined) next.default_multiplier = null
+                p.onConfigChange(next)
+              } else {
+                p.onBidComparisonSourceChange('formula')
+                const next = { ...p.resolverConfig }
+                delete next.bid_path
+                delete next.pricing_mode
+                delete next.source_field
+                delete next.tiers
+                delete next.default_multiplier
+                p.onConfigChange(next)
+              }
+            }}
+            onConfigChange={p.onConfigChange}
+          />
         </div>
       )}
 
@@ -168,6 +135,114 @@ export function BidResolverEditor(p: Props) {
         />
       )}
     </div>
+  )
+}
+
+function BidValueSourceRadio({
+  mode,
+  resolverConfig,
+  onSelectMode,
+  onConfigChange,
+}: {
+  mode: BidValueMode
+  resolverConfig: Record<string, unknown>
+  onSelectMode: (mode: BidValueMode) => void
+  onConfigChange: (cfg: Record<string, unknown>) => void
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-gray-200 bg-beige p-3">
+        <label className="mb-1.5 block text-xs font-medium text-gray-600">Where does the bid value come from?</label>
+        <div className="space-y-1.5">
+          <RadioOption
+            checked={mode === 'response'}
+            onSelect={() => onSelectMode('response')}
+            label="The API response"
+            hint="Bidspoke reads the bid from the partner's response."
+          />
+          <RadioOption
+            checked={mode === 'tiered'}
+            onSelect={() => onSelectMode('tiered')}
+            label="A tier-based multiplier"
+            hint="The API call is for eligibility only. The bid for ranking is a field × a multiplier picked by tier."
+          />
+          <RadioOption
+            checked={mode === 'formula'}
+            onSelect={() => onSelectMode('formula')}
+            label="A custom formula"
+            hint="The API call is for eligibility only. The bid is whatever your expression evaluates to. Use this only if the tier-based form doesn't fit."
+          />
+        </div>
+      </div>
+
+      {mode === 'response' && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
+          <p className="mb-1.5 text-xs text-gray-400">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
+          <input
+            value={typeof resolverConfig.bid_path === 'string' ? resolverConfig.bid_path : ''}
+            onChange={(e) => {
+              const next = { ...resolverConfig }
+              if (e.target.value) next.bid_path = e.target.value
+              else delete next.bid_path
+              onConfigChange(next)
+            }}
+            placeholder="data.bid"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+          />
+        </div>
+      )}
+
+      {mode === 'tiered' && (
+        <TieredMultiplierEditor config={resolverConfig} onChange={onConfigChange} />
+      )}
+
+      {mode === 'formula' && (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
+          <p className="mb-1.5 text-xs text-gray-400">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
+          <textarea
+            value={typeof resolverConfig.formula === 'string' ? resolverConfig.formula : ''}
+            onChange={(e) => {
+              const next = { ...resolverConfig }
+              if (e.target.value) next.formula = e.target.value
+              else delete next.formula
+              onConfigChange(next)
+            }}
+            placeholder="steps.eligibility.output.final * 0.12"
+            rows={3}
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RadioOption({
+  checked,
+  onSelect,
+  label,
+  hint,
+}: {
+  checked: boolean
+  onSelect: () => void
+  label: string
+  hint: string
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2">
+      <input
+        type="radio"
+        checked={checked}
+        onChange={onSelect}
+        className="mt-0.5 h-3.5 w-3.5"
+      />
+      <div className="text-xs">
+        <div className="font-medium text-graphite">{label}</div>
+        <div className="text-gray-500">{hint}</div>
+      </div>
+    </label>
   )
 }
 

@@ -226,6 +226,115 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     expect(result.bid).toBe(1200)
     expect((result.extra as { leadId: string }).leadId).toBe('lead-3')
   })
+
+  it('tiered_multiplier: low-tier debt uses default multiplier', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { createLead: { id: 'lead-low', resultCode: 1013 } } }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'trigger.payload.finalDebt',
+        tiers: [{ above: 12499, multiplier: 0.13 }],
+        default_multiplier: 0.10,
+      },
+    })
+    const ctx = makeCtx({ finalDebt: 10000 })
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBeCloseTo(1000, 5)
+  })
+
+  it('tiered_multiplier: high-tier debt uses tier multiplier', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { createLead: { id: 'lead-high', resultCode: 1013 } } }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'trigger.payload.finalDebt',
+        tiers: [{ above: 12499, multiplier: 0.13 }],
+        default_multiplier: 0.10,
+      },
+    })
+    const ctx = makeCtx({ finalDebt: 20000 })
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBeCloseTo(2600, 5)
+  })
+
+  it('tiered_multiplier: source_field resolves a steps.X.output.Y path', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'steps.eligibility.output.final',
+        tiers: [{ above: 12499, multiplier: 0.13 }],
+        default_multiplier: 0.10,
+      },
+    })
+    const ctx: ExecutionContext = {
+      trigger: { payload: {}, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: { eligibility: { status: 'completed', output: { final: 15000 } } },
+      env: {},
+    }
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBeCloseTo(15000 * 0.13, 5)
+  })
+
+  it('tiered_multiplier: missing source value returns null', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'steps.eligibility.output.final',
+        tiers: [{ above: 12499, multiplier: 0.13 }],
+        default_multiplier: 0.10,
+      },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.bid).toBeNull()
+  })
+
+  it('tiered_multiplier: tiers evaluated highest-first', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'trigger.payload.finalDebt',
+        // Note: order intentionally scrambled; resolver should sort highest-first.
+        tiers: [
+          { above: 5000, multiplier: 0.12 },
+          { above: 12499, multiplier: 0.13 },
+          { above: 25000, multiplier: 0.15 },
+        ],
+        default_multiplier: 0.10,
+      },
+    })
+    // 30000 -> hits the 25000 tier (highest match)
+    const ctx = makeCtx({ finalDebt: 30000 })
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBeCloseTo(30000 * 0.15, 5)
+  })
 })
 
 describe('evaluateFormula', () => {
