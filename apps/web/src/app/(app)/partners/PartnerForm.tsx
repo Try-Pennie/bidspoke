@@ -625,11 +625,13 @@ export default function PartnerForm({
             bidFormula={bidFormula}
             apiEndpoint={apiEndpoint}
             cfSecretKey={cfSecretKey}
+            bidComparisonSource={bidComparisonSource}
             bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
             onTypeChange={setResolverType}
             onFormulaChange={setBidFormula}
             onApiEndpointChange={setApiEndpoint}
             onCfSecretKeyChange={setCfSecretKey}
+            onBidComparisonSourceChange={setBidComparisonSource}
             onConfigChange={setResolverConfig}
           />
           {resolverType === 'matrix' && partner && (
@@ -686,23 +688,6 @@ export default function PartnerForm({
                   {m === 'commit' ? 'Commit' : 'Ping only'}
                 </button>
               ))}
-            </div>
-          </Field>
-
-          <Field
-            label="Comparison bid source"
-            hint="Where the comparison bid (used by BidGroup highest-bid mode) comes from. 'formula' is useful when the API gates eligibility but the comparison number lives in the workflow's constants/payload."
-          >
-            <div className="relative">
-              <select
-                value={bidComparisonSource}
-                onChange={(e) => setBidComparisonSource(e.target.value as BidComparisonSource)}
-                className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
-              >
-                <option value="auto">auto (extract from API response)</option>
-                <option value="api">api (force extract from response)</option>
-                <option value="formula">formula (evaluate bid_resolver_config.formula)</option>
-              </select>
             </div>
           </Field>
 

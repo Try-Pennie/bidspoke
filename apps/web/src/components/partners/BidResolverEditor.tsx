@@ -1,6 +1,6 @@
 'use client'
 
-import type { BidResolverType } from '@/lib/api'
+import type { BidResolverType, BidComparisonSource } from '@/lib/api'
 
 interface Props {
   resolverType: BidResolverType
@@ -8,11 +8,13 @@ interface Props {
   bidFormula: string
   apiEndpoint: string
   cfSecretKey: string
+  bidComparisonSource: BidComparisonSource
   bidConfigOptions: Array<{ id: string; name: string; slug: string }>
   onTypeChange: (t: BidResolverType) => void
   onFormulaChange: (v: string) => void
   onApiEndpointChange: (v: string) => void
   onCfSecretKeyChange: (v: string) => void
+  onBidComparisonSourceChange: (v: BidComparisonSource) => void
   onConfigChange: (cfg: Record<string, unknown>) => void
 }
 
@@ -44,7 +46,7 @@ export function BidResolverEditor(p: Props) {
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600">API endpoint</label>
-            <p className="mb-1.5 text-xs text-gray-400">POSTed with the trigger payload. The bid is read from the response (fields: bid, bid_amount, amount, price, offer) unless a bid path is set below.</p>
+            <p className="mb-1.5 text-xs text-gray-400">POSTed with the trigger payload on every bid.</p>
             <input
               value={p.apiEndpoint}
               onChange={(e) => p.onApiEndpointChange(e.target.value)}
@@ -62,37 +64,85 @@ export function BidResolverEditor(p: Props) {
               className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Bid path (optional)</label>
-            <p className="mb-1.5 text-xs text-gray-400">Dot-path into the response when the bid value isn&apos;t at top level. Example: <code className="rounded bg-gray-100 px-1 font-mono">data.bid</code>. Leave blank for the default top-level scan.</p>
-            <input
-              value={typeof p.resolverConfig.bid_path === 'string' ? p.resolverConfig.bid_path : ''}
-              onChange={(e) => {
-                const next = { ...p.resolverConfig }
-                if (e.target.value) next.bid_path = e.target.value
-                else delete next.bid_path
-                p.onConfigChange(next)
-              }}
-              placeholder="data.bid"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-            />
+
+          <div className="rounded-lg border border-gray-200 bg-beige p-3">
+            <label className="mb-1.5 block text-xs font-medium text-gray-600">Where does the bid value come from?</label>
+            <div className="space-y-1.5">
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="bid-value-source"
+                  checked={p.bidComparisonSource !== 'formula'}
+                  onChange={() => {
+                    p.onBidComparisonSourceChange('auto')
+                    const next = { ...p.resolverConfig }
+                    delete next.formula
+                    p.onConfigChange(next)
+                  }}
+                  className="mt-0.5 h-3.5 w-3.5"
+                />
+                <div className="text-xs">
+                  <div className="font-medium text-graphite">The API response</div>
+                  <div className="text-gray-500">Bidspoke reads the bid from the partner&apos;s response.</div>
+                </div>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="radio"
+                  name="bid-value-source"
+                  checked={p.bidComparisonSource === 'formula'}
+                  onChange={() => {
+                    p.onBidComparisonSourceChange('formula')
+                    const next = { ...p.resolverConfig }
+                    delete next.bid_path
+                    p.onConfigChange(next)
+                  }}
+                  className="mt-0.5 h-3.5 w-3.5"
+                />
+                <div className="text-xs">
+                  <div className="font-medium text-graphite">A formula we calculate</div>
+                  <div className="text-gray-500">The API call is for eligibility only. The bid for ranking comes from a formula you write.</div>
+                </div>
+              </label>
+            </div>
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">Comparison formula (optional)</label>
-            <p className="mb-1.5 text-xs text-gray-400">Only used when <strong>Comparison bid source</strong> below is set to <strong>formula</strong>. The API call gates eligibility; this formula produces the comparison bid. Supports <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.*.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, and bare payload field names.</p>
-            <textarea
-              value={typeof p.resolverConfig.formula === 'string' ? p.resolverConfig.formula : ''}
-              onChange={(e) => {
-                const next = { ...p.resolverConfig }
-                if (e.target.value) next.formula = e.target.value
-                else delete next.formula
-                p.onConfigChange(next)
-              }}
-              placeholder="finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow"
-              rows={3}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-            />
-          </div>
+
+          {p.bidComparisonSource !== 'formula' && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
+              <p className="mb-1.5 text-xs text-gray-400">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
+              <input
+                value={typeof p.resolverConfig.bid_path === 'string' ? p.resolverConfig.bid_path : ''}
+                onChange={(e) => {
+                  const next = { ...p.resolverConfig }
+                  if (e.target.value) next.bid_path = e.target.value
+                  else delete next.bid_path
+                  p.onConfigChange(next)
+                }}
+                placeholder="data.bid"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              />
+            </div>
+          )}
+
+          {p.bidComparisonSource === 'formula' && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
+              <p className="mb-1.5 text-xs text-gray-400">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
+              <textarea
+                value={typeof p.resolverConfig.formula === 'string' ? p.resolverConfig.formula : ''}
+                onChange={(e) => {
+                  const next = { ...p.resolverConfig }
+                  if (e.target.value) next.formula = e.target.value
+                  else delete next.formula
+                  p.onConfigChange(next)
+                }}
+                placeholder="finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow"
+                rows={3}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              />
+            </div>
+          )}
         </div>
       )}
 
