@@ -70,7 +70,7 @@ export default function WorkflowsPage() {
   const prevPositions = useRef<Map<string, number>>(new Map())
 
   useEffect(() => {
-    Promise.all([api.workflows.list(), api.stats.get(30)])
+    Promise.all([api.workflows.list(), api.stats.get(7)])
       .then(([wfs, stats]) => {
         setWorkflows(wfs)
         const map: Record<string, number> = {}

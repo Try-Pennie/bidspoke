@@ -205,7 +205,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [window, setWindow] = useState<Window>(30)
+  const [window, setWindow] = useState<Window>(7)
   const [data, setData] = useState<StatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
