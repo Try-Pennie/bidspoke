@@ -77,6 +77,22 @@ export function BidResolverEditor(p: Props) {
               className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
             />
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-gray-600">Comparison formula (optional)</label>
+            <p className="mb-1.5 text-xs text-gray-400">Only used when <strong>Comparison bid source</strong> below is set to <strong>formula</strong>. The API call gates eligibility; this formula produces the comparison bid. Supports <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.*.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, and bare payload field names.</p>
+            <textarea
+              value={typeof p.resolverConfig.formula === 'string' ? p.resolverConfig.formula : ''}
+              onChange={(e) => {
+                const next = { ...p.resolverConfig }
+                if (e.target.value) next.formula = e.target.value
+                else delete next.formula
+                p.onConfigChange(next)
+              }}
+              placeholder="finalDebt > 12499 ? finalDebt * steps.constants.output.tripointMultiplierHigh : finalDebt * steps.constants.output.tripointMultiplierLow"
+              rows={3}
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            />
+          </div>
         </div>
       )}
 
