@@ -26,17 +26,21 @@ export function classifyTransportError(err: unknown): ErrorType {
 // ── PRD Section 11.2 — Per-partner response classification overrides ───────────
 
 export interface RejectionSignal {
-  field: string         // body field to check
+  field: string         // body field to check (dot-path supported: e.g. `data.createLead.resultCode`)
   equals?: unknown      // exact value match (loose equality)
   contains?: string     // string contains check
+  in?: unknown[]        // loose membership: value is in this list
+  not_in?: unknown[]    // loose non-membership: value is NOT in this list
   present?: boolean     // field is/isn't present
 }
 
 export interface StatusSignal {
   status_code?: number  // HTTP status code to match (if omitted, matches any)
-  body_field?: string   // body field to inspect
+  body_field?: string   // body field to inspect (dot-path supported)
   equals?: unknown      // exact value match
   contains?: string     // string contains
+  in?: unknown[]        // loose membership
+  not_in?: unknown[]    // loose non-membership
   header?: string       // response header to check
   present?: boolean     // whether field/header is present
 }
@@ -90,6 +94,13 @@ function matchRejectionSignal(sig: RejectionSignal, body: unknown): boolean {
   if (sig.contains !== undefined) {
     return typeof value === 'string' && value.includes(sig.contains)
   }
+  if (Array.isArray(sig.in)) {
+    return sig.in.some((m) => looseEquals(value, m))
+  }
+  if (Array.isArray(sig.not_in)) {
+    if (value === undefined) return false   // missing field shouldn't match not_in
+    return !sig.not_in.some((m) => looseEquals(value, m))
+  }
   return false
 }
 
@@ -125,6 +136,13 @@ function matchStatusSignal(
     if (sig.contains !== undefined) {
       return typeof value === 'string' && value.includes(sig.contains)
     }
+    if (Array.isArray(sig.in)) {
+      return sig.in.some((m) => looseEquals(value, m))
+    }
+    if (Array.isArray(sig.not_in)) {
+      if (value === undefined) return false
+      return !sig.not_in.some((m) => looseEquals(value, m))
+    }
   }
 
   // Only status_code was specified, and it matched
@@ -132,8 +150,15 @@ function matchStatusSignal(
 }
 
 function getBodyField(body: unknown, field: string): unknown {
+  if (!field) return undefined
   if (typeof body !== 'object' || body === null) return undefined
-  return (body as Record<string, unknown>)[field]
+  const parts = field.split('.').filter(Boolean)
+  let cur: unknown = body
+  for (const part of parts) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[part]
+  }
+  return cur
 }
 
 function looseEquals(a: unknown, b: unknown): boolean {

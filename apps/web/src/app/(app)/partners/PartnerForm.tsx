@@ -13,9 +13,25 @@ import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
 type RuleKind = 'body' | 'status'
-type BodyCondition = 'equals' | 'contains' | 'present'
-type StatusCondition = 'contains' | 'present'
+type BodyCondition = 'equals' | 'contains' | 'in' | 'not_in' | 'present'
+type StatusCondition = 'contains' | 'in' | 'not_in' | 'present'
 type SignalCategory = 'rejection' | 'transient' | 'permanent'
+
+/** Parse a comma-separated value list for in/not_in. Numeric tokens coerced to numbers. */
+function parseList(s: string): unknown[] {
+  return s
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0)
+    .map((t) => {
+      const n = Number(t)
+      return Number.isFinite(n) && /^-?\d+(\.\d+)?$/.test(t) ? n : t
+    })
+}
+
+function listToString(arr: unknown[]): string {
+  return arr.map((v) => (v == null ? '' : String(v))).join(',')
+}
 
 interface BodyRule   { id: string; kind: 'body';   field: string; condition: BodyCondition;   value: string }
 interface StatusRule { id: string; kind: 'status'; code: string;  bodyField: string; condition: StatusCondition; value: string }
@@ -55,15 +71,19 @@ function parseRules(raw: unknown): SignalRules {
       if (sig.field != null) {
         let condition: BodyCondition = 'equals'
         let value = ''
-        if (sig.present === true)      { condition = 'present' }
-        else if (sig.contains != null) { condition = 'contains'; value = String(sig.contains) }
-        else if (sig.equals != null)   { value = String(sig.equals) }
+        if (sig.present === true)            { condition = 'present' }
+        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
+        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
+        else if (sig.contains != null)       { condition = 'contains'; value = String(sig.contains) }
+        else if (sig.equals != null)         { value = String(sig.equals) }
         result[cat].push({ id: uid(), kind: 'body', field: String(sig.field), condition, value })
       } else if (sig.status_code != null || sig.body_field != null || sig.header != null) {
         let condition: StatusCondition = 'contains'
         let value = ''
-        if (sig.present === true)      { condition = 'present' }
-        else if (sig.contains != null) { value = String(sig.contains) }
+        if (sig.present === true)            { condition = 'present' }
+        else if (Array.isArray(sig.not_in))  { condition = 'not_in';  value = listToString(sig.not_in) }
+        else if (Array.isArray(sig.in))      { condition = 'in';      value = listToString(sig.in) }
+        else if (sig.contains != null)       { value = String(sig.contains) }
         result[cat].push({
           id: uid(), kind: 'status',
           code:      sig.status_code != null ? String(sig.status_code) : '',
@@ -89,6 +109,8 @@ function serializeRules(rules: SignalRules): unknown {
     for (const r of rules[cat]) {
       if (r.kind === 'body' && r.field.trim()) {
         if      (r.condition === 'present')  signals.push({ field: r.field, present: true })
+        else if (r.condition === 'in')       signals.push({ field: r.field, in: parseList(r.value) })
+        else if (r.condition === 'not_in')   signals.push({ field: r.field, not_in: parseList(r.value) })
         else if (r.condition === 'contains') signals.push({ field: r.field, contains: r.value })
         else                                 signals.push({ field: r.field, equals: r.value })
       } else if (r.kind === 'status' && (r.code.trim() || r.bodyField.trim())) {
@@ -96,6 +118,8 @@ function serializeRules(rules: SignalRules): unknown {
         if (r.code.trim())      obj.status_code = parseInt(r.code)
         if (r.bodyField.trim()) obj.body_field   = r.bodyField
         if (r.condition === 'present')        obj.present  = true
+        else if (r.condition === 'in')        obj.in       = parseList(r.value)
+        else if (r.condition === 'not_in')    obj.not_in   = parseList(r.value)
         else if (r.value.trim())              obj.contains = r.value
         signals.push(obj)
       }
@@ -148,13 +172,15 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
           >
             <option value="equals">equals</option>
             <option value="contains">contains</option>
+            <option value="in">in (any of)</option>
+            <option value="not_in">not in</option>
             <option value="present">is present</option>
           </select>
           {rule.condition !== 'present' && (
             <input
               value={rule.value}
               onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder="value"
+              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
               className={`${inputCls} min-w-0 flex-1`}
             />
           )}
@@ -180,13 +206,15 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
             className={`${inputCls} flex-shrink-0`}
           >
             <option value="contains">contains</option>
+            <option value="in">in (any of)</option>
+            <option value="not_in">not in</option>
             <option value="present">is present</option>
           </select>
           {rule.condition !== 'present' && (
             <input
               value={rule.value}
               onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder="value"
+              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
               className={`${inputCls} min-w-0 flex-1`}
             />
           )}

@@ -107,6 +107,73 @@ describe('evaluateResponseClassification — rejection signals', () => {
     const config: ResponseClassificationConfig = {}
     expect(evaluateResponseClassification(config, 400, { error: 'bad' }, noHeaders)).toBe(null)
   })
+
+  it('matches dot-path field — data.createLead.resultCode', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'data.createLead.resultCode', equals: 9999 }],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 9999 } } }, noHeaders)
+    ).toBe('rejection')
+  })
+
+  it('does not match dot-path when intermediate level is missing', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'data.createLead.resultCode', equals: 9999 }],
+    }
+    expect(evaluateResponseClassification(config, 200, { data: {} }, noHeaders)).toBe(null)
+  })
+
+  it('in operator: value in list -> rejection', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'status', in: ['failed', 'declined', 'frozen'] }],
+    }
+    expect(evaluateResponseClassification(config, 200, { status: 'declined' }, noHeaders)).toBe('rejection')
+  })
+
+  it('in operator: value not in list -> null', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'status', in: ['failed', 'declined'] }],
+    }
+    expect(evaluateResponseClassification(config, 200, { status: 'ok' }, noHeaders)).toBe(null)
+  })
+
+  it('not_in operator: value NOT in accepted list -> rejection (Tripoint pattern)', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [
+        { field: 'data.createLead.resultCode', not_in: [1000, 1001, 1013, 1014, 1015, 1016, 1017] },
+      ],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 2019 } } }, noHeaders)
+    ).toBe('rejection')
+  })
+
+  it('not_in operator: accepted value -> null', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [
+        { field: 'data.createLead.resultCode', not_in: [1000, 1001, 1013, 1014, 1015, 1016, 1017] },
+      ],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 1013 } } }, noHeaders)
+    ).toBe(null)
+  })
+
+  it('not_in operator: missing field returns null (does not falsely match)', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'data.createLead.resultCode', not_in: [1013] }],
+    }
+    // Missing field shouldn't be treated as "not in [1013]" → must not trigger rejection
+    expect(evaluateResponseClassification(config, 200, { data: {} }, noHeaders)).toBe(null)
+  })
+
+  it('in operator: loose equality across string/number ("1013" matches 1013)', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'code', in: [1013, 1014] }],
+    }
+    expect(evaluateResponseClassification(config, 200, { code: '1013' }, noHeaders)).toBe('rejection')
+  })
 })
 
 describe('evaluateResponseClassification — transient signals', () => {
