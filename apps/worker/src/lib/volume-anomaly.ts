@@ -1,10 +1,16 @@
 /**
  * Volume anomaly detection — PRD Section 3.6 / 10.3
  *
- * Runs on a scheduled cron trigger (daily at 09:00 UTC).
+ * Runs on a scheduled cron trigger (daily at 13:00 UTC = 9am EDT).
  * For each org that has Slack configured, compares yesterday's execution
  * volume to a same-day-type rolling baseline (weekend vs weekday). If volume
  * dropped below 50% or spiked above 200%, sends a Slack alert.
+ *
+ * Reads from the `workflow_stats_daily` rollup table (refreshed every 5
+ * minutes by pg_cron) rather than `workflow_executions` directly. The live
+ * table can exceed PostgREST's 1000-row default cap in a single high-volume
+ * day, so an unbounded SELECT silently dropped most rows and surfaced
+ * "yesterday: 0" alerts against a tiny early-window baseline.
  *
  * Day-type matching: Saturdays/Sundays are compared only against prior
  * weekend days; Mon-Fri are compared only against prior weekdays. This
@@ -115,23 +121,27 @@ export async function runVolumeAnomalyCheck(
   const allWorkflowIds = Object.keys(wfToOrg)
   if (allWorkflowIds.length === 0) return
 
-  // 3. Query 22 days of execution records — covers ~3 weekends so weekend baselines have enough samples
-  const lookbackStart = new Date(Date.now() - 22 * 24 * 60 * 60 * 1000).toISOString()
-  const { data: executions } = await supabase
-    .from('workflow_executions')
-    .select('workflow_id, started_at')
+  // 3. Read 22 days of pre-aggregated daily counts — covers ~3 weekends so
+  //    weekend baselines have enough samples. The rollup buckets by
+  //    (workflow_id, status, outcome, day, is_test); we sum run_count across
+  //    status/outcome to get per-workflow per-day totals.
+  const lookbackStartDate = new Date(Date.now() - 22 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const { data: rollup } = await supabase
+    .from('workflow_stats_daily')
+    .select('workflow_id, day, run_count')
     .in('workflow_id', allWorkflowIds)
-    .gte('started_at', lookbackStart)
+    .gte('day', lookbackStartDate)
     .eq('is_test', false)
 
   // 4. Group by org + day
   const orgDailyCounts: Record<string, Record<string, number>> = {}
-  for (const exec of executions ?? []) {
-    const orgId = wfToOrg[exec.workflow_id as string]
-    const day = (exec.started_at as string).slice(0, 10)
+  for (const row of rollup ?? []) {
+    const orgId = wfToOrg[row.workflow_id as string]
+    const day = row.day as string
     if (!orgId || !day) continue
     if (!orgDailyCounts[orgId]) orgDailyCounts[orgId] = {}
-    orgDailyCounts[orgId][day] = (orgDailyCounts[orgId][day] ?? 0) + 1
+    // BIGINT may arrive as string from PostgREST — coerce defensively
+    orgDailyCounts[orgId][day] = (orgDailyCounts[orgId][day] ?? 0) + Number(row.run_count)
   }
 
   // 5. Detect anomalies per org and alert

@@ -124,13 +124,14 @@ export default {
     const supabase = createSupabaseClient(env)
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
-        runVolumeAnomalyCheck(supabase)
-          .catch((e) => console.error('[volume-anomaly] check failed:', e))
-      )
-      ctx.waitUntil(
         runSightingsExport(supabase, env)
           .then((s) => console.log('[sightings-export]', JSON.stringify(s)))
           .catch((e) => console.error('[sightings-export] failed:', e))
+      )
+    } else if (event.cron === '0 13 * * *') {
+      ctx.waitUntil(
+        runVolumeAnomalyCheck(supabase)
+          .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(

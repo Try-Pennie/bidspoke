@@ -66,14 +66,15 @@ APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
 
 # Scheduled cron triggers:
-#   "0 9 * * *"     daily 09:00 UTC — volume anomaly check
+#   "0 9 * * *"     daily 09:00 UTC — sightings export to Snowflake (overnight ET)
+#   "0 13 * * *"    daily 13:00 UTC — volume anomaly check (9am EDT; 8am EST in winter)
 #   "0 * * * *"     hourly          — sync partner_bid_configs from Salesforce
 #   "* * * * *"     every 1 min     — pre-warm KV + outbound connection pool
 #                                    (SF token fetch exercises the SF HTTPS pool;
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
 [triggers]
-crons = ["0 9 * * *", "0 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "0 13 * * *", "0 * * * *", "* * * * *"]
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
