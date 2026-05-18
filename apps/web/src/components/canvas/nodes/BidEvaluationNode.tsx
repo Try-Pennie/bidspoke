@@ -5,6 +5,7 @@ import { Trophy } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
+import { nodeWidth } from '@/lib/layout'
 
 interface BidEvaluationOutput {
   winner: { partner: string; bid: number | null; is_fallback?: boolean } | null
@@ -31,12 +32,21 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
     routeLabel = out._route ?? null
   }
 
+  const width = nodeWidth('bid_evaluation', data)
+  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
+  const handleLeftPct = (i: number, fallbackPct: number): string => {
+    if (handleOffsets && handleOffsets[i] != null && width > 0) {
+      return `${50 + (handleOffsets[i] / width) * 100}%`
+    }
+    return `${fallbackPct}%`
+  }
+
   return (
     <div
-      className={`relative w-52 rounded-lg border bg-white shadow-sm ${
+      className={`relative rounded-lg border bg-white shadow-sm ${
         selected ? 'border-rose-400 ring-2 ring-rose-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
-      style={getExecutionStyle(executionStep)}
+      style={{ ...getExecutionStyle(executionStep), width }}
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
@@ -70,15 +80,23 @@ export function BidEvaluationNode({ data, selected }: NodeProps) {
         )}
       </div>
 
-      <div className="flex justify-between border-t border-gray-100 px-3 py-2 text-xs">
-        <span className="text-rose-600">↓ winner</span>
-        <span className="text-slate-400">↓ no winner</span>
+      <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>
+        <span
+          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-rose-600"
+          style={{ left: handleLeftPct(0, 30) }}
+        >
+          ↓ winner
+        </span>
+        <span
+          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 truncate px-1 text-center text-slate-400"
+          style={{ left: handleLeftPct(1, 70) }}
+        >
+          ↓ no winner
+        </span>
       </div>
 
-      {/* winner handle — left */}
-      <Handle type="source" position={Position.Bottom} id="winner" style={{ left: '30%' }} />
-      {/* no_winner handle — right */}
-      <Handle type="source" position={Position.Bottom} id="no_winner" style={{ left: '70%' }} />
+      <Handle type="source" position={Position.Bottom} id="winner" style={{ left: handleLeftPct(0, 30) }} />
+      <Handle type="source" position={Position.Bottom} id="no_winner" style={{ left: handleLeftPct(1, 70) }} />
     </div>
   )
 }

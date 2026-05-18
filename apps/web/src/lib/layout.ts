@@ -326,33 +326,20 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
   const effectiveWidthByNode = new Map<string, number>()
   const handleOffsetsByNode = new Map<string, number[]>()
-  // Only branch and parallel render as visual fan-out containers whose card
-  // stretches over their children's columns. Filter / bid_evaluation / bid_group
-  // also expose multiple source handles, but their DOM is a fixed-width card
-  // with handles at fixed percentages — they don't want a wider _spanWidth or
-  // child placements relative to a wide effective width. (Without this guard,
-  // dagre reserves a wide slot for them and `position.x = dagre_x - effW/2`
-  // slides the narrow card sideways from where the inbound wire lands.)
-  const fanOutTypes = new Set(['branch', 'parallel'])
-  // Fixed-width conditional nodes — keep narrow but still place children directly
-  // under their own handle positions so the two outputs sit tight against the
-  // parent's center instead of being spread apart by dagre based on subtree widths.
-  // Handles render at left: 30% / 70% inside a 208px card → offsets ±42 from center.
-  const FIXED_TWO_HANDLE_OFFSETS = [-NODE_W * 0.2, NODE_W * 0.2]
-  const fixedHandleTypes = new Set(['filter', 'bid_evaluation', 'bid_group'])
+  // Every multi-output node type renders its card wide enough to span its
+  // children's columns and reads `_handleOffsets` to place handles directly
+  // above each child. This is what keeps wires straight and prevents wide
+  // sibling subtrees from horizontally overlapping each other.
+  //
+  // The card-render side of each of these types MUST read `_spanWidth` and
+  // `_handleOffsets` from `data`. See `BranchNode.tsx`, `ParallelNode.tsx`,
+  // `BranchEndNode.tsx`, `BidGroupNode.tsx`, `BidEvaluationNode.tsx`,
+  // `FilterNode.tsx`. New node types that opt in here must do the same.
+  const fanOutTypes = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'filter'])
   for (const n of nodes) {
-    const isFanOut = fanOutTypes.has(n.type ?? '')
-    const isFixedHandle = fixedHandleTypes.has(n.type ?? '')
-    if (!isFanOut && !isFixedHandle) continue
+    if (!fanOutTypes.has(n.type ?? '')) continue
     const handles = configuredHandleIds(n)
     if (!handles || handles.length < 2) continue
-    if (isFixedHandle) {
-      // Don't reserve _spanWidth (DOM stays w-52). Just override child X via
-      // the fixed handle offsets so dagre's natural spread doesn't pull the
-      // two children apart by their subtree widths.
-      handleOffsetsByNode.set(n.id, FIXED_TWO_HANDLE_OFFSETS)
-      continue
-    }
     const stopAt = stopAtForMultiOutput(n, handles)
     const slotWidths = handles.map((h) => {
       const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
