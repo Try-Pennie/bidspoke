@@ -811,7 +811,25 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   onClearExecution?: () => void
 }) {
   const router = useRouter()
-  const { screenToFlowPosition, fitView } = useReactFlow()
+  const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow()
+
+  // After a layout pass that may have shifted existing nodes (e.g. dropping a
+  // new node and re-running dagre), keep the user's view stable by translating
+  // the viewport by the same delta the anchor node moved. Without this, adding
+  // a node when zoomed-in makes the canvas appear to jump.
+  const layoutPreservingViewport = useCallback(
+    (anchorId: string, prevNodes: Node[], nextNodes: Node[]) => {
+      const before = prevNodes.find((n) => n.id === anchorId)?.position
+      const after = nextNodes.find((n) => n.id === anchorId)?.position
+      if (!before || !after) return
+      const dx = after.x - before.x
+      const dy = after.y - before.y
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return
+      const vp = getViewport()
+      setViewport({ x: vp.x - dx * vp.zoom, y: vp.y - dy * vp.zoom, zoom: vp.zoom })
+    },
+    [getViewport, setViewport]
+  )
   const viewport = useViewport()
   const nodesInitialized = useNodesInitialized()
   const updateNodeInternals = useUpdateNodeInternals()
@@ -1723,8 +1741,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             { id: uid(), source: endId, target: existingOutEdge!.target, sourceHandle: 'output' },
           ]
         }
+        const nextNodes = layoutWorkflow([...nodes, startNode, endNode], newEdges)
+        if (sourceNode) layoutPreservingViewport(sourceNode.id, nodes, nextNodes)
         setEdges(newEdges)
-        setNodes((ns) => layoutWorkflow([...ns, startNode, endNode], newEdges))
+        setNodes(nextNodes)
         setSelectedNodeId(newId)
         setIsDirty(true)
         return
@@ -1764,8 +1784,10 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             { id: uid(), source: endId, target: existingOutEdge!.target, sourceHandle: 'output' },
           ]
         }
+        const nextNodes = layoutWorkflow([...nodes, startNode, endNode], newEdges)
+        if (sourceNode) layoutPreservingViewport(sourceNode.id, nodes, nextNodes)
         setEdges(newEdges)
-        setNodes((ns) => layoutWorkflow([...ns, startNode, endNode], newEdges))
+        setNodes(nextNodes)
         setSelectedNodeId(newId)
         setIsDirty(true)
         return
@@ -1789,17 +1811,20 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         ]
       }
 
-      setEdges(newEdges)
       if (autoConnected || insertBetween) {
-        setNodes((ns) => layoutWorkflow([...ns, newNode], newEdges))
+        const nextNodes = layoutWorkflow([...nodes, newNode], newEdges)
+        if (sourceNode) layoutPreservingViewport(sourceNode.id, nodes, nextNodes)
+        setEdges(newEdges)
+        setNodes(nextNodes)
       } else {
         // No suitable source found — drop free-floating at the cursor position
+        setEdges(newEdges)
         setNodes((ns) => [...ns, { ...newNode, position: dropPos, draggable: true }])
       }
       setSelectedNodeId(newId)
       setIsDirty(true)
     },
-    [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition]
+    [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition, layoutPreservingViewport]
   )
 
   // ── Node update / delete ────────────────────────────────────────────────────
