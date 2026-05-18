@@ -51,7 +51,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink, Trash2 } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
@@ -1826,19 +1826,21 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [setNodes]
   )
 
-  const handleNodeDelete = useCallback(
-    (id: string) => {
+  const handleNodesDelete = useCallback(
+    (ids: string[]) => {
+      const seedIds = ids.filter((id) => id !== 'trigger')
+      if (seedIds.length === 0) return
       snapshot()
-      const node = nodes.find((n) => n.id === id)
-      if (!node) return
 
-      // Find the parallel pair — explicit _pairId first, then structural
-      // fallback for parallels created before _pairId tracking was added.
-      let pairId = (node.data as unknown as CanvasNodeData)?._pairId
-      if (!pairId) {
-        if (node.type === 'parallel') {
-          // Walk forward from the parallel start (through children or the
-          // hidden backbone edge) to find the parallel_end.
+      // Expand the deletion set so parallel start/end pairs always go together.
+      // Without this, deleting just the start would orphan the end (or vice versa).
+      const idsToRemove = new Set<string>()
+      for (const id of seedIds) {
+        idsToRemove.add(id)
+        const node = nodes.find((n) => n.id === id)
+        if (!node) continue
+        let pairId = (node.data as unknown as CanvasNodeData)?._pairId
+        if (!pairId && node.type === 'parallel') {
           const visited = new Set<string>([id])
           const queue = [id]
           while (queue.length > 0) {
@@ -1847,16 +1849,11 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               if (e.source !== cur || visited.has(e.target)) continue
               visited.add(e.target)
               const target = nodes.find((n) => n.id === e.target)
-              if (target?.type === 'parallel_end') {
-                pairId = target.id
-                queue.length = 0
-                break
-              }
+              if (target?.type === 'parallel_end') { pairId = target.id; queue.length = 0; break }
               queue.push(e.target)
             }
           }
-        } else if (node.type === 'parallel_end') {
-          // Walk backward from the end to find its parallel_start.
+        } else if (!pairId && node.type === 'parallel_end') {
           const visited = new Set<string>([id])
           const queue = [id]
           while (queue.length > 0) {
@@ -1865,23 +1862,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               if (e.target !== cur || visited.has(e.source)) continue
               visited.add(e.source)
               const source = nodes.find((n) => n.id === e.source)
-              if (source?.type === 'parallel') {
-                pairId = source.id
-                queue.length = 0
-                break
-              }
+              if (source?.type === 'parallel') { pairId = source.id; queue.length = 0; break }
               queue.push(e.source)
             }
           }
         }
+        if (pairId) idsToRemove.add(pairId)
       }
 
-      const idsToRemove = new Set([id, ...(pairId ? [pairId] : [])])
-
-      // Collect upstream sources (pointing INTO deletion set) and downstream
-      // targets (pointed TO by deletion set) so the surviving graph can be
-      // spliced back together — otherwise deleting a middle node leaves the
-      // downstream subtree orphaned on the canvas.
       const upstreamSources = new Set<string>()
       const downstreamTargets = new Set<string>()
       for (const e of edges) {
@@ -1891,8 +1879,6 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       const keptEdges = edges.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target))
 
-      // Splice: connect each upstream to each downstream (skip duplicates).
-      // For the common single-in/single-out case this is just one edge.
       const spliceEdges = [] as typeof edges
       for (const source of upstreamSources) {
         for (const target of downstreamTargets) {
@@ -1915,6 +1901,8 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     },
     [snapshot, nodes, edges, setNodes, setEdges]
   )
+
+  const handleNodeDelete = useCallback((id: string) => handleNodesDelete([id]), [handleNodesDelete])
 
   // Shared logic for paste and duplicate
   function pasteNode(cb: {
@@ -2761,35 +2749,46 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
             const cmOutEdges = edges.filter((e) => e.source === contextMenu.nodeId && e.sourceHandle === 'output')
             const hasInEdges = cmInEdges.length > 0
             const isInChain = hasInEdges || cmOutEdges.length > 0
+            const selectedIds = nodes
+              .filter((n) => n.selected && n.id !== 'trigger')
+              .map((n) => n.id)
+            const isMultiTarget = selectedIds.length > 1 && selectedIds.includes(contextMenu.nodeId)
+            const deleteIds = isMultiTarget ? selectedIds : [contextMenu.nodeId]
+            const deleteLabel = isMultiTarget ? `Delete ${selectedIds.length} nodes` : 'Delete'
             return (
               <div
                 className="fixed z-50 min-w-[200px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                 style={{ left: contextMenu.x, top: contextMenu.y }}
                 onContextMenu={(e) => e.preventDefault()}
               >
-                {hasInEdges && (
+                {!isMultiTarget && hasInEdges && (
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
-                    onClick={() => disconnectNode(contextMenu.nodeId)}
+                    onClick={() => { disconnectNode(contextMenu.nodeId); setContextMenu(null) }}
                     title="Detach this node and its downstream subgraph from the main flow"
                   >
                     <X className="h-3.5 w-3.5 text-gray-400" />
                     Disconnect
                   </button>
                 )}
-                {isInChain && (
+                {!isMultiTarget && isInChain && (
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
-                    onClick={() => removeFromChain(contextMenu.nodeId)}
+                    onClick={() => { removeFromChain(contextMenu.nodeId); setContextMenu(null) }}
                     title="Splice this single node out; the chain reconnects around it"
                   >
                     <X className="h-3.5 w-3.5 text-gray-400" />
                     Remove from chain
                   </button>
                 )}
-                {!isInChain && (
-                  <div className="px-3 py-1.5 text-xs text-gray-400">No connections</div>
-                )}
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-red-600 hover:bg-red-50"
+                  onClick={() => { handleNodesDelete(deleteIds); setContextMenu(null) }}
+                  title={isMultiTarget ? 'Remove the selected nodes from the canvas' : 'Remove this node from the canvas'}
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-red-500" />
+                  {deleteLabel}
+                </button>
               </div>
             )
           })()}
