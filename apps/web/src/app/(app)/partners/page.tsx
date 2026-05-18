@@ -106,6 +106,10 @@ export default function PartnersPage() {
   }
 
   const showForm = creating || selected !== null
+  const pendingSelection =
+    !showForm &&
+    slugParam !== null &&
+    (loading || partners.some((p) => p.slug === slugParam))
 
   return (
     <NavLayout>
@@ -198,6 +202,21 @@ export default function PartnersPage() {
               onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
               deleting={false}
             />
+          ) : pendingSelection ? (
+            <div className="max-w-3xl space-y-6">
+              <div className="space-y-2">
+                <Skeleton className="h-7 w-48" />
+                <Skeleton className="h-4 w-72" />
+              </div>
+              <div className="space-y-4">
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <Skeleton className="h-3 w-24" />
+                    <Skeleton className="h-9 w-full" />
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : (
             <div className="flex h-full items-center justify-center">
               <div className="text-center">
