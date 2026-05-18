@@ -88,11 +88,18 @@ export async function createExecutionRecord(
     is_test: boolean
   }
 ): Promise<void> {
-  await supabase.from('workflow_executions').insert({
+  // Throw on insert failure. The caller chains this into flushStepLogs via
+  // `.then().catch()`, so a thrown error surfaces as a clear "Step logs
+  // failed to persist: <actual cause>" instead of a downstream FK violation
+  // when the missing parent row blocks the step batch insert.
+  const { error } = await supabase.from('workflow_executions').insert({
     ...record,
     status: 'running',
     trigger_type: 'http_webhook',
   })
+  if (error) {
+    throw new Error(`workflow_executions insert failed: ${error.message}`)
+  }
 }
 
 export async function updateExecutionRecord(
