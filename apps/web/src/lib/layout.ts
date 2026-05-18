@@ -334,10 +334,25 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // dagre reserves a wide slot for them and `position.x = dagre_x - effW/2`
   // slides the narrow card sideways from where the inbound wire lands.)
   const fanOutTypes = new Set(['branch', 'parallel'])
+  // Fixed-width conditional nodes — keep narrow but still place children directly
+  // under their own handle positions so the two outputs sit tight against the
+  // parent's center instead of being spread apart by dagre based on subtree widths.
+  // Handles render at left: 30% / 70% inside a 208px card → offsets ±42 from center.
+  const FIXED_TWO_HANDLE_OFFSETS = [-NODE_W * 0.2, NODE_W * 0.2]
+  const fixedHandleTypes = new Set(['filter', 'bid_evaluation', 'bid_group'])
   for (const n of nodes) {
-    if (!fanOutTypes.has(n.type ?? '')) continue
+    const isFanOut = fanOutTypes.has(n.type ?? '')
+    const isFixedHandle = fixedHandleTypes.has(n.type ?? '')
+    if (!isFanOut && !isFixedHandle) continue
     const handles = configuredHandleIds(n)
     if (!handles || handles.length < 2) continue
+    if (isFixedHandle) {
+      // Don't reserve _spanWidth (DOM stays w-52). Just override child X via
+      // the fixed handle offsets so dagre's natural spread doesn't pull the
+      // two children apart by their subtree widths.
+      handleOffsetsByNode.set(n.id, FIXED_TWO_HANDLE_OFFSETS)
+      continue
+    }
     const stopAt = stopAtForMultiOutput(n, handles)
     const slotWidths = handles.map((h) => {
       const slotEdge = edges.find((e) => e.source === n.id && e.sourceHandle === h)
