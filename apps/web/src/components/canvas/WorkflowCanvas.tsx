@@ -1216,6 +1216,24 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     fitView({ padding: 0.4, maxZoom: 0.5, nodes: fitNodes.length > 0 ? fitNodes : undefined })
   }, [layoutSettled, fitView, nodes, edges])
 
+  // Compensate the viewport for the left-sidebar width delta when toggling
+  // edit ↔ view. NodePalette is w-48 (192px), ExecutionListPanel is w-72
+  // (288px) — a 96px difference. Without this, saving (which flips to view
+  // mode) widens the left rail and visually shoves every node 96px to the
+  // right relative to the screen.
+  const prevModeRef = useRef(mode)
+  useEffect(() => {
+    if (prevModeRef.current === mode) return
+    const NODE_PALETTE_W = 192
+    const EXEC_LIST_W = 288
+    const delta = (mode === 'view' ? EXEC_LIST_W : NODE_PALETTE_W)
+      - (prevModeRef.current === 'view' ? EXEC_LIST_W : NODE_PALETTE_W)
+    prevModeRef.current = mode
+    if (delta === 0) return
+    const vp = getViewport()
+    setViewport({ x: vp.x - delta, y: vp.y, zoom: vp.zoom })
+  }, [mode, getViewport, setViewport])
+
   const handleTestStart = useCallback((_execId: string) => {
     setLiveSteps({})
     setTestRunning(true)
