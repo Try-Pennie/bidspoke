@@ -534,54 +534,6 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Slowest step types hint */}
-        {!loading && data && data.by_partner.length > 0 && (
-          <div className="mt-6 rounded-xl border border-gray-200 bg-white">
-            <div className="border-b border-gray-100 px-5 py-3">
-              <p className="text-base font-semibold text-graphite">Partner performance</p>
-            </div>
-            <div className="overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
-              <thead className="border-b border-gray-100 bg-beige">
-                <tr>
-                  <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500 whitespace-nowrap">Partner</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Bids sent</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Accepted</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Win rate</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Avg bid</th>
-                  <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">Skipped</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {data.by_partner.map((p) => (
-                  <tr key={p.slug} className="hover:bg-beige">
-                    <td className="px-5 py-2.5">
-                      <span className="font-medium text-graphite">{p.name}</span>
-                      <span className="ml-1.5 font-mono text-xs text-gray-400">{p.slug}</span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.bids_sent}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">{p.accepted}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">
-                      {/* TODO: calibrate win rate thresholds against real Pennie data — 50/25 are placeholders */}
-                      <span className={`font-medium ${
-                        p.win_rate >= 50 ? 'text-green-600' :
-                        p.win_rate >= 25 ? 'text-amber-500' : 'text-red-500'
-                      }`}>
-                        {p.bids_sent === 0 ? '—' : `${p.win_rate}%`}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
-                      {p.avg_bid != null ? `$${p.avg_bid.toLocaleString()}` : '—'}
-                    </td>
-                    <td className="px-5 py-2.5 text-right tabular-nums text-gray-400">{p.skipped}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
-          </div>
-        )}
-
       </div>
     </NavLayout>
   )

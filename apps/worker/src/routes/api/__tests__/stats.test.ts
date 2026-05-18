@@ -1,7 +1,6 @@
 /**
  * Stats route — PRD Section 2.5
- * Covers: empty org, execution aggregation (summary, by_day, by_workflow, by_partner),
- * recent failures, partner win rate, infra-skipped partners excluded from bids_sent.
+ * Covers: empty org, execution aggregation (summary, by_day, by_workflow), recent failures.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -165,7 +164,6 @@ describe('GET /stats', () => {
     expect(body.summary).toMatchObject({ total: 0, completed: 0, failed: 0 })
     expect(body.by_day).toEqual([])
     expect(body.by_workflow).toEqual([])
-    expect(body.by_partner).toEqual([])
     expect(body.recent_failures).toEqual([])
   })
 
@@ -221,71 +219,6 @@ describe('GET /stats', () => {
     expect(body.by_day).toHaveLength(7)
     const todayEntry = body.by_day.find((d) => d.date === today)
     expect(todayEntry?.total).toBe(1)
-  })
-
-  it('aggregates by_partner from partner_bid execution steps', async () => {
-    const partnerStep = {
-      output: { partner: 'tripoint', bid: 650, accepted: true, skipped: false },
-      status: 'completed',
-    }
-    const rollup = execsToRollup([execCompleted], [testWorkflow])
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflow_executions: { list: [{ id: execCompleted.id }] },
-        execution_steps: { list: [partnerStep] },
-        partner_configs: { list: [{ slug: 'tripoint', name: 'Tripoint Financial' }] },
-      }, { workflow_stats_rollup: rollup }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, '/stats')
-    const body = await res.json() as { by_partner: Array<Record<string, unknown>> }
-    expect(body.by_partner).toHaveLength(1)
-    const tp = body.by_partner[0]
-    expect(tp.slug).toBe('tripoint')
-    expect(tp.name).toBe('Tripoint Financial')
-    expect(tp.bids_sent).toBe(1)
-    expect(tp.accepted).toBe(1)
-    expect(tp.win_rate).toBe(100)
-    expect(tp.avg_bid).toBe(650)
-    expect(tp.skipped).toBe(0)
-  })
-
-  it('counts infra skips separately and excludes them from bids_sent', async () => {
-    const capSkip = { output: { partner: 'tripoint', bid: null, accepted: false, skipped: true, skip_reason: 'cap_exceeded' }, status: 'completed' }
-    const circuitSkip = { output: { partner: 'tripoint', bid: null, accepted: false, skipped: true, skip_reason: 'circuit_open' }, status: 'completed' }
-    const acceptedBid = { output: { partner: 'tripoint', bid: 500, accepted: true, skipped: false }, status: 'completed' }
-    const rollup = execsToRollup([execCompleted], [testWorkflow])
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflow_executions: { list: [{ id: execCompleted.id }] },
-        execution_steps: { list: [capSkip, circuitSkip, acceptedBid] },
-        partner_configs: { list: [{ slug: 'tripoint', name: 'Tripoint' }] },
-      }, { workflow_stats_rollup: rollup }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, '/stats')
-    const body = await res.json() as { by_partner: Array<Record<string, unknown>> }
-    const tp = body.by_partner[0]
-    expect(tp.bids_sent).toBe(1)
-    expect(tp.skipped).toBe(2)
-    expect(tp.win_rate).toBe(100)
-  })
-
-  it('counts failed partner steps as errors', async () => {
-    const errorStep = { output: { partner: 'm1', bid: null }, status: 'failed' }
-    const rollup = execsToRollup([execCompleted], [testWorkflow])
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflow_executions: { list: [{ id: execCompleted.id }] },
-        execution_steps: { list: [errorStep] },
-        partner_configs: { list: [{ slug: 'm1', name: 'M1 Finance' }] },
-      }, { workflow_stats_rollup: rollup }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, '/stats')
-    const body = await res.json() as { by_partner: Array<Record<string, unknown>> }
-    expect(body.by_partner[0].errors).toBe(1)
-    expect(body.by_partner[0].bids_sent).toBe(0)
   })
 
   it('uses the window query param (max 30, min 1)', async () => {
