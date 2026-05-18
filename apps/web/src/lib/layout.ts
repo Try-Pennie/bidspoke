@@ -326,7 +326,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   }
   const effectiveWidthByNode = new Map<string, number>()
   const handleOffsetsByNode = new Map<string, number[]>()
+  // Only branch and parallel render as visual fan-out containers whose card
+  // stretches over their children's columns. Filter / bid_evaluation / bid_group
+  // also expose multiple source handles, but their DOM is a fixed-width card
+  // with handles at fixed percentages — they don't want a wider _spanWidth or
+  // child placements relative to a wide effective width. (Without this guard,
+  // dagre reserves a wide slot for them and `position.x = dagre_x - effW/2`
+  // slides the narrow card sideways from where the inbound wire lands.)
+  const fanOutTypes = new Set(['branch', 'parallel'])
   for (const n of nodes) {
+    if (!fanOutTypes.has(n.type ?? '')) continue
     const handles = configuredHandleIds(n)
     if (!handles || handles.length < 2) continue
     const stopAt = stopAtForMultiOutput(n, handles)
