@@ -93,12 +93,18 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Slot label row + source handles. Both share `handleLeftPct` and use
-          uniform spacing across the node, so labels stay evenly spread even
-          when the node is stretched wide by an asymmetric child subtree. */}
+      {/* Slot label row + source handles. Place each at the X position that
+          matches `layout.ts`'s per-slot offset so each handle sits directly
+          above its child's column. Falls back to evenly-spaced if offsets
+          aren't set yet (very first render before layout has run). */}
       {slots.length > 0 ? (() => {
-        const handleLeftPct = (i: number): string =>
-          `${((i + 0.5) / slots.length) * 100}%`
+        const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
+        const handleLeftPct = (i: number): string => {
+          if (handleOffsets && handleOffsets[i] != null && width > 0) {
+            return `${50 + (handleOffsets[i] / width) * 100}%`
+          }
+          return `${((i + 0.5) / slots.length) * 100}%`
+        }
         return (
           <>
             <div className="relative border-t border-gray-100 py-2 text-xs" style={{ height: 28 }}>

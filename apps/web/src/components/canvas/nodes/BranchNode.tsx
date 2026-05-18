@@ -35,12 +35,20 @@ export function BranchNode({ id, data, selected }: NodeProps) {
     updateNodeInternals(id)
   }, [id, handleIdsKey, updateNodeInternals])
   const width = nodeWidth('branch', data)
-  // Always space labels + handles uniformly across the node, even when the
-  // node stretches wide because of asymmetric child subtrees. Layout positions
-  // children under their handles via this same uniform formula, so wires stay
-  // straight without needing to skew the labels toward narrow children.
-  const handleLeftPct = (i: number): string =>
-    `${((i + 0.5) / handleCount) * 100}%`
+  // Place handles at the X positions that match `layout.ts`'s per-slot offsets,
+  // so each handle sits directly above its child's column. Without this, the
+  // DOM falls back to evenly-spaced handles while layout positions children at
+  // subtree-width-proportional offsets — the mismatch puts a small horizontal
+  // bend on every outgoing wire, which compounds when subtrees are asymmetric.
+  const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets
+  const handleLeftPct = (i: number): string => {
+    if (handleOffsets && handleOffsets[i] != null && width > 0) {
+      // Offsets are signed distances from the node's center; convert to a
+      // percentage of the rendered width (which equals layout's _spanWidth).
+      return `${50 + (handleOffsets[i] / width) * 100}%`
+    }
+    return `${((i + 0.5) / handleCount) * 100}%`
+  }
 
   const description = branches.length === 0
     ? 'No branches'
