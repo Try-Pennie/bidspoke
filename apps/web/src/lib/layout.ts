@@ -465,32 +465,35 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return aIdx - bIdx
   })
 
-  // Two classes of edges get near-zero dagre weight (0.01) so network
-  // simplex stops optimizing for THEIR length:
+  // Edge weights govern dagre's network-simplex objective (Σ weight * slack).
+  // Three groups need special handling:
   //
-  //   1. Backbone edges (branch → branch_end, parallel → parallel_end).
-  //      Network simplex would otherwise drag the entire subtree below the
-  //      start downward to make the backbone short.
+  //   1. Backbone edges (branch → branch_end, parallel → parallel_end). Weight
+  //      0.01 — simplex won't drag the entire subtree below the start downward
+  //      to shorten the backbone, but the start still sits above the end.
   //
-  //   2. Chain-leaf-to-end edges (anything → branch_end / parallel_end other
-  //      than the backbone). User-wired convergence wires. Without low
-  //      weight, dagre drags the chain leaf DOWN to be near the deep
-  //      branch_end (minimizing the convergence wire's length), placing
-  //      simple branch-leaf code nodes at deep ranks instead of right
-  //      below their parent branch.
+  //   2. Chain-leaf-to-branch_end edges. Weight 0 — branch_end's Y is post-
+  //      processed (see below), so we don't want simplex shortening these
+  //      either. A positive weight (even 0.01) makes simplex pull the chain
+  //      leaf DOWN to branch_end.rank - 1, which breaks sibling alignment:
+  //      a short chain whose leaf wires to branch_end gets yanked deeper
+  //      than a sibling chain's same-rank node that doesn't wire down.
+  //      minlen: 1 still ensures branch_end ≥ leaf.rank + 1 for downstream.
   //
-  // Weight 0.01 means dagre stops optimizing for these edges while still
-  // respecting rank ordering (target rank ≥ source rank + 1) via minlen: 1.
+  //   3. Chain-leaf-to-parallel_end edges. Weight 0.01 retained — parallel_end
+  //      uses a different positioning strategy (synthetic dagre edges added
+  //      below) and dagre's natural rank for it is load-bearing.
   for (const edge of sortedEdges) {
     const src = nodeMap.get(edge.source)
     const tgt = nodeMap.get(edge.target)
     const isBackbone =
       (src?.type === 'branch' && tgt?.type === 'branch_end') ||
       (src?.type === 'parallel' && tgt?.type === 'parallel_end')
-    const isChainToEnd =
-      !isBackbone &&
-      (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end')
-    if (isBackbone || isChainToEnd) {
+    const isChainToBranchEnd = !isBackbone && tgt?.type === 'branch_end'
+    const isChainToParallelEnd = !isBackbone && tgt?.type === 'parallel_end'
+    if (isChainToBranchEnd) {
+      g.setEdge(edge.source, edge.target, { weight: 0, minlen: 1 })
+    } else if (isBackbone || isChainToParallelEnd) {
       g.setEdge(edge.source, edge.target, { weight: 0.01, minlen: 1 })
     } else {
       g.setEdge(edge.source, edge.target)
