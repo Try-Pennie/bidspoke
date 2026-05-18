@@ -406,24 +406,21 @@ export default function WorkflowsPage() {
               </colgroup>
               <thead className="border-b border-gray-100 bg-beige">
                 <tr>
-                  <th className="rounded-tl-xl px-4 py-3 text-left">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-gray-500">Name</span>
-                      <button
-                        onClick={toggleSort}
-                        title={sortMode === 'health' ? 'Sorted by health. Click for date order.' : 'Sort by health (failing first)'}
-                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${
-                          sortMode === 'health'
-                            ? 'bg-p-blue-light font-medium text-p-blue-dark'
-                            : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
-                        }`}
-                      >
-                        <ArrowUpDown className="h-3 w-3" />
-                        Health
-                      </button>
-                    </div>
+                  <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-semibold text-gray-500">Name</th>
+                  <th className="px-4 py-3 text-left">
+                    <button
+                      onClick={toggleSort}
+                      title={sortMode === 'health' ? 'Sorted by health. Click to sort by last modified.' : 'Sorted by last modified. Click to sort by health (failing first).'}
+                      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold transition-colors ${
+                        sortMode === 'health'
+                          ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                          : 'bg-p-blue-light text-p-blue-dark'
+                      }`}
+                    >
+                      <ArrowUpDown className="h-3 w-3" />
+                      {sortMode === 'health' ? 'Health' : 'Last modified'}
+                    </button>
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Last modified</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Modified by</th>
                   <th className="rounded-tr-xl px-4 py-3" />
                 </tr>
