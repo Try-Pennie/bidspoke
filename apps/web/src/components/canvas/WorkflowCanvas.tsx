@@ -434,6 +434,36 @@ function backfillBranchEnds(nodes: NodeDef[], edges: EdgeDef[]): { nodes: NodeDe
   return { nodes: [...nodes, ...newNodes], edges: [...edges, ...newEdges] }
 }
 
+// Push any nodes that are no longer reachable from the trigger off to the right
+// of the main flow, keeping them at their current Y and marking manualPosition
+// so dagre won't re-align them. Used by every code path that can orphan nodes
+// (single delete, multi-delete, removeFromChain, disconnect, deleteEdge).
+function shiftOrphansRight(allNodes: Node[], newEdges: Edge[]): Node[] {
+  const reachable = reachableFromTrigger(allNodes, newEdges)
+  const orphanIds = new Set(allNodes.filter((n) => !reachable.has(n.id) && n.id !== 'trigger').map((n) => n.id))
+  if (orphanIds.size === 0) return allNodes
+
+  const mainMaxX = Math.max(
+    0,
+    ...allNodes.filter((n) => !orphanIds.has(n.id)).map((n) => n.position.x + NODE_W)
+  )
+  const orphansMinX = Math.min(
+    Infinity,
+    ...allNodes.filter((n) => orphanIds.has(n.id)).map((n) => n.position.x)
+  )
+  const shift = Math.max(0, mainMaxX + DISCONNECTED_GAP - orphansMinX)
+
+  return allNodes.map((n) => {
+    if (!orphanIds.has(n.id)) return n
+    const d = n.data as unknown as CanvasNodeData
+    return {
+      ...n,
+      position: { x: n.position.x + shift, y: n.position.y },
+      data: d.manualPosition === true ? n.data : { ...(n.data as object), manualPosition: true },
+    }
+  })
+}
+
 function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['trigger']): Node[] {
   const migratedEdges = migrateParallelEdges(nodes, edges)
   // Detect if any parallel_end carries the old (pre-2026-04-30) wait_for/timeout
@@ -1375,31 +1405,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // lost all incoming edges and shift the resulting subgraph right of the
   // main flow. Marks each shifted node manualPosition so layout keeps them
   // in place (no auto-re-alignment to the trigger row).
-  const shiftDisconnectedRight = useCallback((newEdges: Edge[]): Node[] => {
-    const reachable = reachableFromTrigger(nodes, newEdges)
-    const orphanIds = new Set(nodes.filter((n) => !reachable.has(n.id) && n.id !== 'trigger').map((n) => n.id))
-    if (orphanIds.size === 0) return nodes
-
-    const mainMaxX = Math.max(
-      0,
-      ...nodes.filter((n) => !orphanIds.has(n.id)).map((n) => n.position.x + NODE_W)
-    )
-    const orphansMinX = Math.min(
-      Infinity,
-      ...nodes.filter((n) => orphanIds.has(n.id)).map((n) => n.position.x)
-    )
-    const shift = Math.max(0, mainMaxX + DISCONNECTED_GAP - orphansMinX)
-
-    return nodes.map((n) => {
-      if (!orphanIds.has(n.id)) return n
-      const d = n.data as unknown as CanvasNodeData
-      return {
-        ...n,
-        position: { x: n.position.x + shift, y: n.position.y },
-        data: d.manualPosition === true ? n.data : { ...(n.data as object), manualPosition: true },
-      }
-    })
-  }, [nodes])
+  const shiftDisconnectedRight = useCallback((newEdges: Edge[]): Node[] => shiftOrphansRight(nodes, newEdges), [nodes])
 
   const removeFromChain = useCallback((nodeId: string) => {
     snapshot()
@@ -1894,8 +1900,12 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
       const newEdges = [...keptEdges, ...spliceEdges]
       const newNodes = nodes.filter((n) => !idsToRemove.has(n.id))
+      // Any node that lost all paths back to the trigger gets pushed off to the
+      // right of the surviving flow so the visible chain isn't muddled by an
+      // orphaned subtree sitting in its column.
+      const shifted = shiftOrphansRight(newNodes, newEdges)
       setEdges(newEdges)
-      setNodes(layoutWorkflow(newNodes, newEdges))
+      setNodes(layoutWorkflow(shifted, newEdges))
       setSelectedNodeId(null)
       setIsDirty(true)
     },
