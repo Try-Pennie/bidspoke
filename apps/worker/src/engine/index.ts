@@ -837,8 +837,12 @@ export async function walkGraph(
       }
 
       // no_winner_behavior: 'exit' short-circuits the workflow with the group's output.
+      // 'route' (or legacy 'fail') falls through to the no_winner outgoing edge below.
+      // Default to 'route' so unconfigured groups follow the wired edge rather than
+      // throw — matches the 'fail'-as-routing semantics that's been live since BidGroup
+      // shipped. See bid-group.ts `no_winner_behavior` doc comment.
       if (groupOutput && groupOutput._route === 'no_winner') {
-        const noWinnerBehavior = (config.no_winner_behavior as string | undefined) ?? 'fail'
+        const noWinnerBehavior = (config.no_winner_behavior as string | undefined) ?? 'route'
         if (noWinnerBehavior === 'exit') {
           stepOrder = groupEndOrder + 1
           return { body: groupOutput, status: 200 }

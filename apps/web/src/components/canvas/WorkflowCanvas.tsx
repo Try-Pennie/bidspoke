@@ -626,7 +626,7 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
       ...base,
       mode: 'highest_bid',
       partner_ids: [],
-      no_winner_behavior: 'fail',
+      no_winner_behavior: 'route',
     }
   }
   return base

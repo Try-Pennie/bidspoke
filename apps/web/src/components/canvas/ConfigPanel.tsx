@@ -1796,7 +1796,10 @@ function BidGroupConfig({
   const partnerIds = ((config.partner_ids as string[] | undefined) ?? [])
   const fallbackId = (config.fallback_partner_id as string | null | undefined) ?? null
   const minBid = (config.min_bid_threshold as number | null | undefined) ?? null
-  const noWinnerBehavior = ((config.no_winner_behavior as string | undefined) ?? 'fail') as 'fail' | 'exit'
+  // Legacy 'fail' value is an alias for 'route' — both fall through to the no_winner edge.
+  // Normalize on read so the UI only deals with the canonical names.
+  const rawNoWinner = config.no_winner_behavior as string | undefined
+  const noWinnerBehavior: 'route' | 'exit' = rawNoWinner === 'exit' ? 'exit' : 'route'
   const cascadeTimeoutMs = (config.cascade_total_timeout_ms as number | undefined) ?? 30000
 
   const buyerPartners = partners.filter((p) => p.partner_type === 'buyer')
@@ -1930,7 +1933,7 @@ function BidGroupConfig({
       <Field label="If no winner" hint="What happens when no partner accepts and the fallback (if any) doesn't accept either.">
         <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
           {([
-            { v: 'fail', label: 'Take no_winner edge' },
+            { v: 'route', label: 'Take no_winner edge' },
             { v: 'exit', label: 'Exit workflow' },
           ] as const).map((opt) => (
             <button

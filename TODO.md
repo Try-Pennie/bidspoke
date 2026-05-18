@@ -294,6 +294,7 @@
 ## Platform / Ops
 
 - [x] **Estimated cost per execution** (2026-04-23) — `workflow_executions.cost_usd` + `cpu_ms` columns; engine writes step-based slice (partner API calls + code-node WFP + Supabase per-run) at finalize; `apps/worker-tail` tail consumer adds the main-Worker CF request + CPU slice using true `cpuTime` from `TraceItem`; `Est. cost` column on dashboard by-workflow table. Rates live in `apps/worker/src/engine/cost-rates.ts`. Partner per-call rates empty until contracts are confirmed.
+- [ ] **Unified log sink (CF Queue or logging Durable Object)** — today every engine step writes to Supabase via `waitUntil()`, which gets logging off the request critical path but has three weaknesses: (1) no retry/buffering when Supabase is down — failed writes are silently lost; (2) no batching, so each step is an individual insert and `execution_steps` write volume scales linearly with step count (already feeling this in disk growth — see memory `project_supabase_disk_growth_2026_05_18`); (3) Snowflake export, Slack alerts, and Supabase each re-walk the same data instead of subscribing to one stream. A Queue or DO sink that the engine fires-and-forgets into, with a separate consumer draining to Supabase + Snowflake + alert fan-out, fixes all three. Trade-off: new moving part + ~10-100ms consumer lag (fine for logs, not for real-time alerting). Defer until `execution_steps` write volume becomes the bottleneck — `waitUntil` is doing its job at current scale.
 
 ---
 

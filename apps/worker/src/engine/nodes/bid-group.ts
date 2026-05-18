@@ -32,7 +32,22 @@ export interface BidGroupConfig {
   partner_ids?: string[]
   min_bid_threshold?: number | null
   fallback_partner_id?: string | null
-  no_winner_behavior?: 'fail' | 'exit'
+  /**
+   * What happens when the group emits `_route: 'no_winner'`.
+   *
+   *   'route' (default; legacy alias: 'fail')
+   *     The workflow takes the `no_winner` outgoing edge wired in the canvas.
+   *     Continue normal execution. Does NOT throw or mark the step failed.
+   *
+   *   'exit'
+   *     Short-circuit the workflow with the group output as the HTTP response
+   *     (status 200). No edge routing.
+   *
+   * The historical value `'fail'` is preserved at read time for back-compat —
+   * it has always meant "fall through to edge routing", never "throw". The
+   * runtime treats `'fail'` identically to `'route'`.
+   */
+  no_winner_behavior?: 'route' | 'exit' | 'fail'
   cascade_total_timeout_ms?: number
   // tiered (4b):
   tiers?: BidGroupTier[]
