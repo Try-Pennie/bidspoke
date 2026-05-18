@@ -1832,49 +1832,82 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     [setNodes]
   )
 
-  const handleNodesDelete = useCallback(
-    (ids: string[]) => {
-      const seedIds = ids.filter((id) => id !== 'trigger')
-      if (seedIds.length === 0) return
-      snapshot()
-
-      // Expand the deletion set so parallel start/end pairs always go together.
-      // Without this, deleting just the start would orphan the end (or vice versa).
-      const idsToRemove = new Set<string>()
-      for (const id of seedIds) {
-        idsToRemove.add(id)
-        const node = nodes.find((n) => n.id === id)
-        if (!node) continue
-        let pairId = (node.data as unknown as CanvasNodeData)?._pairId
-        if (!pairId && node.type === 'parallel') {
-          const visited = new Set<string>([id])
-          const queue = [id]
-          while (queue.length > 0) {
-            const cur = queue.shift()!
-            for (const e of edges) {
-              if (e.source !== cur || visited.has(e.target)) continue
-              visited.add(e.target)
-              const target = nodes.find((n) => n.id === e.target)
-              if (target?.type === 'parallel_end') { pairId = target.id; queue.length = 0; break }
-              queue.push(e.target)
-            }
-          }
-        } else if (!pairId && node.type === 'parallel_end') {
-          const visited = new Set<string>([id])
-          const queue = [id]
-          while (queue.length > 0) {
-            const cur = queue.shift()!
-            for (const e of edges) {
-              if (e.target !== cur || visited.has(e.source)) continue
-              visited.add(e.source)
-              const source = nodes.find((n) => n.id === e.source)
-              if (source?.type === 'parallel') { pairId = source.id; queue.length = 0; break }
-              queue.push(e.source)
-            }
+  // Resolves the matching end/start id for a parallel or branch container node.
+  // Returns undefined for nodes that aren't half of a container pair.
+  const resolvePairId = useCallback(
+    (node: Node): string | undefined => {
+      const explicit = (node.data as unknown as CanvasNodeData)?._pairId
+      if (explicit) return explicit
+      if (node.type === 'parallel' || node.type === 'branch') {
+        const endType = node.type === 'parallel' ? 'parallel_end' : 'branch_end'
+        const visited = new Set<string>([node.id])
+        const queue = [node.id]
+        while (queue.length > 0) {
+          const cur = queue.shift()!
+          for (const e of edges) {
+            if (e.source !== cur || visited.has(e.target)) continue
+            visited.add(e.target)
+            const target = nodes.find((n) => n.id === e.target)
+            if (target?.type === endType) return target.id
+            queue.push(e.target)
           }
         }
-        if (pairId) idsToRemove.add(pairId)
+      } else if (node.type === 'parallel_end' || node.type === 'branch_end') {
+        const startType = node.type === 'parallel_end' ? 'parallel' : 'branch'
+        const visited = new Set<string>([node.id])
+        const queue = [node.id]
+        while (queue.length > 0) {
+          const cur = queue.shift()!
+          for (const e of edges) {
+            if (e.target !== cur || visited.has(e.source)) continue
+            visited.add(e.source)
+            const source = nodes.find((n) => n.id === e.source)
+            if (source?.type === startType) return source.id
+            queue.push(e.source)
+          }
+        }
       }
+      return undefined
+    },
+    [nodes, edges]
+  )
+
+  // Returns the set of node ids strictly between a container's start and end —
+  // everything on a path from startId forward that reaches endId, excluding
+  // start, end, and anything past end.
+  const collectInnerIds = useCallback(
+    (startId: string, endId: string): Set<string> => {
+      const inner = new Set<string>()
+      const visited = new Set<string>([startId, endId])
+      const queue = [startId]
+      while (queue.length > 0) {
+        const cur = queue.shift()!
+        for (const e of edges) {
+          if (e.source !== cur) continue
+          if (e.target === endId || visited.has(e.target)) continue
+          visited.add(e.target)
+          inner.add(e.target)
+          queue.push(e.target)
+        }
+      }
+      return inner
+    },
+    [edges]
+  )
+
+  // Confirmation state for deleting a container (parallel / branch) that has
+  // nodes inside it. Stays null when no prompt is needed.
+  const [pendingContainerDelete, setPendingContainerDelete] = useState<{
+    outerIds: string[]
+    innerIds: string[]
+    containerLabel: string
+  } | null>(null)
+
+  const executeNodesDelete = useCallback(
+    (ids: string[]) => {
+      const idsToRemove = new Set(ids.filter((id) => id !== 'trigger'))
+      if (idsToRemove.size === 0) return
+      snapshot()
 
       const upstreamSources = new Set<string>()
       const downstreamTargets = new Set<string>()
@@ -1910,6 +1943,53 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       setIsDirty(true)
     },
     [snapshot, nodes, edges, setNodes, setEdges]
+  )
+
+  const handleNodesDelete = useCallback(
+    (ids: string[]) => {
+      const seedIds = ids.filter((id) => id !== 'trigger')
+      if (seedIds.length === 0) return
+
+      // Expand container starts/ends so parallel and branch pairs are always
+      // deleted together. Separately track the nodes that sit inside each
+      // container; if any have content we'll ask before deleting them.
+      const outerIds = new Set<string>(seedIds)
+      const innerIds = new Set<string>()
+      let containerLabel = ''
+      for (const id of seedIds) {
+        const node = nodes.find((n) => n.id === id)
+        if (!node) continue
+        const pairId = resolvePairId(node)
+        if (!pairId) continue
+        outerIds.add(pairId)
+        const startId = node.type === 'parallel' || node.type === 'branch' ? id : pairId
+        const endId = startId === id ? pairId : id
+        for (const innerId of collectInnerIds(startId, endId)) {
+          if (!outerIds.has(innerId)) innerIds.add(innerId)
+        }
+        if (!containerLabel) {
+          const startNode = nodes.find((n) => n.id === startId)
+          const d = startNode?.data as unknown as CanvasNodeData | undefined
+          containerLabel = d?.label || d?.namespace || (startNode?.type === 'branch' ? 'branch' : 'parallel')
+        }
+      }
+
+      // Inner ids that are also being explicitly deleted (e.g. user multi-selected
+      // them along with the container) don't count toward the prompt.
+      for (const id of seedIds) innerIds.delete(id)
+
+      if (innerIds.size === 0) {
+        executeNodesDelete([...outerIds])
+        return
+      }
+
+      setPendingContainerDelete({
+        outerIds: [...outerIds],
+        innerIds: [...innerIds],
+        containerLabel,
+      })
+    },
+    [nodes, resolvePairId, collectInnerIds, executeNodesDelete]
   )
 
   const handleNodeDelete = useCallback((id: string) => handleNodesDelete([id]), [handleNodesDelete])
@@ -2966,6 +3046,49 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           onClose={() => setShowImport(false)}
         />
       )}
+
+      {pendingContainerDelete && (() => {
+        const { outerIds, innerIds, containerLabel } = pendingContainerDelete
+        const innerCount = innerIds.length
+        const cancel = () => setPendingContainerDelete(null)
+        const leave = () => { executeNodesDelete(outerIds); setPendingContainerDelete(null) }
+        const includeInner = () => { executeNodesDelete([...outerIds, ...innerIds]); setPendingContainerDelete(null) }
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
+            <div
+              className="w-[440px] rounded-xl bg-white p-5 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p className="font-semibold text-graphite">
+                Delete {containerLabel}?
+              </p>
+              <p className="mt-1 text-sm text-gray-600">
+                {innerCount} {innerCount === 1 ? 'node' : 'nodes'} sit inside this container. Should they be deleted with it, or left disconnected on the canvas?
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  className="rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100"
+                  onClick={cancel}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-beige"
+                  onClick={leave}
+                >
+                  Leave them
+                </button>
+                <button
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+                  onClick={includeInner}
+                >
+                  Delete inside too
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
