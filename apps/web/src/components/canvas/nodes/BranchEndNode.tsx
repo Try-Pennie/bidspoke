@@ -90,19 +90,25 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
 
   if (!effectivelyConnected) {
     // Compact pill — present and wirable, but visually out of the way until
-    // the user actually feeds a chain into it.
+    // the user actually feeds a chain into it. Wrap in a NODE_W-wide flex
+    // container that centers the pill so the visual matches the layout's
+    // position math: layout writes `position.x = center - NODE_W/2` for an
+    // unconnected branch_end, so the rendered DOM must also occupy that full
+    // width or the auto-sized inline pill drifts left-of-center.
     return (
-      <div
-        className={`relative inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1 text-xs ${
-          selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-purple-100'
-        } ${getNodeClasses(executionStep, hasError, isReachable)}`}
-        style={getExecutionStyle(executionStep)}
-      >
-        <NoteBadge note={note} />
-        <Handle type="target" position={Position.Top} id="input" />
-        <GitMerge className="h-3 w-3 text-purple-400" />
-        <span className="font-medium text-purple-500">{derivedLabel}</span>
-        <Handle type="source" position={Position.Bottom} id="output" />
+      <div className="flex justify-center" style={{ width: nodeWidth('branch_end', data) }}>
+        <div
+          className={`relative inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1 text-xs ${
+            selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-purple-100'
+          } ${getNodeClasses(executionStep, hasError, isReachable)}`}
+          style={getExecutionStyle(executionStep)}
+        >
+          <NoteBadge note={note} />
+          <Handle type="target" position={Position.Top} id="input" />
+          <GitMerge className="h-3 w-3 text-purple-400" />
+          <span className="font-medium text-purple-500">{derivedLabel}</span>
+          <Handle type="source" position={Position.Bottom} id="output" />
+        </div>
       </div>
     )
   }
