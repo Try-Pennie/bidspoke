@@ -735,10 +735,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       iterations++
       for (const node of nodes) {
         const inE = inEdgesByTarget.get(node.id) ?? []
-        if (inE.length !== 1) continue
+        if (inE.length === 0) continue
+        // Multiple incoming edges from the same single parent (e.g. a stray
+        // duplicate edge with a null sourceHandle) is still a linear segment
+        // — what matters is that all incoming come from one upstream.
+        const uniqueParents = new Set(inE.map((e) => e.source))
+        if (uniqueParents.size !== 1) continue
         const parentId = inE[0].source
         const parentOut = outEdgesBySource.get(parentId) ?? []
-        if (parentOut.length !== 1) continue
+        const uniqueChildren = new Set(parentOut.map((e) => e.target))
+        if (uniqueChildren.size !== 1) continue
         const parent = nodeMap.get(parentId)
         if (parent && configuredHandleIds(parent)) continue
         const childPos = pos.get(node.id)

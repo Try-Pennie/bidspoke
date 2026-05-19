@@ -1597,6 +1597,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
         reconnectingEdgeIdRef.current = null
       }
 
+      // Reject a connection that duplicates an existing source→target pair —
+      // even if the sourceHandle differs (e.g. a legacy null-handle edge from
+      // an unstyled node + a new properly-handled edge after the renderer was
+      // added). The duplicate breaks applyLinearChain alignment and offers no
+      // engine value (the second edge fires the same downstream).
+      const isDuplicate = next.some(
+        (e) => e.source === connection.source && e.target === connection.target,
+      )
+      if (isDuplicate) {
+        console.log('[canvas] onConnect: dropping duplicate edge', connection.source, '->', connection.target)
+        return
+      }
       next = addEdge({ ...connection, id: uid() }, next)
 
       // Heuristics on top of the replace-edge default:
