@@ -386,15 +386,41 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // Parallel_end / branch_end inherit their paired start node's effective
   // width so the join visually closes the cluster instead of staying NODE_W
   // under a wider start.
-  // Helper: a branch_end is "effectively connected" if a chain wires into it
-  // OR every chain leaving the paired branch terminates in an exit / response
-  // (workflow-ending), AND no outgoing edge continues past the end. Outgoing
-  // edges mean this is an INTERMEDIATE pass-through (its flow continues into
-  // an outer branch's territory) — rendered as a compact pill, so layout
-  // should not reserve a full card's worth of width / vertical space for it.
+  // Helper: a branch_end is "effectively connected" — render as full card —
+  // ONLY when:
+  //   • it has real incoming (chain wires in) OR all chains terminate in
+  //     exit/response,
+  //   • no outgoing edge continues past it (otherwise it's an intermediate
+  //     pass-through),
+  //   • AND its paired branch is not nested inside another branch's slot.
+  //
   // Mirrors `effectivelyConnected` in BranchEndNode.
+  const isBranchInnerNested = (branchId: string): boolean => {
+    const visited = new Set<string>([branchId])
+    const queue = [branchId]
+    while (queue.length > 0) {
+      const cur = queue.shift()!
+      for (const e of edges) {
+        if (e.target !== cur) continue
+        const handle = e.sourceHandle
+        if (handle && handle !== 'output') {
+          const src = nodeMap.get(e.source)
+          const t = src?.type
+          if (t === 'branch' || t === 'parallel' || t === 'bid_group' || t === 'bid_evaluation' || t === 'filter') {
+            return true
+          }
+        }
+        if (!visited.has(e.source)) {
+          visited.add(e.source)
+          queue.push(e.source)
+        }
+      }
+    }
+    return false
+  }
   const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
     if (edges.some((e) => e.source === endId)) return false
+    if (isBranchInnerNested(branchId)) return false
     if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
     const seedTargets: string[] = []
     for (const e of edges) {
