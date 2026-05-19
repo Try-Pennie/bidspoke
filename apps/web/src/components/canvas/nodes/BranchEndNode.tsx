@@ -69,10 +69,19 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return true
   })
 
-  // The branch_end is "effectively connected" when there's a real wire into
-  // it OR every chain ends in a workflow-terminating node — both states mean
-  // the branch's convergence is meaningful, so we render it as the full card.
-  const effectivelyConnected = hasRealIncoming || allChainsTerminate
+  // Has at least one outgoing edge — this is an INTERMEDIATE end (pass-through
+  // to another branch's territory), not a terminal convergence point. Render
+  // compact so deeply-nested workflows don't cascade hundreds of px of full
+  // cards stacked below the actual content.
+  const hasOutgoing = useStore((s) => {
+    return (s.edges as Edge[]).some((e) => e.source === id)
+  })
+
+  // The branch_end is "terminally convergent" when there's a real wire into
+  // it OR every chain ends in a workflow-terminating node, AND no outgoing
+  // wire continues past it. That's when we render it as the full card —
+  // convergence is meaningful AND this is the actual endpoint of the cluster.
+  const effectivelyConnected = (hasRealIncoming || allChainsTerminate) && !hasOutgoing
 
   // The render shape (compact pill vs full card) changes the handle DOM
   // positions. Without re-registering, React Flow's handle position cache

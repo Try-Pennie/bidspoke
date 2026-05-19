@@ -388,8 +388,13 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // under a wider start.
   // Helper: a branch_end is "effectively connected" if a chain wires into it
   // OR every chain leaving the paired branch terminates in an exit / response
-  // (workflow-ending). Mirrors `effectivelyConnected` in BranchEndNode.
+  // (workflow-ending), AND no outgoing edge continues past the end. Outgoing
+  // edges mean this is an INTERMEDIATE pass-through (its flow continues into
+  // an outer branch's territory) — rendered as a compact pill, so layout
+  // should not reserve a full card's worth of width / vertical space for it.
+  // Mirrors `effectivelyConnected` in BranchEndNode.
   const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
+    if (edges.some((e) => e.source === endId)) return false
     if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
     const seedTargets: string[] = []
     for (const e of edges) {
