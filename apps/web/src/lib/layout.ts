@@ -810,6 +810,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const handles = branch ? configuredHandleIds(branch) ?? [] : []
       let deepestY = branchPos.y
       let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
+      let deepestIsEnd = false
       const visited = new Set<string>([branchId, node.id])
       const queue: string[] = []
       for (const h of handles) {
@@ -824,7 +825,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         const curNode = nodeMap.get(cur)
         if (curPos && curPos.y > deepestY) {
           deepestY = curPos.y
-          if (curNode) deepestH = effectiveHeight(curNode)
+          if (curNode) {
+            deepestH = effectiveHeight(curNode)
+            deepestIsEnd = curNode.type === 'branch_end' || curNode.type === 'parallel_end'
+          }
         }
         for (const e of edges) {
           if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
@@ -832,10 +836,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       }
       const newX = branchPos.x
       // 96 px below the deepest descendant matches the horizontal NODESEP_PRE
-      // gap used between sibling subtree columns elsewhere. Earlier value (48)
-      // left stacked outer / inner branch_end cards visually adjacent — same
-      // styling + wide spanWidth made the tight gap read as overlap.
-      const newY = deepestY + deepestH / 2 + 96 + effectiveHeight(node) / 2
+      // used elsewhere — comfortable separation between an end card and the
+      // content above it. When the deepest descendant is ITSELF a nested
+      // branch_end / parallel_end, that's the same "convergence layer" — stack
+      // tight (16 px) instead of cascading a full content-gap per level.
+      // Without this, 4 nested branches would push the outermost end ~960 px
+      // below the actual content.
+      const gap = deepestIsEnd ? 16 : 96
+      const newY = deepestY + deepestH / 2 + gap + effectiveHeight(node) / 2
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
         ownPos.y = newY
