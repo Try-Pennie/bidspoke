@@ -69,54 +69,10 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return true
   })
 
-  // Has at least one outgoing edge — this is an INTERMEDIATE end (pass-through
-  // to another branch's territory), not a terminal convergence point. Render
-  // compact so deeply-nested workflows don't cascade hundreds of px of full
-  // cards stacked below the actual content.
-  const hasOutgoing = useStore((s) => {
-    return (s.edges as Edge[]).some((e) => e.source === id)
-  })
-
-  // My paired branch is "inner" (inside another branch's slot) — walk backward
-  // through edges and check if we ever traverse a slot-handle edge (anything
-  // other than 'output') sourced from a multi-output node. If we do, our paired
-  // branch lives inside that multi-output's slot, so we're a nested convergence
-  // marker. Render as a compact pill regardless of effectivelyConnected — full
-  // cards inherit the paired branch's wide _spanWidth and would overlap with
-  // sibling end cards at the same Y.
-  const isInner = useStore((s) => {
-    if (!pairId) return false
-    const allEdges = s.edges as Edge[]
-    const allNodes = s.nodes as Node[]
-    const nodesById = new Map(allNodes.map((n) => [n.id, n]))
-    const visited = new Set<string>([pairId])
-    const queue = [pairId]
-    while (queue.length > 0) {
-      const cur = queue.shift() as string
-      for (const e of allEdges) {
-        if (e.target !== cur) continue
-        const handle = e.sourceHandle
-        if (handle && handle !== 'output') {
-          const src = nodesById.get(e.source)
-          const t = src?.type
-          if (t === 'branch' || t === 'parallel' || t === 'bid_group' || t === 'bid_evaluation' || t === 'filter') {
-            return true
-          }
-        }
-        if (!visited.has(e.source)) {
-          visited.add(e.source)
-          queue.push(e.source)
-        }
-      }
-    }
-    return false
-  })
-
-  // The branch_end is "terminally convergent" when there's a real wire into
-  // it OR every chain ends in a workflow-terminating node, AND no outgoing
-  // wire continues past it, AND it's not inner-nested. Full card only at the
-  // workflow's top-level convergence point.
-  const effectivelyConnected = (hasRealIncoming || allChainsTerminate) && !hasOutgoing && !isInner
+  // The branch_end is "effectively connected" when there's a real wire into
+  // it OR every chain ends in a workflow-terminating node — both states mean
+  // the branch's convergence is meaningful, so we render it as the full card.
+  const effectivelyConnected = hasRealIncoming || allChainsTerminate
 
   // The render shape (compact pill vs full card) changes the handle DOM
   // positions. Without re-registering, React Flow's handle position cache

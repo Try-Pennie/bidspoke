@@ -386,41 +386,10 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // Parallel_end / branch_end inherit their paired start node's effective
   // width so the join visually closes the cluster instead of staying NODE_W
   // under a wider start.
-  // Helper: a branch_end is "effectively connected" — render as full card —
-  // ONLY when:
-  //   • it has real incoming (chain wires in) OR all chains terminate in
-  //     exit/response,
-  //   • no outgoing edge continues past it (otherwise it's an intermediate
-  //     pass-through),
-  //   • AND its paired branch is not nested inside another branch's slot.
-  //
-  // Mirrors `effectivelyConnected` in BranchEndNode.
-  const isBranchInnerNested = (branchId: string): boolean => {
-    const visited = new Set<string>([branchId])
-    const queue = [branchId]
-    while (queue.length > 0) {
-      const cur = queue.shift()!
-      for (const e of edges) {
-        if (e.target !== cur) continue
-        const handle = e.sourceHandle
-        if (handle && handle !== 'output') {
-          const src = nodeMap.get(e.source)
-          const t = src?.type
-          if (t === 'branch' || t === 'parallel' || t === 'bid_group' || t === 'bid_evaluation' || t === 'filter') {
-            return true
-          }
-        }
-        if (!visited.has(e.source)) {
-          visited.add(e.source)
-          queue.push(e.source)
-        }
-      }
-    }
-    return false
-  }
+  // Helper: a branch_end is "effectively connected" if a chain wires into it
+  // OR every chain leaving the paired branch terminates in an exit / response
+  // (workflow-ending). Mirrors `effectivelyConnected` in BranchEndNode.
   const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
-    if (edges.some((e) => e.source === endId)) return false
-    if (isBranchInnerNested(branchId)) return false
     if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
     const seedTargets: string[] = []
     for (const e of edges) {
@@ -463,9 +432,6 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       return src?.type === startType
     })
     if (!pairEdge) continue
-    // Branch_ends with no effective incoming render as a compact pill —
-    // don't inherit the paired branch's wide effective width since that'd
-    // reserve a fat empty horizontal slot for them.
     if (n.type === 'branch_end') {
       if (!branchEndIsEffectivelyConnected(n.id, pairEdge.source)) continue
     }
@@ -838,17 +804,19 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       // tucked the unconnected pill right below the start, which left the
       // pill floating between the branch and its children when chains hadn't
       // converged onto it yet (continues-style responses, data_store→… etc.).
-      // Forward BFS through the paired branch's subtree, SKIPPING other end
-      // nodes when tracking deepest. Skipping ends prevents cascade: if
-      // outer.deepest included inner end's Y, outer ends up below inner end,
-      // which in turn was already below inner content — each nesting level
-      // adds another full card's worth of dead space. Skipping makes each end
-      // position based on actual content depth only. Multiple ends in the
-      // same workflow can land at the same Y, sitting side-by-side in their
-      // respective X columns.
+      // Forward BFS through the paired branch's subtree. Non-end nodes always
+      // count toward deepestY. Other branch_end / parallel_end nodes only
+      // count if their X-range actually overlaps mine — that way ends at
+      // different X columns can sit side-by-side at the same Y (no needless
+      // cascade), but ends whose wide _spanWidth boxes WOULD overlap push us
+      // further down so we don't end up on top of them.
+      const myEffW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
+      const myLeft = branchPos.x - myEffW / 2
+      const myRight = branchPos.x + myEffW / 2
       const handles = branch ? configuredHandleIds(branch) ?? [] : []
       let deepestY = branchPos.y
       let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
+      let deepestIsEnd = false
       const visited = new Set<string>([branchId, node.id])
       const queue: string[] = []
       for (const h of handles) {
@@ -862,16 +830,29 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         const curPos = pos.get(cur)
         const curNode = nodeMap.get(cur)
         const isEnd = curNode?.type === 'branch_end' || curNode?.type === 'parallel_end'
-        if (curPos && curPos.y > deepestY && !isEnd) {
-          deepestY = curPos.y
-          if (curNode) deepestH = effectiveHeight(curNode)
+        if (curPos && curPos.y > deepestY) {
+          let countsForDeepest = true
+          if (isEnd && curNode) {
+            const otherEffW = effectiveWidthByNode.get(cur) ?? nodeWidth(curNode.type, curNode.data)
+            const otherLeft = curPos.x - otherEffW / 2
+            const otherRight = curPos.x + otherEffW / 2
+            countsForDeepest = Math.max(myLeft, otherLeft) < Math.min(myRight, otherRight)
+          }
+          if (countsForDeepest) {
+            deepestY = curPos.y
+            if (curNode) deepestH = effectiveHeight(curNode)
+            deepestIsEnd = !!isEnd
+          }
         }
         for (const e of edges) {
           if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
         }
       }
       const newX = branchPos.x
-      const newY = deepestY + deepestH / 2 + 96 + effectiveHeight(node) / 2
+      // When the deepest is another end (and overlaps us), stack tight (16 px)
+      // — same convergence layer. Otherwise full content-gap of 96 px.
+      const gap = deepestIsEnd ? 16 : 96
+      const newY = deepestY + deepestH / 2 + gap + effectiveHeight(node) / 2
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
         ownPos.y = newY
