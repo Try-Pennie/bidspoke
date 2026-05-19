@@ -314,7 +314,30 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited), merged))
       })
       const fanOutWidth = slotWidths.reduce((s, w) => s + w, 0) + NODESEP_PRE * (slotWidths.length - 1)
-      return Math.max(ownWidth, fanOutWidth)
+      // When this branch/parallel is itself nested inside an outer slot, the
+      // chain that exits via its end node and continues toward the outer
+      // stopAt still has to fit inside the outer slot's allocated column.
+      // Walking past the pair_end (constrained by outerStopAt) catches a wide
+      // downstream node — e.g. a bid_group sitting between a nested branch's
+      // end and its parent branch's end — which would otherwise be invisible
+      // to width math and visually overflow into a sibling slot's column.
+      //
+      // Only meaningful when we have an `outerStopAt`. At the top-level call
+      // (no outer slot to fit into), pastEnd has no boundary and would walk
+      // the entire downstream workflow, inflating the node's own width.
+      let pastEndWidth = 0
+      if (outerStopAt && (n.type === 'branch' || n.type === 'parallel')) {
+        const endType = n.type === 'branch' ? 'branch_end' : 'parallel_end'
+        const pairEnd = edges.find((e) => e.source === n.id && nodeMap.get(e.target)?.type === endType)?.target
+        if (pairEnd && !outerStopAt.has(pairEnd)) {
+          for (const e of edges) {
+            if (e.source !== pairEnd) continue
+            const sub = effectiveSubtreeWidthPre(e.target, new Set(visited), outerStopAt)
+            if (sub > pastEndWidth) pastEndWidth = sub
+          }
+        }
+      }
+      return Math.max(ownWidth, fanOutWidth, pastEndWidth)
     }
     let maxBelow = 0
     for (const e of edges) {
