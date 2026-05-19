@@ -1643,11 +1643,18 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       }
 
       const shifted = shiftDisconnectedRight(next)
+      const nextNodes = layoutWorkflow(shifted, next)
+      // Anchor the viewport to the connection's source so that bringing a
+      // disconnected node into the main flow doesn't shift the user's focus —
+      // the connection's source is what Dan was looking at when dragging the
+      // wire. Without this, layoutWorkflow recomputing every node's position
+      // can yank the whole graph left or right on screen.
+      if (connection.source) layoutPreservingViewport(connection.source, nodes, nextNodes)
       setEdges(next)
-      setNodes(layoutWorkflow(shifted, next))
+      setNodes(nextNodes)
       setIsDirty(true)
     },
-    [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes]
+    [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport]
   )
 
   // Start a drag from a source handle that already has a wire → treat as
