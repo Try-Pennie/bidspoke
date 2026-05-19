@@ -888,13 +888,23 @@ function ResponseConfig({
 
   return (
     <section className="space-y-3">
-      <Field label="Status code">
+      <Field label="Status code" hint="A number, or a template like {{steps.X.output.status}} that resolves to one. Falls back to 200 if blank or unresolvable.">
         <input
-          type="number"
+          type="text"
           className="input"
           placeholder="200"
-          value={(config.status_code as number | undefined) ?? 200}
-          onChange={(e) => onChange({ status_code: parseInt(e.target.value) || 200 })}
+          value={(() => {
+            const raw = config.status_code as number | string | undefined
+            return raw === undefined ? '' : String(raw)
+          })()}
+          onChange={(e) => {
+            const v = e.target.value.trim()
+            if (v === '') { onChange({ status_code: undefined }); return }
+            // Template? Keep as string; engine resolves at run time.
+            if (v.includes('{{')) { onChange({ status_code: v }); return }
+            const n = parseInt(v, 10)
+            onChange({ status_code: Number.isFinite(n) ? n : v })
+          }}
         />
       </Field>
       <Field label="Body (JSON or template)">

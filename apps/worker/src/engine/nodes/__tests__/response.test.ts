@@ -46,6 +46,37 @@ describe('executeResponseNode', () => {
     })
   })
 
+  describe('templated status_code', () => {
+    it('resolves {{steps.X.output.status}} to a number', () => {
+      const result = executeResponseNode(
+        node({ status_code: '{{steps.engine_call.output.status}}' }),
+        ctx({ steps: { engine_call: { status: 502 } } })
+      )
+      expect((result.output as { status_code: number }).status_code).toBe(502)
+    })
+
+    it('coerces a stringified number to number', () => {
+      const result = executeResponseNode(
+        node({ status_code: '{{steps.engine_call.output.status_str}}' }),
+        ctx({ steps: { engine_call: { status_str: '418' } } })
+      )
+      expect((result.output as { status_code: number }).status_code).toBe(418)
+    })
+
+    it('falls back to 200 when the template resolves to undefined', () => {
+      const result = executeResponseNode(
+        node({ status_code: '{{steps.missing.output.status}}' }),
+        ctx()
+      )
+      expect((result.output as { status_code: number }).status_code).toBe(200)
+    })
+
+    it('numeric literal still works (back-compat)', () => {
+      const result = executeResponseNode(node({ status_code: 201 }), ctx())
+      expect((result.output as { status_code: number }).status_code).toBe(201)
+    })
+  })
+
   describe('template resolution in body', () => {
     it('resolves {{trigger.payload.*}} references', () => {
       const result = executeResponseNode(

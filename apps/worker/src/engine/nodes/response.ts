@@ -11,7 +11,9 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../.
 import { resolveValue } from '../context'
 
 interface ResponseConfig {
-  status_code?: number
+  /** Number or template string ({{steps.X.output.status}}). Resolves to a number;
+   *  falls back to 200 on undefined/non-numeric. */
+  status_code?: number | string
   headers?: Record<string, string>
   body?: unknown
   continue_after_response?: boolean
@@ -22,7 +24,7 @@ export function executeResponseNode(
   ctx: ExecutionContext
 ): StepExecutionResult {
   const config = node.config as ResponseConfig
-  const status = config.status_code ?? 200
+  const status = resolveStatus(config.status_code, ctx)
   const headers = config.headers ?? {}
   const body = resolveValue(config.body ?? null, ctx)
 
@@ -37,4 +39,15 @@ export function executeResponseNode(
   }
 
   return { output }
+}
+
+function resolveStatus(raw: unknown, ctx: ExecutionContext): number {
+  if (raw === undefined || raw === null) return 200
+  const resolved = typeof raw === 'string' ? resolveValue(raw, ctx) : raw
+  if (typeof resolved === 'number' && Number.isFinite(resolved)) return Math.trunc(resolved)
+  if (typeof resolved === 'string') {
+    const n = parseInt(resolved, 10)
+    if (Number.isFinite(n)) return n
+  }
+  return 200
 }
