@@ -812,10 +812,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       // tucked the unconnected pill right below the start, which left the
       // pill floating between the branch and its children when chains hadn't
       // converged onto it yet (continues-style responses, data_store→… etc.).
+      // Forward BFS through the paired branch's subtree, SKIPPING other end
+      // nodes when tracking deepest. Skipping ends prevents cascade: if
+      // outer.deepest included inner end's Y, outer ends up below inner end,
+      // which in turn was already below inner content — each nesting level
+      // adds another full card's worth of dead space. Skipping makes each end
+      // position based on actual content depth only. Multiple ends in the
+      // same workflow can land at the same Y, sitting side-by-side in their
+      // respective X columns.
       const handles = branch ? configuredHandleIds(branch) ?? [] : []
       let deepestY = branchPos.y
       let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
-      let deepestIsEnd = false
       const visited = new Set<string>([branchId, node.id])
       const queue: string[] = []
       for (const h of handles) {
@@ -828,27 +835,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         visited.add(cur)
         const curPos = pos.get(cur)
         const curNode = nodeMap.get(cur)
-        if (curPos && curPos.y > deepestY) {
+        const isEnd = curNode?.type === 'branch_end' || curNode?.type === 'parallel_end'
+        if (curPos && curPos.y > deepestY && !isEnd) {
           deepestY = curPos.y
-          if (curNode) {
-            deepestH = effectiveHeight(curNode)
-            deepestIsEnd = curNode.type === 'branch_end' || curNode.type === 'parallel_end'
-          }
+          if (curNode) deepestH = effectiveHeight(curNode)
         }
         for (const e of edges) {
           if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
         }
       }
       const newX = branchPos.x
-      // 96 px below the deepest descendant matches the horizontal NODESEP_PRE
-      // used elsewhere — comfortable separation between an end card and the
-      // content above it. When the deepest descendant is ITSELF a nested
-      // branch_end / parallel_end, that's the same "convergence layer" — stack
-      // tight (16 px) instead of cascading a full content-gap per level.
-      // Without this, 4 nested branches would push the outermost end ~960 px
-      // below the actual content.
-      const gap = deepestIsEnd ? 16 : 96
-      const newY = deepestY + deepestH / 2 + gap + effectiveHeight(node) / 2
+      const newY = deepestY + deepestH / 2 + 96 + effectiveHeight(node) / 2
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
         ownPos.y = newY
