@@ -41,6 +41,7 @@ import { ParallelNode } from './nodes/ParallelNode'
 import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
+import { DataStoreNode } from './nodes/DataStoreNode'
 import { RegionNode } from './nodes/RegionNode'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
@@ -81,6 +82,7 @@ const nodeTypes: NodeTypes = {
   bid_group: BidGroupNode,
   constants: ConstantsNode,
   salesforce: SalesforceNode,
+  data_store: DataStoreNode,
   region: RegionNode,
 }
 
