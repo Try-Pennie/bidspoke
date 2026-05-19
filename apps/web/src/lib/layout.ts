@@ -831,7 +831,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         }
       }
       const newX = branchPos.x
-      const newY = deepestY + deepestH / 2 + 48 + effectiveHeight(node) / 2
+      // 96 px below the deepest descendant matches the horizontal NODESEP_PRE
+      // gap used between sibling subtree columns elsewhere. Earlier value (48)
+      // left stacked outer / inner branch_end cards visually adjacent — same
+      // styling + wide spanWidth made the tight gap read as overlap.
+      const newY = deepestY + deepestH / 2 + 96 + effectiveHeight(node) / 2
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
         ownPos.y = newY
