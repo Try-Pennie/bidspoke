@@ -1849,8 +1849,9 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 
   const handleNodeUpdate = useCallback(
     (id: string, patch: Partial<CanvasNodeData>) => {
-      setNodes((ns) =>
-        ns.map((n) => {
+      setNodes((ns) => {
+        // First, write the patched data into the matching node.
+        const patched = ns.map((n) => {
           if (n.id !== id) return n
           const nextData = { ...(n.data as object), ...patch }
           // Branch and parallel widths depend on their footer labels. When the
@@ -1869,10 +1870,23 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           }
           return { ...n, data: nextData }
         })
-      )
+        // If the patch changed the multi-output's handle set or labels, the
+        // layout-derived data on the node (`_spanWidth`, `_handleOffsets`) is
+        // now stale — re-run layoutWorkflow so handles render in their right
+        // columns. Without this, adding a branch keeps the prior offsets and
+        // new labels stack on top of old ones.
+        const target = ns.find((n) => n.id === id)
+        if (target && (target.type === 'branch' || target.type === 'parallel')) {
+          const beforeHandles = configuredHandleIds(target)?.join('|') ?? ''
+          const after = patched.find((n) => n.id === id)
+          const afterHandles = after ? configuredHandleIds(after)?.join('|') ?? '' : ''
+          if (beforeHandles !== afterHandles) return layoutWorkflow(patched, edges)
+        }
+        return patched
+      })
       setIsDirty(true)
     },
-    [setNodes]
+    [setNodes, edges]
   )
 
   // Resolves the matching end/start id for a parallel or branch container node.
