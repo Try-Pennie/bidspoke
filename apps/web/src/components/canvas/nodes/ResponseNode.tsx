@@ -9,7 +9,13 @@ import { NoteBadge } from './NoteBadge'
 
 export function ResponseNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
-  const statusCode = (config.status_code as number | undefined) ?? 200
+  const statusRaw = config.status_code as number | string | undefined
+  // When the status is a {{template}}, the literal can be long and overflow the
+  // node body. Show a compact "dynamic" badge and surface the full expression on
+  // hover via title attribute. Plain numbers render verbatim.
+  const statusIsTemplate = typeof statusRaw === 'string' && statusRaw.includes('{{')
+  const statusDisplay = statusIsTemplate ? 'dynamic' : (statusRaw ?? 200)
+  const statusTitle = statusIsTemplate ? String(statusRaw) : undefined
   const continueAfter = Boolean(config.continue_after_response)
   const outputPreview = getOutputPreview(executionStep)
 
@@ -40,7 +46,7 @@ export function ResponseNode({ id, data, selected }: NodeProps) {
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>
         {label && <p className="truncate font-mono text-xs text-slate-400">{namespace}</p>}
-        <p className="mt-0.5 text-xs text-slate-400">HTTP {statusCode}{continueAfter ? ' · continues' : ''}</p>
+        <p className="mt-0.5 truncate text-xs text-slate-400" title={statusTitle}>HTTP {statusDisplay}{continueAfter ? ' · continues' : ''}</p>
         {outputPreview && (
           <p className="mt-1 truncate rounded bg-green-100 px-1.5 py-0.5 font-mono text-xs text-green-700">{outputPreview}</p>
         )}
