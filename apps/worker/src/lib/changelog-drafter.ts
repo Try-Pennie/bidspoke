@@ -45,7 +45,34 @@ export interface WorkflowDiff {
 
 const edgeKey = (e: EdgeDefinition) => `${e.source}->${e.target}@${e.source_handle ?? 'output'}`
 
+// branch_end / parallel_end nodes carry an auto-generated namespace
+// (e.g. "branch_end_3"), but the canvas displays them with a derived
+// namespace built from the paired start node (e.g. "engine_ok_branch_end").
+// The changelog should match what the user sees on the canvas, so substitute
+// the derived namespace before handing the diff to the LLM.
+function buildDerivedNamespaces(def: WorkflowDefinition): Map<string, string> {
+  const out = new Map<string, string>()
+  const nodesById = new Map(def.nodes.map((n) => [n.id, n]))
+  for (const n of def.nodes) {
+    if (n.type !== 'branch_end' && n.type !== 'parallel_end') continue
+    const startType = n.type === 'branch_end' ? 'branch' : 'parallel'
+    // Pair is found via the backbone edge: start --(output)--> end.
+    const pairEdge = def.edges.find((e) => e.target === n.id && nodesById.get(e.source)?.type === startType)
+    if (!pairEdge) continue
+    const startNode = nodesById.get(pairEdge.source)
+    if (!startNode) continue
+    out.set(n.namespace, `${startNode.namespace}_end`)
+  }
+  return out
+}
+
+function rename(ns: string, derived: Map<string, string>): string {
+  return derived.get(ns) ?? ns
+}
+
 export function computeDiff(oldDef: WorkflowDefinition, newDef: WorkflowDefinition): WorkflowDiff {
+  const oldDerived = buildDerivedNamespaces(oldDef)
+  const newDerived = buildDerivedNamespaces(newDef)
   const oldNodes = new Map(oldDef.nodes.map((n) => [n.namespace, n]))
   const newNodes = new Map(newDef.nodes.map((n) => [n.namespace, n]))
 
@@ -55,12 +82,12 @@ export function computeDiff(oldDef: WorkflowDefinition, newDef: WorkflowDefiniti
 
   for (const [ns, n] of newNodes) {
     if (!oldNodes.has(ns)) {
-      nodes_added.push({ namespace: ns, type: n.type, label: n.label, config: n.config as Record<string, unknown> })
+      nodes_added.push({ namespace: rename(ns, newDerived), type: n.type, label: n.label, config: n.config as Record<string, unknown> })
     }
   }
   for (const [ns, n] of oldNodes) {
     if (!newNodes.has(ns)) {
-      nodes_removed.push({ namespace: ns, type: n.type, label: n.label })
+      nodes_removed.push({ namespace: rename(ns, oldDerived), type: n.type, label: n.label })
     }
   }
 
@@ -79,7 +106,7 @@ export function computeDiff(oldDef: WorkflowDefinition, newDef: WorkflowDefiniti
     const labelChanged = (oldNode.label ?? '') !== (newNode.label ?? '')
     if (Object.keys(config_changes).length > 0 || labelChanged) {
       nodes_modified.push({
-        namespace: ns,
+        namespace: rename(ns, newDerived),
         type: newNode.type,
         ...(labelChanged ? { label_change: { before: oldNode.label, after: newNode.label } } : {}),
         config_changes,
@@ -87,14 +114,21 @@ export function computeDiff(oldDef: WorkflowDefinition, newDef: WorkflowDefiniti
     }
   }
 
+  // Edges reference node namespaces too — translate source/target so the LLM
+  // sees consistent names across the diff (no half-derived references).
+  const nsById = new Map<string, string>()
+  for (const n of newDef.nodes) nsById.set(n.id, rename(n.namespace, newDerived))
+  for (const n of oldDef.nodes) if (!nsById.has(n.id)) nsById.set(n.id, rename(n.namespace, oldDerived))
+  const resolveEnd = (id: string) => nsById.get(id) ?? id
+
   const oldEdgeKeys = new Set(oldDef.edges.map(edgeKey))
   const newEdgeKeys = new Set(newDef.edges.map(edgeKey))
   const edges_added = newDef.edges
     .filter((e) => !oldEdgeKeys.has(edgeKey(e)))
-    .map((e) => ({ from: e.source, to: e.target, handle: e.source_handle ?? 'output' }))
+    .map((e) => ({ from: resolveEnd(e.source), to: resolveEnd(e.target), handle: e.source_handle ?? 'output' }))
   const edges_removed = oldDef.edges
     .filter((e) => !newEdgeKeys.has(edgeKey(e)))
-    .map((e) => ({ from: e.source, to: e.target, handle: e.source_handle ?? 'output' }))
+    .map((e) => ({ from: resolveEnd(e.source), to: resolveEnd(e.target), handle: e.source_handle ?? 'output' }))
 
   const triggerChanged = JSON.stringify(oldDef.trigger) !== JSON.stringify(newDef.trigger)
 
