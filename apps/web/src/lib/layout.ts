@@ -800,41 +800,38 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const ownPos = pos.get(node.id)
       if (!ownPos) continue
       const branch = nodeMap.get(branchId)
-      const isConnected = branchEndIsEffectivelyConnected(node.id, branchId)
-      let newX: number
-      let newY: number
-      if (!isConnected) {
-        const branchH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
-        const pillH = effectiveHeight(node)
-        newX = branchPos.x
-        newY = branchPos.y + branchH / 2 + 16 + pillH / 2
-      } else {
-        const handles = branch ? configuredHandleIds(branch) ?? [] : []
-        let deepestY = branchPos.y
-        let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
-        const visited = new Set<string>([branchId, node.id])
-        const queue: string[] = []
-        for (const h of handles) {
-          const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
-          if (slotEdge) queue.push(slotEdge.target)
-        }
-        while (queue.length > 0) {
-          const cur = queue.shift() as string
-          if (visited.has(cur)) continue
-          visited.add(cur)
-          const curPos = pos.get(cur)
-          const curNode = nodeMap.get(cur)
-          if (curPos && curPos.y > deepestY) {
-            deepestY = curPos.y
-            if (curNode) deepestH = effectiveHeight(curNode)
-          }
-          for (const e of edges) {
-            if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
-          }
-        }
-        newX = branchPos.x
-        newY = deepestY + deepestH / 2 + 48 + effectiveHeight(node) / 2
+      // Always park the branch_end below the deepest node in the branch's
+      // subtree (or right under the branch when the subtree is empty). This
+      // works for both the full-card and compact-pill renders — the pill is
+      // small and won't overlap anything by sitting low. Earlier behavior
+      // tucked the unconnected pill right below the start, which left the
+      // pill floating between the branch and its children when chains hadn't
+      // converged onto it yet (continues-style responses, data_store→… etc.).
+      const handles = branch ? configuredHandleIds(branch) ?? [] : []
+      let deepestY = branchPos.y
+      let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
+      const visited = new Set<string>([branchId, node.id])
+      const queue: string[] = []
+      for (const h of handles) {
+        const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
+        if (slotEdge) queue.push(slotEdge.target)
       }
+      while (queue.length > 0) {
+        const cur = queue.shift() as string
+        if (visited.has(cur)) continue
+        visited.add(cur)
+        const curPos = pos.get(cur)
+        const curNode = nodeMap.get(cur)
+        if (curPos && curPos.y > deepestY) {
+          deepestY = curPos.y
+          if (curNode) deepestH = effectiveHeight(curNode)
+        }
+        for (const e of edges) {
+          if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
+        }
+      }
+      const newX = branchPos.x
+      const newY = deepestY + deepestH / 2 + 48 + effectiveHeight(node) / 2
       if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
         ownPos.x = newX
         ownPos.y = newY
