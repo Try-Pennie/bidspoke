@@ -1462,11 +1462,16 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
     }
     const newEdges = [...remaining, ...bridgeEdges]
     const shifted = shiftDisconnectedRight(newEdges)
+    const next = layoutWorkflow(shifted, newEdges)
+    // Keep the user's spot: anchor the viewport to the upstream node that
+    // survives the operation (near where they clicked), so the canvas doesn't
+    // jump when layout reflows.
+    layoutPreservingViewport(inEdges[0]?.source ?? outEdges[0]?.target ?? 'trigger', nodes, next)
     setEdges(newEdges)
-    setNodes(layoutWorkflow(shifted, newEdges))
+    setNodes(next)
     setIsDirty(true)
     setContextMenu(null)
-  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
+  }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
   // Disconnect: cut only the node's incoming edges. The node and its entire
   // downstream subgraph float away as a disconnected cluster (still internally
@@ -1474,24 +1479,33 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
   // main flow while keeping its current Y.
   const disconnectNode = useCallback((nodeId: string) => {
     snapshot()
+    const cutEdges = edges.filter((e) => e.target === nodeId)
     const newEdges = edges.filter((e) => e.target !== nodeId)
     const shifted = shiftDisconnectedRight(newEdges)
+    const next = layoutWorkflow(shifted, newEdges)
+    // Anchor to the upstream node the edge was cut from — it stays in the main
+    // flow, so the viewport holds steady instead of jumping.
+    layoutPreservingViewport(cutEdges[0]?.source ?? 'trigger', nodes, next)
     setEdges(newEdges)
-    setNodes(layoutWorkflow(shifted, newEdges))
+    setNodes(next)
     setIsDirty(true)
     setContextMenu(null)
-  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
+  }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
   // Disconnect a single edge — used by the right-click menu on edges.
   const deleteEdge = useCallback((edgeId: string) => {
     snapshot()
+    const edge = edges.find((e) => e.id === edgeId)
     const newEdges = edges.filter((e) => e.id !== edgeId)
     const shifted = shiftDisconnectedRight(newEdges)
+    const next = layoutWorkflow(shifted, newEdges)
+    // Anchor to the edge's source — it stays put, so the canvas holds steady.
+    layoutPreservingViewport(edge?.source ?? 'trigger', nodes, next)
     setEdges(newEdges)
-    setNodes(layoutWorkflow(shifted, newEdges))
+    setNodes(next)
     setIsDirty(true)
     setEdgeContextMenu(null)
-  }, [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes])
+  }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
@@ -1699,11 +1713,13 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       let next = edges.filter((e) => e.id !== oldEdge.id)
       next = addEdge({ ...newConnection, id: uid() }, next)
       const shifted = shiftDisconnectedRight(next)
+      const nextNodes = layoutWorkflow(shifted, next)
+      layoutPreservingViewport(newConnection.source ?? oldEdge.source ?? 'trigger', nodes, nextNodes)
       setEdges(next)
-      setNodes(layoutWorkflow(shifted, next))
+      setNodes(nextNodes)
       setIsDirty(true)
     },
-    [snapshot, edges, shiftDisconnectedRight, setEdges, setNodes]
+    [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport]
   )
 
 
