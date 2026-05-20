@@ -299,7 +299,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
         {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'data_store' && <DataStoreConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
