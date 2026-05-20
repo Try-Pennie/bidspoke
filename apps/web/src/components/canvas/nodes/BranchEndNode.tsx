@@ -2,13 +2,13 @@
 
 import { useEffect } from 'react'
 import { Handle, Position, useStore, useUpdateNodeInternals } from '@xyflow/react'
-import type { NodeProps, Node, Edge } from '@xyflow/react'
+import type { NodeProps, Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { nodeWidth, configuredHandleIds } from '@/lib/layout'
+import { nodeWidth } from '@/lib/layout'
 
 export function BranchEndNode({ id, data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
@@ -18,69 +18,16 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     if (!pairId) return null
     return (s.nodes as Node[]).find((n) => n.id === pairId) ?? null
   })
-  // Real chains wired into this branch_end (anything other than the hidden
-  // backbone from the paired branch). When there are none, render compact so
-  // a backfilled-but-unused branch_end doesn't stack a wide grey region at
-  // the bottom of the canvas.
-  const hasRealIncoming = useStore((s) => {
-    return (s.edges as Edge[]).some((e) => e.target === id && e.source !== pairId)
-  })
 
-  // Every chain from the paired branch terminates in an exit / response that
-  // ends the workflow. There's no path for the user to wire into branch_end,
-  // but the branch's job IS to converge here — we render it as if connected
-  // so the visual still looks complete (full card under the cluster).
-  const allChainsTerminate = useStore((s) => {
-    if (!pairId) return false
-    const allNodes = s.nodes as Node[]
-    const allEdges = s.edges as Edge[]
-    const startNode = allNodes.find((n) => n.id === pairId)
-    const handleCount = startNode ? (configuredHandleIds(startNode)?.length ?? 0) : 0
-    const wiredHandles = new Set<string>()
-    const seedTargets: string[] = []
-    for (const e of allEdges) {
-      if (e.source !== pairId) continue
-      if (!e.sourceHandle || e.sourceHandle === 'output') continue
-      wiredHandles.add(e.sourceHandle)
-      seedTargets.push(e.target)
-    }
-    if (seedTargets.length === 0) return false
-    // An empty/unwired handle means that path doesn't terminate — it's just
-    // unconfigured. Only treat the branch as fully-converging-at-its-end when
-    // EVERY configured handle has a chain.
-    if (wiredHandles.size < handleCount) return false
-    const visited = new Set<string>()
-    const queue = [...seedTargets]
-    const leaves = new Set<string>()
-    while (queue.length > 0) {
-      const cur = queue.shift() as string
-      if (visited.has(cur)) continue
-      visited.add(cur)
-      const outs = allEdges.filter((e) => e.source === cur && e.target !== id)
-      if (outs.length === 0) {
-        leaves.add(cur)
-      } else {
-        for (const o of outs) queue.push(o.target)
-      }
-    }
-    if (leaves.size === 0) return false
-    for (const leafId of leaves) {
-      const leaf = allNodes.find((n) => n.id === leafId)
-      if (!leaf) return false
-      if (leaf.type === 'exit') continue
-      if (leaf.type === 'response') {
-        const cfg = (leaf.data as { config?: { continue_after_response?: boolean } } | undefined)?.config
-        if (!cfg?.continue_after_response) continue
-      }
-      return false
-    }
-    return true
-  })
-
-  // The branch_end is "effectively connected" when there's a real wire into
-  // it OR every chain ends in a workflow-terminating node — both states mean
-  // the branch's convergence is meaningful, so we render it as the full card.
-  const effectivelyConnected = hasRealIncoming || allChainsTerminate
+  // Single source of truth for full-card vs pill: layout decides whether this
+  // end is "effectively connected" (chains converge into it) and, if so,
+  // inherits the paired branch's width onto the end's `_spanWidth`. So the
+  // presence of `_spanWidth` IS the full-card signal. Deriving it here instead
+  // of recomputing the connectivity heuristic prevents the layout and the
+  // renderer from disagreeing — which produced a full card stuck at NODE_W
+  // (a "half node": full-card chrome, pill width) when they diverged.
+  const ownSpanWidth = (data as { _spanWidth?: number } | undefined)?._spanWidth
+  const effectivelyConnected = ownSpanWidth != null
 
   // The render shape (compact pill vs full card) changes the handle DOM
   // positions. Without re-registering, React Flow's handle position cache
@@ -121,13 +68,10 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     )
   }
 
-  // Render at the end's OWN _spanWidth — the exact width layout used to place
-  // this node (`position.x = center - _spanWidth/2`). Reading the paired
-  // branch's _spanWidth instead caused a position-vs-render mismatch when the
-  // two differed, leaving the end card off-center / left-aligned instead of
-  // directly below the start. Layout sets the end's _spanWidth to the inherited
-  // value, so this keeps the start and end perfectly stacked.
-  const ownSpanWidth = (data as { _spanWidth?: number } | undefined)?._spanWidth
+  // Full card: render at the end's OWN _spanWidth — the exact width layout used
+  // to place this node (`position.x = center - _spanWidth/2`). We only reach
+  // here when ownSpanWidth is set (effectivelyConnected), so start and end stay
+  // perfectly stacked at the same width.
   const width = ownSpanWidth ?? nodeWidth('branch_end', data)
 
   return (
