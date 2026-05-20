@@ -451,16 +451,16 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             <input
               type="number"
               min={0}
-              step={0.5}
+              step={100}
               placeholder="Off"
-              value={cfg.duration_alert_ms ? cfg.duration_alert_ms / 1000 : ''}
-              onChange={(e) => update({ duration_alert_ms: e.target.value ? Math.round(Number(e.target.value) * 1000) : undefined })}
+              value={cfg.duration_alert_ms ?? ''}
+              onChange={(e) => update({ duration_alert_ms: e.target.value ? Math.round(Number(e.target.value)) : undefined })}
               disabled={readOnly}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             />
-            <span className="text-xs text-gray-400 whitespace-nowrap">seconds</span>
+            <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
           </div>
-          <p className="mt-1 text-xs text-gray-400">Send a Slack alert if any execution takes longer than this. Leave blank to disable.</p>
+          <p className="mt-1 text-xs text-gray-400">Send a Slack alert if any execution takes longer than this. Leave blank to disable. Matches the unit on node-level timeouts.</p>
         </div>
 
         {/* Slack channel override */}
