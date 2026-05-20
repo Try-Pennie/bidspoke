@@ -391,13 +391,19 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // (workflow-ending). Mirrors `effectivelyConnected` in BranchEndNode.
   const branchEndIsEffectivelyConnected = (endId: string, branchId: string): boolean => {
     if (edges.some((e) => e.target === endId && e.source !== branchId)) return true
+    const branch = nodeMap.get(branchId)
+    const handleCount = branch ? (configuredHandleIds(branch)?.length ?? 0) : 0
+    const wiredHandles = new Set<string>()
     const seedTargets: string[] = []
     for (const e of edges) {
       if (e.source !== branchId) continue
       if (!e.sourceHandle || e.sourceHandle === 'output') continue
+      wiredHandles.add(e.sourceHandle)
       seedTargets.push(e.target)
     }
     if (seedTargets.length === 0) return false
+    // An empty/unwired handle means not all chains converge — keep it a pill.
+    if (wiredHandles.size < handleCount) return false
     const visited = new Set<string>()
     const queue = [...seedTargets]
     const leaves: string[] = []

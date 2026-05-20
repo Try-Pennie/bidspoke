@@ -8,7 +8,7 @@ import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { nodeWidth } from '@/lib/layout'
+import { nodeWidth, configuredHandleIds } from '@/lib/layout'
 
 export function BranchEndNode({ id, data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
@@ -34,13 +34,21 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     if (!pairId) return false
     const allNodes = s.nodes as Node[]
     const allEdges = s.edges as Edge[]
+    const startNode = allNodes.find((n) => n.id === pairId)
+    const handleCount = startNode ? (configuredHandleIds(startNode)?.length ?? 0) : 0
+    const wiredHandles = new Set<string>()
     const seedTargets: string[] = []
     for (const e of allEdges) {
       if (e.source !== pairId) continue
       if (!e.sourceHandle || e.sourceHandle === 'output') continue
+      wiredHandles.add(e.sourceHandle)
       seedTargets.push(e.target)
     }
     if (seedTargets.length === 0) return false
+    // An empty/unwired handle means that path doesn't terminate — it's just
+    // unconfigured. Only treat the branch as fully-converging-at-its-end when
+    // EVERY configured handle has a chain.
+    if (wiredHandles.size < handleCount) return false
     const visited = new Set<string>()
     const queue = [...seedTargets]
     const leaves = new Set<string>()
@@ -113,10 +121,14 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     )
   }
 
-  // Match the paired branch's effective width so the join visually closes the
-  // cluster instead of being a narrow box under a wide branch.
-  const startSpanWidth = (startData as { _spanWidth?: number } | undefined)?._spanWidth
-  const width = startSpanWidth ?? nodeWidth('branch_end', data)
+  // Render at the end's OWN _spanWidth — the exact width layout used to place
+  // this node (`position.x = center - _spanWidth/2`). Reading the paired
+  // branch's _spanWidth instead caused a position-vs-render mismatch when the
+  // two differed, leaving the end card off-center / left-aligned instead of
+  // directly below the start. Layout sets the end's _spanWidth to the inherited
+  // value, so this keeps the start and end perfectly stacked.
+  const ownSpanWidth = (data as { _spanWidth?: number } | undefined)?._spanWidth
+  const width = ownSpanWidth ?? nodeWidth('branch_end', data)
 
   return (
     <div
