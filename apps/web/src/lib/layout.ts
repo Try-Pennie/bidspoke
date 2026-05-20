@@ -820,7 +820,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     return d
   }
 
-  const endNodes = nodes.filter((n) => n.type === 'branch_end')
+  // Both end types participate: a parallel_end nested in a branch's slot (or
+  // vice versa) must stack below its container's content too. Excluding
+  // parallel_end here left it at its dagre position while branch_ends cascaded,
+  // so an outer branch_end could land directly on top of an inner parallel_end.
+  const endNodes = nodes.filter((n) => n.type === 'branch_end' || n.type === 'parallel_end')
   const endDepth = new Map<string, number>()
   for (const e of endNodes) {
     const branchId = (e.data as { _pairId?: string })._pairId
