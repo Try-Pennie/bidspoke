@@ -369,10 +369,13 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       // captures clicks/drags otherwise — so nodes sitting on top of a
       // region (e.g., webhook inside parallel cluster) become unclickable.
       style: { pointerEvents: 'none' as const },
-      // Render order in the array (regions first) keeps them visually behind
-      // real nodes when zIndex is unset on real nodes; deeper regions get a
-      // larger zIndex so they stack atop their containing region.
-      zIndex: depth,
+      // Regions must sit BEHIND real nodes so their translucent grey doesn't
+      // darken node text. Real nodes use React Flow's default zIndex (0), so a
+      // non-negative region zIndex (e.g. a nested region at depth >= 1) would
+      // stack ON TOP of the node it wraps. Push regions to a deep negative
+      // band; deeper regions still get a larger value so they stack atop their
+      // containing region, but the whole band stays below 0 (real nodes).
+      zIndex: -1000 + depth,
     } as Node
   })
 }
