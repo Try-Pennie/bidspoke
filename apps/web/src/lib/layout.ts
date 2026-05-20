@@ -836,9 +836,6 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const ownPos = pos.get(node.id)
     if (!branchPos || !ownPos) continue
     const branch = nodeMap.get(branchId)
-    const myEffW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
-    const myLeft = branchPos.x - myEffW / 2
-    const myRight = branchPos.x + myEffW / 2
 
     // (1) Deepest CONTENT in this branch's subtree (skip end nodes; stop
     // recursing at ends so we don't run downstream into outer ends).
@@ -869,12 +866,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     let newY = contentDeepestY + contentDeepestH / 2 + 96 + effectiveHeight(node) / 2
 
-    // (2) Below any already-placed end whose paired branch is genuinely nested
-    // inside MY branch's slot (containment, not just a deeper global depth) and
-    // whose card overlaps mine in X. Processed innermost-first, so those
-    // positions are final. Tight 16 px. Using real containment (not depth
-    // comparison) means a shallow-but-late end like equifax_debt_end doesn't
-    // get dragged below deep nested ends it doesn't actually contain.
+    // (2) Below every already-placed end whose paired branch is genuinely
+    // nested inside MY branch's slot (real containment). The outer end always
+    // sits below its inner ends — no X-overlap gate, because pills are narrow
+    // and two containment-related pills in different columns would otherwise
+    // land at nearly the same Y (ambiguous which is the outer convergence).
+    // Processed innermost-first, so inner positions are final. 48 px gap.
+    // Using real containment (not global depth) means a shallow-but-late end
+    // like equifax_debt_end isn't dragged below deep ends it doesn't contain.
     const myContains = slotReachable.get(branchId) ?? new Set<string>()
     for (const other of endNodes) {
       if (other === node) continue
@@ -882,13 +881,8 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (!otherBranch || !myContains.has(otherBranch)) continue
       const otherPos = pos.get(other.id)
       if (!otherPos) continue
-      const otherEffW = effectiveWidthByNode.get(other.id) ?? nodeWidth(other.type, other.data)
-      const otherLeft = otherPos.x - otherEffW / 2
-      const otherRight = otherPos.x + otherEffW / 2
-      if (Math.max(myLeft, otherLeft) < Math.min(myRight, otherRight)) {
-        const stackedY = otherPos.y + effectiveHeight(other) / 2 + 48 + effectiveHeight(node) / 2
-        if (stackedY > newY) newY = stackedY
-      }
+      const stackedY = otherPos.y + effectiveHeight(other) / 2 + 48 + effectiveHeight(node) / 2
+      if (stackedY > newY) newY = stackedY
     }
 
     ownPos.x = branchPos.x
