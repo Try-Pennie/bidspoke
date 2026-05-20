@@ -975,6 +975,28 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Top-align siblings within a rank. `pos` holds CENTER coordinates, so
+  // converting to top-left as `centerY - height/2` makes same-rank nodes of
+  // different heights (e.g. a tall data_store with a value chip next to a
+  // short response) land at different tops — the incoming edges then arrive at
+  // visibly different heights. Group nodes by their shared center-y and align
+  // every node in the rank to the tallest one's top, so tops line up.
+  const willUsePos = (node: (typeof nodes)[number]) => {
+    const manual = (node.data as { manualPosition?: boolean } | undefined)?.manualPosition
+    const isReachable = reachable.has(node.id)
+    const hasExistingPos = node.position.x !== 0 || node.position.y !== 0
+    if (!isReachable && (manual || hasExistingPos)) return false
+    return pos.has(node.id)
+  }
+  const maxHByRank = new Map<number, number>()
+  for (const node of nodes) {
+    if (!willUsePos(node)) continue
+    const p = pos.get(node.id)!
+    const rank = Math.round(p.y)
+    const h = effectiveHeight(node)
+    if (h > (maxHByRank.get(rank) ?? 0)) maxHByRank.set(rank, h)
+  }
+
   return nodes.map((node) => {
     // manualPosition only applies to nodes NOT reachable from the trigger.
     // Active (reachable) nodes always take dagre's position so the main flow
@@ -1003,7 +1025,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       data: layoutData,
       position: {
         x: p.x - w / 2,
-        y: p.y - effectiveHeight(node) / 2,
+        y: p.y - (maxHByRank.get(Math.round(p.y)) ?? effectiveHeight(node)) / 2,
       },
     }
   })
