@@ -1540,24 +1540,28 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const meta = e.metaKey || e.ctrlKey
-      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
-      if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
+      // Save and Escape stay active everywhere, including inside text fields —
+      // Cmd+S has no useful native behavior here and Escape only closes menus.
       if (meta && e.key === 's') { e.preventDefault(); openSaveMenu() }
       if (e.key === 'Escape') { setContextMenu(null); setEdgeContextMenu(null) }
 
-      // Copy/paste — skip when focus is inside any side panel (config, test, trigger).
-      // This covers Monaco and all other inputs in those panels without relying on
-      // fragile element-type checks.
+      // Focus guard: when the user is editing text — any input/textarea/
+      // contenteditable, or anywhere inside a side panel (config/test/trigger,
+      // incl. Monaco) — let the BROWSER own the keyboard. Otherwise the
+      // canvas-level Cmd+Z would undo the last node-add instead of the text the
+      // user just typed. This guards undo/redo and copy/paste/duplicate alike.
       const target = e.target instanceof Node ? e.target : null
       if (target && sidePanelRef.current?.contains(target)) return
-
-      // Also skip for any plain editable element outside the side panels (e.g. name input in toolbar)
       const inInput = e.composedPath().some(
         (el) => el instanceof HTMLInputElement
           || el instanceof HTMLTextAreaElement
           || (el instanceof HTMLElement && el.isContentEditable)
       )
       if (inInput) return
+
+      // Canvas-level undo/redo — only reached when NOT editing text.
+      if (meta && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
+      if (meta && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo() }
 
       // Cmd+C — copy selected node (not the trigger) to localStorage
       if (meta && e.key === 'c' && selectedNodeId && selectedNodeId !== 'trigger') {
