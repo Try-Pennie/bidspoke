@@ -98,14 +98,14 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
     return (
       <div className="flex justify-center" style={{ width: nodeWidth('branch_end', data) }}>
         <div
-          className={`relative inline-flex items-center gap-1.5 rounded-full border bg-white px-3 py-1 text-xs ${
+          className={`relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border bg-white px-3 py-1 text-xs ${
             selected ? 'border-purple-400 ring-2 ring-purple-200' : 'border-purple-100'
           } ${getNodeClasses(executionStep, hasError, isReachable)}`}
           style={getExecutionStyle(executionStep)}
         >
           <NoteBadge note={note} />
           <Handle type="target" position={Position.Top} id="input" />
-          <GitMerge className="h-3 w-3 text-purple-400" />
+          <GitMerge className="h-3 w-3 shrink-0 text-purple-400" />
           <span className="font-medium text-purple-500">{derivedLabel}</span>
           <Handle type="source" position={Position.Bottom} id="output" />
         </div>
