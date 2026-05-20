@@ -767,98 +767,113 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (snapshot() === before) break
   }
 
-  // ── Post-process: place every branch_end's position relative to its own
-  // branch's cluster, NOT via dagre rank constraints (which cascade through
-  // nested branches and stretch the layout vertically — see commit notes
-  // above). Two modes:
-  //   - Unconnected (only the hidden backbone in): tuck under the branch,
-  //     above the chain children. Compact pill render, findable, doesn't
-  //     overflow into sibling territory.
-  //   - Connected (real chains wired in): pin centered under the branch at
-  //     `deepestY + one rank`, where deepestY is from a BFS through the
-  //     branch's handles that DOES include nested branch_ends — but only
-  //     reads their *post-processed* positions, so each outer end ends up
-  //     just below the deepest inner end.
+  // ── Post-process: place every branch_end below its branch's content and
+  // below any nested end that would horizontally overlap it. The starts
+  // cascade naturally by nesting depth (each nested branch is one flow-step
+  // deeper); the ends should mirror that on the way out — inner ends shallow,
+  // outer ends deep, no overlap.
   //
-  // Iterates until positions stabilize so outer ends can react to inner ends
-  // moving on prior iterations.
-  let branchEndIters = 0
-  let branchEndChanged = true
-  while (branchEndChanged && branchEndIters < 8) {
-    branchEndChanged = false
-    branchEndIters++
-    for (const node of nodes) {
-      if (node.type !== 'branch_end') continue
-      const pairData = node.data as { _pairId?: string }
-      const branchId = pairData._pairId
-      if (!branchId) continue
-      const branchPos = pos.get(branchId)
-      if (!branchPos) continue
-      const ownPos = pos.get(node.id)
-      if (!ownPos) continue
-      const branch = nodeMap.get(branchId)
-      // Always park the branch_end below the deepest node in the branch's
-      // subtree (or right under the branch when the subtree is empty). This
-      // works for both the full-card and compact-pill renders — the pill is
-      // small and won't overlap anything by sitting low. Earlier behavior
-      // tucked the unconnected pill right below the start, which left the
-      // pill floating between the branch and its children when chains hadn't
-      // converged onto it yet (continues-style responses, data_store→… etc.).
-      // Forward BFS through the paired branch's subtree. Non-end nodes always
-      // count toward deepestY. Other branch_end / parallel_end nodes only
-      // count if their X-range actually overlaps mine — that way ends at
-      // different X columns can sit side-by-side at the same Y (no needless
-      // cascade), but ends whose wide _spanWidth boxes WOULD overlap push us
-      // further down so we don't end up on top of them.
-      const myEffW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
-      const myLeft = branchPos.x - myEffW / 2
-      const myRight = branchPos.x + myEffW / 2
-      const handles = branch ? configuredHandleIds(branch) ?? [] : []
-      let deepestY = branchPos.y
-      let deepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
-      let deepestIsEnd = false
-      const visited = new Set<string>([branchId, node.id])
-      const queue: string[] = []
-      for (const h of handles) {
-        const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
-        if (slotEdge) queue.push(slotEdge.target)
+  // Done in nesting order (innermost branch first) in a SINGLE pass to avoid
+  // the circular dependency that an iterative forward-BFS hits: an inner end's
+  // forward reach can run downstream into an outer end (e.g. bid_race.output →
+  // state_condition_check_end skips estimated_debt_check_end), and the outer
+  // end's reach runs back through the inner — each iteration pushed both
+  // deeper, blowing the outermost end thousands of px down.
+  //
+  // Containment depth: how many branches contain B in their slot subtree.
+  const slotReachable = new Map<string, Set<string>>()
+  for (const b of nodes) {
+    if (b.type !== 'branch' && b.type !== 'parallel') continue
+    const handles = configuredHandleIds(b) ?? []
+    const reach = new Set<string>()
+    const q: string[] = []
+    for (const h of handles) {
+      const se = edges.find((e) => e.source === b.id && e.sourceHandle === h)
+      if (se) q.push(se.target)
+    }
+    while (q.length > 0) {
+      const cur = q.shift() as string
+      if (reach.has(cur)) continue
+      reach.add(cur)
+      for (const e of edges) if (e.source === cur && !reach.has(e.target)) q.push(e.target)
+    }
+    slotReachable.set(b.id, reach)
+  }
+  const branchContainmentDepth = (branchId: string): number => {
+    let d = 0
+    for (const [otherId, reach] of slotReachable) {
+      if (otherId !== branchId && reach.has(branchId)) d++
+    }
+    return d
+  }
+
+  const endNodes = nodes.filter((n) => n.type === 'branch_end')
+  const endDepth = new Map<string, number>()
+  for (const e of endNodes) {
+    const branchId = (e.data as { _pairId?: string })._pairId
+    endDepth.set(e.id, branchId ? branchContainmentDepth(branchId) : 0)
+  }
+  // Innermost (highest containment depth) first.
+  endNodes.sort((a, b) => (endDepth.get(b.id) ?? 0) - (endDepth.get(a.id) ?? 0))
+
+  for (const node of endNodes) {
+    const branchId = (node.data as { _pairId?: string })._pairId
+    if (!branchId) continue
+    const branchPos = pos.get(branchId)
+    const ownPos = pos.get(node.id)
+    if (!branchPos || !ownPos) continue
+    const branch = nodeMap.get(branchId)
+    const myEffW = effectiveWidthByNode.get(node.id) ?? nodeWidth(node.type, node.data)
+    const myLeft = branchPos.x - myEffW / 2
+    const myRight = branchPos.x + myEffW / 2
+
+    // (1) Deepest CONTENT in this branch's subtree (skip end nodes; stop
+    // recursing at ends so we don't run downstream into outer ends).
+    const handles = branch ? configuredHandleIds(branch) ?? [] : []
+    let contentDeepestY = branchPos.y
+    let contentDeepestH = branch ? effectiveHeight(branch) : nodeHeight(undefined)
+    const visited = new Set<string>([branchId, node.id])
+    const queue: string[] = []
+    for (const h of handles) {
+      const slotEdge = edges.find((e) => e.source === branchId && e.sourceHandle === h)
+      if (slotEdge) queue.push(slotEdge.target)
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (visited.has(cur)) continue
+      visited.add(cur)
+      const curNode = nodeMap.get(cur)
+      const isEnd = curNode?.type === 'branch_end' || curNode?.type === 'parallel_end'
+      const curPos = pos.get(cur)
+      if (curPos && !isEnd && curPos.y > contentDeepestY) {
+        contentDeepestY = curPos.y
+        if (curNode) contentDeepestH = effectiveHeight(curNode)
       }
-      while (queue.length > 0) {
-        const cur = queue.shift() as string
-        if (visited.has(cur)) continue
-        visited.add(cur)
-        const curPos = pos.get(cur)
-        const curNode = nodeMap.get(cur)
-        const isEnd = curNode?.type === 'branch_end' || curNode?.type === 'parallel_end'
-        if (curPos && curPos.y > deepestY) {
-          let countsForDeepest = true
-          if (isEnd && curNode) {
-            const otherEffW = effectiveWidthByNode.get(cur) ?? nodeWidth(curNode.type, curNode.data)
-            const otherLeft = curPos.x - otherEffW / 2
-            const otherRight = curPos.x + otherEffW / 2
-            countsForDeepest = Math.max(myLeft, otherLeft) < Math.min(myRight, otherRight)
-          }
-          if (countsForDeepest) {
-            deepestY = curPos.y
-            if (curNode) deepestH = effectiveHeight(curNode)
-            deepestIsEnd = !!isEnd
-          }
-        }
-        for (const e of edges) {
-          if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
-        }
-      }
-      const newX = branchPos.x
-      // When the deepest is another end (and overlaps us), stack tight (16 px)
-      // — same convergence layer. Otherwise full content-gap of 96 px.
-      const gap = deepestIsEnd ? 16 : 96
-      const newY = deepestY + deepestH / 2 + gap + effectiveHeight(node) / 2
-      if (Math.abs(ownPos.x - newX) > 0.5 || Math.abs(ownPos.y - newY) > 0.5) {
-        ownPos.x = newX
-        ownPos.y = newY
-        branchEndChanged = true
+      if (isEnd) continue // don't recurse past a nested end
+      for (const e of edges) {
+        if (e.source === cur && !visited.has(e.target)) queue.push(e.target)
       }
     }
+    let newY = contentDeepestY + contentDeepestH / 2 + 96 + effectiveHeight(node) / 2
+
+    // (2) Below any already-placed inner end whose card overlaps mine in X.
+    // Processed innermost-first, so those positions are final. Tight 16 px.
+    for (const other of endNodes) {
+      if (other === node) continue
+      if ((endDepth.get(other.id) ?? 0) <= (endDepth.get(node.id) ?? 0)) continue // only deeper-nested ends are "inner"
+      const otherPos = pos.get(other.id)
+      if (!otherPos) continue
+      const otherEffW = effectiveWidthByNode.get(other.id) ?? nodeWidth(other.type, other.data)
+      const otherLeft = otherPos.x - otherEffW / 2
+      const otherRight = otherPos.x + otherEffW / 2
+      if (Math.max(myLeft, otherLeft) < Math.min(myRight, otherRight)) {
+        const stackedY = otherPos.y + effectiveHeight(other) / 2 + 16 + effectiveHeight(node) / 2
+        if (stackedY > newY) newY = stackedY
+      }
+    }
+
+    ownPos.x = branchPos.x
+    ownPos.y = newY
   }
 
   // ── Post-process: extra gap between the main (trigger) component and any
