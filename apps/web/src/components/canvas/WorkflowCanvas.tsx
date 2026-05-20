@@ -798,9 +798,10 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution }: {
+function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution }: {
   workflow: Workflow
   mode: 'edit' | 'view'
+  onModeChange?: (mode: 'edit' | 'view') => void
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
   executionPayload?: unknown
@@ -814,6 +815,14 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow()
+
+  // Switch view↔edit. Prefer the parent's local-state mode setter (instant —
+  // avoids the App Router transition lag); fall back to a URL push if no
+  // handler was passed.
+  const switchMode = useCallback((next: 'edit' | 'view') => {
+    if (onModeChange) onModeChange(next)
+    else router.push(`/workflows/${workflow.id}?mode=${next}`)
+  }, [onModeChange, router, workflow.id])
 
   // After a layout pass that may have shifted existing nodes (e.g. dropping a
   // new node and re-running dagre), keep the user's view stable by translating
@@ -2257,7 +2266,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
       } else {
         setSavedOk(true)
         setTimeout(() => setSavedOk(false), 2500)
-        router.push(`/workflows/${workflow.id}?mode=view`)
+        switchMode('view')
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
@@ -2350,7 +2359,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
           {/* Group: Mode */}
           <div className="flex overflow-hidden rounded border border-gray-200 text-xs">
             <button
-              onClick={() => router.push(`/workflows/${workflow.id}?mode=edit`)}
+              onClick={() => switchMode('edit')}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
                 mode === 'edit' ? 'bg-p-blue-dark text-white' : 'bg-white text-gray-400 hover:bg-beige'
               }`}
@@ -2359,7 +2368,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
               Edit
             </button>
             <button
-              onClick={() => router.push(`/workflows/${workflow.id}?mode=view`)}
+              onClick={() => switchMode('view')}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
                 mode === 'view' ? 'bg-gray-100 text-gray-800' : 'bg-white text-gray-400 hover:bg-beige'
               }`}
@@ -2579,7 +2588,7 @@ function CanvasInner({ workflow, mode, executionId, executionSteps, executionPay
                     onClick={() => {
                       setTestInitialPayload(JSON.stringify(executionPayload, null, 2))
                       setShowTest(true)
-                      router.push(`/workflows/${workflow.id}?mode=edit`)
+                      switchMode('edit')
                     }}
                     className="flex items-center gap-1 text-p-blue-dark hover:text-navy"
                     title="Load this payload into the test panel"
@@ -3254,6 +3263,7 @@ function EdgeRemoveButton({
 export default function WorkflowCanvas({
   workflow,
   mode,
+  onModeChange,
   executionId,
   executionSteps,
   executionPayload,
@@ -3267,6 +3277,7 @@ export default function WorkflowCanvas({
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
+  onModeChange?: (mode: 'edit' | 'view') => void
   executionId?: string
   executionSteps?: Record<string, ExecutionStep>
   executionPayload?: unknown
@@ -3283,6 +3294,7 @@ export default function WorkflowCanvas({
       <CanvasInner
         workflow={workflow}
         mode={mode}
+        onModeChange={onModeChange}
         executionId={executionId}
         executionSteps={executionSteps}
         executionPayload={executionPayload}

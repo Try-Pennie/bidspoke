@@ -3,22 +3,33 @@
 export const runtime = 'edge'
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { useParams, useSearchParams } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
 import type { Workflow, ExecutionStep } from '@/types/workflow'
 
 function WorkflowEditorInner() {
   const { id } = useParams<{ id: string }>()
+  const router = useRouter()
   const searchParams = useSearchParams()
   const urlExecutionId = searchParams.get('execution') ?? undefined
-  const mode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
+  const urlMode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
 
   // Mirror the URL into local state so Clear can drop the execution view
   // synchronously instead of waiting on the App Router transition. router.replace
   // happens in the background and will re-sync via the effect below.
   const [executionId, setExecutionId] = useState<string | undefined>(urlExecutionId)
   useEffect(() => { setExecutionId(urlExecutionId) }, [urlExecutionId])
+
+  // Same pattern for mode — switching view↔edit through the App Router
+  // transition was noticeably laggy on big workflows. Flip local state
+  // immediately (instant UI) and push the URL in the background.
+  const [mode, setMode] = useState<'edit' | 'view'>(urlMode)
+  useEffect(() => { setMode(urlMode) }, [urlMode])
+  const changeMode = useCallback((next: 'edit' | 'view') => {
+    setMode(next)
+    router.push(`/workflows/${id}?mode=${next}`)
+  }, [router, id])
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [executionSteps, setExecutionSteps] = useState<Record<string, ExecutionStep> | undefined>(undefined)
@@ -146,6 +157,7 @@ function WorkflowEditorInner() {
     <WorkflowCanvas
       workflow={workflow}
       mode={mode}
+      onModeChange={changeMode}
       executionId={executionId}
       executionSteps={executionSteps}
       executionPayload={executionPayload}
