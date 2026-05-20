@@ -1039,6 +1039,19 @@ function DataStoreConfig({
         : JSON.stringify(config.value, null, 2)
       : ''
 
+  // Write defaults to config on mount when they're undefined. Without this, the
+  // form shows 'set' as the visual default but config.operation stays undefined
+  // until the user clicks a button — and the executor throws on missing
+  // operation. Same pattern bit us on BidGroup.no_winner_behavior; root-cause
+  // fix is to make the displayed default also the persisted default.
+  useEffect(() => {
+    const patch: Record<string, unknown> = {}
+    if (config.store === undefined) patch.store = 'submissions'
+    if (config.operation === undefined) patch.operation = 'set'
+    if (Object.keys(patch).length > 0) onChange(patch)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <section className="space-y-4">
       <Field label="Store" hint="Which KV namespace to target. Only one store today; future stores plug in here.">
