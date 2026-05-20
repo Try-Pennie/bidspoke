@@ -880,7 +880,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const otherLeft = otherPos.x - otherEffW / 2
       const otherRight = otherPos.x + otherEffW / 2
       if (Math.max(myLeft, otherLeft) < Math.min(myRight, otherRight)) {
-        const stackedY = otherPos.y + effectiveHeight(other) / 2 + 16 + effectiveHeight(node) / 2
+        const stackedY = otherPos.y + effectiveHeight(other) / 2 + 48 + effectiveHeight(node) / 2
         if (stackedY > newY) newY = stackedY
       }
     }
