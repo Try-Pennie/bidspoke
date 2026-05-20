@@ -242,6 +242,21 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       for (const next of adjOut.get(cur) ?? []) {
         if (reachable.has(next)) continue
         if (stopAt && stopAt.has(next)) continue // skip converge-and-beyond entirely
+        // Stop at an OUTER end: a branch_end/parallel_end whose paired START
+        // lives outside this region means the flow has exited this container's
+        // scope (e.g. a multi-output's `output` handle rejoining an ancestor's
+        // end). Without this the BFS walks bid_race.output → the outer
+        // branch_end → its downstream, and the grey backdrop balloons far past
+        // the container's real content. This container's OWN end (pairId) and
+        // any nested end (whose start was already visited) still pass.
+        const nextNode = nodes.find((n) => n.id === next)
+        if (
+          next !== pairId &&
+          (nextNode?.type === 'branch_end' || nextNode?.type === 'parallel_end')
+        ) {
+          const startId = (nextNode.data as { _pairId?: string })?._pairId
+          if (startId && !reachable.has(startId)) continue
+        }
         reachable.add(next)
         queue.push(next)
       }
