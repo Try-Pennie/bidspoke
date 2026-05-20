@@ -781,9 +781,16 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // deeper, blowing the outermost end thousands of px down.
   //
   // Containment depth: how many branches contain B in their slot subtree.
+  // Crucially, the slot-reachable walk STOPS at the branch's own paired end —
+  // otherwise a branch whose flow continues past its end (e.g. equifax_debt →
+  // … → equifax_debt_end → mutate_bes → … → the entire rest of the workflow)
+  // would appear to "contain" everything downstream, making its end stack
+  // below all of it. Real containment ends at the branch's own convergence.
   const slotReachable = new Map<string, Set<string>>()
   for (const b of nodes) {
     if (b.type !== 'branch' && b.type !== 'parallel') continue
+    const endType = b.type === 'branch' ? 'branch_end' : 'parallel_end'
+    const pairEnd = edges.find((e) => e.source === b.id && nodeMap.get(e.target)?.type === endType)?.target
     const handles = configuredHandleIds(b) ?? []
     const reach = new Set<string>()
     const q: string[] = []
@@ -793,7 +800,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     while (q.length > 0) {
       const cur = q.shift() as string
-      if (reach.has(cur)) continue
+      if (reach.has(cur) || cur === pairEnd) continue
       reach.add(cur)
       for (const e of edges) if (e.source === cur && !reach.has(e.target)) q.push(e.target)
     }
@@ -856,11 +863,17 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     let newY = contentDeepestY + contentDeepestH / 2 + 96 + effectiveHeight(node) / 2
 
-    // (2) Below any already-placed inner end whose card overlaps mine in X.
-    // Processed innermost-first, so those positions are final. Tight 16 px.
+    // (2) Below any already-placed end whose paired branch is genuinely nested
+    // inside MY branch's slot (containment, not just a deeper global depth) and
+    // whose card overlaps mine in X. Processed innermost-first, so those
+    // positions are final. Tight 16 px. Using real containment (not depth
+    // comparison) means a shallow-but-late end like equifax_debt_end doesn't
+    // get dragged below deep nested ends it doesn't actually contain.
+    const myContains = slotReachable.get(branchId) ?? new Set<string>()
     for (const other of endNodes) {
       if (other === node) continue
-      if ((endDepth.get(other.id) ?? 0) <= (endDepth.get(node.id) ?? 0)) continue // only deeper-nested ends are "inner"
+      const otherBranch = (other.data as { _pairId?: string })._pairId
+      if (!otherBranch || !myContains.has(otherBranch)) continue
       const otherPos = pos.get(other.id)
       if (!otherPos) continue
       const otherEffW = effectiveWidthByNode.get(other.id) ?? nodeWidth(other.type, other.data)
