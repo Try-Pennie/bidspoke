@@ -893,6 +893,54 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     ownPos.y = newY
   }
 
+  // ── Post-process: downstream of a cascaded end must follow it down.
+  // The cascade above moves an end BELOW its dagre rank (to clear its content
+  // and any nested ends). But nodes after the end (e.g. branch_end → mutate_bes)
+  // were placed by dagre/applyLinearChain at the end's ORIGINAL rank — they
+  // don't know it moved. The gap then collapses, which is most visible in
+  // execution view: code/branch/filter nodes grow an output-preview row, so on
+  // a layout pass that runs with measured execution heights the cascade offset
+  // is larger and the downstream node ends up underneath the end card. Push
+  // each end's downstream chain down to restore the gap. Relax until stable —
+  // shifting one end's subtree carries any nested ends with it, preserving
+  // their internal spacing; the re-check then finds them already clear.
+  const END_DOWNSTREAM_GAP = 48
+  const shiftSubtreeDown = (rootId: string, delta: number) => {
+    const seen = new Set<string>([rootId])
+    const stack = [rootId]
+    while (stack.length > 0) {
+      const id = stack.pop() as string
+      const p = pos.get(id)
+      if (p) p.y += delta
+      for (const e of edges) {
+        if (e.source === id && !seen.has(e.target)) {
+          seen.add(e.target)
+          stack.push(e.target)
+        }
+      }
+    }
+  }
+  for (let iter = 0; iter < nodes.length; iter++) {
+    let moved = false
+    for (const end of endNodes) {
+      const endPos = pos.get(end.id)
+      if (!endPos) continue
+      const endBottom = endPos.y + effectiveHeight(end) / 2
+      for (const e of edges) {
+        if (e.source !== end.id) continue
+        const child = nodeMap.get(e.target)
+        const childPos = pos.get(e.target)
+        if (!child || !childPos) continue
+        const requiredCenter = endBottom + END_DOWNSTREAM_GAP + effectiveHeight(child) / 2
+        if (childPos.y < requiredCenter - 0.5) {
+          shiftSubtreeDown(e.target, requiredCenter - childPos.y)
+          moved = true
+        }
+      }
+    }
+    if (!moved) break
+  }
+
   // ── Post-process: extra gap between the main (trigger) component and any
   // disconnected subgraphs so it's visually obvious they aren't wired up.
   const EXTRA_DISCONNECTED_GAP = DISCONNECTED_GAP
