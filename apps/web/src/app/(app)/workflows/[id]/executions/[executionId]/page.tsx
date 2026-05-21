@@ -472,7 +472,9 @@ export default function ExecutionDetailPage() {
                 <p className="text-sm text-gray-400">No steps recorded.</p>
               ) : (
                 <div className="space-y-3">
-                  {execution.steps.map((step, i) => (
+                  {execution.steps
+                    .filter((step) => step.step_type !== 'branch_end' && step.step_type !== 'parallel_end')
+                    .map((step, i) => (
                     <div
                       key={step.id}
                       className={`rounded-xl border bg-white p-4 ${

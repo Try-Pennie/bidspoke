@@ -10,6 +10,7 @@ import { findParallelSuggestions } from '@/lib/parallel-suggestions'
 
 type TestStep = {
   step_namespace: string
+  step_type?: string
   status: string
   input: unknown
   output: unknown
@@ -18,6 +19,10 @@ type TestStep = {
   step_order: number
   parallel_group_id?: string | null
 }
+
+// branch_end / parallel_end are structural convergence markers — they always
+// run in <1ms and carry no output, so they're noise in the step list. Hide them.
+const isEndStep = (t?: string) => t === 'branch_end' || t === 'parallel_end'
 
 interface Props {
   workflowId: string
@@ -392,7 +397,7 @@ export default function TestRunPanel({
               )
             })()}
             <div className="overflow-hidden rounded-lg border border-gray-200 divide-y divide-gray-100">
-              {testSteps.map((step) => {
+              {testSteps.filter((step) => !isEndStep(step.step_type)).map((step) => {
                 const isExpanded = expandedStep === step.step_namespace
                 const label = nsToLabel[step.step_namespace] ?? step.step_namespace
                 const hasDetail = !!(step.error_message || (step.output !== null && step.output !== undefined))
