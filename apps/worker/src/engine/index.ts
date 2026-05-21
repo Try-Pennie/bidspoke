@@ -793,7 +793,13 @@ export async function walkGraph(
         }
 
         recordStepOutput(ctx, childNamespace, { output: attemptOutput, status: attemptStatus, error: attemptError, error_type: attemptErrorType })
-        logStep(stepLogQueue, executionId, executionStartedAt, childNode, attemptStatus, { partner_id }, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
+        // Log with the bid_group's REAL node id as step_node_id. childNode.id is
+        // synthetic (`${node.id}::${slug}`) and step_node_id is a uuid column —
+        // logging the synthetic id makes the whole step batch insert fail with
+        // "invalid input syntax for type uuid", silently dropping every step for
+        // the run (no path visible, canvas doesn't light up). The synthesized
+        // attempts belong to the bid_group node, so node.id is the right ref.
+        logStep(stepLogQueue, executionId, executionStartedAt, { ...childNode, id: node.id }, attemptStatus, { partner_id }, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
 
         const attemptStatusLog = attemptStatus === 'completed' ? 'step_complete' : 'step_error'
         log({ event: attemptStatusLog, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: childNamespace, step_type: 'partner_bid', duration_ms: Date.now() - attemptStartMs, error_message: attemptError, error_type: attemptErrorType })

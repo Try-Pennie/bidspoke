@@ -62,15 +62,34 @@ export async function flushStepLogs(
     output: redactPii(entry.output, piiFields),
   }))
   const { error } = await supabase.from('execution_steps').insert(rows)
-  if (error) {
-    console.error('[step-logger] execution_steps batch insert failed', {
-      count: rows.length,
-      execution_id: queue[0]?.execution_id,
-      error,
-    })
-    return error.message
+  if (!error) return null
+
+  console.error('[step-logger] execution_steps batch insert failed', {
+    count: rows.length,
+    execution_id: queue[0]?.execution_id,
+    error,
+  })
+  // The batch insert is atomic, so one malformed row (e.g. a bad uuid) drops
+  // EVERY step for the run — the execution then shows no path and the canvas
+  // doesn't light up. Fall back to per-row inserts so the good steps still
+  // persist and the offending row is isolated in the logs instead of taking
+  // the whole history down with it.
+  let failed = 0
+  let firstRowError: string | null = null
+  for (const row of rows) {
+    const { error: rowErr } = await supabase.from('execution_steps').insert(row)
+    if (rowErr) {
+      failed++
+      if (!firstRowError) firstRowError = rowErr.message
+      console.error('[step-logger] row insert failed', {
+        step_namespace: row.step_namespace,
+        step_node_id: row.step_node_id,
+        error: rowErr.message,
+      })
+    }
   }
-  return null
+  if (failed === 0) return null
+  return `${failed}/${rows.length} step rows failed: ${firstRowError ?? error.message}`
 }
 
 export async function createExecutionRecord(
