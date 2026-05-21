@@ -1320,6 +1320,51 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
   }, [lastTestExecId, nodes, edges, workflow.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Test a single node. "Build from run" passes a prior execution so upstream
+  // step outputs + that run's trigger payload seed the context; "cold start"
+  // omits it and runs with just the supplied trigger payload (works for nodes
+  // that don't read steps.*). Result is written to liveSteps so the node's
+  // StepResults panel renders it, same as a full test run.
+  const handleNodeTest = useCallback(async (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => {
+    const definition = flowToDef(nodes, edges, triggerRef.current)
+    const buildFromExecId = opts.useLastRun ? (lastTestExecId ?? executionId ?? undefined) : undefined
+    try {
+      const result = await api.workflows.testNode(workflow.id, {
+        namespace,
+        definition,
+        execution_id: buildFromExecId,
+        trigger_payload: opts.triggerPayload,
+      })
+      setLiveSteps((prev) => ({
+        ...prev,
+        [namespace]: {
+          status: result.status as ExecutionStep['status'],
+          output: result.output,
+          input: null,
+          error_message: result.error_message,
+          error_type: null,
+          duration_ms: result.duration_ms,
+          retries_used: 0,
+        },
+      }))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('Node test failed:', e)
+      setLiveSteps((prev) => ({
+        ...prev,
+        [namespace]: {
+          status: 'failed' as ExecutionStep['status'],
+          output: null,
+          input: null,
+          error_message: `Test failed: ${msg}`,
+          error_type: null,
+          duration_ms: 0,
+          retries_used: 0,
+        },
+      }))
+    }
+  }, [lastTestExecId, executionId, nodes, edges, workflow.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Apply live step data to nodes during a test run
   useEffect(() => {
     const hasLive = Object.keys(liveSteps).length > 0 || testRunning
@@ -3091,6 +3136,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               onEdgesChange={handleParallelEdgesChange}
               canRerun={!!lastTestExecId}
               onRerun={handleNodeRerun}
+              onNodeTest={handleNodeTest}
+              canBuildFromRun={!!(lastTestExecId || executionId)}
+              defaultTestPayload={(workflow as { test_payloads?: Array<{ name: string; payload: unknown }> }).test_payloads?.[0]?.payload}
               width={sidePanelWidth}
               onResize={setSidePanelWidth}
               workflowId={workflow.id}

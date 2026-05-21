@@ -499,32 +499,55 @@ workflows.post('/:id/test-node', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ namespace: string; execution_id: string; definition?: WorkflowDefinition }>()
+  const body = await c.req.json<{
+    namespace: string
+    definition?: WorkflowDefinition
+    execution_id?: string
+    trigger_payload?: unknown
+    steps?: Record<string, StepOutput>
+  }>()
 
-  // Fetch the prior execution for trigger payload + trace ID
-  const { data: exec } = await supabase
-    .from('workflow_executions')
-    .select('trigger_payload, trace_id, source')
-    .eq('id', body.execution_id)
-    .eq('organization_id', orgId)
-    .single()
-
-  if (!exec) return c.json({ error: 'Execution not found' }, 404)
-
-  // Fetch its steps to reconstruct ctx.steps
-  const { data: stepRows } = await supabase
-    .from('execution_steps')
-    .select('step_namespace, status, output, error_message, error_type')
-    .eq('execution_id', body.execution_id)
-
+  // Build the execution context. Two modes:
+  //  - Build from run: execution_id supplied → reconstruct the trigger payload
+  //    and upstream step outputs from that execution.
+  //  - Cold start: no execution_id → use the inline trigger_payload (and any
+  //    inline steps), so a node that doesn't depend on upstream output can be
+  //    tested without ever running the whole workflow.
+  // Inline trigger_payload / steps always override, so a build-from-run context
+  // can still be tweaked before re-testing.
+  let triggerPayload: unknown = body.trigger_payload ?? {}
+  let source = 'test_node'
+  let traceId = crypto.randomUUID()
   const ctxSteps: Record<string, StepOutput> = {}
-  for (const row of stepRows ?? []) {
-    ctxSteps[row.step_namespace as string] = {
-      output: row.output,
-      status: row.status as StepOutput['status'],
-      error: row.error_message as string | undefined,
-      error_type: row.error_type as StepOutput['error_type'],
+
+  if (body.execution_id) {
+    const { data: exec } = await supabase
+      .from('workflow_executions')
+      .select('trigger_payload, trace_id, source')
+      .eq('id', body.execution_id)
+      .eq('organization_id', orgId)
+      .single()
+    if (!exec) return c.json({ error: 'Execution not found' }, 404)
+    triggerPayload = body.trigger_payload ?? exec.trigger_payload
+    source = (exec.source as string | null) ?? source
+    traceId = (exec.trace_id as string | null) ?? traceId
+
+    const { data: stepRows } = await supabase
+      .from('execution_steps')
+      .select('step_namespace, status, output, error_message, error_type')
+      .eq('execution_id', body.execution_id)
+    for (const row of stepRows ?? []) {
+      ctxSteps[row.step_namespace as string] = {
+        output: row.output,
+        status: row.status as StepOutput['status'],
+        error: row.error_message as string | undefined,
+        error_type: row.error_type as StepOutput['error_type'],
+      }
     }
+  }
+  // Inline step overrides (cold start, or tweaking a build-from-run context).
+  if (body.steps) {
+    for (const [ns, step] of Object.entries(body.steps)) ctxSteps[ns] = step
   }
 
   // Find the node definition
@@ -558,7 +581,7 @@ workflows.post('/:id/test-node', async (c) => {
 
   // Reconstruct execution context
   const envVars = await loadEnvVars(orgId, c.env.WORKFLOW_CACHE, supabase)
-  const ctx = buildContext(exec.trigger_payload, exec.source as string, id, exec.trace_id as string, envVars, orgId, body.execution_id, c.env.APP_URL)
+  const ctx = buildContext(triggerPayload, source, id, traceId, envVars, orgId, body.execution_id, c.env.APP_URL)
   ctx.steps = ctxSteps
 
   const started = Date.now()

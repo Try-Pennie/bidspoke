@@ -9,7 +9,7 @@ import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, Execution
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
-import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2 } from 'lucide-react'
+import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
@@ -34,12 +34,17 @@ interface Props {
   // (not a test run). Resume skips completed upstream steps and re-runs the
   // failed one — so SF prospect creation etc. won't double-fire.
   onRetryFromFailure?: () => Promise<void>
+  // Test a single node. "Build from run" seeds upstream context from the last
+  // run; "cold start" runs with only the supplied trigger payload.
+  onNodeTest?: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+  canBuildFromRun?: boolean
+  defaultTestPayload?: unknown
   width?: number
   onResize?: (width: number) => void
   workflowId?: string
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, width, onResize, workflowId }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -358,8 +363,99 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       </div>
       )}
 
+      {onNodeTest && !readOnly && type !== 'branch_end' && type !== 'parallel_end' && (
+        <NodeTestSection
+          namespace={data.namespace ?? ''}
+          defaultPayload={defaultTestPayload}
+          canBuildFromRun={canBuildFromRun}
+          onTest={onNodeTest}
+        />
+      )}
+
       {exec && <StepResults exec={exec} namespace={data.namespace ?? ''} canRerun={canRerun} onRerun={onRerun ? async () => onRerun(data.namespace) : undefined} onRetryFromFailure={onRetryFromFailure} />}
     </aside>
+  )
+}
+
+// ── Test this node (single-node execution) ────────────────────────────────────
+// "Build from run" seeds the context with the last run's upstream step outputs +
+// trigger payload (editable). "Run cold" runs with only the trigger payload
+// below — for nodes that don't read steps.*. Output renders in StepResults below.
+function NodeTestSection({
+  namespace,
+  defaultPayload,
+  canBuildFromRun,
+  onTest,
+}: {
+  namespace: string
+  defaultPayload: unknown
+  canBuildFromRun: boolean
+  onTest: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
+  const [parseError, setParseError] = useState<string | null>(null)
+  const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
+
+  async function run(useLastRun: boolean) {
+    let parsed: unknown
+    try {
+      parsed = payloadText.trim() ? JSON.parse(payloadText) : {}
+    } catch {
+      setParseError('Invalid JSON')
+      return
+    }
+    setParseError(null)
+    setRunning(useLastRun ? 'run' : 'cold')
+    try { await onTest(namespace, { triggerPayload: parsed, useLastRun }) } finally { setRunning(null) }
+  }
+
+  return (
+    <div className="border-t border-gray-100 px-4 py-3">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between text-xs font-semibold text-gray-700"
+      >
+        <span>Test this node</span>
+        {open ? <ChevronUp className="h-3.5 w-3.5 text-gray-400" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-400" />}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2">
+          <label className="block text-xs font-medium text-gray-500">Trigger payload (JSON)</label>
+          <textarea
+            value={payloadText}
+            onChange={(e) => { setPayloadText(e.target.value); setParseError(null) }}
+            spellCheck={false}
+            rows={6}
+            className="w-full resize-y rounded-md border border-gray-200 bg-gray-50 px-2 py-1.5 font-mono text-xs text-gray-800 focus:border-purple-300 focus:outline-none focus:ring-1 focus:ring-purple-200"
+          />
+          {parseError && <p className="text-xs text-red-600">{parseError}</p>}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => run(true)}
+              disabled={!canBuildFromRun || running !== null}
+              title={canBuildFromRun ? 'Run this node using the upstream outputs from the last run' : 'Run the workflow once to enable'}
+              className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {running === 'run' ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+              Build from run
+            </button>
+            <button
+              onClick={() => run(false)}
+              disabled={running !== null}
+              title="Run this node with only the trigger payload above (no upstream outputs)"
+              className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40"
+            >
+              {running === 'cold' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
+              Run cold
+            </button>
+          </div>
+          {!canBuildFromRun && (
+            <p className="text-xs text-gray-400">Run the full workflow once to enable &ldquo;Build from run&rdquo; (uses upstream step outputs).</p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

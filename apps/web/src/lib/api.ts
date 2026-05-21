@@ -279,7 +279,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ payload, execution_id: executionId, definition }),
       }),
-    testNode: (id: string, data: { namespace: string; execution_id: string; definition: unknown }) =>
+    testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown> }) =>
       req<{
         output: unknown
         status: string
