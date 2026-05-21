@@ -422,6 +422,34 @@ describe('evaluateFormula', () => {
     expect(evaluateFormula('context.finalDebt * 0.13', ctx)).toBeNull()
   })
 
+  it('rejection still extracts extras (Tripoint Duplicate keeps leadId)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ ok: true, data: { createLead: { id: 'dup-lead-123', resultCode: 1003 } } }),
+        { status: 200 }
+      )
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: { pricing_mode: 'tiered_multiplier', source_field: 'context.finalDebt', tiers: [{ above: 12499, multiplier: 0.0013 }], default_multiplier: 0.0009 },
+      extra_extraction: {
+        leadId: 'data.createLead.id',
+        result: { classifier: 'tripoint_result' },
+      },
+      response_classification: {
+        rejection_signals: [
+          { field: 'data.createLead.resultCode', not_in: [1000, 1001, 1013, 1014, 1015, 1016, 1017] },
+        ],
+      },
+    })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.rejected).toBe(true)
+    expect(result.bid).toBeNull()
+    expect(result.extra).toEqual({ leadId: 'dup-lead-123', result: 'Duplicate' })
+  })
+
   it('tiered_multiplier: source_field reads from context.finalDebt', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true, data: { createLead: { id: 'lead-1', resultCode: 1013 } } }), { status: 200 })

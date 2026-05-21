@@ -189,7 +189,13 @@ async function callBidApi(
       resHeaders
     )
     if (override === 'rejection') {
-      return { bid: null, raw, rejected: true }
+      // Pull extras even on rejection — partners like Tripoint return useful
+      // identifiers (e.g. leadId on a Duplicate result code) that downstream
+      // engine-fallback handlers need for SF write-back. Without this, the
+      // engine_no_bids SF body would have TripointLeadID__c=null on a Duplicate
+      // even though Tripoint returned the existing lead's id in the body.
+      const rejectedExtra = extractExtras(partner.extra_extraction, raw)
+      return { bid: null, raw, rejected: true, ...(rejectedExtra ? { extra: rejectedExtra } : {}) }
     }
     if (override === 'transient' || override === 'permanent') {
       const suppress = shouldSuppressAlert(partner.alert_config, override)
