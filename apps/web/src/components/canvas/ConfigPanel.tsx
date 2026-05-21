@@ -2111,14 +2111,20 @@ function BidGroupContextEditor({
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
 }) {
+  // Local row state. The serialized form (Record<string, unknown>) can't
+  // express an empty-key row, so rendering directly off config.context would
+  // drop newly-added blank rows before the user could type a key. Same pattern
+  // as ExtraExtractionEditor (see reference_row_editor_local_state_for_invalid_rows.md).
   const ctxObj = (config.context as Record<string, unknown> | undefined) ?? {}
-  const entries = Object.entries(ctxObj)
+  const [entries, setLocalEntries] = useState<[string, unknown][]>(Object.entries(ctxObj))
+  const valueKey = JSON.stringify(ctxObj)
+  useEffect(() => {
+    setLocalEntries(Object.entries(ctxObj))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [valueKey])
 
   function setEntries(next: [string, unknown][]) {
-    if (next.length === 0) {
-      onChange({ context: undefined })
-      return
-    }
+    setLocalEntries(next)
     const out: Record<string, unknown> = {}
     for (const [k, v] of next) {
       if (!k) continue
