@@ -83,10 +83,31 @@ export default function TestRunPanel({
   }
 
   const nsToLabel = useMemo(() => {
-    const def = currentDefinition as { nodes?: Array<{ namespace?: string; label?: string }> } | null | undefined
+    const def = currentDefinition as {
+      nodes?: Array<{ id?: string; type?: string; namespace?: string; label?: string }>
+      edges?: Array<{ source?: string; target?: string }>
+    } | null | undefined
+    const nodes = def?.nodes ?? []
+    const edges = def?.edges ?? []
+    const byId = new Map(nodes.map((n) => [n.id, n]))
     const map: Record<string, string> = {}
-    for (const n of def?.nodes ?? []) {
+    for (const n of nodes) {
       if (n.namespace && n.label) map[n.namespace] = n.label
+    }
+    // End nodes carry no stored label — the canvas derives `${start} End` from
+    // the paired start (found via the backbone edge start → end). Mirror that
+    // here so the step list shows e.g. "Invalid State OK Branch End", not the
+    // raw auto-generated namespace "branch_end_7".
+    for (const n of nodes) {
+      if ((n.type !== 'branch_end' && n.type !== 'parallel_end') || !n.namespace) continue
+      const startEdge = edges.find((e) => {
+        if (e.target !== n.id) return false
+        const s = byId.get(e.source)
+        return s?.type === (n.type === 'branch_end' ? 'branch' : 'parallel')
+      })
+      const start = startEdge ? byId.get(startEdge.source) : undefined
+      const startLabel = start?.label || start?.namespace
+      if (startLabel) map[n.namespace] = `${startLabel} End`
     }
     return map
   }, [currentDefinition])
