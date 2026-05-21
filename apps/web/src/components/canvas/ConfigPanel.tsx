@@ -2079,6 +2079,23 @@ function BidGroupConfig({
           />
         </Field>
       )}
+
+      {mode === 'highest_bid' && (
+        <Field label="Race deadline (ms)" hint="Max time to wait for partners to respond. Partners that don't settle in time are recorded as failed; the underlying fetch keeps running. Leave blank to wait indefinitely (each partner still has its own 15s fetch timeout).">
+          <input
+            type="number"
+            value={(config.timeout_ms as number | undefined) ?? ''}
+            placeholder="5000"
+            onChange={(e) => {
+              const v = e.target.value.trim()
+              if (v === '') { onChange({ timeout_ms: undefined }); return }
+              const n = parseInt(v, 10)
+              onChange({ timeout_ms: Number.isFinite(n) ? n : undefined })
+            }}
+            className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm focus:border-gray-400 focus:outline-none"
+          />
+        </Field>
+      )}
     </section>
   )
 }

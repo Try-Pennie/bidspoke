@@ -49,6 +49,16 @@ export interface BidGroupConfig {
    */
   no_winner_behavior?: 'route' | 'exit' | 'fail'
   cascade_total_timeout_ms?: number
+  /**
+   * Race deadline for highest_bid mode (and any tier evaluating in highest_bid).
+   * Each partner is raced against this deadline; partners that don't settle in
+   * time are recorded as failed (the underlying fetch keeps running to
+   * completion — see reference_parallel_node_no_abort.md). When unset, no
+   * deadline is enforced and the group waits for every partner to finish.
+   *
+   * Pipedream main flow uses 5000 (BID_DEADLINE_MS) for parity.
+   */
+  timeout_ms?: number
   // tiered (4b):
   tiers?: BidGroupTier[]
 }
@@ -182,20 +192,54 @@ async function runHighestBid(
   config: BidGroupConfig,
   runAttempt: RunAttemptFn
 ): Promise<BidGroupOutput> {
-  const settled = await Promise.all(
-    partnerIds.map((id, idx) =>
-      runAttempt({ partner_id: id, attemptIndex: idx })
-        .catch((err) => ({
-          namespace: `attempt-${idx}`,
-          partner_id: id,
-          output: null,
-          status: 'failed' as const,
-          error: err instanceof Error ? err.message : String(err),
-          started_at: new Date().toISOString(),
-          duration_ms: 0,
-        } satisfies BidGroupAttempt))
-    )
+  const timeoutMs = config.timeout_ms
+  const startedAt = Date.now()
+
+  const tasks = partnerIds.map((id, idx) =>
+    runAttempt({ partner_id: id, attemptIndex: idx })
+      .catch((err) => ({
+        namespace: `attempt-${idx}`,
+        partner_id: id,
+        output: null,
+        status: 'failed' as const,
+        error: err instanceof Error ? err.message : String(err),
+        started_at: new Date().toISOString(),
+        duration_ms: 0,
+      } satisfies BidGroupAttempt))
   )
+
+  // Race each partner against the deadline when timeout_ms is set. Partners
+  // that exceed the deadline are recorded as failed-by-timeout; the BidGroup
+  // returns within the deadline. Underlying fetches keep running (the
+  // AbortSignal-propagation gap is separate — see parallel.ts).
+  let settled: BidGroupAttempt[]
+  if (typeof timeoutMs === 'number' && timeoutMs > 0) {
+    settled = await Promise.all(
+      tasks.map((p, idx) =>
+        Promise.race<BidGroupAttempt>([
+          p,
+          new Promise<BidGroupAttempt>((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  namespace: `attempt-${idx}`,
+                  partner_id: partnerIds[idx],
+                  output: null,
+                  status: 'failed',
+                  error: `Partner did not respond within ${timeoutMs}ms`,
+                  error_type: 'transient',
+                  started_at: new Date(startedAt).toISOString(),
+                  duration_ms: timeoutMs,
+                }),
+              timeoutMs
+            )
+          ),
+        ])
+      )
+    )
+  } else {
+    settled = await Promise.all(tasks)
+  }
 
   const all: PartnerBidOutput[] = []
   for (const a of settled) {

@@ -226,6 +226,60 @@ describe('BidGroup highest_bid mode', () => {
     )
     expect(result.winner?.partner).toBe('p2')
   })
+
+  it('timeout_ms: slow partner is recorded as failed, fast partner still wins', async () => {
+    vi.useFakeTimers()
+    try {
+      const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+        if (partner_id === 'fast') return attempt('fast', { partner: 'fast', bid: 25, accepted: true })
+        // Slow partner: never settles within the test timeline
+        return new Promise(() => {}) as Promise<BidGroupAttempt>
+      }
+      const promise = executeBidGroupNode(
+        makeNode({ mode: 'highest_bid', partner_ids: ['fast', 'slow'], timeout_ms: 5000 }),
+        makeCtx(), env, supabase, runAttempt
+      )
+      // Let microtasks resolve the fast partner; then trip the deadline.
+      await vi.advanceTimersByTimeAsync(5000)
+      const result = await promise
+      expect(result.winner?.partner).toBe('fast')
+      expect(result.winner?.bid).toBe(25)
+      // Slow partner shows up as failed (no output, status failed) — recorded in step rows,
+      // but only partners with output land in all_bids. So all_bids has just 'fast'.
+      expect(result.all_bids.map((b) => b.partner)).toEqual(['fast'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('timeout_ms: all partners slow → no_winner', async () => {
+    vi.useFakeTimers()
+    try {
+      const runAttempt: RunAttemptFn = async () => new Promise(() => {}) as Promise<BidGroupAttempt>
+      const promise = executeBidGroupNode(
+        makeNode({ mode: 'highest_bid', partner_ids: ['p1', 'p2'], timeout_ms: 5000 }),
+        makeCtx(), env, supabase, runAttempt
+      )
+      await vi.advanceTimersByTimeAsync(5000)
+      const result = await promise
+      expect(result.winner).toBeNull()
+      expect(result.reason).toBe('no_accepted_bids')
+      expect(result._route).toBe('no_winner')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('no timeout_ms (undefined) → waits for every partner (back-compat)', async () => {
+    const runAttempt: RunAttemptFn = async ({ partner_id }) =>
+      attempt(partner_id, { partner: partner_id, bid: partner_id === 'p1' ? 10 : 20, accepted: true })
+    const result = await executeBidGroupNode(
+      makeNode({ mode: 'highest_bid', partner_ids: ['p1', 'p2'] }),  // no timeout_ms
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(result.winner?.partner).toBe('p2')
+    expect(result.all_bids).toHaveLength(2)
+  })
 })
 
 describe('BidGroup edge cases', () => {
