@@ -402,4 +402,48 @@ describe('evaluateFormula', () => {
   it('invalid expression returns null instead of throwing', () => {
     expect(evaluateFormula('this is not js', makeCtx({}))).toBeNull()
   })
+
+  it('resolves context.X via ctx.bidGroupContext (BidGroup-scoped values)', () => {
+    const ctx: ExecutionContext = {
+      trigger: { payload: {}, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {},
+      env: {},
+      bidGroupContext: { finalDebt: 15000 },
+    }
+    expect(evaluateFormula('context.finalDebt * 0.13', ctx)).toBeCloseTo(1950, 5)
+  })
+
+  it('context.X is undefined when bidGroupContext not set (returns null bid)', () => {
+    const ctx: ExecutionContext = {
+      trigger: { payload: {}, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {},
+      env: {},
+    }
+    expect(evaluateFormula('context.finalDebt * 0.13', ctx)).toBeNull()
+  })
+
+  it('tiered_multiplier: source_field reads from context.finalDebt', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, data: { createLead: { id: 'lead-1', resultCode: 1013 } } }), { status: 200 })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://tripoint',
+      bid_comparison_source: 'formula',
+      bid_resolver_config: {
+        pricing_mode: 'tiered_multiplier',
+        source_field: 'context.finalDebt',
+        tiers: [{ above: 12499, multiplier: 0.0013 }],
+        default_multiplier: 0.0009,
+      },
+    })
+    const ctx: ExecutionContext = {
+      trigger: { payload: {}, source: 't', workflow_id: '', org_id: '', trace_id: '' },
+      steps: {},
+      env: {},
+      bidGroupContext: { finalDebt: 40000 },
+    }
+    const result = await resolveBid(partner, ctx, env)
+    expect(result.bid).toBeCloseTo(40000 * 0.0013, 5)  // 52.0
+  })
 })

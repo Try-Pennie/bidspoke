@@ -2096,7 +2096,105 @@ function BidGroupConfig({
           />
         </Field>
       )}
+
+      <BidGroupContextEditor config={config} onChange={onChange} refs={refs} />
     </section>
+  )
+}
+
+function BidGroupContextEditor({
+  config,
+  onChange,
+  refs,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  refs: string[]
+}) {
+  const ctxObj = (config.context as Record<string, unknown> | undefined) ?? {}
+  const entries = Object.entries(ctxObj)
+
+  function setEntries(next: [string, unknown][]) {
+    if (next.length === 0) {
+      onChange({ context: undefined })
+      return
+    }
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of next) {
+      if (!k) continue
+      out[k] = v
+    }
+    onChange({ context: Object.keys(out).length > 0 ? out : undefined })
+  }
+
+  function addRow() {
+    setEntries([...entries, ['', '']])
+  }
+  function updateKey(i: number, key: string) {
+    setEntries(entries.map((e, idx) => (idx === i ? [key, e[1]] : e)))
+  }
+  function updateVal(i: number, val: string) {
+    setEntries(entries.map((e, idx) => (idx === i ? [e[0], val] : e)))
+  }
+  function removeRow(i: number) {
+    setEntries(entries.filter((_, idx) => idx !== i))
+  }
+
+  return (
+    <div className="border-t border-gray-100 pt-4">
+      <h4 className="mb-1 text-xs font-medium text-gray-600">Context</h4>
+      <p className="mb-2 text-xs text-gray-400">
+        Name → template pairs resolved once per BidGroup run, exposed to partner
+        formulas as <code className="rounded bg-gray-100 px-1 font-mono">context.&lt;name&gt;</code>.
+        Use these to keep partner configs workflow-agnostic: bind step outputs here,
+        partner formulas reference the name. Example:
+        <code className="rounded bg-gray-100 px-1 font-mono">finalDebt</code> →
+        <code className="rounded bg-gray-100 px-1 font-mono">{'{{steps.pennie_or_eligibility.output.final}}'}</code>.
+      </p>
+      {entries.length > 0 && (
+        <div className="mb-2 space-y-1.5">
+          {entries.map(([k, v], i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <input
+                value={k}
+                onChange={(e) => updateKey(i, e.target.value)}
+                placeholder="finalDebt"
+                className="w-32 flex-shrink-0 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
+              />
+              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" />
+              <input
+                value={typeof v === 'string' ? v : String(v ?? '')}
+                onChange={(e) => updateVal(i, e.target.value)}
+                placeholder="{{steps.eligibility.output.final}}"
+                className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(i)}
+                className="flex-shrink-0 text-gray-300 hover:text-red-400"
+                title="Remove"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={addRow}
+        className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
+      >
+        <Plus className="h-3.5 w-3.5" />
+        Add context value
+      </button>
+      {refs.length > 0 && entries.length === 0 && (
+        <p className="mt-1 text-xs text-gray-400">
+          {/* refs prop already supports the template autocomplete used elsewhere; */}
+          {/* documenting unused-but-available for now */}
+        </p>
+      )}
+    </div>
   )
 }
 

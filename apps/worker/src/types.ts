@@ -118,6 +118,13 @@ export interface ExecutionContext {
   }
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
+  /**
+   * Per-BidGroup context map. Set by walkGraph before evaluating partner attempts
+   * and cleared after the group resolves. Exposed to partner formulas as
+   * `context.<key>` so partners can stay workflow-agnostic (the BidGroup author
+   * binds these to specific step outputs at the workflow level).
+   */
+  bidGroupContext?: Record<string, unknown>
 }
 
 export interface StepOutput {

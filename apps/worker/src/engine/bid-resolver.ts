@@ -291,7 +291,13 @@ function readTiers(raw: unknown): PricingTier[] {
  * `trigger.payload.<name>` for parity with evaluateFormula.
  */
 function resolveFormulaPath(path: string, ctx: ExecutionContext): unknown {
-  if (path.includes('.') || path === 'trigger' || path === 'env' || path === 'steps') {
+  if (
+    path.includes('.') ||
+    path === 'trigger' ||
+    path === 'env' ||
+    path === 'steps' ||
+    path === 'context'
+  ) {
     return resolvePath(path, ctx)
   }
   // Bare identifier — look up on trigger.payload
@@ -409,7 +415,7 @@ export function evaluateFormula(formula: string, ctx: ExecutionContext): number 
   // First pass: substitute compound path references (steps.x.y, trigger.x.y, env.X) with
   // generated identifiers. Done before the bare-identifier scan so the regex below
   // doesn't see `steps`, `trigger`, `env` as bare names.
-  const pathPattern = /\b(?:steps|trigger|env)(?:\.[a-zA-Z0-9_]+)+\b/g
+  const pathPattern = /\b(?:steps|trigger|env|context)(?:\.[a-zA-Z0-9_]+)+\b/g
   const pathVars: Record<string, number> = {}
   let pathIdx = 0
   const stage1 = formula.replace(pathPattern, (match) => {
@@ -473,6 +479,18 @@ function resolvePath(path: string, ctx: ExecutionContext): unknown {
     const tail = rest[1] === 'output' ? rest.slice(2) : rest.slice(1)
     if (tail.length === 0) return step.output
     return getPath(step.output, tail)
+  }
+  // context.<key> — BidGroup-scoped values. ctx.bidGroupContext is set by
+  // walkGraph before partner attempts run and cleared after the group resolves.
+  // Lets partner formulas reference workflow-supplied values (e.g. finalDebt)
+  // without coupling the partner config to a specific workflow's step names.
+  if (head === 'context') {
+    const bidCtx = ctx.bidGroupContext
+    if (!bidCtx) return undefined
+    if (rest.length === 0) return bidCtx
+    const key = rest[0]
+    if (rest.length === 1) return bidCtx[key]
+    return getPath(bidCtx[key], rest.slice(1))
   }
   return undefined
 }

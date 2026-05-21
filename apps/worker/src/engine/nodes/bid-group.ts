@@ -59,6 +59,18 @@ export interface BidGroupConfig {
    * Pipedream main flow uses 5000 (BID_DEADLINE_MS) for parity.
    */
   timeout_ms?: number
+  /**
+   * Map of name → template string. Resolved once at BidGroup entry against the
+   * current execution context (via resolveValue), then attached to
+   * ctx.bidGroupContext for the duration of the group's partner attempts.
+   * Partner formulas can reference these as `context.<name>` to stay
+   * workflow-agnostic.
+   *
+   * Example: `{ finalDebt: "{{steps.eligibility.output.final}}" }` — partner
+   * formulas use `context.finalDebt` regardless of which workflow's step name
+   * provides eligibility data.
+   */
+  context?: Record<string, unknown>
   // tiered (4b):
   tiers?: BidGroupTier[]
 }

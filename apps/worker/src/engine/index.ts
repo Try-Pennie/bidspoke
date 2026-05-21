@@ -816,6 +816,20 @@ export async function walkGraph(
         }
       }
 
+      // Resolve the BidGroup's `context` map and stash on ctx for the duration
+      // of the group's partner attempts. Each value is a template string that
+      // may reference steps.*, trigger.*, env.*. Partner formulas can then use
+      // `context.<name>` for workflow-portable references (see bid-resolver.ts).
+      const contextConfig = node.config.context as Record<string, unknown> | undefined
+      let resolvedContext: Record<string, unknown> | undefined
+      if (contextConfig && typeof contextConfig === 'object') {
+        resolvedContext = {}
+        for (const [k, v] of Object.entries(contextConfig)) {
+          resolvedContext[k] = resolveValue(v, ctx)
+        }
+        ctx.bidGroupContext = resolvedContext
+      }
+
       let groupOutput: BidGroupOutput | null = null
       let groupStatus: StepStatus = 'completed'
       let groupErrorMessage: string | undefined
@@ -824,6 +838,10 @@ export async function walkGraph(
       } catch (err) {
         groupStatus = 'failed'
         groupErrorMessage = err instanceof Error ? err.message : String(err)
+      } finally {
+        // Clear bidGroupContext so subsequent steps (or nested groups, if ever)
+        // don't see stale values. Idempotent — safe even when context wasn't set.
+        ctx.bidGroupContext = undefined
       }
 
       const groupDurationMs = Date.now() - new Date(groupStartedAt).getTime()
