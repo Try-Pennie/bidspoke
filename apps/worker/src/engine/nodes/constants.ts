@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { loadPartnerConstants } from '../../lib/partner-constants-loader'
 
@@ -23,6 +23,11 @@ export async function executeConstantsNode(
     partnerFlat[`${cap}ClickUrl`] = url
   }
 
+  const resolvedInput: ResolvedStepInput = {
+    template: { data: node.config.data },
+    resolved: { data, partner_constants_keys: Object.keys(partnerFlat), partner_count: Object.keys(partnerData.subAccountIdsMap ?? {}).length },
+  }
+
   return {
     output: {
       ...data,
@@ -30,5 +35,6 @@ export async function executeConstantsNode(
       activeBidding: partnerData.activeBidding,
       ...partnerFlat,
     },
+    resolvedInput,
   }
 }

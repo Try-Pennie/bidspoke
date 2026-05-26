@@ -15,7 +15,7 @@
  * Output: { status, body }
  */
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 
@@ -43,6 +43,11 @@ interface SalesforceConfig {
   expected_errors?: ExpectedError[]  // SF rejections treated as business rejections, not failures.
                                      // Matched by errorCode AND optional message substring.
                                      // Step logs as completed and the workflow exits here.
+  transient_errors?: { code: string; message_contains?: string }[]  // SF errors to retry despite a 4xx status.
+                                     // Matched by errorCode AND optional message substring (same matcher as
+                                     // expected_errors). A match marks the error transient so the engine's
+                                     // retry/backoff applies. Pre-populated in the UI with REQUEST_LIMIT_EXCEEDED
+                                     // + "Concurrent" (ConcurrentPerOrgLongTxn limits clear within seconds).
   injected_fields?: Record<string, string>  // create / update / upsert: SF field → template value, merged into body.
                                             // Overrides body on key collision. Resolved per-execution.
                                             // Use {{execution.bidspoke_link}} for the run deeplink.
@@ -114,6 +119,13 @@ export async function executeSalesforceNode(
   let url: string
   let method: string
   let bodyStr: string | undefined
+  // Parsed (not stringified) body used for the Results-panel input shape.
+  // Captured alongside bodyStr so the panel can show a JSON tree rather than
+  // a wall of escaped string.
+  let resolvedBodyForInput: unknown = undefined
+  let resolvedRecordId: string | undefined
+  let resolvedExternalIdValue: string | undefined
+  let resolvedSoql: string | undefined
 
   const baseUrl = `${instanceUrl}/services/data/v60.0/sobjects/${object}`
 
@@ -121,36 +133,65 @@ export async function executeSalesforceNode(
     url = baseUrl
     method = 'POST'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
+    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'update') {
-    const recordId = String(resolveValue(config.record_id ?? '', enrichedCtx) ?? '')
-    if (!recordId) throw new Error('Salesforce update requires record_id')
-    url = `${baseUrl}/${recordId}`
+    resolvedRecordId = String(resolveValue(config.record_id ?? '', enrichedCtx) ?? '')
+    if (!resolvedRecordId) throw new Error('Salesforce update requires record_id')
+    url = `${baseUrl}/${resolvedRecordId}`
     method = 'PATCH'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
+    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'upsert') {
     const extField = config.external_id_field ?? ''
-    const extValue = String(resolveValue(config.external_id_value ?? '', enrichedCtx) ?? '')
-    if (!extField || !extValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
-    url = `${baseUrl}/${extField}/${extValue}`
+    resolvedExternalIdValue = String(resolveValue(config.external_id_value ?? '', enrichedCtx) ?? '')
+    if (!extField || !resolvedExternalIdValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
+    url = `${baseUrl}/${extField}/${resolvedExternalIdValue}`
     method = 'PATCH'
     const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(applyInjectedFields(resolvedBody, config, enrichedCtx))
+    resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
+    bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'query') {
-    const soql = String(resolveValue(config.soql ?? '', enrichedCtx) ?? '')
-    if (!soql) throw new Error('Salesforce query requires soql')
-    url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`
+    resolvedSoql = String(resolveValue(config.soql ?? '', enrichedCtx) ?? '')
+    if (!resolvedSoql) throw new Error('Salesforce query requires soql')
+    url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(resolvedSoql)}`
     method = 'GET'
   } else if (operation === 'apex') {
     const apexPath = (config.apex_path ?? '').replace(/^\/?/, '/')
     if (!apexPath || apexPath === '/') throw new Error('Salesforce apex requires apex_path')
     url = `${instanceUrl}${apexPath}`
     method = 'POST'
-    const resolvedBody = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(resolvedBody)
+    resolvedBodyForInput = resolveValue(config.body, enrichedCtx)
+    bodyStr = JSON.stringify(resolvedBodyForInput)
   } else {
     throw new Error(`Unknown Salesforce operation: ${operation}`)
+  }
+
+  // Built after URL/method so we can include the actual outbound URL the
+  // request went to (helpful for upsert / update which embed the record id).
+  const resolvedInput: ResolvedStepInput = {
+    template: {
+      operation,
+      object: config.object,
+      body: config.body,
+      record_id: config.record_id,
+      external_id_field: config.external_id_field,
+      external_id_value: config.external_id_value,
+      soql: config.soql,
+      apex_path: config.apex_path,
+      injected_fields: config.injected_fields,
+    },
+    resolved: {
+      operation,
+      object,
+      method,
+      url,
+      body: resolvedBodyForInput,
+      record_id: resolvedRecordId,
+      external_id_value: resolvedExternalIdValue,
+      soql: resolvedSoql,
+    },
   }
 
   const controller = new AbortController()
@@ -213,22 +254,38 @@ export async function executeSalesforceNode(
             output,
             earlyResponse: { status: matched.response_status ?? 200, body: resolvedBody },
             earlyExit: true,
+            resolvedInput,
           }
         }
-        return { output, earlyExit: true }
+        return { output, earlyExit: true, resolvedInput }
       }
     }
 
     // Tag transient vs permanent so the engine's retry logic can skip non-retryable
     // SF errors. Mirrors Pipedream's makeRequestWithRetry classification:
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
-    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean }
-    const isTransient = res.status === 429 || res.status >= 500
+    // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
+    // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
+    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput }
+    err.resolvedInput = resolvedInput
+    const transientErrors = config.transient_errors ?? []
+    let matchesTransient = false
+    if (transientErrors.length > 0) {
+      const errorCode = extractSalesforceErrorCode(parsedBody)
+      const message = extractSalesforceErrorMessage(parsedBody) ?? ''
+      matchesTransient = transientErrors.some((e) => {
+        if (!errorCode || e.code !== errorCode) return false
+        const needle = e.message_contains?.trim()
+        if (!needle) return true
+        return message.includes(needle)
+      })
+    }
+    const isTransient = res.status === 429 || res.status >= 500 || matchesTransient
     if (!isTransient) err.permanent = true
     throw err
   }
 
-  return { output: { status: res.status, body: parsedBody } }
+  return { output: { status: res.status, body: parsedBody }, resolvedInput }
 }
 
 function applyInjectedFields(

@@ -19,6 +19,7 @@ export type NodeType =
   | 'constants'
   | 'salesforce'
   | 'data_store'
+  | 'latency_gate'
 
 export interface WorkflowDefinition {
   id: string
@@ -140,6 +141,16 @@ export interface StepLogEntry {
   ts: string
 }
 
+// Captured per-step input for the UI's Results panel. `template` is the
+// pre-template config the author wrote (e.g. `{ BirthDate__c: "{{trigger.payload.dob}}" }`);
+// `resolved` is what those templates produced at execute time. Showing both
+// lets users tell at a glance whether bad output came from a malformed source
+// value or wrong template logic without panel-hopping.
+export interface ResolvedStepInput {
+  template: unknown
+  resolved: unknown
+}
+
 export interface StepExecutionResult {
   output: unknown
   error?: string
@@ -149,6 +160,7 @@ export interface StepExecutionResult {
   continueAfterResponse?: true  // respond but keep walking (mirrors Pipedream $.respond() without $.flow.exit())
   expected?: true  // expected error: keep step status `completed` and skip Slack even if earlyResponse is 4xx/5xx
   logs?: StepLogEntry[]
+  resolvedInput?: ResolvedStepInput
 }
 
 export interface LoadedWorkflow {

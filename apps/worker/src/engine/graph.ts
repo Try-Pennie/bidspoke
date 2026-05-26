@@ -94,7 +94,7 @@ function resolveValueOrLiteral(value: unknown, ctx: ExecutionContext): unknown {
   return value
 }
 
-function resolveField(field: string, ctx: ExecutionContext): unknown {
+export function resolveField(field: string, ctx: ExecutionContext): unknown {
   const parts = field.split('.')
   if (parts[0] === 'trigger') {
     return getPath(ctx.trigger, parts.slice(1))

@@ -249,6 +249,32 @@ function JsonBlock({ value }: { value: unknown }) {
   )
 }
 
+// Renders the {template, resolved} input shape side-by-side when present;
+// falls back to a single JsonBlock for legacy rows.
+function StepInputBlock({ value }: { value: unknown }) {
+  if (
+    typeof value === 'object'
+    && value !== null
+    && 'template' in value
+    && 'resolved' in value
+  ) {
+    const v = value as { template: unknown; resolved: unknown }
+    return (
+      <div className="space-y-2">
+        <div>
+          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Template</p>
+          <JsonBlock value={v.template} />
+        </div>
+        <div>
+          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Resolved</p>
+          <JsonBlock value={v.resolved} />
+        </div>
+      </div>
+    )
+  }
+  return <JsonBlock value={value} />
+}
+
 export default function ExecutionDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -507,7 +533,7 @@ export default function ExecutionDetailPage() {
                         {step.input !== null && (
                           <div>
                             <p className="mb-1 text-xs font-medium text-gray-500">Input</p>
-                            <JsonBlock value={step.input} />
+                            <StepInputBlock value={step.input} />
                           </div>
                         )}
                         <div>

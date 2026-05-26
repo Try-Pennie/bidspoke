@@ -11,6 +11,7 @@ import type { ParallelChildResult } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
+import { buildCodeStepInput } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -39,7 +40,16 @@ import type {
   StepStatus,
   ErrorType,
   WorkflowDefinition,
+  ResolvedStepInput,
 } from '../types'
+
+// Pull resolvedInput off a thrown error if the executor attached one. Mirrors
+// the existing `(err as { logs?: ... }).logs` pattern used a few lines below
+// for captured console output. Lets failed nodes still surface their input.
+function extractResolvedInput(err: unknown): ResolvedStepInput | null {
+  const tagged = err as { resolvedInput?: ResolvedStepInput } | undefined
+  return tagged?.resolvedInput ?? null
+}
 
 // Carries step context through the throw so the alert can report which step failed
 class StepFailureError extends Error {
@@ -780,16 +790,19 @@ export async function walkGraph(
         let attemptError: string | undefined
         let attemptErrorType: ErrorType = null
         let attemptOutput: import('./nodes/partner-bid').PartnerBidOutput | null = null
+        let attemptResolvedInput: ResolvedStepInput | null = null
 
         try {
           const result = await executePartnerBidNode(childNode, ctx, env, supabase)
           attemptOutput = result.output as import('./nodes/partner-bid').PartnerBidOutput
+          attemptResolvedInput = result.resolvedInput ?? null
         } catch (err) {
           attemptStatus = 'failed'
           attemptError = err instanceof Error ? err.message : String(err)
           if (err instanceof PartnerApiError) attemptErrorType = err.errorType
           else if (err instanceof Response) attemptErrorType = classifyHttpError(err.status)
           else attemptErrorType = classifyTransportError(err)
+          attemptResolvedInput = extractResolvedInput(err)
         }
 
         recordStepOutput(ctx, childNamespace, { output: attemptOutput, status: attemptStatus, error: attemptError, error_type: attemptErrorType })
@@ -799,7 +812,12 @@ export async function walkGraph(
         // "invalid input syntax for type uuid", silently dropping every step for
         // the run (no path visible, canvas doesn't light up). The synthesized
         // attempts belong to the bid_group node, so node.id is the right ref.
-        logStep(stepLogQueue, executionId, executionStartedAt, { ...childNode, id: node.id }, attemptStatus, { partner_id }, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
+        // Fallback shape preserves `partner_id` as the input marker when the
+        // partner-bid executor didn't populate resolvedInput (e.g. very early
+        // failures before payload construction).
+        const attemptInput: ResolvedStepInput = attemptResolvedInput
+          ?? { template: { partner_id }, resolved: { partner_id } }
+        logStep(stepLogQueue, executionId, executionStartedAt, { ...childNode, id: node.id }, attemptStatus, attemptInput, attemptOutput, attemptError, attemptErrorType, 0, attemptStart, attemptOrderBase + attemptIndex, node.id)
 
         const attemptStatusLog = attemptStatus === 'completed' ? 'step_complete' : 'step_error'
         log({ event: attemptStatusLog, trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: childNamespace, step_type: 'partner_bid', duration_ms: Date.now() - attemptStartMs, error_message: attemptError, error_type: attemptErrorType })
@@ -852,7 +870,26 @@ export async function walkGraph(
       }
 
       recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: null })
-      logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, null, groupOutput, groupErrorMessage, null, 0, groupStartedAt, groupStartOrder)
+      const groupResolvedInput: ResolvedStepInput = {
+        template: {
+          mode: config.mode,
+          partner_ids: partnerIds,
+          tiers,
+          fallback_partner_id: fallbackId,
+          min_bid_threshold: config.min_bid_threshold,
+          timeout_ms: config.timeout_ms,
+          context: node.config.context,
+          no_winner_behavior: config.no_winner_behavior,
+        },
+        resolved: {
+          mode: config.mode,
+          partner_slugs: partnerIds.map((id) => slugByPartnerId.get(id) ?? id),
+          fallback_partner_slug: fallbackId ? (slugByPartnerId.get(fallbackId) ?? fallbackId) : null,
+          tiered_partner_slugs: tiers.map((t) => (t.partner_ids ?? []).map((id) => slugByPartnerId.get(id) ?? id)),
+          context: resolvedContext,
+        },
+      }
+      logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, groupResolvedInput, groupOutput, groupErrorMessage, null, 0, groupStartedAt, groupStartOrder)
 
       lastOutput = groupOutput
 
@@ -910,7 +947,15 @@ export async function walkGraph(
             log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs, error_message: r.error, error_type: 'transient' })
           }
           recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: r.status === 'failed' ? 'transient' : null })
-          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, null, r.output ?? null, r.error, r.status === 'failed' ? 'transient' : null, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
+          // Chained code steps don't get the standard ResolvedStepInput from the
+          // executor (the bundled worker batches them). Reconstruct the same
+          // template/resolved shape from the chain node's props config — the
+          // resolved values were already computed inside executeCodeChain's
+          // chainPayload build, but aren't returned per-step, so re-resolve here.
+          // resolveValue is cheap (string templating against ctx); fine on the
+          // hot path for a chain of ~3-5 nodes.
+          const chainResolvedInput = buildCodeStepInput(chainNode, ctx)
+          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, r.status === 'failed' ? 'transient' : null, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
           stepOrder++
           if (r.status === 'completed') lastOutput = r.output
 
@@ -963,6 +1008,11 @@ export async function walkGraph(
     let errorMessage: string | undefined
     let errorType: ErrorType = null
     let retriesUsed = 0
+    // Resolved input — captured from executor result on success, or from a
+    // thrown error's `.resolvedInput` on failure. Lets the Results panel show
+    // both the template the author wrote and the resolved values, so debugging
+    // a bad value doesn't require panel-hopping back to the trigger.
+    let resolvedInput: ResolvedStepInput | null = null
 
     const retryConfig = {
       // Default retries=2 so transient blips (timeouts, 5xx, network) self-heal
@@ -996,6 +1046,7 @@ export async function walkGraph(
       stepStatus = 'completed'
       lastOutput = output
       stepLogs = result.logs
+      resolvedInput = result.resolvedInput ?? null
 
       // Early exit / respond sentinels from translated Pipedream patterns:
       //   { response } alone          → respond + exit ($.respond() + $.flow.exit())
@@ -1032,7 +1083,7 @@ export async function walkGraph(
           log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
         }
         recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType }, node.type)
-        logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, null, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+        logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, resolvedInput, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
           pendingResponse = { body: result.earlyResponse.body, status: result.earlyResponse.status, headers: result.earlyResponse.headers }
@@ -1056,6 +1107,11 @@ export async function walkGraph(
       // script's logs are still persisted (often the most useful debug signal).
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
+      // Same pattern for resolved input — executors that build the outbound
+      // payload before fetch (Salesforce, Partner Bid, etc.) attach the
+      // resolved values to thrown errors so failed steps don't show blank input.
+      const errResolvedInput = extractResolvedInput(err)
+      if (errResolvedInput) resolvedInput = errResolvedInput
       if (err instanceof PartnerApiError) {
         errorType = err.errorType
         suppressAlert = err.suppressAlert
@@ -1078,7 +1134,7 @@ export async function walkGraph(
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
           recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
-          logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+          logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
           current = fallback
           stepOrder++
           continue
@@ -1088,7 +1144,7 @@ export async function walkGraph(
         stepStatus = 'failed'
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
-        logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+        logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
     }
@@ -1100,7 +1156,7 @@ export async function walkGraph(
       const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
       recordStepOutput(ctx, node.namespace, { output, status: stepStatus }, node.type)
-      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
+      logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
     }
 
     // Exit node — return immediately. Response nodes also terminate, unless
@@ -1124,7 +1180,7 @@ export async function walkGraph(
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
-    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') &&
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation' || node.type === 'latency_gate') &&
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)
@@ -1250,6 +1306,7 @@ async function runParallelChild(
     let errorMessage: string | undefined
     let errorType: ErrorType = null
     let stepLogs: import('../types').StepLogEntry[] | undefined
+    let resolvedInput: ResolvedStepInput | null = null
 
     try {
       const result = await withRetry(
@@ -1262,6 +1319,7 @@ async function runParallelChild(
       )
       output = result.output
       stepLogs = result.logs
+      resolvedInput = result.resolvedInput ?? null
 
       // Early-response and early-exit sentinels don't make sense inside a
       // parallel block — you can't respond or exit the workflow while sibling
@@ -1281,6 +1339,8 @@ async function runParallelChild(
       errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
+      const errResolvedInput = extractResolvedInput(err)
+      if (errResolvedInput) resolvedInput = errResolvedInput
     }
 
     const nodeDurationMs = Date.now() - new Date(stepStartedAt).getTime()
@@ -1291,7 +1351,7 @@ async function runParallelChild(
     }
 
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
+    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, 0, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
 
     if (stepStatus === 'failed') {
       // The slot's result is the FIRST node's namespace — but downstream chain
@@ -1310,7 +1370,7 @@ async function runParallelChild(
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
-    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') &&
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation' || node.type === 'latency_gate') &&
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)

@@ -16,7 +16,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
@@ -127,6 +127,28 @@ export async function executePartnerBidNode(
   }
 
   const p = partner as unknown as PartnerConfig
+
+  // Built once and merged onto every return/throw path so the Results panel
+  // surfaces both the partner config the author set up and the resolved values
+  // (lead payload, outbound body) the resolver actually used.
+  const baseTemplate = {
+    partner_id: config.partner_id,
+    partner_slug: p.slug,
+    bid_resolver_type: p.bid_resolver_type,
+    bid_mode: p.bid_mode,
+    api_endpoint: p.api_endpoint,
+    bid_formula: p.bid_formula,
+    bid_resolver_config: p.bid_resolver_config,
+    outbound_field_mapping: p.outbound_field_mapping,
+    dedup_endpoint: p.dedup_endpoint,
+    daily_cap: p.daily_cap,
+    min_bid: p.min_bid,
+  }
+  const buildInput = (resolved: Record<string, unknown>): ResolvedStepInput => ({
+    template: baseTemplate,
+    resolved: { partner_slug: p.slug, payload: ctx.trigger.payload, ...resolved },
+  })
+
   const attemptedAt = new Date()
   const logBid = (input: Partial<Parameters<typeof recordBidAttempt>[1]> & { partner_slug: string; attempted_at_utc: Date }) => {
     if (!ctx.trigger.sighting_id) return
@@ -152,7 +174,7 @@ export async function executePartnerBidNode(
   // 2. Inactive check
   if (!p.is_active) {
     logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'partner_inactive' })
-    return skip(p.slug, 'partner_inactive')
+    return { ...skip(p.slug, 'partner_inactive'), resolvedInput: buildInput({ skip_reason: 'partner_inactive' }) }
   }
 
   // 3. Circuit breaker check
@@ -162,7 +184,7 @@ export async function executePartnerBidNode(
     if (!cbCheck.allowed) {
       log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug })
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'circuit_open' })
-      return skip(p.slug, 'circuit_open')
+      return { ...skip(p.slug, 'circuit_open'), resolvedInput: buildInput({ skip_reason: 'circuit_open' }) }
     }
   }
 
@@ -182,7 +204,7 @@ export async function executePartnerBidNode(
     log({ event: 'cap_check', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, allowed: capResult.allowed, count: capCount, cap: p.daily_cap })
     if (!capResult.allowed) {
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'cap_exceeded' })
-      return skip(p.slug, 'cap_exceeded')
+      return { ...skip(p.slug, 'cap_exceeded'), resolvedInput: buildInput({ skip_reason: 'cap_exceeded', cap_count: capCount, daily_cap: p.daily_cap }) }
     }
   }
 
@@ -191,7 +213,7 @@ export async function executePartnerBidNode(
     const isDuplicate = await checkDedup(p.dedup_endpoint, ctx)
     if (isDuplicate) {
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'duplicate' })
-      return skip(p.slug, 'duplicate')
+      return { ...skip(p.slug, 'duplicate'), resolvedInput: buildInput({ skip_reason: 'duplicate' }) }
     }
   }
 
@@ -207,6 +229,7 @@ export async function executePartnerBidNode(
     const respondedAt = new Date()
     matrixInfo = result.matrix ?? null
     extra = result.extra
+    const resolverInput = result.resolved_input ?? {}
     if (result.rejected) {
       logBid({
         partner_slug: p.slug,
@@ -228,6 +251,7 @@ export async function executePartnerBidNode(
           ...(extra ? { extra } : {}),
           matrix: matrixInfo,
         },
+        resolvedInput: buildInput({ ...resolverInput, skip_reason: 'rejected' }),
       }
     }
     bid = result.bid
@@ -256,7 +280,7 @@ export async function executePartnerBidNode(
         ...(extra ? { extra } : {}),
         matrix: matrixInfo,
       }
-      return { output }
+      return { output, resolvedInput: buildInput({ ...resolverInput, skip_reason: 'bid_below_min', bid }) }
     }
 
     logBid({
@@ -279,7 +303,7 @@ export async function executePartnerBidNode(
       matrix: matrixInfo,
     }
     log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })
-    return { output }
+    return { output, resolvedInput: buildInput({ ...resolverInput, bid }) }
   } catch (err) {
     const respondedAt = new Date()
     if (cb) cb.recordError({
@@ -287,6 +311,12 @@ export async function executePartnerBidNode(
       window_seconds: p.circuit_window_seconds,
       cooldown_seconds: p.circuit_cooldown_seconds,
     }).catch(() => {})
+
+    // Pull resolver-side input off the thrown error (callBidApi attaches its
+    // outbound body before throwing). Then re-wrap and attach to the rethrow
+    // so failed partner_bid steps still surface the wire payload.
+    const errResolverInput = (err as { resolved_input?: Record<string, unknown> }).resolved_input ?? {}
+    const errResolvedInput = buildInput({ ...errResolverInput, threw: true })
 
     // Determine error classification — check if err already carries it
     let errorType: ErrorType
@@ -298,6 +328,7 @@ export async function executePartnerBidNode(
         responded_at_utc: respondedAt,
         classification: err.errorType ?? 'transient',
       })
+      ;(err as PartnerApiError & { resolvedInput?: ResolvedStepInput }).resolvedInput = errResolvedInput
       throw err
     } else if (err instanceof Response) {
       errorType = classifyHttpError(err.status)
@@ -316,7 +347,9 @@ export async function executePartnerBidNode(
 
     const suppress = shouldSuppressAlert(p.alert_config, errorType)
     const message = err instanceof Error ? err.message : String(err)
-    throw new PartnerApiError(message, errorType, suppress)
+    const wrapped = new PartnerApiError(message, errorType, suppress) as PartnerApiError & { resolvedInput?: ResolvedStepInput }
+    wrapped.resolvedInput = errResolvedInput
+    throw wrapped
   }
 }
 

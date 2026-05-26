@@ -7,7 +7,7 @@
 // response immediately and keeps walking the graph (mirrors the code-node
 // continueExecution sentinel).
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import { resolveValue } from '../context'
 
 interface ResponseConfig {
@@ -29,16 +29,21 @@ export function executeResponseNode(
   const body = resolveValue(config.body ?? null, ctx)
 
   const output = { status_code: status, headers, body }
+  const resolvedInput: ResolvedStepInput = {
+    template: { status_code: config.status_code, headers: config.headers, body: config.body, continue_after_response: config.continue_after_response },
+    resolved: { status_code: status, headers, body },
+  }
 
   if (config.continue_after_response) {
     return {
       output,
       earlyResponse: { status, headers, body },
       continueAfterResponse: true,
+      resolvedInput,
     }
   }
 
-  return { output }
+  return { output, resolvedInput }
 }
 
 function resolveStatus(raw: unknown, ctx: ExecutionContext): number {

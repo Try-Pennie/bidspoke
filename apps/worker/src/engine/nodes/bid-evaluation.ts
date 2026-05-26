@@ -13,7 +13,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { ParallelChildResult } from './parallel'
 import type { PartnerBidOutput } from './partner-bid'
 
@@ -84,6 +84,31 @@ export async function executeBidEvaluationNode(
 
   const parallelResults = (parallelStep.output ?? []) as ParallelChildResult[]
 
+  const resolvedInput: ResolvedStepInput = {
+    template: {
+      parallel_source: config.parallel_source,
+      strategy: config.strategy,
+      min_bid_threshold: config.min_bid_threshold,
+      tiebreaker: config.tiebreaker,
+      fallback_partner: config.fallback_partner,
+      no_winner_behavior: config.no_winner_behavior,
+      weight_bid: config.weight_bid,
+      weight_acceptance: config.weight_acceptance,
+      weight_speed: config.weight_speed,
+    },
+    resolved: {
+      strategy,
+      tiebreaker,
+      min_bid_threshold: minThreshold,
+      candidates: parallelResults
+        .filter((c) => c.status === 'fulfilled' && c.output)
+        .map((c) => {
+          const pbo = c.output as PartnerBidOutput
+          return { partner: pbo.partner, bid: pbo.bid, accepted: pbo.accepted, skipped: pbo.skipped, skip_reason: pbo.skip_reason }
+        }),
+    },
+  }
+
   // Extract candidates and excluded bids from fulfilled children
   const all_bids: BidCandidate[] = []
   const excluded: BidCandidate[] = []
@@ -128,11 +153,13 @@ export async function executeBidEvaluationNode(
         reason: 'fallback',
         _route: 'winner',
       }
-      return { output }
+      return { output, resolvedInput }
     }
 
     if (noWinnerBehavior === 'fail') {
-      throw new Error(`Bid Evaluation: no qualifying bids (${reason})`)
+      const failErr = new Error(`Bid Evaluation: no qualifying bids (${reason})`) as Error & { resolvedInput?: ResolvedStepInput }
+      failErr.resolvedInput = resolvedInput
+      throw failErr
     }
 
     const output: BidEvaluationOutput = {
@@ -142,7 +169,7 @@ export async function executeBidEvaluationNode(
       reason,
       _route: 'no_winner',
     }
-    return { output }
+    return { output, resolvedInput }
   }
 
   // Select winner

@@ -5,10 +5,39 @@
 // or doesn't contain this namespace (migration in progress), it falls back to
 // the legacy per-node worker.
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
 import { resolveValue } from '../context'
+
+/**
+ * Builds the Results-panel "Input" shape for a code node:
+ *   template: the props config the author wrote (with template strings intact)
+ *   resolved: the resolved prop values + referenced step namespaces
+ *
+ * Excludes the script source (visible in the editor above) and the filtered
+ * steps payload (visible on each upstream step's own row).
+ *
+ * Exported so the chained-code path in walkGraph can synthesize the same shape
+ * without re-implementing the prop resolution logic.
+ */
+export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext): ResolvedStepInput {
+  const propsConfig = (node.config?.props ?? []) as Array<{ name: string; source: string }>
+  const resolvedProps: Record<string, unknown> = {}
+  for (const p of propsConfig) {
+    if (!p?.name || !p?.source) continue
+    resolvedProps[p.name] = resolveValue(p.source, ctx)
+  }
+  const script = (node.config?.script as string | undefined) ?? ''
+  const referenced = extractReferencedSteps(script)
+  return {
+    template: { props: propsConfig },
+    resolved: {
+      props: resolvedProps,
+      steps_referenced: referenced === null ? 'all (dynamic access)' : Array.from(referenced),
+    },
+  }
+}
 
 /**
  * Static-analyzes a user script for `steps.X` dot references and returns the
@@ -88,6 +117,16 @@ export async function executeCodeNode(
     resolvedProps[p.name] = resolveValue(p.source, ctx)
   }
 
+  // Captured for the Results panel. Built once here so both the throw path
+  // (attach to err) and the happy path (return in result) use identical data.
+  const resolvedInput: ResolvedStepInput = {
+    template: { props: propsConfig },
+    resolved: {
+      props: resolvedProps,
+      steps_referenced: referenced === null ? 'all (dynamic access)' : Array.from(referenced),
+    },
+  }
+
   const body = JSON.stringify({
     payload: ctx.trigger.payload,
     steps: stepsToSend,
@@ -116,8 +155,12 @@ export async function executeCodeNode(
     const detail = envelope
       ? (envelope.error ?? text)
       : extractLegacyError(text)
-    const err = new Error(detail) as Error & { logs?: import('../../types').StepLogEntry[] }
+    const err = new Error(detail) as Error & {
+      logs?: import('../../types').StepLogEntry[]
+      resolvedInput?: ResolvedStepInput
+    }
     if (envelope && Array.isArray(envelope.logs)) err.logs = envelope.logs as import('../../types').StepLogEntry[]
+    err.resolvedInput = resolvedInput
     throw err
   }
 
@@ -135,16 +178,16 @@ export async function executeCodeNode(
       const r = obj.response as { status?: number; body?: unknown; headers?: Record<string, string> }
       const expected = obj.expected === true ? (true as const) : undefined
       if (obj.continueExecution === true) {
-        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true, expected, logs }
+        return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, continueAfterResponse: true, expected, logs, resolvedInput }
       }
-      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, expected, logs }
+      return { output, earlyResponse: { status: r.status ?? 200, body: r.body ?? null, headers: r.headers }, expected, logs, resolvedInput }
     }
     if (obj.exit === true) {
-      return { output, earlyExit: true, logs }
+      return { output, earlyExit: true, logs, resolvedInput }
     }
   }
 
-  return { output, logs }
+  return { output, logs, resolvedInput }
 }
 
 function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string } {

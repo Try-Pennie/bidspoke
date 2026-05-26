@@ -64,6 +64,14 @@ export interface BidResolverResult {
     is_sell_off?: boolean
     reason?: string
   }
+  /**
+   * Resolved values used to produce the bid — surfaced to the partner-bid
+   * executor so failed/skipped attempts can show what was actually computed.
+   *   api    → the outbound JSON body sent (post outbound_field_mapping)
+   *   matrix → the lookup key fields read from the lead (credit_score, debt, etc.)
+   *   formula → the formula string + the variables that were in scope
+   */
+  resolved_input?: Record<string, unknown>
 }
 
 export class BidResolverConfigError extends Error {
@@ -85,7 +93,11 @@ export async function resolveBid(
     case 'formula': {
       const formula = readFormula(partner)
       if (!formula) return { bid: null, raw: null }
-      return { bid: evaluateFormula(formula, ctx), raw: null }
+      return {
+        bid: evaluateFormula(formula, ctx),
+        raw: null,
+        resolved_input: { formula, payload: ctx.trigger.payload },
+      }
     }
     case 'api': {
       if (!partner.api_endpoint) return { bid: null, raw: null }
@@ -116,6 +128,7 @@ export async function resolveBid(
           is_sell_off: result.matched_row?.is_sell_off,
           reason: result.reason,
         },
+        resolved_input: { lookup_payload: ctx.trigger.payload, use_sell_off: useSellOff },
       }
     }
   }
@@ -161,6 +174,11 @@ async function callBidApi(
   // Apply per-partner outbound field mapping (TODO 4.9). Null mapping = identity.
   const wireBody = applyOutboundMapping(ctx.trigger.payload, partner.outbound_field_mapping ?? null)
   const body = JSON.stringify(wireBody)
+  const resolvedInputForCaller: Record<string, unknown> = {
+    endpoint: partner.api_endpoint,
+    method: 'POST',
+    outbound_body: wireBody,
+  }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
 
@@ -195,20 +213,30 @@ async function callBidApi(
       // engine_no_bids SF body would have TripointLeadID__c=null on a Duplicate
       // even though Tripoint returned the existing lead's id in the body.
       const rejectedExtra = extractExtras(partner.extra_extraction, raw)
-      return { bid: null, raw, rejected: true, ...(rejectedExtra ? { extra: rejectedExtra } : {}) }
+      return {
+        bid: null,
+        raw,
+        rejected: true,
+        ...(rejectedExtra ? { extra: rejectedExtra } : {}),
+        resolved_input: resolvedInputForCaller,
+      }
     }
     if (override === 'transient' || override === 'permanent') {
       const suppress = shouldSuppressAlert(partner.alert_config, override)
-      throw new PartnerApiError(
+      const apiErr = new PartnerApiError(
         `Partner API returned ${res.status} (classified as ${override} by override)`,
         override,
         suppress
-      )
+      ) as PartnerApiError & { resolved_input?: Record<string, unknown> }
+      apiErr.resolved_input = resolvedInputForCaller
+      throw apiErr
     }
   }
 
   if (!res.ok) {
-    throw new Error(`Partner API returned ${res.status}`)
+    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown> }
+    httpErr.resolved_input = resolvedInputForCaller
+    throw httpErr
   }
 
   const extra = extractExtras(partner.extra_extraction, raw)
@@ -221,7 +249,7 @@ async function callBidApi(
     bid = bidPath ? coerceNumeric(readPath(raw, bidPath)) : extractBid(raw)
   }
 
-  return { bid, raw, ...(extra ? { extra } : {}) }
+  return { bid, raw, ...(extra ? { extra } : {}), resolved_input: resolvedInputForCaller }
 }
 
 // ── Structured pricing ────────────────────────────────────────────────────────

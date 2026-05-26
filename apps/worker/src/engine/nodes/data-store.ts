@@ -14,7 +14,7 @@
  *   delete: { store, operation: 'delete', key }
  */
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 
@@ -47,6 +47,8 @@ export async function executeDataStoreNode(
   const key = String(resolveValue(rawKey, ctx) ?? '')
   if (!key) throw new Error('Data Store node resolved an empty key')
 
+  const templateBase = { store: config.store, operation, key: rawKey, ttl_seconds: config.ttl_seconds, value: config.value }
+
   switch (operation) {
     case 'set': {
       const value = resolveValue(config.value ?? null, ctx)
@@ -55,6 +57,10 @@ export async function executeDataStoreNode(
         putOpts.expirationTtl = Math.max(config.ttl_seconds, KV_MIN_TTL_SECONDS)
       }
       await kv.put(key, JSON.stringify(value), putOpts)
+      const resolvedInput: ResolvedStepInput = {
+        template: templateBase,
+        resolved: { store, operation: 'set', key, value, ttl_seconds: putOpts.expirationTtl ?? null },
+      }
       return {
         output: {
           store,
@@ -62,11 +68,16 @@ export async function executeDataStoreNode(
           key,
           ttl_seconds: putOpts.expirationTtl ?? null,
         },
+        resolvedInput,
       }
     }
     case 'get': {
       const raw = await kv.get(key)
       const value = raw === null ? null : safeParse(raw)
+      const resolvedInput: ResolvedStepInput = {
+        template: templateBase,
+        resolved: { store, operation: 'get', key },
+      }
       return {
         output: {
           store,
@@ -75,12 +86,18 @@ export async function executeDataStoreNode(
           value,
           hit: raw !== null,
         },
+        resolvedInput,
       }
     }
     case 'delete': {
       await kv.delete(key)
+      const resolvedInput: ResolvedStepInput = {
+        template: templateBase,
+        resolved: { store, operation: 'delete', key },
+      }
       return {
         output: { store, operation: 'delete', key },
+        resolvedInput,
       }
     }
     default:

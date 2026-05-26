@@ -19,7 +19,7 @@
  *   steps.x.output.amount * 0.85  — simple arithmetic expression
  */
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -42,14 +42,20 @@ export function executeTransformNode(
   const mappings = config.mappings ?? []
 
   const output: Record<string, unknown> = {}
+  const sourceValues: Array<{ source: string; target: string; value: unknown }> = []
 
   for (const { source, target } of mappings) {
     if (!source || !target) continue
     const value = resolveSource(source.trim(), ctx)
+    sourceValues.push({ source, target, value })
     setNestedPath(output, target.trim(), value)
   }
 
-  return { output }
+  const resolvedInput: ResolvedStepInput = {
+    template: { mappings },
+    resolved: { mappings: sourceValues },
+  }
+  return { output, resolvedInput }
 }
 
 // ── Source resolution ─────────────────────────────────────────────────────────

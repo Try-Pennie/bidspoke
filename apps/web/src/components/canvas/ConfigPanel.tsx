@@ -303,8 +303,9 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
-        {type === 'salesforce' && <SalesforceConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -575,7 +576,7 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
                 Input
               </button>
               {showInput && (
-                <JsonTreeView data={exec.input} basePath={`steps.${namespace}.input`} />
+                <StepInputView input={exec.input} namespace={namespace} />
               )}
             </div>
           )}
@@ -595,6 +596,35 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// New-shape inputs are `{ template, resolved }`. Older rows (partner_bid
+// `{ partner_id }`, or pre-feature null) render with the legacy single tree.
+function isResolvedShape(input: unknown): input is { template: unknown; resolved: unknown } {
+  return (
+    typeof input === 'object'
+    && input !== null
+    && 'template' in input
+    && 'resolved' in input
+  )
+}
+
+function StepInputView({ input, namespace }: { input: unknown; namespace: string }) {
+  if (!isResolvedShape(input)) {
+    return <JsonTreeView data={input} basePath={`steps.${namespace}.input`} />
+  }
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">Template</p>
+        <JsonTreeView data={input.template} basePath={`steps.${namespace}.input.template`} />
+      </div>
+      <div>
+        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">Resolved</p>
+        <JsonTreeView data={input.resolved} basePath={`steps.${namespace}.input.resolved`} />
+      </div>
     </div>
   )
 }
@@ -1220,6 +1250,129 @@ function DataStoreConfig({
               }}
             />
           </Field>
+        </>
+      )}
+    </section>
+  )
+}
+
+function LatencyGateConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const operation = (config.operation as 'mark' | 'check' | undefined) ?? 'mark'
+  const correlationKey = (config.correlation_key as string | undefined) ?? ''
+  const scope = (config.scope as string | undefined) ?? ''
+  const ttl = config.ttl_seconds as number | undefined
+  const thresholdMs = config.threshold_ms as number | undefined
+  const partnerId = (config.partner_id as string | undefined) ?? ''
+  const [partners, setPartners] = useState<Partner[]>([])
+
+  // Persist the displayed default so the executor doesn't throw on a missing
+  // operation (see DataStoreConfig for the same pattern).
+  useEffect(() => {
+    if (config.operation === undefined) onChange({ operation: 'mark' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    api.partners.list().then(setPartners).catch(() => {})
+  }, [])
+
+  return (
+    <section className="space-y-4">
+      <Field label="Operation" hint="Mark stamps the time on the bid. Check measures elapsed time on the confirmation and gates on it.">
+        <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5">
+          {(['mark', 'check'] as const).map((op) => (
+            <button
+              key={op}
+              type="button"
+              onClick={() => onChange({ operation: op })}
+              className={`rounded px-3 py-1 text-xs font-medium transition ${
+                operation === op
+                  ? 'bg-p-blue-light text-p-blue-dark'
+                  : 'text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              {op}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      <Field
+        label="Correlation key"
+        hint="The id the network echoes on BOTH the bid and the confirmation, so check can find the matching mark. Supports {{trigger.*}}, {{steps.*.output.*}}, {{env.*}}."
+      >
+        <input
+          className="input"
+          placeholder="{{trigger.payload.lead_id}}"
+          value={correlationKey}
+          onChange={(e) => onChange({ correlation_key: e.target.value })}
+        />
+      </Field>
+
+      <Field label="Scope (optional)" hint="Namespaces the key so two partners can't collide on the same id. Often the partner slug.">
+        <input
+          className="input"
+          placeholder="{{trigger.source}}"
+          value={scope}
+          onChange={(e) => onChange({ scope: e.target.value || undefined })}
+        />
+      </Field>
+
+      {operation === 'mark' && (
+        <Field label="TTL (seconds)" hint="How long to keep the mark. Minimum 60. Default 86400 (24h). Set above the longest expected waiting period.">
+          <input
+            type="number"
+            className="input"
+            placeholder="86400"
+            value={ttl ?? ''}
+            onChange={(e) => {
+              const n = parseInt(e.target.value)
+              onChange({ ttl_seconds: Number.isFinite(n) ? n : undefined })
+            }}
+          />
+        </Field>
+      )}
+
+      {operation === 'check' && (
+        <>
+          <Field label="Threshold partner" hint="Reads this partner's confirmation window as the latency threshold. Set the value on the partner's settings page.">
+            <div className="relative">
+              <select
+                value={partnerId}
+                onChange={(e) => onChange({ partner_id: e.target.value || undefined })}
+                className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
+              >
+                <option value="">Select a partner...</option>
+                {partners.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}{!p.is_active ? ' (inactive)' : ''}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            </div>
+          </Field>
+          <Field label="Threshold override (ms)" hint="Optional. When set, this wins over the partner's confirmation window.">
+            <input
+              type="number"
+              className="input"
+              placeholder="(use partner setting)"
+              value={thresholdMs ?? ''}
+              onChange={(e) => {
+                const n = parseInt(e.target.value)
+                onChange({ threshold_ms: Number.isFinite(n) ? n : undefined })
+              }}
+            />
+          </Field>
+          <p className="text-xs text-slate-400">
+            Over threshold routes to <span className="font-mono">exceeded</span> (reject due to latency). A missing mark also routes <span className="font-mono">exceeded</span>.
+          </p>
         </>
       )}
     </section>
@@ -2360,6 +2513,14 @@ const SF_OPERATIONS = [
   { value: 'apex',   label: 'Apex REST' },
 ]
 
+// Pre-populated when a Salesforce node is first opened. Edits/removals stick
+// per-node — clearing the list serializes as [] (not undefined), so the default
+// only re-applies to nodes that have never been touched. See
+// feedback_form_displayed_default_must_be_persisted memory.
+const SF_DEFAULT_TRANSIENT_ERRORS: { code: string; message_contains?: string }[] = [
+  { code: 'REQUEST_LIMIT_EXCEEDED', message_contains: 'Concurrent' },
+]
+
 function SalesforceConfig({
   config,
   onChange,
@@ -2378,8 +2539,39 @@ function SalesforceConfig({
   const soql      = (config.soql as string | undefined) ?? ''
   const apexPath  = (config.apex_path as string | undefined) ?? ''
   const expectedErrors = (config.expected_errors as { code: string; message_contains?: string; response_body?: unknown; response_status?: number }[] | undefined) ?? []
+  const transientErrors = (config.transient_errors as { code: string; message_contains?: string }[] | undefined) ?? []
   const injectedFields = (config.injected_fields as Record<string, string> | undefined) ?? {}
   const injectedRows = Object.entries(injectedFields)
+
+  // Persisted default: pre-populate transient_errors with the SF concurrency-limit
+  // entry on first mount of an unconfigured node. With key={node.id} at the render
+  // site, this fires per node. An explicit [] (user cleared all rows) is preserved.
+  useEffect(() => {
+    if (config.transient_errors === undefined) {
+      onChange({ transient_errors: SF_DEFAULT_TRANSIENT_ERRORS })
+    }
+    // Intentional one-time mount write — re-runs are gated by the key={node.id} remount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  function updateTransientError(index: number, patch: Partial<{ code: string; message_contains: string }>) {
+    const next = [...transientErrors]
+    const current = next[index] ?? { code: '' }
+    next[index] = { ...current, ...patch }
+    if (next[index].message_contains !== undefined && next[index].message_contains!.trim() === '') {
+      delete next[index].message_contains
+    }
+    onChange({ transient_errors: next })
+  }
+  function addTransientError() {
+    onChange({ transient_errors: [...transientErrors, { code: '' }] })
+  }
+  function removeTransientError(index: number) {
+    // Keep [] (explicit empty) rather than undefined so the mount-effect default
+    // doesn't re-add rows the user deliberately cleared.
+    const next = transientErrors.filter((_, i) => i !== index)
+    onChange({ transient_errors: next })
+  }
 
   function updateInjectedField(index: number, key: string, value: string) {
     const next: Record<string, string> = {}
@@ -2693,6 +2885,62 @@ function SalesforceConfig({
             ))}
             <p className="text-xs text-gray-400">
               Both errorCode and message substring must match. Leave message blank to match any message with that errorCode. If a response body is set, it&apos;s returned to the caller instead of the raw SF error structure.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="mb-1 flex items-center justify-between">
+          <label className="block text-xs font-medium text-gray-600">Retryable errors</label>
+          <button
+            type="button"
+            onClick={addTransientError}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700"
+          >
+            + Add
+          </button>
+        </div>
+        {transientErrors.length === 0 ? (
+          <p className="text-xs text-gray-400">
+            Treat matching Salesforce errors as transient — the engine&apos;s retry + backoff kicks in instead of failing immediately. Defaults to <code className="rounded bg-gray-100 px-1">REQUEST_LIMIT_EXCEEDED</code> + <code className="rounded bg-gray-100 px-1">Concurrent</code> (org concurrency limit, clears in seconds).
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {transientErrors.map((err, i) => (
+              <div key={i} className="rounded border border-gray-200 p-2">
+                <div className="mb-2 flex items-start gap-2">
+                  <div className="flex-1">
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">errorCode</label>
+                    <input
+                      className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                      value={err.code}
+                      onChange={(e) => updateTransientError(i, { code: e.target.value })}
+                      placeholder="REQUEST_LIMIT_EXCEEDED"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeTransientError(i)}
+                    className="mt-4 text-xs text-gray-400 hover:text-red-600"
+                    aria-label="Remove"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div>
+                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Message contains (optional)</label>
+                  <input
+                    className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                    value={err.message_contains ?? ''}
+                    onChange={(e) => updateTransientError(i, { message_contains: e.target.value })}
+                    placeholder="Concurrent"
+                  />
+                </div>
+              </div>
+            ))}
+            <p className="text-xs text-gray-400">
+              Both errorCode and message substring must match (case-sensitive). Leave message blank to match any message with that errorCode. Retry count + backoff are set in Advanced settings below.
             </p>
           </div>
         )}

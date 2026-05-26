@@ -375,6 +375,115 @@ describe('executeSalesforceNode', () => {
     expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
   })
 
+  // ── transient_errors: per-node opt-in retry for matching 4xx errors ────────
+
+  it('transient_errors: matching errorCode + message_contains marks 403 as transient', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(403, JSON.stringify([{
+      message: 'ConcurrentPerOrgLongTxn Limit exceeded.',
+      errorCode: 'REQUEST_LIMIT_EXCEEDED',
+    }])))
+
+    const err = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        transient_errors: [{ code: 'REQUEST_LIMIT_EXCEEDED', message_contains: 'Concurrent' }],
+      }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
+  })
+
+  it('transient_errors: errorCode match with no message_contains matches any message', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(403, JSON.stringify([{
+      message: 'TotalRequests Limit exceeded.',
+      errorCode: 'REQUEST_LIMIT_EXCEEDED',
+    }])))
+
+    const err = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        transient_errors: [{ code: 'REQUEST_LIMIT_EXCEEDED' }],
+      }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
+  })
+
+  it('transient_errors: message_contains mismatch keeps the error permanent', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(403, JSON.stringify([{
+      message: 'TotalRequests Limit exceeded.',
+      errorCode: 'REQUEST_LIMIT_EXCEEDED',
+    }])))
+
+    const err = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        transient_errors: [{ code: 'REQUEST_LIMIT_EXCEEDED', message_contains: 'Concurrent' }],
+      }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+  })
+
+  it('transient_errors: errorCode mismatch keeps the error permanent', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(400, JSON.stringify([{
+      message: 'Something else',
+      errorCode: 'INVALID_FIELD',
+    }])))
+
+    const err = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: {},
+        transient_errors: [{ code: 'REQUEST_LIMIT_EXCEEDED', message_contains: 'Concurrent' }],
+      }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+  })
+
+  it('transient_errors: empty/unset list preserves default 4xx → permanent behavior', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(403, JSON.stringify([{
+      message: 'ConcurrentPerOrgLongTxn Limit exceeded.',
+      errorCode: 'REQUEST_LIMIT_EXCEEDED',
+    }])))
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e) => e)
+
+    // No transient_errors configured → 403 stays permanent (engine-side default
+    // is intentionally absent; pre-population lives in the UI mount-effect).
+    expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+  })
+
   // ── expected_errors with custom response shape ─────────────────────────────
 
   it('expected_error with response_body returns earlyResponse + earlyExit', async () => {

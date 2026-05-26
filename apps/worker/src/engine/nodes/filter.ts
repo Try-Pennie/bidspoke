@@ -3,8 +3,8 @@
 // Output: { passed: boolean, _route: 'pass' | 'exit' }
 // The engine routes to the edge whose source_handle matches _route.
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult, ConditionGroup, EdgeCondition } from '../../types'
-import { evaluateConditionGroups } from '../graph'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ConditionGroup, EdgeCondition, ResolvedStepInput } from '../../types'
+import { evaluateConditionGroups, resolveField } from '../graph'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -47,7 +47,22 @@ export function executeFilterNode(
   // 'continue_if' → pass when condition met; 'end_if' → exit when condition met
   const passed = operation === 'continue_if' ? conditionMet : !conditionMet
 
+  // Capture the field value the condition actually compared against — the most
+  // useful thing to see for a filter that routed unexpectedly.
+  const resolved: Record<string, unknown> = { operation, condition_met: conditionMet }
+  if (config.condition?.field) {
+    resolved.field = config.condition.field
+    resolved.field_value = resolveField(config.condition.field, ctx)
+    resolved.operator = config.condition.operator
+    resolved.compare_value = config.condition.value
+  }
+  const resolvedInput: ResolvedStepInput = {
+    template: { operation, condition: config.condition, rules: config.rules },
+    resolved,
+  }
+
   return {
     output: { passed, _route: passed ? 'pass' : 'exit' },
+    resolvedInput,
   }
 }

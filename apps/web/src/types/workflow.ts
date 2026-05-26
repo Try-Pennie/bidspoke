@@ -15,6 +15,7 @@ export type NodeType =
   | 'constants'
   | 'salesforce'
   | 'data_store'
+  | 'latency_gate'
 
 export interface EdgeCondition {
   field: string
@@ -140,12 +141,27 @@ export interface EnvVar {
   updated_by_email?: string | null
 }
 
+/**
+ * Resolved step input shape written by the engine — see worker
+ * src/types.ts::ResolvedStepInput. Legacy rows may still hold a bare value or
+ * null; UI renders both cases.
+ */
+export interface ResolvedStepInput {
+  template: unknown
+  resolved: unknown
+}
+
 // Execution step data injected into node.data during replay mode
 export interface ExecutionStep {
   // Step row id; needed by the canvas to lazy-fetch input/output detail.
   step_id?: string
   status: 'completed' | 'failed' | 'skipped' | 'running' | 'failed_with_fallback'
-  input: unknown
+  /**
+   * Resolved input — new rows: `{ template, resolved }` shape; legacy rows:
+   * partner_bid attempts ({ partner_id }) or null. The Results panel handles
+   * all three by feature-detecting the {template, resolved} shape.
+   */
+  input: ResolvedStepInput | unknown
   output: unknown
   logs?: Array<{ level: string; message: string; ts: string }> | null
   error_message: string | null

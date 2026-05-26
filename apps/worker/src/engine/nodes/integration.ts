@@ -16,7 +16,7 @@
  * via classifyHttpError() — same pattern as partner-bid node.
  */
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
 
@@ -117,11 +117,31 @@ export async function executeIntegrationNode(
 
   // Resolve body (skipped for GET/HEAD)
   let bodyStr: string | undefined
+  let resolvedBodyForInput: unknown = undefined
   if (method !== 'GET' && method !== 'HEAD' && config.body !== undefined) {
     const resolvedBody = resolveValue(config.body, enrichedCtx)
+    resolvedBodyForInput = resolvedBody
     if (resolvedBody !== null && resolvedBody !== undefined) {
       bodyStr = typeof resolvedBody === 'string' ? resolvedBody : JSON.stringify(resolvedBody)
     }
+  }
+
+  const resolvedInput: ResolvedStepInput = {
+    template: {
+      service: config.service,
+      action: config.action,
+      url: config.url,
+      method: config.method,
+      headers: config.headers,
+      body: config.body,
+      auth: config.auth ? { type: config.auth.type } : undefined,
+    },
+    resolved: {
+      method,
+      url: resolvedUrl,
+      headers,
+      body: resolvedBodyForInput,
+    },
   }
 
   // Fetch with timeout
@@ -154,7 +174,9 @@ export async function executeIntegrationNode(
 
   // Non-2xx: throw Response so engine classifies the HTTP error
   if (!res.ok) {
-    throw new Response(responseText, { status: res.status, headers: res.headers })
+    const responseErr = new Response(responseText, { status: res.status, headers: res.headers })
+    ;(responseErr as Response & { resolvedInput?: ResolvedStepInput }).resolvedInput = resolvedInput
+    throw responseErr
   }
 
   const output: IntegrationOutput = {
@@ -163,5 +185,5 @@ export async function executeIntegrationNode(
     headers: responseHeaders,
   }
 
-  return { output }
+  return { output, resolvedInput }
 }
