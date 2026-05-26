@@ -35,6 +35,7 @@ export interface Partner {
   circuit_window_seconds: number
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
+  confirmation_window_ms: number | null
   is_active: boolean
   priority: number
   sell_off_offer_title: string | null

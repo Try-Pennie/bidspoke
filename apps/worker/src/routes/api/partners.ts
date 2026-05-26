@@ -33,6 +33,7 @@ interface PartnerBody {
   circuit_window_seconds?: number
   circuit_cooldown_seconds?: number
   circuit_enabled?: boolean
+  confirmation_window_ms?: number | null
   is_active?: boolean
   priority?: number
   sell_off_offer_title?: string | null
@@ -130,6 +131,7 @@ partners.post('/', async (c) => {
       circuit_window_seconds: body.circuit_window_seconds ?? 60,
       circuit_cooldown_seconds: body.circuit_cooldown_seconds ?? 300,
       circuit_enabled: body.circuit_enabled ?? true,
+      confirmation_window_ms: body.confirmation_window_ms ?? null,
       is_active: body.is_active ?? true,
       priority: body.priority ?? 0,
       partner_type: body.partner_type ?? 'buyer',
@@ -189,7 +191,7 @@ partners.put('/:id', async (c) => {
     'bid_mode', 'bid_comparison_source', 'extra_extraction', 'last_probe_response',
     'dedup_endpoint', 'response_classification', 'alert_config',
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
-    'circuit_enabled', 'is_active', 'priority',
+    'circuit_enabled', 'confirmation_window_ms', 'is_active', 'priority',
     'sell_off_offer_title', 'sell_off_offer_details',
     'click_url', 'partner_type',
   ]

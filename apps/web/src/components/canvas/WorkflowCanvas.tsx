@@ -42,6 +42,7 @@ import { ParallelEndNode } from './nodes/ParallelEndNode'
 import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
 import { DataStoreNode } from './nodes/DataStoreNode'
+import { LatencyGateNode } from './nodes/LatencyGateNode'
 import { RegionNode } from './nodes/RegionNode'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
@@ -83,6 +84,7 @@ const nodeTypes: NodeTypes = {
   constants: ConstantsNode,
   salesforce: SalesforceNode,
   data_store: DataStoreNode,
+  latency_gate: LatencyGateNode,
   region: RegionNode,
 }
 
@@ -711,6 +713,18 @@ function chooseSourceHandle(
       [
         { id: 'winner', x: source.position.x + NODE_W * 0.3 },
         { id: 'no_winner', x: source.position.x + NODE_W * 0.7 },
+      ],
+      dropX
+    )
+  }
+
+  if (type === 'latency_gate') {
+    const op = (config?.operation as string | undefined) ?? 'mark'
+    if (op !== 'check') return 'output'
+    return nearestHandleId(
+      [
+        { id: 'within', x: source.position.x + NODE_W * 0.3 },
+        { id: 'exceeded', x: source.position.x + NODE_W * 0.7 },
       ],
       dropX
     )

@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -96,6 +96,13 @@ const NODES: PaletteNode[] = [
     description: 'KV read/write with TTL',
     icon: Database,
     color: 'text-cyan-500',
+  },
+  {
+    type: 'latency_gate',
+    label: 'Latency Gate',
+    description: 'Mark a time, then gate on elapsed',
+    icon: Timer,
+    color: 'text-orange-500',
   },
 ]
 

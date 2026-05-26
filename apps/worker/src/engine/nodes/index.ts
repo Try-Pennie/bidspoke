@@ -12,6 +12,7 @@ import { executeIntegrationNode } from './integration'
 import { executeConstantsNode } from './constants'
 import { executeSalesforceNode } from './salesforce'
 import { executeDataStoreNode } from './data-store'
+import { executeLatencyGateNode } from './latency-gate'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -61,6 +62,8 @@ export async function executeNode(
       return executeSalesforceNode(node, ctx, env)
     case 'data_store':
       return executeDataStoreNode(node, ctx, env)
+    case 'latency_gate':
+      return executeLatencyGateNode(node, ctx, env, supabase)
     default:
       throw new Error(`Unknown node type: ${(node as NodeDefinition).type}`)
   }

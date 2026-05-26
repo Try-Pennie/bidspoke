@@ -49,6 +49,15 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!config.script) return 'No script written'
       return null
     }
+    case 'latency_gate': {
+      const correlationKey = config.correlation_key as string | undefined
+      if (!correlationKey?.trim()) return 'No correlation key set'
+      const operation = (config.operation as string | undefined) ?? 'mark'
+      if (operation === 'check' && !config.partner_id && config.threshold_ms === undefined) {
+        return 'No threshold partner or override set'
+      }
+      return null
+    }
     // response, exit, trigger — always valid
     default:
       return null

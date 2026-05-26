@@ -184,6 +184,10 @@ export function configuredHandleIds(node: Node): string[] | null {
   }
   if (type === 'filter') return ['pass', 'exit']
   if (type === 'bid_evaluation' || type === 'bid_group') return ['winner', 'no_winner']
+  if (type === 'latency_gate') {
+    const op = (config?.operation as string | undefined) ?? 'mark'
+    return op === 'check' ? ['within', 'exceeded'] : null
+  }
   if (type === 'parallel') {
     const raw = config?.children
     if (!Array.isArray(raw) || raw.length === 0) return null
@@ -208,6 +212,10 @@ function handleSortIndex(
   if (nodeType === 'bid_evaluation') {
     if (handleId === 'winner') return 0
     if (handleId === 'no_winner') return 1
+  }
+  if (nodeType === 'latency_gate') {
+    if (handleId === 'within') return 0
+    if (handleId === 'exceeded') return 1
   }
   if (nodeType === 'branch') {
     type BranchData = { config?: { branches?: { label: string }[] } }
@@ -358,7 +366,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // `_handleOffsets` from `data`. See `BranchNode.tsx`, `ParallelNode.tsx`,
   // `BranchEndNode.tsx`, `BidGroupNode.tsx`, `BidEvaluationNode.tsx`,
   // `FilterNode.tsx`. New node types that opt in here must do the same.
-  const fanOutTypes = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'filter'])
+  const fanOutTypes = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'filter', 'latency_gate'])
   for (const n of nodes) {
     if (!fanOutTypes.has(n.type ?? '')) continue
     const handles = configuredHandleIds(n)

@@ -50,6 +50,7 @@ interface FormSnapshot {
   alertTransient: boolean; alertPermanent: boolean
   sellOffOfferTitle: string; sellOffOfferDetails: string
   partnerType: 'source' | 'buyer'
+  confirmationWindowMs: string
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -414,6 +415,10 @@ export default function PartnerForm({
   const [circuitWindow, setCircuitWindow] = useState(String(partner?.circuit_window_seconds ?? 60))
   const [circuitCooldown, setCircuitCooldown] = useState(String(partner?.circuit_cooldown_seconds ?? 300))
 
+  const [confirmationWindowMs, setConfirmationWindowMs] = useState(
+    partner?.confirmation_window_ms != null ? String(partner.confirmation_window_ms) : ''
+  )
+
   const [signalRules, setSignalRules] = useState<SignalRules>(() => parseRules(partner?.response_classification))
 
   const defaultAlertConfig = partner?.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
@@ -455,7 +460,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -471,7 +476,7 @@ export default function PartnerForm({
     setCircuitCooldown(snap.circuitCooldown); setSignalRules(snap.signalRules)
     setAlertTransient(snap.alertTransient); setAlertPermanent(snap.alertPermanent)
     setSellOffOfferTitle(snap.sellOffOfferTitle); setSellOffOfferDetails(snap.sellOffOfferDetails)
-    setPartnerType(snap.partnerType)
+    setPartnerType(snap.partnerType); setConfirmationWindowMs(snap.confirmationWindowMs)
   }
 
   function handleUndo() {
@@ -518,6 +523,7 @@ export default function PartnerForm({
         },
         sell_off_offer_title: sellOffOfferTitle || null,
         sell_off_offer_details: sellOffOfferDetails || null,
+        confirmation_window_ms: confirmationWindowMs ? parseInt(confirmationWindowMs) : null,
       }
       await onSave(body, partner?.id, isNew ? pendingUuids : undefined)
       setSaveState('saved')
@@ -778,6 +784,17 @@ export default function PartnerForm({
           </p>
           <SignalRuleBuilder value={signalRules} onChange={setSignalRules} />
         </Section>}
+
+        <Section title="Bid confirmation latency">
+          <p className="text-xs text-gray-400">
+            Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
+            Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
+            blank to require a node-level override instead.
+          </p>
+          <Field label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
+            <Input value={confirmationWindowMs} onChange={setConfirmationWindowMs} type="number" placeholder="(none)" />
+          </Field>
+        </Section>
 
         {partnerType === 'source' && <Section title="Sell-off offer copy">
           <p className="text-xs text-gray-400">
