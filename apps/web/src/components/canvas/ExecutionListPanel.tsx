@@ -111,6 +111,14 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   useEffect(() => { hasMoreRef.current = hasMore }, [hasMore])
   useEffect(() => { loadingMoreRef.current = loadingMore }, [loadingMore])
 
+  // Generation token: bumps on every workflow/filter change. The 1s poll keeps
+  // firing fetches; when the user switches tabs, the interval is cleared but
+  // already-in-flight requests are not. Without this guard, a stale "all"
+  // response can land after the new filter's response and pollute the merged
+  // list — and mergeExecs only adds rows, so the pollution sticks.
+  const genRef = useRef(0)
+  useEffect(() => { genRef.current += 1 }, [workflowId, filter])
+
   function toggleError(id: string, e: React.MouseEvent) {
     e.stopPropagation()
     setExpandedErrors((prev) => {
@@ -125,9 +133,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const loadFirstPage = useCallback((silent = false) => {
     if (!silent) setLoading(true)
     const opts = filter === 'all' ? undefined : { outcome: filter }
+    const gen = genRef.current
     api.executions
       .list(workflowId, opts)
       .then((page) => {
+        if (gen !== genRef.current) return // stale: filter/workflow changed mid-flight
         if (silent) {
           setExecutions((prev) => mergeExecs(prev, page))
         } else {
@@ -136,7 +146,9 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
         }
       })
       .catch(() => {})
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (gen === genRef.current) setLoading(false)
+      })
   }, [workflowId, filter])
 
   const loadMore = useCallback(() => {
@@ -149,14 +161,18 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       beforeId: oldest.id,
     }
     if (filter !== 'all') opts.outcome = filter
+    const gen = genRef.current
     api.executions
       .list(workflowId, opts)
       .then((page) => {
+        if (gen !== genRef.current) return // stale: filter/workflow changed mid-flight
         setExecutions((prev) => mergeExecs(prev, page))
         setHasMore(page.length === PAGE_SIZE)
       })
       .catch(() => {})
-      .finally(() => setLoadingMore(false))
+      .finally(() => {
+        if (gen === genRef.current) setLoadingMore(false)
+      })
   }, [workflowId, filter])
 
   const loadVersions = useCallback(() => {
