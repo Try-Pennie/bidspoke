@@ -146,6 +146,17 @@ function WorkflowEditorInner() {
     return unsub
   }, [executionId, applyExec])
 
+  // Selecting an execution from the list/banner/parent-link: flip local state
+  // synchronously so the canvas reacts on the same tick as the click, then
+  // push the URL in the background. Pure router.push routes the state update
+  // through the App Router transition, which on big workflows held the visual
+  // change for seconds — exactly the lag the changeMode callback was created
+  // to dodge. Same pattern here.
+  const selectExecution = useCallback((execId: string) => {
+    setExecutionId(execId)
+    router.push(`/workflows/${id}?execution=${execId}`)
+  }, [router, id])
+
   const clearExecution = useCallback(() => {
     setExecutionId(undefined)
     setExecutionSteps(undefined)
@@ -219,6 +230,7 @@ function WorkflowEditorInner() {
       executionChildren={executionChildren}
       onLoadStepDetail={loadStepDetail}
       onClearExecution={clearExecution}
+      onSelectExecution={selectExecution}
     />
   )
 }

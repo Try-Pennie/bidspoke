@@ -836,7 +836,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution }: {
+function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   onModeChange?: (mode: 'edit' | 'view') => void
@@ -850,6 +850,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
   onLoadStepDetail?: (namespace: string) => void
   onClearExecution?: () => void
+  onSelectExecution?: (execId: string) => void
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow()
@@ -861,6 +862,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     if (onModeChange) onModeChange(next)
     else router.push(`/workflows/${workflow.id}?mode=${next}`)
   }, [onModeChange, router, workflow.id])
+
+  // Selecting a new execution. Mirrors switchMode: prefer the parent's
+  // optimistic local-state setter, fall back to router.push if not wired.
+  const selectExecution = useCallback((execId: string) => {
+    if (onSelectExecution) onSelectExecution(execId)
+    else router.push(`/workflows/${workflow.id}?execution=${execId}`)
+  }, [onSelectExecution, router, workflow.id])
 
   // After a layout pass that may have shifted existing nodes (e.g. dropping a
   // new node and re-running dagre), keep the user's view stable by translating
@@ -2791,7 +2799,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           <ExecutionListPanel
             workflowId={workflow.id}
             selectedId={executionId}
-            onSelect={(id) => router.push(`/workflows/${workflow.id}?execution=${id}`)}
+            onSelect={selectExecution}
             refreshSignal={refreshSignal}
           />
         )}
@@ -2838,7 +2846,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     try {
                       const { executionId: newId } = await api.executions.replay(executionId)
                       setRefreshSignal((s) => s + 1)
-                      if (newId) router.push(`/workflows/${workflow.id}?execution=${newId}`)
+                      if (newId) selectExecution(newId)
                     } finally {
                       setReplaying(false)
                     }
@@ -2876,7 +2884,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   <RotateCcw className="h-3 w-3 text-gray-400" />
                   <span>Replay of</span>
                   <button
-                    onClick={() => router.push(`/workflows/${workflow.id}?execution=${executionParentId}`)}
+                    onClick={() => executionParentId && selectExecution(executionParentId)}
                     className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
                   >
                     {executionParentId.slice(0, 8)}…
@@ -2890,7 +2898,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   <button
                     onClick={() => {
                       const latest = executionChildren[executionChildren.length - 1]
-                      router.push(`/workflows/${workflow.id}?execution=${latest.id}`)
+                      selectExecution(latest.id)
                     }}
                     className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
                   >
@@ -3339,7 +3347,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             onRetryFromFailure={async () => {
               const { executionId: newId } = await api.executions.resume(executionId)
               setRefreshSignal((s) => s + 1)
-              if (newId) router.push(`/workflows/${workflow.id}?execution=${newId}`)
+              if (newId) selectExecution(newId)
             }}
           />
         )}
@@ -3523,6 +3531,7 @@ export default function WorkflowCanvas({
   executionChildren,
   onLoadStepDetail,
   onClearExecution,
+  onSelectExecution,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -3537,6 +3546,7 @@ export default function WorkflowCanvas({
   executionChildren?: Array<{ id: string; started_at: string; status: string }>
   onLoadStepDetail?: (namespace: string) => void
   onClearExecution?: () => void
+  onSelectExecution?: (execId: string) => void
 }) {
   return (
     <ReactFlowProvider>
@@ -3554,6 +3564,7 @@ export default function WorkflowCanvas({
         executionChildren={executionChildren}
         onLoadStepDetail={onLoadStepDetail}
         onClearExecution={onClearExecution}
+        onSelectExecution={onSelectExecution}
       />
     </ReactFlowProvider>
   )
