@@ -1142,6 +1142,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // only the one updated namespace gets a new reference. Without this skip,
   // a single step click would re-render all 15-20 nodes and call
   // updateNodeInternals on every one — visibly slow on engine bidding.
+  const hadExecutionRef = useRef(false)
   useEffect(() => {
     const touchedIds: string[] = []
     setNodes((ns) => {
@@ -1158,6 +1159,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       })
       return changed ? next : ns
     })
+    const hasExecution = !!executionSteps
+    const wasFirstSelection = !hadExecutionRef.current && hasExecution
+    hadExecutionRef.current = hasExecution
     if (touchedIds.length === 0) return
     // When clearing the execution view (executionSteps undefined), nodes only
     // shrink (pill disappears) or lose opacity. React Flow's ResizeObserver
@@ -1168,8 +1172,18 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     // Several node types (Branch, Filter, Code, etc.) render an output-preview
     // pill when executionStep is set, which grows the node's height. React
     // Flow caches handle positions on initial mount, so without a re-measure
-    // wires anchor to the old (smaller) bbox. Defer to next frame so the new
-    // DOM has rendered before measuring.
+    // wires anchor to the old (smaller) bbox.
+    //
+    // Two cases need the explicit re-measure:
+    //   1) First selection (no exec → exec): nodes grow from default to with-pill.
+    //   2) Lazy step-detail load (≤ a few touched ids): one node's pill content
+    //      arrived, may have changed width; cheap to re-measure a couple.
+    // Skip on exec → exec swaps (many touched ids, pill already present):
+    // ResizeObserver catches any width delta from changed output text, and
+    // touching all N nodes was the multi-second freeze users reported.
+    const isExecSwap = !wasFirstSelection && touchedIds.length > 3
+    if (isExecSwap) return
+    // Defer to next frame so the new DOM has rendered before measuring.
     const raf = requestAnimationFrame(() => {
       // Pass the whole array in one call — useUpdateNodeInternals accepts
       // string | string[] and batches internally.

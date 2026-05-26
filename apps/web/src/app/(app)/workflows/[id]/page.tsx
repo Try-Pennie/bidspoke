@@ -51,30 +51,60 @@ function WorkflowEditorInner() {
 
   // Populate UI state from a (possibly cached) exec detail. Reused by initial
   // sync read, background revalidation, and per-step lazy-load merges.
+  //
+  // Reference preservation is load-bearing: WorkflowCanvas keys its node-data
+  // sync on ExecutionStep object identity, and a fresh ref for every step on
+  // every cache notify causes updateNodeInternals to touch all N nodes and
+  // freeze the canvas for seconds. See reference_canvas_execution_step_ref
+  // _equality_contract memory. So we use functional setState to access the
+  // prior map and reuse step objects whose observable fields are unchanged —
+  // critical for cache revalidations and per-step detail merges where most
+  // namespaces don't actually change.
   const applyExec = useCallback((exec: ExecutionDetail) => {
-    const map: Record<string, ExecutionStep> = {}
-    for (const step of exec.steps) {
-      const cachedDetail = execCache.getStep(exec.id, step.id)
-      map[step.step_namespace] = {
-        step_id: step.id,
-        status: step.status as ExecutionStep['status'],
-        input: cachedDetail?.input,
-        output: cachedDetail?.output,
-        logs: cachedDetail?.logs ?? undefined,
-        error_message: step.error_message,
-        error_type: step.error_type,
-        duration_ms: step.duration_ms,
-        retries_used: step.retries_used,
-        detail_loaded: !!cachedDetail,
+    setExecutionSteps((prev) => {
+      const map: Record<string, ExecutionStep> = {}
+      for (const step of exec.steps) {
+        const cachedDetail = execCache.getStep(exec.id, step.id)
+        const cachedInput = cachedDetail?.input
+        const cachedOutput = cachedDetail?.output
+        const cachedLogs = cachedDetail?.logs ?? undefined
+        const detailLoaded = !!cachedDetail
+        const prevStep = prev?.[step.step_namespace]
+        const same =
+          prevStep !== undefined &&
+          prevStep.step_id === step.id &&
+          prevStep.status === step.status &&
+          prevStep.error_message === step.error_message &&
+          prevStep.error_type === step.error_type &&
+          prevStep.duration_ms === step.duration_ms &&
+          prevStep.retries_used === step.retries_used &&
+          prevStep.detail_loaded === detailLoaded &&
+          prevStep.input === cachedInput &&
+          prevStep.output === cachedOutput &&
+          prevStep.logs === cachedLogs
+        map[step.step_namespace] = same
+          ? prevStep
+          : {
+              step_id: step.id,
+              status: step.status as ExecutionStep['status'],
+              input: cachedInput,
+              output: cachedOutput,
+              logs: cachedLogs,
+              error_message: step.error_message,
+              error_type: step.error_type,
+              duration_ms: step.duration_ms,
+              retries_used: step.retries_used,
+              detail_loaded: detailLoaded,
+            }
       }
-    }
+      return map
+    })
     setExecutionPayload(exec.trigger_payload)
     setExecutionSource(exec.source)
     setExecutionTraceId(exec.trace_id)
     setExecutionStartedAt(exec.started_at)
     setExecutionParentId(exec.parent_execution_id ?? null)
     setExecutionChildren(exec.child_executions ?? [])
-    setExecutionSteps(map)
   }, [])
 
   useEffect(() => {
