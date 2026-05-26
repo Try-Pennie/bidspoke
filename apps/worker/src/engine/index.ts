@@ -825,6 +825,7 @@ export async function walkGraph(
         return {
           namespace: childNamespace,
           partner_id,
+          partner_slug: slug,
           output: attemptOutput,
           status: attemptStatus,
           error: attemptError,
@@ -852,7 +853,7 @@ export async function walkGraph(
       let groupStatus: StepStatus = 'completed'
       let groupErrorMessage: string | undefined
       try {
-        groupOutput = await executeBidGroupNode(node, ctx, env, supabase, runAttempt)
+        groupOutput = await executeBidGroupNode(node, ctx, env, supabase, runAttempt, (id) => slugByPartnerId.get(id))
       } catch (err) {
         groupStatus = 'failed'
         groupErrorMessage = err instanceof Error ? err.message : String(err)

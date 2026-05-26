@@ -108,6 +108,11 @@ export interface BidGroupAttempt {
   namespace: string
   /** Partner UUID this attempt targeted */
   partner_id: string
+  /** Partner slug — set by the engine on real attempts, also filled in for
+   *  race-timeout fallbacks via the slugLookup arg. Used to synthesize
+   *  PartnerBidOutput rows for failed attempts so they remain visible in
+   *  all_bids instead of vanishing. */
+  partner_slug?: string
   /** Output from executePartnerBidNode (or null if it threw) */
   output: PartnerBidOutput | null
   /** completed when the partner returned (accepted or skipped); failed when it threw */
@@ -152,18 +157,27 @@ interface RunAttemptInput {
  */
 export type RunAttemptFn = (input: RunAttemptInput) => Promise<BidGroupAttempt>
 
+/**
+ * Optional partner-id → slug lookup so the race-timeout fallback (which is
+ * synthesized inside bid-group, not via runAttempt) can populate partner_slug
+ * on the synthetic BidGroupAttempt. When omitted, failed-attempt synthesis
+ * falls back to using partner_id as the display slug.
+ */
+export type SlugLookup = (partnerId: string) => string | undefined
+
 export async function executeBidGroupNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
   _env: Env,
   _supabase: SupabaseClient,
-  runAttempt: RunAttemptFn
+  runAttempt: RunAttemptFn,
+  slugLookup?: SlugLookup
 ): Promise<BidGroupOutput> {
   const config = node.config as unknown as BidGroupConfig
   const mode = config.mode ?? 'highest_bid'
 
   if (mode === 'tiered') {
-    return runTiered(config, ctx, runAttempt)
+    return runTiered(config, ctx, runAttempt, slugLookup)
   }
 
   const partnerIds = config.partner_ids ?? []
@@ -176,7 +190,7 @@ export async function executeBidGroupNode(
   }
 
   // highest_bid: fan-out concurrently, pick the highest accepted bid.
-  return runHighestBid(partnerIds, config, runAttempt)
+  return runHighestBid(partnerIds, config, runAttempt, slugLookup)
 }
 
 // ── Cascade ───────────────────────────────────────────────────────────────────
@@ -196,6 +210,7 @@ async function runCascade(
     }
     const attempt = await runAttempt({ partner_id: partnerIds[i], attemptIndex: i })
     if (attempt.output) all.push(attempt.output)
+    else all.push(synthFailedOutput(attempt))
 
     if (attempt.status === 'completed' && attempt.output && isWinning(attempt.output, config.min_bid_threshold)) {
       return winnerOutput('cascade', all, attempt.output, all)
@@ -207,6 +222,7 @@ async function runCascade(
   if (config.fallback_partner_id) {
     const attempt = await runAttempt({ partner_id: config.fallback_partner_id, attemptIndex: partnerIds.length })
     if (attempt.output) all.push(attempt.output)
+    else all.push(synthFailedOutput(attempt))
     if (attempt.status === 'completed' && attempt.output && isWinning(attempt.output, config.min_bid_threshold)) {
       return winnerOutput('cascade', all, attempt.output, all, 'fallback_won')
     }
@@ -220,7 +236,8 @@ async function runCascade(
 async function runHighestBid(
   partnerIds: string[],
   config: BidGroupConfig,
-  runAttempt: RunAttemptFn
+  runAttempt: RunAttemptFn,
+  slugLookup?: SlugLookup
 ): Promise<BidGroupOutput> {
   const timeoutMs = config.timeout_ms
   const startedAt = Date.now()
@@ -230,6 +247,7 @@ async function runHighestBid(
       .catch((err) => ({
         namespace: `attempt-${idx}`,
         partner_id: id,
+        partner_slug: slugLookup?.(id),
         output: null,
         status: 'failed' as const,
         error: err instanceof Error ? err.message : String(err),
@@ -254,6 +272,7 @@ async function runHighestBid(
                 resolve({
                   namespace: `attempt-${idx}`,
                   partner_id: partnerIds[idx],
+                  partner_slug: slugLookup?.(partnerIds[idx]),
                   output: null,
                   status: 'failed',
                   error: `Partner did not respond within ${timeoutMs}ms`,
@@ -271,9 +290,15 @@ async function runHighestBid(
     settled = await Promise.all(tasks)
   }
 
+  // Include both successful and failed attempts in `all` so the JSON makes
+  // the full set of partners visible. Failed attempts get a synthesized
+  // PartnerBidOutput (stamped as outcome:'error' downstream) carrying the
+  // partner slug + error info — without this they vanish from all_bids/
+  // excluded and the bid_group output looks like the partner was never tried.
   const all: PartnerBidOutput[] = []
   for (const a of settled) {
     if (a.output) all.push(a.output)
+    else all.push(synthFailedOutput(a))
   }
 
   const accepted = all.filter((b) => isWinning(b, config.min_bid_threshold))
@@ -281,6 +306,7 @@ async function runHighestBid(
     if (config.fallback_partner_id) {
       const fb = await runAttempt({ partner_id: config.fallback_partner_id, attemptIndex: settled.length })
       if (fb.output) all.push(fb.output)
+      else all.push(synthFailedOutput(fb))
       if (fb.status === 'completed' && fb.output && isWinning(fb.output, config.min_bid_threshold)) {
         return winnerOutput('highest_bid', all, fb.output, all, 'fallback_won')
       }
@@ -300,7 +326,8 @@ async function runHighestBid(
 async function runTiered(
   config: BidGroupConfig,
   ctx: ExecutionContext,
-  runAttempt: RunAttemptFn
+  runAttempt: RunAttemptFn,
+  slugLookup?: SlugLookup
 ): Promise<BidGroupOutput> {
   const tiers = config.tiers ?? []
   if (tiers.length === 0) {
@@ -339,7 +366,7 @@ async function runTiered(
 
     const tierResult = tier.mode === 'cascade'
       ? await runCascade(tier.partner_ids, tierConfig, globalRun)
-      : await runHighestBid(tier.partner_ids, tierConfig, globalRun)
+      : await runHighestBid(tier.partner_ids, tierConfig, globalRun, slugLookup)
 
     for (const b of tierResult.all_bids) allBids.push(b)
 
@@ -362,6 +389,7 @@ async function runTiered(
   if (config.fallback_partner_id) {
     const fbAttempt = await globalRun({ partner_id: config.fallback_partner_id, attemptIndex: 0 })
     if (fbAttempt.output) allBids.push(fbAttempt.output)
+    else allBids.push(synthFailedOutput(fbAttempt))
     if (fbAttempt.status === 'completed' && fbAttempt.output && isWinning(fbAttempt.output, config.min_bid_threshold)) {
       const winnerPartner = fbAttempt.output.partner
       return {
@@ -404,12 +432,36 @@ function isWinning(output: PartnerBidOutput, minBid: number | null | undefined):
 
 const DECLINED_REASONS = new Set(['rejected', 'bid_below_min'])
 
+/**
+ * Build a PartnerBidOutput stand-in for a failed/timed-out attempt so the
+ * bid_group's all_bids array stays complete. `error`+`error_type` ride along
+ * so the UI can show "Errored" with the reason. Partner display name falls
+ * back to partner_id when slug lookup misses (still better than the row
+ * silently disappearing).
+ */
+function synthFailedOutput(attempt: BidGroupAttempt): PartnerBidOutput {
+  return {
+    partner: attempt.partner_slug ?? attempt.partner_id,
+    bid: null,
+    accepted: false,
+    skipped: false,
+    error: attempt.error,
+    error_type: attempt.error_type ?? null,
+  }
+}
+
 function stampOutcome(
   bid: PartnerBidOutput,
   winnerPartner: string | null
 ): PartnerBidOutputWithOutcome {
   if (winnerPartner !== null && bid.partner === winnerPartner) {
     return { ...bid, outcome: 'won' }
+  }
+  // Synthesized failed-attempt rows carry an error string — flag them as
+  // outcome:'error' so the UI distinguishes "partner threw" from "partner
+  // declined the lead". Real PartnerBidOutput rows never set bid.error.
+  if (bid.error !== undefined) {
+    return { ...bid, outcome: 'error' }
   }
   if (bid.skipped) {
     return {

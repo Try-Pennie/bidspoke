@@ -35,6 +35,8 @@ interface PartnerBidOutputShape {
   response_headers?: Record<string, string> | null
   raw_response?: unknown
   outcome?: BidOutcome
+  error?: string
+  error_type?: 'transient' | 'permanent' | null
   matrix?: {
     config_id: string
     matched_row_id: string | null
@@ -123,6 +125,13 @@ function describeAttempt(attempt: PartnerBidOutputShape): { result: string; tone
   // pre-outcome heuristic for legacy executions.
   if (attempt.outcome === 'won') return { result: 'Won', tone: 'green', why: '' }
   if (attempt.outcome === 'outbid') return { result: 'Outbid', tone: 'gray', why: 'Lost on amount' }
+  if (attempt.outcome === 'error') {
+    const msg = attempt.error ?? 'Partner errored'
+    // Timeout is a transient error type; show that explicitly so it doesn't
+    // look like an API/auth failure.
+    const isTimeout = /within \d+ms|timed? ?out/i.test(msg)
+    return { result: isTimeout ? 'Timed out' : 'Errored', tone: 'red', why: msg }
+  }
   if (attempt.accepted && attempt.outcome === undefined) {
     return { result: 'Bid', tone: 'green', why: '' }
   }
@@ -336,6 +345,15 @@ function BidAttemptRow({
                   </div>
                 )}
               </div>
+
+              {attempt.error && (
+                <div className="rounded border border-red-200 bg-red-50 p-2">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-red-600">
+                    Error{attempt.error_type ? ` · ${attempt.error_type}` : ''}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[11px] text-red-800">{attempt.error}</p>
+                </div>
+              )}
 
               {headers && Object.keys(headers).length > 0 && (
                 <div>

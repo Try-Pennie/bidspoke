@@ -199,7 +199,12 @@ describe('BidGroup highest_bid mode', () => {
       makeCtx(), env, supabase, runAttempt
     )
     expect(result.winner?.partner).toBe('p3')
-    expect(result.all_bids).toHaveLength(2)  // failed attempt has no output
+    // Failed attempts are synthesized into all_bids so they stay visible —
+    // outcome:'error' distinguishes them from successful bids.
+    expect(result.all_bids).toHaveLength(3)
+    const p1 = result.all_bids.find((b) => b.partner === 'p1')
+    expect(p1?.outcome).toBe('error')
+    expect(p1?.bid).toBeNull()
   })
 
   it('fallback wins when no primary partner accepts', async () => {
@@ -244,9 +249,14 @@ describe('BidGroup highest_bid mode', () => {
       const result = await promise
       expect(result.winner?.partner).toBe('fast')
       expect(result.winner?.bid).toBe(25)
-      // Slow partner shows up as failed (no output, status failed) — recorded in step rows,
-      // but only partners with output land in all_bids. So all_bids has just 'fast'.
-      expect(result.all_bids.map((b) => b.partner)).toEqual(['fast'])
+      // Slow partner is timeout-failed; synthesized into all_bids with
+      // outcome:'error' so it stays visible in the JSON output instead of
+      // silently vanishing. partner_id is used when slugLookup isn't provided.
+      expect(result.all_bids.map((b) => b.partner).sort()).toEqual(['fast', 'slow'])
+      const slow = result.all_bids.find((b) => b.partner === 'slow')
+      expect(slow?.outcome).toBe('error')
+      expect(slow?.bid).toBeNull()
+      expect(slow?.error).toMatch(/within 5000ms/)
     } finally {
       vi.useRealTimers()
     }

@@ -76,6 +76,11 @@ export interface PartnerBidOutput {
   http_status?: number | null
   /** Response headers from the partner API (sensitive headers stripped). */
   response_headers?: Record<string, string> | null
+  /** Set on synthesized rows for failed/timed-out attempts so the UI can show
+   *  "Errored" with a message. Real executePartnerBidNode outputs never set
+   *  these — errors there bubble up as thrown PartnerApiError. */
+  error?: string
+  error_type?: 'transient' | 'permanent' | null
   cap_count?: number      // today's cap count after this request
   resolver_type?: BidResolverType | null
   /**
