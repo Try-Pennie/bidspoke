@@ -79,6 +79,71 @@ function formatDuration(ms: number | null) {
   return `${(ms / 1000).toFixed(2)}s`
 }
 
+type AlertReason = NonNullable<Execution['slack_alert_reason']>
+
+function AlertTldr({
+  type,
+  reason,
+  durationMs,
+}: {
+  type: 'failure' | 'duration'
+  reason: AlertReason
+  durationMs: number | null
+}) {
+  // Severity colour: red for failure, amber for duration. Border + background only —
+  // mirrors the existing error callout pattern further down the page.
+  const styles = type === 'failure'
+    ? { border: 'border-red-200', bg: 'bg-red-50', label: 'text-red-700', body: 'text-red-900', title: 'Failure alert' }
+    : { border: 'border-amber-200', bg: 'bg-amber-50', label: 'text-amber-700', body: 'text-amber-900', title: 'Slow execution alert' }
+
+  // Structured one-liner — always renders, even before Claude fills in .summary.
+  const headline = (() => {
+    if (type === 'duration') {
+      const tookS = durationMs !== null ? formatDuration(durationMs) : '?'
+      const thresholdS = reason.threshold_ms ? `${(reason.threshold_ms / 1000).toFixed(0)}s` : '?'
+      const stepS = formatDuration(reason.step_duration_ms)
+      const pct = durationMs && durationMs > 0 ? Math.round((reason.step_duration_ms / durationMs) * 100) : null
+      return (
+        <>
+          Took <strong>{tookS}</strong>, exceeded the <strong>{thresholdS}</strong> threshold. Bottleneck:{' '}
+          <code className="rounded bg-white/60 px-1 py-0.5 font-mono text-xs">{reason.step_namespace}</code>{' '}
+          ({stepS}{pct !== null ? `, ${pct}% of total` : ''}).
+        </>
+      )
+    }
+    const errLabel = reason.error_type === 'transient' ? 'transient' : 'permanent'
+    return (
+      <>
+        Step{' '}
+        <code className="rounded bg-white/60 px-1 py-0.5 font-mono text-xs">{reason.step_namespace}</code>{' '}
+        failed with a <strong>{errLabel}</strong> error.
+      </>
+    )
+  })()
+
+  return (
+    <div className={`rounded-xl border ${styles.border} ${styles.bg} p-4`}>
+      <div className="flex items-start gap-2">
+        <AlertTriangle className={`mt-0.5 h-4 w-4 flex-shrink-0 ${styles.label}`} />
+        <div className="min-w-0 flex-1">
+          <p className={`text-xs font-semibold uppercase tracking-wide ${styles.label}`}>{styles.title}</p>
+          <p className={`mt-1 text-sm ${styles.body}`}>{headline}</p>
+          {reason.summary ? (
+            <p className={`mt-2 text-sm ${styles.body}`}>{reason.summary}</p>
+          ) : (
+            <p className={`mt-2 text-xs italic ${styles.label}`}>Summary generating…</p>
+          )}
+          {type === 'failure' && reason.error_message && (
+            <pre className={`mt-2 whitespace-pre-wrap rounded bg-white/60 p-2 font-mono text-xs ${styles.body}`}>
+              {reason.error_message}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function buildReport(execution: Execution): string {
   const lines: string[] = []
   lines.push(`# Execution ${execution.id}`)
@@ -584,6 +649,15 @@ export default function ExecutionDetailPage() {
               </div>
               <StatusBadge status={execution.status} />
             </div>
+
+            {/* Alert TLDR — only shown when this execution triggered a Slack alert */}
+            {execution.slack_alert_type && execution.slack_alert_reason && (
+              <AlertTldr
+                type={execution.slack_alert_type}
+                reason={execution.slack_alert_reason}
+                durationMs={execution.duration_ms}
+              />
+            )}
 
             {/* Replay lineage */}
             {(execution.parent_execution_id || (execution.child_executions?.length ?? 0) > 0) && (

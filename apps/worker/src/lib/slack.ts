@@ -62,15 +62,21 @@ export async function getSlackConnection(
 
 // ── Alert senders ─────────────────────────────────────────────────────────────
 
+export interface SlackAlertHandle {
+  channel: string
+  ts: string
+  bot_token: string
+}
+
 export async function sendFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
   payload: FailureAlertPayload,
   appUrl: string
-): Promise<void> {
+): Promise<SlackAlertHandle | null> {
   const connection = await getSlackConnection(supabase, orgId)
-  if (!connection) return  // Slack not configured — silently skip
+  if (!connection) return null  // Slack not configured — silently skip
 
   const channel = channelOverride || connection.default_channel
   const errorLabel = payload.error_type === 'transient' ? 'Transient' : 'Permanent'
@@ -115,7 +121,8 @@ export async function sendFailureAlert(
     },
   ]
 
-  await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
+  const ts = await postMessage(connection.bot_token, channel, blocks, `Workflow "${payload.workflow_name}" failed at ${stepText}: ${payload.error_message}`)
+  return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
 
 export async function sendDurationAlert(
@@ -131,9 +138,9 @@ export async function sendDurationAlert(
     timestamp: string
   },
   appUrl: string
-): Promise<void> {
+): Promise<SlackAlertHandle | null> {
   const connection = await getSlackConnection(supabase, orgId)
-  if (!connection) return
+  if (!connection) return null
 
   const channel = channelOverride || connection.default_channel
   const seconds = (payload.duration_ms / 1000).toFixed(1)
@@ -159,12 +166,29 @@ export async function sendDurationAlert(
     },
   ]
 
-  await postMessage(
+  const ts = await postMessage(
     connection.bot_token,
     channel,
     blocks,
     `Workflow "${payload.workflow_name}" took ${seconds}s (threshold: ${thresholdSeconds}s)`
   )
+  return ts ? { channel, ts, bot_token: connection.bot_token } : null
+}
+
+export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
+  await fetch('https://slack.com/api/chat.postMessage', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${handle.bot_token}`,
+    },
+    body: JSON.stringify({
+      channel: handle.channel,
+      thread_ts: handle.ts,
+      text,
+      unfurl_links: false,
+    }),
+  }).catch((e) => console.error('[slack] thread reply failed:', e))
 }
 
 export interface MatrixChangeAlertPayload {
@@ -333,7 +357,7 @@ async function postMessage(
   channel: string,
   blocks: unknown[],
   text: string
-): Promise<void> {
+): Promise<string | null> {
   const res = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {
@@ -345,11 +369,13 @@ async function postMessage(
 
   if (!res.ok) {
     console.error(`[slack] HTTP error ${res.status}`)
-    return
+    return null
   }
 
-  const data = (await res.json()) as { ok: boolean; error?: string }
+  const data = (await res.json()) as { ok: boolean; error?: string; ts?: string }
   if (!data.ok) {
     console.error(`[slack] API error: ${data.error}`)
+    return null
   }
+  return data.ts ?? null
 }

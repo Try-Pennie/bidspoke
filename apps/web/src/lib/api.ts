@@ -401,6 +401,18 @@ export const api = {
         error_message: string | null
         trigger_payload: unknown
         parent_execution_id: string | null
+        slack_alert_type: 'failure' | 'duration' | null
+        slack_alert_fired_at: string | null
+        slack_alert_reason: {
+          step_namespace: string
+          step_type: string
+          step_duration_ms: number
+          threshold_ms?: number
+          error_message?: string | null
+          error_type?: 'transient' | 'permanent' | null
+          summary?: string
+          slack_ts?: string
+        } | null
         child_executions: Array<{
           id: string
           started_at: string

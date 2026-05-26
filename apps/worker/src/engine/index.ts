@@ -30,7 +30,7 @@ import {
   extractBidGroupSummary,
 } from './lead-sightings'
 import { formatSsn } from './persons-crypto'
-import { sendFailureAlert, sendDurationAlert } from '../lib/slack'
+import { fireExecutionAlert } from '../lib/execution-alerts'
 import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
@@ -397,15 +397,24 @@ export async function executeWorkflow(
 
         if (finalStatus === 'failed' && executionStatus === 'completed' && !options.isTest) {
           executionCtx.waitUntil(
-            sendFailureAlert(supabase, org_id, slack_channel, {
-              workflow_id: workflowId,
-              workflow_name,
-              execution_id: executionId,
-              step_namespace: failedStep,
-              error_message: finalErrorMessage ?? 'Unknown error',
-              error_type: failedErrorType ?? 'permanent',
+            fireExecutionAlert({
+              alertType: 'failure',
+              supabase,
+              env,
+              executionCtx,
+              orgId: org_id,
+              slackChannel: slack_channel,
+              workflowId,
+              workflowName: workflow_name,
+              executionId,
+              executionStartedAt: startedAt,
+              durationMs,
+              failedStep,
+              errorMessage: finalErrorMessage ?? 'Unknown error',
+              errorType: failedErrorType ?? 'permanent',
               timestamp: completedAt,
-            }, env.APP_URL).catch((e) => console.error('[slack] backstop alert failed:', e))
+              stepLogQueue,
+            }).catch((e) => console.error('[slack] backstop alert failed:', e))
           )
         }
       })
@@ -492,28 +501,45 @@ export async function executeWorkflow(
   const durationAlertMs = definition.trigger.config.duration_alert_ms
   if (!options.isTest && durationAlertMs && durationMs > durationAlertMs) {
     executionCtx.waitUntil(
-      sendDurationAlert(supabase, org_id, slack_channel, {
-        workflow_id: workflowId,
-        workflow_name,
-        execution_id: executionId,
-        duration_ms: durationMs,
-        threshold_ms: durationAlertMs,
+      fireExecutionAlert({
+        alertType: 'duration',
+        supabase,
+        env,
+        executionCtx,
+        orgId: org_id,
+        slackChannel: slack_channel,
+        workflowId,
+        workflowName: workflow_name,
+        executionId,
+        executionStartedAt: startedAt,
+        durationMs,
+        thresholdMs: durationAlertMs,
         timestamp: completedAt,
-      }, env.APP_URL).catch((e) => console.error('[slack] duration alert failed:', e))
+        stepLogQueue,
+      }).catch((e) => console.error('[slack] duration alert failed:', e))
     )
   }
 
   if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert) {
     executionCtx.waitUntil(
-      sendFailureAlert(supabase, org_id, slack_channel, {
-        workflow_id: workflowId,
-        workflow_name,
-        execution_id: executionId,
-        step_namespace: failedStep,
-        error_message: errorMessage ?? 'Unknown error',
-        error_type: failedErrorType,
+      fireExecutionAlert({
+        alertType: 'failure',
+        supabase,
+        env,
+        executionCtx,
+        orgId: org_id,
+        slackChannel: slack_channel,
+        workflowId,
+        workflowName: workflow_name,
+        executionId,
+        executionStartedAt: startedAt,
+        durationMs,
+        failedStep,
+        errorMessage: errorMessage ?? 'Unknown error',
+        errorType: failedErrorType,
         timestamp: completedAt,
-      }, env.APP_URL).catch((e) => console.error('[slack] alert failed:', e))
+        stepLogQueue,
+      }).catch((e) => console.error('[slack] alert failed:', e))
     )
   }
 
