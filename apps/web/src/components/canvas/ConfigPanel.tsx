@@ -42,9 +42,13 @@ interface Props {
   width?: number
   onResize?: (width: number) => void
   workflowId?: string
+  // Returns true if the rename was committed (refs rewritten / no refs to rewrite),
+  // false if the user cancelled the prompt. ConfigPanel reverts the local Step ID
+  // input when the result is false.
+  onRenameRequest?: (oldNs: string, newNs: string) => Promise<boolean>
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -62,19 +66,59 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 
   useEffect(() => { nsManuallyEdited.current = false }, [node.id])
 
+  // Local buffer for the Step ID input. Committing to node.data.namespace
+  // happens on blur so we can show a rename-impact prompt for downstream
+  // references in one batched gesture instead of one per keystroke.
+  const [nsDraft, setNsDraft] = useState(data.namespace)
+  const [nsBusy, setNsBusy] = useState(false)
+  useEffect(() => { setNsDraft(data.namespace) }, [node.id, data.namespace])
+
   function toNamespace(label: string) {
     return label.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
   }
 
   function handleLabelChange(value: string) {
     const patch: Partial<CanvasNodeData> = { label: value || undefined }
-    if (!nsManuallyEdited.current) patch.namespace = toNamespace(value) || data.namespace
+    // Only auto-derive the namespace from the label while the user hasn't
+    // manually edited it AND nobody downstream references it yet. Once a
+    // namespace is being referenced, label edits stop touching it so we
+    // don't silently break those references.
+    if (!nsManuallyEdited.current && !refs.includes(`steps.${data.namespace}`)) {
+      patch.namespace = toNamespace(value) || data.namespace
+    }
     onUpdate(node.id, patch)
   }
 
-  function handleNamespaceChange(value: string) {
+  async function commitNamespace(value: string) {
+    const next = value.trim()
+    if (!next || next === data.namespace) {
+      setNsDraft(data.namespace)
+      return
+    }
+    // Uniqueness — block commit and leave the draft in place so the user
+    // sees the red ring + can correct it.
+    if (nodeNamespaces.some((ns) => ns !== data.namespace && ns === next)) {
+      setNsDraft(next)
+      return
+    }
     nsManuallyEdited.current = true
-    onUpdate(node.id, { namespace: value })
+    if (onRenameRequest) {
+      setNsBusy(true)
+      try {
+        const committed = await onRenameRequest(data.namespace, next)
+        if (!committed) {
+          setNsDraft(data.namespace)
+          return
+        }
+      } finally {
+        setNsBusy(false)
+      }
+    }
+    onUpdate(node.id, { namespace: next })
+  }
+
+  function handleNamespaceDraft(value: string) {
+    setNsDraft(value)
   }
 
   function updateConfig(patch: Record<string, unknown>) {
@@ -159,11 +203,14 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 <div>
                   <p className="mb-1 text-xs font-medium text-gray-500">Step ID</p>
                   <input
-                    className={`input font-mono ${nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 ? 'border-red-400 ring-1 ring-red-200' : ''}`}
-                    value={data.namespace}
-                    onChange={(e) => handleNamespaceChange(e.target.value)}
+                    className={`input font-mono ${nodeNamespaces.some((ns) => ns !== data.namespace && ns === nsDraft) ? 'border-red-400 ring-1 ring-red-200' : ''}`}
+                    value={nsDraft}
+                    disabled={nsBusy}
+                    onChange={(e) => handleNamespaceDraft(e.target.value)}
+                    onBlur={(e) => commitNamespace(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
                   />
-                  {nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 && (
+                  {nodeNamespaces.some((ns) => ns !== data.namespace && ns === nsDraft) && (
                     <p className="mt-1 text-xs text-red-500">
                       Already used by another node. Step IDs must be unique.
                     </p>
@@ -259,13 +306,16 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {/* Namespace */}
         <Field label="Step ID" hint="Unique identifier used to reference this step's output in later steps. E.g. steps.credit_check.score">
           <input
-            className={`input ${nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 ? 'border-red-400 ring-1 ring-red-200' : ''}`}
-            value={data.namespace}
-            onChange={(e) => handleNamespaceChange(e.target.value)}
+            className={`input ${nodeNamespaces.some((ns) => ns !== data.namespace && ns === nsDraft) ? 'border-red-400 ring-1 ring-red-200' : ''}`}
+            value={nsDraft}
+            disabled={nsBusy}
+            onChange={(e) => handleNamespaceDraft(e.target.value)}
+            onBlur={(e) => commitNamespace(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
           />
-          {nodeNamespaces.filter((ns) => ns === data.namespace).length > 1 && (
+          {nodeNamespaces.some((ns) => ns !== data.namespace && ns === nsDraft) && (
             <p className="mt-1 text-xs text-red-500">
-              Already used by another node. Step IDs must be unique — references like <code className="rounded bg-red-50 px-1">steps.{data.namespace}</code> would resolve ambiguously.
+              Already used by another node. Step IDs must be unique — references like <code className="rounded bg-red-50 px-1">steps.{nsDraft}</code> would resolve ambiguously.
             </p>
           )}
         </Field>

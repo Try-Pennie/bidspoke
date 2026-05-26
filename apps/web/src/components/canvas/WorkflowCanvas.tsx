@@ -64,6 +64,12 @@ import TriggerConfigPanel from './TriggerConfigPanel'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
+import {
+  renameStepReferences,
+  countStepReferences,
+  renameFallbackNamespace,
+} from '@/lib/rename-step-references'
+import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 
 // Defined outside component to prevent re-render on each render
 const nodeTypes: NodeTypes = {
@@ -924,6 +930,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+  // Step ID rename — prompt state + queued partner-formula rewrites that get
+  // applied to the DB after the next successful workflow save.
+  const [renamePrompt, setRenamePrompt] = useState<{
+    oldNs: string
+    newNs: string
+    canvasReferenceCount: number
+    partnerFormulas: PartnerFormulaImpact[]
+    resolve: (committed: boolean) => void
+  } | null>(null)
+  const pendingFormulaRenamesRef = useRef<Array<{ oldNs: string; newNs: string; partner_ids: string[] }>>([])
   // Grace period before hiding the edge X button — gives the cursor time to
   // bridge the gap between the thin wire hover region and the button itself.
   // Cleared whenever the user re-enters the wire or the button.
@@ -1974,6 +1990,114 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   // ── Node update / delete ────────────────────────────────────────────────────
 
+  // Rewrite `steps.OLD.…` → `steps.NEW.…` in every node's config + variables,
+  // and rewrite a `fallback_node: 'OLD'` field to `'NEW'`. Single setNodes call
+  // so undo treats the rename and reference updates as one atomic step.
+  const applyCanvasRename = useCallback(
+    (renamingNodeId: string, oldNs: string, newNs: string) => {
+      setNodes((ns) =>
+        ns.map((n) => {
+          const nextData: Record<string, unknown> = { ...(n.data as object) }
+          let changed = false
+          // The node being renamed gets its namespace updated.
+          if (n.id === renamingNodeId) {
+            nextData.namespace = newNs
+            changed = true
+          } else {
+            // Other nodes: rewrite references inside config + variables.
+            const config = (nextData.config ?? {}) as Record<string, unknown>
+            const newConfig = renameStepReferences(config, oldNs, newNs) as Record<string, unknown>
+            if (newConfig !== config) {
+              // Also fix fallback_node which stores a bare namespace.
+              const withFallback = {
+                ...newConfig,
+                fallback_node: renameFallbackNamespace(newConfig.fallback_node, oldNs, newNs),
+              }
+              nextData.config = withFallback
+              changed = true
+            } else if (renameFallbackNamespace(config.fallback_node, oldNs, newNs) !== config.fallback_node) {
+              nextData.config = {
+                ...config,
+                fallback_node: renameFallbackNamespace(config.fallback_node, oldNs, newNs),
+              }
+              changed = true
+            }
+            const variables = nextData.variables as Record<string, string> | undefined
+            if (variables) {
+              const newVars = renameStepReferences(variables, oldNs, newNs) as Record<string, string>
+              if (newVars !== variables) {
+                nextData.variables = newVars
+                changed = true
+              }
+            }
+          }
+          return changed ? { ...n, data: nextData } : n
+        })
+      )
+      setIsDirty(true)
+    },
+    [setNodes]
+  )
+
+  const handleRenameRequest = useCallback(
+    async (oldNs: string, newNs: string): Promise<boolean> => {
+      // Count references in OTHER nodes' configs and variables.
+      let canvasRefs = 0
+      for (const n of nodes) {
+        const data = n.data as unknown as CanvasNodeData
+        if (data?.namespace === oldNs) continue
+        canvasRefs += countStepReferences(data?.config, oldNs)
+        canvasRefs += countStepReferences(data?.variables, oldNs)
+        if ((data?.config as Record<string, unknown> | undefined)?.fallback_node === oldNs) {
+          canvasRefs += 1
+        }
+      }
+      // Partner formula impact (workflow + cross-workflow analysis).
+      let partnerFormulas: PartnerFormulaImpact[] = []
+      try {
+        const impact = await api.workflows.renameImpact(workflow.id, oldNs, newNs)
+        partnerFormulas = impact.partner_formulas
+      } catch {
+        // If impact fetch fails we fall through with no formula data — canvas
+        // rewrites still happen. The user gets to see what's at least
+        // discoverable client-side.
+      }
+
+      // Find this node id (the node whose namespace is being renamed) so the
+      // canvas rewrite can stamp the new value on the right node.
+      const renamingNode = nodes.find((n) => (n.data as unknown as CanvasNodeData)?.namespace === oldNs)
+      if (!renamingNode) return false
+
+      if (canvasRefs === 0 && partnerFormulas.length === 0) {
+        // Silent path — no references anywhere. Just rename the node itself.
+        applyCanvasRename(renamingNode.id, oldNs, newNs)
+        return true
+      }
+
+      // Prompt the user.
+      return new Promise<boolean>((resolve) => {
+        setRenamePrompt({
+          oldNs,
+          newNs,
+          canvasReferenceCount: canvasRefs,
+          partnerFormulas,
+          resolve: (committed) => {
+            setRenamePrompt(null)
+            if (committed) {
+              applyCanvasRename(renamingNode.id, oldNs, newNs)
+              const safeIds = partnerFormulas.filter((p) => p.can_rewrite).map((p) => p.partner_id)
+              if (safeIds.length > 0) {
+                pendingFormulaRenamesRef.current.push({ oldNs, newNs, partner_ids: safeIds })
+              }
+            }
+            resolve(committed)
+          },
+        })
+      })
+    },
+    [nodes, workflow.id, applyCanvasRename]
+  )
+
   const handleNodeUpdate = useCallback(
     (id: string, patch: Partial<CanvasNodeData>) => {
       setNodes((ns) => {
@@ -2339,6 +2463,21 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setIsDirty(false)
       setCommitMessage('')
       aiDraftKeyRef.current = null
+      // Apply any queued partner-formula rewrites from Step ID renames during
+      // this edit session. Runs AFTER the workflow save so the canvas
+      // definition + partner formulas stay consistent (e.g. if save had
+      // failed, the formulas wouldn't be rewritten).
+      const queuedRenames = pendingFormulaRenamesRef.current
+      pendingFormulaRenamesRef.current = []
+      for (const rn of queuedRenames) {
+        try {
+          await api.workflows.renameApply(workflow.id, rn.oldNs, rn.newNs, rn.partner_ids)
+        } catch (e) {
+          // Don't block save UX — surface as a non-fatal banner.
+          const msg = e instanceof Error ? e.message : 'Formula rewrite failed'
+          setSaveError(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
+        }
+      }
       if (result.deploy_errors?.length) {
         const msg = result.deploy_errors
           .map((e) => `${e.namespace}: ${e.error}`)
@@ -3156,6 +3295,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               width={sidePanelWidth}
               onResize={setSidePanelWidth}
               workflowId={workflow.id}
+              onRenameRequest={handleRenameRequest}
             />
           )}
         </div>
@@ -3231,6 +3371,17 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         <ImportDialog
           onImport={handleImport}
           onClose={() => setShowImport(false)}
+        />
+      )}
+
+      {renamePrompt && (
+        <RenameConfirmDialog
+          oldNs={renamePrompt.oldNs}
+          newNs={renamePrompt.newNs}
+          canvasReferenceCount={renamePrompt.canvasReferenceCount}
+          partnerFormulas={renamePrompt.partnerFormulas}
+          onConfirm={() => renamePrompt.resolve(true)}
+          onCancel={() => renamePrompt.resolve(false)}
         />
       )}
 

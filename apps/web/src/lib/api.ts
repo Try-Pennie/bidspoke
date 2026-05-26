@@ -293,6 +293,23 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ test_payloads }),
       }),
+    renameImpact: (id: string, oldNs: string, newNs: string) =>
+      req<{
+        partner_formulas: Array<{
+          partner_id: string
+          partner_name: string
+          partner_slug: string
+          references: number
+          formula_preview: string
+          shared_with_workflows: Array<{ id: string; name: string }>
+          can_rewrite: boolean
+        }>
+      }>(`/api/workflows/${id}/rename-impact?old=${encodeURIComponent(oldNs)}&new=${encodeURIComponent(newNs)}`),
+    renameApply: (id: string, oldNs: string, newNs: string, partner_ids: string[]) =>
+      req<{ updated: number }>(`/api/workflows/${id}/rename-apply`, {
+        method: 'POST',
+        body: JSON.stringify({ old: oldNs, new: newNs, partner_ids }),
+      }),
   },
 
   versions: {

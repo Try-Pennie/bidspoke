@@ -608,4 +608,214 @@ workflows.post('/:id/test-node', async (c) => {
   }
 })
 
+// ─── Step ID rename ──────────────────────────────────────────────────────────
+//
+// When a user renames a node's namespace on the canvas, downstream references
+// in other nodes (`steps.OLD.foo`) need to follow. Canvas-local references are
+// rewritten client-side. Partner bid formulas live in `partner_configs` and
+// are shared across workflows — these endpoints handle the cross-workflow
+// safety check and the actual formula rewrite.
+//
+// GET  rename-impact: report which partner formulas would be affected, and
+//                     which of them are shared with OTHER workflows in the org
+//                     (those get flagged as unsafe-to-rewrite).
+// POST rename-apply:  rewrite the formulas the caller opts into. Caller is
+//                     expected to call this only after the workflow save
+//                     succeeds, so the canvas and DB stay in sync.
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function countStepsRefs(haystack: string | null | undefined, ns: string): number {
+  if (!haystack) return 0
+  const matches = haystack.match(new RegExp(`\\bsteps\\.${escapeRegex(ns)}\\b`, 'g'))
+  return matches ? matches.length : 0
+}
+
+function rewriteStepsRefs(haystack: string | null | undefined, oldNs: string, newNs: string): string | null {
+  if (!haystack) return haystack ?? null
+  return haystack.replace(new RegExp(`\\bsteps\\.${escapeRegex(oldNs)}\\b`, 'g'), `steps.${newNs}`)
+}
+
+interface PartnerForRename {
+  id: string
+  name: string
+  slug: string
+  bid_formula: string | null
+  bid_resolver_config: Record<string, unknown> | null
+}
+
+function isValidNamespace(s: unknown): s is string {
+  return typeof s === 'string' && s.length > 0 && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(s)
+}
+
+// GET /api/workflows/:id/rename-impact?old=foo&new=bar
+workflows.get('/:id/rename-impact', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const oldNs = c.req.query('old')
+  const newNs = c.req.query('new')
+  const supabase = createSupabaseClient(c.env)
+
+  if (!isValidNamespace(oldNs) || !isValidNamespace(newNs)) {
+    return c.json({ error: 'old and new must be valid namespaces' }, 400)
+  }
+  if (oldNs === newNs) {
+    return c.json({ partner_formulas: [] })
+  }
+
+  const { error: ownError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (ownError) return c.json({ error: 'Workflow not found' }, 404)
+
+  const { data: partners, error: partnersError } = await supabase
+    .from('partner_configs')
+    .select('id, name, slug, bid_formula, bid_resolver_config')
+    .eq('organization_id', orgId)
+  if (partnersError) return c.json({ error: partnersError.message }, 500)
+
+  const affected: PartnerForRename[] = []
+  for (const p of (partners ?? []) as PartnerForRename[]) {
+    const resolverFormula =
+      p.bid_resolver_config && typeof (p.bid_resolver_config as Record<string, unknown>).formula === 'string'
+        ? ((p.bid_resolver_config as Record<string, unknown>).formula as string)
+        : null
+    const refs = countStepsRefs(p.bid_formula, oldNs) + countStepsRefs(resolverFormula, oldNs)
+    if (refs > 0) affected.push(p)
+  }
+
+  if (affected.length === 0) return c.json({ partner_formulas: [] })
+
+  // For each affected partner, find OTHER workflows in the same org that
+  // reference this partner via a partner_bid or bid_group node. Those
+  // workflows would be silently broken by a formula rewrite, so we surface
+  // them to the user and (by default) skip the rewrite.
+  const { data: otherWorkflows, error: wfError } = await supabase
+    .from('workflows')
+    .select('id, name, definition')
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .neq('id', id)
+  if (wfError) return c.json({ error: wfError.message }, 500)
+
+  function workflowsUsingPartner(partnerId: string): { id: string; name: string }[] {
+    const out: { id: string; name: string }[] = []
+    for (const w of otherWorkflows ?? []) {
+      const def = (w as { definition: unknown }).definition as { nodes?: Array<{ type?: string; config?: Record<string, unknown> }> } | null
+      const nodes = def?.nodes ?? []
+      const used = nodes.some((n) => {
+        if (!n || !n.config) return false
+        if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
+        if (n.type === 'bid_group') {
+          const ids = n.config.partner_ids
+          if (Array.isArray(ids) && ids.includes(partnerId)) return true
+          if (n.config.fallback_partner_id === partnerId) return true
+        }
+        return false
+      })
+      if (used) out.push({ id: (w as { id: string }).id, name: (w as { name: string }).name })
+    }
+    return out
+  }
+
+  const partner_formulas = affected.map((p) => {
+    const resolverFormula =
+      p.bid_resolver_config && typeof (p.bid_resolver_config as Record<string, unknown>).formula === 'string'
+        ? ((p.bid_resolver_config as Record<string, unknown>).formula as string)
+        : null
+    const formulaPreview = resolverFormula ?? p.bid_formula ?? ''
+    const shared = workflowsUsingPartner(p.id)
+    return {
+      partner_id: p.id,
+      partner_name: p.name,
+      partner_slug: p.slug,
+      references: countStepsRefs(p.bid_formula, oldNs) + countStepsRefs(resolverFormula, oldNs),
+      formula_preview: formulaPreview.length > 120 ? formulaPreview.slice(0, 120) + '…' : formulaPreview,
+      shared_with_workflows: shared,
+      can_rewrite: shared.length === 0,
+    }
+  })
+
+  return c.json({ partner_formulas })
+})
+
+// POST /api/workflows/:id/rename-apply
+// Body: { old: string, new: string, partner_ids: string[] }
+// Rewrites `steps.OLD.…` → `steps.NEW.…` in each listed partner's bid_formula
+// and bid_resolver_config.formula. Caller is responsible for filtering out
+// cross-workflow-shared partners using the rename-impact response.
+workflows.post('/:id/rename-apply', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<{ old?: unknown; new?: unknown; partner_ids?: unknown }>()
+
+  if (!isValidNamespace(body.old) || !isValidNamespace(body.new)) {
+    return c.json({ error: 'old and new must be valid namespaces' }, 400)
+  }
+  const oldNs = body.old as string
+  const newNs = body.new as string
+  if (oldNs === newNs) return c.json({ updated: 0 })
+
+  if (!Array.isArray(body.partner_ids) || body.partner_ids.some((x) => typeof x !== 'string')) {
+    return c.json({ error: 'partner_ids must be an array of strings' }, 400)
+  }
+  const partnerIds = body.partner_ids as string[]
+  if (partnerIds.length === 0) return c.json({ updated: 0 })
+
+  const { error: ownError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (ownError) return c.json({ error: 'Workflow not found' }, 404)
+
+  const { data: partners, error: partnersError } = await supabase
+    .from('partner_configs')
+    .select('id, name, slug, bid_formula, bid_resolver_config')
+    .eq('organization_id', orgId)
+    .in('id', partnerIds)
+  if (partnersError) return c.json({ error: partnersError.message }, 500)
+
+  let updated = 0
+  for (const p of (partners ?? []) as PartnerForRename[]) {
+    const nextLegacy = rewriteStepsRefs(p.bid_formula, oldNs, newNs)
+    const cfg = (p.bid_resolver_config ?? {}) as Record<string, unknown>
+    const cfgFormula = typeof cfg.formula === 'string' ? cfg.formula : null
+    const nextCfgFormula = rewriteStepsRefs(cfgFormula, oldNs, newNs)
+    const cfgChanged = cfgFormula !== null && nextCfgFormula !== cfgFormula
+    const legacyChanged = nextLegacy !== p.bid_formula
+    if (!cfgChanged && !legacyChanged) continue
+
+    const update: Record<string, unknown> = { updated_by: userId }
+    if (legacyChanged) update.bid_formula = nextLegacy
+    if (cfgChanged) update.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
+
+    const { error: upErr } = await supabase
+      .from('partner_configs')
+      .update(update)
+      .eq('id', p.id)
+      .eq('organization_id', orgId)
+    if (upErr) return c.json({ error: upErr.message }, 500)
+
+    await writeAuditLog(supabase, orgId, 'partner_config', p.id, 'updated', userId, {
+      reason: 'step_id_renamed',
+      workflow_id: id,
+      old_namespace: oldNs,
+      new_namespace: newNs,
+    })
+    updated += 1
+  }
+
+  return c.json({ updated })
+})
+
 export default workflows
