@@ -55,6 +55,10 @@ export interface BidResolverResult {
   bid: number | null
   raw: unknown
   rejected?: boolean
+  /** HTTP status from the partner API. null for formula/matrix resolvers. */
+  http_status?: number | null
+  /** Response headers from the partner API (sensitive headers stripped). null for formula/matrix. */
+  response_headers?: Record<string, string> | null
   /** Partner-specific extras pulled from the API response (clickUrl, leadId, classification, …). */
   extra?: Record<string, unknown>
   matrix?: {
@@ -72,6 +76,22 @@ export interface BidResolverResult {
    *   formula → the formula string + the variables that were in scope
    */
   resolved_input?: Record<string, unknown>
+}
+
+const SENSITIVE_HEADER_KEYS = new Set([
+  'authorization',
+  'set-cookie',
+  'cookie',
+  'proxy-authorization',
+])
+
+function scrubHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(headers)) {
+    if (SENSITIVE_HEADER_KEYS.has(k.toLowerCase())) continue
+    out[k] = v
+  }
+  return out
 }
 
 export class BidResolverConfigError extends Error {
@@ -198,6 +218,8 @@ async function callBidApi(
 
   const resHeaders: Record<string, string> = {}
   res.headers.forEach((v, k) => { resHeaders[k] = v })
+  const safeHeaders = scrubHeaders(resHeaders)
+  const httpStatus = res.status
 
   if (partner.response_classification) {
     const override = evaluateResponseClassification(
@@ -217,6 +239,8 @@ async function callBidApi(
         bid: null,
         raw,
         rejected: true,
+        http_status: httpStatus,
+        response_headers: safeHeaders,
         ...(rejectedExtra ? { extra: rejectedExtra } : {}),
         resolved_input: resolvedInputForCaller,
       }
@@ -227,15 +251,19 @@ async function callBidApi(
         `Partner API returned ${res.status} (classified as ${override} by override)`,
         override,
         suppress
-      ) as PartnerApiError & { resolved_input?: Record<string, unknown> }
+      ) as PartnerApiError & { resolved_input?: Record<string, unknown>; http_status?: number; response_headers?: Record<string, string> }
       apiErr.resolved_input = resolvedInputForCaller
+      apiErr.http_status = httpStatus
+      apiErr.response_headers = safeHeaders
       throw apiErr
     }
   }
 
   if (!res.ok) {
-    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown> }
+    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown>; http_status?: number; response_headers?: Record<string, string> }
     httpErr.resolved_input = resolvedInputForCaller
+    httpErr.http_status = httpStatus
+    httpErr.response_headers = safeHeaders
     throw httpErr
   }
 
@@ -249,7 +277,14 @@ async function callBidApi(
     bid = bidPath ? coerceNumeric(readPath(raw, bidPath)) : extractBid(raw)
   }
 
-  return { bid, raw, ...(extra ? { extra } : {}), resolved_input: resolvedInputForCaller }
+  return {
+    bid,
+    raw,
+    http_status: httpStatus,
+    response_headers: safeHeaders,
+    ...(extra ? { extra } : {}),
+    resolved_input: resolvedInputForCaller,
+  }
 }
 
 // ── Structured pricing ────────────────────────────────────────────────────────

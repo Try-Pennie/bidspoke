@@ -72,6 +72,10 @@ export interface PartnerBidOutput {
   skipped: boolean
   skip_reason?: SkipReason
   raw_response?: unknown
+  /** HTTP status from the partner API. Null/absent for non-API resolvers (formula/matrix). */
+  http_status?: number | null
+  /** Response headers from the partner API (sensitive headers stripped). */
+  response_headers?: Record<string, string> | null
   cap_count?: number      // today's cap count after this request
   resolver_type?: BidResolverType | null
   /**
@@ -235,6 +239,7 @@ export async function executePartnerBidNode(
         partner_slug: p.slug,
         attempted_at_utc: attemptedAt,
         responded_at_utc: respondedAt,
+        http_status: result.http_status ?? null,
         classification: 'decline',
         skip_reason: 'rejected',
       })
@@ -246,6 +251,8 @@ export async function executePartnerBidNode(
           skipped: true,
           skip_reason: 'rejected' as const,
           raw_response: result.raw,
+          http_status: result.http_status ?? null,
+          response_headers: result.response_headers ?? null,
           cap_count: capCount,
           resolver_type: p.bid_resolver_type ?? null,
           ...(extra ? { extra } : {}),
@@ -265,6 +272,7 @@ export async function executePartnerBidNode(
         attempted_at_utc: attemptedAt,
         responded_at_utc: respondedAt,
         bid_cents: Math.round(bid * 100),
+        http_status: result.http_status ?? null,
         classification: 'decline',
         skip_reason: 'bid_below_min',
       })
@@ -275,6 +283,8 @@ export async function executePartnerBidNode(
         skipped: true,
         skip_reason: 'bid_below_min',
         raw_response: rawResponse,
+        http_status: result.http_status ?? null,
+        response_headers: result.response_headers ?? null,
         cap_count: capCount,
         resolver_type: p.bid_resolver_type ?? null,
         ...(extra ? { extra } : {}),
@@ -288,6 +298,7 @@ export async function executePartnerBidNode(
       attempted_at_utc: attemptedAt,
       responded_at_utc: respondedAt,
       bid_cents: bid !== null ? Math.round(bid * 100) : null,
+      http_status: result.http_status ?? null,
       classification: bid !== null ? 'accept' : 'no_bid',
     })
 
@@ -297,6 +308,8 @@ export async function executePartnerBidNode(
       accepted: bid !== null,
       skipped: false,
       raw_response: rawResponse,
+      http_status: result.http_status ?? null,
+      response_headers: result.response_headers ?? null,
       cap_count: capCount,
       resolver_type: p.bid_resolver_type ?? null,
       ...(extra ? { extra } : {}),

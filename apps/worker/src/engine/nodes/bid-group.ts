@@ -88,6 +88,21 @@ export interface BidGroupTier {
   advance_condition?: { groups: ConditionGroup[]; logic: 'AND' | 'OR' }
 }
 
+/**
+ * Per-partner outcome stamped onto each entry in BidGroupOutput.all_bids /
+ * .excluded so the JSON is self-describing — the table doesn't have to
+ * cross-reference `winner.partner` to know who lost on amount vs. who declined.
+ *
+ *   won      — picked as the bid group's winner
+ *   outbid   — partner returned a usable bid (accepted=true) but lost on amount
+ *   declined — partner rejected the lead (skip_reason in 'rejected'/'bid_below_min')
+ *   skipped  — partner not contacted (skip_reason in 'partner_inactive'/'circuit_open'/'cap_exceeded'/'duplicate')
+ *   error    — attempt failed (output null at the BidGroup level). Not currently
+ *              attached to all_bids entries since failed attempts don't add a
+ *              PartnerBidOutput row, but kept here for completeness.
+ */
+export type BidGroupAttemptOutcome = 'won' | 'outbid' | 'declined' | 'skipped' | 'error'
+
 export interface BidGroupAttempt {
   /** Synthesized step namespace (`${groupNamespace}.${partner_slug}`) */
   namespace: string
@@ -103,6 +118,9 @@ export interface BidGroupAttempt {
   duration_ms: number
 }
 
+/** PartnerBidOutput plus the group-level outcome stamp. */
+export type PartnerBidOutputWithOutcome = PartnerBidOutput & { outcome?: BidGroupAttemptOutcome }
+
 export interface BidGroupOutput {
   winner: {
     partner: string
@@ -111,8 +129,8 @@ export interface BidGroupOutput {
     /** Partner-specific values from PartnerBidOutput.extra (clickUrl, leadId, etc.). */
     extra?: Record<string, unknown>
   } | null
-  all_bids: PartnerBidOutput[]
-  excluded: PartnerBidOutput[]
+  all_bids: PartnerBidOutputWithOutcome[]
+  excluded: PartnerBidOutputWithOutcome[]
   mode: BidGroupMode
   reason: string
   _route: 'winner' | 'no_winner'
@@ -326,10 +344,11 @@ async function runTiered(
     for (const b of tierResult.all_bids) allBids.push(b)
 
     if (tierResult.winner) {
+      const winnerPartner = tierResult.winner.partner
       return {
         winner: tierResult.winner,
-        all_bids: allBids,
-        excluded: allBids.filter((b) => b.partner !== tierResult.winner!.partner),
+        all_bids: allBids.map((b) => stampOutcome(b, winnerPartner)),
+        excluded: allBids.filter((b) => b.partner !== winnerPartner).map((b) => stampOutcome(b, winnerPartner)),
         mode: 'tiered',
         reason: tierResult.reason === 'fallback_won' ? 'fallback_won' : 'tier_winner',
         _route: 'winner',
@@ -344,6 +363,7 @@ async function runTiered(
     const fbAttempt = await globalRun({ partner_id: config.fallback_partner_id, attemptIndex: 0 })
     if (fbAttempt.output) allBids.push(fbAttempt.output)
     if (fbAttempt.status === 'completed' && fbAttempt.output && isWinning(fbAttempt.output, config.min_bid_threshold)) {
+      const winnerPartner = fbAttempt.output.partner
       return {
         winner: {
           partner: fbAttempt.output.partner,
@@ -351,8 +371,8 @@ async function runTiered(
           raw_response: fbAttempt.output.raw_response,
           ...(fbAttempt.output.extra ? { extra: fbAttempt.output.extra } : {}),
         },
-        all_bids: allBids,
-        excluded: allBids.filter((b) => b.partner !== fbAttempt.output!.partner),
+        all_bids: allBids.map((b) => stampOutcome(b, winnerPartner)),
+        excluded: allBids.filter((b) => b.partner !== winnerPartner).map((b) => stampOutcome(b, winnerPartner)),
         mode: 'tiered',
         reason: 'fallback_won',
         _route: 'winner',
@@ -361,10 +381,11 @@ async function runTiered(
     }
   }
 
+  const stamped = allBids.map((b) => stampOutcome(b, null))
   return {
     winner: null,
-    all_bids: allBids,
-    excluded: allBids,
+    all_bids: stamped,
+    excluded: stamped,
     mode: 'tiered',
     reason: tiersSkipped.length === tiers.length ? 'all_tiers_skipped' : 'all_tiers_exhausted',
     _route: 'no_winner',
@@ -381,6 +402,29 @@ function isWinning(output: PartnerBidOutput, minBid: number | null | undefined):
   return true
 }
 
+const DECLINED_REASONS = new Set(['rejected', 'bid_below_min'])
+
+function stampOutcome(
+  bid: PartnerBidOutput,
+  winnerPartner: string | null
+): PartnerBidOutputWithOutcome {
+  if (winnerPartner !== null && bid.partner === winnerPartner) {
+    return { ...bid, outcome: 'won' }
+  }
+  if (bid.skipped) {
+    return {
+      ...bid,
+      outcome: bid.skip_reason && DECLINED_REASONS.has(bid.skip_reason) ? 'declined' : 'skipped',
+    }
+  }
+  if (bid.accepted) {
+    return { ...bid, outcome: 'outbid' }
+  }
+  // accepted=false but not skipped — partner returned but bid was null (e.g. matrix
+  // produced no row, formula evaluated to null). Treat as declined.
+  return { ...bid, outcome: 'declined' }
+}
+
 function winnerOutput(
   mode: BidGroupMode,
   all: PartnerBidOutput[],
@@ -388,6 +432,7 @@ function winnerOutput(
   excluded: PartnerBidOutput[],
   reason = 'winner'
 ): BidGroupOutput {
+  const stampedAll = all.map((b) => stampOutcome(b, winner.partner))
   return {
     winner: {
       partner: winner.partner,
@@ -395,8 +440,8 @@ function winnerOutput(
       raw_response: winner.raw_response,
       ...(winner.extra ? { extra: winner.extra } : {}),
     },
-    all_bids: all,
-    excluded: excluded.filter((b) => b.partner !== winner.partner),
+    all_bids: stampedAll,
+    excluded: excluded.filter((b) => b.partner !== winner.partner).map((b) => stampOutcome(b, winner.partner)),
     mode,
     reason,
     _route: 'winner',
@@ -404,10 +449,11 @@ function winnerOutput(
 }
 
 function noWinner(mode: BidGroupMode, all: PartnerBidOutput[], reason: string): BidGroupOutput {
+  const stamped = all.map((b) => stampOutcome(b, null))
   return {
     winner: null,
-    all_bids: all,
-    excluded: all,
+    all_bids: stamped,
+    excluded: stamped,
     mode,
     reason,
     _route: 'no_winner',

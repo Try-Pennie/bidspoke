@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 
@@ -21,6 +21,8 @@ interface BidGroupOutputShape {
   _route?: 'winner' | 'no_winner'
 }
 
+type BidOutcome = 'won' | 'outbid' | 'declined' | 'skipped' | 'error'
+
 interface PartnerBidOutputShape {
   partner: string
   bid: number | null
@@ -29,6 +31,10 @@ interface PartnerBidOutputShape {
   skip_reason?: string
   cap_count?: number
   resolver_type?: 'formula' | 'api' | 'matrix' | null
+  http_status?: number | null
+  response_headers?: Record<string, string> | null
+  raw_response?: unknown
+  outcome?: BidOutcome
   matrix?: {
     config_id: string
     matched_row_id: string | null
@@ -113,7 +119,11 @@ function buildReport(execution: Execution): string {
 }
 
 function describeAttempt(attempt: PartnerBidOutputShape): { result: string; tone: 'green' | 'gray' | 'red' | 'amber'; why: string } {
-  if (attempt.accepted) {
+  // outcome stamp from bid-group is the authoritative source; fall back to the
+  // pre-outcome heuristic for legacy executions.
+  if (attempt.outcome === 'won') return { result: 'Won', tone: 'green', why: '' }
+  if (attempt.outcome === 'outbid') return { result: 'Outbid', tone: 'gray', why: 'Lost on amount' }
+  if (attempt.accepted && attempt.outcome === undefined) {
     return { result: 'Bid', tone: 'green', why: '' }
   }
   if (attempt.skipped) {
@@ -141,6 +151,17 @@ function describeAttempt(attempt: PartnerBidOutputShape): { result: string; tone
   return { result: 'No bid', tone: 'gray', why: '' }
 }
 
+function readOutboundBody(input: unknown): unknown {
+  if (input === null || typeof input !== 'object') return null
+  const v = input as Record<string, unknown>
+  if ('resolved' in v && v.resolved && typeof v.resolved === 'object') {
+    const r = v.resolved as Record<string, unknown>
+    if ('outbound_body' in r) return r.outbound_body
+  }
+  if ('outbound_body' in v) return v.outbound_body
+  return null
+}
+
 function describeMode(attempt: PartnerBidOutputShape): string {
   if (attempt.resolver_type === 'matrix') return attempt.matrix?.is_sell_off ? 'Matrix (sell-off)' : 'Matrix'
   if (attempt.resolver_type === 'formula') return 'Formula'
@@ -159,19 +180,33 @@ function ToneBadge({ tone, children }: { tone: 'green' | 'gray' | 'red' | 'amber
 }
 
 function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attemptSteps: Step[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const output = (groupStep.output ?? {}) as BidGroupOutputShape
   const noWinner = output._route === 'no_winner' || !output.winner
   const reason = output.reason ?? 'unknown'
   const mode = output.mode ?? '—'
 
-  // Prefer per-attempt step rows (one per partner) when available, since they carry
-  // per-partner timing and step status. Fall back to the bid_group's all_bids array
-  // for the data we need to render the table.
-  const attempts: PartnerBidOutputShape[] = attemptSteps.length > 0
-    ? attemptSteps.map((s) => (s.output as PartnerBidOutputShape) ?? { partner: s.step_namespace, bid: null, accepted: false, skipped: false })
-    : (output.all_bids ?? [])
+  // Build {attempt, step?} pairs so we can read raw_response/headers from the
+  // attempt JSON and duration/input from the per-partner step row when present.
+  // attemptSteps carry per-partner timing and step status; the bid_group's
+  // all_bids array is the fallback when step rows aren't recorded (e.g. old runs).
+  const pairs: Array<{ attempt: PartnerBidOutputShape; step?: Step }> = attemptSteps.length > 0
+    ? attemptSteps.map((s) => ({
+        attempt: (s.output as PartnerBidOutputShape) ?? { partner: s.step_namespace, bid: null, accepted: false, skipped: false },
+        step: s,
+      }))
+    : (output.all_bids ?? []).map((a) => ({ attempt: a }))
 
   const winnerSlug = output.winner?.partner
+
+  const toggle = (i: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
 
   const headerTone = noWinner ? 'border-red-200 bg-red-50/30' : 'border-green-200 bg-green-50/30'
   const headerIcon = noWinner ? <AlertTriangle className="h-4 w-4 text-red-600" /> : <CheckCircle className="h-4 w-4 text-green-600" />
@@ -191,32 +226,38 @@ function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attempt
         </div>
       </div>
 
-      {attempts.length === 0 ? (
+      {pairs.length === 0 ? (
         <p className="text-xs text-gray-500">No partner attempts recorded.</p>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
           <table className="w-full text-left text-xs">
             <thead className="bg-gray-50 text-gray-500">
               <tr>
+                <th className="w-6 px-2 py-2"></th>
                 <th className="px-3 py-2 font-medium">Partner</th>
                 <th className="px-3 py-2 font-medium">Mode</th>
                 <th className="px-3 py-2 font-medium">Result</th>
                 <th className="px-3 py-2 text-right font-medium">Bid</th>
                 <th className="px-3 py-2 font-medium">Why</th>
+                <th className="px-3 py-2 text-right font-medium">Duration</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {attempts.map((a, i) => {
+              {pairs.map(({ attempt: a, step }, i) => {
                 const d = describeAttempt(a)
-                const isWinner = a.partner === winnerSlug && a.accepted
+                const isWinner = a.outcome === 'won' || (a.partner === winnerSlug && a.accepted)
+                const isOpen = expanded.has(i)
                 return (
-                  <tr key={`${a.partner}-${i}`} className={isWinner ? 'bg-green-50/40' : undefined}>
-                    <td className="px-3 py-2 font-mono text-graphite">{a.partner}</td>
-                    <td className="px-3 py-2 text-gray-600">{describeMode(a)}</td>
-                    <td className="px-3 py-2"><ToneBadge tone={isWinner ? 'green' : d.tone}>{isWinner ? 'Won' : d.result}</ToneBadge></td>
-                    <td className="px-3 py-2 text-right font-mono text-graphite">{a.bid !== null ? `$${a.bid}` : '—'}</td>
-                    <td className="px-3 py-2 text-gray-600">{d.why || (isWinner ? '' : '—')}</td>
-                  </tr>
+                  <BidAttemptRow
+                    key={`${a.partner}-${i}`}
+                    index={i}
+                    attempt={a}
+                    step={step}
+                    describe={d}
+                    isWinner={isWinner}
+                    isOpen={isOpen}
+                    onToggle={() => toggle(i)}
+                  />
                 )
               })}
             </tbody>
@@ -224,6 +265,106 @@ function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attempt
         </div>
       )}
     </div>
+  )
+}
+
+function BidAttemptRow({
+  index,
+  attempt,
+  step,
+  describe,
+  isWinner,
+  isOpen,
+  onToggle,
+}: {
+  index: number
+  attempt: PartnerBidOutputShape
+  step?: Step
+  describe: { result: string; tone: 'green' | 'gray' | 'red' | 'amber'; why: string }
+  isWinner: boolean
+  isOpen: boolean
+  onToggle: () => void
+}) {
+  // step.input carries { template, resolved } where resolved.outbound_body is
+  // the JSON we sent over the wire. raw_response on the attempt is the parsed
+  // response. http_status/response_headers were added to PartnerBidOutput so
+  // they ride along on the attempt too.
+  const outboundBody = step ? readOutboundBody(step.input) : null
+  const duration = step?.duration_ms ?? null
+  const httpStatus = attempt.http_status ?? null
+  const headers = attempt.response_headers ?? null
+  const rawResponse = attempt.raw_response ?? null
+  void index
+
+  return (
+    <>
+      <tr
+        className={`cursor-pointer hover:bg-gray-50 ${isWinner ? 'bg-green-50/40 hover:bg-green-50/60' : ''}`}
+        onClick={onToggle}
+      >
+        <td className="w-6 px-2 py-2 text-gray-400">
+          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+        </td>
+        <td className="px-3 py-2 font-mono text-graphite">{attempt.partner}</td>
+        <td className="px-3 py-2 text-gray-600">{describeMode(attempt)}</td>
+        <td className="px-3 py-2"><ToneBadge tone={isWinner ? 'green' : describe.tone}>{isWinner ? 'Won' : describe.result}</ToneBadge></td>
+        <td className="px-3 py-2 text-right font-mono text-graphite">{attempt.bid !== null ? `$${attempt.bid}` : '—'}</td>
+        <td className="px-3 py-2 text-gray-600">{describe.why || (isWinner ? '' : '—')}</td>
+        <td className="px-3 py-2 text-right font-mono text-gray-500">{formatDuration(duration)}</td>
+      </tr>
+      {isOpen && (
+        <tr className={isWinner ? 'bg-green-50/20' : 'bg-gray-50/60'}>
+          <td colSpan={7} className="px-3 py-3">
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+                <div>
+                  <span className="text-gray-500">HTTP status:</span>{' '}
+                  <span className="font-mono text-graphite">{httpStatus !== null ? httpStatus : '—'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Duration:</span>{' '}
+                  <span className="font-mono text-graphite">{formatDuration(duration)}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500">Resolver:</span>{' '}
+                  <span className="font-mono text-graphite">{attempt.resolver_type ?? '—'}</span>
+                </div>
+                {attempt.outcome && (
+                  <div>
+                    <span className="text-gray-500">Outcome:</span>{' '}
+                    <span className="font-mono text-graphite">{attempt.outcome}</span>
+                  </div>
+                )}
+              </div>
+
+              {headers && Object.keys(headers).length > 0 && (
+                <div>
+                  <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Response headers</p>
+                  <pre className="overflow-auto rounded bg-white p-2 text-[11px] text-gray-700 ring-1 ring-gray-200">
+                    {Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n')}
+                  </pre>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div>
+                  <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Request body sent</p>
+                  {outboundBody === null
+                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-400 ring-1 ring-gray-200">Not recorded</p>
+                    : <JsonBlock value={outboundBody} />}
+                </div>
+                <div>
+                  <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Raw response</p>
+                  {rawResponse === null
+                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-400 ring-1 ring-gray-200">Not recorded</p>
+                    : <JsonBlock value={rawResponse} />}
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 
@@ -242,8 +383,11 @@ function findBidGroupSummaries(steps: Step[]): Array<{ groupStep: Step; attemptS
 
 function JsonBlock({ value }: { value: unknown }) {
   if (value === null || value === undefined) return <span className="text-gray-400 italic">null</span>
+  // No height cap — let the block grow with the JSON so reads don't require an
+  // inner scroll. Huge payloads still get a soft cap via max-h-[80vh] so they
+  // don't blow out the page; horizontal overflow stays scrollable.
   return (
-    <pre className="overflow-auto rounded bg-gray-50 p-3 text-xs text-gray-700 max-h-48">
+    <pre className="overflow-auto rounded bg-gray-50 p-3 text-xs text-gray-700 max-h-[80vh]">
       {JSON.stringify(value, null, 2)}
     </pre>
   )
