@@ -38,11 +38,18 @@ executions.get('/', async (c) => {
   let query = supabase
     .from('workflow_executions')
     .select('id, workflow_id, status, outcome, final_node_namespace, source, started_at, duration_ms, error_message, parent_execution_id')
-    .in('workflow_id', workflowIds)
     .eq('is_test', false)
     .order('started_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(100)
+  // `.in('workflow_id', [oneId])` generates `workflow_id=in.(X)` which the
+  // planner sees as `col = ANY(ARRAY[X])` — partition pruning skips on the
+  // ANY form and the query scans every partition (~7s on engine-bidding
+  // post daily-partition migration vs ~140ms with `eq.`). Use eq when there
+  // is a single workflow so partition pruning fires.
+  query = workflowIds.length === 1
+    ? query.eq('workflow_id', workflowIds[0])
+    : query.in('workflow_id', workflowIds)
 
   if (status) query = query.eq('status', status)
   if (outcome) query = query.eq('outcome', outcome)
