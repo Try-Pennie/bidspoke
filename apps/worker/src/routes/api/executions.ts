@@ -264,16 +264,25 @@ executions.get('/:id', async (c) => {
 
   // Fetch steps + any executions that reference this one as parent (replays
   // and resumes both set parent_execution_id, so both surface as children).
+  // `started_at >= execution.started_at` is a partition-pruning hint:
+  //   - Steps are always created during/after the execution starts.
+  //   - Replay/resume children are always triggered after the parent finishes.
+  // Without it the planner has to scan every partition on each query. See
+  // reference_supabase_in_single_id_defeats_partition_pruning for the related
+  // gotcha on the list endpoint.
+  const execStartedAt = execution.started_at
   const [stepsRes, childrenRes] = await Promise.all([
     supabase
       .from('execution_steps')
       .select(stepColumns)
       .eq('execution_id', id)
+      .gte('started_at', execStartedAt)
       .order('step_order', { ascending: true }),
     supabase
       .from('workflow_executions')
       .select('id, started_at, status, outcome, source')
       .eq('parent_execution_id', id)
+      .gte('started_at', execStartedAt)
       .order('started_at', { ascending: true }),
   ])
   const t2 = Date.now()
@@ -286,11 +295,17 @@ executions.get('/:id', async (c) => {
   let steps = (stepsRes.data ?? []) as unknown as StepRow[]
   if (execution.resumed_from_execution_id) {
     const presentNamespaces = new Set(steps.map((s) => s.step_namespace))
+    // The resumed-from execution ran strictly before the current one, so its
+    // steps' `started_at` is always < execStartedAt. Lets the planner prune all
+    // partitions newer than the current execution. Doesn't bound the lower end
+    // tightly (we'd need parent.started_at for that), but is still a big win
+    // once daily partitions accumulate.
     const { data: parentSteps } = await supabase
       .from('execution_steps')
       .select(stepColumns)
       .eq('execution_id', execution.resumed_from_execution_id)
       .eq('status', 'completed')
+      .lt('started_at', execStartedAt)
       .order('step_order', { ascending: true })
     const inherited = ((parentSteps ?? []) as unknown as StepRow[])
       .filter((s) => !presentNamespaces.has(s.step_namespace))
