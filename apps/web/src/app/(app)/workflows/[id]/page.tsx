@@ -147,15 +147,22 @@ function WorkflowEditorInner() {
   }, [executionId, applyExec])
 
   // Selecting an execution from the list/banner/parent-link: flip local state
-  // synchronously so the canvas reacts on the same tick as the click, then
-  // push the URL in the background. Pure router.push routes the state update
-  // through the App Router transition, which on big workflows held the visual
-  // change for seconds — exactly the lag the changeMode callback was created
-  // to dodge. Same pattern here.
+  // synchronously so the canvas reacts on the same tick as the click, AND
+  // update the URL bar synchronously via window.history.pushState. router.push
+  // routes the URL change through the App Router transition, which on big
+  // workflows held the URL bar update for seconds after the click — Dan: "if
+  // I click and see it update and then go copy the URL I might get the wrong
+  // one." pushState dodges the transition entirely; since Next 14.1,
+  // useSearchParams reacts to pushState, so the rest of the data flow still
+  // works (the search-params useEffect just resyncs to the same value, no-op).
   const selectExecution = useCallback((execId: string) => {
     setExecutionId(execId)
-    router.push(`/workflows/${id}?execution=${execId}`)
-  }, [router, id])
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      url.searchParams.set('execution', execId)
+      window.history.pushState(null, '', url.toString())
+    }
+  }, [])
 
   const clearExecution = useCallback(() => {
     setExecutionId(undefined)
