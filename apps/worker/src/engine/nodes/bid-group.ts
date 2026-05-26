@@ -123,8 +123,23 @@ export interface BidGroupAttempt {
   duration_ms: number
 }
 
-/** PartnerBidOutput plus the group-level outcome stamp. */
-export type PartnerBidOutputWithOutcome = PartnerBidOutput & { outcome?: BidGroupAttemptOutcome }
+/** PartnerBidOutput plus the group-level outcome stamp + human-readable reason. */
+export type PartnerBidOutputWithOutcome = PartnerBidOutput & {
+  outcome?: BidGroupAttemptOutcome
+  /**
+   * One-line explanation of why this attempt got the outcome it did. Generated
+   * by stampOutcome from the attempt's state + the group's winner + mode.
+   * Examples:
+   *   "Highest bid in race"           (won, highest_bid)
+   *   "First partner to accept"       (won, cascade)
+   *   "Won as fallback"               (won, reason='fallback_won')
+   *   "Outbid by tripoint ($19.82 vs $12)"  (outbid)
+   *   "Partner declined"              (declined, skip_reason='rejected')
+   *   "Daily cap (250)"               (skipped, skip_reason='cap_exceeded')
+   *   "Partner did not respond within 5000ms"  (error)
+   */
+  outcome_reason?: string
+}
 
 export interface BidGroupOutput {
   winner: {
@@ -371,13 +386,15 @@ async function runTiered(
     for (const b of tierResult.all_bids) allBids.push(b)
 
     if (tierResult.winner) {
-      const winnerPartner = tierResult.winner.partner
+      const winnerOutput = allBids.find((b) => b.partner === tierResult.winner!.partner) ?? null
+      const reason = tierResult.reason === 'fallback_won' ? 'fallback_won' : 'tier_winner'
+      const stampCtx: StampContext = { winner: winnerOutput, mode: 'tiered', groupReason: reason }
       return {
         winner: tierResult.winner,
-        all_bids: allBids.map((b) => stampOutcome(b, winnerPartner)),
-        excluded: allBids.filter((b) => b.partner !== winnerPartner).map((b) => stampOutcome(b, winnerPartner)),
+        all_bids: allBids.map((b) => stampOutcome(b, stampCtx)),
+        excluded: allBids.filter((b) => b.partner !== tierResult.winner!.partner).map((b) => stampOutcome(b, stampCtx)),
         mode: 'tiered',
-        reason: tierResult.reason === 'fallback_won' ? 'fallback_won' : 'tier_winner',
+        reason,
         _route: 'winner',
         tiers_skipped: tiersSkipped.length > 0 ? tiersSkipped : undefined,
         tier_winner: tier.id,
@@ -391,16 +408,17 @@ async function runTiered(
     if (fbAttempt.output) allBids.push(fbAttempt.output)
     else allBids.push(synthFailedOutput(fbAttempt))
     if (fbAttempt.status === 'completed' && fbAttempt.output && isWinning(fbAttempt.output, config.min_bid_threshold)) {
-      const winnerPartner = fbAttempt.output.partner
+      const winnerOut = fbAttempt.output
+      const stampCtx: StampContext = { winner: winnerOut, mode: 'tiered', groupReason: 'fallback_won' }
       return {
         winner: {
-          partner: fbAttempt.output.partner,
-          bid: fbAttempt.output.bid ?? 0,
-          raw_response: fbAttempt.output.raw_response,
-          ...(fbAttempt.output.extra ? { extra: fbAttempt.output.extra } : {}),
+          partner: winnerOut.partner,
+          bid: winnerOut.bid ?? 0,
+          raw_response: winnerOut.raw_response,
+          ...(winnerOut.extra ? { extra: winnerOut.extra } : {}),
         },
-        all_bids: allBids.map((b) => stampOutcome(b, winnerPartner)),
-        excluded: allBids.filter((b) => b.partner !== winnerPartner).map((b) => stampOutcome(b, winnerPartner)),
+        all_bids: allBids.map((b) => stampOutcome(b, stampCtx)),
+        excluded: allBids.filter((b) => b.partner !== winnerOut.partner).map((b) => stampOutcome(b, stampCtx)),
         mode: 'tiered',
         reason: 'fallback_won',
         _route: 'winner',
@@ -409,13 +427,15 @@ async function runTiered(
     }
   }
 
-  const stamped = allBids.map((b) => stampOutcome(b, null))
+  const noWinReason = tiersSkipped.length === tiers.length ? 'all_tiers_skipped' : 'all_tiers_exhausted'
+  const stampCtx: StampContext = { winner: null, mode: 'tiered', groupReason: noWinReason }
+  const stamped = allBids.map((b) => stampOutcome(b, stampCtx))
   return {
     winner: null,
     all_bids: stamped,
     excluded: stamped,
     mode: 'tiered',
-    reason: tiersSkipped.length === tiers.length ? 'all_tiers_skipped' : 'all_tiers_exhausted',
+    reason: noWinReason,
     _route: 'no_winner',
     tiers_skipped: tiersSkipped.length > 0 ? tiersSkipped : undefined,
   }
@@ -450,31 +470,72 @@ function synthFailedOutput(attempt: BidGroupAttempt): PartnerBidOutput {
   }
 }
 
+interface StampContext {
+  winner: PartnerBidOutput | null
+  mode: BidGroupMode
+  /** Group-level reason ('winner' | 'fallback_won' | 'tier_winner' | etc.). */
+  groupReason: string
+}
+
+function reasonForWon(mode: BidGroupMode, groupReason: string): string {
+  if (groupReason === 'fallback_won') return 'Won as fallback'
+  if (mode === 'cascade') return 'First partner to accept'
+  if (mode === 'tiered') return 'Winner of tier'
+  return 'Highest bid in race'
+}
+
+function reasonForOutbid(self: PartnerBidOutput, winner: PartnerBidOutput | null): string {
+  if (!winner) return 'Lost on amount'
+  if (winner.bid !== null && self.bid !== null) {
+    return `Outbid by ${winner.partner} ($${winner.bid} vs $${self.bid})`
+  }
+  return `Outbid by ${winner.partner}`
+}
+
+function reasonForSkipped(bid: PartnerBidOutput): string {
+  switch (bid.skip_reason) {
+    case 'duplicate': return 'Dedup match'
+    case 'cap_exceeded': return `Daily cap${bid.cap_count !== undefined ? ` (${bid.cap_count})` : ''}`
+    case 'circuit_open': return 'Circuit breaker open'
+    case 'partner_inactive': return 'Partner inactive'
+    case 'bid_below_min': return `Bid${bid.bid !== null ? ` $${bid.bid}` : ''} below partner min`
+    case 'rejected': return 'Partner declined'
+    default: return bid.skip_reason ?? 'Skipped'
+  }
+}
+
+function reasonForNullBid(bid: PartnerBidOutput): string {
+  const m = bid.matrix?.reason
+  if (m === 'no_matching_cell') return 'No matrix row matched the lead'
+  if (m && m.startsWith('missing_payload_field:')) return `Missing payload field: ${m.split(':')[1]}`
+  if (m === 'config_inactive') return 'Matrix config inactive'
+  return m ?? 'Resolver returned null'
+}
+
 function stampOutcome(
   bid: PartnerBidOutput,
-  winnerPartner: string | null
+  ctx: StampContext
 ): PartnerBidOutputWithOutcome {
+  const winnerPartner = ctx.winner?.partner ?? null
   if (winnerPartner !== null && bid.partner === winnerPartner) {
-    return { ...bid, outcome: 'won' }
+    return { ...bid, outcome: 'won', outcome_reason: reasonForWon(ctx.mode, ctx.groupReason) }
   }
   // Synthesized failed-attempt rows carry an error string — flag them as
   // outcome:'error' so the UI distinguishes "partner threw" from "partner
   // declined the lead". Real PartnerBidOutput rows never set bid.error.
   if (bid.error !== undefined) {
-    return { ...bid, outcome: 'error' }
+    return { ...bid, outcome: 'error', outcome_reason: bid.error }
   }
   if (bid.skipped) {
-    return {
-      ...bid,
-      outcome: bid.skip_reason && DECLINED_REASONS.has(bid.skip_reason) ? 'declined' : 'skipped',
-    }
+    const outcome = bid.skip_reason && DECLINED_REASONS.has(bid.skip_reason) ? 'declined' : 'skipped'
+    return { ...bid, outcome, outcome_reason: reasonForSkipped(bid) }
   }
   if (bid.accepted) {
-    return { ...bid, outcome: 'outbid' }
+    return { ...bid, outcome: 'outbid', outcome_reason: reasonForOutbid(bid, ctx.winner) }
   }
   // accepted=false but not skipped — partner returned but bid was null (e.g. matrix
   // produced no row, formula evaluated to null). Treat as declined.
-  return { ...bid, outcome: 'declined' }
+  return { ...bid, outcome: 'declined', outcome_reason: reasonForNullBid(bid) }
 }
 
 function winnerOutput(
@@ -484,7 +545,8 @@ function winnerOutput(
   excluded: PartnerBidOutput[],
   reason = 'winner'
 ): BidGroupOutput {
-  const stampedAll = all.map((b) => stampOutcome(b, winner.partner))
+  const stampCtx: StampContext = { winner, mode, groupReason: reason }
+  const stampedAll = all.map((b) => stampOutcome(b, stampCtx))
   return {
     winner: {
       partner: winner.partner,
@@ -493,7 +555,7 @@ function winnerOutput(
       ...(winner.extra ? { extra: winner.extra } : {}),
     },
     all_bids: stampedAll,
-    excluded: excluded.filter((b) => b.partner !== winner.partner).map((b) => stampOutcome(b, winner.partner)),
+    excluded: excluded.filter((b) => b.partner !== winner.partner).map((b) => stampOutcome(b, stampCtx)),
     mode,
     reason,
     _route: 'winner',
@@ -501,7 +563,8 @@ function winnerOutput(
 }
 
 function noWinner(mode: BidGroupMode, all: PartnerBidOutput[], reason: string): BidGroupOutput {
-  const stamped = all.map((b) => stampOutcome(b, null))
+  const stampCtx: StampContext = { winner: null, mode, groupReason: reason }
+  const stamped = all.map((b) => stampOutcome(b, stampCtx))
   return {
     winner: null,
     all_bids: stamped,

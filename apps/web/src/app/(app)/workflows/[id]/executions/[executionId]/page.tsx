@@ -35,6 +35,7 @@ interface PartnerBidOutputShape {
   response_headers?: Record<string, string> | null
   raw_response?: unknown
   outcome?: BidOutcome
+  outcome_reason?: string
   error?: string
   error_type?: 'transient' | 'permanent' | null
   matrix?: {
@@ -121,16 +122,27 @@ function buildReport(execution: Execution): string {
 }
 
 function describeAttempt(attempt: PartnerBidOutputShape): { result: string; tone: 'green' | 'gray' | 'red' | 'amber'; why: string } {
-  // outcome stamp from bid-group is the authoritative source; fall back to the
-  // pre-outcome heuristic for legacy executions.
-  if (attempt.outcome === 'won') return { result: 'Won', tone: 'green', why: '' }
-  if (attempt.outcome === 'outbid') return { result: 'Outbid', tone: 'gray', why: 'Lost on amount' }
+  // outcome stamp from bid-group is the authoritative source; outcome_reason
+  // is the engine-generated human-readable why. Fall back to the pre-outcome
+  // heuristic only for legacy executions that pre-date these fields.
+  if (attempt.outcome === 'won') {
+    return { result: 'Won', tone: 'green', why: attempt.outcome_reason ?? '' }
+  }
+  if (attempt.outcome === 'outbid') {
+    return { result: 'Outbid', tone: 'gray', why: attempt.outcome_reason ?? 'Lost on amount' }
+  }
   if (attempt.outcome === 'error') {
-    const msg = attempt.error ?? 'Partner errored'
+    const msg = attempt.outcome_reason ?? attempt.error ?? 'Partner errored'
     // Timeout is a transient error type; show that explicitly so it doesn't
     // look like an API/auth failure.
     const isTimeout = /within \d+ms|timed? ?out/i.test(msg)
     return { result: isTimeout ? 'Timed out' : 'Errored', tone: 'red', why: msg }
+  }
+  if (attempt.outcome === 'declined') {
+    return { result: 'Rejected', tone: 'red', why: attempt.outcome_reason ?? 'Partner declined' }
+  }
+  if (attempt.outcome === 'skipped') {
+    return { result: 'Skipped', tone: 'gray', why: attempt.outcome_reason ?? '' }
   }
   if (attempt.accepted && attempt.outcome === undefined) {
     return { result: 'Bid', tone: 'green', why: '' }
@@ -345,6 +357,13 @@ function BidAttemptRow({
                   </div>
                 )}
               </div>
+
+              {attempt.outcome_reason && (
+                <p className="text-xs text-gray-700">
+                  <span className="text-gray-500">Why: </span>
+                  {attempt.outcome_reason}
+                </p>
+              )}
 
               {attempt.error && (
                 <div className="rounded border border-red-200 bg-red-50 p-2">
