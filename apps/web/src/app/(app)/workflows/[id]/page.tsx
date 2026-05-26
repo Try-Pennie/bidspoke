@@ -2,9 +2,11 @@
 
 export const runtime = 'edge'
 
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
+import * as execCache from '@/lib/execution-cache'
+import type { ExecutionDetail } from '@/lib/execution-cache'
 import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
 import type { Workflow, ExecutionStep } from '@/types/workflow'
 
@@ -47,9 +49,33 @@ function WorkflowEditorInner() {
       .catch((e) => setError(e.message))
   }, [id])
 
-  // Track in-flight per-step detail fetches so rapid clicks across nodes don't
-  // duplicate work. Keyed by step row id; cleared when the execution changes.
-  const inFlightStepDetails = useRef<Set<string>>(new Set())
+  // Populate UI state from a (possibly cached) exec detail. Reused by initial
+  // sync read, background revalidation, and per-step lazy-load merges.
+  const applyExec = useCallback((exec: ExecutionDetail) => {
+    const map: Record<string, ExecutionStep> = {}
+    for (const step of exec.steps) {
+      const cachedDetail = execCache.getStep(exec.id, step.id)
+      map[step.step_namespace] = {
+        step_id: step.id,
+        status: step.status as ExecutionStep['status'],
+        input: cachedDetail?.input,
+        output: cachedDetail?.output,
+        logs: cachedDetail?.logs ?? undefined,
+        error_message: step.error_message,
+        error_type: step.error_type,
+        duration_ms: step.duration_ms,
+        retries_used: step.retries_used,
+        detail_loaded: !!cachedDetail,
+      }
+    }
+    setExecutionPayload(exec.trigger_payload)
+    setExecutionSource(exec.source)
+    setExecutionTraceId(exec.trace_id)
+    setExecutionStartedAt(exec.started_at)
+    setExecutionParentId(exec.parent_execution_id ?? null)
+    setExecutionChildren(exec.child_executions ?? [])
+    setExecutionSteps(map)
+  }, [])
 
   useEffect(() => {
     if (!executionId) {
@@ -61,42 +87,34 @@ function WorkflowEditorInner() {
       setExecutionStartedAt(null)
       setExecutionParentId(null)
       setExecutionChildren([])
-      inFlightStepDetails.current.clear()
       return
     }
 
-    // Don't reset state before the fetch — keep the previous execution on
-    // screen until the new one arrives, then atomic swap. Resetting first
-    // doubled the render cost when clicking through executions: one render
-    // to clear, another to populate, ~200ms apart.
-    let cancelled = false
-    inFlightStepDetails.current.clear()
-    api.executions.get(executionId, { summary: true }).then((exec) => {
-      if (cancelled) return
-      const map: Record<string, ExecutionStep> = {}
-      for (const step of exec.steps) {
-        map[step.step_namespace] = {
-          step_id: step.id,
-          status: step.status as ExecutionStep['status'],
-          input: undefined,
-          output: undefined,
-          error_message: step.error_message,
-          error_type: step.error_type,
-          duration_ms: step.duration_ms,
-          retries_used: step.retries_used,
-          detail_loaded: false,
-        }
-      }
-      setExecutionPayload(exec.trigger_payload)
-      setExecutionSource(exec.source)
-      setExecutionTraceId(exec.trace_id)
-      setExecutionStartedAt(exec.started_at)
-      setExecutionParentId(exec.parent_execution_id ?? null)
-      setExecutionChildren(exec.child_executions ?? [])
-      setExecutionSteps(map)
-    }).catch(() => {})
-    return () => { cancelled = true }
-  }, [executionId])
+    // Synchronous cache read: if we've seen this exec before (hover prefetch,
+    // 10s sweep, or back-click), the canvas overlay paints immediately with no
+    // network wait. Don't reset state before the fetch on a miss — keep the
+    // previous execution on screen until the new one lands, then atomic swap.
+    const cached = execCache.get(executionId)
+    if (cached) applyExec(cached)
+
+    // Stale-while-revalidate: refetch in the background if the cached row was
+    // still running. A miss kicks off the foreground fetch (deduped if a
+    // prefetch is already in flight).
+    if (cached) {
+      execCache.revalidateIfRunning(executionId)
+    } else {
+      execCache.fetchExec(executionId).catch(() => {})
+    }
+
+    // Subscribe to cache writes for this id — covers background revalidation
+    // landing and per-step detail merges from sibling tabs.
+    const unsub = execCache.subscribe((id) => {
+      if (id !== executionId) return
+      const next = execCache.get(executionId)
+      if (next) applyExec(next)
+    })
+    return unsub
+  }, [executionId, applyExec])
 
   const clearExecution = useCallback(() => {
     setExecutionId(undefined)
@@ -107,16 +125,16 @@ function WorkflowEditorInner() {
     setExecutionStartedAt(null)
     setExecutionParentId(null)
     setExecutionChildren([])
-    inFlightStepDetails.current.clear()
   }, [])
 
   const loadStepDetail = useCallback((namespace: string) => {
     if (!executionId) return
     const step = executionSteps?.[namespace]
     if (!step || !step.step_id || step.detail_loaded) return
-    if (inFlightStepDetails.current.has(step.step_id)) return
-    inFlightStepDetails.current.add(step.step_id)
-    api.executions.getStep(executionId, step.step_id).then((detail) => {
+    // Cache short-circuits: if we've already loaded this step's input/output
+    // (or another component did via the same cache), apply immediately.
+    const cached = execCache.getStep(executionId, step.step_id)
+    if (cached) {
       setExecutionSteps((prev) => {
         if (!prev) return prev
         const existing = prev[namespace]
@@ -125,16 +143,19 @@ function WorkflowEditorInner() {
           ...prev,
           [namespace]: {
             ...existing,
-            input: detail.input,
-            output: detail.output,
-            logs: detail.logs,
+            input: cached.input,
+            output: cached.output,
+            logs: cached.logs ?? undefined,
             detail_loaded: true,
           },
         }
       })
-    }).catch(() => {}).finally(() => {
-      if (step.step_id) inFlightStepDetails.current.delete(step.step_id)
-    })
+      return
+    }
+    // Cache miss — fetchStep dedupes concurrent requests for the same step.
+    // The subscribe() in the executionId effect picks up the cache write and
+    // re-applies, so no explicit setState here is needed on success.
+    execCache.fetchStep(executionId, step.step_id).catch(() => {})
   }, [executionId, executionSteps])
 
   if (error) {

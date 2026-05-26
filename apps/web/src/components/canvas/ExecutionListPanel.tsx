@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import * as execCache from '@/lib/execution-cache'
 import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-react'
 
 const PAGE_SIZE = 100
@@ -205,6 +206,59 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     }
   }, [refreshSignal, loadFirstPage, loadVersions])
 
+  // Hover prefetch: 150ms debounce keeps a quick mouse-pass over the list
+  // from firing 20+ requests. The cache itself dedupes against an in-flight
+  // fetch, so a clicked row that's mid-hover-prefetch reuses the same call.
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onRowEnter = useCallback((id: string) => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    hoverTimerRef.current = setTimeout(() => {
+      execCache.prefetch(id)
+    }, 150)
+  }, [])
+  const onRowLeave = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+  }, [])
+
+  // Background sweep: every 10s prefetch the first 20 rows in the current
+  // filter view. Chunks of 5 with 400ms gaps so we don't open 20 sockets at
+  // once. Running/queued rows are revalidated (status may have changed);
+  // terminal rows get prefetched once and skipped thereafter.
+  useEffect(() => {
+    let cancelled = false
+    let chunkTimer: ReturnType<typeof setTimeout> | null = null
+
+    const sweep = () => {
+      if (cancelled || document.hidden) return
+      const top = execsRef.current.slice(0, 20)
+      if (!top.length) return
+      let i = 0
+      const fire = () => {
+        if (cancelled) return
+        const batch = top.slice(i, i + 5)
+        i += 5
+        for (const row of batch) {
+          // Revalidate is a no-op on a cache miss, prefetch is a no-op on a
+          // hit. Calling both covers "first time we've seen this id" and
+          // "cached as running, should refresh."
+          execCache.revalidateIfRunning(row.id)
+          execCache.prefetch(row.id)
+        }
+        if (i < top.length) chunkTimer = setTimeout(fire, 400)
+      }
+      fire()
+    }
+    const interval = setInterval(sweep, 10_000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      if (chunkTimer) clearTimeout(chunkTimer)
+    }
+  }, [])
+
   // Sentinel ref callback: (re)attaches an IntersectionObserver to the
   // bottom-of-list element. The scroll container is the parent .overflow-y-auto
   // div, set as `root` so observation fires only when the sentinel scrolls
@@ -312,6 +366,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                 <button
                   key={exec.id}
                   onClick={() => onSelect(exec.id)}
+                  onMouseEnter={() => onRowEnter(exec.id)}
+                  onMouseLeave={onRowLeave}
                   className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
                     isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
                     exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
