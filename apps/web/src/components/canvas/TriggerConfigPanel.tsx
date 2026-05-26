@@ -297,7 +297,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
           <select
             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             value={cfg.auth_method}
-            onChange={(e) => update({ auth_method: e.target.value as 'api_key' })}
+            onChange={(e) => update({ auth_method: e.target.value as 'api_key' | 'none' })}
           >
             <option value="api_key">API Key (X-API-Key header)</option>
             <option value="none">None</option>

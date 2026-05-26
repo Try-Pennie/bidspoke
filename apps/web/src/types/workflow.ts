@@ -66,7 +66,7 @@ export interface TriggerDef {
   type: 'http_webhook'
   config: {
     method: string
-    auth_method: 'api_key'
+    auth_method: 'api_key' | 'none'
     idempotency?: {
       enabled: boolean
       derive_from_fields?: string[]

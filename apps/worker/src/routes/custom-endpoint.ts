@@ -25,6 +25,7 @@ interface CachedEndpoint {
   workflow_id: string
   source_name: string
   is_active: boolean
+  auth_method: 'api_key' | 'none'
 }
 
 /**
@@ -75,16 +76,29 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     const supabase = createSupabaseClient(c.env)
     const { data, error } = await supabase
       .from('webhook_endpoints')
-      .select('id, workflow_id, source_name, is_active')
+      .select('id, workflow_id, source_name, is_active, workflows!inner(definition)')
       .eq('subdomain', partner)
       .eq('path', path)
-      .single()
+      .single<{
+        id: string
+        workflow_id: string
+        source_name: string
+        is_active: boolean
+        workflows: { definition: { trigger?: { config?: { auth_method?: string } } } }
+      }>()
 
     if (error || !data) {
       return c.json({ error: 'Endpoint not found' }, 404)
     }
 
-    endpoint = data as CachedEndpoint
+    const triggerAuth = data.workflows?.definition?.trigger?.config?.auth_method
+    endpoint = {
+      id: data.id,
+      workflow_id: data.workflow_id,
+      source_name: data.source_name,
+      is_active: data.is_active,
+      auth_method: triggerAuth === 'none' ? 'none' : 'api_key',
+    }
     // Cache even if inactive — inactive endpoints just return 404 quickly
     await c.env.WORKFLOW_CACHE.put(cacheKey, JSON.stringify(endpoint), {
       expirationTtl: CACHE_TTL,
@@ -95,19 +109,21 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     return c.json({ error: 'Endpoint not active' }, 404)
   }
 
-  // Require a valid API key — same auth contract as generic webhooks
-  const apiKey = c.req.header('X-API-Key')
-  if (!apiKey) {
-    return c.json({ error: 'Missing X-API-Key header' }, 401)
-  }
-  let keyMap: Record<string, string>
-  try {
-    keyMap = JSON.parse(c.env.API_KEY_MAP) as Record<string, string>
-  } catch {
-    return c.json({ error: 'Internal configuration error' }, 500)
-  }
-  if (!keyMap[apiKey]) {
-    return c.json({ error: 'Invalid API key' }, 401)
+  // Require a valid API key unless the trigger opts out with auth_method='none'
+  if (endpoint.auth_method !== 'none') {
+    const apiKey = c.req.header('X-API-Key')
+    if (!apiKey) {
+      return c.json({ error: 'Missing X-API-Key header' }, 401)
+    }
+    let keyMap: Record<string, string>
+    try {
+      keyMap = JSON.parse(c.env.API_KEY_MAP) as Record<string, string>
+    } catch {
+      return c.json({ error: 'Internal configuration error' }, 500)
+    }
+    if (!keyMap[apiKey]) {
+      return c.json({ error: 'Invalid API key' }, 401)
+    }
   }
 
   let payload: unknown
