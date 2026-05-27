@@ -22,10 +22,15 @@ export async function executeConstantsNode(
     const cap = slug.charAt(0).toUpperCase() + slug.slice(1)
     partnerFlat[`${cap}ClickUrl`] = url
   }
+  const partnerMaps: Record<string, Record<string, number>> = {}
+  for (const [slug, bids] of Object.entries(partnerData.subAccountMinBids ?? {})) {
+    const cap = slug.charAt(0).toUpperCase() + slug.slice(1)
+    partnerMaps[`${cap}SubAccountMinBids`] = bids
+  }
 
   const resolvedInput: ResolvedStepInput = {
     template: { data: node.config.data },
-    resolved: { data, partner_constants_keys: Object.keys(partnerFlat), partner_count: Object.keys(partnerData.subAccountIdsMap ?? {}).length },
+    resolved: { data, partner_constants_keys: [...Object.keys(partnerFlat), ...Object.keys(partnerMaps)], partner_count: Object.keys(partnerData.subAccountIdsMap ?? {}).length },
   }
 
   return {
@@ -34,6 +39,7 @@ export async function executeConstantsNode(
       subAccountIdsMap: partnerData.subAccountIdsMap,
       activeBidding: partnerData.activeBidding,
       ...partnerFlat,
+      ...partnerMaps,
     },
     resolvedInput,
   }

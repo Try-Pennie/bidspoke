@@ -38,6 +38,7 @@ function makeConstants(overrides: Partial<PartnerConstants> = {}): PartnerConsta
     sellOff: {},
     clickUrls: {},
     activeBidding: {},
+    subAccountMinBids: {},
     ...overrides,
   }
 }
@@ -88,6 +89,18 @@ describe('executeConstantsNode', () => {
     expect(out.SofiSellOffOfferDetails).toBe('<p>details</p>')
     expect(out.NerdwalletSellOffOfferTitle).toBe('NW Title')
     expect(out.NerdwalletSellOffOfferDetails).toBe('<p>nw</p>')
+  })
+
+  it('generates {Cap}SubAccountMinBids from slug', async () => {
+    vi.mocked(loadPartnerConstants).mockResolvedValue(makeConstants({
+      subAccountMinBids: {
+        lendswift: { 'uuid-a': 9.23, 'uuid-b': 3.85 },
+      },
+    }))
+
+    const { output } = await executeConstantsNode(makeNode(), makeCtx(), mockEnv, mockSupabase)
+    const out = output as Record<string, unknown>
+    expect(out.LendswiftSubAccountMinBids).toEqual({ 'uuid-a': 9.23, 'uuid-b': 3.85 })
   })
 
   it('generates {Cap}ClickUrl from slug', async () => {

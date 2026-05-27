@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 const TTL = 300
-const cacheKey = (orgId: string) => `partner-constants-${orgId}`
+const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
 
 export interface PartnerConstants {
   subAccountIdsMap: Record<string, string>
@@ -9,6 +9,8 @@ export interface PartnerConstants {
   clickUrls: Record<string, string>
   /** Bidding active per partner slug. Missing slug = inactive (safe-by-default). */
   activeBidding: Record<string, boolean>
+  /** Per-partner per-sub-account minimum bid floors. Partner slug → uuid → floor. */
+  subAccountMinBids: Record<string, Record<string, number>>
 }
 
 export async function loadPartnerConstants(
@@ -26,7 +28,7 @@ export async function loadPartnerConstants(
       .eq('org_id', orgId),
     supabase
       .from('partner_configs')
-      .select('slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active')
+      .select('slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
       .eq('organization_id', orgId),
   ])
 
@@ -38,6 +40,7 @@ export async function loadPartnerConstants(
   const sellOff: Record<string, { title: string; details: string }> = {}
   const clickUrls: Record<string, string> = {}
   const activeBidding: Record<string, boolean> = {}
+  const subAccountMinBids: Record<string, Record<string, number>> = {}
   for (const row of partnerRows ?? []) {
     if (row.sell_off_offer_title || row.sell_off_offer_details) {
       sellOff[row.slug] = {
@@ -49,9 +52,17 @@ export async function loadPartnerConstants(
       clickUrls[row.slug] = row.click_url
     }
     activeBidding[row.slug] = row.is_active === true
+    if (row.sub_account_min_bids && typeof row.sub_account_min_bids === 'object') {
+      const normalized: Record<string, number> = {}
+      for (const [uuid, bid] of Object.entries(row.sub_account_min_bids as Record<string, unknown>)) {
+        const n = Number(bid)
+        if (Number.isFinite(n)) normalized[uuid] = n
+      }
+      if (Object.keys(normalized).length > 0) subAccountMinBids[row.slug] = normalized
+    }
   }
 
-  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding }
+  const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids }
   await kv.put(cacheKey(orgId), JSON.stringify(result), { expirationTtl: TTL })
   return result
 }

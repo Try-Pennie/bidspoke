@@ -39,6 +39,7 @@ interface PartnerBody {
   sell_off_offer_title?: string | null
   sell_off_offer_details?: string | null
   click_url?: string | null
+  sub_account_min_bids?: Record<string, number> | null
   partner_type?: 'source' | 'buyer'
 }
 
@@ -138,6 +139,7 @@ partners.post('/', async (c) => {
       sell_off_offer_title: body.sell_off_offer_title ?? null,
       sell_off_offer_details: body.sell_off_offer_details ?? null,
       click_url: body.click_url ?? null,
+      sub_account_min_bids: body.sub_account_min_bids ?? null,
       updated_by: userId,
       updated_by_email: email,
       updated_by_name: c.get('user').name,
@@ -155,7 +157,7 @@ partners.post('/', async (c) => {
     slug,
   })
 
-  if (body.sell_off_offer_title || body.sell_off_offer_details || body.click_url) {
+  if (body.sell_off_offer_title || body.sell_off_offer_details || body.click_url || body.sub_account_min_bids) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
 
@@ -193,7 +195,7 @@ partners.put('/:id', async (c) => {
     'circuit_error_threshold', 'circuit_window_seconds', 'circuit_cooldown_seconds',
     'circuit_enabled', 'confirmation_window_ms', 'is_active', 'priority',
     'sell_off_offer_title', 'sell_off_offer_details',
-    'click_url', 'partner_type',
+    'click_url', 'partner_type', 'sub_account_min_bids',
   ]
   for (const f of fields) {
     if (body[f] !== undefined) updates[f] = body[f]
@@ -212,8 +214,12 @@ partners.put('/:id', async (c) => {
     changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
   })
 
-  const affectsSellOff = 'sell_off_offer_title' in updates || 'sell_off_offer_details' in updates || 'click_url' in updates
-  if (affectsSellOff) {
+  const affectsConstants =
+    'sell_off_offer_title' in updates ||
+    'sell_off_offer_details' in updates ||
+    'click_url' in updates ||
+    'sub_account_min_bids' in updates
+  if (affectsConstants) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
 

@@ -38,6 +38,8 @@ interface StatusRule { id: string; kind: 'status'; code: string;  bodyField: str
 type Rule = BodyRule | StatusRule
 type SignalRules = Record<SignalCategory, Rule[]>
 
+interface SubAccountFloor { id: string; uuid: string; bid: string }
+
 interface FormSnapshot {
   name: string; apiEndpoint: string; cfSecretKey: string; clickUrl: string; isActive: boolean
   priority: string; dailyCap: string; minBid: string; bidFormula: string
@@ -51,6 +53,24 @@ interface FormSnapshot {
   sellOffOfferTitle: string; sellOffOfferDetails: string
   partnerType: 'source' | 'buyer'
   confirmationWindowMs: string
+  subAccountFloors: SubAccountFloor[]
+}
+
+function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
+  if (!map) return []
+  return Object.entries(map).map(([uuid, bid]) => ({ id: uid(), uuid, bid: String(bid) }))
+}
+
+function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {
+  const out: Record<string, number> = {}
+  for (const f of floors) {
+    const uuid = f.uuid.trim()
+    if (!uuid) continue
+    const n = Number(f.bid)
+    if (!Number.isFinite(n)) continue
+    out[uuid] = n
+  }
+  return Object.keys(out).length > 0 ? out : null
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -429,6 +449,7 @@ export default function PartnerForm({
 
   const [sellOffOfferTitle, setSellOffOfferTitle] = useState(partner?.sell_off_offer_title ?? '')
   const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
+  const [subAccountFloors, setSubAccountFloors] = useState<SubAccountFloor[]>(() => floorsFromMap(partner?.sub_account_min_bids))
 
   const [uuids, setUuids] = useState<PartnerUuid[]>([])
   const [pendingUuids, setPendingUuids] = useState<string[]>([])
@@ -460,7 +481,7 @@ export default function PartnerForm({
   }, [undoSecondsLeft])
 
   function captureSnapshot(): FormSnapshot {
-    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs }
+    return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors }
   }
 
   function restoreSnapshot(snap: FormSnapshot) {
@@ -477,6 +498,7 @@ export default function PartnerForm({
     setAlertTransient(snap.alertTransient); setAlertPermanent(snap.alertPermanent)
     setSellOffOfferTitle(snap.sellOffOfferTitle); setSellOffOfferDetails(snap.sellOffOfferDetails)
     setPartnerType(snap.partnerType); setConfirmationWindowMs(snap.confirmationWindowMs)
+    setSubAccountFloors(snap.subAccountFloors)
   }
 
   function handleUndo() {
@@ -523,6 +545,7 @@ export default function PartnerForm({
         },
         sell_off_offer_title: sellOffOfferTitle || null,
         sell_off_offer_details: sellOffOfferDetails || null,
+        sub_account_min_bids: floorsToMap(subAccountFloors),
         confirmation_window_ms: confirmationWindowMs ? parseInt(confirmationWindowMs) : null,
       }
       await onSave(body, partner?.id, isNew ? pendingUuids : undefined)
@@ -748,6 +771,48 @@ export default function PartnerForm({
             <Field label="Minimum bid ($)" hint="Reject bids below this amount.">
               <Input value={minBid} onChange={setMinBid} type="number" placeholder="0.00" />
             </Field>
+          </div>
+        </Section>}
+
+        {partnerType === 'buyer' && <Section title="Per-sub-account min bids">
+          <p className="text-xs text-gray-400">
+            Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
+            this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
+          </p>
+          <div className="space-y-1.5">
+            {subAccountFloors.map((f, i) => (
+              <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
+                <input
+                  value={f.uuid}
+                  onChange={(e) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: e.target.value } : row))}
+                  placeholder="sub-account UUID"
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                />
+                <input
+                  value={f.bid}
+                  onChange={(e) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: e.target.value } : row))}
+                  type="number"
+                  step="0.01"
+                  placeholder="0.00"
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                />
+                <button
+                  type="button"
+                  onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))}
+                  className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  aria-label="Remove row"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])}
+              className="flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:border-gray-400 hover:text-graphite"
+            >
+              <Plus size={12} /> Add row
+            </button>
           </div>
         </Section>}
 

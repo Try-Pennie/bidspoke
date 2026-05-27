@@ -41,6 +41,7 @@ export interface Partner {
   sell_off_offer_title: string | null
   sell_off_offer_details: string | null
   click_url: string | null
+  sub_account_min_bids: Record<string, number> | null
   partner_type: 'source' | 'buyer'
   created_at: string
   updated_at: string

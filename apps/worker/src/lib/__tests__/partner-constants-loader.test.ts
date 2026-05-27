@@ -7,7 +7,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { loadPartnerConstants, invalidatePartnerConstantsCache } from '../partner-constants-loader'
 
 const ORG = 'org-test'
-const CACHE_KEY = `partner-constants-${ORG}`
+const CACHE_KEY = `partner-constants-v2-${ORG}`
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -131,7 +131,7 @@ describe('loadPartnerConstants', () => {
 
     const result = await loadPartnerConstants(ORG, kv, sb as never)
 
-    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {} })
+    expect(result).toEqual({ subAccountIdsMap: {}, sellOff: {}, clickUrls: {}, activeBidding: {}, subAccountMinBids: {} })
   })
 
   it('builds activeBidding from partner_configs.is_active', async () => {
@@ -145,6 +145,33 @@ describe('loadPartnerConstants', () => {
     const result = await loadPartnerConstants(ORG, kv, sb as never)
 
     expect(result.activeBidding).toEqual({ sofi: true, nerdwallet: false, dot818: true })
+  })
+
+  it('builds subAccountMinBids only for partners with non-empty maps', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [
+      { slug: 'lendswift', is_active: true,  sell_off_offer_title: null, sell_off_offer_details: null, click_url: null, sub_account_min_bids: { 'uuid-a': 9.23, 'uuid-b': 3.85 } },
+      { slug: 'sofi',      is_active: true,  sell_off_offer_title: null, sell_off_offer_details: null, click_url: null, sub_account_min_bids: null },
+      { slug: 'empty',     is_active: true,  sell_off_offer_title: null, sell_off_offer_details: null, click_url: null, sub_account_min_bids: {} },
+    ])
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result.subAccountMinBids).toEqual({ lendswift: { 'uuid-a': 9.23, 'uuid-b': 3.85 } })
+    expect(result.subAccountMinBids).not.toHaveProperty('sofi')
+    expect(result.subAccountMinBids).not.toHaveProperty('empty')
+  })
+
+  it('coerces stringy numbers in sub_account_min_bids and drops non-numeric', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [
+      { slug: 'lendswift', is_active: true, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
+        sub_account_min_bids: { 'uuid-a': '9.23', 'uuid-b': 'not-a-number', 'uuid-c': 3.08 } },
+    ])
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result.subAccountMinBids.lendswift).toEqual({ 'uuid-a': 9.23, 'uuid-c': 3.08 })
   })
 
   it('treats null/missing is_active as inactive (safe-by-default)', async () => {
