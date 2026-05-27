@@ -8,7 +8,10 @@ import type { WorkflowSummary } from '@/types/workflow'
 
 const HOOK_BASE = 'https://hook.trypennie.dev'
 
+// Single-segment endpoints (path '/' or empty) render without a trailing
+// path; two-segment endpoints append the path.
 function endpointUrl(subdomain: string, path: string): string {
+  if (!path || path === '/') return `${HOOK_BASE}/${subdomain}`
   return `${HOOK_BASE}/${subdomain}${path}`
 }
 
@@ -38,7 +41,7 @@ export default function EndpointCreateForm({
 }: Props) {
   const [form, setForm] = useState({
     subdomain: '',
-    path: '/bidding',
+    path: '',
     workflow_id: workflowId ?? '',
     source_name: '',
   })
@@ -66,7 +69,8 @@ export default function EndpointCreateForm({
     try {
       const created = await api.endpoints.create({
         subdomain: form.subdomain,
-        path: form.path || '/webhook',
+        // Empty path = single-segment URL. Worker stores it as '/'.
+        path: form.path,
         workflow_id: form.workflow_id,
         source_name: form.source_name || form.subdomain,
       })
@@ -79,7 +83,7 @@ export default function EndpointCreateForm({
   }
 
   const previewUrl = form.subdomain
-    ? endpointUrl(form.subdomain, form.path || '/webhook')
+    ? endpointUrl(form.subdomain, form.path)
     : null
 
   return (
@@ -112,7 +116,9 @@ export default function EndpointCreateForm({
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Path</label>
+          <label className="mb-1 block text-xs font-medium text-gray-600">
+            Path <span className="font-normal text-gray-400">(optional)</span>
+          </label>
           <input
             className="input w-full font-mono"
             placeholder="/bidding"

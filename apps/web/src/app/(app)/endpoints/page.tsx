@@ -13,7 +13,9 @@ import { Skeleton } from '@/components/ui/Skeleton'
 
 const HOOK_BASE = 'https://hook.trypennie.dev'
 
+// Single-segment endpoints (path '/' or empty) render without a trailing path.
 function endpointUrl(subdomain: string, path: string): string {
+  if (!path || path === '/') return `${HOOK_BASE}/${subdomain}`
   return `${HOOK_BASE}/${subdomain}${path}`
 }
 
@@ -161,7 +163,7 @@ export default function EndpointsPage() {
             <Globe className="mx-auto mb-3 h-6 w-6 text-gray-300" />
             <p className="text-base font-semibold text-graphite">No custom endpoints yet</p>
             <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
-              Give partners a URL like <span className="font-mono text-gray-600">hook.trypennie.dev/partner-name/bidding</span> instead of a generic webhook ID and API key.
+              Give partners a URL like <span className="font-mono text-gray-600">hook.trypennie.dev/partner-name</span> (or <span className="font-mono text-gray-600">/partner-name/bidding</span>) instead of a generic webhook ID and API key.
             </p>
             <button
               onClick={() => setAdding(true)}

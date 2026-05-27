@@ -38,9 +38,12 @@ function validateSubdomain(sub: string): string | null {
   return null
 }
 
+// Normalize a webhook path. Strips leading/trailing slashes and lowercases.
+// An empty input becomes '/' — the marker for a single-segment endpoint
+// (URL is hook.trypennie.dev/<subdomain> with no second path segment).
 function normalizePath(raw: string): string {
   const stripped = raw.replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase()
-  return '/' + stripped
+  return stripped === '' ? '/' : '/' + stripped
 }
 
 function validatePath(path: string): string | null {
@@ -94,7 +97,9 @@ endpoints.post('/', async (c) => {
   if (!body.source_name) return c.json({ error: 'source_name is required' }, 400)
 
   const subdomain = body.subdomain.trim().toLowerCase()
-  const path = normalizePath(body.path?.trim() || '/webhook')
+  // Empty path = single-segment endpoint (hook.trypennie.dev/<subdomain>).
+  // Non-empty path = two-segment (hook.trypennie.dev/<subdomain>/<path>).
+  const path = normalizePath(body.path?.trim() ?? '')
   const source_name = body.source_name.trim().toLowerCase().replace(/\s+/g, '_')
 
   const subErr = validateSubdomain(subdomain)

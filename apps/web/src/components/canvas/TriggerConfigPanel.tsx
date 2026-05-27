@@ -213,7 +213,10 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
           {customEndpoints.length > 0 && (
             <div className="space-y-1.5">
               {customEndpoints.map((ep) => {
-                const url = `${HOOK_BASE}/${ep.subdomain}${ep.path}`
+                // Single-segment endpoints (path '/' or empty) render without a trailing path.
+                const url = !ep.path || ep.path === '/'
+                  ? `${HOOK_BASE}/${ep.subdomain}`
+                  : `${HOOK_BASE}/${ep.subdomain}${ep.path}`
                 return (
                   <div key={ep.id} className="flex items-start gap-1.5 rounded border border-p-blue-light bg-p-blue-light pl-2.5 pr-1.5 py-1.5">
                     <span className="flex-1 break-all font-mono text-xs text-p-blue-dark">{url}</span>
@@ -234,7 +237,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             </div>
           )}
           {customEndpoints.length === 0 && !addingEndpoint && (
-            <p className="text-xs text-gray-400">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner/bidding</span>.</p>
+            <p className="text-xs text-gray-400">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner</span> (or <span className="font-mono">/partner/bidding</span>).</p>
           )}
           <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingEndpoint ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
             <div className="min-h-0 overflow-hidden">

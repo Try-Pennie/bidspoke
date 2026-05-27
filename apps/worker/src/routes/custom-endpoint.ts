@@ -35,10 +35,12 @@ export function isCustomEndpointHost(host: string): boolean {
   return host.split(':')[0].toLowerCase() === HOOK_HOST
 }
 
-/** Normalize a URL path: lowercase, leading slash, no trailing slash. */
+// Normalize a URL path: lowercase, leading slash, no trailing slash.
+// Empty input becomes '/' — matches the single-segment endpoint row
+// (subdomain='x', path='/') for URL hook.trypennie.dev/x.
 function normalizePath(raw: string): string {
   const stripped = raw.replace(/^\/+/, '').replace(/\/+$/, '').toLowerCase()
-  return '/' + stripped
+  return stripped === '' ? '/' : '/' + stripped
 }
 
 export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promise<Response> {
