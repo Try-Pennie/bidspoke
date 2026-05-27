@@ -116,10 +116,20 @@ export interface WorkflowSummary {
   description?: string | null
   is_active: boolean
   capture_sightings?: boolean
+  folder_id?: string | null
   created_at: string
   updated_at: string
   updated_by_email?: string | null
   updated_by_name?: string | null
+}
+
+export interface Folder {
+  id: string
+  organization_id: string
+  parent_id: string | null
+  name: string
+  created_at: string
+  updated_at: string
 }
 
 export interface WorkflowVersion {

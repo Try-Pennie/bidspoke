@@ -1,5 +1,5 @@
 import { createClient } from './supabase/client'
-import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar } from '@/types/workflow'
+import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder } from '@/types/workflow'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -274,6 +274,11 @@ export const api = {
       req<{ id: string; capture_sightings: boolean }>(`/api/workflows/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ capture_sightings }),
+      }),
+    setFolder: (id: string, folder_id: string | null) =>
+      req<{ id: string; folder_id: string | null }>(`/api/workflows/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ folder_id }),
       }),
     test: (id: string, payload: unknown, executionId?: string, definition?: unknown) =>
       req<unknown>(`/api/workflows/${id}/test`, {
@@ -649,5 +654,15 @@ export const api = {
       }),
     clearAnthropicKey: () =>
       req<{ configured: boolean }>('/api/settings/anthropic-key', { method: 'DELETE' }),
+  },
+
+  folders: {
+    list: () => req<Folder[]>('/api/folders'),
+    create: (name: string, parent_id: string | null) =>
+      req<Folder>('/api/folders', { method: 'POST', body: JSON.stringify({ name, parent_id }) }),
+    update: (id: string, data: { name?: string; parent_id?: string | null }) =>
+      req<Folder>(`/api/folders/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' }),
   },
 }

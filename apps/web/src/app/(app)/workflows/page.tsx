@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import type { WorkflowSummary } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff } from 'lucide-react'
+import type { WorkflowSummary, Folder } from '@/types/workflow'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -69,19 +69,55 @@ export default function WorkflowsPage() {
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map())
   const prevPositions = useRef<Map<string, number>>(new Map())
 
+  // Folders
+  const [folders, setFolders] = useState<Folder[]>([])
+  const [folderSort, setFolderSort] = useState<'mru' | 'name'>('mru')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [folderMenuOpen, setFolderMenuOpen] = useState<string | null>(null)
+  const folderMenuRef = useRef<HTMLDivElement>(null)
+  const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
+  const [renameFolderValue, setRenameFolderValue] = useState('')
+  const [movingWorkflowId, setMovingWorkflowId] = useState<string | null>(null)
+  const moveMenuRef = useRef<HTMLDivElement>(null)
+  const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
+  const folderMoveMenuRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
-    Promise.all([api.workflows.list(), api.stats.get(7)])
-      .then(([wfs, stats]) => {
+    Promise.all([api.workflows.list(), api.stats.get(7), api.folders.list()])
+      .then(([wfs, stats, fs]) => {
         setWorkflows(wfs)
         const map: Record<string, number> = {}
         for (const wf of stats.by_workflow) {
           if (wf.success_rate != null) map[wf.workflow_id] = wf.success_rate
         }
         setHealthMap(map)
+        setFolders(fs)
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
+
+  // Restore collapsed state once on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('bidspoke:folders:collapsed')
+      if (raw) setCollapsed(new Set(JSON.parse(raw) as string[]))
+    } catch {
+      // ignore parse / quota errors
+    }
+  }, [])
+
+  function toggleCollapse(folderId: string) {
+    setCollapsed((s) => {
+      const next = new Set(s)
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
+      try { localStorage.setItem('bidspoke:folders:collapsed', JSON.stringify([...next])) } catch { /* ignore */ }
+      return next
+    })
+  }
 
   // Keyboard shortcut: / or ⌘K focuses search
   useEffect(() => {
@@ -136,6 +172,33 @@ export default function WorkflowsPage() {
     return () => document.removeEventListener('mousedown', handler)
   }, [openMenuId])
 
+  // Close folder menu on outside click
+  useEffect(() => {
+    if (!folderMenuOpen) return
+    function handler(e: MouseEvent) {
+      if (folderMenuRef.current && !folderMenuRef.current.contains(e.target as globalThis.Node)) {
+        setFolderMenuOpen(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [folderMenuOpen])
+
+  // Close move-to-folder popup on outside click
+  useEffect(() => {
+    if (!movingWorkflowId && !movingFolderId) return
+    function handler(e: MouseEvent) {
+      const inWf = moveMenuRef.current?.contains(e.target as globalThis.Node)
+      const inFolder = folderMoveMenuRef.current?.contains(e.target as globalThis.Node)
+      if (!inWf && !inFolder) {
+        setMovingWorkflowId(null)
+        setMovingFolderId(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [movingWorkflowId, movingFolderId])
+
   // Health priority for sort: red=4, amber=3, green=2, no-history=1, inactive=0
   function healthPriority(wf: WorkflowSummary): number {
     if (!wf.is_active) return 0
@@ -166,6 +229,171 @@ export default function WorkflowsPage() {
   const firstMatchId = isSearchActive
     ? sortedWorkflows.find((wf) => wf.name.toLowerCase().includes(searchQuery.toLowerCase()))?.id
     : undefined
+
+  // Folder tree maps. Keys are nullable strings; we coerce to '__root__' so Map works cleanly.
+  const ROOT = '__root__'
+  const childFoldersByParent = useMemo(() => {
+    const map = new Map<string, Folder[]>()
+    for (const f of folders) {
+      const key = f.parent_id ?? ROOT
+      const arr = map.get(key) ?? []
+      arr.push(f)
+      map.set(key, arr)
+    }
+    return map
+  }, [folders])
+
+  const workflowsByFolder = useMemo(() => {
+    const map = new Map<string, WorkflowSummary[]>()
+    for (const w of sortedWorkflows) {
+      const key = w.folder_id ?? ROOT
+      const arr = map.get(key) ?? []
+      arr.push(w)
+      map.set(key, arr)
+    }
+    return map
+  }, [sortedWorkflows])
+
+  // Recursive descendant lookup — used by MRU computation and by the
+  // move-into-folder picker so we can disable a folder's own descendants.
+  const descendantsOf = useMemo(() => {
+    const cache = new Map<string, Set<string>>()
+    function walk(folderId: string): Set<string> {
+      const cached = cache.get(folderId)
+      if (cached) return cached
+      const set = new Set<string>()
+      for (const child of childFoldersByParent.get(folderId) ?? []) {
+        set.add(child.id)
+        for (const d of walk(child.id)) set.add(d)
+      }
+      cache.set(folderId, set)
+      return set
+    }
+    for (const f of folders) walk(f.id)
+    return cache
+  }, [folders, childFoldersByParent])
+
+  function folderMru(folderId: string): number {
+    let max = 0
+    const folder = folders.find((f) => f.id === folderId)
+    if (folder) max = new Date(folder.updated_at).getTime()
+    const ids = [folderId, ...(descendantsOf.get(folderId) ?? [])]
+    for (const id of ids) {
+      for (const w of workflowsByFolder.get(id) ?? []) {
+        const t = new Date(w.updated_at).getTime()
+        if (t > max) max = t
+      }
+    }
+    return max
+  }
+
+  function compareFolders(a: Folder, b: Folder): number {
+    if (folderSort === 'name') return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    return folderMru(b.id) - folderMru(a.id)
+  }
+
+  async function handleCreateFolder() {
+    const name = newFolderName.trim()
+    if (!name) {
+      setCreatingFolderParent(undefined)
+      setNewFolderName('')
+      return
+    }
+    const parent_id = creatingFolderParent ?? null
+    try {
+      const folder = await api.folders.create(name, parent_id)
+      setFolders((fs) => [...fs, folder])
+      // If creating a subfolder, make sure the parent stays expanded
+      if (parent_id) {
+        setCollapsed((s) => {
+          if (!s.has(parent_id)) return s
+          const next = new Set(s)
+          next.delete(parent_id)
+          try { localStorage.setItem('bidspoke:folders:collapsed', JSON.stringify([...next])) } catch { /* ignore */ }
+          return next
+        })
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create folder')
+    }
+    setCreatingFolderParent(undefined)
+    setNewFolderName('')
+  }
+
+  function startRenameFolder(folder: Folder) {
+    setFolderMenuOpen(null)
+    setRenamingFolderId(folder.id)
+    setRenameFolderValue(folder.name)
+  }
+
+  async function commitRenameFolder(id: string) {
+    const trimmed = renameFolderValue.trim()
+    setRenamingFolderId(null)
+    const original = folders.find((f) => f.id === id)
+    if (!trimmed || !original || trimmed === original.name) return
+    setFolders((fs) => fs.map((f) => (f.id === id ? { ...f, name: trimmed } : f)))
+    try {
+      await api.folders.update(id, { name: trimmed })
+    } catch (e) {
+      setFolders((fs) => fs.map((f) => (f.id === id ? original : f)))
+      setError(e instanceof Error ? e.message : 'Failed to rename folder')
+    }
+  }
+
+  async function handleDeleteFolder(folder: Folder) {
+    setFolderMenuOpen(null)
+    try {
+      await api.folders.delete(folder.id)
+      setFolders((fs) => fs.filter((f) => f.id !== folder.id))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete folder')
+    }
+  }
+
+  async function handleMoveWorkflow(workflowId: string, folderId: string | null) {
+    setMovingWorkflowId(null)
+    setOpenMenuId(null)
+    const original = workflows.find((w) => w.id === workflowId)
+    if (!original) return
+    setWorkflows((ws) => ws.map((w) => (w.id === workflowId ? { ...w, folder_id: folderId } : w)))
+    // Ensure target folder is expanded so the workflow is visible after move
+    if (folderId && collapsed.has(folderId)) {
+      setCollapsed((s) => {
+        const next = new Set(s)
+        next.delete(folderId)
+        try { localStorage.setItem('bidspoke:folders:collapsed', JSON.stringify([...next])) } catch { /* ignore */ }
+        return next
+      })
+    }
+    try {
+      await api.workflows.setFolder(workflowId, folderId)
+    } catch (e) {
+      setWorkflows((ws) => ws.map((w) => (w.id === workflowId ? original : w)))
+      setError(e instanceof Error ? e.message : 'Failed to move workflow')
+    }
+  }
+
+  async function handleMoveFolder(folderId: string, parentId: string | null) {
+    setMovingFolderId(null)
+    setFolderMenuOpen(null)
+    const original = folders.find((f) => f.id === folderId)
+    if (!original) return
+    setFolders((fs) => fs.map((f) => (f.id === folderId ? { ...f, parent_id: parentId } : f)))
+    if (parentId && collapsed.has(parentId)) {
+      setCollapsed((s) => {
+        const next = new Set(s)
+        next.delete(parentId)
+        try { localStorage.setItem('bidspoke:folders:collapsed', JSON.stringify([...next])) } catch { /* ignore */ }
+        return next
+      })
+    }
+    try {
+      await api.folders.update(folderId, { parent_id: parentId })
+    } catch (e) {
+      setFolders((fs) => fs.map((f) => (f.id === folderId ? original : f)))
+      setError(e instanceof Error ? e.message : 'Failed to move folder')
+    }
+  }
 
   // View Transitions: tag the clicked element, then navigate inside startViewTransition
   function navigateToWorkflow(e: React.MouseEvent<HTMLElement>, id: string) {
@@ -297,6 +525,375 @@ export default function WorkflowsPage() {
     }
   }
 
+  // ============================================================
+  // Folder + workflow row rendering
+  // ============================================================
+
+  // Indent: 16px base padding-left + 20px per nesting level.
+  const indentPx = (depth: number) => 16 + depth * 20
+
+  function FolderPickerList({
+    onPick,
+    excludeId,
+    rootLabel = 'Root (no folder)',
+  }: {
+    onPick: (folderId: string | null) => void
+    excludeId?: string
+    rootLabel?: string
+  }) {
+    const exclude = excludeId ? new Set([excludeId, ...(descendantsOf.get(excludeId) ?? [])]) : new Set<string>()
+    function renderLevel(parentId: string | null, depth: number): React.ReactNode[] {
+      const kids = (childFoldersByParent.get(parentId ?? ROOT) ?? []).slice().sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      )
+      const out: React.ReactNode[] = []
+      for (const f of kids) {
+        const disabled = exclude.has(f.id)
+        out.push(
+          <button
+            key={f.id}
+            disabled={disabled}
+            onClick={() => onPick(f.id)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent"
+            style={{ paddingLeft: `${12 + depth * 14}px` }}
+          >
+            <FolderIcon className="h-3.5 w-3.5 text-gray-400" />
+            <span className="truncate">{f.name}</span>
+          </button>
+        )
+        out.push(...renderLevel(f.id, depth + 1))
+      }
+      return out
+    }
+    return (
+      <div className="max-h-72 overflow-y-auto py-1">
+        <button
+          onClick={() => onPick(null)}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
+        >
+          <span className="text-gray-400">↥</span>
+          <span>{rootLabel}</span>
+        </button>
+        <div className="my-1 border-t border-gray-100" />
+        {renderLevel(null, 0)}
+      </div>
+    )
+  }
+
+  function renderInlineCreateFolderRow(parentId: string | null, depth: number): React.ReactNode {
+    return (
+      <tr key={`create-folder-${parentId ?? 'root'}`} className="bg-blue-50/40">
+        <td colSpan={4} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
+          <form
+            onSubmit={(e) => { e.preventDefault(); handleCreateFolder() }}
+            className="flex items-center gap-2"
+          >
+            <FolderIcon className="h-4 w-4 text-gray-400" />
+            <input
+              autoFocus
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              onBlur={handleCreateFolder}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setCreatingFolderParent(undefined)
+                  setNewFolderName('')
+                }
+              }}
+              placeholder="Folder name"
+              className="flex-1 rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
+            />
+          </form>
+        </td>
+      </tr>
+    )
+  }
+
+  function renderWorkflowRow(wf: WorkflowSummary, depth: number): React.ReactNode {
+    const isMatch = !isSearchActive || wf.name.toLowerCase().includes(searchQuery.toLowerCase())
+    const isFirstMatch = wf.id === firstMatchId
+    const isFailing = healthMap[wf.id] != null && healthMap[wf.id] < 80
+    return (
+      <tr
+        key={wf.id}
+        ref={(el) => { if (el) rowRefs.current.set(wf.id, el); else rowRefs.current.delete(wf.id) }}
+        className={[
+          'transition-opacity duration-150',
+          removingId === wf.id ? 'opacity-0' : '',
+          isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
+          isFirstMatch ? 'bg-p-blue-light/50 hover:bg-p-blue-light/70' :
+            isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-beige',
+        ].filter(Boolean).join(' ')}
+      >
+        {/* Name + status badge */}
+        <td className="px-4 py-3" style={depth > 0 ? { paddingLeft: `${indentPx(depth)}px` } : undefined}>
+          <div className="flex items-center gap-2">
+            <HealthDot rate={healthMap[wf.id] ?? null} />
+            {renamingId === wf.id ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
+                className="flex items-center gap-1.5"
+              >
+                <input
+                  autoFocus
+                  className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={() => commitRename(wf.id)}
+                  onKeyDown={(e) => e.key === 'Escape' && setRenamingId(null)}
+                />
+                <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+              </form>
+            ) : (
+              <Link
+                href={`/workflows/${wf.id}`}
+                onClick={(e) => navigateToWorkflow(e, wf.id)}
+                className="font-semibold text-graphite hover:text-p-blue-dark"
+              >
+                {wf.name}
+              </Link>
+            )}
+            <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${
+              wf.is_active
+                ? 'bg-green-50 text-green-700'
+                : 'bg-gray-100 text-gray-500'
+            }`}>
+              {wf.is_active ? 'Active' : 'Inactive'}
+            </span>
+            {duplicating === wf.id && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-p-blue-dark" />
+            )}
+          </div>
+          {wf.description && (
+            <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
+          )}
+        </td>
+
+        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+          {formatDatetime(wf.updated_at)}
+        </td>
+        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
+
+        {/* Actions column */}
+        <td className="px-4 py-3">
+          <div ref={openMenuId === wf.id || movingWorkflowId === wf.id ? menuRef : undefined} className="relative">
+            {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
+            <button
+              onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
+              className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
+              title="More options"
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </button>
+            {/* Confirm — floats absolutely, extends left over adjacent column */}
+            {confirmingDelete === wf.id && (
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
+                <button
+                  onClick={() => handleDelete(wf.id)}
+                  className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                >
+                  Delete
+                </button>
+                <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                  Cancel
+                </button>
+              </div>
+            )}
+            {/* Dropdown menu */}
+            {openMenuId === wf.id && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                <button
+                  onClick={() => handleToggleActive(wf)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  <Power className="h-4 w-4 text-gray-400" />
+                  {wf.is_active ? 'Disable' : 'Enable'}
+                </button>
+                <button
+                  onClick={() => startRename(wf)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  <Pencil className="h-4 w-4 text-gray-400" />
+                  Rename
+                </button>
+                <button
+                  onClick={() => handleDuplicate(wf.id)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  <Copy className="h-4 w-4 text-gray-400" />
+                  Duplicate
+                </button>
+                <button
+                  onClick={() => handleToggleCaptureSightings(wf)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  {(wf.capture_sightings ?? true) ? (
+                    <EyeOff className="h-4 w-4 text-gray-400" />
+                  ) : (
+                    <Eye className="h-4 w-4 text-gray-400" />
+                  )}
+                  {(wf.capture_sightings ?? true) ? 'Stop capturing' : 'Capture sightings'}
+                </button>
+                <button
+                  onClick={() => { setOpenMenuId(null); setMovingWorkflowId(wf.id) }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  <FolderInput className="h-4 w-4 text-gray-400" />
+                  Move to folder…
+                </button>
+                <div className="my-1 border-t border-gray-100" />
+                <button
+                  onClick={() => requestDelete(wf.id)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </button>
+              </div>
+            )}
+            {/* Move-to-folder popover */}
+            {movingWorkflowId === wf.id && (
+              <div ref={moveMenuRef} className="absolute right-0 top-full z-50 mt-1 w-60 rounded-lg border border-gray-200 bg-white shadow-lg">
+                <FolderPickerList onPick={(folderId) => handleMoveWorkflow(wf.id, folderId)} />
+              </div>
+            )}
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  function renderFolderGroup(folder: Folder, depth: number): React.ReactNode[] {
+    const isCollapsed = collapsed.has(folder.id)
+    const rows: React.ReactNode[] = []
+
+    rows.push(
+      <tr key={`folder-${folder.id}`} className="bg-gray-50/70 hover:bg-gray-100/60">
+        <td colSpan={4} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => toggleCollapse(folder.id)}
+              className="rounded p-0.5 text-gray-400 hover:bg-gray-200/60 hover:text-gray-600"
+              aria-label={isCollapsed ? 'Expand folder' : 'Collapse folder'}
+            >
+              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+            <FolderIcon className="h-4 w-4 text-gray-400" />
+            {renamingFolderId === folder.id ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); commitRenameFolder(folder.id) }}
+                className="flex-1"
+              >
+                <input
+                  autoFocus
+                  value={renameFolderValue}
+                  onChange={(e) => setRenameFolderValue(e.target.value)}
+                  onBlur={() => commitRenameFolder(folder.id)}
+                  onKeyDown={(e) => e.key === 'Escape' && setRenamingFolderId(null)}
+                  className="rounded border border-gray-300 px-2 py-0.5 text-sm font-semibold text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
+                />
+              </form>
+            ) : (
+              <button
+                onClick={() => toggleCollapse(folder.id)}
+                className="flex-1 text-left text-sm font-semibold text-graphite"
+              >
+                {folder.name}
+              </button>
+            )}
+            <div ref={folderMenuOpen === folder.id || movingFolderId === folder.id ? folderMenuRef : undefined} className="relative">
+              <button
+                onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
+                className={`rounded p-1.5 text-gray-400 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
+                title="Folder options"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {folderMenuOpen === folder.id && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                  <button
+                    onClick={() => startRenameFolder(folder)}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                  >
+                    <Pencil className="h-4 w-4 text-gray-400" />
+                    Rename
+                  </button>
+                  <button
+                    onClick={() => {
+                      setFolderMenuOpen(null)
+                      setCreatingFolderParent(folder.id)
+                      setNewFolderName('')
+                    }}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                  >
+                    <FolderPlus className="h-4 w-4 text-gray-400" />
+                    New subfolder
+                  </button>
+                  <button
+                    onClick={() => { setFolderMenuOpen(null); setMovingFolderId(folder.id) }}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                  >
+                    <FolderInput className="h-4 w-4 text-gray-400" />
+                    Move to folder…
+                  </button>
+                  <div className="my-1 border-t border-gray-100" />
+                  <button
+                    onClick={() => handleDeleteFolder(folder)}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </button>
+                </div>
+              )}
+              {movingFolderId === folder.id && (
+                <div ref={folderMoveMenuRef} className="absolute right-0 top-full z-50 mt-1 w-60 rounded-lg border border-gray-200 bg-white shadow-lg">
+                  <FolderPickerList
+                    onPick={(parentId) => handleMoveFolder(folder.id, parentId)}
+                    excludeId={folder.id}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        </td>
+      </tr>
+    )
+
+    if (!isCollapsed) {
+      if (creatingFolderParent === folder.id) {
+        rows.push(renderInlineCreateFolderRow(folder.id, depth + 1))
+      }
+      const childWorkflows = workflowsByFolder.get(folder.id) ?? []
+      for (const wf of childWorkflows) {
+        rows.push(renderWorkflowRow(wf, depth + 1))
+      }
+      const subs = (childFoldersByParent.get(folder.id) ?? []).slice().sort(compareFolders)
+      for (const sub of subs) {
+        rows.push(...renderFolderGroup(sub, depth + 1))
+      }
+    }
+
+    return rows
+  }
+
+  function renderRows(): React.ReactNode {
+    if (isSearchActive) {
+      return sortedWorkflows.map((wf) => renderWorkflowRow(wf, 0))
+    }
+    const rootWorkflows = workflowsByFolder.get(ROOT) ?? []
+    const rootFolders = (childFoldersByParent.get(ROOT) ?? []).slice().sort(compareFolders)
+    return (
+      <>
+        {creatingFolderParent === null && renderInlineCreateFolderRow(null, 0)}
+        {rootWorkflows.map((wf) => renderWorkflowRow(wf, 0))}
+        {rootFolders.map((f) => renderFolderGroup(f, 0))}
+      </>
+    )
+  }
+
   return (
     <NavLayout>
       <div className="p-8">
@@ -327,6 +924,17 @@ export default function WorkflowsPage() {
                 </button>
               )}
             </div>
+            <button
+              onClick={() => {
+                setCreatingFolderParent(null)
+                setNewFolderName('')
+              }}
+              className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
+              title="New folder"
+            >
+              <FolderPlus className="h-4 w-4" />
+              New folder
+            </button>
             <button
               onClick={handleCreate}
               disabled={creating}
@@ -365,7 +973,7 @@ export default function WorkflowsPage() {
               </tbody>
             </table>
           </div>
-        ) : workflows.length === 0 ? (
+        ) : workflows.length === 0 && folders.length === 0 ? (
           <div className="flex flex-col items-center py-20 text-center">
             {/* Mini workflow diagram */}
             <svg width="100" height="122" viewBox="0 0 100 122" fill="none" aria-hidden="true" className="mb-8">
@@ -406,7 +1014,25 @@ export default function WorkflowsPage() {
               </colgroup>
               <thead className="border-b border-gray-100 bg-beige">
                 <tr>
-                  <th className="rounded-tl-xl px-4 py-3 text-left text-xs font-semibold text-gray-500">Name</th>
+                  <th className="rounded-tl-xl px-4 py-3 text-left">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-gray-500">Name</span>
+                      {folders.length > 0 && (
+                        <button
+                          onClick={() => setFolderSort((s) => (s === 'mru' ? 'name' : 'mru'))}
+                          title={folderSort === 'mru' ? 'Folders sorted by most recently used. Click to sort by name.' : 'Folders sorted by name. Click to sort by most recently used.'}
+                          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
+                            folderSort === 'name'
+                              ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                              : 'bg-p-blue-light text-p-blue-dark'
+                          }`}
+                        >
+                          <FolderIcon className="h-3 w-3" />
+                          {folderSort === 'mru' ? 'Recent' : 'A–Z'}
+                        </button>
+                      )}
+                    </div>
+                  </th>
                   <th className="px-4 py-3 text-left">
                     <button
                       onClick={toggleSort}
@@ -426,148 +1052,7 @@ export default function WorkflowsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {sortedWorkflows.map((wf) => {
-                  const isMatch = !isSearchActive || wf.name.toLowerCase().includes(searchQuery.toLowerCase())
-                  const isFirstMatch = wf.id === firstMatchId
-                  const isFailing = healthMap[wf.id] != null && healthMap[wf.id] < 80
-                  return (
-                    <tr
-                      key={wf.id}
-                      ref={(el) => { if (el) rowRefs.current.set(wf.id, el); else rowRefs.current.delete(wf.id) }}
-                      className={[
-                        'transition-opacity duration-150',
-                        removingId === wf.id ? 'opacity-0' : '',
-                        isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
-                        isFirstMatch ? 'bg-p-blue-light/50 hover:bg-p-blue-light/70' :
-                          isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-beige',
-                      ].filter(Boolean).join(' ')}
-                    >
-                      {/* Name + status badge */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <HealthDot rate={healthMap[wf.id] ?? null} />
-                          {renamingId === wf.id ? (
-                            <form
-                              onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
-                              className="flex items-center gap-1.5"
-                            >
-                              <input
-                                autoFocus
-                                className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
-                                value={renameValue}
-                                onChange={(e) => setRenameValue(e.target.value)}
-                                onBlur={() => commitRename(wf.id)}
-                                onKeyDown={(e) => e.key === 'Escape' && setRenamingId(null)}
-                              />
-                              <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
-                                <Check className="h-3.5 w-3.5" />
-                              </button>
-                            </form>
-                          ) : (
-                            <Link
-                              href={`/workflows/${wf.id}`}
-                              onClick={(e) => navigateToWorkflow(e, wf.id)}
-                              className="font-semibold text-graphite hover:text-p-blue-dark"
-                            >
-                              {wf.name}
-                            </Link>
-                          )}
-                          <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${
-                            wf.is_active
-                              ? 'bg-green-50 text-green-700'
-                              : 'bg-gray-100 text-gray-500'
-                          }`}>
-                            {wf.is_active ? 'Active' : 'Inactive'}
-                          </span>
-                          {duplicating === wf.id && (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin text-p-blue-dark" />
-                          )}
-                        </div>
-                        {wf.description && (
-                          <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
-                        )}
-                      </td>
-
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                        {formatDatetime(wf.updated_at)}
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
-
-                      {/* Actions column */}
-                      <td className="px-4 py-3">
-                        <div ref={openMenuId === wf.id ? menuRef : undefined} className="relative">
-                          {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
-                          <button
-                            onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
-                            className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
-                            title="More options"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
-                          {/* Confirm — floats absolutely, extends left over adjacent column */}
-                          {confirmingDelete === wf.id && (
-                            <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
-                              <button
-                                onClick={() => handleDelete(wf.id)}
-                                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                              >
-                                Delete
-                              </button>
-                              <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
-                                Cancel
-                              </button>
-                            </div>
-                          )}
-                          {/* Dropdown menu */}
-                          {openMenuId === wf.id && (
-                            <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                              <button
-                                onClick={() => handleToggleActive(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                              >
-                                <Power className="h-4 w-4 text-gray-400" />
-                                {wf.is_active ? 'Disable' : 'Enable'}
-                              </button>
-                              <button
-                                onClick={() => startRename(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                              >
-                                <Pencil className="h-4 w-4 text-gray-400" />
-                                Rename
-                              </button>
-                              <button
-                                onClick={() => handleDuplicate(wf.id)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                              >
-                                <Copy className="h-4 w-4 text-gray-400" />
-                                Duplicate
-                              </button>
-                              <button
-                                onClick={() => handleToggleCaptureSightings(wf)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                              >
-                                {(wf.capture_sightings ?? true) ? (
-                                  <EyeOff className="h-4 w-4 text-gray-400" />
-                                ) : (
-                                  <Eye className="h-4 w-4 text-gray-400" />
-                                )}
-                                {(wf.capture_sightings ?? true) ? 'Stop capturing' : 'Capture sightings'}
-                              </button>
-                              <div className="my-1 border-t border-gray-100" />
-                              <button
-                                onClick={() => requestDelete(wf.id)}
-                                className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                                Delete
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {renderRows()}
               </tbody>
             </table>
             {isSearchActive && !firstMatchId && (

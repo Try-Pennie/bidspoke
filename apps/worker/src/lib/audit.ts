@@ -10,6 +10,7 @@ export type AuditEntityType =
   | 'workflow'
   | 'circuit_breaker'
   | 'app_setting'
+  | 'folder'
 
 export type AuditAction =
   | 'created'
