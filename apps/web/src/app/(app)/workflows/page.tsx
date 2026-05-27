@@ -453,6 +453,9 @@ export default function WorkflowsPage() {
     const activeId = String(active.id).replace(/^(workflow|folder):/, '')
     const overId = overKind === 'root' ? null : String(over.id).replace(/^drop:/, '')
 
+    // Dropping a folder on itself is a no-op (would hit cycle guard anyway)
+    if (activeKind === 'folder' && activeId === overId) return
+
     if (activeKind === 'workflow') {
       handleMoveWorkflow(activeId, overId)
     } else if (activeKind === 'folder') {
@@ -1134,8 +1137,11 @@ export default function WorkflowsPage() {
             </button>
           </div>
         ) : (
-          <FolderDndProvider onDragEnd={handleDragEnd}>
-          <DragStartTracker onChange={setIsAnyDragging} />
+          <FolderDndProvider
+            onDragStart={() => setIsAnyDragging(true)}
+            onDragEnd={handleDragEnd}
+            onDragCancel={() => setIsAnyDragging(false)}
+          >
           <div className="rounded-xl border border-gray-200 bg-white">
             <table className="w-full table-fixed text-sm">
               <colgroup>
@@ -1202,24 +1208,3 @@ export default function WorkflowsPage() {
   )
 }
 
-// Show the root drop zone only while a row is being dragged. Listens for
-// pointerdown on a drag handle (aria-label="Drag to move") rather than wiring
-// dnd-kit's onDragStart through the provider.
-function DragStartTracker({ onChange }: { onChange: (dragging: boolean) => void }) {
-  useEffect(() => {
-    function down(e: PointerEvent) {
-      const t = e.target as HTMLElement | null
-      if (t?.closest('[aria-label="Drag to move"]')) onChange(true)
-    }
-    function up() { onChange(false) }
-    document.addEventListener('pointerdown', down)
-    document.addEventListener('pointerup', up)
-    document.addEventListener('pointercancel', up)
-    return () => {
-      document.removeEventListener('pointerdown', down)
-      document.removeEventListener('pointerup', up)
-      document.removeEventListener('pointercancel', up)
-    }
-  }, [onChange])
-  return null
-}

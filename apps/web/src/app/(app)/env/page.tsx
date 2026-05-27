@@ -1041,9 +1041,10 @@ export default function EnvPage() {
           </div>
         ) : (
           <FolderDndProvider
+            onDragStart={() => setIsAnyDragging(true)}
             onDragEnd={(e) => { setIsAnyDragging(false); handleDragEnd(e) }}
+            onDragCancel={() => setIsAnyDragging(false)}
           >
-            <DragStartTracker onChange={setIsAnyDragging} />
             <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
               <table className="w-full text-sm">
                 <thead className="border-b border-gray-100 bg-beige">
@@ -1086,24 +1087,3 @@ export default function EnvPage() {
   )
 }
 
-// Tiny helper to surface drag-start to the parent so the root drop zone can appear.
-// Uses pointerdown rather than dnd-kit's onDragStart prop because we wire onDragEnd
-// at the provider level; this saves us threading another prop through.
-function DragStartTracker({ onChange }: { onChange: (dragging: boolean) => void }) {
-  useEffect(() => {
-    function down(e: PointerEvent) {
-      const t = e.target as HTMLElement | null
-      if (t?.closest('[aria-label="Drag to move"]')) onChange(true)
-    }
-    function up() { onChange(false) }
-    document.addEventListener('pointerdown', down)
-    document.addEventListener('pointerup', up)
-    document.addEventListener('pointercancel', up)
-    return () => {
-      document.removeEventListener('pointerdown', down)
-      document.removeEventListener('pointerup', up)
-      document.removeEventListener('pointercancel', up)
-    }
-  }, [onChange])
-  return null
-}

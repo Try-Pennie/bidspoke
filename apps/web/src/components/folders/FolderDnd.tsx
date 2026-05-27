@@ -17,17 +17,27 @@ export type { DragEndEvent }
 const DRAG_ACTIVATION_DISTANCE = 8
 
 export function FolderDndProvider({
+  onDragStart,
   onDragEnd,
+  onDragCancel,
   children,
 }: {
+  onDragStart?: () => void
   onDragEnd: (event: DragEndEvent) => void
+  onDragCancel?: () => void
   children: ReactNode
 }) {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: DRAG_ACTIVATION_DISTANCE } })
   )
   return (
-    <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={pointerWithin}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
+    >
       {children}
     </DndContext>
   )
