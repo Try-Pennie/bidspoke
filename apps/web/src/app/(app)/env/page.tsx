@@ -294,7 +294,7 @@ export default function EnvPage() {
   // Handlers
   // ============================================================
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent, opts?: { keepOpen?: boolean }) {
     e.preventDefault()
     if (!newVar.key) return
     setCreating(true)
@@ -302,8 +302,13 @@ export default function EnvPage() {
       const created = await api.env.create({ ...newVar, folder_id: formFolderId })
       setVars((vs) => [...vs, created])
       setNewVar({ key: '', value: '', is_secret: false })
-      setShowForm(false)
-      setFormFolderId(null)
+      if (!opts?.keepOpen) {
+        setShowForm(false)
+        setFormFolderId(null)
+      } else {
+        // Re-focus the Key input so the user can keep typing
+        requestAnimationFrame(() => keyInputRef.current?.focus())
+      }
       if (formFolderId && collapsed.has(formFolderId)) {
         // Make sure the destination folder is expanded so the new var shows
         setCollapsed((s) => {
@@ -966,13 +971,22 @@ export default function EnvPage() {
                   Secret. Value encrypted and synced to Cloudflare Worker.
                 </label>
               </div>
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 flex items-center gap-2">
                 <button
                   type="submit"
                   disabled={creating}
                   className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
                 >
                   {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  disabled={creating || !newVar.key}
+                  onClick={(e) => handleCreate(e as unknown as React.FormEvent, { keepOpen: true })}
+                  className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
+                  title="Save this variable and keep the form open to add another"
+                >
+                  Save & add another
                 </button>
                 <button
                   type="button"
