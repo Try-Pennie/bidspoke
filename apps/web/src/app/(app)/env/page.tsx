@@ -10,8 +10,6 @@ import {
   Eye,
   EyeOff,
   Loader2,
-  Search,
-  X,
   MoreHorizontal,
   Folder as FolderIcon,
   FolderPlus,
@@ -22,8 +20,8 @@ import {
 } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate } from '@/components/folders/FolderDnd'
-import type { DragEndEvent } from '@/components/folders/FolderDnd'
+import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate, InlineRenameInput, SearchInput } from '@/components/folders/FolderDnd'
+import type { DragEndEvent, SearchInputHandle } from '@/components/folders/FolderDnd'
 
 type NewVar = { key: string; value: string; is_secret: boolean }
 
@@ -53,7 +51,7 @@ export default function EnvPage() {
 
   // Search
   const [searchQuery, setSearchQuery] = useState('')
-  const searchRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<SearchInputHandle>(null)
 
   // Folders
   const [folderSort, setFolderSort] = useState<'mru' | 'name'>('mru')
@@ -62,7 +60,6 @@ export default function EnvPage() {
   const folderMenuRef = useRef<HTMLDivElement>(null)
   const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
-  const [renameFolderValue, setRenameFolderValue] = useState('')
   const [movingVarId, setMovingVarId] = useState<string | null>(null)
   const moveMenuRef = useRef<HTMLDivElement>(null)
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
@@ -365,11 +362,10 @@ export default function EnvPage() {
   function startRenameFolder(folder: EnvVarFolder) {
     setFolderMenuOpen(null)
     setRenamingFolderId(folder.id)
-    setRenameFolderValue(folder.name)
   }
 
-  async function commitRenameFolder(id: string) {
-    const trimmed = renameFolderValue.trim()
+  async function commitRenameFolder(id: string, nextName: string) {
+    const trimmed = nextName.trim()
     setRenamingFolderId(null)
     const original = folders.find((f) => f.id === id)
     if (!trimmed || !original || trimmed === original.name) return
@@ -704,19 +700,14 @@ export default function EnvPage() {
               </button>
               <FolderIcon className={`h-4 w-4 ${nameMatched ? 'text-p-blue-dark' : 'text-gray-400'}`} />
               {renamingFolderId === folder.id ? (
-                <form
-                  onSubmit={(e) => { e.preventDefault(); commitRenameFolder(folder.id) }}
-                  className="flex-1"
-                >
-                  <input
-                    autoFocus
-                    value={renameFolderValue}
-                    onChange={(e) => setRenameFolderValue(e.target.value)}
-                    onBlur={() => commitRenameFolder(folder.id)}
-                    onKeyDown={(e) => e.key === 'Escape' && setRenamingFolderId(null)}
+                <div className="flex-1">
+                  <InlineRenameInput
+                    initialValue={folder.name}
+                    onCommit={(v) => commitRenameFolder(folder.id, v)}
+                    onCancel={() => setRenamingFolderId(null)}
                     className="rounded border border-gray-300 px-2 py-0.5 text-sm font-semibold text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
                   />
-                </form>
+                </div>
               ) : (
                 <button
                   onClick={() => toggleCollapse(folder.id)}
@@ -866,27 +857,7 @@ export default function EnvPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            {/* Search */}
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
-              <input
-                ref={searchRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') { setSearchQuery(''); searchRef.current?.blur() } }}
-                placeholder="Search… /"
-                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-p-blue-dark"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => { setSearchQuery(''); searchRef.current?.focus() }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
+            <SearchInput ref={searchRef} onChange={setSearchQuery} />
             <button
               onClick={() => setCreatingFolderParent(null)}
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"

@@ -6,9 +6,9 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary, Folder } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
-import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate } from '@/components/folders/FolderDnd'
-import type { DragEndEvent } from '@/components/folders/FolderDnd'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
+import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate, InlineRenameInput, SearchInput } from '@/components/folders/FolderDnd'
+import type { DragEndEvent, SearchInputHandle } from '@/components/folders/FolderDnd'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -43,9 +43,9 @@ export default function WorkflowsPage() {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Search
+  // Search — input owns the typed value locally; this is the debounced copy.
   const [searchQuery, setSearchQuery] = useState('')
-  const searchRef = useRef<HTMLInputElement>(null)
+  const searchRef = useRef<SearchInputHandle>(null)
 
   // Sort (default: updated_at order from API)
   const [sortMode, setSortMode] = useState<SortMode>('time')
@@ -56,7 +56,6 @@ export default function WorkflowsPage() {
 
   // Inline rename
   const [renamingId, setRenamingId] = useState<string | null>(null)
-  const [renameValue, setRenameValue] = useState('')
 
   // Inline delete confirm
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
@@ -79,7 +78,6 @@ export default function WorkflowsPage() {
   const folderMenuRef = useRef<HTMLDivElement>(null)
   const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
-  const [renameFolderValue, setRenameFolderValue] = useState('')
   const [movingWorkflowId, setMovingWorkflowId] = useState<string | null>(null)
   const moveMenuRef = useRef<HTMLDivElement>(null)
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
@@ -357,11 +355,10 @@ export default function WorkflowsPage() {
   function startRenameFolder(folder: Folder) {
     setFolderMenuOpen(null)
     setRenamingFolderId(folder.id)
-    setRenameFolderValue(folder.name)
   }
 
-  async function commitRenameFolder(id: string) {
-    const trimmed = renameFolderValue.trim()
+  async function commitRenameFolder(id: string, nextName: string) {
+    const trimmed = nextName.trim()
     setRenamingFolderId(null)
     const original = folders.find((f) => f.id === id)
     if (!trimmed || !original || trimmed === original.name) return
@@ -524,11 +521,10 @@ export default function WorkflowsPage() {
   function startRename(wf: WorkflowSummary) {
     setOpenMenuId(null)
     setRenamingId(wf.id)
-    setRenameValue(wf.name)
   }
 
-  async function commitRename(id: string) {
-    const trimmed = renameValue.trim()
+  async function commitRename(id: string, nextName: string) {
+    const trimmed = nextName.trim()
     if (!trimmed) { setRenamingId(null); return }
     setWorkflows((ws) => ws.map((w) => w.id === id ? { ...w, name: trimmed } : w))
     setRenamingId(null)
@@ -683,22 +679,17 @@ export default function WorkflowsPage() {
           <div className="flex items-center gap-2">
             <HealthDot rate={healthMap[wf.id] ?? null} />
             {renamingId === wf.id ? (
-              <form
-                onSubmit={(e) => { e.preventDefault(); commitRename(wf.id) }}
-                className="flex items-center gap-1.5"
-              >
-                <input
-                  autoFocus
-                  className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onBlur={() => commitRename(wf.id)}
-                  onKeyDown={(e) => e.key === 'Escape' && setRenamingId(null)}
-                />
-                <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
-                  <Check className="h-3.5 w-3.5" />
-                </button>
-              </form>
+              <InlineRenameInput
+                initialValue={wf.name}
+                onCommit={(v) => commitRename(wf.id, v)}
+                onCancel={() => setRenamingId(null)}
+                className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
+                trailing={
+                  <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
+                    <Check className="h-3.5 w-3.5" />
+                  </button>
+                }
+              />
             ) : (
               <Link
                 href={`/workflows/${wf.id}`}
@@ -850,19 +841,14 @@ export default function WorkflowsPage() {
             </button>
             <FolderIcon className={`h-4 w-4 ${nameMatchedHere ? 'text-p-blue-dark' : 'text-gray-400'}`} />
             {renamingFolderId === folder.id ? (
-              <form
-                onSubmit={(e) => { e.preventDefault(); commitRenameFolder(folder.id) }}
-                className="flex-1"
-              >
-                <input
-                  autoFocus
-                  value={renameFolderValue}
-                  onChange={(e) => setRenameFolderValue(e.target.value)}
-                  onBlur={() => commitRenameFolder(folder.id)}
-                  onKeyDown={(e) => e.key === 'Escape' && setRenamingFolderId(null)}
+              <div className="flex-1">
+                <InlineRenameInput
+                  initialValue={folder.name}
+                  onCommit={(v) => commitRenameFolder(folder.id, v)}
+                  onCancel={() => setRenamingFolderId(null)}
                   className="rounded border border-gray-300 px-2 py-0.5 text-sm font-semibold text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
                 />
-              </form>
+              </div>
             ) : (
               <button
                 onClick={() => toggleCollapse(folder.id)}
@@ -1007,30 +993,14 @@ export default function WorkflowsPage() {
         <div className="mb-6 flex items-center gap-4">
           <h1 className="text-3xl font-bold text-graphite">Workflows</h1>
           <div className="flex flex-1 items-center justify-end gap-3">
-            {/* Search */}
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
-              <input
-                ref={searchRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && firstMatchId) router.push(`/workflows/${firstMatchId}`)
-                  if (e.key === 'Escape') { setSearchQuery(''); searchRef.current?.blur() }
-                }}
-                placeholder="Search… /"
-                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-p-blue-dark"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => { setSearchQuery(''); searchRef.current?.focus() }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
+            <SearchInput
+              ref={searchRef}
+              onChange={setSearchQuery}
+              onEnter={(q) => {
+                const id = sortedWorkflows.find((wf) => wf.name.toLowerCase().includes(q.toLowerCase()))?.id
+                if (id) router.push(`/workflows/${id}`)
+              }}
+            />
             <button
               onClick={() => setCreatingFolderParent(null)}
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"

@@ -7,8 +7,8 @@
 
 import { DndContext, PointerSensor, pointerWithin, useSensor, useSensors, useDraggable, useDroppable } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
-import { Folder as FolderIcon, GripVertical } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { Folder as FolderIcon, GripVertical, Search, X } from 'lucide-react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
 
 export type { DragEndEvent }
 
@@ -100,6 +100,103 @@ export function InlineFolderCreate({
     </tr>
   )
 }
+
+// Inline rename input. Owns its value locally so typing doesn't re-render
+// the parent page. Commits on form submit, Enter, or blur; cancels on Escape.
+export function InlineRenameInput({
+  initialValue,
+  onCommit,
+  onCancel,
+  className,
+  trailing,
+}: {
+  initialValue: string
+  onCommit: (value: string) => void
+  onCancel: () => void
+  className?: string
+  trailing?: ReactNode
+}) {
+  const [value, setValue] = useState(initialValue)
+  return (
+    <form
+      onSubmit={(e) => { e.preventDefault(); onCommit(value) }}
+      className="flex items-center gap-1.5"
+    >
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={() => onCommit(value)}
+        onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+        className={className}
+      />
+      {trailing}
+    </form>
+  )
+}
+
+// Search input. Owns the visible value locally; debounces propagation to the
+// parent so typing doesn't re-render the (potentially expensive) table on
+// every keystroke. Exposes imperative focus/blur/clear via ref so the parent
+// can wire `/` and ⌘K shortcuts.
+export interface SearchInputHandle {
+  focus: () => void
+  blur: () => void
+  clear: () => void
+}
+
+export const SearchInput = forwardRef<SearchInputHandle, {
+  onChange: (query: string) => void
+  onEnter?: (query: string) => void
+  placeholder?: string
+  debounceMs?: number
+}>(function SearchInput({ onChange, onEnter, placeholder = 'Search… /', debounceMs = 80 }, ref) {
+  const [value, setValue] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus(),
+    blur: () => inputRef.current?.blur(),
+    clear: () => { setValue(''); onChange('') },
+  }))
+
+  // Debounce upstream propagation. Empty value flushes immediately so the
+  // table un-filters as soon as the user clears the input.
+  useEffect(() => {
+    if (value === '' || debounceMs === 0) {
+      onChange(value)
+      return
+    }
+    const t = setTimeout(() => onChange(value), debounceMs)
+    return () => clearTimeout(t)
+  }, [value, debounceMs, onChange])
+
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { onEnter?.(value); return }
+          if (e.key === 'Escape') { setValue(''); inputRef.current?.blur() }
+        }}
+        placeholder={placeholder}
+        className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-7 text-sm text-gray-700 placeholder-gray-400 transition-[width] duration-200 focus:w-64 focus:outline-none focus:ring-1 focus:ring-p-blue-dark"
+      />
+      {value && (
+        <button
+          onClick={() => { setValue(''); inputRef.current?.focus() }}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  )
+})
 
 export function DragHandle({
   attributes,
