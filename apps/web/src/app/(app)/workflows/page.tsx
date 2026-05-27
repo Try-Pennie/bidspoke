@@ -7,7 +7,7 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary, Folder } from '@/types/workflow'
 import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
-import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle } from '@/components/folders/FolderDnd'
+import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate } from '@/components/folders/FolderDnd'
 import type { DragEndEvent } from '@/components/folders/FolderDnd'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
@@ -78,7 +78,6 @@ export default function WorkflowsPage() {
   const [folderMenuOpen, setFolderMenuOpen] = useState<string | null>(null)
   const folderMenuRef = useRef<HTMLDivElement>(null)
   const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
-  const [newFolderName, setNewFolderName] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [renameFolderValue, setRenameFolderValue] = useState('')
   const [movingWorkflowId, setMovingWorkflowId] = useState<string | null>(null)
@@ -335,14 +334,8 @@ export default function WorkflowsPage() {
     return { workflowMatches: wm, folderNameMatches: fnm, visibleFolders: vis }
   }, [isSearchActive, q, workflows, folders, descendantsOf, workflowsByFolder])
 
-  async function handleCreateFolder() {
-    const name = newFolderName.trim()
-    if (!name) {
-      setCreatingFolderParent(undefined)
-      setNewFolderName('')
-      return
-    }
-    const parent_id = creatingFolderParent ?? null
+  async function handleCreateFolder(name: string, parent_id: string | null) {
+    setCreatingFolderParent(undefined)
     try {
       const folder = await api.folders.create(name, parent_id)
       setFolders((fs) => [...fs, folder])
@@ -359,8 +352,6 @@ export default function WorkflowsPage() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create folder')
     }
-    setCreatingFolderParent(undefined)
-    setNewFolderName('')
   }
 
   function startRenameFolder(folder: Folder) {
@@ -650,31 +641,15 @@ export default function WorkflowsPage() {
 
   function renderInlineCreateFolderRow(parentId: string | null, depth: number): React.ReactNode {
     return (
-      <tr key={`create-folder-${parentId ?? 'root'}`} className="bg-blue-50/40">
-        <td className="w-8 px-2 py-2" />
-        <td colSpan={4} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
-          <form
-            onSubmit={(e) => { e.preventDefault(); handleCreateFolder() }}
-            className="flex items-center gap-2"
-          >
-            <FolderIcon className="h-4 w-4 text-gray-400" />
-            <input
-              autoFocus
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onBlur={handleCreateFolder}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setCreatingFolderParent(undefined)
-                  setNewFolderName('')
-                }
-              }}
-              placeholder="Folder name"
-              className="flex-1 rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
-            />
-          </form>
-        </td>
-      </tr>
+      <InlineFolderCreate
+        key={`create-folder-${parentId ?? 'root'}`}
+        parentId={parentId}
+        paddingLeft={indentPx(depth)}
+        colSpan={4}
+        leadingTd
+        onSubmit={(name, pid) => handleCreateFolder(name, pid)}
+        onCancel={() => setCreatingFolderParent(undefined)}
+      />
     )
   }
 
@@ -918,7 +893,6 @@ export default function WorkflowsPage() {
                     onClick={() => {
                       setFolderMenuOpen(null)
                       setCreatingFolderParent(folder.id)
-                      setNewFolderName('')
                     }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
@@ -1058,10 +1032,7 @@ export default function WorkflowsPage() {
               )}
             </div>
             <button
-              onClick={() => {
-                setCreatingFolderParent(null)
-                setNewFolderName('')
-              }}
+              onClick={() => setCreatingFolderParent(null)}
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
               title="New folder"
             >
