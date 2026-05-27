@@ -7,6 +7,8 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary, Folder } from '@/types/workflow'
 import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, Search, X, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
+import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle } from '@/components/folders/FolderDnd'
+import type { DragEndEvent } from '@/components/folders/FolderDnd'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -83,6 +85,7 @@ export default function WorkflowsPage() {
   const moveMenuRef = useRef<HTMLDivElement>(null)
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
   const folderMoveMenuRef = useRef<HTMLDivElement>(null)
+  const [isAnyDragging, setIsAnyDragging] = useState(false)
 
   useEffect(() => {
     Promise.all([api.workflows.list(), api.stats.get(7), api.folders.list()])
@@ -226,8 +229,9 @@ export default function WorkflowsPage() {
       : workflows
 
   const isSearchActive = searchQuery.length > 0
+  const q = searchQuery.toLowerCase()
   const firstMatchId = isSearchActive
-    ? sortedWorkflows.find((wf) => wf.name.toLowerCase().includes(searchQuery.toLowerCase()))?.id
+    ? sortedWorkflows.find((wf) => wf.name.toLowerCase().includes(q))?.id
     : undefined
 
   // Folder tree maps. Keys are nullable strings; we coerce to '__root__' so Map works cleanly.
@@ -291,6 +295,45 @@ export default function WorkflowsPage() {
     if (folderSort === 'name') return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
     return folderMru(b.id) - folderMru(a.id)
   }
+
+  // Search match propagation — see env page for the same pattern.
+  const { workflowMatches, folderNameMatches, visibleFolders } = useMemo(() => {
+    if (!isSearchActive) {
+      return { workflowMatches: new Set<string>(), folderNameMatches: new Set<string>(), visibleFolders: new Set<string>() }
+    }
+    const wm = new Set<string>()
+    for (const w of workflows) if (w.name.toLowerCase().includes(q)) wm.add(w.id)
+    const fnm = new Set<string>()
+    for (const f of folders) if (f.name.toLowerCase().includes(q)) fnm.add(f.id)
+
+    const vis = new Set<string>()
+    for (const f of folders) {
+      if (fnm.has(f.id)) {
+        vis.add(f.id)
+        for (const d of descendantsOf.get(f.id) ?? []) vis.add(d)
+      }
+    }
+    for (const f of folders) {
+      if (vis.has(f.id)) continue
+      const ids = [f.id, ...(descendantsOf.get(f.id) ?? [])]
+      for (const id of ids) {
+        for (const w of workflowsByFolder.get(id) ?? []) {
+          if (wm.has(w.id)) { vis.add(f.id); break }
+        }
+      }
+    }
+    // Propagate visibility up to ancestors
+    for (const f of folders) {
+      if (vis.has(f.id) && f.parent_id) {
+        let p: string | null = f.parent_id
+        while (p) {
+          vis.add(p)
+          p = folders.find((x) => x.id === p)?.parent_id ?? null
+        }
+      }
+    }
+    return { workflowMatches: wm, folderNameMatches: fnm, visibleFolders: vis }
+  }, [isSearchActive, q, workflows, folders, descendantsOf, workflowsByFolder])
 
   async function handleCreateFolder() {
     const name = newFolderName.trim()
@@ -377,7 +420,11 @@ export default function WorkflowsPage() {
     setMovingFolderId(null)
     setFolderMenuOpen(null)
     const original = folders.find((f) => f.id === folderId)
-    if (!original) return
+    if (!original || original.parent_id === parentId) return
+    if (parentId && (descendantsOf.get(folderId)?.has(parentId) ?? false)) {
+      setError('Cannot move a folder into one of its descendants')
+      return
+    }
     setFolders((fs) => fs.map((f) => (f.id === folderId ? { ...f, parent_id: parentId } : f)))
     if (parentId && collapsed.has(parentId)) {
       setCollapsed((s) => {
@@ -395,6 +442,24 @@ export default function WorkflowsPage() {
     }
   }
 
+  function handleDragEnd(event: DragEndEvent) {
+    setIsAnyDragging(false)
+    const { active, over } = event
+    if (!over) return
+    const activeKind = (active.data.current?.kind as 'workflow' | 'folder' | undefined) ?? undefined
+    const overKind = (over.data.current?.kind as 'folder' | 'root' | undefined) ?? undefined
+    if (!activeKind || !overKind) return
+
+    const activeId = String(active.id).replace(/^(workflow|folder):/, '')
+    const overId = overKind === 'root' ? null : String(over.id).replace(/^drop:/, '')
+
+    if (activeKind === 'workflow') {
+      handleMoveWorkflow(activeId, overId)
+    } else if (activeKind === 'folder') {
+      handleMoveFolder(activeId, overId)
+    }
+  }
+
   // View Transitions: tag the clicked element, then navigate inside startViewTransition
   function navigateToWorkflow(e: React.MouseEvent<HTMLElement>, id: string) {
     // Pass through middle-click / modifier-click so browser handles them normally
@@ -407,10 +472,10 @@ export default function WorkflowsPage() {
       .startViewTransition(() => router.push(`/workflows/${id}`))
   }
 
-  async function handleCreate() {
+  async function handleCreate(folderId: string | null = null) {
     setCreating(true)
     try {
-      const wf = await api.workflows.create('Untitled Workflow')
+      const wf = await api.workflows.create('Untitled Workflow', folderId)
       router.push(`/workflows/${wf.id}?mode=edit`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create workflow')
@@ -583,6 +648,7 @@ export default function WorkflowsPage() {
   function renderInlineCreateFolderRow(parentId: string | null, depth: number): React.ReactNode {
     return (
       <tr key={`create-folder-${parentId ?? 'root'}`} className="bg-blue-50/40">
+        <td className="w-8 px-2 py-2" />
         <td colSpan={4} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
           <form
             onSubmit={(e) => { e.preventDefault(); handleCreateFolder() }}
@@ -609,22 +675,31 @@ export default function WorkflowsPage() {
     )
   }
 
-  function renderWorkflowRow(wf: WorkflowSummary, depth: number): React.ReactNode {
-    const isMatch = !isSearchActive || wf.name.toLowerCase().includes(searchQuery.toLowerCase())
+  function WorkflowRow({ wf, depth, ancestorMatched }: { wf: WorkflowSummary; depth: number; ancestorMatched: boolean }) {
+    const isMatch = !isSearchActive || workflowMatches.has(wf.id) || ancestorMatched
     const isFirstMatch = wf.id === firstMatchId
     const isFailing = healthMap[wf.id] != null && healthMap[wf.id] < 80
+    const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggableRow(`workflow:${wf.id}`, { kind: 'workflow' })
+    const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: 0.6 } : undefined
+    const combinedRef = (el: HTMLTableRowElement | null) => {
+      setNodeRef(el)
+      if (el) rowRefs.current.set(wf.id, el); else rowRefs.current.delete(wf.id)
+    }
     return (
       <tr
-        key={wf.id}
-        ref={(el) => { if (el) rowRefs.current.set(wf.id, el); else rowRefs.current.delete(wf.id) }}
+        ref={combinedRef}
+        style={style}
         className={[
-          'transition-opacity duration-150',
+          'group transition-opacity duration-150',
           removingId === wf.id ? 'opacity-0' : '',
           isSearchActive && !isMatch ? 'opacity-20 pointer-events-none select-none' : '',
           isFirstMatch ? 'bg-p-blue-light/50 hover:bg-p-blue-light/70' :
             isFailing ? 'bg-red-50/60 hover:bg-red-50' : 'hover:bg-beige',
         ].filter(Boolean).join(' ')}
       >
+        <td className="w-8 px-2 py-3 align-middle">
+          <DragHandle attributes={attributes} listeners={listeners} isDragging={isDragging} />
+        </td>
         {/* Name + status badge */}
         <td className="px-4 py-3" style={depth > 0 ? { paddingLeft: `${indentPx(depth)}px` } : undefined}>
           <div className="flex items-center gap-2">
@@ -765,22 +840,37 @@ export default function WorkflowsPage() {
     )
   }
 
-  function renderFolderGroup(folder: Folder, depth: number): React.ReactNode[] {
-    const isCollapsed = collapsed.has(folder.id)
-    const rows: React.ReactNode[] = []
-
-    rows.push(
-      <tr key={`folder-${folder.id}`} className="bg-gray-50/70 hover:bg-gray-100/60">
+  function FolderHeaderRow({ folder, depth, nameMatchedHere, expanded, isCollapsed }: {
+    folder: Folder
+    depth: number
+    nameMatchedHere: boolean
+    expanded: boolean
+    isCollapsed: boolean
+  }) {
+    const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggableRow(`folder:${folder.id}`, { kind: 'folder' })
+    const { setNodeRef: setDropRef, isOver } = useDroppableFolder(`drop:${folder.id}`, { kind: 'folder' })
+    const setRef = (el: HTMLTableRowElement | null) => { setDragRef(el); setDropRef(el) }
+    const style = transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, opacity: 0.6 } : undefined
+    return (
+      <tr
+        ref={setRef}
+        style={style}
+        className={`group bg-gray-50/70 hover:bg-gray-100/60 ${isOver ? 'bg-p-blue-light/60 ring-2 ring-inset ring-p-blue-dark' : ''}`}
+      >
+        <td className="w-8 px-2 py-2 align-middle">
+          <DragHandle attributes={attributes} listeners={listeners} isDragging={isDragging} />
+        </td>
         <td colSpan={4} className="px-4 py-2" style={{ paddingLeft: `${indentPx(depth)}px` }}>
           <div className="flex items-center gap-2">
             <button
               onClick={() => toggleCollapse(folder.id)}
-              className="rounded p-0.5 text-gray-400 hover:bg-gray-200/60 hover:text-gray-600"
+              disabled={isSearchActive}
+              className="rounded p-0.5 text-gray-400 hover:bg-gray-200/60 hover:text-gray-600 disabled:opacity-50"
               aria-label={isCollapsed ? 'Expand folder' : 'Collapse folder'}
             >
-              {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             </button>
-            <FolderIcon className="h-4 w-4 text-gray-400" />
+            <FolderIcon className={`h-4 w-4 ${nameMatchedHere ? 'text-p-blue-dark' : 'text-gray-400'}`} />
             {renamingFolderId === folder.id ? (
               <form
                 onSubmit={(e) => { e.preventDefault(); commitRenameFolder(folder.id) }}
@@ -798,7 +888,8 @@ export default function WorkflowsPage() {
             ) : (
               <button
                 onClick={() => toggleCollapse(folder.id)}
-                className="flex-1 text-left text-sm font-semibold text-graphite"
+                disabled={isSearchActive}
+                className={`flex-1 text-left text-sm font-semibold ${nameMatchedHere ? 'text-p-blue-dark' : 'text-graphite'} disabled:cursor-default`}
               >
                 {folder.name}
               </button>
@@ -832,6 +923,13 @@ export default function WorkflowsPage() {
                     New subfolder
                   </button>
                   <button
+                    onClick={() => { setFolderMenuOpen(null); handleCreate(folder.id) }}
+                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                  >
+                    <Plus className="h-4 w-4 text-gray-400" />
+                    New workflow here
+                  </button>
+                  <button
                     onClick={() => { setFolderMenuOpen(null); setMovingFolderId(folder.id) }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
@@ -861,35 +959,67 @@ export default function WorkflowsPage() {
         </td>
       </tr>
     )
+  }
 
-    if (!isCollapsed) {
-      if (creatingFolderParent === folder.id) {
+  function renderFolderGroup(folder: Folder, depth: number, ancestorMatched = false): React.ReactNode[] {
+    if (isSearchActive && !visibleFolders.has(folder.id)) return []
+    const isCollapsed = collapsed.has(folder.id)
+    const expanded = isSearchActive ? true : !isCollapsed
+    const nameMatchedHere = ancestorMatched || (isSearchActive && folderNameMatches.has(folder.id))
+    const rows: React.ReactNode[] = []
+
+    rows.push(
+      <FolderHeaderRow
+        key={`folder-${folder.id}`}
+        folder={folder}
+        depth={depth}
+        nameMatchedHere={nameMatchedHere}
+        expanded={expanded}
+        isCollapsed={isCollapsed}
+      />
+    )
+
+    if (expanded) {
+      if (!isSearchActive && creatingFolderParent === folder.id) {
         rows.push(renderInlineCreateFolderRow(folder.id, depth + 1))
       }
       const childWorkflows = workflowsByFolder.get(folder.id) ?? []
       for (const wf of childWorkflows) {
-        rows.push(renderWorkflowRow(wf, depth + 1))
+        if (isSearchActive && !nameMatchedHere && !workflowMatches.has(wf.id)) continue
+        rows.push(<WorkflowRow key={wf.id} wf={wf} depth={depth + 1} ancestorMatched={nameMatchedHere} />)
       }
       const subs = (childFoldersByParent.get(folder.id) ?? []).slice().sort(compareFolders)
       for (const sub of subs) {
-        rows.push(...renderFolderGroup(sub, depth + 1))
+        rows.push(...renderFolderGroup(sub, depth + 1, nameMatchedHere))
       }
     }
 
     return rows
   }
 
+  function RootDropRow() {
+    const { setNodeRef, isOver } = useDroppableFolder('drop:root', { kind: 'root' })
+    return (
+      <tr ref={setNodeRef} className={isOver ? 'bg-p-blue-light/60 ring-2 ring-inset ring-p-blue-dark' : 'bg-gray-50/40'}>
+        <td colSpan={5} className="px-4 py-1.5 text-center text-xs text-gray-400">
+          Drop here to move out of any folder
+        </td>
+      </tr>
+    )
+  }
+
   function renderRows(): React.ReactNode {
-    if (isSearchActive) {
-      return sortedWorkflows.map((wf) => renderWorkflowRow(wf, 0))
-    }
     const rootWorkflows = workflowsByFolder.get(ROOT) ?? []
     const rootFolders = (childFoldersByParent.get(ROOT) ?? []).slice().sort(compareFolders)
     return (
       <>
-        {creatingFolderParent === null && renderInlineCreateFolderRow(null, 0)}
-        {rootWorkflows.map((wf) => renderWorkflowRow(wf, 0))}
-        {rootFolders.map((f) => renderFolderGroup(f, 0))}
+        {isAnyDragging && <RootDropRow />}
+        {!isSearchActive && creatingFolderParent === null && renderInlineCreateFolderRow(null, 0)}
+        {rootWorkflows.map((wf) => {
+          if (isSearchActive && !workflowMatches.has(wf.id)) return null
+          return <WorkflowRow key={wf.id} wf={wf} depth={0} ancestorMatched={false} />
+        })}
+        {rootFolders.map((f) => renderFolderGroup(f, 0, false))}
       </>
     )
   }
@@ -936,7 +1066,7 @@ export default function WorkflowsPage() {
               New folder
             </button>
             <button
-              onClick={handleCreate}
+              onClick={() => handleCreate()}
               disabled={creating}
               className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
@@ -996,7 +1126,7 @@ export default function WorkflowsPage() {
               Connect a trigger to filters, decisions, and API calls. Automate what happens when a lead comes in.
             </p>
             <button
-              onClick={handleCreate}
+              onClick={() => handleCreate()}
               disabled={creating}
               className="mt-6 rounded-lg bg-p-blue-dark px-5 py-2.5 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
             >
@@ -1004,9 +1134,12 @@ export default function WorkflowsPage() {
             </button>
           </div>
         ) : (
+          <FolderDndProvider onDragEnd={handleDragEnd}>
+          <DragStartTracker onChange={setIsAnyDragging} />
           <div className="rounded-xl border border-gray-200 bg-white">
             <table className="w-full table-fixed text-sm">
               <colgroup>
+                <col className="w-8" />
                 <col />
                 <col className="w-52" />
                 <col className="w-44" />
@@ -1014,7 +1147,8 @@ export default function WorkflowsPage() {
               </colgroup>
               <thead className="border-b border-gray-100 bg-beige">
                 <tr>
-                  <th className="rounded-tl-xl px-4 py-3 text-left">
+                  <th className="rounded-tl-xl w-8 px-2 py-3" />
+                  <th className="px-4 py-3 text-left">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-semibold text-gray-500">Name</span>
                       {folders.length > 0 && (
@@ -1061,8 +1195,31 @@ export default function WorkflowsPage() {
               </div>
             )}
           </div>
+          </FolderDndProvider>
         )}
       </div>
     </NavLayout>
   )
+}
+
+// Show the root drop zone only while a row is being dragged. Listens for
+// pointerdown on a drag handle (aria-label="Drag to move") rather than wiring
+// dnd-kit's onDragStart through the provider.
+function DragStartTracker({ onChange }: { onChange: (dragging: boolean) => void }) {
+  useEffect(() => {
+    function down(e: PointerEvent) {
+      const t = e.target as HTMLElement | null
+      if (t?.closest('[aria-label="Drag to move"]')) onChange(true)
+    }
+    function up() { onChange(false) }
+    document.addEventListener('pointerdown', down)
+    document.addEventListener('pointerup', up)
+    document.addEventListener('pointercancel', up)
+    return () => {
+      document.removeEventListener('pointerdown', down)
+      document.removeEventListener('pointerup', up)
+      document.removeEventListener('pointercancel', up)
+    }
+  }, [onChange])
+  return null
 }

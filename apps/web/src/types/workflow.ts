@@ -147,8 +147,18 @@ export interface EnvVar {
   is_secret: boolean
   scope: string
   workflow_id?: string | null
+  folder_id?: string | null
   updated_at: string
   updated_by_email?: string | null
+}
+
+export interface EnvVarFolder {
+  id: string
+  organization_id: string
+  parent_id: string | null
+  name: string
+  created_at: string
+  updated_at: string
 }
 
 /**

@@ -11,6 +11,7 @@ export type AuditEntityType =
   | 'circuit_breaker'
   | 'app_setting'
   | 'folder'
+  | 'env_var_folder'
 
 export type AuditAction =
   | 'created'

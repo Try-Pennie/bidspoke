@@ -18,7 +18,7 @@ env.get('/', async (c) => {
 
   const { data, error } = await supabase
     .from('environment_variables')
-    .select('id, key, value, is_secret, scope, workflow_id, updated_at, updated_by_email')
+    .select('id, key, value, is_secret, scope, workflow_id, folder_id, updated_at, updated_by_email')
     .eq('organization_id', orgId)
     .order('key', { ascending: true })
 
@@ -43,10 +43,21 @@ env.post('/', async (c) => {
     is_secret?: boolean
     scope?: string
     workflow_id?: string
+    folder_id?: string | null
   }>()
 
   if (!body.key) return c.json({ error: 'key is required' }, 400)
   if (body.is_secret && !body.value) return c.json({ error: 'value is required for secrets' }, 400)
+
+  if (body.folder_id) {
+    const { data: folder } = await supabase
+      .from('env_var_folders')
+      .select('id')
+      .eq('id', body.folder_id)
+      .eq('organization_id', orgId)
+      .single()
+    if (!folder) return c.json({ error: 'folder not found' }, 404)
+  }
 
   // Sync to Cloudflare if secret; also store encrypted copy for reveal
   let storedValue: string | null = body.value ?? null
@@ -64,6 +75,7 @@ env.post('/', async (c) => {
       is_secret: body.is_secret ?? false,
       scope: body.scope ?? 'global',
       workflow_id: body.workflow_id ?? null,
+      folder_id: body.folder_id ?? null,
       created_by: userId,
       updated_by: userId,
       updated_by_email: email,
@@ -86,7 +98,7 @@ env.put('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ key?: string; value?: string }>()
+  const body = await c.req.json<{ key?: string; value?: string; folder_id?: string | null }>()
 
   const { data: existing, error: fetchError } = await supabase
     .from('environment_variables')
@@ -105,14 +117,30 @@ env.put('/:id', async (c) => {
     updatedValue = body.value ?? existing.value
   }
 
+  const updates: Record<string, unknown> = {
+    key: body.key ?? existing.key,
+    value: updatedValue ?? existing.value,
+    updated_by: userId,
+    updated_by_email: email,
+  }
+  if ('folder_id' in body) {
+    if (body.folder_id === null) {
+      updates.folder_id = null
+    } else if (typeof body.folder_id === 'string') {
+      const { data: folder } = await supabase
+        .from('env_var_folders')
+        .select('id')
+        .eq('id', body.folder_id)
+        .eq('organization_id', orgId)
+        .single()
+      if (!folder) return c.json({ error: 'folder not found' }, 404)
+      updates.folder_id = body.folder_id
+    }
+  }
+
   const { data, error } = await supabase
     .from('environment_variables')
-    .update({
-      key: body.key ?? existing.key,
-      value: updatedValue ?? existing.value,
-      updated_by: userId,
-      updated_by_email: email,
-    })
+    .update(updates)
     .eq('id', id)
     .select()
     .single()

@@ -1,5 +1,5 @@
 import { createClient } from './supabase/client'
-import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder } from '@/types/workflow'
+import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -248,8 +248,8 @@ export const api = {
   workflows: {
     list: () => req<WorkflowSummary[]>('/api/workflows'),
     get: (id: string) => req<Workflow>(`/api/workflows/${id}`),
-    create: (name: string) =>
-      req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name }) }),
+    create: (name: string, folder_id?: string | null) =>
+      req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, folder_id: folder_id ?? null }) }),
     save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
       req<Workflow & { deploy_errors?: { namespace: string; error: string }[] }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
@@ -333,10 +333,12 @@ export const api = {
 
   env: {
     list: () => req<EnvVar[]>('/api/env'),
-    create: (data: { key: string; value?: string; is_secret?: boolean; scope?: string }) =>
+    create: (data: { key: string; value?: string; is_secret?: boolean; scope?: string; folder_id?: string | null }) =>
       req<EnvVar>('/api/env', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id: string, data: { value?: string }) =>
+    update: (id: string, data: { value?: string; folder_id?: string | null }) =>
       req<EnvVar>(`/api/env/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    setFolder: (id: string, folder_id: string | null) =>
+      req<EnvVar>(`/api/env/${id}`, { method: 'PUT', body: JSON.stringify({ folder_id }) }),
     reveal: (id: string) => req<{ value: string }>(`/api/env/${id}/reveal`),
     delete: (id: string) => req<{ ok: boolean }>(`/api/env/${id}`, { method: 'DELETE' }),
   },
@@ -664,5 +666,15 @@ export const api = {
       req<Folder>(`/api/folders/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
     delete: (id: string) =>
       req<{ ok: boolean }>(`/api/folders/${id}`, { method: 'DELETE' }),
+  },
+
+  envFolders: {
+    list: () => req<EnvVarFolder[]>('/api/env-folders'),
+    create: (name: string, parent_id: string | null) =>
+      req<EnvVarFolder>('/api/env-folders', { method: 'POST', body: JSON.stringify({ name, parent_id }) }),
+    update: (id: string, data: { name?: string; parent_id?: string | null }) =>
+      req<EnvVarFolder>(`/api/env-folders/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+    delete: (id: string) =>
+      req<{ ok: boolean }>(`/api/env-folders/${id}`, { method: 'DELETE' }),
   },
 }

@@ -37,9 +37,19 @@ workflows.get('/', async (c) => {
 workflows.post('/', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ name: string; description?: string; definition?: unknown }>()
+  const body = await c.req.json<{ name: string; description?: string; definition?: unknown; folder_id?: string | null }>()
 
   if (!body.name) return c.json({ error: 'name is required' }, 400)
+
+  if (body.folder_id) {
+    const { data: folder } = await supabase
+      .from('folders')
+      .select('id')
+      .eq('id', body.folder_id)
+      .eq('organization_id', orgId)
+      .single()
+    if (!folder) return c.json({ error: 'folder not found' }, 404)
+  }
 
   const { data, error } = await supabase
     .from('workflows')
@@ -49,6 +59,7 @@ workflows.post('/', async (c) => {
       description: body.description ?? null,
       definition: body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } },
       is_active: true,
+      folder_id: body.folder_id ?? null,
       created_by: userId,
       updated_by: userId,
       updated_by_email: c.get('user').email,
