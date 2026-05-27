@@ -37,10 +37,8 @@ export default function EnvPage() {
 
   // Add-variable form
   const [showForm, setShowForm] = useState(false)
-  const [newVar, setNewVar] = useState<NewVar>({ key: '', value: '', is_secret: false })
   const [creating, setCreating] = useState(false)
   const [formFolderId, setFormFolderId] = useState<string | null>(null)
-  const keyInputRef = useRef<HTMLInputElement | null>(null)
 
   // Secret reveal
   const [revealedValues, setRevealedValues] = useState<Record<string, string>>({})
@@ -71,13 +69,6 @@ export default function EnvPage() {
   const folderMoveMenuRef = useRef<HTMLDivElement>(null)
   const [rowMenuOpen, setRowMenuOpen] = useState<string | null>(null)
   const rowMenuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (showForm) {
-      const frame = requestAnimationFrame(() => keyInputRef.current?.focus())
-      return () => cancelAnimationFrame(frame)
-    }
-  }, [showForm])
 
   useEffect(() => {
     Promise.all([api.env.list(), api.envFolders.list()])
@@ -294,23 +285,17 @@ export default function EnvPage() {
   // Handlers
   // ============================================================
 
-  async function handleCreate(e: React.FormEvent, opts?: { keepOpen?: boolean }) {
-    e.preventDefault()
-    if (!newVar.key) return
+  async function handleCreate(values: NewVar, opts: { keepOpen: boolean }): Promise<boolean> {
+    if (!values.key) return false
     setCreating(true)
     try {
-      const created = await api.env.create({ ...newVar, folder_id: formFolderId })
+      const created = await api.env.create({ ...values, folder_id: formFolderId })
       setVars((vs) => [...vs, created])
-      setNewVar({ key: '', value: '', is_secret: false })
-      if (!opts?.keepOpen) {
+      if (!opts.keepOpen) {
         setShowForm(false)
         setFormFolderId(null)
-      } else {
-        // Re-focus the Key input so the user can keep typing
-        requestAnimationFrame(() => keyInputRef.current?.focus())
       }
       if (formFolderId && collapsed.has(formFolderId)) {
-        // Make sure the destination folder is expanded so the new var shows
         setCollapsed((s) => {
           const next = new Set(s)
           next.delete(formFolderId)
@@ -318,8 +303,10 @@ export default function EnvPage() {
           return next
         })
       }
+      return true
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create')
+      return false
     } finally {
       setCreating(false)
     }
@@ -927,76 +914,14 @@ export default function EnvPage() {
         {/* Add form — animated slide open/closed */}
         <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${showForm ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
-            <form
-              onSubmit={handleCreate}
-              className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
-              inert={!showForm || undefined}
-            >
-              <h2 className="mb-4 text-sm font-medium text-gray-400">
-                {formFolderId ? <>New variable <span className="text-gray-500">in {folderName(formFolderId)}</span></> : 'New variable'}
-              </h2>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
-                  <input
-                    ref={keyInputRef}
-                    className="input w-full font-mono"
-                    placeholder="MY_API_KEY"
-                    value={newVar.key}
-                    onChange={(e) => setNewVar({ ...newVar, key: e.target.value.toUpperCase().replace(/\s/g, '_') })}
-                    onBlur={() => setNewVar((v) => ({ ...v, key: v.key.replace(/_+$/, '') }))}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
-                  <input
-                    type={newVar.is_secret ? 'password' : 'text'}
-                    className="input w-full"
-                    placeholder="value"
-                    value={newVar.value}
-                    onChange={(e) => setNewVar({ ...newVar, value: e.target.value })}
-                  />
-                </div>
-              </div>
-              <div className="mt-3 flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="is_secret"
-                  checked={newVar.is_secret}
-                  onChange={(e) => setNewVar({ ...newVar, is_secret: e.target.checked })}
-                  className="rounded border-gray-300 text-p-blue-dark"
-                />
-                <label htmlFor="is_secret" className="text-xs text-gray-600">
-                  Secret. Value encrypted and synced to Cloudflare Worker.
-                </label>
-              </div>
-              <div className="mt-4 flex items-center gap-2">
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
-                >
-                  {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  disabled={creating || !newVar.key}
-                  onClick={(e) => handleCreate(e as unknown as React.FormEvent, { keepOpen: true })}
-                  className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
-                  title="Save this variable and keep the form open to add another"
-                >
-                  Save & add another
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setShowForm(false); setFormFolderId(null) }}
-                  className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+            {showForm && (
+              <NewVariableForm
+                folderName={formFolderId ? folderName(formFolderId) : undefined}
+                creating={creating}
+                onSubmit={handleCreate}
+                onCancel={() => { setShowForm(false); setFormFolderId(null) }}
+              />
+            )}
           </div>
         </div>
 
@@ -1074,6 +999,110 @@ export default function EnvPage() {
         )}
       </div>
     </NavLayout>
+  )
+}
+
+// Self-contained inline create-variable form. Owns its input state locally so
+// typing in Key / Value / secret-checkbox doesn't re-render the parent page
+// (which would trigger flicker from dnd-kit re-measuring every row).
+function NewVariableForm({
+  folderName,
+  creating,
+  onSubmit,
+  onCancel,
+}: {
+  folderName?: string
+  creating: boolean
+  onSubmit: (values: NewVar, opts: { keepOpen: boolean }) => Promise<boolean>
+  onCancel: () => void
+}) {
+  const [values, setValues] = useState<NewVar>({ key: '', value: '', is_secret: false })
+  const keyInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    const f = requestAnimationFrame(() => keyInputRef.current?.focus())
+    return () => cancelAnimationFrame(f)
+  }, [])
+
+  async function submit(keepOpen: boolean) {
+    if (!values.key) return
+    const ok = await onSubmit(values, { keepOpen })
+    if (ok && keepOpen) {
+      setValues({ key: '', value: '', is_secret: false })
+      requestAnimationFrame(() => keyInputRef.current?.focus())
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => { e.preventDefault(); submit(false) }}
+      className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
+    >
+      <h2 className="mb-4 text-sm font-medium text-gray-400">
+        {folderName ? <>New variable <span className="text-gray-500">in {folderName}</span></> : 'New variable'}
+      </h2>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
+          <input
+            ref={keyInputRef}
+            className="input w-full font-mono"
+            placeholder="MY_API_KEY"
+            value={values.key}
+            onChange={(e) => setValues((v) => ({ ...v, key: e.target.value.toUpperCase().replace(/\s/g, '_') }))}
+            onBlur={() => setValues((v) => ({ ...v, key: v.key.replace(/_+$/, '') }))}
+            required
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
+          <input
+            type={values.is_secret ? 'password' : 'text'}
+            className="input w-full"
+            placeholder="value"
+            value={values.value}
+            onChange={(e) => setValues((v) => ({ ...v, value: e.target.value }))}
+          />
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="is_secret"
+          checked={values.is_secret}
+          onChange={(e) => setValues((v) => ({ ...v, is_secret: e.target.checked }))}
+          className="rounded border-gray-300 text-p-blue-dark"
+        />
+        <label htmlFor="is_secret" className="text-xs text-gray-600">
+          Secret. Value encrypted and synced to Cloudflare Worker.
+        </label>
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={creating}
+          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+        >
+          {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
+        </button>
+        <button
+          type="button"
+          disabled={creating || !values.key}
+          onClick={() => submit(true)}
+          className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-beige disabled:opacity-50"
+          title="Save this variable and keep the form open to add another"
+        >
+          Save & add another
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="px-4 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   )
 }
 
