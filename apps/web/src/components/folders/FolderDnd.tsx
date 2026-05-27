@@ -5,7 +5,7 @@
 // click-on-button interactions still fire without triggering a drag, plus a
 // drag-handle component that fades in on row hover (per the agreed UX).
 
-import { DndContext, PointerSensor, useSensor, useSensors, useDraggable, useDroppable } from '@dnd-kit/core'
+import { DndContext, PointerSensor, pointerWithin, useSensor, useSensors, useDraggable, useDroppable } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
 import { GripVertical } from 'lucide-react'
 import type { ReactNode } from 'react'
@@ -27,7 +27,7 @@ export function FolderDndProvider({
     useSensor(PointerSensor, { activationConstraint: { distance: DRAG_ACTIVATION_DISTANCE } })
   )
   return (
-    <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+    <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
       {children}
     </DndContext>
   )
