@@ -1,0 +1,54 @@
+-- Index to make the timeout-suggestion RPCs (step_duration_percentiles) fast.
+--
+-- Problem: execution_steps has no index on step_namespace, so computing duration
+-- percentiles for one step (e.g. equifax_credit_report) forced Postgres to either
+-- seq-scan all steps or nested-loop from workflow_executions reading EVERY step of
+-- EVERY execution and filtering namespace in memory. On the 12GB / ~7.7M-row current
+-- partition this exceeded the 8s PostgREST statement timeout, so the config-panel
+-- timeout-suggestion callout silently went blank.
+--
+-- This partial index covers exactly what the suggestion query reads (completed steps
+-- with a duration), keeping it small and minimizing write amplification on the hot
+-- insert path. Keys are (step_namespace, started_at); status/duration live in the
+-- predicate since the query always filters status='completed'.
+--
+-- ----------------------------------------------------------------------------------
+-- PROD NOTE: a plain CREATE INDEX on the parent recurses and locks writes on the
+-- 12GB partition for the duration of the build (minutes). To avoid stalling the
+-- engine's step-logging, prod was indexed manually & concurrently (no write lock):
+--
+--   -- 1. Parent index, metadata only (instant; marked INVALID until all partitions attach)
+--   CREATE INDEX idx_exec_steps_namespace_completed
+--     ON ONLY execution_steps (step_namespace, started_at)
+--     WHERE status = 'completed' AND duration_ms IS NOT NULL;
+--
+--   -- 2. Build per partition WITHOUT locking writes (run each as its own statement,
+--   --    NOT inside a transaction). The big one takes a while; the rest are instant.
+--   CREATE INDEX CONCURRENTLY idx_exec_steps_2026_05_ns_completed
+--     ON execution_steps_2026_05 (step_namespace, started_at)
+--     WHERE status = 'completed' AND duration_ms IS NOT NULL;
+--   CREATE INDEX CONCURRENTLY idx_exec_steps_2026_07_ns_completed
+--     ON execution_steps_2026_07 (step_namespace, started_at)
+--     WHERE status = 'completed' AND duration_ms IS NOT NULL;
+--   CREATE INDEX CONCURRENTLY idx_exec_steps_2026_08_ns_completed
+--     ON execution_steps_2026_08 (step_namespace, started_at)
+--     WHERE status = 'completed' AND duration_ms IS NOT NULL;
+--   CREATE INDEX CONCURRENTLY idx_exec_steps_2026_09_ns_completed
+--     ON execution_steps_2026_09 (step_namespace, started_at)
+--     WHERE status = 'completed' AND duration_ms IS NOT NULL;
+--
+--   -- 3. Attach each partition index to the parent (flips parent to VALID once all done)
+--   ALTER INDEX idx_exec_steps_namespace_completed ATTACH PARTITION idx_exec_steps_2026_05_ns_completed;
+--   ALTER INDEX idx_exec_steps_namespace_completed ATTACH PARTITION idx_exec_steps_2026_07_ns_completed;
+--   ALTER INDEX idx_exec_steps_namespace_completed ATTACH PARTITION idx_exec_steps_2026_08_ns_completed;
+--   ALTER INDEX idx_exec_steps_namespace_completed ATTACH PARTITION idx_exec_steps_2026_09_ns_completed;
+--
+-- Future partitions auto-inherit this index (matching index built on PARTITION OF).
+--
+-- The statement below is therefore a NO-OP on prod (the named parent index already
+-- exists). On fresh/CI databases it builds normally against empty partitions.
+-- ----------------------------------------------------------------------------------
+
+CREATE INDEX IF NOT EXISTS idx_exec_steps_namespace_completed
+  ON execution_steps (step_namespace, started_at)
+  WHERE status = 'completed' AND duration_ms IS NOT NULL;
