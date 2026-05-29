@@ -647,7 +647,7 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     }
   }
   if (type === 'constants') {
-    return { ...base, data: {}, timeout_ms: 5000 }
+    return { ...base, data: {} }
   }
   if (type === 'bid_group') {
     return {

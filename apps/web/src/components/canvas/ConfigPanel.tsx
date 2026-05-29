@@ -3276,10 +3276,8 @@ function ConstantsConfig({
   }
 
   function addKey() {
-    let name = 'key'
-    let i = 1
-    while (name in data) { name = `key${i++}` }
-    updateData({ ...data, [name]: '' })
+    if ('' in data) return
+    updateData({ ...data, ['']: '' })
   }
 
   const entries = Object.entries(data)
