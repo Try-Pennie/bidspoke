@@ -994,6 +994,21 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
 
+  // Whether the selected node's namespace is referenced by any OTHER node's
+  // config / variables / fallback. Drives ConfigPanel's auto-derive guard so
+  // label edits stop touching the Step ID once it's actually referenced.
+  const selectedNamespaceReferenced = useMemo(() => {
+    if (!selectedNode) return false
+    const ns = (selectedNode.data as unknown as CanvasNodeData).namespace
+    if (!ns) return false
+    return nodes.some((n) => {
+      if (n.id === selectedNode.id) return false
+      const data = n.data as unknown as CanvasNodeData
+      if ((data?.config as Record<string, unknown> | undefined)?.fallback_node === ns) return true
+      return countStepReferences(data?.config, ns) > 0 || countStepReferences(data?.variables, ns) > 0
+    })
+  }, [selectedNode, nodes])
+
   // Lazy-load step detail (input/output/logs) for the selected node in view
   // mode. The summary fetch in the parent page only ships status/duration, so
   // we pull the heavy payload here on demand.
@@ -3307,6 +3322,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               nodeNamespaces={nodeNamespaces}
               nodeOptions={nodeOptions}
               refs={refs}
+              namespaceReferenced={selectedNamespaceReferenced}
               edges={edges}
               onEdgesChange={handleParallelEdgesChange}
               canRerun={!!lastTestExecId}

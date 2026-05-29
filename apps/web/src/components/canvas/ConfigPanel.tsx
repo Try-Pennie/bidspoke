@@ -24,6 +24,10 @@ interface Props {
   nodeNamespaces: string[]
   nodeOptions?: { id: string; namespace: string; label?: string }[]
   refs?: string[]
+  // True when this node's namespace is referenced by another node's config /
+  // variables / fallback. Auto-deriving the Step ID from the Display name stops
+  // once this is true so label edits don't silently break those references.
+  namespaceReferenced?: boolean
   readOnly?: boolean
   edges?: { id: string; source: string; target: string; sourceHandle?: string | null }[]
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
@@ -48,7 +52,7 @@ interface Props {
   onRenameRequest?: (oldNs: string, newNs: string) => Promise<boolean>
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -83,7 +87,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
     // manually edited it AND nobody downstream references it yet. Once a
     // namespace is being referenced, label edits stop touching it so we
     // don't silently break those references.
-    if (!nsManuallyEdited.current && !refs.includes(`steps.${data.namespace}`)) {
+    if (!nsManuallyEdited.current && !namespaceReferenced) {
       patch.namespace = toNamespace(value) || data.namespace
     }
     onUpdate(node.id, patch)
