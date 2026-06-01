@@ -2198,17 +2198,20 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           }
           return { ...n, data: nextData }
         })
-        // If the patch changed the multi-output's handle set or labels, the
-        // layout-derived data on the node (`_spanWidth`, `_handleOffsets`) is
-        // now stale — re-run layoutWorkflow so handles render in their right
-        // columns. Without this, adding a branch keeps the prior offsets and
-        // new labels stack on top of old ones.
+        // Re-run layout only when the multi-output's handle COUNT changes
+        // (an arm added/removed) — that's what makes `_spanWidth` /
+        // `_handleOffsets` stale and would otherwise stack new labels on old
+        // offsets. A pure RENAME keeps the same number of handles and the same
+        // slot/subtree widths, so the offsets are still valid; re-laying-out on
+        // a rename needlessly re-flows the whole graph (longer label → wider
+        // node → everything shifts). The width-recenter above already keeps the
+        // node visually stable, so a rename moves nothing.
         const target = ns.find((n) => n.id === id)
         if (target && (target.type === 'branch' || target.type === 'parallel')) {
-          const beforeHandles = configuredHandleIds(target)?.join('|') ?? ''
+          const beforeCount = configuredHandleIds(target)?.length ?? 0
           const after = patched.find((n) => n.id === id)
-          const afterHandles = after ? configuredHandleIds(after)?.join('|') ?? '' : ''
-          if (beforeHandles !== afterHandles) return layoutWorkflow(patched, edges)
+          const afterCount = after ? configuredHandleIds(after)?.length ?? 0 : 0
+          if (beforeCount !== afterCount) return layoutWorkflow(patched, edges)
         }
         return patched
       })
