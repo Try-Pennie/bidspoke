@@ -282,6 +282,11 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
       if (mo.type === 'parallel' && tgt?.type === 'parallel_end') { pairedEndId = e.target; break }
       if (mo.type === 'branch' && tgt?.type === 'branch_end') { pairedEndId = e.target; break }
     }
+    // The paired end is a convergence node, so the `stopAt` step above excludes
+    // it from `reachable`. Add it back so it cradles the region — otherwise the
+    // backdrop stops at the bottom of the branch bodies and never reaches the
+    // branch_end's vertical center (the "half inside the end node" look).
+    if (pairedEndId) reachable.add(pairedEndId)
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
     for (const n of nodes) {
       if (!reachable.has(n.id)) continue
