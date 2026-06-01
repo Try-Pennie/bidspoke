@@ -2493,15 +2493,24 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     const others = nodes.filter((n) => !idSet.has(n.id) && n.id !== 'trigger')
     const graphRight = others.length > 0 ? Math.max(...others.map((n) => n.position.x + NODE_W)) : selMinX
     const OFFSET = { x: graphRight + DISCONNECTED_GAP - selMinX, y: 0 }
+    // First pass: assign every cloned node its new id + numbered namespace, and
+    // build old→new id and namespace maps. Both maps must be complete before we
+    // build any node, because each cloned config gets its intra-cluster `steps.*`
+    // and child/pair references remapped against the FULL maps.
     const working = [...nodeNamespaces]
     const idMap = new Map<string, string>()
-    selNodes.forEach((n) => idMap.set(n.id, uid()))
-
-    const builtNodes = selNodes.map((n) => {
+    const nsMap = new Map<string, string>()
+    const meta = selNodes.map((n) => {
       const d = n.data as unknown as CanvasNodeData
+      idMap.set(n.id, uid())
       const origLabel = d.label && d.label.length > 0 ? d.label : d.namespace
       const { namespace: ns, label } = nextCopyName(d.namespace, origLabel, working)
       working.push(ns)
+      nsMap.set(d.namespace, ns)
+      return { n, d, ns, label }
+    })
+
+    const builtNodes = meta.map(({ n, d, ns, label }) => {
       // Remap any intra-selection child references (parallel groups); ids
       // outside the selection pass through unchanged.
       const remapChildren = (raw: unknown): unknown =>
@@ -2514,7 +2523,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   : c
             )
           : raw
-      const config = JSON.parse(JSON.stringify(d.config ?? {})) as Record<string, unknown>
+      let config = JSON.parse(JSON.stringify(d.config ?? {})) as Record<string, unknown>
+      let variables = JSON.parse(JSON.stringify(d.variables ?? {})) as Record<string, string>
+      // Rewrite `steps.<oldNs>` → `steps.<newNs>` for every namespace inside the
+      // clone, so the copies read each other's output instead of the originals'.
+      // References to nodes OUTSIDE the selection (shared upstream nodes like
+      // constants / gen_vantage_score) aren't in nsMap, so they're left alone.
+      for (const [oldNs, newNs] of nsMap) {
+        config = renameStepReferences(config, oldNs, newNs) as Record<string, unknown>
+        variables = renameStepReferences(variables, oldNs, newNs) as Record<string, string>
+      }
       if (config.children !== undefined) config.children = remapChildren(config.children)
       // Remap the branch/parallel ↔ end pairing onto the cloned ids. Without
       // this the cloned end loses its `_pairId`, and layout's end-placement
@@ -2535,7 +2553,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           label,
           ...(d.note ? { note: d.note } : {}),
           config,
-          variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+          variables,
           ...(newPairId ? { _pairId: newPairId } : {}),
         } satisfies CanvasNodeData,
       } as Node
