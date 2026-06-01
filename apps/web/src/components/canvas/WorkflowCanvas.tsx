@@ -53,7 +53,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink, Trash2 } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
@@ -634,6 +634,21 @@ function dedupNamespace(suggested: string, existing: string[]): string {
   let i = 2
   while (existing.includes(`${suggested}_${i}`)) i++
   return `${suggested}_${i}`
+}
+
+/**
+ * Name for a duplicated node: strip any trailing number off the original
+ * (so repeated copies increment rather than stack `_copy_copy`), then append
+ * the smallest free counter — `_1` / ` 1`, bumping to `_2`/` 2`, `_3`/` 3`, …
+ * until the namespace is free. Namespace drives the counter; the label reuses
+ * the same number so the two stay in sync.
+ */
+function nextCopyName(namespace: string, label: string, existing: string[]): { namespace: string; label: string } {
+  const baseNs = namespace.replace(/_\d+$/, '')
+  const baseLabel = (label && label.length > 0 ? label : namespace).replace(/\s+\d+$/, '')
+  let n = 1
+  while (existing.includes(`${baseNs}_${n}`)) n++
+  return { namespace: `${baseNs}_${n}`, label: `${baseLabel} ${n}` }
 }
 
 function defaultNodeConfig(type: NodeType): Record<string, unknown> {
@@ -2378,23 +2393,129 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   function duplicateNode(node: Node) {
     const d = node.data as unknown as CanvasNodeData
     const origLabel = d.label && d.label.length > 0 ? d.label : d.namespace
+    const { namespace, label } = nextCopyName(d.namespace, origLabel, nodeNamespaces)
     pasteNode({
       type: node.type as NodeType,
       config: d.config ?? {},
       variables: d.variables ?? {},
       position: node.position,
-      namespace: `${d.namespace}_copy`,
-      label: `${origLabel} (copy)`,
+      namespace,
+      label,
     })
   }
 
+  // All nodes enclosed by a container start (branch/parallel): the start, every
+  // node reachable from it up to AND including its paired *_end, but nothing
+  // downstream of that end. Nested containers' ends are interior, so they're
+  // walked through. Non-container nodes resolve to just themselves. This is what
+  // makes "duplicate a branch start" pull the whole branch + end + insides.
+  function collectNodeScope(startId: string): string[] {
+    const start = nodes.find((n) => n.id === startId)
+    if (!start) return []
+    if (start.type !== 'branch' && start.type !== 'parallel') return [startId]
+    const endType = start.type === 'branch' ? 'branch_end' : 'parallel_end'
+    const pairedEnd = edges.find(
+      (e) => e.source === startId && nodes.find((n) => n.id === e.target)?.type === endType
+    )?.target
+    const scope = new Set<string>([startId])
+    // Parallel slots can be referenced by `children` rather than only by edges.
+    const seedChildren = (start as { children?: string[] }).children ?? []
+    const queue = [startId, ...seedChildren.filter((c) => { scope.add(c); return true })]
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      if (cur === pairedEnd) continue // include the end, but don't escape past it
+      for (const e of edges) {
+        if (e.source === cur && !scope.has(e.target)) {
+          scope.add(e.target)
+          queue.push(e.target)
+        }
+      }
+    }
+    return [...scope]
+  }
+
   const handleNodeDuplicate = useCallback(
-    (id: string) => {
-      const node = nodes.find((n) => n.id === id)
-      if (node) duplicateNode(node)
-    },
-    [nodes, nodeNamespaces, snapshot, setNodes] // eslint-disable-line react-hooks/exhaustive-deps
+    (id: string) => { duplicateNodes([id]) },
+    [nodes, edges, nodeNamespaces, snapshot, setNodes, setEdges] // eslint-disable-line react-hooks/exhaustive-deps
   )
+
+  // Duplicate one or more nodes as a group, preserving the edges that run
+  // BETWEEN them (so a cloned subtree — e.g. a branch + its branch_end + the
+  // nodes in between — comes out fully wired internally). Selecting a branch/
+  // parallel start auto-expands to its whole scope. Edges that cross the
+  // selection boundary are dropped: the copy lands disconnected from the rest
+  // of the flow for the user to wire in. New nodes get fresh ids, numbered
+  // `_N` namespaces, and become the active selection.
+  function duplicateNodes(ids: string[]) {
+    const idSet = new Set<string>()
+    for (const id of ids) {
+      if (id === 'trigger') continue
+      for (const scoped of collectNodeScope(id)) idSet.add(scoped)
+    }
+    const selNodes = nodes.filter((n) => idSet.has(n.id))
+    if (selNodes.length === 0) return
+    if (selNodes.length === 1) { duplicateNode(selNodes[0]); return }
+
+    snapshot()
+    // Offset the whole group so the copies are clearly grabbable beside the
+    // originals while keeping their relative layout intact.
+    const OFFSET = { x: NODE_W + 80, y: 40 }
+    const working = [...nodeNamespaces]
+    const idMap = new Map<string, string>()
+    selNodes.forEach((n) => idMap.set(n.id, uid()))
+
+    const builtNodes = selNodes.map((n) => {
+      const d = n.data as unknown as CanvasNodeData
+      const origLabel = d.label && d.label.length > 0 ? d.label : d.namespace
+      const { namespace: ns, label } = nextCopyName(d.namespace, origLabel, working)
+      working.push(ns)
+      // Remap any intra-selection child references (parallel groups); ids
+      // outside the selection pass through unchanged.
+      const remapChildren = (raw: unknown): unknown =>
+        Array.isArray(raw)
+          ? raw.map((c) =>
+              typeof c === 'string'
+                ? idMap.get(c) ?? c
+                : c && typeof c === 'object' && 'id' in (c as Record<string, unknown>)
+                  ? { ...(c as Record<string, unknown>), id: idMap.get((c as { id: string }).id) ?? (c as { id: string }).id }
+                  : c
+            )
+          : raw
+      const config = JSON.parse(JSON.stringify(d.config ?? {})) as Record<string, unknown>
+      if (config.children !== undefined) config.children = remapChildren(config.children)
+      return {
+        id: idMap.get(n.id) as string,
+        type: n.type,
+        position: { x: n.position.x + OFFSET.x, y: n.position.y + OFFSET.y },
+        selected: true,
+        ...((n as { children?: string[] }).children
+          ? { children: ((n as { children?: string[] }).children as string[]).map((c) => idMap.get(c) ?? c) }
+          : {}),
+        data: {
+          namespace: ns,
+          label,
+          ...(d.note ? { note: d.note } : {}),
+          config,
+          variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+        } satisfies CanvasNodeData,
+      } as Node
+    })
+
+    // Only edges with BOTH endpoints inside the selection are cloned.
+    const newEdges = edges
+      .filter((e) => idSet.has(e.source) && idSet.has(e.target))
+      .map((e) => ({
+        ...e,
+        id: uid(),
+        source: idMap.get(e.source) as string,
+        target: idMap.get(e.target) as string,
+      }))
+
+    setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...builtNodes])
+    setEdges((prev) => [...prev, ...newEdges])
+    setSelectedNodeId(null)
+    setIsDirty(true)
+  }
 
   const handleParallelEdgesChange = useCallback(
     (
@@ -3205,12 +3326,22 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             const isMultiTarget = selectedIds.length > 1 && selectedIds.includes(contextMenu.nodeId)
             const deleteIds = isMultiTarget ? selectedIds : [contextMenu.nodeId]
             const deleteLabel = isMultiTarget ? `Delete ${selectedIds.length} nodes` : 'Delete'
+            const duplicateIds = isMultiTarget ? selectedIds : [contextMenu.nodeId]
+            const duplicateLabel = isMultiTarget ? `Duplicate ${selectedIds.length} nodes` : 'Duplicate'
             return (
               <div
                 className="fixed z-50 min-w-[200px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg"
                 style={{ left: contextMenu.x, top: contextMenu.y }}
                 onContextMenu={(e) => e.preventDefault()}
               >
+                <button
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
+                  onClick={() => { duplicateNodes(duplicateIds); setContextMenu(null) }}
+                  title={isMultiTarget ? 'Clone the selected nodes and the edges between them' : 'Clone this node'}
+                >
+                  <CopyPlus className="h-3.5 w-3.5 text-gray-400" />
+                  {duplicateLabel}
+                </button>
                 {!isMultiTarget && hasInEdges && (
                   <button
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
