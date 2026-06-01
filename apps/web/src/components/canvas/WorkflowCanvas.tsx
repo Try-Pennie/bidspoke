@@ -2152,6 +2152,31 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   const handleNodeUpdate = useCallback(
     (id: string, patch: Partial<CanvasNodeData>) => {
+      // A branch arm's handle id IS its label (configuredHandleIds), so
+      // renaming an arm changes the handle and would orphan any edge wired to
+      // it. Detect same-position label renames and carry the connected edges
+      // over to the new handle so wires stay attached.
+      const oldNode = nodes.find((n) => n.id === id)
+      if (oldNode?.type === 'branch' && (patch.config as Record<string, unknown> | undefined)?.branches) {
+        const oldBranches = ((oldNode.data as unknown as CanvasNodeData).config?.branches as { label: string }[] | undefined) ?? []
+        const newBranches = ((patch.config as Record<string, unknown>).branches as { label: string }[] | undefined) ?? []
+        if (oldBranches.length === newBranches.length) {
+          const renames = new Map<string, string>()
+          oldBranches.forEach((b, i) => {
+            const nl = newBranches[i]?.label
+            if (nl && nl !== b.label) renames.set(b.label, nl)
+          })
+          if (renames.size > 0) {
+            setEdges((es) =>
+              es.map((e) =>
+                e.source === id && e.sourceHandle && renames.has(e.sourceHandle)
+                  ? { ...e, sourceHandle: renames.get(e.sourceHandle) as string }
+                  : e
+              )
+            )
+          }
+        }
+      }
       setNodes((ns) => {
         // First, write the patched data into the matching node.
         const patched = ns.map((n) => {
@@ -2189,7 +2214,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       })
       setIsDirty(true)
     },
-    [setNodes, edges]
+    [setNodes, setEdges, edges, nodes]
   )
 
   // Resolves the matching end/start id for a parallel or branch container node.
