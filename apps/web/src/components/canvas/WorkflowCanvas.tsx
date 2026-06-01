@@ -2457,9 +2457,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     if (selNodes.length === 1) { duplicateNode(selNodes[0]); return }
 
     snapshot()
-    // Offset the whole group so the copies are clearly grabbable beside the
-    // originals while keeping their relative layout intact.
-    const OFFSET = { x: NODE_W + 80, y: 40 }
+    // Drop the whole group into clear space to the right of the existing graph
+    // (same convention as a disconnected subgraph) so it never lands on top of
+    // other nodes, keeping its internal relative layout intact. Once the user
+    // wires it in, auto-layout takes over and slots it into the flow.
+    const selMinX = Math.min(...selNodes.map((n) => n.position.x))
+    const others = nodes.filter((n) => !idSet.has(n.id) && n.id !== 'trigger')
+    const graphRight = others.length > 0 ? Math.max(...others.map((n) => n.position.x + NODE_W)) : selMinX
+    const OFFSET = { x: graphRight + DISCONNECTED_GAP - selMinX, y: 0 }
     const working = [...nodeNamespaces]
     const idMap = new Map<string, string>()
     selNodes.forEach((n) => idMap.set(n.id, uid()))
@@ -2483,6 +2488,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           : raw
       const config = JSON.parse(JSON.stringify(d.config ?? {})) as Record<string, unknown>
       if (config.children !== undefined) config.children = remapChildren(config.children)
+      // Remap the branch/parallel ↔ end pairing onto the cloned ids. Without
+      // this the cloned end loses its `_pairId`, and layout's end-placement
+      // post-process skips it — leaving the end at a raw, often overlapping
+      // position. (`_pairId` is otherwise only re-derived on load.)
+      const origPairId = (d as { _pairId?: string })._pairId
+      const newPairId = origPairId ? idMap.get(origPairId) : undefined
       return {
         id: idMap.get(n.id) as string,
         type: n.type,
@@ -2497,6 +2508,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           ...(d.note ? { note: d.note } : {}),
           config,
           variables: JSON.parse(JSON.stringify(d.variables ?? {})),
+          ...(newPairId ? { _pairId: newPairId } : {}),
         } satisfies CanvasNodeData,
       } as Node
     })
