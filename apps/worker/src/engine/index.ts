@@ -77,6 +77,9 @@ export interface ExecuteOptions {
   isTest?: boolean
   executionId?: string
   definitionOverride?: WorkflowDefinition
+  /** Ephemeral code bundle name for test runs (from deployTestCodeBundle), so
+   *  code nodes dispatch to the just-deployed unsaved code. */
+  codeBundleName?: string
   /** When true, verify the source is unrestricted or explicitly assigned to this workflow. */
   enforceSourceAssignment?: boolean
 }
@@ -215,6 +218,7 @@ export async function executeWorkflow(
 
   // Build execution context
   const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
+  if (options.codeBundleName) ctx.codeBundleName = options.codeBundleName
 
   // If resuming, pre-populate completed steps
   if (options.resumeFromExecutionId) {

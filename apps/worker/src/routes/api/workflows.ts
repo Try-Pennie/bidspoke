@@ -9,7 +9,7 @@ import { executeWorkflow } from '../../engine/index'
 import { executeNode } from '../../engine/nodes/index'
 import { buildContext } from '../../engine/context'
 import { loadEnvVars } from '../../lib/env-loader'
-import { deployCodeNodes } from '../../lib/code-node-deployer'
+import { deployCodeNodes, deployTestCodeBundle, deleteTestBundles } from '../../lib/code-node-deployer'
 import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 
@@ -171,6 +171,12 @@ workflows.put('/:id', async (c) => {
     for (const r of results) {
       if (r.error) deployErrors.push({ namespace: r.namespace, error: r.error })
     }
+    // The stable bundle is now (re)deployed — delete the ephemeral test bundles
+    // accumulated from iterate-then-test cycles. Non-blocking; best-effort.
+    c.executionCtx.waitUntil(
+      deleteTestBundles(id, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN, c.env.WORKFLOW_CACHE)
+        .catch((e) => console.error('[code-nodes] test bundle cleanup failed:', e))
+    )
   }
 
   // Push definition to GitHub backup repo and store commit SHA on the version row (non-blocking)
@@ -495,16 +501,21 @@ workflows.post('/:id/test', async (c) => {
 
   if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Deploy any code nodes from the current (unsaved) definition so test runs the latest scripts.
-  // Hash-and-skip via WORKFLOW_CACHE avoids the ~200-500ms CF upload on repeated tests with no changes.
+  // Deploy code nodes from the current (unsaved) definition to an ephemeral
+  // content-hashed bundle so the test runs the EXACT canvas code, with no
+  // dispatch-namespace update-propagation lag (a fixed name can serve the prior
+  // bundle right after an upload). The bundle name is threaded to the engine so
+  // code nodes dispatch to it; saved bundles are cleaned up on the next save.
+  let testBundleName: string | null = null
   if (body.definition) {
-    await deployCodeNodes(
+    const dep = await deployTestCodeBundle(
       id,
       body.definition as WorkflowDefinition,
       c.env.CLOUDFLARE_ACCOUNT_ID,
       c.env.CLOUDFLARE_API_TOKEN,
       c.env.WORKFLOW_CACHE
-    ).catch((e) => console.error('[code-nodes] test deploy failed:', e))
+    ).catch((e) => { console.error('[code-nodes] test deploy failed:', e); return { bundleName: null } })
+    testBundleName = dep.bundleName
   }
 
   const result = await executeWorkflow(
@@ -514,6 +525,7 @@ workflows.post('/:id/test', async (c) => {
       source: 'test_runner',
       isTest: true,
       executionId: body.execution_id,
+      ...(testBundleName ? { codeBundleName: testBundleName } : {}),
       ...(body.definition ? { definitionOverride: body.definition as import('../../types').WorkflowDefinition } : {}),
     },
     c.env,

@@ -189,6 +189,119 @@ async function sha256Hex(input: string): Promise<string> {
     .join('')
 }
 
+// ── Ephemeral test bundles ──────────────────────────────────────────────────
+//
+// Test runs may execute UNSAVED canvas edits. Deploying those edits to the
+// stable bundle name (codeBundleName) and dispatching in the same request hits
+// dispatch-namespace update-propagation lag — the dispatch can serve the prior
+// bundle, so the test runs stale code. Instead we deploy test runs to a name
+// derived from the bundle's content hash: a brand-new, never-seen script name
+// has no prior version to serve stale, so the fresh code runs immediately.
+// These ephemeral bundles are tracked in KV and deleted on the next save.
+
+const TEST_BUNDLES_KEY = (workflowId: string) => `test-bundles-${workflowId}`
+
+/** Content-versioned ephemeral bundle name for a test run. */
+export function testBundleName(workflowId: string, hash: string): string {
+  return `bs-wft-${workflowId.slice(0, 8)}-${hash.slice(0, 8)}`.slice(0, 64)
+}
+
+/**
+ * Deploys the workflow's code nodes to a content-hashed ephemeral bundle and
+ * returns the name to dispatch to (null when there are no code nodes). The
+ * unique-per-content name sidesteps the stale-dispatch problem described above.
+ * Tracks deployed names in KV so a later save can clean them up.
+ */
+export async function deployTestCodeBundle(
+  workflowId: string,
+  definition: WorkflowDefinition,
+  accountId: string | undefined,
+  apiToken: string | undefined,
+  cache?: KVNamespace
+): Promise<{ bundleName: string | null; error?: string }> {
+  if (!accountId || !apiToken) {
+    console.warn('[code-deployer] Test deploy skipped — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured')
+    return { bundleName: null }
+  }
+
+  const codeNodes = definition.nodes.filter((n): n is NodeDefinition => {
+    const script = n.config?.script as string | undefined
+    return n.type === 'code' && typeof script === 'string' && script.trim().length > 0
+  })
+  if (codeNodes.length === 0) return { bundleName: null }
+
+  const scripts = codeNodes.map((n) => ({ namespace: n.namespace, script: n.config.script as string }))
+  const workerScript = buildBundledWorkerScript(scripts)
+  const scriptBytes = new TextEncoder().encode(workerScript).length
+  if (scriptBytes > MAX_SCRIPT_BYTES) {
+    const err = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
+    console.error(`[code-deployer] ${err}`)
+    return { bundleName: null, error: err }
+  }
+
+  const hash = await sha256Hex(workerScript)
+  const workerName = testBundleName(workflowId, hash)
+
+  // Same content under the same name = already deployed; skip the upload.
+  const deployedKey = `test-deployed-${workerName}`
+  const alreadyDeployed = cache ? await cache.get(deployedKey) : null
+  if (alreadyDeployed) return { bundleName: workerName }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${workerName}`
+  const formData = new FormData()
+  formData.append('metadata', JSON.stringify({ main_module: 'script.js' }))
+  formData.append('script.js', new Blob([workerScript], { type: 'application/javascript+module' }), 'script.js')
+
+  const res = await fetch(url, { method: 'PUT', headers: { Authorization: `Bearer ${apiToken}` }, body: formData })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    let msg: string
+    try { msg = (JSON.parse(body) as { errors?: { message?: string }[] }).errors?.[0]?.message ?? `HTTP ${res.status}` }
+    catch { msg = body || `HTTP ${res.status}` }
+    console.error(`[code-deployer] Test deploy failed "${workerName}": ${msg}`)
+    return { bundleName: null, error: msg }
+  }
+
+  console.log(`[code-deployer] Deployed TEST bundle "${workerName}" (${codeNodes.length} nodes, ${scriptBytes} bytes)`)
+  if (cache) {
+    await cache.put(deployedKey, '1', { expirationTtl: 86400 }).catch(() => undefined)
+    const key = TEST_BUNDLES_KEY(workflowId)
+    const existing = (await cache.get<string[]>(key, 'json')) ?? []
+    if (!existing.includes(workerName)) {
+      existing.push(workerName)
+      await cache.put(key, JSON.stringify(existing), { expirationTtl: 86400 }).catch(() => undefined)
+    }
+  }
+
+  return { bundleName: workerName }
+}
+
+/**
+ * Deletes every ephemeral test bundle tracked for a workflow. Call on save —
+ * after the stable bundle is (re)deployed — so iterate-then-save cleans up the
+ * hashed test scripts left in the dispatch namespace.
+ */
+export async function deleteTestBundles(
+  workflowId: string,
+  accountId: string | undefined,
+  apiToken: string | undefined,
+  cache?: KVNamespace
+): Promise<void> {
+  if (!accountId || !apiToken || !cache) return
+  const key = TEST_BUNDLES_KEY(workflowId)
+  const names = (await cache.get<string[]>(key, 'json')) ?? []
+  if (names.length === 0) return
+  await Promise.all(names.map(async (name) => {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/dispatch/namespaces/${NAMESPACE}/scripts/${name}`
+    await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${apiToken}` } })
+      .then((r) => { if (!r.ok && r.status !== 404) console.warn(`[code-deployer] test bundle delete ${name}: HTTP ${r.status}`) })
+      .catch((e) => console.warn(`[code-deployer] test bundle delete ${name} failed:`, e))
+    await cache.delete(`test-deployed-${name}`).catch(() => undefined)
+  }))
+  await cache.delete(key).catch(() => undefined)
+  console.log(`[code-deployer] Cleaned up ${names.length} test bundle(s) for ${workflowId.slice(0, 8)}`)
+}
+
 /**
  * Deploys all code nodes in a workflow as a single bundled Worker.
  * Returns one DeployResult per code node namespace so the UI can surface

@@ -138,7 +138,7 @@ export async function executeCodeNode(
     props: resolvedProps,
   })
 
-  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body)
+  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName)
   const text = await res.text()
 
   // Parse the response, then unwrap the {__bsv: 1, output, logs} envelope if
@@ -213,9 +213,12 @@ async function dispatchWithFallback(
   env: Env,
   workflowId: string,
   namespace: string,
-  body: string
+  body: string,
+  bundleNameOverride?: string
 ): Promise<Response> {
-  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(workflowId))
+  // Test runs pass an ephemeral content-hashed bundle name so unsaved edits run
+  // immediately; prod runs use the stable per-workflow bundle.
+  const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(bundleNameOverride ?? codeBundleName(workflowId))
   let bundleRes: Response | undefined
   let bindingError: unknown
   try {
@@ -234,6 +237,14 @@ async function dispatchWithFallback(
     bundleRes?.status === 404
 
   if (!bundleMissing && bundleRes) return bundleRes
+
+  // Test runs target a freshly-deployed ephemeral bundle. The legacy per-node
+  // worker is stale-by-definition, so falling back to it would silently run old
+  // code — exactly what the ephemeral bundle exists to prevent. Surface the miss
+  // instead.
+  if (bundleNameOverride) {
+    throw new Error(`Test code bundle "${bundleNameOverride}" not reachable for "${namespace}" (status ${bundleRes?.status ?? 'binding error'})`)
+  }
 
   console.log(`[code-node] Bundle miss for "${namespace}" on workflow ${workflowId.slice(0, 8)}, falling back to per-node worker`)
   const perNodeBinding = env.DYNAMIC_WORKER_LOADER.get(codeWorkerName(workflowId, namespace))

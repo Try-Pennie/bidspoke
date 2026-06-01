@@ -119,6 +119,10 @@ export interface ExecutionContext {
   }
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
+  /** Dispatch-namespace bundle name code nodes route to. Set for test runs to an
+   *  ephemeral content-hashed bundle so unsaved edits run immediately; unset for
+   *  prod runs (code.ts falls back to the stable codeBundleName). */
+  codeBundleName?: string
   /**
    * Per-BidGroup context map. Set by walkGraph before evaluating partner attempts
    * and cleared after the group resolves. Exposed to partner formulas as
