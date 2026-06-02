@@ -297,12 +297,12 @@ export async function executeWorkflow(
   // the failure alert path fires. Mirrors Pipedream's slack_alert step which
   // fired on any non-200 response.
   if (executionStatus === 'completed' && walkStatus >= 500) {
-    const lastFailedStep = [...stepLogQueue].reverse().find((e) => e.status === 'failed')
-    if (lastFailedStep) {
+    const attribution = attributeWalkFailure(stepLogQueue, walkStatus, ctx.lastCompletedNamespace)
+    if (attribution) {
       executionStatus = 'failed'
-      failedStep = lastFailedStep.step_namespace
-      failedErrorType = lastFailedStep.error_type ?? 'permanent'
-      errorMessage = lastFailedStep.error_message ?? `Workflow returned HTTP ${walkStatus}`
+      failedStep = attribution.failedStep
+      failedErrorType = attribution.failedErrorType
+      errorMessage = attribution.errorMessage
     }
   }
 
@@ -1241,6 +1241,54 @@ export async function walkGraph(
   }
 
   return pendingResponse ?? { body: lastOutput, status: 200 }
+}
+
+// Decide how to attribute a walk that finished with a 5xx response to a failing
+// step, so the failure alert blames the node that actually produced the 5xx.
+//
+// The subtlety is bid_group children: a partner bid that errors inside a race is
+// logged as a `failed` step, but if the group itself COMPLETED (it tolerated the
+// error and routed `no_winner`), that child was absorbed and didn't cause the
+// 5xx. Naively picking "the last failed step" blamed those handled blips — e.g.
+// a transient partner 502 with "should succeed on retry" — when the real cause
+// was a downstream node (the no_winner fallback's own 5xx). So we skip failures
+// belonging to a completed bid_group and, if nothing else failed, attribute to
+// the terminal node that emitted the response.
+//
+// Returns null when no step failed (walk returned 5xx but nothing errored — the
+// caller leaves the execution `completed`, preserving prior behavior).
+export function attributeWalkFailure(
+  stepLogQueue: readonly StepLogEntry[],
+  walkStatus: number,
+  lastCompletedNamespace: string | null | undefined
+): { failedStep: string | undefined; failedErrorType: ErrorType; errorMessage: string } | null {
+  const absorbedGroupIds = new Set(
+    stepLogQueue
+      .filter((e) => e.step_type === 'bid_group' && e.status !== 'failed')
+      .map((e) => e.step_node_id)
+      .filter((id): id is string => id != null)
+  )
+  const failedSteps = [...stepLogQueue].reverse().filter((e) => e.status === 'failed')
+  if (failedSteps.length === 0) return null
+
+  // Prefer the most recent failure the workflow did NOT already absorb.
+  const cause = failedSteps.find(
+    (e) => !(e.parallel_group_id != null && absorbedGroupIds.has(e.parallel_group_id))
+  )
+  if (cause) {
+    return {
+      failedStep: cause.step_namespace,
+      failedErrorType: cause.error_type ?? 'permanent',
+      errorMessage: cause.error_message ?? `Workflow returned HTTP ${walkStatus}`,
+    }
+  }
+  // Every failure was absorbed by a completed bid_group; the 5xx came from the
+  // terminal node's own response. Blame that node, not the handled blip.
+  return {
+    failedStep: lastCompletedNamespace ?? failedSteps[0].step_namespace,
+    failedErrorType: 'permanent',
+    errorMessage: `Workflow returned HTTP ${walkStatus}`,
+  }
 }
 
 // Synchronously enqueue a step log entry. Writes are batched and flushed once
