@@ -45,18 +45,49 @@ function evaluateGroup(group: ConditionGroup, ctx: ExecutionContext): boolean {
   return group.logic === 'AND' ? results.every(Boolean) : results.some(Boolean)
 }
 
+// Equality for eq/neq. Rule-builder config values always arrive as strings
+// ("0", "true", "WI"), while the resolved field is its real type (number 0,
+// boolean true). A strict === therefore never matched a numeric/boolean field
+// against its string config — e.g. `mutate_bes.output (number 0) != "0"` wrongly
+// evaluated true and fired the arm. Coerce the string config by the actual
+// value's type, then fall back to a string compare so same-typed values and
+// plain strings still work.
+function valuesEqual(actual: unknown, expected: unknown): boolean {
+  if (actual === expected) return true
+  if (typeof actual === 'number' && typeof expected === 'string' && expected.trim() !== '') {
+    return actual === Number(expected)
+  }
+  if (typeof actual === 'boolean' && typeof expected === 'string') {
+    return String(actual) === expected
+  }
+  if (actual === null || actual === undefined) return false
+  return String(actual) === String(expected)
+}
+
+// Numeric comparison for gt/gte/lt/lte. Both sides are coerced to Number first:
+// config values arrive as strings, and the field may also be a numeric string
+// (e.g. "9"). Comparing two strings with > would sort lexicographically — "9" >
+// "10" is true — so we must compare as numbers. Non-numeric operands yield NaN,
+// which makes every comparison false (the safe default for a malformed rule).
+function numericCompare(actual: unknown, expected: unknown, cmp: (a: number, b: number) => boolean): boolean {
+  const a = Number(actual)
+  const b = Number(expected)
+  if (Number.isNaN(a) || Number.isNaN(b)) return false
+  return cmp(a, b)
+}
+
 function evaluateCondition(
   condition: { field: string; operator: string; value?: unknown },
   ctx: ExecutionContext
 ): boolean {
   const actual = resolveField(condition.field, ctx)
   switch (condition.operator) {
-    case 'eq':       return actual === condition.value
-    case 'neq':      return actual !== condition.value
-    case 'gt':       return (actual as number) > (condition.value as number)
-    case 'gte':      return (actual as number) >= (condition.value as number)
-    case 'lt':       return (actual as number) < (condition.value as number)
-    case 'lte':      return (actual as number) <= (condition.value as number)
+    case 'eq':       return valuesEqual(actual, condition.value)
+    case 'neq':      return !valuesEqual(actual, condition.value)
+    case 'gt':       return numericCompare(actual, condition.value, (a, b) => a > b)
+    case 'gte':      return numericCompare(actual, condition.value, (a, b) => a >= b)
+    case 'lt':       return numericCompare(actual, condition.value, (a, b) => a < b)
+    case 'lte':      return numericCompare(actual, condition.value, (a, b) => a <= b)
     case 'contains': return String(actual).includes(String(condition.value))
     case 'not_contains': return !String(actual).includes(String(condition.value))
     case 'is_true':  return actual === true
@@ -67,11 +98,11 @@ function evaluateCondition(
     case 'is_not_null': return actual !== null
     case 'in_array': {
       const arr = resolveValueOrLiteral(condition.value, ctx)
-      return Array.isArray(arr) && arr.includes(actual)
+      return Array.isArray(arr) && arr.some((el) => valuesEqual(actual, el))
     }
     case 'not_in_array': {
       const arr = resolveValueOrLiteral(condition.value, ctx)
-      return Array.isArray(arr) && !arr.includes(actual)
+      return Array.isArray(arr) && !arr.some((el) => valuesEqual(actual, el))
     }
     default: {
       // Surface unhandled operators instead of silently returning false.

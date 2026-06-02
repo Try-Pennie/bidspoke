@@ -123,6 +123,48 @@ describe('evaluateConditionGroups — all operators', () => {
   })
 })
 
+// --- String-typed config values (rule-builder reality) ---
+// The rule builder stores every condition value as a STRING ("0", "10",
+// "true"), while the resolved field keeps its real type (number, boolean). These
+// guard the coercion that production depends on — without it, `mutate_bes.output
+// (number 0) != "0"` wrongly fired its arm.
+
+describe('evaluateConditionGroups — string config vs typed field', () => {
+  function single(field: string, operator: EdgeCondition['operator'], value: unknown, payload: unknown): boolean {
+    return evaluateConditionGroups([{ conditions: [{ field, operator, value }], logic: 'AND' }], 'AND', ctx(payload))
+  }
+
+  describe('eq / neq across number↔string', () => {
+    it('eq: number 0 matches "0"', () => expect(single('trigger.payload.x', 'eq', '0', { x: 0 })).toBe(true))
+    it('neq: number 0 does NOT differ from "0" (the reported bug)', () =>
+      expect(single('trigger.payload.x', 'neq', '0', { x: 0 })).toBe(false))
+    it('neq: number 1 differs from "0"', () => expect(single('trigger.payload.x', 'neq', '0', { x: 1 })).toBe(true))
+    it('eq: number 9999 matches "9999"', () => expect(single('trigger.payload.x', 'eq', '9999', { x: 9999 })).toBe(true))
+    it('eq: boolean true matches "true"', () => expect(single('trigger.payload.b', 'eq', 'true', { b: true })).toBe(true))
+    it('neq: boolean false differs from "true"', () => expect(single('trigger.payload.b', 'neq', 'true', { b: false })).toBe(true))
+    it('eq: null does not match "0"', () => expect(single('trigger.payload.x', 'eq', '0', { x: null })).toBe(false))
+  })
+
+  describe('gt / lt are numeric, not lexicographic', () => {
+    it('gt: numeric-string "9" is NOT > "10" (lexicographic would say true)', () =>
+      expect(single('trigger.payload.n', 'gt', '10', { n: '9' })).toBe(false))
+    it('lt: numeric-string "9" < "10"', () => expect(single('trigger.payload.n', 'lt', '10', { n: '9' })).toBe(true))
+    it('gte: number 720 >= "720"', () => expect(single('trigger.payload.n', 'gte', '720', { n: 720 })).toBe(true))
+    it('gt: number 11 > "10"', () => expect(single('trigger.payload.n', 'gt', '10', { n: 11 })).toBe(true))
+    it('gt: non-numeric field is false, not a throw', () =>
+      expect(single('trigger.payload.n', 'gt', '10', { n: 'abc' })).toBe(false))
+  })
+
+  describe('in_array / not_in_array coerce element types', () => {
+    it('in_array: number 1 is in ["1","2"]', () =>
+      expect(single('trigger.payload.x', 'in_array', ['1', '2'], { x: 1 })).toBe(true))
+    it('in_array: string "1" is in [1,2]', () =>
+      expect(single('trigger.payload.x', 'in_array', [1, 2], { x: '1' })).toBe(true))
+    it('not_in_array: number 3 is not in ["1","2"]', () =>
+      expect(single('trigger.payload.x', 'not_in_array', ['1', '2'], { x: 3 })).toBe(true))
+  })
+})
+
 // --- Group + top-level logic combinations ---
 
 describe('evaluateConditionGroups — group logic', () => {
