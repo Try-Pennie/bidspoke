@@ -167,4 +167,37 @@ describe('sendFailureAlert', () => {
     const { headers } = fetchMock.mock.calls[0][1]
     expect(headers['Authorization']).toBe('Bearer xoxb-test-token')
   })
+
+  it('shows the retry count when the step retried before failing', async () => {
+    const retried = { ...payload, retries_used: 2 }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, retried, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
+      (b.fields ?? []).map((f) => f.text)
+    ).join('\n')
+    expect(allText).toContain('retried 2 times before failing')
+  })
+
+  it('singularizes the retry count for a single retry', async () => {
+    const retried = { ...payload, retries_used: 1 }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, retried, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
+      (b.fields ?? []).map((f) => f.text)
+    ).join('\n')
+    expect(allText).toContain('retried 1 time before failing')
+  })
+
+  it('says no retry when the step failed on its first attempt', async () => {
+    // payload has no retries_used → treated as 0
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
+      (b.fields ?? []).map((f) => f.text)
+    ).join('\n')
+    expect(allText).toContain('failed on first attempt (no retry)')
+  })
 })

@@ -94,6 +94,49 @@ describe('withRetry — mixed classification', () => {
   })
 })
 
+// ── Stats out-param ───────────────────────────────────────────────────────────
+
+describe('withRetry — stats out-param', () => {
+  it('reports 0 retries when fn succeeds on the first attempt', async () => {
+    const stats = { retries: 0 }
+    const fn = vi.fn().mockResolvedValue('ok')
+    await withRetry(fn, { retries: 3, backoff: 'linear', timeout_ms: 5000 }, transient, stats)
+    expect(stats.retries).toBe(0)
+  })
+
+  it('reports the number of retries used before a transient success', async () => {
+    vi.useFakeTimers()
+    const stats = { retries: 0 }
+    let calls = 0
+    const fn = vi.fn().mockImplementation(async () => {
+      if (++calls < 3) throw new Error('flaky')
+      return 'recovered'
+    })
+    const p = withRetry(fn, { retries: 5, backoff: 'linear', timeout_ms: 60_000 }, transient, stats)
+    await vi.runAllTimersAsync()
+    await p
+    expect(stats.retries).toBe(2) // failed twice, succeeded on the 3rd attempt
+  })
+
+  it('reports retries used even when all attempts are exhausted (throw path)', async () => {
+    vi.useFakeTimers()
+    const stats = { retries: 0 }
+    const fn = vi.fn().mockImplementation(async () => { throw new Error('always fails') })
+    const p = withRetry(fn, { retries: 2, backoff: 'linear', timeout_ms: 60_000 }, transient, stats)
+    await Promise.all([vi.runAllTimersAsync(), expect(p).rejects.toThrow('always fails')])
+    expect(stats.retries).toBe(2) // 1 initial + 2 retries, then gave up
+  })
+
+  it('reports 0 retries when the first error is permanent', async () => {
+    const stats = { retries: 0 }
+    const fn = vi.fn().mockRejectedValue(new Error('bad request'))
+    await expect(
+      withRetry(fn, { retries: 3, backoff: 'linear', timeout_ms: 5000 }, permanent, stats)
+    ).rejects.toThrow('bad request')
+    expect(stats.retries).toBe(0)
+  })
+})
+
 // ── Timeout ───────────────────────────────────────────────────────────────────
 
 describe('withRetry — timeout', () => {

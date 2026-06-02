@@ -1039,6 +1039,9 @@ export async function walkGraph(
     let errorMessage: string | undefined
     let errorType: ErrorType = null
     let retriesUsed = 0
+    // Mutated in place by withRetry (below) on both the success and throw path,
+    // then copied into retriesUsed so every logStep call records the real count.
+    const retryStats = { retries: 0 }
     // Resolved input — captured from executor result on success, or from a
     // thrown error's `.resolvedInput` on failure. Lets the Results panel show
     // both the template the author wrote and the resolved values, so debugging
@@ -1071,8 +1074,10 @@ export async function walkGraph(
         (err) => {
           if (err instanceof Response) return classifyHttpError(err.status)
           return classifyTransportError(err)
-        }
+        },
+        retryStats
       )
+      retriesUsed = retryStats.retries
       output = result.output
       stepStatus = 'completed'
       lastOutput = output
@@ -1132,6 +1137,9 @@ export async function walkGraph(
       }
 
     } catch (err) {
+      // withRetry exhausted (or hit a permanent error) — record how many retries
+      // it burned through so the failed step logs the true count.
+      retriesUsed = retryStats.retries
       // Classify error type — needed for Slack alerting
       let suppressAlert = false
       // Extract captured console output from code-node errors so a failing
@@ -1338,6 +1346,9 @@ async function runParallelChild(
     let errorType: ErrorType = null
     let stepLogs: import('../types').StepLogEntry[] | undefined
     let resolvedInput: ResolvedStepInput | null = null
+    // Captures the real retry count from withRetry (mutated in place on both the
+    // success and throw path) so this child's step log records it instead of 0.
+    const retryStats = { retries: 0 }
 
     try {
       const result = await withRetry(
@@ -1346,7 +1357,8 @@ async function runParallelChild(
         (err) => {
           if (err instanceof Response) return classifyHttpError(err.status)
           return classifyTransportError(err)
-        }
+        },
+        retryStats
       )
       output = result.output
       stepLogs = result.logs
@@ -1382,7 +1394,7 @@ async function runParallelChild(
     }
 
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
-    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, 0, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
+    logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
 
     if (stepStatus === 'failed') {
       // The slot's result is the FIRST node's namespace — but downstream chain

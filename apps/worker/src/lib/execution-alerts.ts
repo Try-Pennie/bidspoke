@@ -33,6 +33,7 @@ interface StepLogShape {
   status: StepStatus
   error_message?: string
   error_type?: ErrorType | null
+  retries_used?: number
 }
 
 export interface ExecutionAlertArgs {
@@ -71,9 +72,18 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
   if (args.alertType === 'duration') {
     reason.threshold_ms = args.thresholdMs
   }
+  // Retries the failed step burned through before giving up. Read from the
+  // logged step (engine now records the real count) so both the Slack message
+  // and the persisted snapshot can say "retried N times before failing".
+  let retriesUsed: number | undefined
   if (args.alertType === 'failure') {
     reason.error_message = args.errorMessage
     reason.error_type = args.errorType
+    const failedLog = args.failedStep
+      ? args.stepLogQueue.find((s) => s.step_namespace === args.failedStep && s.status === 'failed')
+      : undefined
+    retriesUsed = failedLog?.retries_used
+    if (retriesUsed !== undefined) reason.retries_used = retriesUsed
   }
 
   // Persist the snapshot BEFORE sending Slack — even if Slack fails, the banner
@@ -108,6 +118,7 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
         step_namespace: args.failedStep,
         error_message: args.errorMessage ?? 'Unknown error',
         error_type: args.errorType ?? 'permanent',
+        retries_used: retriesUsed,
         timestamp: args.timestamp,
       }, args.env.APP_URL).catch((e) => { console.error('[slack] failure alert failed:', e); return null })
 

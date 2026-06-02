@@ -21,6 +21,9 @@ export interface FailureAlertPayload {
   step_namespace?: string
   error_message: string
   error_type: ErrorType
+  /** Retries the failed step consumed before giving up. 0/undefined = failed on
+   * the first attempt (no retry). Shown in the alert only when > 0. */
+  retries_used?: number
   timestamp: string
 }
 
@@ -83,6 +86,13 @@ export async function sendFailureAlert(
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
   const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}`
 
+  // Only show the retry line when at least one retry actually happened — a step
+  // that failed on its first attempt shouldn't add noise claiming "0 retries".
+  const retries = payload.retries_used ?? 0
+  const retryText = retries > 0
+    ? `retried ${retries} ${retries === 1 ? 'time' : 'times'} before failing`
+    : 'failed on first attempt (no retry)'
+
   const blocks = [
     {
       type: 'header',
@@ -94,6 +104,7 @@ export async function sendFailureAlert(
         { type: 'mrkdwn', text: `*Workflow:* ${payload.workflow_name}` },
         { type: 'mrkdwn', text: `*Failed step:* ${stepText}` },
         { type: 'mrkdwn', text: `*Error type:* ${errorLabel}` },
+        { type: 'mrkdwn', text: `*Retries:* ${retryText}` },
         { type: 'mrkdwn', text: `*Time:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
       ],
     },
