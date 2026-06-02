@@ -107,10 +107,10 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v6 prefix: bump when the suggestion math changes so stale entries expire
+  // v7 prefix: bump when the suggestion math changes so stale entries expire
   // immediately instead of lingering 30 min. (v5 added the per-workflow RPC
-  // bound; v6 added the node-type-aware suggestion floor.)
-  const cacheKey = `step-stats:v6:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
+  // bound; v6 added the node-type floor; v7 moved `constants` to the DB floor.)
+  const cacheKey = `step-stats:v7:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -214,21 +214,29 @@ function pctRow(data: unknown): PctRow {
 // Minimum timeout the suggester will ever recommend, by node type. This is the
 // irreducible overhead the percentiles CAN'T measure: completed-step durations
 // exclude any attempt slow enough to have hit the current timeout, so for
-// dispatch-/network-bound steps the real floor lives below the visible data.
+// dispatch-/IO-bound steps the real floor lives below the visible data.
+//
+// Dispatch/DB floor (~150ms): a cold-path round-trip that retries can't rescue,
+// because a cold worker / cold cache makes EVERY attempt in the run slow.
 //   - code: Cloudflare Dynamic Worker (WfP) dispatch. Warm is single-digit ms,
-//     but a cold dispatch can be 100ms+ and hits every attempt in a cold run, so
-//     retries don't rescue it. A 20ms timeout here = flaky timeouts on cold runs.
-//   - network (partner_bid / integration / salesforce / webhook): outbound HTTP
-//     round-trip + TLS; rarely meaningfully under ~50ms.
-//   - everything else: in-memory (filter/branch/transform/constants/…) — truly
-//     fast; keep the original 10ms floor so we don't recommend 0ms.
-const CODE_DISPATCH_FLOOR_MS = 150
+//     cold is 100ms+. A 20ms timeout here = flaky timeouts on cold runs.
+//   - constants: LOOKS in-memory but loadPartnerConstants reads KV and, on a
+//     cold miss, queries Supabase (partner_uuid_map + partner_configs) — a DB
+//     round-trip. A timed-out fetch never populates KV, so retries stay cold.
+//
+// Network floor (~50ms): outbound HTTP round-trip + TLS. These nodes' own p99 is
+// usually well above this, so the floor mainly guards a fast-declining partner.
+//
+// In-memory floor (10ms): filter/branch/transform/response/etc. — truly fast;
+// keep the original floor so we don't recommend 0ms.
+const DISPATCH_OR_DB_FLOOR_MS = 150
 const NETWORK_FLOOR_MS = 50
 const INMEMORY_FLOOR_MS = 10
+const DISPATCH_OR_DB_NODE_TYPES = new Set(['code', 'constants'])
 const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group'])
 
 export function suggestionFloorMs(nodeType?: string): number {
-  if (nodeType === 'code') return CODE_DISPATCH_FLOOR_MS
+  if (nodeType && DISPATCH_OR_DB_NODE_TYPES.has(nodeType)) return DISPATCH_OR_DB_FLOOR_MS
   if (nodeType && NETWORK_NODE_TYPES.has(nodeType)) return NETWORK_FLOOR_MS
   return INMEMORY_FLOOR_MS
 }
