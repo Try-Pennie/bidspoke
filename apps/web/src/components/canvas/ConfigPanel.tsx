@@ -52,6 +52,16 @@ interface Props {
   onRenameRequest?: (oldNs: string, newNs: string) => Promise<boolean>
 }
 
+// Retries always resolves to a number (never null/empty): erasing the field
+// lands on 0, anything else is parsed and clamped to 0–5. Mirrors the engine
+// default of 2, which the input shows when the value is unset.
+function clampRetries(raw: string): number {
+  if (raw === '') return 0
+  const n = parseInt(raw, 10)
+  if (Number.isNaN(n)) return 0
+  return Math.max(0, Math.min(5, n))
+}
+
 export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
@@ -261,9 +271,9 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
               <div className="mt-3 space-y-3">
                 <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} nodeType={type} />
                 <Field label="Retries" hint="How many times to retry on temporary failures. Max 5.">
-                  <input type="number" className="input" placeholder="0" min={0} max={5}
-                    value={(data.config.retries as number | undefined) ?? ''}
-                    onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
+                  <input type="number" className="input" min={0} max={5}
+                    value={(data.config.retries as number | undefined) ?? 2}
+                    onChange={(e) => updateConfig({ retries: clampRetries(e.target.value) })}
                   />
                 </Field>
                 <Field label="If this step fails">
@@ -380,11 +390,10 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
               <input
                 type="number"
                 className="input"
-                placeholder="0"
                 min={0}
                 max={5}
-                value={(data.config.retries as number | undefined) ?? ''}
-                onChange={(e) => updateConfig({ retries: e.target.value ? parseInt(e.target.value) : undefined })}
+                value={(data.config.retries as number | undefined) ?? 2}
+                onChange={(e) => updateConfig({ retries: clampRetries(e.target.value) })}
               />
             </Field>
             <Field label="If this step fails">
