@@ -107,10 +107,10 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v5 prefix: bump when the suggestion math changes (or, here, when the RPC is
-  // fixed to bound per-workflow) so stale entries — including wrong "0 samples"
-  // results cached under v4 — expire immediately instead of lingering 30 min.
-  const cacheKey = `step-stats:v5:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
+  // v6 prefix: bump when the suggestion math changes so stale entries expire
+  // immediately instead of lingering 30 min. (v5 added the per-workflow RPC
+  // bound; v6 added the node-type-aware suggestion floor.)
+  const cacheKey = `step-stats:v6:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -169,15 +169,21 @@ executions.get('/step-duration-stats', async (c) => {
   //   retries == 0: must clear max × 1.05 — a single timeout = permanent fail.
   //   retries >= 1: drop the max-clamp; a long-tail outlier just retries.
   //                 Use p99 × 1.5 as the baseline (most calls succeed first try).
-  // 10ms hard floor across both cases: avoids recommending 0ms when percentiles
-  // round to zero for sub-ms in-memory steps. Magnitude-aware rounding keeps
-  // sub-100ms suggestions readable (5ms steps), sub-1s at 50ms, above at 250ms.
-  const SUGGESTION_FLOOR_MS = 10
+  // Node-type floor (below): the percentiles are computed over COMPLETED steps,
+  // so any attempt slow enough to hit the current timeout is censored out of the
+  // distribution. For dispatch-/network-bound steps that floor is exactly the
+  // overhead the data can't see — a code node's Dynamic Worker cold-dispatch can
+  // exceed its compute-time p99 by an order of magnitude, and retries don't help
+  // when the slowness is correlated within a run (cold worker = every attempt is
+  // slow). So we never suggest below the type's known irreducible floor.
+  // Magnitude-aware rounding keeps sub-100ms suggestions readable, sub-1s at
+  // 50ms, above at 250ms.
+  const floorMs = suggestionFloorMs(nodeType)
   const rawSuggested =
     p99 != null && maxMs != null
       ? retries >= 1
-        ? Math.max(p99 * 1.5, SUGGESTION_FLOOR_MS)
-        : Math.max(p99 * 1.5, maxMs * 1.05, SUGGESTION_FLOOR_MS)
+        ? Math.max(p99 * 1.5, floorMs)
+        : Math.max(p99 * 1.5, maxMs * 1.05, floorMs)
       : null
   const suggestedMs = rawSuggested != null ? roundUpSmart(rawSuggested) : null
 
@@ -203,6 +209,28 @@ executions.get('/step-duration-stats', async (c) => {
 type PctRow = { p50: number | null; p95: number | null; p99: number | null; max_ms: number | null; sample_size: number } | undefined
 function pctRow(data: unknown): PctRow {
   return ((data ?? []) as PctRow[])[0]
+}
+
+// Minimum timeout the suggester will ever recommend, by node type. This is the
+// irreducible overhead the percentiles CAN'T measure: completed-step durations
+// exclude any attempt slow enough to have hit the current timeout, so for
+// dispatch-/network-bound steps the real floor lives below the visible data.
+//   - code: Cloudflare Dynamic Worker (WfP) dispatch. Warm is single-digit ms,
+//     but a cold dispatch can be 100ms+ and hits every attempt in a cold run, so
+//     retries don't rescue it. A 20ms timeout here = flaky timeouts on cold runs.
+//   - network (partner_bid / integration / salesforce / webhook): outbound HTTP
+//     round-trip + TLS; rarely meaningfully under ~50ms.
+//   - everything else: in-memory (filter/branch/transform/constants/…) — truly
+//     fast; keep the original 10ms floor so we don't recommend 0ms.
+const CODE_DISPATCH_FLOOR_MS = 150
+const NETWORK_FLOOR_MS = 50
+const INMEMORY_FLOOR_MS = 10
+const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group'])
+
+export function suggestionFloorMs(nodeType?: string): number {
+  if (nodeType === 'code') return CODE_DISPATCH_FLOOR_MS
+  if (nodeType && NETWORK_NODE_TYPES.has(nodeType)) return NETWORK_FLOOR_MS
+  return INMEMORY_FLOOR_MS
 }
 
 // Round suggestions to readable increments that scale with magnitude. Without
