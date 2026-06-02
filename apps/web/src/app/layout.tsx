@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import localFont from 'next/font/local'
 import { GeistMono } from 'geist/font/mono'
 import './globals.css'
+import NumberInputWheelGuard from '@/components/NumberInputWheelGuard'
 
 const ppMori = localFont({
   src: [
@@ -30,7 +31,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${ppMori.variable} ${GeistMono.variable}`}>
-      <body className="bg-beige font-sans text-graphite antialiased">{children}</body>
+      <body className="bg-beige font-sans text-graphite antialiased">
+        <NumberInputWheelGuard />
+        {children}
+      </body>
     </html>
   )
 }
