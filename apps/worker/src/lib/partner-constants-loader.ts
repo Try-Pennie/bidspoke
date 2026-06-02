@@ -56,7 +56,10 @@ export async function loadPartnerConstants(
       const normalized: Record<string, number> = {}
       for (const [uuid, bid] of Object.entries(row.sub_account_min_bids as Record<string, unknown>)) {
         const n = Number(bid)
-        if (Number.isFinite(n)) normalized[uuid] = n
+        // A 0 (or negative) floor means "accept anything" and would bypass the
+        // partner-wide min_bid — never an intended override. Drop it as no floor,
+        // backstopping any 0 already persisted by the old blank-input bug.
+        if (Number.isFinite(n) && n > 0) normalized[uuid] = n
       }
       if (Object.keys(normalized).length > 0) subAccountMinBids[row.slug] = normalized
     }

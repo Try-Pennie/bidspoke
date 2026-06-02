@@ -571,7 +571,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
                   value={idempotency.ttl_seconds ?? 86400}
                   min={60}
-                  onChange={(e) => updateIdempotency({ ttl_seconds: Number(e.target.value) })}
+                  onChange={(e) => updateIdempotency({ ttl_seconds: e.target.value === '' ? undefined : Number(e.target.value) })}
                 />
                 <p className="mt-1 text-xs text-gray-400">How long to cache the response. Default 86400 = 24 hours.</p>
               </div>

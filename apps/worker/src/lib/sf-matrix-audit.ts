@@ -352,11 +352,16 @@ function fmtNum(n: number | null): string {
 
 /** Standard Vantage Score tier names — append in parens when bounds match exactly. */
 function vantageTierName(low: number | null, high: number | null): string {
-  if (low === 301 && high === 499) return ' (Very Poor)'
-  if (low === 500 && high === 600) return ' (Poor)'
-  if (low === 601 && high === 660) return ' (Fair)'
-  if (low === 661 && high === 780) return ' (Good)'
-  if (low === 781 && high === 850) return ' (Excellent)'
+  // For removed rows these bounds come from a DB-read snapshot, where Postgres
+  // NUMERIC is serialized as a STRING ('781'), so strict === against the numeric
+  // literals never matched and removed-row alerts dropped the tier label.
+  const lo = low === null ? null : Number(low)
+  const hi = high === null ? null : Number(high)
+  if (lo === 301 && hi === 499) return ' (Very Poor)'
+  if (lo === 500 && hi === 600) return ' (Poor)'
+  if (lo === 601 && hi === 660) return ' (Fair)'
+  if (lo === 661 && hi === 780) return ' (Good)'
+  if (lo === 781 && hi === 850) return ' (Excellent)'
   return ''
 }
 

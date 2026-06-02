@@ -17,7 +17,7 @@ type RollupRow = {
   run_count: number
   duration_ms_sum: number
   duration_ms_count: number
-  cost_usd_sum: number | string
+  cost_usd_sum: number
 }
 
 stats.get('/', async (c) => {
@@ -41,7 +41,18 @@ stats.get('/', async (c) => {
     p_since: since,
   })
   if (rollupError) return c.json({ error: rollupError.message }, 500)
-  const rollup = (rollupRaw ?? []) as RollupRow[]
+  // The rollup RPC's aggregate columns are Postgres BIGINT (run_count,
+  // duration_ms_sum, duration_ms_count) and NUMERIC (cost_usd_sum). PostgREST
+  // serializes both as JSON STRINGS to preserve precision, so without coercion
+  // `total += r.run_count` string-concatenates ("5"+"3" = "53") and every
+  // summary/per-workflow number is garbage. Normalize once at the boundary.
+  const rollup: RollupRow[] = ((rollupRaw ?? []) as RollupRow[]).map((r) => ({
+    ...r,
+    run_count: Number(r.run_count),
+    duration_ms_sum: Number(r.duration_ms_sum),
+    duration_ms_count: Number(r.duration_ms_count),
+    cost_usd_sum: Number(r.cost_usd_sum),
+  }))
   if (rollup.length === 0) return c.json(empty)
 
   // 2. Summary (production runs only — is_test=false)
@@ -107,7 +118,7 @@ stats.get('/', async (c) => {
       }
     }
     const s = wfStats[r.workflow_id]
-    s.cost_sum += Number(r.cost_usd_sum) // includes test runs
+    s.cost_sum += r.cost_usd_sum // includes test runs (already coerced to number above)
     if (r.is_test) continue
     s.total += r.run_count
     if (r.status === 'completed') s.completed += r.run_count

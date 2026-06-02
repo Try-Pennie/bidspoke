@@ -131,7 +131,12 @@ export async function executeWorkflow(
     }
   }
 
-  const ttl = idempotencyConfig?.ttl_seconds ?? 300
+  // Clamp the configured TTL: `?? 300` alone wouldn't catch a 0 (the UI can
+  // persist ttl_seconds: 0 from a cleared number input), and Cloudflare KV
+  // rejects expirationTtl below 60s. A 0 here would make the idempotency PUT
+  // fail silently, so duplicate-lead suppression would never store — and the
+  // same lead could fire duplicate partner bids. Floor at the KV minimum.
+  const ttl = Math.max(idempotencyConfig?.ttl_seconds || 300, 60)
 
   // Parallel: idempotency check + env var load (both independent once we have definition/org_id)
   const executionId = options.executionId ?? crypto.randomUUID()

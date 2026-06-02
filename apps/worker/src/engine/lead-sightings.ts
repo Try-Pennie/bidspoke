@@ -528,14 +528,20 @@ export function extractBidGroupSummary(steps: Record<string, StepOutput>): {
 
     const winner = obj.winner as { partner?: string; bid?: number } | null
     const allBids = Array.isArray(obj.all_bids) ? (obj.all_bids as Array<Record<string, unknown>>) : []
-    const excluded = Array.isArray(obj.excluded) ? (obj.excluded as Array<Record<string, unknown>>) : []
-    const responded = allBids.filter((b) => !b.skipped).length
+    // `responded` = partners that actually returned a response. A timed-out or
+    // errored attempt is synthesized with skipped:false but carries an `error`,
+    // so guard on both — otherwise non-responders inflate the response rate.
+    // (A genuine null-bid decline has no `error` and correctly counts.)
+    const responded = allBids.filter((b) => !b.skipped && b.error === undefined).length
 
     return {
       winner_slug: winner?.partner ?? null,
       winner_bid_cents:
         typeof winner?.bid === 'number' ? Math.round(winner.bid * 100) : null,
-      attempted: allBids.length + excluded.length || null,
+      // `all_bids` already contains every attempt; `excluded` is a SUBSET of it
+      // (all_bids minus the winner, or an alias of it in the no-winner case), so
+      // adding the two double-counts. Count attempts from all_bids alone.
+      attempted: allBids.length || null,
       responded: responded || null,
     }
   }

@@ -187,6 +187,35 @@ describe('GET /stats', () => {
     expect(body.summary.avg_duration_ms).toBe(150)
   })
 
+  it('numerically sums BIGINT/NUMERIC aggregates that PostgREST returns as strings', async () => {
+    // Regression: workflow_stats_rollup's run_count/duration columns are BIGINT
+    // and cost is NUMERIC; PostgREST serializes both as JSON strings. Without
+    // coercion `total += r.run_count` string-concatenates ("2"+"1" = "21").
+    const rollup = execsToRollup([execCompleted, execCompleted, execFailed], [testWorkflow]).map((r) => ({
+      ...r,
+      run_count: String(r.run_count),
+      duration_ms_sum: String(r.duration_ms_sum),
+      duration_ms_count: String(r.duration_ms_count),
+      cost_usd_sum: String(r.cost_usd_sum),
+    }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { list: [] },
+        execution_steps: { list: [] },
+        partner_configs: { list: [] },
+      }, { workflow_stats_rollup: rollup }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, '/stats')
+    const body = await res.json() as { summary: Record<string, unknown>; by_workflow: Array<Record<string, unknown>> }
+    expect(body.summary.total).toBe(3)              // not "21" / "111"
+    expect(typeof body.summary.total).toBe('number')
+    expect(body.summary.completed).toBe(2)
+    expect(body.summary.failed).toBe(1)
+    expect(body.summary.avg_duration_ms).toBe(167)  // (200+200+100)/3 rounded
+    expect(body.by_workflow[0].total).toBe(3)
+  })
+
   it('includes recent_failures with workflow name', async () => {
     const rollup = execsToRollup([execFailed], [testWorkflow])
     vi.mocked(createSupabaseClient).mockReturnValue(

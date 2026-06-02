@@ -66,8 +66,13 @@ function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {
   for (const f of floors) {
     const uuid = f.uuid.trim()
     if (!uuid) continue
+    // A blank bid is "no override", not a $0 floor. Number('') === 0 passes
+    // isFinite, so without this guard an unfilled row would persist a floor of
+    // 0 — which accepts any bid and silently bypasses the partner-wide min_bid.
+    // Treat blank or non-positive as no floor.
+    if (f.bid.trim() === '') continue
     const n = Number(f.bid)
-    if (!Number.isFinite(n)) continue
+    if (!Number.isFinite(n) || n <= 0) continue
     out[uuid] = n
   }
   return Object.keys(out).length > 0 ? out : null

@@ -174,6 +174,22 @@ describe('loadPartnerConstants', () => {
     expect(result.subAccountMinBids.lendswift).toEqual({ 'uuid-a': 9.23, 'uuid-c': 3.08 })
   })
 
+  it('drops 0 / negative sub-account floors (a $0 floor would bypass the partner min_bid)', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([], [
+      { slug: 'lendswift', is_active: true, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
+        sub_account_min_bids: { 'uuid-zero': 0, 'uuid-neg': -5, 'uuid-real': 4.5 } },
+      { slug: 'allzero', is_active: true, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
+        sub_account_min_bids: { 'uuid-x': 0 } },
+    ])
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result.subAccountMinBids.lendswift).toEqual({ 'uuid-real': 4.5 })
+    // a partner whose only floor was 0 ends up with no floors at all
+    expect(result.subAccountMinBids).not.toHaveProperty('allzero')
+  })
+
   it('treats null/missing is_active as inactive (safe-by-default)', async () => {
     const kv = makeKv(null)
     const sb = makeSupabase([], [
