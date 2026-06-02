@@ -107,8 +107,10 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v4 prefix: bump when the suggestion math changes so stale entries expire.
-  const cacheKey = `step-stats:v4:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
+  // v5 prefix: bump when the suggestion math changes (or, here, when the RPC is
+  // fixed to bound per-workflow) so stale entries — including wrong "0 samples"
+  // results cached under v4 — expire immediately instead of lingering 30 min.
+  const cacheKey = `step-stats:v5:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
