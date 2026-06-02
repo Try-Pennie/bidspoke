@@ -3467,14 +3467,10 @@ function TimeoutField({
     return () => { cancelled = true }
   }, [workflowId, namespace, nodeType, subtype, retries])
 
-  // Pick a single unit (ms or s) for every value rendered inside the callout
-  // so we don't mix '766ms' and '7.5s' in the same sentence.
-  const fmt = makeUnitFormatter([
-    stats?.p50 ?? null,
-    stats?.p99 ?? null,
-    stats?.max_ms ?? null,
-    stats?.suggested_ms ?? null,
-  ])
+  // Render every callout value in ms to match the input field — the timeout is
+  // entered in ms, so showing '2.3s' forces mental math to compare against what
+  // you're typing. The action link already uses ms; keep the stats consistent.
+  const fmt = (ms: number) => (ms < 1 ? '<1ms' : `${Math.round(ms).toLocaleString()}ms`)
 
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
@@ -3559,7 +3555,7 @@ function TimeoutField({
 
       {/* Plain-language description sits right under the input */}
       <p className="mt-1.5 text-xs text-gray-500">
-        How long to wait before giving up on this step. Default 30s.
+        How long to wait before giving up on this step. Default 30000ms.
       </p>
 
       {/* Single callout: stats + optional action sentence */}
@@ -3620,25 +3616,6 @@ function formatMs(ms: number): string {
   if (ms < 1) return '<1ms'
   if (ms < 1000) return `${ms.toLocaleString()}ms`
   return `${(ms / 1000).toFixed(1).replace(/\.0$/, '')}s`
-}
-
-// Used inside the timeout callout where multiple values appear in one sentence
-// and unit-mixing reads badly ("…rarely takes more than 766ms… lower this to 7.5s").
-// Picks one unit for the whole set based on the largest value in the callout.
-function makeUnitFormatter(values: (number | null)[]): (ms: number) => string {
-  const present = values.filter((v): v is number => v != null)
-  const useSeconds = present.some((v) => v >= 1000)
-  return (ms: number) => {
-    if (!useSeconds) {
-      if (ms < 1) return '<1ms'
-      return `${ms.toLocaleString()}ms`
-    }
-    if (ms < 10) return '<0.01s'
-    const s = ms / 1000
-    if (s < 1) return `${s.toFixed(2)}s`
-    const oneDecimal = s.toFixed(1)
-    return oneDecimal.endsWith('.0') ? `${oneDecimal.slice(0, -2)}s` : `${oneDecimal}s`
-  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
