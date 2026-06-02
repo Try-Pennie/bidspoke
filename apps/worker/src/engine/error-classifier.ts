@@ -161,15 +161,19 @@ function getBodyField(body: unknown, field: string): unknown {
   return cur
 }
 
+// Equality across the partner response value (`a`, typed from the partner's
+// JSON) and the configured signal value (`b`, author-entered). Coerce in BOTH
+// directions: the previous version only handled b=number/a=string, so a numeric
+// response field (e.g. resultCode 1000) vs a string config ("1000") silently
+// failed to match — the same class of bug as the branch condition operators.
 function looseEquals(a: unknown, b: unknown): boolean {
   if (a === b) return true
-  // String/boolean coercion: "false" == false, "true" == true
-  if (typeof b === 'boolean') {
-    if (a === String(b)) return true
-  }
-  if (typeof b === 'number' && typeof a === 'string') {
-    return parseFloat(a) === b
-  }
+  // boolean ↔ its string form ("true"/"false"), either side
+  if (typeof a === 'boolean' && typeof b === 'string') return String(a) === b
+  if (typeof b === 'boolean' && typeof a === 'string') return String(b) === a
+  // number ↔ numeric string, either side
+  if (typeof a === 'number' && typeof b === 'string' && b.trim() !== '') return a === Number(b)
+  if (typeof b === 'number' && typeof a === 'string' && a.trim() !== '') return b === Number(a)
   return false
 }
 

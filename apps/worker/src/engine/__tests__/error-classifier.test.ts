@@ -160,6 +160,33 @@ describe('evaluateResponseClassification — rejection signals', () => {
     ).toBe(null)
   })
 
+  // Symmetric number/string coercion — config value and response field can be
+  // either type. The previous looseEquals only coerced number-config/string-
+  // response, so a STRING config against a NUMERIC response field silently
+  // failed to match (same class as the branch operator bug).
+  it('equals: string config "9999" matches numeric response 9999 (previously missed)', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'data.createLead.resultCode', equals: '9999' }],
+    }
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 9999 } } }, noHeaders)
+    ).toBe('rejection')
+  })
+
+  it('not_in: string-config accepted list still matches numeric response', () => {
+    const config: ResponseClassificationConfig = {
+      rejection_signals: [{ field: 'data.createLead.resultCode', not_in: ['1000', '1013'] }],
+    }
+    // 1013 is accepted -> not a rejection
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 1013 } } }, noHeaders)
+    ).toBe(null)
+    // 2019 is not accepted -> rejection
+    expect(
+      evaluateResponseClassification(config, 200, { data: { createLead: { resultCode: 2019 } } }, noHeaders)
+    ).toBe('rejection')
+  })
+
   it('not_in operator: missing field returns null (does not falsely match)', () => {
     const config: ResponseClassificationConfig = {
       rejection_signals: [{ field: 'data.createLead.resultCode', not_in: [1013] }],
