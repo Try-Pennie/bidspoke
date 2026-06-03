@@ -1092,6 +1092,39 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // De-overlap pass. dagre separates nodes within a rank, but the post-dagre
+  // overrides (multi-output children snapped to handle-x, convergence nodes
+  // aligned to their branch-x) move nodes without collision checks — so two
+  // chains that end up in the same column (e.g. a filter's cross-link routes
+  // one response leg on top of another) can overlap. Walk each rank left-to-
+  // right and push any node that overlaps its left neighbour rightward by the
+  // minimum gap. Only reachable nodes are shuffled (orphans keep their manual
+  // positions). Runs as part of layout, so collisions resolve live as the
+  // canvas re-lays-out on wiring — no save/reload needed.
+  {
+    const DEOVERLAP_GAP = NODE_GAP
+    const widthOf = (id: string) =>
+      effectiveWidthByNode.get(id) ?? nodeWidth(nodeMap.get(id)?.type, nodeMap.get(id)?.data)
+    const byRank = new Map<number, string[]>()
+    for (const [id, p] of pos) {
+      if (!reachable.has(id)) continue
+      const r = Math.round(p.y)
+      const arr = byRank.get(r) ?? []
+      arr.push(id)
+      byRank.set(r, arr)
+    }
+    for (const ids of byRank.values()) {
+      if (ids.length < 2) continue
+      ids.sort((a, b) => pos.get(a)!.x - pos.get(b)!.x)
+      for (let i = 1; i < ids.length; i++) {
+        const prev = pos.get(ids[i - 1])!
+        const cur = pos.get(ids[i])!
+        const minCenterDist = widthOf(ids[i - 1]) / 2 + widthOf(ids[i]) / 2 + DEOVERLAP_GAP
+        if (cur.x - prev.x < minCenterDist) cur.x = prev.x + minCenterDist
+      }
+    }
+  }
+
   // Top-align siblings within a rank. `pos` holds CENTER coordinates, so
   // converting to top-left as `centerY - height/2` makes same-rank nodes of
   // different heights (e.g. a tall data_store with a value chip next to a

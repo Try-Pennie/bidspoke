@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Node, Edge } from '@xyflow/react'
-import { layoutWorkflow } from '../layout'
+import { layoutWorkflow, nodeWidth, nodeHeight } from '../layout'
 
 // A node deliberately wired from a second, deeper path (a "cross-link") must be
 // DRAWN but must not drive dagre's ranking — otherwise the shared target is
@@ -37,6 +37,19 @@ function build(withCrossLink: boolean): { nodes: Node[]; edges: Edge[] } {
 
 const y = (nodes: Node[], id: string) => nodes.find((n) => n.id === id)!.position.y
 
+// Count pairs of nodes whose rendered boxes overlap (the de-overlap pass should
+// keep this at 0 — dagre + the post-dagre overrides can otherwise stack nodes).
+function overlapCount(laid: Node[]): number {
+  const boxes = laid.map((n) => ({ x: n.position.x, y: n.position.y, w: nodeWidth(n.type, n.data), h: nodeHeight(n.type) }))
+  let c = 0
+  for (let i = 0; i < boxes.length; i++)
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i], b = boxes[j]
+      if (Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 5 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 5) c++
+    }
+  return c
+}
+
 describe('cross-link layout', () => {
   it('keeps a cross-linked shallow node at its shallow rank', () => {
     const base = build(false)
@@ -48,5 +61,10 @@ describe('cross-link layout', () => {
     // i.e. the cross-link did NOT drag it down below L3.
     expect(y(laidX, 'R1')).toBeLessThan(y(laidX, 'L3'))
     expect(y(laidX, 'R1')).toBeCloseTo(y(laidBase, 'R1'), -1)
+  })
+
+  it('produces no overlapping nodes', () => {
+    expect(overlapCount(layoutWorkflow(build(true).nodes, build(true).edges))).toBe(0)
+    expect(overlapCount(layoutWorkflow(build(false).nodes, build(false).edges))).toBe(0)
   })
 })
