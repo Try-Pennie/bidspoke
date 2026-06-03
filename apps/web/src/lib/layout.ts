@@ -302,6 +302,12 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     return stops
   }
+  // Node types that render their card wide enough to span their arms' subtrees
+  // (handles placed above each child column). `filter` is intentionally NOT here:
+  // it's a 2-way gate, not a fan-out splitter, so it stays a fixed-width card and
+  // its pass/exit wires just bend to their targets — otherwise a filter whose arm
+  // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
+  const FANOUT_TYPES = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'latency_gate'])
   const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>, outerStopAt?: Set<string>): number => {
     if (visited.has(startId)) return 0
     if (outerStopAt && outerStopAt.has(startId)) return 0
@@ -310,7 +316,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (!n) return NODE_W
     const ownWidth = nodeWidth(n.type, n.data)
     const handles = configuredHandleIds(n)
-    if (handles && handles.length >= 2) {
+    if (handles && handles.length >= 2 && FANOUT_TYPES.has(n.type ?? '')) {
       // Add this multi-output's own convergence + paired end to the stopAt
       // before walking its slot chains, so each slot's width reflects its
       // exclusive territory (not any rejoin or post-cluster downstream).
@@ -364,11 +370,11 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   //
   // The card-render side of each of these types MUST read `_spanWidth` and
   // `_handleOffsets` from `data`. See `BranchNode.tsx`, `ParallelNode.tsx`,
-  // `BranchEndNode.tsx`, `BidGroupNode.tsx`, `BidEvaluationNode.tsx`,
-  // `FilterNode.tsx`. New node types that opt in here must do the same.
-  const fanOutTypes = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'filter', 'latency_gate'])
+  // `BranchEndNode.tsx`, `BidGroupNode.tsx`, `BidEvaluationNode.tsx`. New node
+  // types that opt in here must do the same. (`filter` is excluded — see
+  // FANOUT_TYPES above; it renders fixed-width with handles at 30%/70%.)
   for (const n of nodes) {
-    if (!fanOutTypes.has(n.type ?? '')) continue
+    if (!FANOUT_TYPES.has(n.type ?? '')) continue
     const handles = configuredHandleIds(n)
     if (!handles || handles.length < 2) continue
     const stopAt = stopAtForMultiOutput(n, handles)
@@ -1071,9 +1077,20 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     // offsets (so handles render above each child's actual column).
     const effW = effectiveWidthByNode.get(node.id)
     const offsets = handleOffsetsByNode.get(node.id)
-    const layoutData = (effW || offsets)
-      ? { ...(node.data as object), _spanWidth: effW, _handleOffsets: offsets }
-      : node.data
+    const staleData = node.data as { _spanWidth?: number; _handleOffsets?: number[] } | undefined
+    let layoutData: typeof node.data
+    if (effW || offsets) {
+      layoutData = { ...node.data, _spanWidth: effW, _handleOffsets: offsets }
+    } else if (staleData?._spanWidth != null || staleData?._handleOffsets != null) {
+      // Node is no longer an active fan-out (e.g. a `filter`, or a type change) —
+      // drop the stale span so `nodeWidth` stops honoring it. Only rebuilds the
+      // object when the fields actually exist, preserving identity otherwise.
+      const { _spanWidth, _handleOffsets, ...rest } = node.data
+      void _spanWidth; void _handleOffsets
+      layoutData = rest
+    } else {
+      layoutData = node.data
+    }
     if (!isReachable && (manual || hasExistingPos)) {
       return layoutData === node.data ? node : { ...node, data: layoutData }
     }
