@@ -725,7 +725,11 @@ function FilterConfig({
   const value = condition.value as string | undefined ?? ''
 
   function setCondition(patch: Partial<{ field: string; operator: EdgeCondition['operator']; value: unknown }>) {
-    onChange({ condition: { ...condition, ...patch } })
+    // Persist the displayed operator default ('eq') so it can't be shown in the
+    // dropdown but silently absent from the saved config — the engine throws on
+    // a missing operator, so a user who never touches the dropdown would save a
+    // condition that errors at runtime.
+    onChange({ condition: { operator, ...condition, ...patch } })
   }
 
   return (

@@ -250,3 +250,23 @@ describe('resolveField — .output tolerance', () => {
     expect(single('steps.foo.output', 'eq', 42, { foo: 42 })).toBe(true)
   })
 })
+
+// --- missing operator defaults to equality (matches the config UI default,
+// which shows 'equals' but historically didn't persist it) ---
+
+describe('condition with no operator defaults to eq', () => {
+  function single(field: string, value: unknown, steps: Record<string, unknown>): boolean {
+    return evaluateConditionGroups(
+      // operator intentionally omitted — mirrors a saved filter config where the
+      // user never touched the operator dropdown.
+      [{ conditions: [{ field, value } as unknown as EdgeCondition], logic: 'AND' }],
+      'AND',
+      ctx({}, steps)
+    )
+  }
+
+  it('behaves as equals instead of throwing', () => {
+    expect(single('steps.foo.output.x', 0, { foo: { x: 0 } })).toBe(true)
+    expect(single('steps.foo.output.x', 0, { foo: { x: 5 } })).toBe(false)
+  })
+})

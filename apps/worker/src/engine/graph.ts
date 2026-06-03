@@ -81,7 +81,10 @@ function evaluateCondition(
   ctx: ExecutionContext
 ): boolean {
   const actual = resolveField(condition.field, ctx)
-  switch (condition.operator) {
+  // A missing operator defaults to equality — the config UI shows 'equals' as
+  // the default in its dropdown, so an un-touched condition (operator never
+  // written) must behave as equals rather than throw. Matches the UI default.
+  switch (condition.operator || 'eq') {
     case 'eq':       return valuesEqual(actual, condition.value)
     case 'neq':      return !valuesEqual(actual, condition.value)
     case 'gt':       return numericCompare(actual, condition.value, (a, b) => a > b)
