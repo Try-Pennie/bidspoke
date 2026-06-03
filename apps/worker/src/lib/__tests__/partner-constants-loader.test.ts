@@ -3,11 +3,17 @@
  * Cache hit skips Supabase, cache miss fetches + stores, null columns excluded,
  * invalidate removes key.
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { loadPartnerConstants, invalidatePartnerConstantsCache } from '../partner-constants-loader'
 
 const ORG = 'org-test'
 const CACHE_KEY = `partner-constants-v2-${ORG}`
+
+// The loader keeps a process-level memory cache; clear it between tests so each
+// starts cold (otherwise a prior test's load is served from memory).
+beforeEach(async () => {
+  await invalidatePartnerConstantsCache(ORG, makeKv())
+})
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -199,6 +205,62 @@ describe('loadPartnerConstants', () => {
     const result = await loadPartnerConstants(ORG, kv, sb as never)
 
     expect(result.activeBidding.partial).toBe(false)
+  })
+})
+
+describe('loadPartnerConstants — memory cache + single-flight', () => {
+  it('serves a second call from memory without touching KV', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([{ uuid: 'uuid-1', partner_slug: 'sofi' }], [])
+
+    const first = await loadPartnerConstants(ORG, kv, sb as never)
+    const second = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(second).toEqual(first)
+    expect(kv.get).toHaveBeenCalledTimes(1) // only the first call hit KV
+    expect(sb.from).toHaveBeenCalledTimes(2) // 2 tables, once total
+  })
+
+  it('coalesces concurrent cold loads into a single KV/DB read', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([{ uuid: 'uuid-1', partner_slug: 'sofi' }], [])
+
+    const [a, b, c] = await Promise.all([
+      loadPartnerConstants(ORG, kv, sb as never),
+      loadPartnerConstants(ORG, kv, sb as never),
+      loadPartnerConstants(ORG, kv, sb as never),
+    ])
+
+    expect(a).toEqual(b)
+    expect(b).toEqual(c)
+    expect(kv.get).toHaveBeenCalledTimes(1)
+    expect(sb.from).toHaveBeenCalledTimes(2) // partner_uuid_map + partner_configs, once
+  })
+
+  it('a load failure is not memoized — the next call retries', async () => {
+    const kv = {
+      get: vi.fn().mockRejectedValueOnce(new Error('KV down')).mockResolvedValue(null),
+      put: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    } as unknown as KVNamespace
+    const sb = makeSupabase([], [])
+
+    await expect(loadPartnerConstants(ORG, kv, sb as never)).rejects.toThrow('KV down')
+    // second call should not return a cached failure — it loads fresh
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+    expect(result.subAccountIdsMap).toEqual({})
+    expect(kv.get).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidate clears the memory copy so the next load refetches', async () => {
+    const kv = makeKv(null)
+    const sb = makeSupabase([{ uuid: 'uuid-1', partner_slug: 'sofi' }], [])
+
+    await loadPartnerConstants(ORG, kv, sb as never)
+    await invalidatePartnerConstantsCache(ORG, kv)
+    await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(kv.get).toHaveBeenCalledTimes(2) // memory cleared, so KV read again
   })
 })
 

@@ -5,8 +5,20 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // the Constants node off the cold-DB path; it's finite only as a self-healing
 // backstop so a missed invalidation can't leave bidding data (activeBidding,
 // sub_account_min_bids) stale forever.
-const TTL = 60 * 60 * 24 * 30 // 30 days
+const TTL = 60 * 60 * 24 * 30 // 30 days (KV)
 const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
+
+// In front of KV sits a per-isolate memory cache + single-flight. A warm isolate
+// serves from memory without touching KV (sub-ms), and concurrent loads on a cold
+// isolate coalesce to one KV/DB read instead of stampeding Supabase — the failure
+// mode behind the constants-node burst timeouts (cold KV miss -> slow Supabase).
+// The TTL is deliberately short: invalidatePartnerConstantsCache busts KV on every
+// partner/uuid edit but cannot reach other isolates' memory, so this bounds how
+// long a warm isolate can serve a pre-edit copy of bidding-critical data
+// (activeBidding, sub_account_min_bids). It only needs to outlast a traffic burst.
+const MEMORY_TTL_MS = 15_000
+const memoryCache = new Map<string, { value: PartnerConstants; expiresAt: number }>()
+const inflight = new Map<string, Promise<PartnerConstants>>()
 
 export interface PartnerConstants {
   subAccountIdsMap: Record<string, string>
@@ -19,6 +31,30 @@ export interface PartnerConstants {
 }
 
 export async function loadPartnerConstants(
+  orgId: string,
+  kv: KVNamespace,
+  supabase: SupabaseClient
+): Promise<PartnerConstants> {
+  const memo = memoryCache.get(orgId)
+  if (memo && memo.expiresAt > Date.now()) return memo.value
+
+  const existing = inflight.get(orgId)
+  if (existing) return existing
+
+  const load = (async () => {
+    try {
+      const value = await loadFromKvOrDb(orgId, kv, supabase)
+      memoryCache.set(orgId, { value, expiresAt: Date.now() + MEMORY_TTL_MS })
+      return value
+    } finally {
+      inflight.delete(orgId)
+    }
+  })()
+  inflight.set(orgId, load)
+  return load
+}
+
+async function loadFromKvOrDb(
   orgId: string,
   kv: KVNamespace,
   supabase: SupabaseClient
@@ -76,5 +112,8 @@ export async function loadPartnerConstants(
 }
 
 export async function invalidatePartnerConstantsCache(orgId: string, kv: KVNamespace): Promise<void> {
+  // Clears this isolate's memory copy too; other isolates self-heal within MEMORY_TTL_MS.
+  memoryCache.delete(orgId)
+  inflight.delete(orgId)
   await kv.delete(cacheKey(orgId))
 }
