@@ -1,6 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-const TTL = 300
+// Partner constants change rarely and every mutating route busts this cache
+// explicitly (see invalidatePartnerConstantsCache call sites). The long TTL keeps
+// the Constants node off the cold-DB path; it's finite only as a self-healing
+// backstop so a missed invalidation can't leave bidding data (activeBidding,
+// sub_account_min_bids) stale forever.
+const TTL = 60 * 60 * 24 * 30 // 30 days
 const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
 
 export interface PartnerConstants {

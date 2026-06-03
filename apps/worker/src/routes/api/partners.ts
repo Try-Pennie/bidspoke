@@ -157,9 +157,9 @@ partners.post('/', async (c) => {
     slug,
   })
 
-  if (body.sell_off_offer_title || body.sell_off_offer_details || body.click_url || body.sub_account_min_bids) {
-    await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
-  }
+  // A new partner always affects the constants set (subAccountIdsMap / activeBidding),
+  // so invalidate unconditionally rather than gating on the copy fields.
+  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
 
   return c.json(data, 201)
 })
@@ -218,7 +218,8 @@ partners.put('/:id', async (c) => {
     'sell_off_offer_title' in updates ||
     'sell_off_offer_details' in updates ||
     'click_url' in updates ||
-    'sub_account_min_bids' in updates
+    'sub_account_min_bids' in updates ||
+    'is_active' in updates
   if (affectsConstants) {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
@@ -255,6 +256,8 @@ partners.delete('/:id', async (c) => {
     name: existing.name,
     slug: existing.slug,
   })
+
+  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
 
   return c.json({ ok: true })
 })

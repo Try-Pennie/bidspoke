@@ -1,0 +1,354 @@
+{
+    "triggers": [
+        {
+            "id": "hi_wWHk3EX",
+            "created_at": 1773761190,
+            "updated_at": 1773761211,
+            "custom_response": true,
+            "endpoint_url": "https://eo1dx0m1f96hf7f.m.pipedream.net",
+            "key": "eo1dx0m1f96hf7f",
+            "type": "HttpInterface"
+        }
+    ],
+    "steps": [
+        {
+            "id": "c_2jfLAJeO",
+            "type": "CodeCell",
+            "namespace": "constants",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_5ZiZyOlR",
+                "code": "export default defineComponent({\n  async run({ steps, $ }) {\n    if (steps.trigger.event.method !== \"POST\" || !steps.trigger.event?.body?.personalInformation) {\n      $.flow.exit();\n    }\n\n    const today = new Date().toISOString().split('T')[0];\n\n    return {\n      offerName: \"Reserve My Loan\",\n      offerTitle: \"Get Cash Without the Credit Check\",\n      offerDetails: \"A smarter way to borrow — approved based on what you earn, not your credit score.<ul><li>Borrow up to $1,000 — no credit score required</li><li>Approved in under 5 minutes</li><li>Funds deposited as soon as same day</li><li>100% online, start to finish</li></ul>\",\n      pennieClickUrl: \"https://reservemyloan.com/portal/ls\",\n      productType: \"installment_loan\",\n      logoSrc: \"https://pub-aaaeedacc51943d1a26b21aaf3aab284.r2.dev/RML_White.png\",\n      states: [\"DE\", \"ID\", \"KS\", \"MO\", \"MS\", \"SC\", \"TX\", \"UT\", \"WI\"],\n      multiplier: 0.65,\n      biddingActive: true,\n      maximumLoanAmount: 5001,\n      subAccountBids: {\n        \"3714027c-81cf-4ab9-9db3-77f8dc0cbf80\": 9.23,\n        \"47430d99-6e9b-465a-b92b-d13be78e2d9e\": 3.85,\n        \"462a8345-3957-4fb2-b3f1-68b63fd4c5f3\": 4.62,\n        \"b3918028-6417-4a3d-acd7-c0f4ca1f9e28\": 6.15,\n        \"bc36a297-28a5-476b-a68b-22a16baa60bf\": 3.08,\n        \"0d868153-1e04-4425-95f9-ce2320a030b0\": 6.15,\n        \"34c7f980-f343-4348-b85f-562697bd2980\": 4.62,\n        \"f7d57eb6-4c87-437b-8686-fdf088a29846\": 9.23,\n      },\n    }\n  },\n})",
+                "codeHash": "3c19fd17fbaff99cb06fb6875aed001b15a330b4ec097fd7706803f13125f84f",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_W3fnOe0v",
+            "type": "CodeCell",
+            "namespace": "parsed_name",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_n5i0JALv",
+                "code": "function sanitizeName(name, maxLength) {\n  if (name == null) return \"\";\n  return name.replace(/[^a-zA-Z]/g, \" \").substring(0, maxLength);\n}\n\nfunction extractMiddleName(fullName) {\n  if (!fullName) return '';\n  const nameParts = fullName.trim().split(' ');\n  if (nameParts.length > 2) {\n    return nameParts[1].charAt(0).toUpperCase();\n  }\n  return '';\n}\n\nexport default defineComponent({\n  async run({ steps, $ }) {\n    const firstName = steps.trigger.event.body.personalInformation.firstName;\n    const lastName = steps.trigger.event.body.personalInformation.lastName;\n    const middleName = extractMiddleName(firstName);\n    return {\n      firstName: sanitizeName(firstName, 15),\n      lastName: sanitizeName(lastName, 25),\n      middleName: sanitizeName(middleName, 15)\n    }\n  }\n})",
+                "codeHash": "b9951ea4f2552ffa01beeaff1bd9d941837014b6a057760884c5008b7f1bb345",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_YYf45zeA",
+            "type": "CodeCell",
+            "namespace": "validate_bidding_and_state",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_L4iqo2WO",
+                "code": "function isBlank(name) {\n  return !name || name.trim() === \"\" || !/[a-zA-Z]/.test(name);\n};\n\nexport default defineComponent({\n  async run({ steps, $ }) {\n    const constants = steps.constants.$return_value;\n    const allowedStates = constants.states;\n    const state = steps.trigger.event.body.personalInformation.state;\n    const validState = allowedStates.includes(state);\n\n    const firstName = steps.parsed_name.$return_value.firstName;\n    const lastName = steps.parsed_name.$return_value.lastName;\n    const validName = !isBlank(firstName) && !isBlank(lastName);\n\n    const biddingActive = constants.biddingActive;\n\n    const loanAmount = steps.trigger.event.body.loanInformation.loanAmount;\n    const validLoanAmount = loanAmount <= constants.maximumLoanAmount;\n\n    const isMilitary = steps.trigger.event.body.personalInformation.militaryStatus === true;\n\n    if (biddingActive && validState && validName && validLoanAmount && !isMilitary) return;\n\n    if (!biddingActive) {\n      await $.respond({\n        status: 200,\n        headers: {\n          \"Content-Type\": \"application/json\",\n        },\n        body: {\n          lead_id: steps.trigger.event.body.leadUuid,\n          status: \"rejected\",\n          reason: \"bidding not active\",\n        }\n      });\n      console.log(`Rejected due to bidding not being active: ${biddingActive}`);\n      $.flow.exit(\"Rejected due to bidding not active\");\n    };\n\n    if (!validState) {\n      await $.respond({\n        status: 200,\n        headers: {\n          \"Content-Type\": \"application/json\",\n        },\n        body: {\n          status: \"rejected\",\n          reason: \"ineligible state\",\n        }\n      });\n      console.log(`Rejected due to invalid_state: ${state}`);\n      $.flow.exit(\"Rejected due to invalid_state\");\n    }\n\n    if (!validName) {\n      await $.respond({\n        status: 200,\n        headers: { \"Content-Type\": \"application/json\" },\n        body: {\n          status: \"rejected\",\n          reason: \"invalid name\",\n        }\n      });\n      console.log(`Rejected due to invalid name: firstName=\"${firstName}\", lastName=\"${lastName}\"`);\n      $.flow.exit(\"Rejected due to invalid_name\");\n    }\n\n    if (!validLoanAmount) {\n      await $.respond({\n        status: 200,\n        headers: { \"Content-Type\": \"application/json\" },\n        body: {\n          status: \"rejected\",\n          reason: \"loan amount exceeds maximum\",\n        }\n      });\n      console.log(`Rejected due to loan amount: ${loanAmount}`);\n      $.flow.exit(\"Rejected due to loan_amount_exceeded\");\n    }\n\n    if (isMilitary) {\n      await $.respond({\n        status: 200,\n        headers: { \"Content-Type\": \"application/json\" },\n        body: {\n          status: \"rejected\",\n          reason: \"military status ineligible\",\n        }\n      });\n      console.log(`Rejected due to military status`);\n      $.flow.exit(\"Rejected due to military_status\");\n    }\n  },\n})",
+                "codeHash": "c09d59882ca074f3de02623d4e43a71bacbfd2573d6bdef7afc7df82c2e255b3",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_9Of0MY6O",
+            "type": "CodeCell",
+            "namespace": "applicant_body",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_YNiwEZW4",
+                "code": "import { axios } from \"@pipedream/platform\";\n\nfunction transformToSalesforceFormat(inputData, traceId, parsedName) {\n  const personal = inputData.personalInformation || {};\n  const loan = inputData.loanInformation || {};\n  const mortgage = inputData.mortgageInformation || {};\n  const credit = inputData.creditInformation || {};\n  const financial = inputData.financialInformation || {};\n  const education = inputData.educationInformation || {};\n  const legal = inputData.legalInformation || {};\n  const session = inputData.sessionInformation || {};\n\n  const mapEmploymentStatus = (status) => {\n    if (!status) return 'Other';\n    \n    const statusMap = {\n      'employed': 'Employed',\n      'employed_full_time': 'employed_full_time',\n      'employed_part_time': 'employed_part_time',\n      'military': 'Military',\n      'not_employed': 'not_employed',\n      'self_employed': 'self_employed',\n      'retired': 'Retired',\n      'other': 'Other'\n    };\n    return statusMap[status.toLowerCase()] || 'Other';\n  };\n\n  const mapEducationLevel = (level) => {\n    if (!level) return 'Other';\n    \n    const levelMap = {\n      'high_school': 'high_school',\n      'associate': 'Associate',\n      'bachelors': 'Bachelors',\n      'masters': 'Masters',\n      'doctorate': 'Doctorate',\n      'other_grad_degree': 'other_grad_degree',\n      'certificate': 'Certificate',\n      'did_not_graduate': 'did_not_graduate',\n      'still_enrolled': 'still_enrolled',\n      'other': 'Other'\n    };\n    return levelMap[level.toLowerCase()] || 'Other';\n  };\n\n  const mapLoanPurpose = (purpose) => {\n    if (!purpose) return 'Other';\n    \n    const purposeMap = {\n      'auto': 'Auto',\n      'auto_purchase': 'auto_purchase',\n      'auto_refinance': 'auto_refinance',\n      'baby': 'Baby',\n      'boat': 'Boat',\n      'business': 'Business',\n      'car_repair': 'car_repair',\n      'cosmetic': 'Cosmetic',\n      'credit_card_refi': 'credit_card_refi',\n      'debt_consolidation': 'debt_consolidation',\n      'emergency': 'Emergency',\n      'engagement': 'Engagement',\n      'green': 'Green',\n      'home_improvement': 'home_improvement',\n      'home_purchase': 'home_purchase',\n      'home_refi': 'home_refi',\n      'household_expenses': 'household_expenses',\n      'large_purchases': 'large_purchases',\n      'life_event': 'life_event',\n      'medical_dental': 'medical_dental',\n      'motorcycle': 'Motorcycle',\n      'moving_relocation': 'moving_relocation',\n      'other': 'Other',\n      'rv': 'Rv',\n      'special_occasion': 'special_occasion',\n      'student_loan': 'student_loan',\n      'student_loan_refi': 'student_loan_refi',\n      'taxes': 'Taxes',\n      'unknown': 'Unknown',\n      'vacation': 'Vacation',\n      'wedding': 'Wedding'\n    };\n    return purposeMap[purpose.toLowerCase()] || 'Other';\n  };\n\n  const mapPaymentFrequency = (frequency) => {\n    if (!frequency) return 'Monthly';\n    \n    const frequencyMap = {\n      'weekly': 'Weekly',\n      'biweekly': 'biweekly',\n      'twice_monthly': 'twice_monthly',\n      'monthly': 'Monthly'\n    };\n    return frequencyMap[frequency.toLowerCase()] || 'Monthly';\n  };\n\n  const mapCreditRating = (rating) => {\n    if (!rating) return 'Poor (<600)';\n    \n    const ratingMap = {\n      'excellent': 'Excellent (720+)',\n      'good': 'Good (660-719)',\n      'fair': 'Fair (620-659)',\n      'poor': 'Poor (<600)',\n      'limited': 'Poor (<600)',\n      'unknown': 'Poor (<600)'\n    };\n    return ratingMap[rating.toLowerCase()] || 'Poor (<600)';\n  };\n\n  const mapPropertyStatus = (status) => {\n    if (!status) return 'Rent';\n    \n    const statusMap = {\n      'own_outright': 'Own Outright',\n      'own_with_mortgage': 'Own with Mortgage',\n      'rent': 'Rent'\n    };\n    return statusMap[status.toLowerCase()] || 'Rent';\n  };\n\n  const formatPhoneNumber = (phone) => {\n    if (!phone) return '';\n    // Remove all non-digit characters\n    const digits = phone.replace(/\\D/g, '');\n    // Format as (XXX) XXX-XXXX\n    if (digits.length === 10) {\n      return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;\n    }\n    return phone; // Return original if not 10 digits\n  };\n\n  const formatSSN = (ssn) => {\n    if (!ssn) return '';\n    // Remove all non-digit characters\n    const digits = ssn.replace(/\\D/g, '');\n    return digits;\n  };\n\n  return {\n    \"Last_Name__c\": parsedName.lastName || '',\n    \"Middle_Name__c\": parsedName.middleName || '',\n    \"First_Name__c\": parsedName.firstName || '',\n    \"State__c\": personal.state || '',\n    \"City__c\": personal.city || '',\n    \"Zip__c\": personal.zipcode || '',\n    \"Email__c\": personal.email || '',\n    \"Phone__c\": formatPhoneNumber(personal.primaryPhone),\n    \"BirthDate__c\": personal.dateOfBirth || '',\n    \"Street__c\": personal.address1 || '',\n    \"AptSuite__c\": personal.address2 || '',\n    \"LoanAmount__c\": loan.loanAmount || 0,\n    \"LoanPurpose__c\": mapLoanPurpose(loan.purpose),\n    \"IncomePmtFrequency__c\": mapPaymentFrequency(financial.employmentPayFrequency),\n    \"AnnualIncomeBeforeTaxes__c\": financial.annualIncome || 0,\n    \"EmploymentStatus__c\": mapEmploymentStatus(financial.employmentStatus),\n    \"EducationLevel__c\": mapEducationLevel(education.educationLevel),\n    \"SocialSecurityNumber__c\": formatSSN(personal.ssn),\n    \"RentOrOwn__c\": mapPropertyStatus(mortgage.propertyStatus),\n    \"ApproximateCreditRating__c\": mapCreditRating(credit.providedCreditRating),\n    \"LeadUUID__c\": inputData.leadUuid,\n    \"SubaccountUUID__c\": inputData.subAccountUuid,\n    \"Source__c\": \"Engine\",\n    \"ProspectTraceId__c\": `https://pipedream.com/@penniefinancial/projects/proj_YRsogdx/reserve-bidding-workflow-p_5VCPj2d/inspect/${traceId}`,\n    \"TCPAConsentFlag__c\": legal.consentsToTcpa,\n    \"FCRAConsentFlag__c\": legal.consentsToFcra,\n    \"User_Agent__c\": session.userAgent,\n    \"User_IP__c\": session.ipAddress,\n  }\n}\n\nexport default defineComponent({\n  async run({ steps, $ }) {\n    // Reference previous step data using the steps object and return data to use it in future steps\n    try {\n      return transformToSalesforceFormat(steps.trigger.event.body, steps.trigger.context.trace_id, steps.parsed_name.$return_value);\n    } catch (error) {\n      console.error('Error transforming data:', error);\n      await $.respond({\n        status: 500,\n        body: {\n          lead_id: steps.trigger.event.body.leadUuid,\n          status: \"error\",\n          reason: \"internal server error\",\n        }\n      });\n      await axios($, {\n        method: \"post\",\n        url: \"https://hooks.slack.com/triggers/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\",\n        data: {\n          pipedream_run_id: steps.trigger.context.trace_id,\n        },\n      });\n      $.flow.exit();\n    }\n  },\n})",
+                "codeHash": "3312315abeb8d863b5b83a5e94722826caf95e35c4ad0be9a2fee5115435ed8b",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_1qflKW3q",
+            "type": "CodeCell",
+            "namespace": "create_applicant",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_MeixZREK",
+                "code": "import { axios } from \"@pipedream/platform\";\n\nexport const delay = (ms) => {\n  return new Promise(resolve => setTimeout(resolve, ms));\n};\n\nexport const isRetryable = (error) => {\n  const retryableCodes = ['ECONNABORTED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT'];\n  const retryableStatuses = [429]; // Rate limiting\n  const nonRetryableStatuses = [400, 401, 403, 404, 422]; // Client errors that won't change on retry\n  \n  if (retryableCodes.includes(error.code)) return true;\n  if (retryableStatuses.includes(error.status)) return true;\n  if (error.status >= 500) return true;\n  if (nonRetryableStatuses.includes(error.status)) return false;\n  \n  return true; // Default to retry for unknown errors\n};\n\nexport const makeRequestWithRetry = async (url, options = {}, maxRetries = 2, timeoutMs = 10000) => {\n  const baseDelay = 1000; // Start with 1 second delay\n  \n  for (let attempt = 0; attempt <= maxRetries; attempt++) {\n    try {\n      console.log(`Attempt ${attempt + 1}/${maxRetries + 1} for ${url}`);\n      \n      const controller = new AbortController();\n      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);\n      \n      const response = await fetch(url, {\n        ...options,\n        signal: controller.signal\n      });\n      \n      clearTimeout(timeoutId);\n      \n      console.log(`Request succeeded on attempt ${attempt + 1} with status ${response.status}`);\n      return response;\n      \n    } catch (error) {\n      const isLastAttempt = attempt === maxRetries;\n      const isRetryableError = isRetryable(error);\n      \n      console.log(`Attempt ${attempt + 1} failed:`, error.message);\n      \n      if (isLastAttempt || !isRetryableError) {\n        // If it's the last attempt or non-retryable error, throw the error\n        throw error;\n      }\n      \n      const delayMs = baseDelay * Math.pow(2, attempt);\n      console.log(`Retrying in ${delayMs}ms...`);\n      await delay(delayMs);\n    }\n  }\n};\n\nexport default defineComponent({\n  props: {\n    salesforce: {\n      type: \"app\",\n      app: \"salesforce_rest_api\"\n    },\n  },\n\n  async run({ steps, $ }) {\n    try {\n      const response = await makeRequestWithRetry(\n        \"https://trypennie.my.salesforce.com/services/data/v66.0/sobjects/Applicant__c\",\n        {\n          method: \"POST\",\n          headers: {\n            \"Authorization\": `Bearer ${this.salesforce.$auth.oauth_access_token}`,\n            \"Content-Type\": \"application/json\"\n          },\n          body: JSON.stringify(steps.applicant_body.$return_value)\n        }\n      );\n\n      if (response.status !== 201 && response.status !== 200) {\n        console.log(`Salesforce API returned non-success status: ${response.status}`);\n        \n        const errorBody = await response.json().catch(() => ({}));\n        console.error('Salesforce error response:', errorBody);\n        \n        await $.respond({\n          status: 200,\n          headers: {\n            \"Content-Type\": \"application/json\",\n          },\n          body: {\n            lead_id: steps.trigger.event.body.leadUuid,\n            status: \"rejected\",\n            reason: \"duplicated lead\",\n          }\n        });\n        \n        return $.flow.exit(`Salesforce applicant creation failed with status ${response.status}`);\n      }\n\n      const responseData = await response.json();\n      console.log('Successfully created Salesforce applicant:', responseData);\n\n      return responseData;\n    } catch (error) {\n      console.error('Error creating Salesforce applicant:', error.message || error);\n      console.error('Full error:', JSON.stringify(error, null, 2));\n      \n      await $.respond({\n        status: 500,\n        headers: {\n          \"Content-Type\": \"application/json\",\n        },\n        body: {\n          lead_id: steps.trigger.event.body.leadUuid,\n          status: \"error\",\n          reason: \"internal server error\",\n        }\n      });\n\n      await axios($, {\n        method: \"POST\",\n        url: \"https://hooks.slack.com/triggers/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\",\n        data: {\n          pipedream_run_id: steps.trigger.context.trace_id,\n        },\n      });\n\n      return $.flow.exit(\"Failed to create Salesforce applicant after retries\");\n    }\n  }\n});",
+                "codeHash": "81e42732dc82fa11f78c20a52e965d060fb0bfa5b5f660a06addc8293aff8b75",
+                "configurableProps": [
+                    {
+                        "name": "salesforce",
+                        "type": "app",
+                        "app": "salesforce_rest_api"
+                    }
+                ],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": [
+                    {
+                        "appId": "app_OrZhD7",
+                        "nameSlug": "salesforce_rest_api",
+                        "authType": "oauth"
+                    }
+                ]
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_y1fmNGdR",
+            "type": "CodeCell",
+            "namespace": "fetch_lendswift_credentials",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_L4iqobbz",
+                "code": "export default defineComponent({\n  async run({ steps, $ }) {\n    const state = steps.trigger.event.body.personalInformation.state;\n\n    if (!state) {\n      throw new Error(\"No state found in request body\");\n    }\n\n    const username = process.env[`LENDSWIFT_${state}_USERNAME`];\n    const password = process.env[`LENDSWIFT_${state}_PASSWORD`];\n\n    if (!username || !password) {\n      throw new Error(`No credentials found for state: ${state}`);\n    }\n\n    console.log(`Credentials found for state: ${state}`);\n\n    return { username, password };\n  },\n});",
+                "codeHash": "4ae6a9d5cfe3be613829d27f7e93995871f953ff55575a6c46cc8b22477288c5",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_AVfvjvBo",
+            "type": "CodeCell",
+            "namespace": "ping_lendswift",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_A3ip0YMg",
+                "code": "import { axios } from \"@pipedream/platform\";\n\nasync function transformToLendSwift(body, refId, leadAffiliate, leadProvider, leadCampaign, subAccountBids) {\n  const personal = body.personalInformation || {};\n  const loan = body.loanInformation || {};\n  const financial = body.financialInformation || {};\n  const mortgage = body.mortgageInformation || {};\n  const session = body.sessionInformation || {};\n\n  const mapIncomeType = (status) => {\n    const map = {\n      'employed': '1', 'employed_full_time': '1', 'employed_part_time': '1',\n      'military': '6', 'not_employed': '6', 'self_employed': '5',\n      'retired': '4', 'other': '6'\n    };\n    return map[(status || '').toLowerCase()] || '6';\n  };\n\n  const mapPayFrequency = (freq) => {\n    const map = { 'weekly': '1', 'biweekly': '2', 'twice_monthly': '3', 'monthly': '4' };\n    return map[(freq || '').toLowerCase()] || '4';\n  };\n\n  const formatSSN = (ssn) => (ssn || '').replace(/\\D/g, '');\n\n  const formatPhone = (phone) => {\n    const digits = (phone || '').replace(/\\D/g, '');\n    if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;\n    return phone || '';\n  };\n\n  const monthlyIncome = financial.annualIncome ? +(financial.annualIncome / 12).toFixed(2) : 0;\n\n  // Next pay date: 7 days from today as a sensible default\n  const nextPayDay = (() => {\n    const d = new Date();\n    d.setDate(d.getDate() + 7);\n    const mm = String(d.getMonth() + 1).padStart(2, '0');\n    const dd = String(d.getDate()).padStart(2, '0');\n    return `${mm}/${dd}/${d.getFullYear()}`;\n  })();\n\n  const minBidValue = subAccountBids?.[body.subAccountUuid] ?? null;\n\n  return {\n    data: {\n      Username: body.lendSwiftUsername,\n      Password: body.lendSwiftPassword,\n      RefID: refId || body.leadUuid || '',\n      LeadAffiliate: leadAffiliate || body.subAccountUuid || '',\n      LeadCost: 0,\n      min_bid_value: minBidValue ?? 0.00,\n      Firstname: personal.firstName || '',\n      Lastname: personal.lastName || '',\n      SSN: formatSSN(personal.ssn),\n      Email: personal.email || '',\n      DOB: personal.dateOfBirth || '',\n      Language: 'e',\n      Military: 'n',\n      HomeAddress: personal.address1 || '',\n      HomeCity: personal.city || '',\n      HomeState: personal.state || '',\n      HomeZip: personal.zipcode || '',\n      HomePhone: formatPhone(personal.primaryPhone),\n      CellPhone: formatPhone(personal.primaryPhone),\n      HomeOwner: ['own_outright', 'own_with_mortgage'].includes(mortgage.propertyStatus) ? 'y' : 'n',\n      BankInfo: {\n        AccountToUse: 'C'\n      },\n      EmploymentInfo: {\n        MonthlyIncome: monthlyIncome,\n        PayFrequency: mapPayFrequency(financial.employmentPayFrequency),\n        IncomeType: mapIncomeType(financial.employmentStatus),\n        PayrollType: '2',\n        NextPayDay: nextPayDay,\n      },\n      LoanInfo: {\n        Amount: loan.loanAmount || 0\n      },\n      LeadProvider: leadProvider || '',\n      LeadCampaign: leadCampaign || loan.purpose || '',\n      ClientIPAddress: session.ipAddress || ''\n    },\n    control: {\n      execution_mode: 'sync'\n    },\n    mock_data: {},\n    metadata: {},\n  };\n}\n\nasync function makeLendSwiftRequest($, payload, sandboxUrl) {\n  try {\n    const response = await axios($, {\n      method: 'post',\n      url: sandboxUrl,\n      headers: {\n        'Content-Type': 'application/json',\n        'X-Api-Key': payload.apiKey\n      },\n      data: payload.body\n    });\n\n    console.log(response);\n\n    return {\n      error: false,\n      statusCode: 200,\n      data: response.data || response\n    };\n  } catch (error) {\n    console.log(\"LendSwift request error details:\", error);\n    return {\n      error: true,\n      statusCode: error.response?.status || 500,\n      message: error.response?.data ? JSON.stringify(error.response.data) : error.message\n    };\n  }\n}\n\nasync function makeLendSwiftRequestWithRetry($, payload, endpointUrl) {\n  console.log(\"Making initial request to LendSwift...\");\n  let result = await makeLendSwiftRequest($, payload, endpointUrl);\n\n  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {\n    console.log(`First request failed with ${result.statusCode}, retrying after 250ms...`);\n    await new Promise(resolve => setTimeout(resolve, 250));\n\n    console.log(\"Making retry request to LendSwift...\");\n    result = await makeLendSwiftRequest($, payload, endpointUrl);\n\n    if (result.error) {\n      console.log(`Retry also failed with status ${result.statusCode}`);\n    } else {\n      console.log(\"Retry request succeeded!\");\n    }\n  }\n\n  return result;\n}\n\nexport default {\n  name: \"LendSwift Lead Submission\",\n  version: \"1.0.0\",\n  key: \"lendswift-lead-submission\",\n  description: \"Submits a loan lead to the LendSwift API via Taktile and returns the decision\",\n  props: {\n    lendSwiftApiKey: {\n      type: \"string\",\n      label: \"LendSwift API Key\",\n      description: \"The X-Api-Key header value provided by LendSwift\",\n      secret: true,\n      optional: false\n    },\n    lendSwiftUsername: {\n      type: \"string\",\n      label: \"LendSwift Username\",\n      description: \"State-specific username provided by LendSwift (use 'test' in sandbox)\",\n      optional: false\n    },\n    lendSwiftPassword: {\n      type: \"string\",\n      label: \"LendSwift Password\",\n      description: \"State-specific password provided by LendSwift (use 'test' in sandbox)\",\n      secret: true,\n      optional: false\n    },\n    endpointUrl: {\n      type: \"string\",\n      label: \"Endpoint URL\",\n      description: \"LendSwift/Taktile endpoint URL (sandbox or production)\",\n      default: \"https://risk.bf9baa41.decide.taktile.com/run/api/v1/flows/training/sandbox/decide\",\n      optional: false\n    },\n    leadProvider: {\n      type: \"string\",\n      label: \"Lead Provider\",\n      description: \"Your company/source name as provided by LendSwift\",\n      optional: false\n    },\n    applicantId: {\n    type: \"string\",\n    label: \"Applicant ID\",\n    description: \"ID from the create_applicant step\",\n    optional: false\n  },\n    body: {\n      type: \"object\",\n      label: \"Form submission body\",\n      description: \"The lead data from the form submission\",\n      optional: false\n    },\n    subAccountBids: {\n      type: \"object\",\n      label: \"Sub Account Bids Map\",\n      description: \"Map of subAccountUuid to minimum bid value (from constants step)\",\n      optional: true\n    }\n  },\n  type: \"action\",\n  methods: {\n    transformToLendSwift,\n    makeLendSwiftRequest,\n    makeLendSwiftRequestWithRetry\n  },\n  async run({ $ }) {\n    const { lendSwiftApiKey, lendSwiftUsername, lendSwiftPassword, endpointUrl, leadProvider, body, subAccountBids } = this;\n\n    const submissionId = body.submissionid || body.submissionId || body.leadUuid;\n    console.log(`Processing LendSwift lead submission for: ${submissionId}`);\n\n    try {\n      // Step 1: Build the formatted request body\n      const formattedBody = await transformToLendSwift(\n        { ...body, lendSwiftUsername, lendSwiftPassword },\n        this.applicantId,\n        body.subAccountUuid,\n        leadProvider,\n        body.loanInformation?.purpose,\n        subAccountBids\n      );\n      console.log(\"formattedBody:\", formattedBody);\n\n      // Step 2: Submit to LendSwift with retry\n      const result = await makeLendSwiftRequestWithRetry(\n        $,\n        { apiKey: lendSwiftApiKey, body: formattedBody },\n        endpointUrl\n      );\n\n      if (result.error) {\n        console.error('Error in LendSwift lead submission:', error);\n        $.export(\"$summary\", `Error submitting lead to LendSwift: ${result.message}`);\n        await $.respond({\n          status: 500,\n          body: {\n            lead_id: body.leadUuid,\n            status: \"error\",\n            reason: \"internal server error\"\n          }\n        });\n        await $.http.post(\"https://hooks.slack.com/triggers/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\", {\n          pipedream_run_id: steps.trigger.context.id,\n        });\n        $.flow.exit();\n      }\n\n      const decision = result.data?.data?.status;\n      $.export(\"$summary\", `LendSwift decision for ${submissionId}: ${decision}`);\n\n      return result;\n    } catch (error) {\n      console.error('Error in LendSwift lead submission:', error);\n      $.export(\"$summary\", `Error: ${error.message}`);\n      await $.respond({\n        status: 500,\n        body: {\n          lead_id: body.leadUuid,\n          status: \"error\",\n          reason: \"internal server error\"\n        }\n      });\n      await $.http.post(\"https://hooks.slack.com/triggers/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\", {\n        pipedream_run_id: steps.trigger.context.id,\n      });\n      $.flow.exit();\n    }\n  }\n};",
+                "codeHash": "0912f4d5f6c4bda86129e8991cdfc6aa1bc8fe3e482c06f3e6bde5a1949e6344",
+                "configurableProps": [
+                    {
+                        "name": "lendSwiftApiKey",
+                        "type": "string",
+                        "label": "LendSwift API Key",
+                        "description": "The X-Api-Key header value provided by LendSwift",
+                        "secret": true,
+                        "optional": false
+                    },
+                    {
+                        "name": "lendSwiftUsername",
+                        "type": "string",
+                        "label": "LendSwift Username",
+                        "description": "State-specific username provided by LendSwift (use 'test' in sandbox)",
+                        "optional": false
+                    },
+                    {
+                        "name": "lendSwiftPassword",
+                        "type": "string",
+                        "label": "LendSwift Password",
+                        "description": "State-specific password provided by LendSwift (use 'test' in sandbox)",
+                        "secret": true,
+                        "optional": false
+                    },
+                    {
+                        "name": "endpointUrl",
+                        "type": "string",
+                        "label": "Endpoint URL",
+                        "description": "LendSwift/Taktile endpoint URL (sandbox or production)",
+                        "default": "https://risk.bf9baa41.decide.taktile.com/run/api/v1/flows/training/sandbox/decide",
+                        "optional": false
+                    },
+                    {
+                        "name": "leadProvider",
+                        "type": "string",
+                        "label": "Lead Provider",
+                        "description": "Your company/source name as provided by LendSwift",
+                        "optional": false
+                    },
+                    {
+                        "name": "applicantId",
+                        "type": "string",
+                        "label": "Applicant ID",
+                        "description": "ID from the create_applicant step",
+                        "optional": false
+                    },
+                    {
+                        "name": "body",
+                        "type": "object",
+                        "label": "Form submission body",
+                        "description": "The lead data from the form submission",
+                        "optional": false
+                    },
+                    {
+                        "name": "subAccountBids",
+                        "type": "object",
+                        "label": "Sub Account Bids Map",
+                        "description": "Map of subAccountUuid to minimum bid value (from constants step)",
+                        "optional": true
+                    }
+                ],
+                "key": "lendswift-lead-submission",
+                "description": "Submits a loan lead to the LendSwift API via Taktile and returns the decision",
+                "entryPath": null,
+                "version": "1.0.0",
+                "apps": []
+            },
+            "component_key": "lendswift-lead-submission",
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_ZRfm352p",
+            "type": "CodeCell",
+            "namespace": "return_response",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_6QibogNw",
+                "code": "export default defineComponent({\n  async run({ steps, $ }) {\n    const lendswiftData = steps.ping_lendswift.$return_value.data;\n    const lendswiftResult = lendswiftData.status;\n    const lendswiftBid = lendswiftData.bid_amount;\n    const lendswiftRedirectUrl = lendswiftData.redirect_url;\n    const constants = steps.constants.$return_value;\n    const subAccountUuid = steps.trigger.event.body.subAccountUuid;\n    \n    if (!Number(lendswiftBid) || Number(lendswiftBid) <= 0 || lendswiftResult !== \"ACCEPTED\") {\n      return await $.respond({\n        status: 200,\n        headers: {\n          \"Content-Type\": \"application/json\",\n        },\n        body: {\n          lead_id: steps.trigger.event.body.leadUuid,\n          status: \"rejected\",\n          reason: \"unqualified_lead\",\n        },\n      });\n    };\n    \n    // Reject if subAccount is in the bid map and the returned bid is below threshold\n    const minBid = constants.subAccountBids?.[subAccountUuid];\n    if (minBid !== undefined && Number(lendswiftBid) < minBid) {\n      return await $.respond({\n        status: 200,\n        headers: {\n          \"Content-Type\": \"application/json\",\n        },\n        body: {\n          lead_id: steps.trigger.event.body.leadUuid,\n          status: \"rejected\",\n          reason: \"bid_below_threshold\",\n        },\n      });\n    }\n    \n    const bidAmount = lendswiftBid * constants.multiplier;   \n    const responseBody = {\n      requestId: steps.trigger.context.trace_id,\n      offers: [\n        {\n          name: constants.offerName,\n          display_name: constants.offerName,\n          rate: bidAmount,\n          click_url: constants.pennieClickUrl + `/${steps.create_applicant.$return_value.id}`,\n          product_type: constants.productType,\n          logo_src: constants.logoSrc,\n          offer_title: constants.offerTitle,\n          offer_details: constants.offerDetails\n        }\n      ]\n    };\n    \n    await $.respond({\n      status: 200,\n      headers: {\n        \"Content-Type\": \"application/json\",\n      },\n      body: responseBody,\n    });\n  },\n});",
+                "codeHash": "150dcaac9cb6a7e7d44463212cb3b37760d55201400cfe02539b40935f14e02d",
+                "configurableProps": [],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        },
+        {
+            "id": "c_y1f1j4de",
+            "type": "CodeCell",
+            "namespace": "ifelse",
+            "disabled": false,
+            "code_raw": null,
+            "codeRaw": null,
+            "codeConfigJson": null,
+            "lang": "nodejs20.x",
+            "text_raw": "",
+            "appConnections": [],
+            "flat_params_visibility_json": null,
+            "params_json": "{}",
+            "component": true,
+            "savedComponent": {
+                "id": "sc_5ZiBMkY",
+                "code": "export default {\n  type: \"action\",\n  props: {\n    _controlFlow: \"any\",\n  },\n  run({ $ }) {\n    const tryTriggerRoute = (route, branchId) => {\n      if (route && typeof route === \"object\") {\n        const did = route.pipeline?.deploymentId || $.NO_COMPONENT\n        return $.flow.trigger(did, $.IMPORT_STEPS, {\n          context: {\n            branchId,\n          },\n          inline_execution: true,\n        })\n      }\n      throw new Error(\"control flow bad route\")\n    }\n    const c = this._controlFlow\n    if (!c || typeof c !== \"object\" || c.type !== \"ifelse\") {\n      throw new Error(\"control flow not configured correctly\")\n    }\n    const s = c.ifelse\n    if (!s || typeof s !== \"object\" || !Array.isArray(s.ifElses)) {\n      throw new Error(\"control flow not configured correctly\")\n    }\n    for (const ifElse of s.ifElses) {\n      if (evalRuleGroup(ifElse.rules)) {\n        return tryTriggerRoute(ifElse.route, ifElse.id)\n      }\n    }\n    if (s._else?.shown) {\n      return tryTriggerRoute(s._else.route, \"_else\")\n    }\n  },\n}\n\n// ifElse.rules\nfunction evalRuleGroup(rules) {\n  const and = rules.t === \"and\"\n  let v = and\n  for (const r of rules.r) {\n    const b = (\"t\" in r) ? evalRuleGroup(r) : evalRule(r)\n    v = and ? v && b : v || b\n  }\n  return v\n}\n// XXX if rule.a is {{something}} should probably NOT +rule.a, but if rule.a is \"12\" we should... hmm\nfunction evalRule(rule) {\n  switch (rule.op) {\n    default: throw new Error(`unhandled op: ${rule.op}`)\n    case \"exist\": return rule.a !== undefined\n    case \"!exist\": return rule.a === undefined\n    case \"null\": return rule.a === null\n    case \"!null\": return rule.a !== null\n    case \"str\": return typeof rule.a === \"string\"\n    case \"!str\": return typeof rule.a !== \"string\"\n    case \"str \": return typeof rule.a === \"string\" && !!rule.a.match(/^\\s*$/)\n    case \"str! \": return typeof rule.a === \"string\" && !rule.a.match(/^\\s*$/)\n    case \"str=\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.a.localeCompare(rule.b, undefined, { sensitivity: rule.matchCase ? \"variant\" : \"base\" }) == 0)\n    case \"str!=\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.a.localeCompare(rule.b, undefined, { sensitivity: rule.matchCase ? \"variant\" : \"base\" }) != 0)\n    case \"str^\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.matchCase ? rule.a.startsWith(rule.b) : rule.a.toLowerCase().startsWith(rule.b.toLowerCase()))\n    case \"str/\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.matchCase ? rule.a.includes(rule.b) : rule.a.toLowerCase().includes(rule.b.toLowerCase()))\n    case \"str!/\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.matchCase ? !rule.a.includes(rule.b) : !rule.a.toLowerCase().includes(rule.b.toLowerCase()))\n    case \"str$\": return typeof rule.a === \"string\" && typeof rule.b === \"string\" && (rule.matchCase ? rule.a.endsWith(rule.b) : rule.a.toLowerCase().endsWith(rule.b.toLowerCase()))\n    case \"num\": return typeof rule.a === \"number\"\n    case \"!num\": return typeof rule.a !== \"number\"\n    case \"num=\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a === +rule.b\n    case \"num!=\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a !== +rule.b\n    case \"num>\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a > +rule.b\n    case \"num>=\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a >= +rule.b\n    case \"num<\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a < +rule.b\n    case \"num<=\": return typeof +rule.a === \"number\" && typeof +rule.b === \"number\" && +rule.a <= +rule.b\n    case \"true\": return typeof rule.a === \"boolean\" && rule.a\n    case \"false\": return typeof rule.a === \"boolean\" && !rule.a\n    case \"bool\": return typeof rule.a === \"boolean\"\n    case \"!bool\": return typeof rule.a !== \"boolean\"\n    case \"bool=\": return typeof rule.a === \"boolean\" && typeof rule.b === \"boolean\" && rule.a === rule.b\n  }
+}\n",
+                "codeHash": "9f2dcf990d5b34ee55976f13d9beeb7c427d5b17ab70a1e774d9dcb18722cf30",
+                "configurableProps": [
+                    {
+                        "name": "_controlFlow",
+                        "type": "any"
+                    }
+                ],
+                "key": null,
+                "description": null,
+                "entryPath": null,
+                "version": "",
+                "apps": []
+            },
+            "component_key": null,
+            "component_owner_id": "o_MMIG3KD",
+            "configured_props_json": "{}"
+        }
+    ]
+}

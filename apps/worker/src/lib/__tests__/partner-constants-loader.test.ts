@@ -82,7 +82,7 @@ describe('loadPartnerConstants', () => {
     expect(kv.put).toHaveBeenCalledWith(
       CACHE_KEY,
       expect.any(String),
-      { expirationTtl: 300 }
+      { expirationTtl: 60 * 60 * 24 * 30 }
     )
   })
 
