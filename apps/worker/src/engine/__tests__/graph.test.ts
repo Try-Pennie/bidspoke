@@ -270,3 +270,21 @@ describe('condition with no operator defaults to eq', () => {
     expect(single('steps.foo.output.x', 0, { foo: { x: 5 } })).toBe(false)
   })
 })
+
+// --- ?? coalesce in a condition field — reads whichever of two steps ran ---
+
+describe('condition field ?? coalesce', () => {
+  function isFalse(field: string, steps: Record<string, unknown>): boolean {
+    return evaluateConditionGroups(
+      [{ conditions: [{ field, operator: 'is_false' }], logic: 'AND' }],
+      'AND',
+      ctx({}, steps)
+    )
+  }
+  it('falls back to the second step and keeps a real false', () => {
+    // only the fallback ran, ok=false → is_false true (false is kept, not skipped)
+    expect(isFalse('steps.a.output.ok ?? steps.b.output.ok', { b: { ok: false } })).toBe(true)
+    // first ran, ok=true → is_false false
+    expect(isFalse('steps.a.output.ok ?? steps.b.output.ok', { a: { ok: true } })).toBe(false)
+  })
+})

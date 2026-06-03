@@ -62,4 +62,16 @@ describe('resolveValue — template resolution', () => {
     const c = ctxWith({ foo: { name: 'bar' } })
     expect(resolveValue('Hello {{steps.foo.output.name}}', c)).toBe('Hello bar')
   })
+
+  it('?? coalesce picks the first non-null operand (whichever step ran)', () => {
+    const onlyB = ctxWith({ b: { v: 7 } })
+    expect(resolveValue('{{steps.a.output.v ?? steps.b.output.v}}', onlyB)).toBe(7)
+    const onlyA = ctxWith({ a: { v: 3 } })
+    expect(resolveValue('{{steps.a.output.v ?? steps.b.output.v}}', onlyA)).toBe(3)
+  })
+
+  it('?? coalesce keeps a real false (uses null/undefined semantics, not ||)', () => {
+    const c = ctxWith({ a: { ok: false } })
+    expect(resolveValue('{{steps.a.output.ok ?? steps.b.output.ok}}', c)).toBe(false)
+  })
 })

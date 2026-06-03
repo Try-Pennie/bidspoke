@@ -129,6 +129,16 @@ function resolveValueOrLiteral(value: unknown, ctx: ExecutionContext): unknown {
 }
 
 export function resolveField(field: string, ctx: ExecutionContext): unknown {
+  // Coalesce / fallback: "a ?? b" resolves to the first operand that isn't
+  // null/undefined — lets a condition read whichever of two steps ran (e.g. a
+  // duplicated node). Mirrors the same syntax in `{{...}}` templates.
+  if (field.includes('??')) {
+    for (const part of field.split('??')) {
+      const v = resolveField(part.trim(), ctx)
+      if (v !== null && v !== undefined) return v
+    }
+    return undefined
+  }
   const parts = field.split('.')
   if (parts[0] === 'trigger') {
     return getPath(ctx.trigger, parts.slice(1))

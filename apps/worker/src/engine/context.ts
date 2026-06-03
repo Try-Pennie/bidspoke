@@ -49,6 +49,17 @@ function resolveTemplate(template: string, ctx: ExecutionContext): unknown {
 }
 
 function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
+  // Coalesce / fallback: "a ?? b ?? c" resolves to the first operand that isn't
+  // null/undefined. Lets one reference read whichever of two steps actually ran
+  // (e.g. a duplicated node: `steps.engine_no_bids_call_1.output.x ?? steps.engine_no_bids_call.output.x`).
+  // Uses ?? semantics so a real `false`/`0`/'' is kept, not skipped.
+  if (expr.includes('??')) {
+    for (const part of expr.split('??')) {
+      const v = resolveExpression(part.trim(), ctx)
+      if (v !== null && v !== undefined) return v
+    }
+    return undefined
+  }
   const parts = expr.split('.')
   if (parts[0] === 'env' && parts[1]) {
     return ctx.env[parts[1]]
