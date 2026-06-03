@@ -3335,7 +3335,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             snapToGrid={false}
             fitView
             fitViewOptions={{ padding: 0.4, maxZoom: 0.5 }}
-            minZoom={0.2}
+            minZoom={0.05}
             maxZoom={1.5}
             zoomOnDoubleClick={false}
             multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
