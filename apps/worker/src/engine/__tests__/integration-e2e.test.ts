@@ -721,3 +721,33 @@ describe('parallel_end logging — matches parallel start status', () => {
     expect(endRow!.status).toBe('failed')
   })
 })
+
+describe('filter routing — unwired handle terminates the chain', () => {
+  it('does not fall through to the other handle when the chosen one is unwired', async () => {
+    const ran: string[] = []
+    vi.mocked(executeNode).mockImplementation(async (n) => {
+      ran.push(n.namespace)
+      // The filter routes to `exit`, but only `pass` is wired below.
+      if (n.type === 'filter') return { output: { passed: false, _route: 'exit' } }
+      return { output: { ok: true } }
+    })
+
+    const def = {
+      nodes: [
+        node('start', 'start', 'code'),
+        node('gate', 'gate', 'filter'),
+        node('pass_target', 'pass_target', 'code'),
+      ],
+      edges: [
+        edge('start', 'gate'),
+        edge('gate', 'pass_target', 'pass'), // only `pass` wired; `exit` is not
+      ],
+    }
+
+    await walkGraph(makeCtx(), def, 'exec-filter', new Date().toISOString(), supabase, env)
+
+    // The `exit`-routed lead must NOT leak down the `pass` edge.
+    expect(ran).toContain('gate')
+    expect(ran).not.toContain('pass_target')
+  })
+})

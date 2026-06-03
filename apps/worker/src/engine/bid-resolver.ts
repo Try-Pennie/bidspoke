@@ -55,6 +55,13 @@ export interface BidResolverResult {
   bid: number | null
   raw: unknown
   rejected?: boolean
+  /**
+   * Why an API resolver produced a null bid — set only when the partner
+   * responded (2xx) but no bid could be read (unrecognized response shape or a
+   * bid_path that resolved to nothing). Distinguishes a config/shape problem
+   * from a genuine decline, which otherwise both look like "no bid".
+   */
+  bid_reason?: string
   /** HTTP status from the partner API. null for formula/matrix resolvers. */
   http_status?: number | null
   /** Response headers from the partner API (sensitive headers stripped). null for formula/matrix. */
@@ -270,11 +277,23 @@ async function callBidApi(
   const extra = extractExtras(partner.extra_extraction, raw)
   const comparison = partner.bid_comparison_source ?? 'auto'
   let bid: number | null
+  let bidReason: string | undefined
   if (comparison === 'formula') {
     bid = evaluatePricing(partner, ctx)
   } else {
     const bidPath = readBidPath(partner)
-    bid = bidPath ? coerceNumeric(readPath(raw, bidPath)) : extractBid(raw)
+    if (bidPath) {
+      bid = coerceNumeric(readPath(raw, bidPath))
+      if (bid === null) bidReason = `bid_path '${bidPath}' resolved to no numeric value`
+    } else {
+      bid = extractBid(raw)
+      // Responded with an object but none of bid/bid_amount/amount/price/offer
+      // held a number — likely a response-shape drift or a missing bid_path,
+      // not a real decline. Surface it so "why no bid?" isn't a mystery.
+      if (bid === null && raw !== null && typeof raw === 'object') {
+        bidReason = 'no recognized bid field in response'
+      }
+    }
   }
 
   return {
@@ -283,6 +302,7 @@ async function callBidApi(
     http_status: httpStatus,
     response_headers: safeHeaders,
     ...(extra ? { extra } : {}),
+    ...(bidReason ? { bid_reason: bidReason } : {}),
     resolved_input: resolvedInputForCaller,
   }
 }

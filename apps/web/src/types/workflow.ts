@@ -60,6 +60,9 @@ export interface EdgeDef {
     groups: ConditionGroup[]
     logic: 'AND' | 'OR'
   }
+  // Render-only: hidden backbone edges (branch/parallel start → paired _end).
+  // Persisted so they stay hidden across save → reload; the engine ignores it.
+  hidden?: boolean
 }
 
 export interface TriggerDef {

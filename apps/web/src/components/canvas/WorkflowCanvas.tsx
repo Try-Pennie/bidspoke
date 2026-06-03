@@ -589,6 +589,7 @@ function defToEdges(edges: EdgeDef[]): Edge[] {
     target: e.target,
     sourceHandle: e.source_handle ?? null,
     data: { condition: e.condition },
+    ...(e.hidden ? { hidden: true } : {}),
   }))
 }
 
@@ -618,6 +619,7 @@ function flowToDef(
       target: e.target,
       source_handle: e.sourceHandle ?? undefined,
       condition: (e.data as { condition?: EdgeDef['condition'] })?.condition,
+      ...(e.hidden ? { hidden: true } : {}),
     })),
   }
 }

@@ -100,6 +100,10 @@ export interface PartnerBidOutput {
     is_sell_off?: boolean
     reason?: string
   } | null
+  /** Why an API resolver returned a null bid despite a 2xx response — set when
+   *  no bid field could be read (shape drift / missing bid_path), so "no bid"
+   *  isn't confused with a genuine decline. */
+  bid_reason?: string
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -318,6 +322,7 @@ export async function executePartnerBidNode(
       cap_count: capCount,
       resolver_type: p.bid_resolver_type ?? null,
       ...(extra ? { extra } : {}),
+      ...(bid === null && result.bid_reason ? { bid_reason: result.bid_reason } : {}),
       matrix: matrixInfo,
     }
     log({ event: 'partner_bid', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, bid, accepted: output.accepted })

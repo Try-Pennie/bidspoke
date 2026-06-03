@@ -1228,9 +1228,14 @@ export async function walkGraph(
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)
-      // For branches, an unwired handle terminates the chain — don't fall
-      // back to evaluateEdge or the backbone edge would steal the routing.
-      if (!nextEdge && node.type === 'branch') {
+      // branch/filter: an unwired chosen handle terminates the chain. Without
+      // this it falls through to evaluateEdge and follows whatever edge evaluates
+      // true — for a branch the hidden backbone edge, for a filter the OTHER
+      // handle (only `pass` wired would send an `exit` lead down `pass`).
+      // Terminating is the safe behavior: an unwired output just stops.
+      // (bid_evaluation/latency_gate are intentionally NOT here — their no-match
+      // routing is governed by no_winner_behavior / their own semantics.)
+      if (!nextEdge && (node.type === 'branch' || node.type === 'filter')) {
         current = undefined
         stepOrder++
         continue
