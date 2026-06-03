@@ -1096,32 +1096,39 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // overrides (multi-output children snapped to handle-x, convergence nodes
   // aligned to their branch-x) move nodes without collision checks — so two
   // chains that end up in the same column (e.g. a filter's cross-link routes
-  // one response leg on top of another) can overlap. Walk each rank left-to-
-  // right and push any node that overlaps its left neighbour rightward by the
-  // minimum gap. Only reachable nodes are shuffled (orphans keep their manual
-  // positions). Runs as part of layout, so collisions resolve live as the
-  // canvas re-lays-out on wiring — no save/reload needed.
+  // one response leg on top of another) can overlap. We compare ACTUAL boxes
+  // rather than rank buckets: a tall node (a branch is 164px) can bleed into a
+  // neighbour that dagre put a sub-rank away, so same-rank grouping misses it.
+  // For every vertically-overlapping pair, push the right node rightward by the
+  // minimum gap; iterate until stable. Only reachable nodes are shuffled
+  // (orphans keep their manual positions). Runs as part of layout, so collisions
+  // resolve live as the canvas re-lays-out on wiring — no save/reload needed.
   {
     const DEOVERLAP_GAP = NODE_GAP
     const widthOf = (id: string) =>
       effectiveWidthByNode.get(id) ?? nodeWidth(nodeMap.get(id)?.type, nodeMap.get(id)?.data)
-    const byRank = new Map<number, string[]>()
-    for (const [id, p] of pos) {
-      if (!reachable.has(id)) continue
-      const r = Math.round(p.y)
-      const arr = byRank.get(r) ?? []
-      arr.push(id)
-      byRank.set(r, arr)
+    const halfH = (id: string) => {
+      const n = nodeMap.get(id)
+      return (n ? effectiveHeight(n) : STANDARD_NODE_H) / 2
     }
-    for (const ids of byRank.values()) {
-      if (ids.length < 2) continue
+    const ids = [...pos.keys()].filter((id) => reachable.has(id))
+    for (let iter = 0; iter < 8; iter++) {
       ids.sort((a, b) => pos.get(a)!.x - pos.get(b)!.x)
-      for (let i = 1; i < ids.length; i++) {
-        const prev = pos.get(ids[i - 1])!
-        const cur = pos.get(ids[i])!
-        const minCenterDist = widthOf(ids[i - 1]) / 2 + widthOf(ids[i]) / 2 + DEOVERLAP_GAP
-        if (cur.x - prev.x < minCenterDist) cur.x = prev.x + minCenterDist
+      let moved = false
+      for (let i = 0; i < ids.length; i++) {
+        const a = pos.get(ids[i])!
+        for (let j = i + 1; j < ids.length; j++) {
+          const b = pos.get(ids[j])!
+          // Only collide nodes whose vertical spans actually overlap.
+          if (Math.abs(a.y - b.y) >= halfH(ids[i]) + halfH(ids[j])) continue
+          const minCenterDist = widthOf(ids[i]) / 2 + widthOf(ids[j]) / 2 + DEOVERLAP_GAP
+          if (b.x - a.x < minCenterDist - 0.5) {
+            b.x = a.x + minCenterDist
+            moved = true
+          }
+        }
       }
+      if (!moved) break
     }
   }
 
