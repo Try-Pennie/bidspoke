@@ -308,6 +308,56 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // its pass/exit wires just bend to their targets — otherwise a filter whose arm
   // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
   const FANOUT_TYPES = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'latency_gate'])
+
+  // Cross-path edges: a node can be deliberately wired from a second, deeper
+  // path (e.g. a filter on one branch routing into a bid_group on another).
+  // That edge must be DRAWN but must NOT drive dagre's ranking OR the width-
+  // reservation math — otherwise the shared target is forced to a deep rank and
+  // the branch that owns the forking arm balloons to "reserve" a subtree that
+  // actually lives elsewhere, scattering its arms. For each multi-parent node
+  // we keep its shallowest incoming edge as the ranking ("primary") edge and
+  // treat any strictly-deeper parent as a cross-link. branch_end / parallel_end
+  // joins keep their own multi-parent handling and are never cross-links.
+  const incomingByTarget = new Map<string, typeof edges>()
+  for (const e of edges) {
+    const arr = incomingByTarget.get(e.target) ?? []
+    arr.push(e)
+    incomingByTarget.set(e.target, arr)
+  }
+  const nodeDepth = new Map<string, number>()
+  {
+    const roots = nodes.filter((n) => !incomingByTarget.has(n.id)).map((n) => n.id)
+    const queue = roots.length > 0 ? [...roots] : nodes[0] ? [nodes[0].id] : []
+    for (const r of queue) nodeDepth.set(r, 0)
+    while (queue.length > 0) {
+      const cur = queue.shift() as string
+      const d = nodeDepth.get(cur) ?? 0
+      for (const e of edges) {
+        if (e.source !== cur || nodeDepth.has(e.target)) continue
+        nodeDepth.set(e.target, d + 1)
+        queue.push(e.target)
+      }
+    }
+  }
+  const crossEdgeIds = new Set<string>()
+  for (const [targetId, ins] of incomingByTarget) {
+    if (ins.length < 2) continue
+    const tgt = nodeMap.get(targetId)
+    if (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end') continue
+    let primary = ins[0]
+    let primaryDepth = nodeDepth.get(ins[0].source) ?? Infinity
+    for (const e of ins) {
+      const d = nodeDepth.get(e.source) ?? Infinity
+      if (d < primaryDepth) { primaryDepth = d; primary = e }
+    }
+    for (const e of ins) {
+      if (e === primary) continue
+      // Only de-rank parents strictly deeper than the primary — a genuine
+      // cross-link. Same-depth diamonds stay untouched.
+      if ((nodeDepth.get(e.source) ?? Infinity) > primaryDepth) crossEdgeIds.add(e.id)
+    }
+  }
+
   const effectiveSubtreeWidthPre = (startId: string, visited: Set<string>, outerStopAt?: Set<string>): number => {
     if (visited.has(startId)) return 0
     if (outerStopAt && outerStopAt.has(startId)) return 0
@@ -323,7 +373,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       const innerStops = stopAtForMultiOutput(n, handles)
       const merged = outerStopAt ? new Set([...outerStopAt, ...innerStops]) : innerStops
       const slotWidths = handles.map((h) => {
-        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h)
+        const slotEdge = edges.find((e) => e.source === startId && e.sourceHandle === h && !crossEdgeIds.has(e.id))
         if (!slotEdge) return NODE_W
         return Math.max(NODE_W, effectiveSubtreeWidthPre(slotEdge.target, new Set(visited), merged))
       })
@@ -345,7 +395,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
         const pairEnd = edges.find((e) => e.source === n.id && nodeMap.get(e.target)?.type === endType)?.target
         if (pairEnd && !outerStopAt.has(pairEnd)) {
           for (const e of edges) {
-            if (e.source !== pairEnd) continue
+            if (e.source !== pairEnd || crossEdgeIds.has(e.id)) continue
             const sub = effectiveSubtreeWidthPre(e.target, new Set(visited), outerStopAt)
             if (sub > pastEndWidth) pastEndWidth = sub
           }
@@ -355,7 +405,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
     let maxBelow = 0
     for (const e of edges) {
-      if (e.source !== startId) continue
+      if (e.source !== startId || crossEdgeIds.has(e.id)) continue
       const sub = effectiveSubtreeWidthPre(e.target, new Set(visited), outerStopAt)
       if (sub > maxBelow) maxBelow = sub
     }
@@ -506,67 +556,6 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     const bIdx = handleSortIndex(src?.type, b.sourceHandle, src?.data)
     return aIdx - bIdx
   })
-
-  // Cross-path edges: a node can be deliberately wired from a second path
-  // (e.g. a filter on one branch routing into a bid_group that already sits on
-  // another branch). That extra edge must be DRAWN but must NOT drive dagre's
-  // ranking — otherwise the shared target is forced to a deep rank to satisfy
-  // the long edge and the whole graph stretches sideways to span it. For each
-  // node with multiple parents we keep its shallowest incoming edge as the
-  // ranking ("primary") edge and exclude any parent that sits strictly deeper
-  // (a genuine cross-link) from dagre. branch_end / parallel_end joins keep
-  // their existing multi-parent handling and are never treated as cross-links.
-  const incomingByTarget = new Map<string, typeof edges>()
-  for (const e of edges) {
-    const arr = incomingByTarget.get(e.target) ?? []
-    arr.push(e)
-    incomingByTarget.set(e.target, arr)
-  }
-  const nodeDepth = new Map<string, number>()
-  {
-    const roots = nodes.filter((n) => !incomingByTarget.has(n.id)).map((n) => n.id)
-    const queue = roots.length > 0 ? [...roots] : nodes[0] ? [nodes[0].id] : []
-    for (const r of queue) nodeDepth.set(r, 0)
-    while (queue.length > 0) {
-      const cur = queue.shift() as string
-      const d = nodeDepth.get(cur) ?? 0
-      for (const e of edges) {
-        if (e.source !== cur || nodeDepth.has(e.target)) continue
-        nodeDepth.set(e.target, d + 1)
-        queue.push(e.target)
-      }
-    }
-  }
-  const crossEdgeIds = new Set<string>()
-  for (const [targetId, ins] of incomingByTarget) {
-    if (ins.length < 2) continue
-    const tgt = nodeMap.get(targetId)
-    if (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end') continue
-    // A filter is a 2-way gate whose arm often FORKS into a node that already
-    // lives on another branch (e.g. "no offers" routing into an existing bid
-    // race). When that happens, the filter should flow DOWN into the forked
-    // node — so the filter owns its rank (the node sits below the filter) and
-    // every other incoming edge becomes the cross-link spline, regardless of
-    // depth. Without this the shallower pre-existing parent wins the rank and
-    // the filter's fork is drawn as an ugly backward/sideways wire.
-    const filterEdge = ins.find((e) => nodeMap.get(e.source)?.type === 'filter')
-    if (filterEdge) {
-      for (const e of ins) if (e !== filterEdge) crossEdgeIds.add(e.id)
-      continue
-    }
-    let primary = ins[0]
-    let primaryDepth = nodeDepth.get(ins[0].source) ?? Infinity
-    for (const e of ins) {
-      const d = nodeDepth.get(e.source) ?? Infinity
-      if (d < primaryDepth) { primaryDepth = d; primary = e }
-    }
-    for (const e of ins) {
-      if (e === primary) continue
-      // Only de-rank parents that sit strictly deeper than the primary — a
-      // genuine cross-link. Same-depth diamonds stay in dagre untouched.
-      if ((nodeDepth.get(e.source) ?? Infinity) > primaryDepth) crossEdgeIds.add(e.id)
-    }
-  }
 
   // Edge weights govern dagre's network-simplex objective (Σ weight * slack).
   // Three groups need special handling:
