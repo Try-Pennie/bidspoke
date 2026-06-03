@@ -67,4 +67,27 @@ describe('cross-link layout', () => {
     expect(overlapCount(layoutWorkflow(build(true).nodes, build(true).edges))).toBe(0)
     expect(overlapCount(layoutWorkflow(build(false).nodes, build(false).edges))).toBe(0)
   })
+
+  // A filter forking into a node must not pull that node off its main chain —
+  // the filter is ignored for shape, and the single-child chain P -> X stays
+  // straight (X directly under P).
+  it('keeps a chain straight under its parent when a filter forks into it', () => {
+    const nodes: Node[] = [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: {} },
+      { id: 'start', type: 'branch', position: { x: 0, y: 0 }, data: { config: { branches: [{ label: 'a' }, { label: 'b' }], use_else: false } } },
+      { id: 'P', type: 'code', position: { x: 0, y: 0 }, data: {} },
+      { id: 'X', type: 'code', position: { x: 0, y: 0 }, data: {} },
+      { id: 'F', type: 'filter', position: { x: 0, y: 0 }, data: { config: { operation: 'continue_if', condition: { field: 'x', operator: 'eq', value: '1' } } } },
+    ]
+    const edges: Edge[] = [
+      { id: 't', source: 'trigger', target: 'start' },
+      { id: 'a', source: 'start', target: 'P', sourceHandle: 'a' },
+      { id: 'px', source: 'P', target: 'X' },
+      { id: 'b', source: 'start', target: 'F', sourceHandle: 'b' },
+      { id: 'fork', source: 'F', target: 'X', sourceHandle: 'pass' },
+    ]
+    const laid = layoutWorkflow(nodes, edges)
+    const cx = (id: string) => { const n = laid.find((m) => m.id === id)!; return n.position.x + 104 }
+    expect(Math.abs(cx('X') - cx('P'))).toBeLessThan(40)
+  })
 })

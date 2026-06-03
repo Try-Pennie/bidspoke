@@ -340,21 +340,26 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
   const crossEdgeIds = new Set<string>()
+  const isFilter = (id: string) => nodeMap.get(id)?.type === 'filter'
   for (const [targetId, ins] of incomingByTarget) {
     if (ins.length < 2) continue
     const tgt = nodeMap.get(targetId)
     if (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end') continue
-    let primary = ins[0]
-    let primaryDepth = nodeDepth.get(ins[0].source) ?? Infinity
-    for (const e of ins) {
+    // A filter must never influence the shape: its fork edge is always a cross-
+    // link (drawn, not ranked), and a non-filter parent is preferred as primary
+    // so the forked node sits under its real upstream, not the filter.
+    const pool = ins.some((e) => !isFilter(e.source)) ? ins.filter((e) => !isFilter(e.source)) : ins
+    let primary = pool[0]
+    let primaryDepth = nodeDepth.get(pool[0].source) ?? Infinity
+    for (const e of pool) {
       const d = nodeDepth.get(e.source) ?? Infinity
       if (d < primaryDepth) { primaryDepth = d; primary = e }
     }
     for (const e of ins) {
       if (e === primary) continue
-      // Only de-rank parents strictly deeper than the primary — a genuine
-      // cross-link. Same-depth diamonds stay untouched.
-      if ((nodeDepth.get(e.source) ?? Infinity) > primaryDepth) crossEdgeIds.add(e.id)
+      // De-rank a genuine cross-link: any filter fork, or a non-filter parent
+      // strictly deeper than the primary. Same-depth non-filter diamonds stay.
+      if (isFilter(e.source) || (nodeDepth.get(e.source) ?? Infinity) > primaryDepth) crossEdgeIds.add(e.id)
     }
   }
 
@@ -1090,6 +1095,45 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       if (reachable.has(id)) continue
       reachable.add(id)
       for (const next of outgoing.get(id) ?? []) queue.push(next)
+    }
+  }
+
+  // Chain-straightening. dagre balances a node between its own parent and its
+  // child's subtree, which leaves a single-child chain running on a diagonal
+  // (e.g. engine_no_bids_call → engine_ok_branch drifting right under its
+  // response legs). When a node C has exactly ONE non-cross parent P and P has
+  // exactly ONE non-cross child (C), pull C's whole exclusive subtree so C sits
+  // directly under P. Cross-links (filter forks) are ignored — they don't count
+  // as parents/children here, so the chain straightens "ignoring the filter".
+  {
+    const isEnd = (id: string) => { const t = nodeMap.get(id)?.type; return t === 'branch_end' || t === 'parallel_end' }
+    const childrenOf = (id: string) => edges
+      .filter((e) => e.source === id && !crossEdgeIds.has(e.id) && reachable.has(e.target) && !isEnd(e.target))
+      .map((e) => e.target)
+    const parentsOf = (id: string) => edges
+      .filter((e) => e.target === id && !crossEdgeIds.has(e.id))
+      .map((e) => e.source)
+    const order = [...pos.keys()].filter((id) => reachable.has(id)).sort((a, b) => pos.get(a)!.y - pos.get(b)!.y)
+    for (const p of order) {
+      const kids = childrenOf(p)
+      if (kids.length !== 1) continue
+      const c = kids[0]
+      const cp = parentsOf(c)
+      if (cp.length !== 1 || cp[0] !== p || isEnd(c)) continue
+      const shift = pos.get(p)!.x - pos.get(c)!.x
+      if (Math.abs(shift) < 1) continue
+      // Shift C and its exclusive non-cross subtree (stop at any node that has a
+      // parent outside the subtree, so we never drag a shared node).
+      const sub = new Set<string>([c])
+      const stack = [c]
+      while (stack.length) {
+        const x = stack.pop() as string
+        for (const k of childrenOf(x)) {
+          if (sub.has(k)) continue
+          if (parentsOf(k).every((pp) => sub.has(pp))) { sub.add(k); stack.push(k) }
+        }
+      }
+      for (const id of sub) { const pp = pos.get(id); if (pp) pp.x += shift }
     }
   }
 
