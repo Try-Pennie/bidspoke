@@ -542,6 +542,18 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     if (ins.length < 2) continue
     const tgt = nodeMap.get(targetId)
     if (tgt?.type === 'branch_end' || tgt?.type === 'parallel_end') continue
+    // A filter is a 2-way gate whose arm often FORKS into a node that already
+    // lives on another branch (e.g. "no offers" routing into an existing bid
+    // race). When that happens, the filter should flow DOWN into the forked
+    // node — so the filter owns its rank (the node sits below the filter) and
+    // every other incoming edge becomes the cross-link spline, regardless of
+    // depth. Without this the shallower pre-existing parent wins the rank and
+    // the filter's fork is drawn as an ugly backward/sideways wire.
+    const filterEdge = ins.find((e) => nodeMap.get(e.source)?.type === 'filter')
+    if (filterEdge) {
+      for (const e of ins) if (e !== filterEdge) crossEdgeIds.add(e.id)
+      continue
+    }
     let primary = ins[0]
     let primaryDepth = nodeDepth.get(ins[0].source) ?? Infinity
     for (const e of ins) {
