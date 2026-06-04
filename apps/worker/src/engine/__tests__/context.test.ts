@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { resolveValue, buildContext, recordStepOutput } from '../context'
+import { describe, it, expect, vi } from 'vitest'
+import { resolveValue, buildContext, recordStepOutput, findUndefinedPaths, warnDroppedBodyFields } from '../context'
 import type { ExecutionContext } from '../../types'
 
 function ctxWith(steps: Record<string, unknown>, env: Record<string, string> = {}): ExecutionContext {
@@ -95,5 +95,50 @@ describe('resolveValue — template resolution', () => {
     expect(
       resolveValue('{{steps.mutate_adv.output}}{{steps.mutate_bes.output}}{{trigger.payload.LEG}}', c)
     ).toBe('1')
+  })
+})
+
+describe('findUndefinedPaths — dropped-field detection', () => {
+  it('returns top-level keys whose value is undefined', () => {
+    expect(findUndefinedPaths({ a: 1, b: undefined, c: 'x' })).toEqual(['b'])
+  })
+
+  it('returns nested dot-paths and array indices', () => {
+    expect(findUndefinedPaths({ a: { b: undefined }, list: [1, undefined] })).toEqual([
+      'a.b',
+      'list[1]',
+    ])
+  })
+
+  it('treats null and empty string as present (not dropped)', () => {
+    expect(findUndefinedPaths({ a: null, b: '', c: 0, d: false })).toEqual([])
+  })
+
+  it('returns [] for a fully-resolved body', () => {
+    expect(findUndefinedPaths({ ADV_SO__c: 1, XBC_SO__c: '112' })).toEqual([])
+  })
+})
+
+describe('warnDroppedBodyFields', () => {
+  it('emits a warn log + structured console.warn when fields drop', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logs = warnDroppedBodyFields(
+      { ADV_SO__c: 1, XBC_SO__c: undefined },
+      { nodeNamespace: 'send_salesforce', nodeLabel: 'send_salesforce', traceId: 't1' }
+    )
+    expect(logs).toHaveLength(1)
+    expect(logs[0].level).toBe('warn')
+    expect(logs[0].message).toContain('XBC_SO__c')
+    expect(spy).toHaveBeenCalledOnce()
+    const payload = JSON.parse(spy.mock.calls[0][0] as string)
+    expect(payload).toMatchObject({ event: 'template_field_dropped', node: 'send_salesforce', fields: ['XBC_SO__c'] })
+    spy.mockRestore()
+  })
+
+  it('returns [] and does not warn when nothing dropped', () => {
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(warnDroppedBodyFields({ a: 1 }, { traceId: 't1' })).toEqual([])
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

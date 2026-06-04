@@ -15,9 +15,9 @@
  * Output: { status, body }
  */
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
 import type { Env } from '../../index'
-import { resolveValue } from '../context'
+import { resolveValue, warnDroppedBodyFields } from '../context'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -168,6 +168,17 @@ export async function executeSalesforceNode(
     throw new Error(`Unknown Salesforce operation: ${operation}`)
   }
 
+  // Warn if any body field resolved to undefined (would be silently dropped on
+  // serialization). Relevant to create/update/upsert/apex; query/GET has no body.
+  const warnLogs: StepLogEntry[] =
+    resolvedBodyForInput !== undefined
+      ? warnDroppedBodyFields(resolvedBodyForInput, {
+          nodeNamespace: node.namespace,
+          nodeLabel: node.label,
+          traceId: ctx.trigger.trace_id,
+        })
+      : []
+
   // Built after URL/method so we can include the actual outbound URL the
   // request went to (helpful for upsert / update which embed the record id).
   const resolvedInput: ResolvedStepInput = {
@@ -266,8 +277,9 @@ export async function executeSalesforceNode(
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
     // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
     // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
-    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput }
+    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
     err.resolvedInput = resolvedInput
+    if (warnLogs.length > 0) err.logs = warnLogs
     const transientErrors = config.transient_errors ?? []
     let matchesTransient = false
     if (transientErrors.length > 0) {
@@ -285,7 +297,7 @@ export async function executeSalesforceNode(
     throw err
   }
 
-  return { output: { status: res.status, body: parsedBody }, resolvedInput }
+  return { output: { status: res.status, body: parsedBody }, resolvedInput, ...(warnLogs.length > 0 ? { logs: warnLogs } : {}) }
 }
 
 function applyInjectedFields(

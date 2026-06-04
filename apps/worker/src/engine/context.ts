@@ -1,4 +1,4 @@
-import type { ExecutionContext, StepOutput } from '../types'
+import type { ExecutionContext, StepOutput, StepLogEntry } from '../types'
 
 export function buildContext(
   triggerPayload: unknown,
@@ -103,6 +103,52 @@ export function resolveValue(value: unknown, ctx: ExecutionContext): unknown {
     return out
   }
   return value
+}
+
+// Find dot-paths in a resolved value whose leaf is `undefined`. These keys
+// silently vanish on JSON serialization (JSON.stringify drops undefined-valued
+// object keys), so a body field configured with an unresolvable template would
+// disappear from the outbound request with no other signal — exactly how a
+// dropped Salesforce field went unnoticed. Used to warn at execution time.
+export function findUndefinedPaths(value: unknown, base = ''): string[] {
+  if (value === undefined) return [base || '(root)']
+  if (Array.isArray(value)) {
+    return value.flatMap((v, i) => findUndefinedPaths(v, base ? `${base}[${i}]` : `[${i}]`))
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) =>
+      findUndefinedPaths(v, base ? `${base}.${k}` : k)
+    )
+  }
+  return []
+}
+
+// Warn when a resolved request body has fields that resolved to `undefined` and
+// would be silently dropped on serialization. Emits a structured console.warn
+// (for tail/Logpush/alerting) and returns a StepLogEntry[] to surface in the
+// execution detail UI. Returns [] when nothing was dropped.
+export function warnDroppedBodyFields(
+  resolvedBody: unknown,
+  meta: { nodeNamespace?: string; nodeLabel?: string; traceId?: string }
+): StepLogEntry[] {
+  const dropped = findUndefinedPaths(resolvedBody)
+  if (dropped.length === 0) return []
+  console.warn(
+    JSON.stringify({
+      event: 'template_field_dropped',
+      trace_id: meta.traceId,
+      node: meta.nodeLabel ?? meta.nodeNamespace,
+      fields: dropped,
+    })
+  )
+  const plural = dropped.length === 1 ? '' : 's'
+  return [
+    {
+      level: 'warn',
+      message: `Dropped ${dropped.length} body field${plural} — template resolved to undefined: ${dropped.join(', ')}`,
+      ts: new Date().toISOString(),
+    },
+  ]
 }
 
 // Synthetic join nodes (branch_end, parallel_end) are excluded from

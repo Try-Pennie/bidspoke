@@ -18,7 +18,7 @@
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
-import { resolveValue } from '../context'
+import { resolveValue, warnDroppedBodyFields } from '../context'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -118,9 +118,15 @@ export async function executeIntegrationNode(
   // Resolve body (skipped for GET/HEAD)
   let bodyStr: string | undefined
   let resolvedBodyForInput: unknown = undefined
+  const warnLogs: import('../../types').StepLogEntry[] = []
   if (method !== 'GET' && method !== 'HEAD' && config.body !== undefined) {
     const resolvedBody = resolveValue(config.body, enrichedCtx)
     resolvedBodyForInput = resolvedBody
+    warnLogs.push(...warnDroppedBodyFields(resolvedBody, {
+      nodeNamespace: node.namespace,
+      nodeLabel: node.label,
+      traceId: ctx.trigger.trace_id,
+    }))
     if (resolvedBody !== null && resolvedBody !== undefined) {
       bodyStr = typeof resolvedBody === 'string' ? resolvedBody : JSON.stringify(resolvedBody)
     }
@@ -175,7 +181,10 @@ export async function executeIntegrationNode(
   // Non-2xx: throw Response so engine classifies the HTTP error
   if (!res.ok) {
     const responseErr = new Response(responseText, { status: res.status, headers: res.headers })
-    ;(responseErr as Response & { resolvedInput?: ResolvedStepInput }).resolvedInput = resolvedInput
+    ;(responseErr as Response & { resolvedInput?: ResolvedStepInput; logs?: import('../../types').StepLogEntry[] }).resolvedInput = resolvedInput
+    if (warnLogs.length > 0) {
+      (responseErr as Response & { logs?: import('../../types').StepLogEntry[] }).logs = warnLogs
+    }
     throw responseErr
   }
 
@@ -185,5 +194,5 @@ export async function executeIntegrationNode(
     headers: responseHeaders,
   }
 
-  return { output, resolvedInput }
+  return { output, resolvedInput, ...(warnLogs.length > 0 ? { logs: warnLogs } : {}) }
 }
