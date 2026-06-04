@@ -186,6 +186,73 @@ export async function sendDurationAlert(
   return ts ? { channel, ts, bot_token: connection.bot_token } : null
 }
 
+export interface SlowSpikeAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** Slow runs (duration_ms > threshold) in the window. */
+  slow_count: number
+  /** All terminal runs in the window — the denominator. */
+  total_count: number
+  threshold_ms: number
+  slowest_ms: number
+  median_slow_ms: number
+  window_minutes: number
+  timestamp: string
+}
+
+/**
+ * Aggregated slow-execution alert — fired by the cron slow-spike check, not per
+ * run. Links to the workflow's execution list (filtered by the eye test) rather
+ * than a single execution, since the point is a cluster, not one slow lead.
+ */
+export async function sendSlowSpikeAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: SlowSpikeAlertPayload,
+  appUrl: string
+): Promise<void> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return
+
+  const channel = channelOverride || connection.default_channel
+  const thresholdSeconds = (payload.threshold_ms / 1000).toFixed(0)
+  const medianSeconds = (payload.median_slow_ms / 1000).toFixed(1)
+  const slowestSeconds = (payload.slowest_ms / 1000).toFixed(1)
+  const sharePct = payload.total_count > 0 ? Math.round((payload.slow_count / payload.total_count) * 100) : 0
+  const workflowUrl = `${appUrl}/workflows/${payload.workflow_id}`
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Slow Execution Spike', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}* had *${payload.slow_count} of ${payload.total_count} runs* (${sharePct}%) exceed the ${thresholdSeconds}s threshold in the last ${payload.window_minutes} minutes.`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Median slow run:* ${medianSeconds}s` },
+        { type: 'mrkdwn', text: `*Slowest:* ${slowestSeconds}s` },
+        { type: 'mrkdwn', text: `*Time:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` },
+    },
+  ]
+
+  await postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `Slow execution spike: ${payload.workflow_name} — ${payload.slow_count}/${payload.total_count} runs over ${thresholdSeconds}s`
+  )
+}
+
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
   await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',

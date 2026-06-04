@@ -506,28 +506,11 @@ export async function executeWorkflow(
     )
   }
 
-  // Send Slack alert on failure (skip business rejections and test runs)
-  const durationAlertMs = definition.trigger.config.duration_alert_ms
-  if (!options.isTest && durationAlertMs && durationMs > durationAlertMs) {
-    executionCtx.waitUntil(
-      fireExecutionAlert({
-        alertType: 'duration',
-        supabase,
-        env,
-        executionCtx,
-        orgId: org_id,
-        slackChannel: slack_channel,
-        workflowId,
-        workflowName: workflow_name,
-        executionId,
-        executionStartedAt: startedAt,
-        durationMs,
-        thresholdMs: durationAlertMs,
-        timestamp: completedAt,
-        stepLogQueue,
-      }).catch((e) => console.error('[slack] duration alert failed:', e))
-    )
-  }
+  // Slow executions are no longer alerted per-run (too noisy — one transiently
+  // slow lead = one page). The duration threshold (trigger.config.duration_alert_ms)
+  // is still the per-run "slow" definition, but alerting is now aggregated: the
+  // minute cron (lib/slow-execution-rate.ts) fires only when slow runs SPIKE
+  // across a 5-minute window. See runSlowExecutionCheck.
 
   if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert) {
     executionCtx.waitUntil(

@@ -5,6 +5,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runSightingsExport } from './lib/sightings-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
@@ -152,6 +153,10 @@ export default {
       ctx.waitUntil(
         runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[volume-cliff] check failed:', e))
+      )
+      ctx.waitUntil(
+        runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[slow-spike] check failed:', e))
       )
     }
   },
