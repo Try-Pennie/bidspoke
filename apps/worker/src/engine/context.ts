@@ -36,8 +36,14 @@ export function resolveVariables(
 }
 
 function resolveTemplate(template: string, ctx: ExecutionContext): unknown {
-  // Simple single-expression template: "{{expr}}"
-  const match = template.match(/^\{\{(.+?)\}\}$/)
+  // Simple single-expression template: "{{expr}}" — returns the typed value.
+  // The capture is restricted to non-brace chars so a concatenation of multiple
+  // expressions ("{{a}}{{b}}") is NOT mistaken for one expression: with `.+?`
+  // the trailing `$` would force backtracking that swallows the interior `}}{{`,
+  // feeding a malformed path to resolveExpression (it resolves to undefined, and
+  // JSON serialization then drops the key entirely). Valid expressions never
+  // contain `{` or `}`.
+  const match = template.match(/^\{\{([^{}]+)\}\}$/)
   if (match) {
     return resolveExpression(match[1].trim(), ctx)
   }

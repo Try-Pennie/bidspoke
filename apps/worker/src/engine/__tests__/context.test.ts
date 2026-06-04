@@ -74,4 +74,26 @@ describe('resolveValue — template resolution', () => {
     const c = ctxWith({ a: { ok: false } })
     expect(resolveValue('{{steps.a.output.ok ?? steps.b.output.ok}}', c)).toBe(false)
   })
+
+  it('concatenates adjacent {{a}}{{b}}{{c}} expressions into a string (no single-expr over-match)', () => {
+    // Regression: the single-expression regex used to over-match this whole
+    // string because the trailing `$` forced the non-greedy capture to swallow
+    // the interior `}}{{`, feeding a malformed path to resolveExpression. It
+    // resolved to undefined and the SF body key was silently dropped.
+    const c = buildContext({ LEG: 2 }, 'test', 'wf', 'trace', {}, 'org')
+    recordStepOutput(c, 'mutate_adv', { output: 1, status: 'completed' })
+    recordStepOutput(c, 'mutate_bes', { output: 1, status: 'completed' })
+    expect(
+      resolveValue('{{steps.mutate_adv.output}}{{steps.mutate_bes.output}}{{trigger.payload.LEG}}', c)
+    ).toBe('112')
+  })
+
+  it('drops the missing operand to empty string in a concatenation (never undefined)', () => {
+    const c = buildContext({}, 'test', 'wf', 'trace', {}, 'org')
+    recordStepOutput(c, 'mutate_adv', { output: 1, status: 'completed' })
+    // mutate_bes never ran and trigger.payload.LEG is absent → both empty, key still present
+    expect(
+      resolveValue('{{steps.mutate_adv.output}}{{steps.mutate_bes.output}}{{trigger.payload.LEG}}', c)
+    ).toBe('1')
+  })
 })
