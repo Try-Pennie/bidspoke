@@ -361,6 +361,8 @@ export const api = {
         max_ms: number | null
         sample_size: number
         suggested_ms: number | null
+        floor_ms: number | null
+        floor_reason: string | null
         window_days: number
         source: 'history' | 'similar'
         subtype: string | null

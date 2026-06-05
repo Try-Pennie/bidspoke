@@ -194,6 +194,11 @@ executions.get('/step-duration-stats', async (c) => {
     max_ms: row?.max_ms ?? null,
     sample_size: sampleSize,
     suggested_ms: suggestedMs,
+    // The node-type floor and why it exists. Sent unconditionally (even with no
+    // run history) so the config UI can hard-flag a timeout set below the floor —
+    // a value the percentiles can't catch when a node has thin/no completed runs.
+    floor_ms: floorMs,
+    floor_reason: suggestionFloorReason(nodeType),
     window_days: 7,
     source,
     subtype: resolvedSubtype,
@@ -239,6 +244,19 @@ export function suggestionFloorMs(nodeType?: string): number {
   if (nodeType && DISPATCH_OR_DB_NODE_TYPES.has(nodeType)) return DISPATCH_OR_DB_FLOOR_MS
   if (nodeType && NETWORK_NODE_TYPES.has(nodeType)) return NETWORK_FLOOR_MS
   return INMEMORY_FLOOR_MS
+}
+
+// Plain-language reason the floor exists, so the config UI can explain why a
+// sub-floor timeout is a hard error (cold path fails every attempt) rather than
+// a soft "you have less headroom" nudge. Mirrors the categories above.
+export function suggestionFloorReason(nodeType?: string): string | null {
+  if (nodeType && nodeType === 'code')
+    return 'Code nodes run in a sandboxed worker that takes time to dispatch, so a cold run can take 100ms+ before your code even starts.'
+  if (nodeType && nodeType === 'constants')
+    return 'The constants step reads from KV and queries the database on a cold cache, so the first run after a gap is a full round-trip.'
+  if (nodeType && NETWORK_NODE_TYPES.has(nodeType))
+    return 'This step makes an outbound API call, so every run pays a network round-trip plus TLS setup.'
+  return null
 }
 
 // Round suggestions to readable increments that scale with magnitude. Without

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { suggestionFloorMs } from '../executions'
+import { suggestionFloorMs, suggestionFloorReason } from '../executions'
 
 describe('suggestionFloorMs', () => {
   it('floors dispatch/DB nodes at the cold round-trip overhead (not their compute-time p99)', () => {
@@ -25,5 +25,25 @@ describe('suggestionFloorMs', () => {
   it('defaults to the in-memory floor for unknown/undefined node types', () => {
     expect(suggestionFloorMs(undefined)).toBe(10)
     expect(suggestionFloorMs('something_new')).toBe(10)
+  })
+})
+
+describe('suggestionFloorReason', () => {
+  it('explains the dispatch floor for code and constants nodes', () => {
+    expect(suggestionFloorReason('code')).toMatch(/sandboxed worker/i)
+    expect(suggestionFloorReason('constants')).toMatch(/KV|database/i)
+  })
+
+  it('explains the network floor for outbound-call nodes', () => {
+    for (const t of ['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group']) {
+      expect(suggestionFloorReason(t)).toMatch(/network round-trip/i)
+    }
+  })
+
+  it('has no reason for in-memory nodes (no floor worth explaining)', () => {
+    for (const t of ['filter', 'branch', 'transform', 'exit', 'response']) {
+      expect(suggestionFloorReason(t)).toBeNull()
+    }
+    expect(suggestionFloorReason(undefined)).toBeNull()
   })
 })

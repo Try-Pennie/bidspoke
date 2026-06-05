@@ -3401,6 +3401,8 @@ type StepStats = {
   max_ms: number | null
   sample_size: number
   suggested_ms: number | null
+  floor_ms: number | null
+  floor_reason: string | null
   window_days: number
   source: 'history' | 'similar'
   subtype: string | null
@@ -3479,6 +3481,23 @@ function TimeoutField({
   const current = config.timeout_ms as number | undefined
   const effective = current ?? 30000
 
+  // Hard floor check, independent of run history. The percentile callout below
+  // needs >=10 completed runs and frames a tight value as "less headroom" — but
+  // a timeout set below the node-type dispatch/network floor isn't a headroom
+  // issue: cold runs exceed it on every (correlated) retry, so the step fails
+  // outright. This is exactly the case the percentiles miss, because the slow
+  // attempts time out and never enter the completed-step distribution. Surface
+  // it as a red error whenever the configured value is below the floor, even
+  // with zero history.
+  const floorMs = stats?.floor_ms ?? null
+  const belowFloor = current != null && floorMs != null && current < floorMs
+  // Bump target: the data-driven suggestion when it already clears the floor,
+  // otherwise the floor itself.
+  const floorFixMs =
+    stats?.suggested_ms != null && floorMs != null && stats.suggested_ms >= floorMs
+      ? stats.suggested_ms
+      : floorMs
+
   // One callout, always shown when we have data. Tone defaults to neutral.
   // Action sentence is appended only when there's a recommendation to make,
   // and the numeric value inside it is the click target.
@@ -3523,8 +3542,11 @@ function TimeoutField({
     }
   }
 
-  const showStats = !loading && stats && stats.sample_size >= 10
-  const showThin = !loading && stats && stats.sample_size < 10
+  // The floor error supersedes the history-based callout — when a value can't
+  // physically work, the percentile stats are noise.
+  const showFloorWarning = !loading && belowFloor && floorMs != null
+  const showStats = !loading && !showFloorWarning && stats && stats.sample_size >= 10
+  const showThin = !loading && !showFloorWarning && stats && stats.sample_size < 10
 
   const calloutClasses =
     tone === 'red'
@@ -3566,6 +3588,28 @@ function TimeoutField({
       {workflowId && namespace && (
         <div className="mt-3">
           {loading && <p className="text-xs text-gray-400">Checking past runs…</p>}
+
+          {showFloorWarning && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs leading-relaxed text-red-800">
+              <strong className="font-semibold">{current!.toLocaleString()}ms</strong> is below the
+              minimum reliable timeout for this step (~<strong className="font-semibold">{floorMs!.toLocaleString()}ms</strong>).
+              {stats!.floor_reason ? <> {stats!.floor_reason}</> : null}{' '}
+              Cold runs will exceed it on every retry, so the step times out and fails.
+              {floorFixMs != null && current !== floorFixMs && (
+                <>
+                  {' '}Use{' '}
+                  <button
+                    type="button"
+                    onClick={() => updateConfig({ timeout_ms: floorFixMs })}
+                    className="font-semibold text-red-900 underline-offset-2 hover:underline"
+                  >
+                    {floorFixMs.toLocaleString()}ms
+                  </button>
+                  {' '}instead.
+                </>
+              )}
+            </div>
+          )}
 
           {showThin && (
             <p className="text-xs text-gray-400">
