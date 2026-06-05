@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useVirtualizer, defaultRangeExtractor } from '@tanstack/react-virtual'
 import { api } from '@/lib/api'
 import * as execCache from '@/lib/execution-cache'
 import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-react'
@@ -280,30 +281,62 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     }
   }, [])
 
-  // Sentinel ref callback: (re)attaches an IntersectionObserver to the
-  // bottom-of-list element. The scroll container is the parent .overflow-y-auto
-  // div, set as `root` so observation fires only when the sentinel scrolls
-  // into the panel's viewport (not the page's).
-  const scrollRootRef = useRef<HTMLDivElement | null>(null)
-  const observerRef = useRef<IntersectionObserver | null>(null)
-  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
-    if (observerRef.current) {
-      observerRef.current.disconnect()
-      observerRef.current = null
-    }
-    if (!node) return
-    const obs = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) loadMore()
-      },
-      { root: scrollRootRef.current, rootMargin: '200px' }
-    )
-    obs.observe(node)
-    observerRef.current = obs
-  }, [loadMore])
-
   const filtered = executions
-  const items = buildItems(filtered, versions)
+  const items = useMemo(() => buildItems(filtered, versions), [filtered, versions])
+
+  // Virtualized list: only the rows in (and near) the viewport are mounted, so
+  // the DOM stays bounded no matter how deep the user scrolls back. Heights vary
+  // (exec rows expand to show errors, dividers/headers differ), so we measure
+  // each rendered row dynamically via measureElement. The scroll container is
+  // the parent .overflow-y-auto div (scrollRootRef).
+  const scrollRootRef = useRef<HTMLDivElement | null>(null)
+
+  // Indices of the date-header rows — used to keep one header pinned to the top
+  // while its date's executions scroll under it (replaces the old CSS-sticky
+  // behavior, which doesn't survive virtualization since rows are absolutely
+  // positioned). activeStickyIndexRef holds the header currently pinned.
+  const headerIndexes = useMemo(
+    () => items.flatMap((it, i) => (it.type === 'date-header' ? [i] : [])),
+    [items]
+  )
+  const activeStickyIndexRef = useRef(0)
+
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRootRef.current,
+    estimateSize: () => 56,
+    overscan: 10,
+    getItemKey: (index) => {
+      const it = items[index]
+      if (it.type === 'exec') return `e-${it.exec.id}`
+      if (it.type === 'version-divider') return `v-${it.version.id}`
+      return `d-${index}`
+    },
+    // Always keep the active sticky header in the rendered set so it can pin to
+    // the top even after its slot scrolls out of view.
+    rangeExtractor: useCallback(
+      (range: { startIndex: number; endIndex: number; overscan: number; count: number }) => {
+        let active = 0
+        for (const i of headerIndexes) {
+          if (i <= range.startIndex) active = i
+          else break
+        }
+        activeStickyIndexRef.current = active
+        const next = new Set([active, ...defaultRangeExtractor(range)])
+        return [...next].sort((a, b) => a - b)
+      },
+      [headerIndexes]
+    ),
+  })
+
+  // Infinite scroll: when the rendered window reaches the tail of the list,
+  // pull the next older page. loadMore guards against concurrent/duplicate
+  // calls internally, so firing on every range change is safe.
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  useEffect(() => {
+    const last = virtualItems[virtualItems.length - 1]
+    if (last && last.index >= items.length - 5) loadMore()
+  }, [virtualItems, items.length, loadMore])
 
   return (
     <aside className="flex w-72 flex-col border-r border-gray-200 bg-white">
@@ -352,11 +385,24 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
             )}
           </div>
         ) : (
-          <div>
-            {items.map((item, i) => {
+          <>
+            <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%' }}>
+            {virtualItems.map((vRow) => {
+              const item = items[vRow.index]
+              if (!item) return null
+              const isActiveStickyHeader =
+                item.type === 'date-header' && activeStickyIndexRef.current === vRow.index
+              const wrapStyle: React.CSSProperties = isActiveStickyHeader
+                ? { position: 'sticky', top: 0, zIndex: 2, width: '100%' }
+                : { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${vRow.start}px)` }
+              const wrap = (children: React.ReactNode) => (
+                <div key={vRow.key} data-index={vRow.index} ref={rowVirtualizer.measureElement} style={wrapStyle}>
+                  {children}
+                </div>
+              )
               if (item.type === 'date-header') {
-                return (
-                  <div key={`date-${item.label}-${i}`} className="sticky top-0 bg-beige px-3 py-1.5 border-b border-gray-100">
+                return wrap(
+                  <div className="bg-beige px-3 py-1.5 border-b border-gray-100">
                     <p className="text-xs font-medium text-gray-400">{item.label}</p>
                   </div>
                 )
@@ -364,9 +410,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
               if (item.type === 'version-divider') {
                 const v = item.version
-                return (
+                return wrap(
                   <div
-                    key={`v-${v.id}`}
                     className="flex items-center gap-2 px-2 py-1.5"
                     title={`Saved ${formatTime(v.created_at)}${v.message ? ` · ${v.message}` : ''}`}
                   >
@@ -383,9 +428,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
               const cfg = iconFor(exec)
               const Icon = cfg.icon
               const isSelected = exec.id === selectedId
-              return (
+              return wrap(
                 <button
-                  key={exec.id}
                   onClick={() => onSelect(exec.id)}
                   onMouseEnter={() => onRowEnter(exec.id)}
                   onMouseLeave={onRowLeave}
@@ -432,14 +476,15 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                 </button>
               )
             })}
+            </div>
             {hasMore ? (
-              <div ref={sentinelRef} className="flex justify-center px-3 py-3">
+              <div className="flex justify-center px-3 py-3">
                 {loadingMore && <Loader2 className="h-4 w-4 animate-spin text-gray-400" />}
               </div>
             ) : filtered.length > 0 ? (
               <p className="px-3 py-3 text-center text-[10px] text-gray-300">End of history</p>
             ) : null}
-          </div>
+          </>
         )}
       </div>
     </aside>
