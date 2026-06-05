@@ -7,14 +7,23 @@ import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-r
 
 const PAGE_SIZE = 100
 
-function mergeExecs(a: ExecRow[], b: ExecRow[]): ExecRow[] {
+// Union a + b, dedupe by id, sort newest-first, and trim to `cap` rows.
+// The cap is load-bearing: the 1s poll merges the newest page every second, and
+// on a high-volume workflow that page is mostly fresh rows each tick. Without a
+// bound, the merged set (and the un-virtualized DOM list below) grows without
+// limit while the tab sits open, eventually OOMing the renderer. Callers pass a
+// cap of (loadedPages + 1) * PAGE_SIZE so polling only refreshes the newest
+// window, while explicit loadMore scroll-back still extends it.
+function mergeExecs(a: ExecRow[], b: ExecRow[], cap: number): ExecRow[] {
   const map = new Map<string, ExecRow>()
   for (const e of a) map.set(e.id, e)
   for (const e of b) map.set(e.id, e)
-  return Array.from(map.values()).sort((x, y) => {
-    if (x.started_at !== y.started_at) return x.started_at < y.started_at ? 1 : -1
-    return x.id < y.id ? 1 : -1
-  })
+  return Array.from(map.values())
+    .sort((x, y) => {
+      if (x.started_at !== y.started_at) return x.started_at < y.started_at ? 1 : -1
+      return x.id < y.id ? 1 : -1
+    })
+    .slice(0, cap)
 }
 import { getDateLabel, formatTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -108,6 +117,10 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const execsRef = useRef<ExecRow[]>([])
   const hasMoreRef = useRef(true)
   const loadingMoreRef = useRef(false)
+  // How many older pages the user has explicitly scrolled in via loadMore.
+  // Drives the retained-row cap so the 1s poll can't grow the list unbounded
+  // (newest window stays at PAGE_SIZE), but deliberate scroll-back still works.
+  const pagesLoadedRef = useRef(0)
   useEffect(() => { execsRef.current = executions }, [executions])
   useEffect(() => { hasMoreRef.current = hasMore }, [hasMore])
   useEffect(() => { loadingMoreRef.current = loadingMore }, [loadingMore])
@@ -116,7 +129,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   // firing fetches; when the user switches tabs, the interval is cleared but
   // already-in-flight requests are not. Without this guard, a stale "all"
   // response can land after the new filter's response and pollute the merged
-  // list — and mergeExecs only adds rows, so the pollution sticks.
+  // list with rows that don't match the active filter.
   const genRef = useRef(0)
   useEffect(() => { genRef.current += 1 }, [workflowId, filter])
 
@@ -140,8 +153,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .then((page) => {
         if (gen !== genRef.current) return // stale: filter/workflow changed mid-flight
         if (silent) {
-          setExecutions((prev) => mergeExecs(prev, page))
+          const cap = (pagesLoadedRef.current + 1) * PAGE_SIZE
+          setExecutions((prev) => mergeExecs(prev, page, cap))
         } else {
+          // Fresh load (initial / refresh signal): reset the scroll-back window.
+          pagesLoadedRef.current = 0
           setExecutions(page)
           setHasMore(page.length === PAGE_SIZE)
         }
@@ -167,7 +183,11 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .list(workflowId, opts)
       .then((page) => {
         if (gen !== genRef.current) return // stale: filter/workflow changed mid-flight
-        setExecutions((prev) => mergeExecs(prev, page))
+        // Grow the retained window by one page before merging so the older rows
+        // we just fetched survive the cap (and aren't trimmed by the next poll).
+        pagesLoadedRef.current += 1
+        const cap = (pagesLoadedRef.current + 1) * PAGE_SIZE
+        setExecutions((prev) => mergeExecs(prev, page, cap))
         setHasMore(page.length === PAGE_SIZE)
       })
       .catch(() => {})
@@ -184,6 +204,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   useEffect(() => {
     setExecutions([])
     setHasMore(true)
+    pagesLoadedRef.current = 0
   }, [workflowId, filter])
 
   // Initial load + 1s polling for executions; versions load once (refresh on save signal)
