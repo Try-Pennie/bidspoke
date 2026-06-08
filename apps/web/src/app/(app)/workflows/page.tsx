@@ -676,7 +676,7 @@ export default function WorkflowsPage() {
         </td>
         {/* Name + status badge */}
         <td className="px-4 py-3" style={depth > 0 ? { paddingLeft: `${indentPx(depth)}px` } : undefined}>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <HealthDot rate={healthMap[wf.id] ?? null} />
             {renamingId === wf.id ? (
               <InlineRenameInput
@@ -694,12 +694,13 @@ export default function WorkflowsPage() {
               <Link
                 href={`/workflows/${wf.id}`}
                 onClick={(e) => navigateToWorkflow(e, wf.id)}
-                className="font-semibold text-graphite hover:text-p-blue-dark"
+                title={wf.name}
+                className="min-w-0 truncate font-semibold text-graphite hover:text-p-blue-dark"
               >
                 {wf.name}
               </Link>
             )}
-            <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${
+            <span className={`inline-flex flex-shrink-0 items-center rounded px-2 py-0.5 text-xs font-medium ${
               wf.is_active
                 ? 'bg-green-50 text-green-700'
                 : 'bg-gray-100 text-gray-500'
@@ -707,11 +708,11 @@ export default function WorkflowsPage() {
               {wf.is_active ? 'Active' : 'Inactive'}
             </span>
             {duplicating === wf.id && (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-p-blue-dark" />
+              <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-p-blue-dark" />
             )}
           </div>
           {wf.description && (
-            <p className="mt-0.5 text-xs text-gray-400">{wf.description}</p>
+            <p className="mt-0.5 truncate text-xs text-gray-400">{wf.description}</p>
           )}
         </td>
 
