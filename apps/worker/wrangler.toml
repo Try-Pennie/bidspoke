@@ -64,6 +64,9 @@ SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-know
 PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_score" to enable
 APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
+# External reachability target for the volume-cliff self-check. Stable bidspoke-owned
+# hostname that routes to this worker (GET returns 200). Keep off personal subdomains.
+SELF_CHECK_URL = "https://hook.trypennie.dev/"
 
 # Scheduled cron triggers:
 #   "0 9 * * *"     daily 09:00 UTC — sightings export to Snowflake (overnight ET)

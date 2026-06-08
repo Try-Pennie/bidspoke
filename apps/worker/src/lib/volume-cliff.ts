@@ -26,7 +26,10 @@ export const RECENT_WINDOW_MINUTES = 5     // [-5, 0)
 // External URL we hit when a cliff fires, to confirm the worker is reachable from
 // outside Cloudflare. A 200 here means the issue is upstream of CF (caller stopped
 // sending); a failure means CF/route/DNS/TLS — investigate our side first.
-const SELF_CHECK_URL = 'https://bidspoke-worker.bnelms.workers.dev/'
+//
+// Default is a stable bidspoke-owned hostname (the hook.trypennie.dev route hits
+// this worker and a GET returns 200). Override via the SELF_CHECK_URL env var.
+export const DEFAULT_SELF_CHECK_URL = 'https://hook.trypennie.dev/'
 const SELF_CHECK_TIMEOUT_MS = 5000
 
 export interface SelfCheckResult {
@@ -82,7 +85,8 @@ interface KvLike {
 export async function runVolumeCliffCheck(
   supabase: SupabaseClient,
   kv: KvLike,
-  appUrl: string
+  appUrl: string,
+  selfCheckUrl: string = DEFAULT_SELF_CHECK_URL
 ): Promise<void> {
   const { data: slackOrgs } = await supabase
     .from('service_connections')
@@ -141,7 +145,7 @@ export async function runVolumeCliffCheck(
   let cachedSelfCheck: SelfCheckResult | null = null
   const getSelfCheck = async (): Promise<SelfCheckResult> => {
     if (cachedSelfCheck) return cachedSelfCheck
-    cachedSelfCheck = await runSelfCheck()
+    cachedSelfCheck = await runSelfCheck(selfCheckUrl)
     return cachedSelfCheck
   }
 
@@ -181,16 +185,16 @@ export async function runVolumeCliffCheck(
   }
 }
 
-async function runSelfCheck(): Promise<SelfCheckResult> {
+async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
   const start = Date.now()
   try {
     const ctrl = new AbortController()
     const timeout = setTimeout(() => ctrl.abort(), SELF_CHECK_TIMEOUT_MS)
-    const res = await fetch(SELF_CHECK_URL, { method: 'GET', signal: ctrl.signal })
+    const res = await fetch(selfCheckUrl, { method: 'GET', signal: ctrl.signal })
     clearTimeout(timeout)
     const latency = Date.now() - start
     const cfRay = res.headers.get('cf-ray')
-    console.log(`[volume-cliff] self-check status=${res.status} latency=${latency}ms cf-ray=${cfRay} url=${SELF_CHECK_URL}`)
+    console.log(`[volume-cliff] self-check status=${res.status} latency=${latency}ms cf-ray=${cfRay} url=${selfCheckUrl}`)
     // Any HTTP response (including 4xx) proves the worker is reachable. Only
     // network/timeout errors below mean unreachable. 5xx is the one ambiguous
     // case — treat it as errored (worker up but failing).
@@ -199,7 +203,7 @@ async function runSelfCheck(): Promise<SelfCheckResult> {
     const latency = Date.now() - start
     const errName = e instanceof Error ? e.name : 'unknown'
     const errMsg = e instanceof Error ? e.message : String(e)
-    console.error(`[volume-cliff] self-check FAILED type=${errName} message=${errMsg} latency=${latency}ms url=${SELF_CHECK_URL}`)
+    console.error(`[volume-cliff] self-check FAILED type=${errName} message=${errMsg} latency=${latency}ms url=${selfCheckUrl}`)
     return { ok: false, status: null, latency_ms: latency, error: `${errName}: ${errMsg}` }
   }
 }

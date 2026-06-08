@@ -41,6 +41,11 @@ export interface Env {
   // Frontend URL — used for deep links in Slack alerts
   APP_URL: string
 
+  // External hostname the volume-cliff monitor hits to confirm the worker is
+  // reachable from outside Cloudflare. Must be a stable bidspoke-owned URL that
+  // routes to this worker. Optional — falls back to a built-in default.
+  SELF_CHECK_URL?: string
+
   // Cloudflare API — for syncing secrets (PRD 12.3)
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
@@ -156,7 +161,7 @@ export default {
           .catch((e) => console.error('[prewarm] failed:', e))
       )
       ctx.waitUntil(
-        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL)
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       ctx.waitUntil(
