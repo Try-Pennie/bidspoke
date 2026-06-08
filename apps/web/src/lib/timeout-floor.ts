@@ -5,10 +5,11 @@
 // current timeout, so for dispatch-/IO-bound steps the real floor lives below
 // the visible data.
 //
-// MIRROR of `suggestionFloorMs` in apps/worker/src/routes/api/executions.ts.
-// Kept on the frontend so the canvas can flag a sub-floor timeout at a glance —
-// in view mode, without selecting the node or making an API round-trip. Keep
-// the two in sync; the worker is the source of truth.
+// MIRROR of `suggestionFloorMs` in apps/worker/src/lib/timeout-floor.ts (the
+// source of truth). Kept on the frontend so the canvas can flag a sub-floor
+// timeout at a glance — in view mode, without selecting the node or making an
+// API round-trip. The two apps share no package, so __tests__/
+// timeout-floor-sync.test.ts imports both and fails CI if they diverge.
 const DISPATCH_OR_DB_FLOOR_MS = 150
 const NETWORK_FLOOR_MS = 50
 const INMEMORY_FLOOR_MS = 10
