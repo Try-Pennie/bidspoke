@@ -10,6 +10,10 @@ import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEdit
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 
+// Shared across the form's own guards (Cancel, tab close, link nav) and the
+// parent page's partner-switch / New guards so the prompt copy stays identical.
+export const UNSAVED_CHANGES_MESSAGE = 'You have unsaved changes. Leave without saving?'
+
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
 type RuleKind = 'body' | 'status'
@@ -330,6 +334,8 @@ interface Props {
   onConfirmDelete?: () => void
   onCancelDelete?: () => void
   deleting?: boolean
+  /** Reports whether the form has unsaved edits, so the parent can guard partner-switch / New. */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -400,6 +406,7 @@ export default function PartnerForm({
   onConfirmDelete,
   onCancelDelete,
   deleting,
+  onDirtyChange,
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -489,6 +496,45 @@ export default function PartnerForm({
     return { name, apiEndpoint, cfSecretKey, clickUrl, isActive, priority, dailyCap, minBid, bidFormula, resolverType, resolverConfig, outboundMapping, bidMode, bidComparisonSource, extraExtraction, lastProbeResponse, dedupEndpoint, circuitEnabled, circuitThreshold, circuitWindow, circuitCooldown, signalRules, alertTransient, alertPermanent, sellOffOfferTitle, sellOffOfferDetails, partnerType, confirmationWindowMs, subAccountFloors }
   }
 
+  // Dirty tracking — compare current values against the values at mount (reset
+  // after each successful save). This is a real-money config surface, so silently
+  // losing an edit (e.g. a flipped Status toggle that was never saved) is high-impact.
+  const dirtyKey = JSON.stringify({ ...captureSnapshot(), slug })
+  const baselineDirtyKey = useRef<string | null>(null)
+  if (baselineDirtyKey.current === null) baselineDirtyKey.current = dirtyKey
+  const dirty = baselineDirtyKey.current !== dirtyKey
+
+  // Tell the parent so it can guard partner-switch / New (those are <button>s the
+  // link interceptor below can't see).
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+
+  // Warn on tab close / refresh / external navigation while dirty.
+  useEffect(() => {
+    if (!dirty) return
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  // Intercept client-side <a> navigations (left nav, etc.) while dirty. The
+  // partner list / Cancel / New are <button>s handled by the parent + Cancel guards.
+  useEffect(() => {
+    if (!dirty) return
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const anchor = (e.target as HTMLElement | null)?.closest('a')
+      if (!anchor) return
+      const href = anchor.getAttribute('href')
+      if (!href || href.startsWith('#') || anchor.target === '_blank') return
+      if (!window.confirm(UNSAVED_CHANGES_MESSAGE)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [dirty])
+
   function restoreSnapshot(snap: FormSnapshot) {
     setName(snap.name); setApiEndpoint(snap.apiEndpoint); setCfSecretKey(snap.cfSecretKey)
     setClickUrl(snap.clickUrl); setIsActive(snap.isActive); setPriority(snap.priority)
@@ -554,6 +600,8 @@ export default function PartnerForm({
         confirmation_window_ms: confirmationWindowMs ? parseInt(confirmationWindowMs) : null,
       }
       await onSave(body, partner?.id, isNew ? pendingUuids : undefined)
+      // The saved values are now the clean baseline — clears the dirty flag.
+      baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
       setSaveState('saved')
       if (!isNew) {
         setUndoSnapshot(snapshot)
@@ -614,7 +662,7 @@ export default function PartnerForm({
           )}
           <button
             type="button"
-            onClick={onCancel}
+            onClick={() => { if (dirty && !window.confirm(UNSAVED_CHANGES_MESSAGE)) return; onCancel() }}
             className="px-3 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
           >
             Cancel
@@ -1011,7 +1059,13 @@ export default function PartnerForm({
               Undo · {undoSecondsLeft}s
             </button>
           )}
-          {!isNew && !undoSnapshot && (
+          {dirty && saveState !== 'saving' && (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+              Unsaved changes
+            </span>
+          )}
+          {!isNew && !undoSnapshot && !dirty && (
             <p className="text-xs text-gray-400">
               {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? '—'}`}
             </p>

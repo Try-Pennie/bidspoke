@@ -9,7 +9,7 @@ import type { Partner, PartnerBody } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Plus, ChevronRight, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
-import PartnerForm from './PartnerForm'
+import PartnerForm, { UNSAVED_CHANGES_MESSAGE } from './PartnerForm'
 
 export default function PartnersPage() {
   const router = useRouter()
@@ -25,6 +25,13 @@ export default function PartnersPage() {
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [formDirty, setFormDirty] = useState(false)
+
+  // Confirm before discarding unsaved partner-form edits. Used to guard the
+  // in-page <button> navigations (partner switch, New) the form can't intercept.
+  function confirmDiscardIfDirty(): boolean {
+    return !formDirty || window.confirm(UNSAVED_CHANGES_MESSAGE)
+  }
 
   async function load() {
     try {
@@ -61,6 +68,7 @@ export default function PartnersPage() {
   function clearSelection() {
     setCreating(false)
     setSelected(null)
+    setFormDirty(false)
     if (slugParam) router.replace('/partners', { scroll: false })
   }
 
@@ -120,7 +128,7 @@ export default function PartnersPage() {
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
             <button
-              onClick={() => { clearSelection(); setCreating(true) }}
+              onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }}
               className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0]"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -154,7 +162,7 @@ export default function PartnersPage() {
                 {partners.map((partner) => (
                   <button
                     key={partner.id}
-                    onClick={() => selectPartner(partner)}
+                    onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); selectPartner(partner) }}
                     className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[colors,opacity] duration-150 ${
                       selected?.id === partner.id
                         ? 'bg-gray-100'
@@ -201,6 +209,7 @@ export default function PartnersPage() {
               onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
               onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
               deleting={false}
+              onDirtyChange={setFormDirty}
             />
           ) : pendingSelection ? (
             <div className="max-w-3xl space-y-6">
