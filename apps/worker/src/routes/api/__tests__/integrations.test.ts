@@ -250,10 +250,12 @@ describe('GET /integrations/slack', () => {
     )
     const res = await request(app, 'GET', '/integrations/slack')
     expect(res.status).toBe(200)
-    const body = await res.json() as { connected: boolean; workspace_name: string; default_channel: string }
+    const body = await res.json() as { connected: boolean; workspace_name: string; default_channel: string; config_alerts_enabled: boolean }
     expect(body.connected).toBe(true)
     expect(body.workspace_name).toBe('Pennie HQ')
     expect(body.default_channel).toBe('#alerts')
+    // Alert flags default on when absent from config (opt-out semantics).
+    expect(body.config_alerts_enabled).toBe(true)
   })
 })
 

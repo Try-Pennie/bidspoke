@@ -19,6 +19,7 @@ interface SlackStatus {
   default_channel?: string | null
   volume_alerts_enabled?: boolean
   matrix_alerts_enabled?: boolean
+  config_alerts_enabled?: boolean
   matrix_alerts_channel?: string | null
   updated_at?: string
   updated_by_email?: string | null
@@ -428,6 +429,27 @@ export default function IntegrationsPage() {
                     }
                   }}
                   label="Volume anomaly alerts"
+                />
+              </div>
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3">
+                <div className="text-sm">
+                  <p className="font-medium text-graphite">Configuration warning alerts</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Daily audit that flags live workflow nodes whose timeout is below the reliable floor for their type. Turn off to mute the digest.
+                  </p>
+                </div>
+                <SlackToggle
+                  checked={slack.config_alerts_enabled !== false}
+                  onChange={async (next) => {
+                    setSlack((s) => (s ? { ...s, config_alerts_enabled: next } : s))
+                    try {
+                      await api.integrations.updateSlackSettings({ config_alerts_enabled: next })
+                    } catch (e) {
+                      setSlack((s) => (s ? { ...s, config_alerts_enabled: !next } : s))
+                      setError(e instanceof Error ? e.message : 'Failed to update setting')
+                    }
+                  }}
+                  label="Configuration warning alerts"
                 />
               </div>
               <div className="rounded-lg border border-gray-200 p-3">
