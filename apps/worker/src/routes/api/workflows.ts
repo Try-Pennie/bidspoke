@@ -154,8 +154,24 @@ workflows.post('/:id/duplicate', async (c) => {
     })
   }
 
+  // Deploy the clone's code-node bundle. Bundles are keyed per workflow id, so
+  // the source's bundle doesn't cover the clone — without this, a cloned workflow
+  // with Code nodes would 500 on them until its first save. Awaited so the clone
+  // is runnable on return; no-op (returns []) when the definition has no code nodes.
+  const deployErrors: { namespace: string; error: string }[] = []
+  const results = await deployCodeNodes(
+    clone.id,
+    source.definition as WorkflowDefinition,
+    c.env.CLOUDFLARE_ACCOUNT_ID,
+    c.env.CLOUDFLARE_API_TOKEN,
+    c.env.WORKFLOW_CACHE
+  ).catch((e) => { console.error('[duplicate] code-node deploy failed:', e); return [] })
+  for (const r of results) {
+    if (r.error) deployErrors.push({ namespace: r.namespace, error: r.error })
+  }
+
   await writeAuditLog(supabase, orgId, 'workflow', clone.id, 'created', userId, { duplicated_from: id })
-  return c.json(clone, 201)
+  return c.json({ ...clone, deploy_errors: deployErrors.length ? deployErrors : undefined }, 201)
 })
 
 // GET /api/workflows/:id

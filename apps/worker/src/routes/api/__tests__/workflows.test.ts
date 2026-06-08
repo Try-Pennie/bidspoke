@@ -251,6 +251,28 @@ describe('POST /workflows/:id/duplicate', () => {
     const body = await res.json() as { id: string }
     expect(body.id).toBe('wf-copy2')
   })
+
+  it('succeeds when the source has code nodes (deploy path runs, no CF creds = no-op)', async () => {
+    const source = {
+      name: 'Coded',
+      description: null,
+      definition: { nodes: [{ id: 'n1', type: 'code', namespace: 'enrich', config: { script: 'return {}' } }] },
+      folder_id: null,
+      is_active: true,
+    }
+    const clone = { id: 'wf-copy3', name: 'Coded (copy)', organization_id: USER_ORG }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: source }, { insertResult: clone }],
+        workflow_versions: [{ list: [{ version_number: 1, definition: source.definition }] }, { insertResult: {} }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    const body = await res.json() as { id: string }
+    expect(body.id).toBe('wf-copy3')
+  })
 })
 
 describe('PATCH /workflows/:id', () => {
