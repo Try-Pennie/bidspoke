@@ -561,7 +561,7 @@ export default function DashboardPage() {
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <span className="truncate text-sm font-medium text-graphite">{w.workflow_name}</span>
                       <Link
-                        href={`/workflows/${w.workflow_id}`}
+                        href={`/workflows/${w.workflow_id}?node=${w.nodes[0].node_id}`}
                         className="flex flex-shrink-0 items-center gap-0.5 text-xs text-p-blue-dark hover:text-p-blue-dark"
                       >
                         Open <ArrowRight className="h-3 w-3" />
@@ -569,12 +569,18 @@ export default function DashboardPage() {
                     </div>
                     <ul className="space-y-0.5">
                       {w.nodes.map((n) => (
-                        <li key={n.node_id} className="flex items-baseline gap-2 pl-1 text-xs">
-                          <span className="truncate font-mono text-gray-600">{n.label || n.namespace}</span>
-                          <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] text-gray-500">{n.type}</span>
-                          <span className="flex-shrink-0 text-gray-500">
-                            set to {n.configured_ms}ms, needs at least {n.floor_ms}ms
-                          </span>
+                        <li key={n.node_id}>
+                          <Link
+                            href={`/workflows/${w.workflow_id}?node=${n.node_id}`}
+                            className="-mx-1 flex items-baseline gap-2 rounded px-2 py-0.5 text-xs hover:bg-gray-50"
+                            title="Open this node on the canvas"
+                          >
+                            <span className="truncate font-mono text-gray-600">{n.label || n.namespace}</span>
+                            <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] text-gray-500">{n.type}</span>
+                            <span className="flex-shrink-0 text-gray-500">
+                              set to {n.configured_ms}ms, needs at least {n.floor_ms}ms
+                            </span>
+                          </Link>
                         </li>
                       ))}
                     </ul>

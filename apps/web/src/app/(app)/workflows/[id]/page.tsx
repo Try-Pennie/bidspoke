@@ -16,6 +16,7 @@ function WorkflowEditorInner() {
   const searchParams = useSearchParams()
   const urlExecutionId = searchParams.get('execution') ?? undefined
   const urlMode = searchParams.get('mode') === 'edit' ? 'edit' : 'view'
+  const urlFocusNodeId = searchParams.get('node') ?? undefined
 
   // Mirror the URL into local state so Clear can drop the execution view
   // synchronously instead of waiting on the App Router transition. router.replace
@@ -238,6 +239,7 @@ function WorkflowEditorInner() {
       onLoadStepDetail={loadStepDetail}
       onClearExecution={clearExecution}
       onSelectExecution={selectExecution}
+      focusNodeId={urlFocusNodeId}
     />
   )
 }

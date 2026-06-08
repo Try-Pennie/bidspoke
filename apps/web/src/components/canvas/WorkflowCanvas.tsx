@@ -858,7 +858,7 @@ function findRunningNamespace(
 
 // ── Inner canvas (needs ReactFlowProvider context) ───────────────────────────
 
-function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution }: {
+function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps, executionPayload, executionSource, executionTraceId, executionStartedAt, executionParentId, executionChildren, onLoadStepDetail, onClearExecution, onSelectExecution, focusNodeId }: {
   workflow: Workflow
   mode: 'edit' | 'view'
   onModeChange?: (mode: 'edit' | 'view') => void
@@ -873,6 +873,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   onLoadStepDetail?: (namespace: string) => void
   onClearExecution?: () => void
   onSelectExecution?: (execId: string) => void
+  focusNodeId?: string
 }) {
   const router = useRouter()
   const { screenToFlowPosition, fitView, getViewport, setViewport } = useReactFlow()
@@ -1333,6 +1334,18 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       .map((n) => ({ id: n.id }))
     fitView({ padding: 0.4, maxZoom: 0.5, nodes: fitNodes.length > 0 ? fitNodes : undefined })
   }, [layoutSettled, fitView, nodes, edges])
+
+  // Deep link: ?node=<id> (e.g. from a config-warning) selects the node and
+  // frames it. Runs after the broad fit above so it wins the viewport. Guarded
+  // so it only fires once per mount.
+  const focusDoneRef = useRef(false)
+  useEffect(() => {
+    if (!layoutSettled || !focusNodeId || focusDoneRef.current) return
+    if (!nodes.some((n) => n.id === focusNodeId)) return
+    focusDoneRef.current = true
+    setSelectedNodeId(focusNodeId)
+    fitView({ padding: 0.6, maxZoom: 1.2, duration: 600, nodes: [{ id: focusNodeId }] })
+  }, [layoutSettled, focusNodeId, nodes, fitView])
 
   // Compensate the viewport for the left-sidebar width delta when toggling
   // edit ↔ view. NodePalette is w-48 (192px), ExecutionListPanel is w-72
@@ -3744,6 +3757,7 @@ export default function WorkflowCanvas({
   onLoadStepDetail,
   onClearExecution,
   onSelectExecution,
+  focusNodeId,
 }: {
   workflow: Workflow
   mode: 'edit' | 'view'
@@ -3759,6 +3773,8 @@ export default function WorkflowCanvas({
   onLoadStepDetail?: (namespace: string) => void
   onClearExecution?: () => void
   onSelectExecution?: (execId: string) => void
+  /** Node to select and center on load (e.g. from a config-warning deep link `?node=`). */
+  focusNodeId?: string
 }) {
   return (
     <ReactFlowProvider>
@@ -3777,6 +3793,7 @@ export default function WorkflowCanvas({
         onLoadStepDetail={onLoadStepDetail}
         onClearExecution={onClearExecution}
         onSelectExecution={onSelectExecution}
+        focusNodeId={focusNodeId}
       />
     </ReactFlowProvider>
   )

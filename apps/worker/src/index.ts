@@ -141,7 +141,7 @@ export default {
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
       ctx.waitUntil(
-        runTimeoutAuditCheck(supabase, env.IDEMPOTENCY)
+        runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[timeout-audit] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {

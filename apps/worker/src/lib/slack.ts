@@ -380,8 +380,9 @@ export async function sendMatrixChangeAlert(
 // Structural shape of one workflow's offending nodes. Defined here (rather than
 // imported from timeout-audit) so slack.ts has no dependency back on its caller.
 interface TimeoutConfigWarning {
+  workflow_id: string
   workflow_name: string
-  nodes: Array<{ label: string | null; namespace: string; type: string; configured_ms: number; floor_ms: number }>
+  nodes: Array<{ node_id: string; label: string | null; namespace: string; type: string; configured_ms: number; floor_ms: number }>
 }
 
 /**
@@ -392,7 +393,8 @@ interface TimeoutConfigWarning {
  */
 export async function sendTimeoutConfigAlert(
   connection: SlackConnection,
-  warnings: TimeoutConfigWarning[]
+  warnings: TimeoutConfigWarning[],
+  appUrl: string
 ): Promise<void> {
   if (warnings.length === 0) return
 
@@ -411,7 +413,10 @@ export async function sendTimeoutConfigAlert(
   for (const w of warnings) {
     const lines = w.nodes
       .slice(0, 20)
-      .map((n) => `• ${n.label || n.namespace} (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`)
+      .map((n) => {
+        const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
+        return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`
+      })
     const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
     blocks.push({
       type: 'section',

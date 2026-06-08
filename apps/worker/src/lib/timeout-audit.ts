@@ -116,7 +116,7 @@ export async function getOrgTimeoutWarnings(
  * Daily cron: scan every Slack-connected org's active workflows and alert when
  * the offending set changes. Called from the Worker scheduled handler.
  */
-export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike): Promise<void> {
+export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string): Promise<void> {
   const { data: slackOrgs } = await supabase
     .from('service_connections')
     .select('organization_id')
@@ -143,6 +143,6 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike)
 
     const connection = await getSlackConnection(supabase, orgId)
     if (!connection || !connection.config_alerts_enabled) continue
-    await sendTimeoutConfigAlert(connection, warnings)
+    await sendTimeoutConfigAlert(connection, warnings, appUrl)
   }
 }
