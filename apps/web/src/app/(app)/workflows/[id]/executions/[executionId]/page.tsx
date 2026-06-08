@@ -751,11 +751,33 @@ export default function ExecutionDetailPage() {
               <h2 className="mb-3 text-sm font-semibold text-gray-700">Steps</h2>
               {execution.steps.length === 0 ? (
                 <p className="text-sm text-gray-400">No steps recorded.</p>
-              ) : (
+              ) : (() => {
+                const visibleSteps = execution.steps.filter(
+                  (step) => step.step_type !== 'branch_end' && step.step_type !== 'parallel_end'
+                )
+                const runStartMs = new Date(execution.started_at).getTime()
+                // Waterfall scale: prefer the execution's total duration; fall back to the
+                // latest step completion for in-progress runs. Offsets are wall-clock from
+                // the trigger, so parallel steps render with overlapping bars (correct).
+                const latestEndMs = visibleSteps.reduce((max, s) => {
+                  if (!s.completed_at) return max
+                  return Math.max(max, new Date(s.completed_at).getTime() - runStartMs)
+                }, 0)
+                const totalSpanMs = Math.max(1, execution.duration_ms ?? latestEndMs)
+                return (
                 <div className="space-y-3">
-                  {execution.steps
-                    .filter((step) => step.step_type !== 'branch_end' && step.step_type !== 'parallel_end')
-                    .map((step, i) => (
+                  {visibleSteps.map((step, i) => {
+                    // Steps inherited from a prior run (resumes) predate this execution's
+                    // start, so elapsed-from-trigger and the waterfall don't apply to them.
+                    const startedAtMs = new Date(step.started_at).getTime()
+                    const isPreRun = startedAtMs < runStartMs
+                    const startOffsetMs = Math.max(0, startedAtMs - runStartMs)
+                    const elapsedMs = !isPreRun && step.completed_at
+                      ? new Date(step.completed_at).getTime() - runStartMs
+                      : null
+                    const barLeftPct = (startOffsetMs / totalSpanMs) * 100
+                    const barWidthPct = Math.max(0.5, ((step.duration_ms ?? 0) / totalSpanMs) * 100)
+                    return (
                     <div
                       key={step.id}
                       className={`rounded-xl border bg-white p-4 ${
@@ -769,11 +791,34 @@ export default function ExecutionDetailPage() {
                           </span>
                           <div>
                             <p className="font-mono text-sm font-semibold text-graphite">{step.step_namespace}</p>
-                            <p className="text-xs text-gray-400">{step.step_type} · {formatDuration(step.duration_ms)}</p>
+                            <p className="text-xs text-gray-400">
+                              {step.step_type} · {formatDuration(step.duration_ms)}
+                              {elapsedMs !== null && (
+                                <>
+                                  {' · '}
+                                  <span className="text-gray-500" title="Elapsed from trigger to this step's completion">
+                                    +{formatDuration(elapsedMs)} from trigger
+                                  </span>
+                                </>
+                              )}
+                            </p>
                           </div>
                         </div>
                         <StatusBadge status={step.status} />
                       </div>
+
+                      {/* Waterfall: where this step sits within the whole run */}
+                      {!isPreRun && (
+                        <div
+                          className="mb-3 h-1.5 w-full overflow-hidden rounded-full bg-gray-100"
+                          title={`Starts at +${formatDuration(startOffsetMs)}, runs for ${formatDuration(step.duration_ms)}`}
+                        >
+                          <div
+                            className={`h-full rounded-full ${step.status === 'failed' ? 'bg-red-400' : 'bg-gray-400'}`}
+                            style={{ marginLeft: `${barLeftPct}%`, width: `${barWidthPct}%` }}
+                          />
+                        </div>
+                      )}
 
                       {step.error_message && (
                         <div className="mb-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2">
@@ -812,9 +857,11 @@ export default function ExecutionDetailPage() {
                         </div>
                       )}
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
-              )}
+                )
+              })()}
             </div>
 
           </div>
