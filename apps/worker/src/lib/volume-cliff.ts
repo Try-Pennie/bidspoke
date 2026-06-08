@@ -106,38 +106,39 @@ export async function runVolumeCliffCheck(
   if (!workflows?.length) return
 
   const now = Date.now()
-  const sixtyMinAgo = new Date(now - 60 * 60 * 1000).toISOString()
   const workflowIds = workflows.map((w) => w.id as string)
 
-  // Paginate around PostgREST's 1000-row cap. At ~50 leads/min × 60 min × N workflows,
-  // a single page truncates the baseline window and silently zeroes out medians.
-  const PAGE_SIZE = 1000
-  const executions: { workflow_id: string; started_at: string }[] = []
-  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
-    const { data: page } = await supabase
-      .from('workflow_executions')
-      .select('workflow_id, started_at')
-      .in('workflow_id', workflowIds)
-      .gte('started_at', sixtyMinAgo)
-      .eq('is_test', false)
-      .range(offset, offset + PAGE_SIZE - 1)
-    if (!page || page.length === 0) break
-    executions.push(...(page as { workflow_id: string; started_at: string }[]))
-    if (page.length < PAGE_SIZE) break
-  }
-  console.log(`[volume-cliff] fetched ${executions.length} executions across ${workflows.length} workflows`)
+  // 60 wall-clock-minute buckets ending with the current (partial) minute at
+  // index 59. windowStart is minute-aligned so the DB's date_trunc('minute', …)
+  // buckets map cleanly onto array indices.
+  const nowMinuteMs = Math.floor(now / 60000) * 60000
+  const windowStartMs = nowMinuteMs - 59 * 60000
+  const windowStart = new Date(windowStartMs).toISOString()
 
-  // Bucket per workflow into 60 minute-bins
-  const sixtyMinAgoMs = now - 60 * 60 * 1000
+  // Aggregate per-minute counts in the database rather than streaming raw rows
+  // into the Worker. This collapses thousands of rows to ~60 per workflow and
+  // sidesteps PostgREST's 1000-row page cap, which previously forced unordered
+  // OFFSET pagination that silently dropped the newest rows (the trailing-5-min
+  // window) and fired false cliff alerts.
+  const { data: counts, error: countsError } = await supabase.rpc('execution_counts_per_minute', {
+    p_workflow_ids: workflowIds,
+    p_since: windowStart,
+  })
+  if (countsError) {
+    console.error(`[volume-cliff] execution_counts_per_minute failed: ${countsError.message}`)
+    return
+  }
+  const rows = (counts ?? []) as { workflow_id: string; minute: string; cnt: number | string }[]
+  console.log(`[volume-cliff] fetched ${rows.length} minute-buckets across ${workflows.length} workflows`)
+
   const perWorkflow = new Map<string, number[]>()
   for (const id of workflowIds) perWorkflow.set(id, new Array(60).fill(0))
 
-  for (const exec of executions) {
-    const startedAt = new Date(exec.started_at).getTime()
-    const minuteIdx = Math.floor((startedAt - sixtyMinAgoMs) / 60000)
+  for (const row of rows) {
+    const minuteIdx = Math.round((new Date(row.minute).getTime() - windowStartMs) / 60000)
     if (minuteIdx < 0 || minuteIdx >= 60) continue
-    const bucket = perWorkflow.get(exec.workflow_id)
-    if (bucket) bucket[minuteIdx] += 1
+    const bucket = perWorkflow.get(row.workflow_id)
+    if (bucket) bucket[minuteIdx] = Number(row.cnt)
   }
 
   // Run the self-check at most once per cron tick, lazily — only if we're about

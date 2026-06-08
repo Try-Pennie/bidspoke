@@ -122,6 +122,10 @@ export async function runSlowExecutionCheck(
       .gte('started_at', windowStart)
       .eq('is_test', false)
       .not('duration_ms', 'is', null)
+      // Stable ordering is required across pages — without it Postgres recomputes
+      // each OFFSET against an independent scan, silently skipping/duplicating rows.
+      .order('started_at', { ascending: true })
+      .order('id', { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1)
     if (!page || page.length === 0) break
     rows.push(...(page as { workflow_id: string; duration_ms: number }[]))

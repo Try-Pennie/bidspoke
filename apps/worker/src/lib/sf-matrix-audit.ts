@@ -130,6 +130,8 @@ async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> 
     const { data, error } = await supabase
       .from('sf_bid_matrix_audit')
       .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, partner_flags')
+      // Stable ordering keeps OFFSET pagination from skipping/duplicating rows across pages.
+      .order('source_id', { ascending: true })
       .range(from, from + PAGE_SIZE - 1)
     if (error) throw new Error(`sf_bid_matrix_audit read failed: ${error.message}`)
     const page = (data ?? []) as unknown as AuditSnapshot[]
