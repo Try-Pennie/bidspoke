@@ -74,6 +74,90 @@ workflows.post('/', async (c) => {
   return c.json(data, 201)
 })
 
+// POST /api/workflows/:id/duplicate — clone a workflow with its full version history
+//
+// Unlike a client-side "GET then create", this copies every workflow_versions row
+// so the clone is a faithful starting point: the revision timeline reads identically
+// and the next save continues from the right version number (rather than restarting
+// at v1). The workflow's current `definition` is always the latest saved state, so
+// copying it carries the most recent edits too. (A separate draft/undeployed concept
+// doesn't exist yet — see the staging-vs-prod issue — so there's nothing more to carry.)
+workflows.post('/:id/duplicate', async (c) => {
+  const { orgId, userId, email, name } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+
+  // Load source (org-scoped)
+  const { data: source, error: sourceErr } = await supabase
+    .from('workflows')
+    .select('name, description, definition, folder_id, is_active')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+
+  if (sourceErr || !source) return c.json({ error: 'Workflow not found' }, 404)
+
+  // Create the clone. is_active mirrors the source — a clone has no source
+  // assignments or custom endpoints pointing at it, so it can't receive live
+  // traffic regardless until the user wires routing.
+  const { data: clone, error: createErr } = await supabase
+    .from('workflows')
+    .insert({
+      organization_id: orgId,
+      name: `${source.name} (copy)`,
+      description: source.description ?? null,
+      definition: source.definition,
+      is_active: source.is_active,
+      folder_id: source.folder_id ?? null,
+      created_by: userId,
+      updated_by: userId,
+      updated_by_email: email,
+      updated_by_name: name,
+    })
+    .select()
+    .single()
+
+  if (createErr || !clone) return c.json({ error: createErr?.message ?? 'Failed to create copy' }, 500)
+
+  // Copy the full version history. Preserve version_number, created_at, message,
+  // commit_sha, and created_by so the timeline is identical and the next save
+  // increments from the source's latest version.
+  const { data: versions } = await supabase
+    .from('workflow_versions')
+    .select('version_number, definition, commit_sha, created_by, created_at, message')
+    .eq('workflow_id', id)
+    .order('version_number', { ascending: true })
+
+  if (versions && versions.length > 0) {
+    const rows = versions.map((v) => ({
+      workflow_id: clone.id,
+      version_number: v.version_number,
+      definition: v.definition,
+      commit_sha: v.commit_sha,
+      created_by: v.created_by,
+      created_at: v.created_at,
+      message: v.message,
+    }))
+    const { error: versionsErr } = await supabase.from('workflow_versions').insert(rows)
+    if (versionsErr) console.error('[duplicate] version history copy failed:', versionsErr.message)
+  } else {
+    // Source never had a saved version (created but not yet saved). Seed v1 from
+    // the current definition so the clone has a baseline snapshot, matching what
+    // a first save produces.
+    await supabase.from('workflow_versions').insert({
+      workflow_id: clone.id,
+      version_number: 1,
+      definition: source.definition,
+      created_by: userId,
+      message: `Duplicated from ${source.name}`,
+    })
+  }
+
+  await writeAuditLog(supabase, orgId, 'workflow', clone.id, 'created', userId, { duplicated_from: id })
+  return c.json(clone, 201)
+})
+
 // GET /api/workflows/:id
 workflows.get('/:id', async (c) => {
   const { orgId } = c.get('user')

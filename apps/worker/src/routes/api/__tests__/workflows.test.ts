@@ -190,6 +190,69 @@ describe('PUT /workflows/:id', () => {
   })
 })
 
+describe('POST /workflows/:id/duplicate', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 when the source workflow is not in the org', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-other/duplicate')
+    expect(res.status).toBe(404)
+  })
+
+  it('clones the workflow, copies version history, and audit-logs the source', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: { nodes: [] }, folder_id: null, is_active: true }
+    const clone = { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        // 1st workflows call = source select; 2nd = clone insert
+        workflows: [{ single: source }, { insertResult: clone }],
+        // 1st workflow_versions call = source history select; 2nd = bulk insert
+        workflow_versions: [
+          { list: [{ version_number: 1, definition: { nodes: [] }, message: 'init' }, { version_number: 2, definition: { nodes: [] }, message: 'edit' }] },
+          { insertResult: {} },
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    const body = await res.json() as { id: string; name: string }
+    expect(body.id).toBe('wf-copy')
+    expect(body.name).toBe('Lead Routing (copy)')
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(), USER_ORG, 'workflow', 'wf-copy', 'created', 'user-1', { duplicated_from: 'wf-1' }
+    )
+  })
+
+  it('seeds a baseline v1 when the source has no saved versions', async () => {
+    const source = { name: 'Fresh', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
+    const clone = { id: 'wf-copy2', name: 'Fresh (copy)', organization_id: USER_ORG }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: source }, { insertResult: clone }],
+        workflow_versions: [{ list: [] }, { insertResult: {} }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    const body = await res.json() as { id: string }
+    expect(body.id).toBe('wf-copy2')
+  })
+})
+
 describe('PATCH /workflows/:id', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 

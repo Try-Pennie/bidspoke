@@ -274,13 +274,10 @@ export const api = {
         { method: 'POST', body: JSON.stringify({ definition }) }
       ),
     delete: (id: string) => req<{ ok: boolean }>(`/api/workflows/${id}`, { method: 'DELETE' }),
-    duplicate: async (id: string) => {
-      const wf = await req<Workflow>(`/api/workflows/${id}`)
-      return req<Workflow>('/api/workflows', {
-        method: 'POST',
-        body: JSON.stringify({ name: `${wf.name} (copy)`, definition: wf.definition }),
-      })
-    },
+    // Server-side clone — carries the full version history (and the latest saved
+    // definition), unlike a name+definition copy which restarts at v1.
+    duplicate: (id: string) =>
+      req<Workflow>(`/api/workflows/${id}/duplicate`, { method: 'POST' }),
     setActive: (id: string, is_active: boolean) =>
       req<{ id: string; is_active: boolean }>(`/api/workflows/${id}`, {
         method: 'PATCH',
