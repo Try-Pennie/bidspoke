@@ -152,6 +152,21 @@ export interface StatsResponse {
   }>
 }
 
+export interface ConfigWarningsResponse {
+  workflows: Array<{
+    workflow_id: string
+    workflow_name: string
+    nodes: Array<{
+      node_id: string
+      namespace: string
+      label: string | null
+      type: string
+      configured_ms: number
+      floor_ms: number
+    }>
+  }>
+}
+
 export interface SchemaField {
   name: string
   label: string
@@ -592,6 +607,9 @@ export const api = {
   },
   stats: {
     get: (window: 7 | 14 | 30 = 7) => req<StatsResponse>(`/api/stats?window=${window}`),
+  },
+  configWarnings: {
+    get: () => req<ConfigWarningsResponse>('/api/config-warnings'),
   },
 
   servicePresets: {

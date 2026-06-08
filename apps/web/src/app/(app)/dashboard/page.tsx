@@ -6,11 +6,11 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { StatsResponse } from '@/lib/api'
+import type { StatsResponse, ConfigWarningsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { formatDatetime } from '@/lib/dates'
-import { AlertCircle, CheckCircle2, ArrowRight } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle } from 'lucide-react'
 
 type Window = 7 | 14 | 30
 
@@ -207,6 +207,7 @@ export default function DashboardPage() {
   const router = useRouter()
   const [window, setWindow] = useState<Window>(7)
   const [data, setData] = useState<StatsResponse | null>(null)
+  const [configWarnings, setConfigWarnings] = useState<ConfigWarningsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -220,6 +221,11 @@ export default function DashboardPage() {
         .then((d) => { setData(d); setLastUpdated(new Date()) })
         .catch((e) => setError(e.message))
         .finally(() => setLoading(false))
+      // Config warnings are workflow-config state, not windowed run stats, so
+      // they load independently and a failure here never blocks the dashboard.
+      api.configWarnings.get()
+        .then(setConfigWarnings)
+        .catch(() => {})
     }
 
     load(true)
@@ -533,6 +539,51 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {configWarnings && configWarnings.workflows.length > 0 && (
+          <div className="mt-6 rounded-xl border border-red-200 bg-white">
+            <div className="flex items-center gap-2 border-b border-red-100 bg-red-50 px-5 py-3">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0 text-red-500" />
+              <p className="text-base font-semibold text-graphite">Configuration warnings</p>
+              <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                {configWarnings.workflows.reduce((n, w) => n + w.nodes.length, 0)}
+              </span>
+            </div>
+            <div className="px-5 py-3">
+              <p className="mb-3 text-xs text-gray-500">
+                These steps have a timeout set below the minimum that reliably works for their node type. On a cold run
+                the step exceeds it before the work starts, so it times out and fails on every retry. Open the workflow
+                and raise each timeout to at least the listed minimum.
+              </p>
+              <div className="divide-y divide-gray-100">
+                {configWarnings.workflows.map((w) => (
+                  <div key={w.workflow_id} className="py-2.5 first:pt-0 last:pb-0">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium text-graphite">{w.workflow_name}</span>
+                      <Link
+                        href={`/workflows/${w.workflow_id}`}
+                        className="flex flex-shrink-0 items-center gap-0.5 text-xs text-p-blue-dark hover:text-p-blue-dark"
+                      >
+                        Open <ArrowRight className="h-3 w-3" />
+                      </Link>
+                    </div>
+                    <ul className="space-y-0.5">
+                      {w.nodes.map((n) => (
+                        <li key={n.node_id} className="flex items-baseline gap-2 pl-1 text-xs">
+                          <span className="truncate font-mono text-gray-600">{n.label || n.namespace}</span>
+                          <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] text-gray-500">{n.type}</span>
+                          <span className="flex-shrink-0 text-gray-500">
+                            set to {n.configured_ms}ms, needs at least {n.floor_ms}ms
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
       </div>
     </NavLayout>

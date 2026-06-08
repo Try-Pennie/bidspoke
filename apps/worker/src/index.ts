@@ -5,6 +5,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runSightingsExport } from './lib/sightings-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
@@ -133,6 +134,10 @@ export default {
       ctx.waitUntil(
         runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
+      )
+      ctx.waitUntil(
+        runTimeoutAuditCheck(supabase, env.IDEMPOTENCY)
+          .catch((e) => console.error('[timeout-audit] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(

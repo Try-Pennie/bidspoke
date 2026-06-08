@@ -10,6 +10,7 @@ export interface SlackConnection {
   workspace_name?: string
   volume_alerts_enabled: boolean
   matrix_alerts_enabled: boolean
+  config_alerts_enabled: boolean
   /** Optional dedicated channel for matrix-change alerts. Falls back to default_channel when null. */
   matrix_alerts_channel: string | null
 }
@@ -59,6 +60,7 @@ export async function getSlackConnection(
     // Default true so existing connections keep alerting; opt-out only.
     volume_alerts_enabled: cfg.volume_alerts_enabled !== false,
     matrix_alerts_enabled: cfg.matrix_alerts_enabled !== false,
+    config_alerts_enabled: cfg.config_alerts_enabled !== false,
     matrix_alerts_channel: typeof cfg.matrix_alerts_channel === 'string' && cfg.matrix_alerts_channel ? cfg.matrix_alerts_channel : null,
   }
 }
@@ -373,6 +375,56 @@ export async function sendMatrixChangeAlert(
   }
 
   await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)
+}
+
+// Structural shape of one workflow's offending nodes. Defined here (rather than
+// imported from timeout-audit) so slack.ts has no dependency back on its caller.
+interface TimeoutConfigWarning {
+  workflow_name: string
+  nodes: Array<{ label: string | null; namespace: string; type: string; configured_ms: number; floor_ms: number }>
+}
+
+/**
+ * Alert that one or more active workflows have a step whose timeout is below the
+ * node-type reliability floor. Posted by the daily audit cron, deduped upstream
+ * so it fires only when the offending set changes. The caller passes an already
+ * fetched connection and has already checked config_alerts_enabled.
+ */
+export async function sendTimeoutConfigAlert(
+  connection: SlackConnection,
+  warnings: TimeoutConfigWarning[]
+): Promise<void> {
+  if (warnings.length === 0) return
+
+  const totalNodes = warnings.reduce((sum, w) => sum + w.nodes.length, 0)
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Timeout Below Reliable Minimum', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${totalNodes} step${totalNodes === 1 ? '' : 's'} across ${warnings.length} active workflow${warnings.length === 1 ? '' : 's'} ${totalNodes === 1 ? 'has' : 'have'} a timeout set below the minimum that reliably works for the node type. On a cold run the step exceeds it before the work starts, so it times out and fails on every retry. Raise each to at least the listed minimum.`,
+      },
+    },
+  ]
+
+  for (const w of warnings) {
+    const lines = w.nodes
+      .slice(0, 20)
+      .map((n) => `• ${n.label || n.namespace} (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`)
+    const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
+    })
+  }
+
+  await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Timeout config warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} below the reliable minimum`
+  )
 }
 
 function linkSuffix(url: string | undefined): string {
