@@ -3548,6 +3548,11 @@ function TimeoutField({
   const showStats = !loading && !showFloorWarning && stats && stats.sample_size >= 10
   const showThin = !loading && !showFloorWarning && stats && stats.sample_size < 10
 
+  // The sample window is adaptive (a busy node fills the sample in hours, so the
+  // suggester uses a short window to avoid timing out; a sparse node widens to a
+  // week). Phrase the copy to match the window the sample actually came from.
+  const windowLabel = !stats ? 'the last week' : stats.window_days >= 7 ? 'the last week' : stats.window_days >= 1 ? 'the last day' : 'the last few hours'
+
   const calloutClasses =
     tone === 'red'
       ? 'border-red-200 bg-red-50 text-red-800'
@@ -3613,7 +3618,7 @@ function TimeoutField({
 
           {showThin && (
             <p className="text-xs text-gray-400">
-              Not enough runs yet to suggest a value ({stats!.sample_size} in the last week).
+              Not enough runs yet to suggest a value ({stats!.sample_size} in {windowLabel}).
             </p>
           )}
 
@@ -3632,7 +3637,7 @@ function TimeoutField({
                   <strong className="font-semibold">{fmt(stats!.max_ms)}</strong>
                 </>
               )}
-              <span className="opacity-70"> ({stats!.sample_size.toLocaleString()} runs in the last week)</span>.
+              <span className="opacity-70"> ({stats!.sample_size.toLocaleString()} runs in {windowLabel})</span>.
               {actionLeading && current !== actionLink?.ms && (
                 <>
                   {' '}

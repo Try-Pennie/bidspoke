@@ -107,10 +107,11 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v7 prefix: bump when the suggestion math changes so stale entries expire
+  // v8 prefix: bump when the suggestion math changes so stale entries expire
   // immediately instead of lingering 30 min. (v5 added the per-workflow RPC
-  // bound; v6 added the node-type floor; v7 moved `constants` to the DB floor.)
-  const cacheKey = `step-stats:v7:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
+  // bound; v6 added the node-type floor; v7 moved `constants` to the DB floor;
+  // v8 made the sample window adaptive so high-volume nodes stop timing out.)
+  const cacheKey = `step-stats:v8:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -125,18 +126,48 @@ executions.get('/step-duration-stats', async (c) => {
     .single()
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
-  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
   const SAMPLE_FLOOR = 10
+  const HOUR = 60 * 60 * 1000
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * HOUR).toISOString()
 
-  // 1. Per-step history (preferred when there's enough data)
-  const { data: specificData, error: specificError } = await supabase.rpc('step_duration_percentiles', {
-    p_workflow_id: workflowId,
-    p_namespace: namespace,
-    p_since: since,
-  })
-  if (specificError) return c.json({ error: specificError.message }, 500)
-  const specificRow = pctRow(specificData)
-  const specificSample = Number(specificRow?.sample_size ?? 0)
+  // 1. Per-step history (preferred when there's enough data).
+  //
+  // Adaptive window, shortest-first. The per-step RPC joins this workflow's
+  // recent executions to their step partitions; over a 7-day window a
+  // high-volume workflow (Engine Bidding produces 50k-100k+ steps/namespace/wk)
+  // makes that join scan enough partitions to blow the DB statement timeout —
+  // which surfaced as the config panel never showing a suggestion at all. But a
+  // busy node fills the whole sample within a couple of hours, so we try a short
+  // window first and only widen when the sample is thin. A node thin at 2h is
+  // low-volume by definition, so its wider joins are cheap — the timeout-prone
+  // case and the needs-a-wide-window case are mutually exclusive.
+  //
+  // On RPC error (e.g. statement timeout) we stop widening and degrade to
+  // whatever we have (often nothing) plus the node-type floor below, returning
+  // 200 so the panel can still hard-flag a sub-floor timeout — never a 500 that
+  // blanks the UI.
+  const WINDOWS: Array<{ since: string; days: number }> = [
+    { since: new Date(Date.now() - 2 * HOUR).toISOString(), days: 2 / 24 },
+    { since: new Date(Date.now() - 24 * HOUR).toISOString(), days: 1 },
+    { since: sevenDaysAgo, days: 7 },
+  ]
+  let specificRow: PctRow
+  let specificSample = 0
+  let specificWindowDays = 7
+  for (const w of WINDOWS) {
+    const { data: specificData, error: specificError } = await supabase.rpc('step_duration_percentiles', {
+      p_workflow_id: workflowId,
+      p_namespace: namespace,
+      p_since: w.since,
+    })
+    if (specificError) break // degrade gracefully; floor payload still returned below
+    // A wider window is a strict superset, so a successful call never has fewer
+    // samples than a narrower one — always take the latest success.
+    specificRow = pctRow(specificData)
+    specificSample = Number(specificRow?.sample_size ?? 0)
+    specificWindowDays = w.days
+    if (specificSample >= SAMPLE_FLOOR) break // enough data; don't widen
+  }
 
   // 2. Cross-workflow fallback when per-step data is thin and the type qualifies
   let row = specificRow
@@ -149,7 +180,7 @@ executions.get('/step-duration-stats', async (c) => {
       p_org_id: orgId,
       p_step_type: nodeType,
       p_step_subtype: subtypeArg,
-      p_since: since,
+      p_since: sevenDaysAgo,
     })
     if (!typedError) {
       const typedRow = pctRow(typedData)
@@ -199,7 +230,8 @@ executions.get('/step-duration-stats', async (c) => {
     // a value the percentiles can't catch when a node has thin/no completed runs.
     floor_ms: floorMs,
     floor_reason: suggestionFloorReason(nodeType),
-    window_days: 7,
+    // The per-step window actually used (adaptive); the typed fallback is 7d.
+    window_days: source === 'similar' ? 7 : specificWindowDays,
     source,
     subtype: resolvedSubtype,
     retries_assumed: retries,
