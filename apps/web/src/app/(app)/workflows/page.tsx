@@ -674,8 +674,8 @@ export default function WorkflowsPage() {
         <td className="w-8 px-2 py-3 align-middle">
           <DragHandle attributes={attributes} listeners={listeners} isDragging={isDragging} />
         </td>
-        {/* Name + status badge */}
-        <td className="px-4 py-3" style={depth > 0 ? { paddingLeft: `${indentPx(depth)}px` } : undefined}>
+        {/* Name + status badge — priority column: claims remaining width, truncates */}
+        <td className="w-full max-w-0 px-4 py-3" style={depth > 0 ? { paddingLeft: `${indentPx(depth)}px` } : undefined}>
           <div className="flex min-w-0 items-center gap-2">
             <HealthDot rate={healthMap[wf.id] ?? null} />
             {renamingId === wf.id ? (
@@ -719,7 +719,7 @@ export default function WorkflowsPage() {
         <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
           {formatDatetime(wf.updated_at)}
         </td>
-        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
+        <td className="max-w-[160px] truncate px-4 py-3 text-gray-500" title={wf.updated_by_name ?? wf.updated_by_email ?? undefined}>{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
         {/* Actions column */}
         <td className="px-4 py-3">
@@ -1085,13 +1085,17 @@ export default function WorkflowsPage() {
             onDragCancel={() => setIsAnyDragging(false)}
           >
           <div className="rounded-xl border border-gray-200 bg-white">
-            <table className="w-full table-fixed text-sm">
+            {/* Auto layout (not table-fixed): the name cell is the priority column
+                (w-full max-w-0) so it claims the remaining width and truncates,
+                while the date / modified-by columns size to their content. A
+                fixed name column starved the name at narrow widths. */}
+            <table className="w-full text-sm">
               <colgroup>
                 <col className="w-8" />
                 <col />
-                <col className="w-52" />
-                <col className="w-44" />
-                <col className="w-16" />
+                <col />
+                <col />
+                <col className="w-12" />
               </colgroup>
               <thead className="border-b border-gray-100 bg-beige">
                 <tr>
