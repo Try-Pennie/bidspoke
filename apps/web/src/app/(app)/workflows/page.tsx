@@ -716,10 +716,10 @@ export default function WorkflowsPage() {
           )}
         </td>
 
-        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
+        <td className="hidden px-4 py-3 text-gray-500 whitespace-nowrap md:table-cell">
           {formatDatetime(wf.updated_at)}
         </td>
-        <td className="max-w-[160px] truncate px-4 py-3 text-gray-500" title={wf.updated_by_name ?? wf.updated_by_email ?? undefined}>{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
+        <td className="hidden max-w-[160px] truncate px-4 py-3 text-gray-500 lg:table-cell" title={wf.updated_by_name ?? wf.updated_by_email ?? undefined}>{wf.updated_by_name ?? wf.updated_by_email?.split('@')[0] ?? '—'}</td>
 
         {/* Actions column */}
         <td className="px-4 py-3">
@@ -1040,8 +1040,8 @@ export default function WorkflowsPage() {
                         <Skeleton className="h-5 w-14 rounded-full" />
                       </div>
                     </td>
-                    <td className="px-4 py-3"><Skeleton className="h-4 w-24" /></td>
-                    <td className="px-4 py-3"><Skeleton className="h-4 w-20" /></td>
+                    <td className="hidden px-4 py-3 md:table-cell"><Skeleton className="h-4 w-24" /></td>
+                    <td className="hidden px-4 py-3 lg:table-cell"><Skeleton className="h-4 w-20" /></td>
                     <td className="px-4 py-3"><Skeleton className="h-6 w-6" /></td>
                   </tr>
                 ))}
@@ -1119,7 +1119,7 @@ export default function WorkflowsPage() {
                       )}
                     </div>
                   </th>
-                  <th className="px-4 py-3 text-left">
+                  <th className="hidden px-4 py-3 text-left md:table-cell">
                     <button
                       onClick={toggleSort}
                       title={sortMode === 'health' ? 'Sorted by health. Click to sort by last modified.' : 'Sorted by last modified. Click to sort by health (failing first).'}
@@ -1133,7 +1133,7 @@ export default function WorkflowsPage() {
                       {sortMode === 'health' ? 'Health' : 'Last modified'}
                     </button>
                   </th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Modified by</th>
+                  <th className="hidden px-4 py-3 text-left text-xs font-semibold text-gray-500 lg:table-cell">Modified by</th>
                   <th className="rounded-tr-xl px-4 py-3" />
                 </tr>
               </thead>
