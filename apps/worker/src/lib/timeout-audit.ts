@@ -34,6 +34,47 @@ export interface WorkflowTimeoutWarnings {
   nodes: SubFloorNode[]
 }
 
+// Over-provisioned ("could be lower") side of the audit. Unlike the sub-floor
+// check this is history-based: a timeout is only "too high" relative to how long
+// the step actually takes. Low urgency (a slow call just takes longer to fail),
+// so this is surfaced on the dashboard only — never in the Slack alert.
+export interface OverProvisionedNode {
+  node_id: string
+  namespace: string
+  label: string | null
+  type: string
+  configured_ms: number
+  suggested_ms: number
+  p99_ms: number
+  sample_size: number
+}
+
+export interface WorkflowOverProvisioned {
+  workflow_id: string
+  workflow_name: string
+  nodes: OverProvisionedNode[]
+}
+
+export interface NodeDurationStats {
+  p99: number | null
+  max_ms: number | null
+  sample_size: number
+}
+
+// Flag a node only when it is configured well above what it needs and we have
+// enough runs to trust that. 3x the suggested value, >= 50 completed runs.
+export const OVER_PROVISION_FACTOR = 3
+export const OVER_PROVISION_MIN_SAMPLE = 50
+
+// Mirror the config panel's suggested timeout so the dashboard agrees with what a
+// user sees when they open the node: p99 x1.5 (most calls succeed first try), with
+// max x1.05 headroom unless p99 == max, never below the node-type floor.
+export function suggestedTimeoutMs(type: string, p99: number, maxMs: number): number {
+  const floor = suggestionFloorMs(type)
+  const base = p99 === maxMs ? p99 * 1.5 : Math.max(p99 * 1.5, maxMs * 1.05)
+  return Math.ceil(Math.max(base, floor))
+}
+
 interface KvLike {
   get(key: string): Promise<string | null>
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
@@ -110,6 +151,84 @@ export async function getOrgTimeoutWarnings(
       definition: w.definition as WorkflowDefinition | null,
     }))
   )
+}
+
+/**
+ * Pure scan: nodes whose configured timeout is far above what their run history
+ * suggests. `statsByNamespace` maps step_namespace -> duration stats for this
+ * workflow. Nodes with thin history (< OVER_PROVISION_MIN_SAMPLE runs) are never
+ * flagged — over-provisioning is only meaningful with confidence.
+ */
+export function findOverProvisionedNodes(
+  definition: WorkflowDefinition | null | undefined,
+  statsByNamespace: Map<string, NodeDurationStats>
+): OverProvisionedNode[] {
+  const nodes = definition?.nodes
+  if (!Array.isArray(nodes)) return []
+  const out: OverProvisionedNode[] = []
+  for (const node of nodes) {
+    const timeout = node.config?.timeout_ms
+    if (typeof timeout !== 'number') continue
+    const stats = statsByNamespace.get(node.namespace)
+    if (!stats || stats.p99 == null || stats.max_ms == null) continue
+    if (stats.sample_size < OVER_PROVISION_MIN_SAMPLE) continue
+    const suggested = suggestedTimeoutMs(node.type, stats.p99, stats.max_ms)
+    if (timeout <= suggested * OVER_PROVISION_FACTOR) continue
+    out.push({
+      node_id: node.id,
+      namespace: node.namespace,
+      label: node.label ?? null,
+      type: node.type,
+      configured_ms: timeout,
+      suggested_ms: suggested,
+      p99_ms: stats.p99,
+      sample_size: stats.sample_size,
+    })
+  }
+  return out
+}
+
+/**
+ * Over-provisioned nodes across an org's active workflows. One grouped
+ * percentile query per workflow (step_duration_percentiles_by_workflow) rather
+ * than one per node. Dashboard only — not wired into the Slack cron.
+ */
+export async function getOrgOverProvisionedWarnings(
+  supabase: SupabaseClient,
+  orgId: string
+): Promise<WorkflowOverProvisioned[]> {
+  const { data } = await supabase
+    .from('workflows')
+    .select('id, name, definition')
+    .eq('organization_id', orgId)
+    .eq('is_active', true)
+    .is('deleted_at', null)
+
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+
+  // One grouped percentile query per workflow, run in parallel so the dashboard
+  // load doesn't serialize them.
+  const results = await Promise.all(
+    (data ?? []).map(async (w): Promise<WorkflowOverProvisioned | null> => {
+      const definition = w.definition as WorkflowDefinition | null
+      if (!Array.isArray(definition?.nodes) || definition.nodes.length === 0) return null
+
+      const { data: rows } = await supabase.rpc('step_duration_percentiles_by_workflow', {
+        p_workflow_id: w.id as string,
+        p_since: since,
+      })
+
+      const stats = new Map<string, NodeDurationStats>()
+      for (const r of (rows ?? []) as Array<{ step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }>) {
+        stats.set(r.step_namespace, { p99: r.p99, max_ms: r.max_ms, sample_size: Number(r.sample_size) })
+      }
+
+      const nodes = findOverProvisionedNodes(definition, stats)
+      return nodes.length > 0 ? { workflow_id: w.id as string, workflow_name: w.name as string, nodes } : null
+    })
+  )
+
+  return results.filter((r): r is WorkflowOverProvisioned => r !== null)
 }
 
 /**

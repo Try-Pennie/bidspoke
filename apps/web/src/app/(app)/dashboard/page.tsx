@@ -10,7 +10,7 @@ import type { StatsResponse, ConfigWarningsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { formatDatetime } from '@/lib/dates'
-import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle } from 'lucide-react'
+import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle, TrendingDown } from 'lucide-react'
 
 type Window = 7 | 14 | 30
 
@@ -579,6 +579,57 @@ export default function DashboardPage() {
                             <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] text-gray-500">{n.type}</span>
                             <span className="flex-shrink-0 text-gray-500">
                               set to {n.configured_ms}ms, needs at least {n.floor_ms}ms
+                            </span>
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {configWarnings && configWarnings.over_provisioned?.length > 0 && (
+          <div className="mt-6 rounded-xl border border-amber-200 bg-white">
+            <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-5 py-3">
+              <TrendingDown className="h-4 w-4 flex-shrink-0 text-amber-500" />
+              <p className="text-base font-semibold text-graphite">Timeouts that could be lower</p>
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+                {configWarnings.over_provisioned.reduce((n, w) => n + w.nodes.length, 0)}
+              </span>
+            </div>
+            <div className="px-5 py-3">
+              <p className="mb-3 text-xs text-gray-500">
+                These steps have a timeout set far above what their recent runs need. Not a failure risk, but a tighter
+                timeout means a stuck call fails fast instead of hanging. The suggested value is p99 with headroom over
+                the last 7 days. Lowering is optional.
+              </p>
+              <div className="divide-y divide-gray-100">
+                {configWarnings.over_provisioned.map((w) => (
+                  <div key={w.workflow_id} className="py-2.5 first:pt-0 last:pb-0">
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium text-graphite">{w.workflow_name}</span>
+                      <Link
+                        href={`/workflows/${w.workflow_id}?node=${w.nodes[0].node_id}`}
+                        className="flex flex-shrink-0 items-center gap-0.5 text-xs text-p-blue-dark hover:text-p-blue-dark"
+                      >
+                        Open <ArrowRight className="h-3 w-3" />
+                      </Link>
+                    </div>
+                    <ul className="space-y-0.5">
+                      {w.nodes.map((n) => (
+                        <li key={n.node_id}>
+                          <Link
+                            href={`/workflows/${w.workflow_id}?node=${n.node_id}`}
+                            className="-mx-1 flex items-baseline gap-2 rounded px-2 py-0.5 text-xs hover:bg-gray-50"
+                            title="Open this node on the canvas"
+                          >
+                            <span className="truncate font-mono text-gray-600">{n.label || n.namespace}</span>
+                            <span className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] text-gray-500">{n.type}</span>
+                            <span className="flex-shrink-0 text-gray-500">
+                              set to {n.configured_ms}ms, suggested ~{n.suggested_ms}ms (p99 {n.p99_ms}ms over {n.sample_size} runs)
                             </span>
                           </Link>
                         </li>

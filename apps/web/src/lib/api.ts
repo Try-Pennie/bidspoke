@@ -165,6 +165,22 @@ export interface ConfigWarningsResponse {
       floor_ms: number
     }>
   }>
+  // Nodes whose timeout is far above what their run history needs (could be
+  // lower). Low-urgency cleanup, shown separately from the sub-floor list.
+  over_provisioned: Array<{
+    workflow_id: string
+    workflow_name: string
+    nodes: Array<{
+      node_id: string
+      namespace: string
+      label: string | null
+      type: string
+      configured_ms: number
+      suggested_ms: number
+      p99_ms: number
+      sample_size: number
+    }>
+  }>
 }
 
 export interface SchemaField {

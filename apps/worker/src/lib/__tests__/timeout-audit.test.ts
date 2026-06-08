@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature } from '../timeout-audit'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, suggestedTimeoutMs, type NodeDurationStats } from '../timeout-audit'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 
 function node(partial: Partial<NodeDefinition> & { id: string; type: NodeDefinition['type'] }): NodeDefinition {
@@ -73,5 +73,54 @@ describe('warningsSignature', () => {
 
   it('is empty when there are no offenders', () => {
     expect(warningsSignature([])).toBe('')
+  })
+})
+
+describe('suggestedTimeoutMs', () => {
+  it('uses p99 x1.5 with max headroom, never below the floor', () => {
+    // code floor = 150; p99 != max so max*1.05 applies
+    expect(suggestedTimeoutMs('code', 200, 300)).toBe(315) // max(300, 315, 150)
+    // p99 == max: just p99*1.5
+    expect(suggestedTimeoutMs('code', 200, 200)).toBe(300)
+    // tiny durations clamp up to the node-type floor
+    expect(suggestedTimeoutMs('code', 10, 20)).toBe(150)
+  })
+})
+
+describe('findOverProvisionedNodes', () => {
+  const stats = (s: Partial<NodeDurationStats>): NodeDurationStats =>
+    ({ p99: 200, max_ms: 300, sample_size: 100, ...s })
+
+  it('flags a node configured far above its suggested value', () => {
+    // suggested = 315; 3x = 945; configured 5000 > 945
+    const out = findOverProvisionedNodes(
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 5000 } })]),
+      new Map([['n1', stats({})]])
+    )
+    expect(out[0]).toMatchObject({ node_id: 'n1', configured_ms: 5000, suggested_ms: 315, p99_ms: 200, sample_size: 100 })
+  })
+
+  it('does not flag when configured is within 3x of suggested', () => {
+    const out = findOverProvisionedNodes(
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 900 } })]), // < 945
+      new Map([['n1', stats({})]])
+    )
+    expect(out).toEqual([])
+  })
+
+  it('does not flag without enough run history', () => {
+    const out = findOverProvisionedNodes(
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 5000 } })]),
+      new Map([['n1', stats({ sample_size: 49 })]])
+    )
+    expect(out).toEqual([])
+  })
+
+  it('skips nodes with no stats, no timeout, or a non-numeric timeout', () => {
+    const d = def([
+      node({ id: 'no_stats', type: 'code', config: { timeout_ms: 5000 } }),
+      node({ id: 'no_timeout', type: 'code', config: {} }),
+    ])
+    expect(findOverProvisionedNodes(d, new Map())).toEqual([])
   })
 })
