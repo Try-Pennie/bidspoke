@@ -8,7 +8,8 @@ import type { WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
 import NavLayout from '@/components/NavLayout'
 import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
-import { Globe, Plus, Copy, Check, Trash2, ToggleLeft, ToggleRight } from 'lucide-react'
+import EndpointEditForm from '@/components/forms/EndpointEditForm'
+import { Globe, Plus, Copy, Check, Trash2, ToggleLeft, ToggleRight, Pencil } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 
 const HOOK_BASE = 'https://hook.trypennie.dev'
@@ -29,6 +30,7 @@ export default function EndpointsPage() {
   const [adding, setAdding] = useState(false)
 
   // Inline state
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
@@ -181,6 +183,20 @@ export default function EndpointsPage() {
                   ep.is_active ? 'border-gray-200' : 'border-gray-100 bg-gray-50'
                 } ${removingId === ep.id ? 'opacity-0' : ''}`}
               >
+                {editingId === ep.id ? (
+                  <div className="p-1">
+                    <p className="mb-4 text-sm font-medium text-gray-400">Edit endpoint</p>
+                    <EndpointEditForm
+                      endpoint={ep}
+                      workflows={workflows}
+                      onSaved={(updated) => {
+                        setEndpoints((prev) => prev.map((e) => e.id === updated.id ? updated : e))
+                        setEditingId(null)
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  </div>
+                ) : (
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0 flex-1">
                     {/* URL */}
@@ -222,6 +238,15 @@ export default function EndpointsPage() {
                       }
                     </button>
 
+                    {/* Edit */}
+                    <button
+                      onClick={() => { cancelDelete(); setEditingId(ep.id) }}
+                      className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:bg-beige"
+                      title="Edit endpoint"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+
                     {/* Toggle active */}
                     <button
                       onClick={() => handleToggle(ep)}
@@ -259,6 +284,7 @@ export default function EndpointsPage() {
                     )}
                   </div>
                 </div>
+                )}
               </div>
             ))}
           </div>
