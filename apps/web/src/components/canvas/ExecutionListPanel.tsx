@@ -135,6 +135,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   useEffect(() => { genRef.current += 1 }, [workflowId, filter])
 
   function toggleError(id: string, e: React.MouseEvent) {
+    e.preventDefault()
     e.stopPropagation()
     setExpandedErrors((prev) => {
       const next = new Set(prev)
@@ -429,11 +430,17 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
               const Icon = cfg.icon
               const isSelected = exec.id === selectedId
               return wrap(
-                <button
-                  onClick={() => onSelect(exec.id)}
+                <a
+                  href={`/workflows/${workflowId}?execution=${exec.id}`}
+                  onClick={(e) => {
+                    // Let the browser handle modifier / middle clicks natively (open in new tab).
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+                    e.preventDefault()
+                    onSelect(exec.id)
+                  }}
                   onMouseEnter={() => onRowEnter(exec.id)}
                   onMouseLeave={onRowLeave}
-                  className={`w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
+                  className={`block w-full border-b border-gray-50 px-3 py-2.5 text-left transition-colors hover:bg-beige ${
                     isSelected ? 'border-l-2 border-l-p-blue-dark bg-p-blue-light' :
                     exec.status === 'failed' ? 'border-l-2 border-l-red-400' : ''
                   }`}
@@ -473,7 +480,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                       {exec.error_message}
                     </p>
                   )}
-                </button>
+                </a>
               )
             })}
             </div>

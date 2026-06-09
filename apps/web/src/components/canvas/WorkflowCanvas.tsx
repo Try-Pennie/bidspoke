@@ -56,6 +56,7 @@ import type { ImportResult } from '@/lib/pipedream-import'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
 import { reachableFromTrigger } from './reachability'
 import ExecutionListPanel from './ExecutionListPanel'
@@ -2774,19 +2775,20 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         mode === 'edit' ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-white'
       }`}>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => {
-              if (typeof document !== 'undefined' && 'startViewTransition' in document) {
-                ;(document as Document & { startViewTransition(cb: () => void): void })
-                  .startViewTransition(() => router.push('/workflows'))
-              } else {
-                router.push('/workflows')
-              }
+          <Link
+            href="/workflows"
+            onClick={(e) => {
+              // Let the browser handle modifier / middle clicks natively (open in new tab).
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              if (typeof document === 'undefined' || !('startViewTransition' in document)) return
+              e.preventDefault()
+              ;(document as Document & { startViewTransition(cb: () => void): void })
+                .startViewTransition(() => router.push('/workflows'))
             }}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
             ← Workflows
-          </button>
+          </Link>
           <div className="h-5 w-px bg-gray-200" />
           <div className="group flex items-center gap-1">
             {mode === 'edit' ? (
