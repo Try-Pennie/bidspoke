@@ -90,4 +90,32 @@ describe('cross-link layout', () => {
     const cx = (id: string) => { const n = laid.find((m) => m.id === id)!; return n.position.x + 104 }
     expect(Math.abs(cx('X') - cx('P'))).toBeLessThan(40)
   })
+
+  // A branch with only ONE of its arms wired (the other handle empty, plus the
+  // backbone to branch_end) must keep that arm's child directly under its handle
+  // — NOT recentered under the branch card. childrenOf() excludes the end node,
+  // so this looks like a single-child linear chain to the straightening pass;
+  // the multi-output guard keeps the child under the "Bid" handle (left).
+  it('keeps a single wired branch arm under its handle, not recentered', () => {
+    const center = (id: string, laid: Node[]) => {
+      const n = laid.find((m) => m.id === id)!
+      return n.position.x + nodeWidth(n.type, n.data) / 2
+    }
+    const nodes: Node[] = [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: {} },
+      { id: 'br', type: 'branch', position: { x: 0, y: 0 }, data: { config: { branches: [{ label: 'Bid' }], else_label: 'No Bid', else_behavior: 'output' } } },
+      { id: 'sf', type: 'salesforce', position: { x: 0, y: 0 }, data: {} },
+      { id: 'br_end', type: 'branch_end', position: { x: 0, y: 0 }, data: { _pairId: 'br' } },
+    ]
+    const edges: Edge[] = [
+      { id: 't', source: 'trigger', target: 'br' },
+      { id: 'bid', source: 'br', target: 'sf', sourceHandle: 'Bid' },
+      { id: 'backbone', source: 'br', target: 'br_end' },
+      { id: 'sfend', source: 'sf', target: 'br_end' },
+    ]
+    const laid = layoutWorkflow(nodes, edges)
+    // The "Bid" handle is the left (first) handle, so its child sits left of the
+    // branch's center — it must NOT be recentered onto the branch's x.
+    expect(center('sf', laid)).toBeLessThan(center('br', laid) - 40)
+  })
 })

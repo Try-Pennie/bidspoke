@@ -1115,6 +1115,14 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
       .map((e) => e.source)
     const order = [...pos.keys()].filter((id) => reachable.has(id)).sort((a, b) => pos.get(a)!.y - pos.get(b)!.y)
     for (const p of order) {
+      // Don't straighten a multi-output node's lone wired child back to center.
+      // applyMultiOutputOverride placed that child under its specific handle, and
+      // childrenOf() excludes end nodes — so a branch/filter with only one arm
+      // wired (e.g. only the "Bid" handle → a salesforce node, "No Bid" empty)
+      // looks like a single-child linear chain here and would otherwise get
+      // recentered under the card. It should stay directly under its handle.
+      const parentNode = nodeMap.get(p)
+      if (parentNode && configuredHandleIds(parentNode)) continue
       const kids = childrenOf(p)
       if (kids.length !== 1) continue
       const c = kids[0]
