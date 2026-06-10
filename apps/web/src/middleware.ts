@@ -31,7 +31,12 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/login') ||
     pathname.startsWith('/auth') ||
     pathname.startsWith('/access-denied') ||
-    pathname.startsWith('/mockup')
+    pathname.startsWith('/mockup') ||
+    // Public documentation site and the AI crawl index. Reachable without auth
+    // so external readers and AI crawlers (which point at the raw .md files and
+    // /llms.txt) are not redirected to /login.
+    pathname.startsWith('/docs') ||
+    pathname === '/llms.txt'
 
   // Allowlist gate — only enforced on protected paths.
   // Public paths (/login, /auth, /access-denied) are exempt so we don't

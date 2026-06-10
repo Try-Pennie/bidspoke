@@ -2,13 +2,17 @@
   "name": "web",
   "private": true,
   "scripts": {
+    "docs:sync": "node scripts/sync-docs.mjs",
+    "predev": "node scripts/sync-docs.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/sync-docs.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
+    "prepages:build": "node scripts/sync-docs.mjs",
     "pages:build": "npx @cloudflare/next-on-pages",
     "pages:deploy": "npx wrangler pages deploy .vercel/output/static"
   },
@@ -24,11 +28,14 @@
     "lucide-react": "^1.7.0",
     "next": "^14.2.3",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.12.0",
     "@playwright/test": "^1.59.1",
+    "@tailwindcss/typography": "^0.5.20",
     "@types/dagre": "^0.7.54",
     "@types/node": "^20.12.12",
     "@types/react": "^18.3.2",

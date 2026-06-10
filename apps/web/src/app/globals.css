@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Pin the page canvas (and the rubber-band overscroll region) to the app's
+   beige and force a light color scheme. Without this, Safari in OS dark mode
+   paints the html canvas and overscroll area with the dark system backdrop,
+   since body's background does not propagate to the overscroll region there. */
+html {
+  background-color: #f9f6f0;
+  color-scheme: light;
+}
+
 @keyframes check-draw {
   from { stroke-dashoffset: 14; }
   to   { stroke-dashoffset: 0; }

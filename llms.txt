@@ -1,0 +1,60 @@
+# Bidspoke
+
+> Bidspoke is a visual workflow builder for lead routing and partner bidding. Users build workflows on a drag-and-drop canvas, trigger them over HTTP, and the engine runs them in real time: validating leads, pulling credit, soliciting bids from partners in parallel, picking a winner, and responding with an offer. This file indexes the platform documentation so an AI assistant can help users build and edit workflows.
+
+Each link points to a raw markdown page. Append nothing; the .md URLs are self-contained. The human-readable site for each page is the same URL without the .md suffix (for example /docs/concepts/overview). To build a workflow definition, read the Workflow definition schema, Data references, and the relevant node pages.
+
+## Start here
+
+- [Documentation home](https://bidspoke.trypennie.dev/docs/README.md): index of all pages.
+- [Overview](https://bidspoke.trypennie.dev/docs/concepts/overview.md): what Bidspoke is and the two modes (outbound routing, inbound bidding).
+- [Getting started](https://bidspoke.trypennie.dev/docs/guides/getting-started.md): build, save, test, and trigger your first workflow.
+
+## Concepts
+
+- [Workflow definition schema](https://bidspoke.trypennie.dev/docs/concepts/workflow-definition-schema.md): the canonical JSON shape of a workflow. Read this to build one.
+- [Data references](https://bidspoke.trypennie.dev/docs/concepts/data-references.md): the expression and template syntax (steps.*, trigger.*, env.*).
+- [Workflows and executions](https://bidspoke.trypennie.dev/docs/concepts/workflows-and-executions.md): the core domain model.
+- [Triggers and endpoints](https://bidspoke.trypennie.dev/docs/concepts/triggers-and-endpoints.md): how workflows are invoked over HTTP.
+- [Bidding model](https://bidspoke.trypennie.dev/docs/concepts/bidding-model.md): hub-and-spoke and ping-post bidding, caps, circuit breakers, dedup.
+- [Glossary](https://bidspoke.trypennie.dev/docs/concepts/glossary.md): definitions of every term.
+
+## Nodes
+
+- [Node catalog](https://bidspoke.trypennie.dev/docs/nodes/README.md): all node types, grouped by purpose.
+- [Filter](https://bidspoke.trypennie.dev/docs/nodes/filter.md): pass/exit gate on a condition.
+- [Branch](https://bidspoke.trypennie.dev/docs/nodes/branch.md): N conditional outputs plus else.
+- [Parallel](https://bidspoke.trypennie.dev/docs/nodes/parallel.md): fan out to child nodes concurrently.
+- [Exit](https://bidspoke.trypennie.dev/docs/nodes/exit.md): end the execution early.
+- [Response](https://bidspoke.trypennie.dev/docs/nodes/response.md): send a structured HTTP response.
+- [Code](https://bidspoke.trypennie.dev/docs/nodes/code.md): run a sandboxed JavaScript script.
+- [Webhook](https://bidspoke.trypennie.dev/docs/nodes/webhook.md): outbound HTTP request (the Integration node).
+- [Salesforce](https://bidspoke.trypennie.dev/docs/nodes/salesforce.md): create, update, or query Salesforce records.
+- [Transform](https://bidspoke.trypennie.dev/docs/nodes/transform.md): map and reshape data.
+- [Constants](https://bidspoke.trypennie.dev/docs/nodes/constants.md): emit workflow constants plus partner data.
+- [Data Store](https://bidspoke.trypennie.dev/docs/nodes/data-store.md): read and write a key-value store.
+- [Bid Group](https://bidspoke.trypennie.dev/docs/nodes/bid-group.md): fan out to N partners and pick a winner.
+- [Partner Bid](https://bidspoke.trypennie.dev/docs/nodes/partner-bid.md): request a bid from one partner.
+- [Bid Evaluation](https://bidspoke.trypennie.dev/docs/nodes/bid-evaluation.md): pick a winner from collected bids.
+- [Latency Gate](https://bidspoke.trypennie.dev/docs/nodes/latency-gate.md): mark and check a partner match-latency window.
+
+## Guides
+
+- [Building a bidding workflow](https://bidspoke.trypennie.dev/docs/guides/building-a-bidding-workflow.md): an end-to-end outbound routing flow.
+- [Configuring a partner](https://bidspoke.trypennie.dev/docs/guides/configuring-a-partner.md): add and configure a bidding partner.
+- [Importing from Pipedream](https://bidspoke.trypennie.dev/docs/guides/importing-from-pipedream.md): reconstruct a Pipedream workflow on the canvas.
+- [Testing and debugging](https://bidspoke.trypennie.dev/docs/guides/testing-and-debugging.md): the Test Runner, execution overlay, replay, and resume.
+- [Environment variables and secrets](https://bidspoke.trypennie.dev/docs/guides/environment-variables-and-secrets.md): where credentials live and how nodes read them.
+- [Versioning and backup](https://bidspoke.trypennie.dev/docs/guides/versioning-and-backup.md): version snapshots, restore, and GitHub backup.
+
+## Reference
+
+- [REST API](https://bidspoke.trypennie.dev/docs/reference/api.md): the management API (/api/*).
+- [Webhook contract](https://bidspoke.trypennie.dev/docs/reference/webhook-contract.md): the exact HTTP contract for triggering workflows.
+- [Partners](https://bidspoke.trypennie.dev/docs/reference/partners.md): every partner configuration field.
+- [Error handling](https://bidspoke.trypennie.dev/docs/reference/error-handling.md): error classification, retries, fallback, alerts.
+- [Observability](https://bidspoke.trypennie.dev/docs/reference/observability.md): the dashboard, tracing, alerts, cost, and retention.
+
+## Examples
+
+- [Annotated workflow](https://bidspoke.trypennie.dev/docs/examples/annotated-workflow.md): a complete workflow definition, explained node by node.
