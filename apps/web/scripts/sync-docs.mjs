@@ -11,13 +11,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DOCS_SRC = path.resolve(__dirname, '../../../docs')
 const DOCS_OUT = path.resolve(__dirname, '../public/docs')
 
-// Internal dev docs that should NOT be published on the public site.
-const BLOCKLIST = new Set([
-  'engine-cutover-scope.md',
-  'gigfi-port-plan.md',
-  'partner-proxy-to-bidspoke.md',
-  'reference/README.md',
-])
+// Positive publish rule (kept in sync with the docs-coverage test in
+// apps/worker/src/__tests__/docs-coverage.test.ts). A markdown file is published
+// only if it is the top-level README.md or lives under one of the content
+// directories below. Internal build notes dropped at the docs/ root (e.g.
+// engine-cutover-scope.md, gigfi-port-plan.md) are therefore never published.
+const CONTENT_DIRS = new Set(['concepts', 'nodes', 'guides', 'reference', 'examples'])
+// Files inside a content directory that are still internal, not public docs.
+const EXCLUDE = new Set(['reference/README.md'])
+
+export function isPublished(rel) {
+  if (!rel.endsWith('.md') || EXCLUDE.has(rel)) return false
+  if (rel === 'README.md') return true
+  return CONTENT_DIRS.has(rel.split('/')[0])
+}
 
 async function walk(dir, base = '') {
   const out = []
@@ -26,7 +33,7 @@ async function walk(dir, base = '') {
     const rel = base ? `${base}/${entry.name}` : entry.name
     if (entry.isDirectory()) {
       out.push(...(await walk(path.join(dir, entry.name), rel)))
-    } else if (entry.name.endsWith('.md') && !BLOCKLIST.has(rel)) {
+    } else if (isPublished(rel)) {
       out.push(rel)
     }
   }
