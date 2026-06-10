@@ -30,6 +30,7 @@ import {
   extractBidGroupSummary,
 } from './lead-sightings'
 import { formatSsn } from './persons-crypto'
+import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
 import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
 import { log } from '../lib/logger'
@@ -505,6 +506,25 @@ export async function executeWorkflow(
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))
     )
   }
+
+  // Achieve evaluation log: after the walk completes, scan step outputs for
+  // the achieve_fdr marker and persist request/offers to achieve_evaluations.
+  // Test runs are recorded with is_test=true so sandbox validation is visible.
+  executionCtx.waitUntil(
+    walkPromiseCaught
+      .then(async () => {
+        const payloadSubmissionId = (payload as { Submission__c?: unknown } | null)?.Submission__c
+        const achieveRows = extractAchieveEvaluations(stepLogQueue, {
+          trace_id: traceId,
+          execution_id: executionId,
+          workflow_id: workflowId,
+          submission_id: typeof payloadSubmissionId === 'string' ? payloadSubmissionId : null,
+          is_test: options.isTest ?? false,
+        })
+        await insertAchieveEvaluations(supabase, achieveRows)
+      })
+      .catch((e) => console.error('[achieve-log] write failed:', e))
+  )
 
   // Slow executions are no longer alerted per-run (too noisy — one transiently
   // slow lead = one page). The duration threshold (trigger.config.duration_alert_ms)
