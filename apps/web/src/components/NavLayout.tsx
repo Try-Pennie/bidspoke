@@ -5,7 +5,7 @@ import Link from 'next/link'
 
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, LayoutDashboard, Globe } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, LayoutDashboard, Globe, BookOpen } from 'lucide-react'
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -61,6 +61,15 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
           })}
         </div>
         <div className="border-t border-white/10 px-2 py-4 space-y-0.5">
+          <a
+            href="/docs"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/50 transition-colors hover:bg-white/5 hover:text-white/80"
+          >
+            <BookOpen className="h-4 w-4 text-white/40" />
+            Docs
+          </a>
           <Link
             href="/settings"
             className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
