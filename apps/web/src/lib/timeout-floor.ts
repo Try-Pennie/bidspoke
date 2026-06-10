@@ -14,7 +14,7 @@ const DISPATCH_OR_DB_FLOOR_MS = 150
 const NETWORK_FLOOR_MS = 50
 const INMEMORY_FLOOR_MS = 10
 const DISPATCH_OR_DB_NODE_TYPES = new Set(['code', 'constants'])
-const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group'])
+const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group', 'achieve_offers'])
 
 export function timeoutFloorMs(nodeType?: string): number {
   if (nodeType && DISPATCH_OR_DB_NODE_TYPES.has(nodeType)) return DISPATCH_OR_DB_FLOOR_MS

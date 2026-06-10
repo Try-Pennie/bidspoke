@@ -20,6 +20,7 @@ export type NodeType =
   | 'salesforce'
   | 'data_store'
   | 'latency_gate'
+  | 'achieve_offers'
 
 export interface WorkflowDefinition {
   id: string

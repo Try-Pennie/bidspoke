@@ -370,6 +370,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
+        {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -1442,6 +1443,92 @@ function LatencyGateConfig({
           </p>
         </>
       )}
+    </section>
+  )
+}
+
+const ACHIEVE_PRODUCTS = [
+  { id: 'fdr', label: 'FDR', hint: 'Freedom Debt Relief (debt settlement)' },
+  { id: 'fplus', label: 'FreedomPlus', hint: 'Personal loans' },
+  { id: 'lendage', label: 'Lendage', hint: 'Home equity' },
+] as const
+
+function AchieveOffersConfig({
+  config,
+  onChange,
+}: {
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+}) {
+  const products = (config.targeted_products as string[] | undefined) ?? ['fdr']
+  const waitForOffers = config.wait_for_offers !== false
+  const utmSource = (config.utm_source as string | undefined) ?? ''
+  const debtRef = (config.unsecured_debt_ref as string | undefined) ?? ''
+
+  const toggleProduct = (id: string) => {
+    const next = products.includes(id) ? products.filter((p) => p !== id) : [...products, id]
+    onChange({ targeted_products: next })
+  }
+
+  return (
+    <section className="space-y-4">
+      <Field label="Targeted products" hint="Which Achieve products to request offers for. FDR only for the data-collection effort.">
+        <div className="space-y-1.5">
+          {ACHIEVE_PRODUCTS.map((p) => (
+            <label key={p.id} className="flex items-center gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={products.includes(p.id)}
+                onChange={() => toggleProduct(p.id)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              <span className="font-medium">{p.label}</span>
+              <span className="text-xs text-slate-400">{p.hint}</span>
+            </label>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Wait for offers" hint="Achieve holds the request up to 10 seconds and returns offers inline. Off = they reply accepted/rejected immediately and prequalify asynchronously (no offers logged).">
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={waitForOffers}
+            onChange={(e) => onChange({ wait_for_offers: e.target.checked })}
+            className="h-4 w-4 rounded border-gray-300"
+          />
+          <span>Hold for inline offers</span>
+        </label>
+      </Field>
+
+      <Field label="UTM source (optional)" hint="tracking.utm_source sent to Achieve. Defaults to the ACHIEVE_UTM_SOURCE env var, then 'pennie'. Confirm the value with Achieve BizDev.">
+        <input
+          className="input"
+          placeholder="pennie"
+          value={utmSource}
+          onChange={(e) => onChange({ utm_source: e.target.value || undefined })}
+        />
+      </Field>
+
+      <Field
+        label="Unsecured debt override (optional)"
+        hint="Where to read the verified unsecured debt. Defaults to the Main Flow eligibility step (steps.pennie_or_eligibility). Supports {{trigger.*}} / {{steps.*.output.*}}."
+      >
+        <input
+          className="input"
+          placeholder="{{steps.pennie_or_eligibility.output.final}}"
+          value={debtRef}
+          onChange={(e) => onChange({ unsecured_debt_ref: e.target.value || undefined })}
+        />
+      </Field>
+
+      <p className="text-xs text-slate-400">
+        Credentials come from env vars: <span className="font-mono">ACHIEVE_USERNAME</span>,{' '}
+        <span className="font-mono">ACHIEVE_PASSWORD</span>,{' '}
+        <span className="font-mono">ACHIEVE_API_URL</span>. This node is collect-only: it logs the
+        lead and any offers to the Achieve evaluations table, passes its input through, and never
+        fails the flow.
+      </p>
     </section>
   )
 }

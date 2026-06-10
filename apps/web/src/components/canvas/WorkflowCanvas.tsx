@@ -43,6 +43,7 @@ import { ConstantsNode } from './nodes/ConstantsNode'
 import { SalesforceNode } from './nodes/SalesforceNode'
 import { DataStoreNode } from './nodes/DataStoreNode'
 import { LatencyGateNode } from './nodes/LatencyGateNode'
+import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
@@ -92,6 +93,7 @@ const nodeTypes: NodeTypes = {
   salesforce: SalesforceNode,
   data_store: DataStoreNode,
   latency_gate: LatencyGateNode,
+  achieve_offers: AchieveOffersNode,
   region: RegionNode,
 }
 
@@ -671,6 +673,12 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
   }
   if (type === 'constants') {
     return { ...base, data: {} }
+  }
+  if (type === 'achieve_offers') {
+    // wait_for_offers holds the request up to 10s, so the timeout needs
+    // headroom; retries 0 because retrying a transport failure risks
+    // double-submitting the lead to Achieve.
+    return { ...base, targeted_products: ['fdr'], wait_for_offers: true, timeout_ms: 15000, retries: 0 }
   }
   if (type === 'bid_group') {
     return {

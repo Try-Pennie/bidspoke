@@ -1,6 +1,7 @@
 # Achieve (FDR) offer-collection node
 
-Status: built 2026-06-10, pending canvas placement + Achieve account values.
+Status: built 2026-06-10 as the first-class `achieve_offers` node type, pending canvas
+placement + Achieve account values. Node reference: [docs/nodes/achieve-offers.md](./nodes/achieve-offers.md).
 
 Geoff's ask (Slack, 2026-06-09): hit Achieve's Partners API targeting just FDR from the
 main flow, collect their offers without feeding them into routing, and log lead-in /
@@ -21,10 +22,13 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    `waitUntil`. Works from any workflow and any node name; multiple Achieve nodes per
    flow each get their own row. Test runs are recorded with `is_test = true`.
 
-3. **Code node script** (`docs/reference/achieve_fdr.js`) - ready to paste. POSTs to
-   `/evaluations` with Basic auth, `targeted_products: ['fdr']`, `wait_for_offers: true`.
-   Never throws: every outcome (accepted / rejected / auth failure / timeout / missing
-   fields) returns the marked output shape so it gets logged and the flow continues.
+3. **`achieve_offers` first-class node** (`apps/worker/src/engine/nodes/achieve-offers.ts`,
+   palette entry "Achieve Offers") - POSTs to `/evaluations` with Basic auth. Config:
+   targeted products (default FDR only), wait_for_offers toggle, utm_source, optional
+   unsecured-debt template override. Single output, pass-through, never fails the flow:
+   every outcome (accepted / rejected / auth failure / timeout / missing fields) returns
+   the marked output shape so it gets logged and the flow continues. Internal 12s fetch
+   abort keeps a hung Achieve API from tripping the engine-level step timeout.
 
 ## Canvas setup
 
@@ -37,10 +41,9 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    | `ACHIEVE_UTM_SOURCE` | value from Achieve BizDev (defaults to `pennie`) | no |
    | `ACHIEVE_TRUSTED_FORM_CERT` | only if Achieve requires it for us (see open questions) | no |
 
-2. Add a Code node, namespace `achieve_fdr`, paste `docs/reference/achieve_fdr.js`.
-   Timeout **15000 ms** (`wait_for_offers` holds up to 10s), retries **0** (a retry on a
-   transport failure risks double-submitting the lead). Save the workflow - code nodes
-   run the deployed bundle, so the script only takes effect after a canvas Save.
+2. Drag an **Achieve Offers** node from the palette (defaults: FDR only, wait for
+   offers on, timeout 15000 ms, retries 0 - retrying a transport failure risks
+   double-submitting the lead). No script involved; Save the workflow as usual.
 
 3. Placement (Main Flow): recommended at the **tail convergence** `branch_end`
    (node `79d7745b`) where all bid paths merge. The client response is already sent by
@@ -109,7 +112,7 @@ fields to this table).
 
 ## Validation plan
 
-1. Sandbox creds + `ACHIEVE_API_URL=api-stg`, paste node on canvas, Save.
+1. Sandbox creds + `ACHIEVE_API_URL=api-stg`, drop the Achieve Offers node on the canvas, Save.
 2. Test runner with a saved payload (rows land in `achieve_evaluations` with
    `is_test = true`); cross-check against the showroom profiles
    (https://growth-admin.stg.ffngcp.com/showroom, same creds as sandbox).

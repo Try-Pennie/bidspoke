@@ -1,5 +1,5 @@
 // Achieve (FDR) evaluation logging.
-// The achieve_fdr code node marks its output with _achieve_evaluation: true.
+// The achieve_offers node marks its output with _achieve_evaluation: true.
 // After the walk completes, the engine scans the step log queue for marked
 // outputs and writes one achieve_evaluations row per call, in waitUntil.
 // Best-effort: failures never block the workflow.

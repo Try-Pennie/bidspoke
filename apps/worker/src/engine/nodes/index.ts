@@ -13,6 +13,7 @@ import { executeConstantsNode } from './constants'
 import { executeSalesforceNode } from './salesforce'
 import { executeDataStoreNode } from './data-store'
 import { executeLatencyGateNode } from './latency-gate'
+import { executeAchieveOffersNode } from './achieve-offers'
 
 export async function executeNode(
   node: NodeDefinition,
@@ -64,6 +65,8 @@ export async function executeNode(
       return executeDataStoreNode(node, ctx, env)
     case 'latency_gate':
       return executeLatencyGateNode(node, ctx, env, supabase)
+    case 'achieve_offers':
+      return executeAchieveOffersNode(node, ctx)
     default:
       throw new Error(`Unknown node type: ${(node as NodeDefinition).type}`)
   }

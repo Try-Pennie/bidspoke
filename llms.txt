@@ -37,6 +37,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Partner Bid](https://bidspoke.trypennie.dev/docs/nodes/partner-bid.md): request a bid from one partner.
 - [Bid Evaluation](https://bidspoke.trypennie.dev/docs/nodes/bid-evaluation.md): pick a winner from collected bids.
 - [Latency Gate](https://bidspoke.trypennie.dev/docs/nodes/latency-gate.md): mark and check a partner match-latency window.
+- [Achieve Offers](https://bidspoke.trypennie.dev/docs/nodes/achieve-offers.md): send the lead to Achieve (FDR) and log the offers returned.
 
 ## Guides
 

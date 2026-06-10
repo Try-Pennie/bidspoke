@@ -33,12 +33,13 @@ For the JSON shape of a node and how edges route between them, see the [workflow
 | [Partner Bid](partner-bid.md) | `partner_bid` | Request a bid from a single partner. | single next |
 | [Bid Evaluation](bid-evaluation.md) | `bid_evaluation` | Pick a winner from already-collected bids. | route handle |
 | [Latency Gate](latency-gate.md) | `latency_gate` | Mark and check a partner match-latency window. | `within` / `exceeded` |
+| [Achieve Offers](achieve-offers.md) | `achieve_offers` | Send the lead to Achieve (FDR) and log the offers returned; collect-only. | single next |
 
 The [Bid Group](bid-group.md) node is the primary, first-class way to run a parallel auction across partners: it is one canvas node that fans out to the partners internally. [Partner Bid](partner-bid.md) and [Bid Evaluation](bid-evaluation.md) are the lower-level building blocks (a single partner attempt, and a standalone evaluator) used in hand-built or imported flows. The default node palette surfaces Bid Group; Partner Bid and Bid Evaluation are available as node types in definitions even though they are not separate palette entries.
 
 ## Which nodes are in the canvas palette
 
-The drag-and-drop palette offers: Filter, Branch, Code, Response, Exit, Transform, Webhook, Parallel, Bid Group, Constants, Salesforce, Data Store, and Latency Gate. The engine additionally understands `partner_bid`, `bid_evaluation`, and the passive join nodes `branch_end` and `parallel_end`, which appear automatically when you use Branch and Parallel.
+The drag-and-drop palette offers: Filter, Branch, Code, Response, Exit, Transform, Webhook, Parallel, Bid Group, Constants, Salesforce, Data Store, Latency Gate, and Achieve Offers. The engine additionally understands `partner_bid`, `bid_evaluation`, and the passive join nodes `branch_end` and `parallel_end`, which appear automatically when you use Branch and Parallel.
 
 ## See also
 

@@ -58,6 +58,12 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       }
       return null
     }
+    case 'achieve_offers': {
+      // Defaults are valid; only an explicitly emptied product list is a misconfig.
+      const products = config.targeted_products as string[] | undefined
+      if (products !== undefined && products.length === 0) return 'No products selected'
+      return null
+    }
     // response, exit, trigger — always valid
     default:
       return null

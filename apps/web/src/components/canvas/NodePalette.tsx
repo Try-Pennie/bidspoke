@@ -1,7 +1,7 @@
 'use client'
 
 import type { NodeType } from '@/types/workflow'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -103,6 +103,13 @@ const NODES: PaletteNode[] = [
     description: 'Mark a time, then gate on elapsed',
     icon: Timer,
     color: 'text-orange-500',
+  },
+  {
+    type: 'achieve_offers',
+    label: 'Achieve Offers',
+    description: 'Collect Achieve/FDR offers, log only',
+    icon: HandCoins,
+    color: 'text-violet-500',
   },
 ]
 
