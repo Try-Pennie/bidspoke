@@ -92,6 +92,17 @@ export async function flushStepLogs(
   return `${failed}/${rows.length} step rows failed: ${firstRowError ?? error.message}`
 }
 
+// Retry delays for the execution-row insert. The nightly partition-purge cron
+// takes an ACCESS EXCLUSIVE lock on workflow_executions for up to ~15s; inserts
+// queue behind it past the 8s statement timeout and fail — which lost 8
+// executions' entire audit trail on 2026-06-10 (and a similar burst 2026-05-30,
+// create-daily-partitions). The lock clears within seconds, so a short backoff
+// saves the row. This runs inside waitUntil(), off the request critical path,
+// so the added wall-clock is free.
+const CREATE_RETRY_DELAYS_MS = [3_000, 8_000]
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 export async function createExecutionRecord(
   supabase: SupabaseClient,
   record: {
@@ -105,20 +116,35 @@ export async function createExecutionRecord(
     trace_id: string
     started_at: string
     is_test: boolean
-  }
+  },
+  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS
 ): Promise<void> {
-  // Throw on insert failure. The caller chains this into flushStepLogs via
-  // `.then().catch()`, so a thrown error surfaces as a clear "Step logs
+  // Throw on (final) insert failure. The caller chains this into flushStepLogs
+  // via `.then().catch()`, so a thrown error surfaces as a clear "Step logs
   // failed to persist: <actual cause>" instead of a downstream FK violation
   // when the missing parent row blocks the step batch insert.
-  const { error } = await supabase.from('workflow_executions').insert({
-    ...record,
-    status: 'running',
-    trigger_type: 'http_webhook',
-  })
-  if (error) {
-    throw new Error(`workflow_executions insert failed: ${error.message}`)
+  let lastError: { code?: string; message: string } | null = null
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
+    if (attempt > 0) {
+      console.warn('[step-logger] retrying workflow_executions insert', {
+        execution_id: record.id,
+        attempt,
+        previous_error: lastError?.message,
+      })
+      await sleep(retryDelaysMs[attempt - 1])
+    }
+    const { error } = await supabase.from('workflow_executions').insert({
+      ...record,
+      status: 'running',
+      trigger_type: 'http_webhook',
+    })
+    if (!error) return
+    // Unique violation on a retry means a prior attempt actually landed and
+    // only its response was lost — the row exists, which is all we want.
+    if (attempt > 0 && error.code === '23505') return
+    lastError = error
   }
+  throw new Error(`workflow_executions insert failed: ${lastError?.message}`)
 }
 
 export async function updateExecutionRecord(
