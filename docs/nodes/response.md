@@ -12,7 +12,7 @@ Builds the HTTP response that the webhook caller receives. You set a status code
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `status_code` | number \| string | No | `200` | The HTTP status. May be a literal number or a template string like `{{steps.X.output.status}}` that resolves to a number. Falls back to `200` if blank or unresolvable. A string number is parsed; a float is truncated. |
-| `headers` | `Record<string, string>` | No | `{}` | Response headers. Keys and values are sent as-is. |
+| `headers` | `Record<string, string>` | No | `{}` | Response headers. Keys are sent as-is. Values support `{{...}}` templates; the resolved value is coerced to a string. A header whose template resolves to nothing (undefined/null) is omitted from the response. |
 | `body` | any | No | `null` | The response body. Strings (including string values nested in an object) support [data reference](../concepts/data-references.md) `{{...}}` templates. |
 | `continue_after_response` | boolean | No | `false` (omitted) | When `true`, send the response immediately and keep walking the graph. When false or omitted, this node ends the run. |
 
@@ -38,7 +38,7 @@ In the editor: "Status code", "Body (JSON or template)", a "Headers" key/value e
 | Field | Type | Description |
 |-------|------|-------------|
 | `status_code` | number | The resolved status code. |
-| `headers` | object | The headers as configured. |
+| `headers` | object | The headers after `{{...}}` templates in values are resolved. |
 | `body` | any | The body after `{{...}}` templates are resolved. |
 
 ## Examples
@@ -101,5 +101,5 @@ If `status` is missing or non-numeric, the status falls back to `200`.
 
 - [Exit node](./exit.md) for ending a run with an optional response but no template resolution beyond the stored object.
 - [Branch node](./branch.md) and [Filter node](./filter.md) for choosing which Response node a lead reaches.
-- [Data references](../concepts/data-references.md) for the `{{...}}` template syntax used in the body and status code.
+- [Data references](../concepts/data-references.md) for the `{{...}}` template syntax used in the body, headers, and status code.
 - [Workflow definition schema](../concepts/workflow-definition-schema.md) for the node and edge JSON shape.

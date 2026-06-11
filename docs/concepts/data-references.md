@@ -156,5 +156,5 @@ steps.b.output.x ?? steps.a.output.x          first non-null of two steps
 
 - [Workflow definition schema](./workflow-definition-schema.md) - where references appear, plus the full operator table.
 - [Constants node](../nodes/constants.md) - how to define workflow constants you read via `steps.<ns>.output.*`.
-- [Response node](../nodes/response.md) - templated response bodies.
+- [Response node](../nodes/response.md) - templated response bodies, headers, and status codes.
 - [Workflows and executions](./workflows-and-executions.md) - what step outputs are and when they exist.

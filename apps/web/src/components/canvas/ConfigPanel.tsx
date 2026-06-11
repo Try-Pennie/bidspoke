@@ -1141,11 +1141,14 @@ function ResponseConfig({
                   onChange={(e) => updateHeader(i, e.target.value, value)}
                   placeholder="Header"
                 />
-                <input
-                  className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
+                <TemplateTextarea
+                  singleLine
+                  containerClassName="flex-1"
+                  className="block w-full resize-none overflow-hidden rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                   value={value}
-                  onChange={(e) => updateHeader(i, key, e.target.value)}
-                  placeholder="Value"
+                  onChange={(val) => updateHeader(i, key, val)}
+                  placeholder="Value or {{template}}"
+                  refs={refs}
                 />
                 <button
                   type="button"

@@ -1,7 +1,7 @@
 // Response node — structured HTTP response (PRD Section 5.6)
 // Config: { status_code?: number, headers?: Record<string, string>, body?: unknown,
 //           continue_after_response?: boolean }
-// Body strings support {{...}} template references (trigger, steps, env).
+// Body strings and header values support {{...}} template references (trigger, steps, env).
 // By default, the engine returns this node's output as the final HTTP response and
 // terminates the walk. With continue_after_response: true, the engine sends the
 // response immediately and keeps walking the graph (mirrors the code-node
@@ -25,7 +25,7 @@ export function executeResponseNode(
 ): StepExecutionResult {
   const config = node.config as ResponseConfig
   const status = resolveStatus(config.status_code, ctx)
-  const headers = config.headers ?? {}
+  const headers = resolveHeaders(config.headers, ctx)
   const body = resolveValue(config.body ?? null, ctx)
 
   const output = { status_code: status, headers, body }
@@ -44,6 +44,24 @@ export function executeResponseNode(
   }
 
   return { output, resolvedInput }
+}
+
+// Header values are template-resolved and coerced to strings (HTTP headers are
+// always strings on the wire). A value whose template resolves to undefined/null
+// is omitted entirely — sending "x-submission-id: " would be worse than not
+// sending the header at all.
+function resolveHeaders(
+  raw: Record<string, string> | undefined,
+  ctx: ExecutionContext
+): Record<string, string> {
+  if (!raw) return {}
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    const resolved = typeof value === 'string' ? resolveValue(value, ctx) : value
+    if (resolved === undefined || resolved === null) continue
+    out[key] = typeof resolved === 'object' ? JSON.stringify(resolved) : String(resolved)
+  }
+  return out
 }
 
 function resolveStatus(raw: unknown, ctx: ExecutionContext): number {

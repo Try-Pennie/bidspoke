@@ -8,9 +8,13 @@ interface Props {
   placeholder?: string
   className?: string
   refs: string[]   // available data refs: "steps.credit", "trigger.payload", "env.KEY"
+  /** Compact single-line mode: one row, Enter/newlines suppressed, no hint text.
+   *  For inline fields like header key/value rows. */
+  singleLine?: boolean
+  containerClassName?: string
 }
 
-export default function TemplateTextarea({ value, onChange, placeholder, className, refs }: Props) {
+export default function TemplateTextarea({ value, onChange, placeholder, className, refs, singleLine, containerClassName }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
@@ -27,7 +31,7 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
   }
 
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    const val = e.target.value
+    const val = singleLine ? e.target.value.replace(/[\r\n]/g, '') : e.target.value
     const cursor = e.target.selectionStart ?? val.length
     onChange(val)
     const sugs = computeSuggestions(val, cursor)
@@ -36,7 +40,10 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (suggestions.length === 0) return
+    if (suggestions.length === 0) {
+      if (singleLine && e.key === 'Enter') e.preventDefault()
+      return
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1))
@@ -84,9 +91,10 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
   }, [])
 
   return (
-    <div ref={containerRef} className="relative">
+    <div ref={containerRef} className={containerClassName ? `relative ${containerClassName}` : 'relative'}>
       <textarea
         ref={textareaRef}
+        rows={singleLine ? 1 : undefined}
         className={className}
         placeholder={placeholder}
         value={value}
@@ -112,7 +120,7 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
           ))}
         </ul>
       )}
-      {refs.length > 0 && suggestions.length === 0 && (
+      {!singleLine && refs.length > 0 && suggestions.length === 0 && (
         <p className="mt-1 text-xs text-gray-400">
           Type <code className="rounded bg-gray-100 px-0.5">{'{{'}</code> to insert a reference
         </p>

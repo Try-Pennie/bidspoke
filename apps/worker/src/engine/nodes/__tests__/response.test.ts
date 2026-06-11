@@ -77,6 +77,65 @@ describe('executeResponseNode', () => {
     })
   })
 
+  describe('template resolution in headers', () => {
+    it('resolves {{trigger.payload.*}} references in header values', () => {
+      const result = executeResponseNode(
+        node({ headers: { 'X-Submission-Id': '{{trigger.payload.Submission__c}}' } }),
+        ctx({ payload: { Submission__c: 'a04Ui00000IAdKHIA1' } })
+      )
+      expect((result.output as { headers: Record<string, string> }).headers).toEqual({
+        'X-Submission-Id': 'a04Ui00000IAdKHIA1',
+      })
+    })
+
+    it('coerces a non-string resolved value to string', () => {
+      const result = executeResponseNode(
+        node({ headers: { 'X-Score': '{{steps.credit.score}}' } }),
+        ctx({ steps: { credit: { score: 720 } } })
+      )
+      expect((result.output as { headers: Record<string, string> }).headers['X-Score']).toBe('720')
+    })
+
+    it('supports inline interpolation in header values', () => {
+      const result = executeResponseNode(
+        node({ headers: { 'X-Trace': 'lead-{{trigger.payload.id}}' } }),
+        ctx({ payload: { id: 'abc' } })
+      )
+      expect((result.output as { headers: Record<string, string> }).headers['X-Trace']).toBe('lead-abc')
+    })
+
+    it('omits a header whose template resolves to undefined', () => {
+      const result = executeResponseNode(
+        node({ headers: { 'X-Missing': '{{steps.missing.output.x}}', 'Content-Type': 'application/json' } }),
+        ctx()
+      )
+      expect((result.output as { headers: Record<string, string> }).headers).toEqual({
+        'Content-Type': 'application/json',
+      })
+    })
+
+    it('leaves static header values untouched', () => {
+      const result = executeResponseNode(
+        node({ headers: { 'Content-Type': 'application/json' } }),
+        ctx()
+      )
+      expect((result.output as { headers: Record<string, string> }).headers).toEqual({
+        'Content-Type': 'application/json',
+      })
+    })
+
+    it('resolved headers flow into earlyResponse with continue_after_response', () => {
+      const result = executeResponseNode(
+        node({
+          headers: { 'X-Submission-Id': '{{trigger.payload.Submission__c}}' },
+          continue_after_response: true,
+        }),
+        ctx({ payload: { Submission__c: 'sub-1' } })
+      )
+      expect(result.earlyResponse?.headers).toEqual({ 'X-Submission-Id': 'sub-1' })
+    })
+  })
+
   describe('template resolution in body', () => {
     it('resolves {{trigger.payload.*}} references', () => {
       const result = executeResponseNode(
