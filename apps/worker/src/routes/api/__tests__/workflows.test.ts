@@ -534,13 +534,24 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
   })
 
   it('returns per-node suggestions from the grouped RPC and caches the payload', async () => {
-    const rpc = vi.fn().mockResolvedValue({
-      data: [
-        { step_namespace: 'equifax', p99: 5000, max_ms: 11000, sample_size: 1996 },
-        { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
-      ],
-      error: null,
-    })
+    // equifax clears SAMPLE_CONFIDENT in the first (2h) window and must lock
+    // there: the wider windows return different stats for it, which a correct
+    // implementation ignores.
+    const rpc = vi.fn()
+      .mockResolvedValueOnce({
+        data: [
+          { step_namespace: 'equifax', p99: 5000, max_ms: 11000, sample_size: 1996 },
+          { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
+        ],
+        error: null,
+      })
+      .mockResolvedValue({
+        data: [
+          { step_namespace: 'equifax', p99: 9000, max_ms: 20000, sample_size: 5000 },
+          { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
+        ],
+        error: null,
+      })
     const sb = Object.assign(makeSupabase({
       users: { single: testUser },
       workflows: { single: wfRow },
@@ -552,7 +563,9 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as { window_days: number; nodes: Array<Record<string, unknown>> }
 
-    // equifax has a real sample: default retries (2) -> suggested = p99 * 1.5
+    // equifax has a real sample: default retries (2) -> suggested = p99 * 1.5,
+    // computed from the FIRST window's stats (locked, despite the wider windows
+    // reporting p99 9000 for it).
     expect(body.nodes).toHaveLength(1)
     expect(body.nodes[0]).toMatchObject({
       node_id: 'equifax',
@@ -563,12 +576,12 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
       p99: 5000,
       sample_size: 1996,
     })
-    // 'thin' stayed under the sample floor at every window, so the route widened
-    // through all three windows before giving up on it.
+    // 'thin' never reached a confident sample, so the route widened through all
+    // three windows before giving up on it.
     expect(rpc).toHaveBeenCalledTimes(3)
     expect(body.window_days).toBe(7)
     expect(kv.put).toHaveBeenCalledWith(
-      'timeout-suggestions:v1:wf-1:2026-06-11T00:00:00Z',
+      'timeout-suggestions:v2:wf-1:2026-06-11T00:00:00Z',
       expect.any(String),
       { expirationTtl: 1800 }
     )

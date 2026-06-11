@@ -20,6 +20,22 @@ import { suggestionFloorMs } from './timeout-floor'
 /** The engine's default retries when a node doesn't configure them. */
 export const DEFAULT_RETRIES = 2
 
+/** Below this many completed runs, don't trust a suggestion at all. */
+export const SUGGESTION_MIN_SAMPLE = 10
+
+/**
+ * Keep widening the sample window while a namespace has fewer completed runs
+ * than this. A p99 needs a real tail to be meaningful — at 22 samples it's
+ * basically the max of a quiet couple of hours, which is how a 700ms timeout
+ * looked safe in the config panel while the day's history (p99 739ms) said
+ * otherwise. High-volume namespaces clear this within the 2h window, so the
+ * statement-timeout protection of the adaptive window is unchanged: only
+ * low-volume namespaces widen, and their joins are cheap. Every surface
+ * (config panel, canvas badge, audit) must use the same stop rule or they
+ * disagree about the same node.
+ */
+export const SAMPLE_CONFIDENT = 200
+
 // Round suggestions to readable increments that scale with magnitude. Without
 // this a sub-100ms value would get rounded to 250ms (defeating the hard floor)
 // and a 30s value would have noisy 250ms granularity.

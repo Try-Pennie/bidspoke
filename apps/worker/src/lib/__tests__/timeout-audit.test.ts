@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, type NodeDurationStats } from '../timeout-audit'
+import { describe, it, expect, vi } from 'vitest'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, type NodeDurationStats } from '../timeout-audit'
 import { suggestedTimeoutMs, timeoutSeverity } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 
@@ -245,5 +245,53 @@ describe('warningsSignature with under-provisioned entries', () => {
   it('changes when the configured value changes', () => {
     const changed = [{ ...under[0], nodes: [{ ...under[0].nodes[0], configured_ms: 5000 }] }]
     expect(warningsSignature([], changed)).not.toBe(warningsSignature([], under))
+  })
+})
+
+describe('collectWorkflowDurationStats', () => {
+  type RpcResult = { data: unknown; error: unknown }
+  function fakeClient(results: RpcResult[]) {
+    let i = 0
+    const rpc = vi.fn().mockImplementation(() => Promise.resolve(results[Math.min(i++, results.length - 1)]))
+    return { client: { rpc } as unknown as Parameters<typeof collectWorkflowDurationStats>[0], rpc }
+  }
+
+  it('stops after one window when every namespace clears the confident sample', async () => {
+    const { client, rpc } = fakeClient([
+      { data: [{ step_namespace: 'a', p99: 100, max_ms: 200, sample_size: 5000 }], error: null },
+    ])
+    const { stats, windowDays } = await collectWorkflowDurationStats(client, 'wf-1', ['a'])
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(windowDays).toBeLessThan(1)
+    expect(stats.get('a')).toEqual({ p99: 100, max_ms: 200, sample_size: 5000 })
+  })
+
+  it('locks a confident namespace at its first window while widening for thin ones', async () => {
+    const { client, rpc } = fakeClient([
+      { data: [
+        { step_namespace: 'busy', p99: 400, max_ms: 450, sample_size: 1000 },
+        { step_namespace: 'quiet', p99: 50, max_ms: 60, sample_size: 22 },
+      ], error: null },
+      { data: [
+        { step_namespace: 'busy', p99: 9000, max_ms: 9999, sample_size: 4000 },
+        { step_namespace: 'quiet', p99: 739, max_ms: 1250, sample_size: 166 },
+      ], error: null },
+    ])
+    const { stats } = await collectWorkflowDurationStats(client, 'wf-1', ['busy', 'quiet'])
+    expect(rpc).toHaveBeenCalledTimes(3)
+    // busy locked at window 1; quiet kept widening and took the later stats
+    expect(stats.get('busy')).toEqual({ p99: 400, max_ms: 450, sample_size: 1000 })
+    expect(stats.get('quiet')).toEqual({ p99: 739, max_ms: 1250, sample_size: 166 })
+  })
+
+  it('degrades on RPC error, keeping the narrower windows results', async () => {
+    const { client, rpc } = fakeClient([
+      { data: [{ step_namespace: 'a', p99: 100, max_ms: 200, sample_size: 22 }], error: null },
+      { data: null, error: { message: 'statement timeout' } },
+    ])
+    const { stats, windowDays } = await collectWorkflowDurationStats(client, 'wf-1', ['a'])
+    expect(rpc).toHaveBeenCalledTimes(2)
+    expect(windowDays).toBeLessThan(1)
+    expect(stats.get('a')).toEqual({ p99: 100, max_ms: 200, sample_size: 22 })
   })
 })

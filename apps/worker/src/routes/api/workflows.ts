@@ -11,7 +11,8 @@ import { buildContext } from '../../engine/context'
 import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes, deployTestCodeBundle, deleteTestBundles } from '../../lib/code-node-deployer'
 import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
-import { DEFAULT_RETRIES, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
+import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
+import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 
 type Variables = AuthVariables
@@ -200,11 +201,9 @@ workflows.get('/:id', async (c) => {
 // window instead of N: step_duration_percentiles_by_workflow returns all
 // namespaces at once.
 //
-// Adaptive window, shortest-first, same rationale as step-duration-stats: a
-// busy workflow fills every active namespace's sample within a couple of hours,
-// and the 7-day join on a high-volume workflow can blow the DB statement
-// timeout. We widen only while some node's sample is still thin, and on RPC
-// error stop widening and serve whatever the narrower windows returned.
+// Sampling comes from collectWorkflowDurationStats — the shared adaptive
+// window with per-namespace lock-in, so the badge, the config panel, and the
+// audit all see the same stats for the same node.
 //
 // Cached in KV for 30 minutes, keyed on updated_at so a save (which can change
 // per-node retries, and with them the suggestion math) busts it immediately.
@@ -222,43 +221,25 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
     .single()
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
-  const cacheKey = `timeout-suggestions:v1:${id}:${wf.updated_at}`
+  // v2: per-namespace lock-in at SAMPLE_CONFIDENT replaced fill-at-10
+  const cacheKey = `timeout-suggestions:v2:${id}:${wf.updated_at}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
   const definition = wf.definition as WorkflowDefinition | null
   const defNodes = Array.isArray(definition?.nodes) ? definition.nodes : []
 
-  const SAMPLE_FLOOR = 10
-  const HOUR = 60 * 60 * 1000
-  const WINDOWS: Array<{ since: string; days: number }> = [
-    { since: new Date(Date.now() - 2 * HOUR).toISOString(), days: 2 / 24 },
-    { since: new Date(Date.now() - 24 * HOUR).toISOString(), days: 1 },
-    { since: new Date(Date.now() - 7 * 24 * HOUR).toISOString(), days: 7 },
-  ]
-
-  type StatRow = { step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }
-  const stats = new Map<string, StatRow>()
-  let windowDays = 0
-  for (const w of WINDOWS) {
-    const { data: rows, error } = await supabase.rpc('step_duration_percentiles_by_workflow', {
-      p_workflow_id: id,
-      p_since: w.since,
-    })
-    if (error) break // degrade to whatever narrower windows returned
-    // A wider window is a strict superset per namespace — always take the
-    // latest success.
-    for (const r of (rows ?? []) as StatRow[]) stats.set(r.step_namespace, r)
-    windowDays = w.days
-    const allFilled = defNodes.every((n) => Number(stats.get(n.namespace)?.sample_size ?? 0) >= SAMPLE_FLOOR)
-    if (allFilled) break
-  }
+  const { stats, windowDays } = await collectWorkflowDurationStats(
+    supabase,
+    id,
+    defNodes.map((n) => n.namespace)
+  )
 
   const nodes = defNodes.flatMap((node) => {
     const row = stats.get(node.namespace)
     if (!row || row.p99 == null || row.max_ms == null) return []
     const sampleSize = Number(row.sample_size)
-    if (sampleSize < SAMPLE_FLOOR) return []
+    if (sampleSize < SUGGESTION_MIN_SAMPLE) return []
     const retries = typeof node.config?.retries === 'number' ? node.config.retries : DEFAULT_RETRIES
     return [{
       node_id: node.id,

@@ -19,7 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
-import { DEFAULT_RETRIES, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
+import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
 import { getSlackConnection, sendTimeoutConfigAlert } from './slack'
 
 export interface SubFloorNode {
@@ -279,6 +279,49 @@ export interface OrgHistoryWarnings {
 }
 
 /**
+ * Adaptive per-workflow duration stats: one grouped percentile RPC per window,
+ * shortest-first (2h, 1d, 7d), locking each namespace at the first window where
+ * its sample clears SAMPLE_CONFIDENT so a quiet couple of hours can't stand in
+ * for a real p99. Widening stops once every requested namespace is locked; an
+ * RPC error (e.g. statement timeout on the wide join) stops widening and keeps
+ * whatever the narrower windows returned.
+ *
+ * This is THE sampling rule for every batch surface (canvas badge endpoint,
+ * audit, Slack cron). The config panel's per-node endpoint applies the same
+ * stop threshold to its per-namespace RPC, so all surfaces see the same stats
+ * for the same node.
+ */
+export async function collectWorkflowDurationStats(
+  supabase: SupabaseClient,
+  workflowId: string,
+  namespaces: string[]
+): Promise<{ stats: Map<string, NodeDurationStats>; windowDays: number }> {
+  const HOUR = 60 * 60 * 1000
+  const windows = [
+    { since: new Date(Date.now() - 2 * HOUR).toISOString(), days: 2 / 24 },
+    { since: new Date(Date.now() - 24 * HOUR).toISOString(), days: 1 },
+    { since: new Date(Date.now() - 7 * 24 * HOUR).toISOString(), days: 7 },
+  ]
+  const stats = new Map<string, NodeDurationStats>()
+  const locked = (ns: string) => (stats.get(ns)?.sample_size ?? 0) >= SAMPLE_CONFIDENT
+  let windowDays = 0
+  for (const w of windows) {
+    if (namespaces.length > 0 && namespaces.every(locked)) break
+    const { data, error } = await supabase.rpc('step_duration_percentiles_by_workflow', {
+      p_workflow_id: workflowId,
+      p_since: w.since,
+    })
+    if (error) break
+    for (const r of (data ?? []) as Array<{ step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }>) {
+      if (locked(r.step_namespace)) continue
+      stats.set(r.step_namespace, { p99: r.p99, max_ms: r.max_ms, sample_size: Number(r.sample_size) })
+    }
+    windowDays = w.days
+  }
+  return { stats, windowDays }
+}
+
+/**
  * History-based warnings (under- and over-provisioned) across an org's active
  * workflows, from one shared stats pass: one grouped percentile query per
  * workflow (step_duration_percentiles_by_workflow) rather than one per node.
@@ -295,24 +338,20 @@ export async function getOrgHistoryWarnings(
     .eq('is_active', true)
     .is('deleted_at', null)
 
-  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-
-  // One grouped percentile query per workflow, run in parallel so the dashboard
-  // load doesn't serialize them.
+  // Adaptive grouped percentile queries per workflow, run in parallel so the
+  // dashboard load doesn't serialize them. Same sampling rule as the canvas
+  // badge endpoint and the config panel, so the audit never flags a node those
+  // surfaces call fine (or vice versa).
   const results = await Promise.all(
     (data ?? []).map(async (w) => {
       const definition = w.definition as WorkflowDefinition | null
       if (!Array.isArray(definition?.nodes) || definition.nodes.length === 0) return null
 
-      const { data: rows } = await supabase.rpc('step_duration_percentiles_by_workflow', {
-        p_workflow_id: w.id as string,
-        p_since: since,
-      })
-
-      const stats = new Map<string, NodeDurationStats>()
-      for (const r of (rows ?? []) as Array<{ step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }>) {
-        stats.set(r.step_namespace, { p99: r.p99, max_ms: r.max_ms, sample_size: Number(r.sample_size) })
-      }
+      const { stats } = await collectWorkflowDurationStats(
+        supabase,
+        w.id as string,
+        definition.nodes.map((n) => n.namespace)
+      )
 
       return {
         workflow_id: w.id as string,
