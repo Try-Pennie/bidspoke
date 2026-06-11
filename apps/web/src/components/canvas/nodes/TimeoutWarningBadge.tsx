@@ -44,7 +44,10 @@ export function TimeoutWarningBadge({
   // Mirror the config panel: an unset timeout means the engine default (30s),
   // which can still sit below the suggestion for a slow step.
   const effective = typeof config?.timeout_ms === 'number' ? config.timeout_ms : 30000
-  if (effective >= suggestion.suggested_ms) return null
+  // Compare against the tolerance threshold, not suggested_ms itself: the
+  // suggestion is 1.5x a rolling p99, so a config sitting exactly at the
+  // suggested value would otherwise flap in and out of warning as stats drift.
+  if (effective >= (suggestion.warn_below_ms ?? suggestion.suggested_ms)) return null
 
   const fmt = (ms: number) => `${Math.round(ms).toLocaleString()}ms`
   const redThreshold = suggestion.retries >= 1 ? suggestion.p99 : suggestion.max_ms

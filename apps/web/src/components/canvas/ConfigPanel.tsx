@@ -3491,6 +3491,8 @@ type StepStats = {
   max_ms: number | null
   sample_size: number
   suggested_ms: number | null
+  /** Under-provision flag threshold (suggested x tolerance), from the worker. */
+  warn_below_ms?: number | null
   floor_ms: number | null
   floor_reason: string | null
   window_days: number
@@ -3617,7 +3619,10 @@ function TimeoutField({
         : 'Your timeout would have cut that off — try'
       actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'for safety.'
-    } else if (effective < stats.suggested_ms) {
+    } else if (effective < (stats.warn_below_ms ?? stats.suggested_ms)) {
+      // Tolerance band from the worker: a value at or just under the suggestion
+      // is someone who already took it — agree with the canvas badge and stay
+      // quiet instead of flapping on p99 drift.
       tone = 'amber'
       actionLeading = hasRetries
         ? 'Some runs will time out and burn retries — try'

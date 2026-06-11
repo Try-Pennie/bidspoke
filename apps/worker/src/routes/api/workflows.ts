@@ -11,7 +11,7 @@ import { buildContext } from '../../engine/context'
 import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes, deployTestCodeBundle, deleteTestBundles } from '../../lib/code-node-deployer'
 import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
-import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
+import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs, warnBelowMs } from '../../lib/timeout-suggestion'
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 
@@ -221,8 +221,8 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
     .single()
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
-  // v2: per-namespace lock-in at SAMPLE_CONFIDENT replaced fill-at-10
-  const cacheKey = `timeout-suggestions:v2:${id}:${wf.updated_at}`
+  // v3: added warn_below_ms (tolerance band so at-suggested configs don't flap)
+  const cacheKey = `timeout-suggestions:v3:${id}:${wf.updated_at}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -241,13 +241,17 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
     const sampleSize = Number(row.sample_size)
     if (sampleSize < SUGGESTION_MIN_SAMPLE) return []
     const retries = typeof node.config?.retries === 'number' ? node.config.retries : DEFAULT_RETRIES
+    const suggested = suggestedTimeoutMs(node.type, row.p99, row.max_ms, retries)
     return [{
       node_id: node.id,
       namespace: node.namespace,
       type: node.type,
       configured_ms: typeof node.config?.timeout_ms === 'number' ? node.config.timeout_ms : null,
       retries,
-      suggested_ms: suggestedTimeoutMs(node.type, row.p99, row.max_ms, retries),
+      suggested_ms: suggested,
+      // Flag threshold with tolerance — the badge compares against this, not
+      // suggested_ms, so a config sitting at the suggested value stays quiet.
+      warn_below_ms: warnBelowMs(suggested),
       p99: row.p99,
       max_ms: row.max_ms,
       sample_size: sampleSize,

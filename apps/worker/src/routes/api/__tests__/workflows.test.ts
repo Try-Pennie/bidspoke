@@ -573,6 +573,7 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
       configured_ms: 4000,
       retries: 2,
       suggested_ms: 7500,
+      warn_below_ms: 6750,
       p99: 5000,
       sample_size: 1996,
     })
@@ -581,7 +582,7 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
     expect(rpc).toHaveBeenCalledTimes(3)
     expect(body.window_days).toBe(7)
     expect(kv.put).toHaveBeenCalledWith(
-      'timeout-suggestions:v2:wf-1:2026-06-11T00:00:00Z',
+      'timeout-suggestions:v3:wf-1:2026-06-11T00:00:00Z',
       expect.any(String),
       { expirationTtl: 1800 }
     )

@@ -36,6 +36,21 @@ export const SUGGESTION_MIN_SAMPLE = 10
  */
 export const SAMPLE_CONFIDENT = 200
 
+/**
+ * Only flag a timeout as under-provisioned when it sits below this fraction of
+ * the suggested value. The suggestion is 1.5x a rolling p99, which drifts a few
+ * percent run to run — without a tolerance band, a node configured exactly at
+ * the suggested value (i.e. someone clicked the suggestion) flaps in and out of
+ * warning as the sample rolls, and surfaces fetched at different moments (canvas
+ * badge at page load, config panel on click) disagree about the same node.
+ */
+export const UNDER_PROVISION_TOLERANCE = 0.9
+
+/** The compare-against value for under-provision warnings, with tolerance. */
+export function warnBelowMs(suggestedMs: number): number {
+  return Math.round(suggestedMs * UNDER_PROVISION_TOLERANCE)
+}
+
 // Round suggestions to readable increments that scale with magnitude. Without
 // this a sub-100ms value would get rounded to 250ms (defeating the hard floor)
 // and a 30s value would have noisy 250ms granularity.
