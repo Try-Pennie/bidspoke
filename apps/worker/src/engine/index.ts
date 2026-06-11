@@ -401,6 +401,10 @@ export async function executeWorkflow(
           completed_at: completedAt,
           duration_ms: durationMs,
           response_body: response,
+          // The status the caller actually received (mirrors the fetch return
+          // at the bottom of this function). Read by the sightings backfill,
+          // which has no walk context to recompute it from.
+          response_status: executionStatus === 'completed' ? walkStatus : 500,
           error_message: finalErrorMessage,
           cost_usd: cost,
         })

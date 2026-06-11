@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionRecord } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord } from '../step-logger'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Regression guard for the 2026-06-10 incident: the nightly partition purge
@@ -73,5 +73,27 @@ describe('createExecutionRecord', () => {
     // rule. The audit row existing is the goal, so this is success, not an
     // error worth surfacing as "step logs failed to persist".
     await expect(createExecutionRecord(client, record, [1, 1])).resolves.toBeUndefined()
+  })
+})
+
+describe('updateExecutionRecord', () => {
+  it('passes response_status through to the workflow_executions update (issue #30)', async () => {
+    const select = vi.fn().mockResolvedValue({ data: [{ id: 'exec-1' }] })
+    const eq2 = vi.fn().mockReturnValue({ select })
+    const eq1 = vi.fn().mockReturnValue({ eq: eq2 })
+    const update = vi.fn().mockReturnValue({ eq: eq1 })
+    const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+
+    await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', {
+      status: 'completed',
+      completed_at: '2026-06-11T00:00:01Z',
+      duration_ms: 1000,
+      response_body: { ok: true },
+      response_status: 200,
+    })
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ response_status: 200, response_body: { ok: true } })
+    )
   })
 })
