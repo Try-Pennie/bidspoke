@@ -58,7 +58,8 @@ function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
   // Coalesce / fallback: "a ?? b ?? c" resolves to the first operand that isn't
   // null/undefined. Lets one reference read whichever of two steps actually ran
   // (e.g. a duplicated node: `steps.engine_no_bids_call_1.output.x ?? steps.engine_no_bids_call.output.x`).
-  // Uses ?? semantics so a real `false`/`0`/'' is kept, not skipped.
+  // Uses ?? semantics so a real `false`/`0`/'' is kept, not skipped. Lowest
+  // precedence: each ?? operand may itself be an arithmetic expression.
   if (expr.includes('??')) {
     for (const part of expr.split('??')) {
       const v = resolveExpression(part.trim(), ctx)
@@ -66,7 +67,89 @@ function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
     }
     return undefined
   }
-  const parts = expr.split('.')
+
+  // Arithmetic: "a * b", "x + 0.65", "bid - fee * 2". Operators MUST be
+  // whitespace-separated — payload keys can legally contain `-` (and in theory
+  // `+`), so splitting on bare operators would corrupt plain lookups like
+  // `trigger.payload.some-key`. Valid references never contain spaces, so a
+  // spaced operand/operator alternation is unambiguous.
+  const tokens = expr.split(/\s+/)
+  if (
+    tokens.length >= 3 &&
+    tokens.length % 2 === 1 &&
+    tokens.every((t, i) => (i % 2 === 1 ? ARITHMETIC_OPS.has(t) : t.length > 0))
+  ) {
+    return evalArithmetic(tokens, ctx)
+  }
+
+  return resolveReference(expr, ctx)
+}
+
+const ARITHMETIC_OPS = new Set(['*', '/', '+', '-'])
+const NUMBER_LITERAL = /^-?\d+(\.\d+)?$/
+
+/**
+ * Evaluate a flat [operand, op, operand, op, ...] token list with standard
+ * precedence (* / before + -). Number coercion is strict and the whole
+ * expression fails closed to undefined when any operand doesn't resolve to a
+ * finite number — preserving the dropped-field warning path, same as an
+ * unresolvable plain reference. No parentheses; this is deliberately not a
+ * full expression language.
+ */
+function evalArithmetic(tokens: string[], ctx: ExecutionContext): number | undefined {
+  const values: number[] = []
+  const ops: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    if (i % 2 === 1) {
+      ops.push(tokens[i])
+      continue
+    }
+    const raw = NUMBER_LITERAL.test(tokens[i]) ? Number(tokens[i]) : Number(resolveReference(tokens[i], ctx))
+    if (!Number.isFinite(raw)) return undefined
+    values.push(raw)
+  }
+
+  // Pass 1: * and / collapse into the left value
+  const v2: number[] = [values[0]]
+  const o2: string[] = []
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i] === '*') v2[v2.length - 1] = v2[v2.length - 1] * values[i + 1]
+    else if (ops[i] === '/') v2[v2.length - 1] = v2[v2.length - 1] / values[i + 1]
+    else {
+      o2.push(ops[i])
+      v2.push(values[i + 1])
+    }
+  }
+  // Pass 2: + and - left to right
+  let result = v2[0]
+  for (let i = 0; i < o2.length; i++) {
+    result = o2[i] === '+' ? result + v2[i + 1] : result - v2[i + 1]
+  }
+  // Division by zero and overflow fail closed rather than serializing
+  // Infinity/NaN (JSON.stringify renders those as null).
+  return Number.isFinite(result) ? result : undefined
+}
+
+/** A plain path reference: env.X, trigger.*, execution.*, steps.* — with
+ * optional bracket segments (`map[trigger.payload.key]`, `arr[0]`, `obj['k']`)
+ * whose keys resolve before the lookup. */
+function resolveReference(expr: string, ctx: ExecutionContext): unknown {
+  const segments = splitPathSegments(expr)
+  if (!segments) return undefined
+
+  // Resolve bracket segments to concrete keys first, failing closed if any
+  // dynamic key doesn't resolve to a string/number.
+  const parts: string[] = []
+  for (const seg of segments) {
+    if (typeof seg === 'string') {
+      parts.push(seg)
+      continue
+    }
+    const key = resolveBracketKey(seg.key, ctx)
+    if (key === undefined) return undefined
+    parts.push(key)
+  }
+
   if (parts[0] === 'env' && parts[1]) {
     return ctx.env[parts[1]]
   }
@@ -88,6 +171,63 @@ function resolveExpression(expr: string, ctx: ExecutionContext): unknown {
     if (pathParts.length === 0) return step.output
     return getPath(step.output, pathParts)
   }
+  return undefined
+}
+
+/**
+ * Split a reference into dot segments and bracket segments:
+ * `steps.c.map[trigger.payload.k].id` ->
+ * ['steps', 'c', 'map', {key: 'trigger.payload.k'}, 'id'].
+ * Returns null on malformed input (unclosed bracket, empty segment between
+ * dots) so the caller fails closed.
+ */
+function splitPathSegments(expr: string): Array<string | { key: string }> | null {
+  const out: Array<string | { key: string }> = []
+  let i = 0
+  let current = ''
+  while (i < expr.length) {
+    const ch = expr[i]
+    if (ch === '.') {
+      if (current.length === 0) return null
+      out.push(current)
+      current = ''
+      i++
+      continue
+    }
+    if (ch === '[') {
+      if (current.length > 0) {
+        out.push(current)
+        current = ''
+      } else if (out.length === 0) {
+        return null // expression can't start with a bracket
+      }
+      const close = expr.indexOf(']', i + 1)
+      if (close === -1) return null
+      const inner = expr.slice(i + 1, close).trim()
+      if (inner.length === 0) return null
+      out.push({ key: inner })
+      i = close + 1
+      // After a bracket: end of string, another bracket, or a dot (consumed here
+      // so the next identifier doesn't start with it).
+      if (expr[i] === '.') i++
+      continue
+    }
+    current += ch
+    i++
+  }
+  if (current.length > 0) out.push(current)
+  if (out.length === 0) return null
+  return out
+}
+
+/** Bracket key: quoted string literal, numeric index, or a reference resolved
+ * against the context (`map[trigger.payload.subAccountUuid]`). */
+function resolveBracketKey(inner: string, ctx: ExecutionContext): string | undefined {
+  const quoted = inner.match(/^'(.*)'$|^"(.*)"$/)
+  if (quoted) return quoted[1] ?? quoted[2]
+  if (NUMBER_LITERAL.test(inner)) return inner
+  const resolved = resolveExpression(inner, ctx)
+  if (typeof resolved === 'string' || typeof resolved === 'number') return String(resolved)
   return undefined
 }
 

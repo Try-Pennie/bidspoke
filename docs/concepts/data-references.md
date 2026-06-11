@@ -116,6 +116,30 @@ steps.retry_call.output.result ?? steps.first_call.output.result
 
 This is useful when two nodes (for example a node and its duplicate) might run, and you want whichever one actually produced output.
 
+## Arithmetic: `* / + -`
+
+`{{ }}` templates (not condition paths) support basic arithmetic between references and number literals. Operators must be separated by spaces: `a * b` is arithmetic, but `a*b` and `some-key` stay plain lookups, so payload keys containing `-` are never misread as subtraction.
+
+```json
+{ "bidAmount": "{{steps.ping.output.data.bid_amount * 0.65}}" }
+```
+
+Standard precedence applies (`*` and `/` before `+` and `-`). There are no parentheses; this is deliberately not a full expression language. Each `??` operand may itself be arithmetic: `{{steps.a.x * 2 ?? steps.b.y}}`.
+
+Arithmetic fails closed: if any operand does not resolve to a finite number (missing reference, non-numeric value, division by zero), the whole expression resolves to `undefined` and the field is dropped with the usual dropped-field warning.
+
+## Dynamic keys: `obj[<ref>]`
+
+`{{ }}` templates support bracket lookups where the key is a numeric index, a quoted literal, or itself a reference resolved first:
+
+```text
+steps.x.output.all_bids[0].amount                          numeric index
+steps.x.output.obj['key with spaces.or.dots']              quoted literal
+steps.constants.output.uuid_map[trigger.payload.subAccountUuid]   value-indexed key
+```
+
+If the dynamic key does not resolve to a string or number, the whole reference resolves to `undefined` (fails closed). Condition `field` paths support numeric indexes (`list[0]`) but not dynamic keys.
+
 ## Unresolved references
 
 - In a **single expression**, an unresolved reference yields `undefined`. If that value is the whole config field and the config is later serialized to JSON, the key is dropped (JSON does not serialize `undefined`-valued keys). The engine warns about dropped body fields on outbound request nodes.
@@ -150,6 +174,8 @@ steps.bids.output.all_bids[0].amount          array access into step output
 env.TRIPOINT_PROXY_URL                         an environment variable
 execution.trace_id                            this run's trace id
 steps.b.output.x ?? steps.a.output.x          first non-null of two steps
+steps.ping.output.bid_amount * 0.65           arithmetic (templates only, spaced operators)
+steps.c.output.map[trigger.payload.uuid]      dynamic key lookup (templates only)
 ```
 
 ## See also
