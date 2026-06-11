@@ -5,7 +5,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DOCS_SRC = path.resolve(__dirname, '../../../docs')
@@ -76,7 +76,11 @@ async function main() {
   console.log(`Synced ${files.length} doc pages + llms.txt to apps/web/public`)
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+// Only sync when run directly — check-docs.mjs imports isPublished from this
+// module and must not trigger a sync as a side effect.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}
