@@ -200,15 +200,6 @@ describe('findUnderProvisionedNodes', () => {
     expect(out).toEqual([])
   })
 
-  it('does not flag inside the tolerance band just below the suggested value', () => {
-    // suggested 7500 -> warn threshold 6750; 7000 sits in the no-flap band
-    const out = findUnderProvisionedNodes(
-      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 7000 } })]),
-      new Map([['equifax', stats({})]])
-    )
-    expect(out).toEqual([])
-  })
-
   it('leaves sub-floor nodes to the sub-floor scan', () => {
     const out = findUnderProvisionedNodes(
       def([node({ id: 'c', type: 'code', config: { timeout_ms: 50 } })]),

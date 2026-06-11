@@ -19,7 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
-import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity, warnBelowMs } from './timeout-suggestion'
+import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
 import { getSlackConnection, sendTimeoutConfigAlert } from './slack'
 
 export interface SubFloorNode {
@@ -256,9 +256,7 @@ export function findUnderProvisionedNodes(
     if (stats.sample_size < UNDER_PROVISION_MIN_SAMPLE) continue
     const retries = nodeRetries(node.config)
     const suggested = suggestedTimeoutMs(node.type, stats.p99, stats.max_ms, retries)
-    // Tolerance band: a timeout at or just under the suggested value is someone
-    // who already took the suggestion — don't flap on p99 drift.
-    if (timeout >= warnBelowMs(suggested)) continue
+    if (timeout >= suggested) continue
     out.push({
       node_id: node.id,
       namespace: node.namespace,

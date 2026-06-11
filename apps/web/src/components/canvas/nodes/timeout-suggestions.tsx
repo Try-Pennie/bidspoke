@@ -9,8 +9,6 @@ import { api } from '@/lib/api'
  */
 export interface NodeTimeoutSuggestion {
   suggested_ms: number
-  /** Flag threshold: suggested_ms x tolerance, so at-suggested configs don't flap. */
-  warn_below_ms: number
   p99: number
   max_ms: number
   retries: number

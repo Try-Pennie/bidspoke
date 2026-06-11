@@ -4,7 +4,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { executeWorkflow } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
-import { SAMPLE_CONFIDENT, suggestedTimeoutMs, warnBelowMs } from '../../lib/timeout-suggestion'
+import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 
 type Variables = AuthVariables
 
@@ -109,13 +109,13 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
-  // v10 prefix: bump when the suggestion math changes so stale entries expire
-  // immediately instead of lingering 30 min. (v6 added the node-type floor; v7
-  // moved `constants` to the DB floor; v8 made the sample window adaptive so
-  // high-volume nodes stop timing out; v9 raised the widening stop to
-  // SAMPLE_CONFIDENT so a thin 2h sample can't hide the day's p99; v10 added
-  // warn_below_ms so at-suggested configs don't flap on p99 drift.)
-  const cacheKey = `step-stats:v10:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
+  // v9 prefix: bump when the suggestion math changes so stale entries expire
+  // immediately instead of lingering 30 min. (v5 added the per-workflow RPC
+  // bound; v6 added the node-type floor; v7 moved `constants` to the DB floor;
+  // v8 made the sample window adaptive so high-volume nodes stop timing out;
+  // v9 raised the widening stop to SAMPLE_CONFIDENT so a thin 2h sample can't
+  // hide the day's p99 — keeps the panel agreeing with the canvas badge.)
+  const cacheKey = `step-stats:v9:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -217,10 +217,6 @@ executions.get('/step-duration-stats', async (c) => {
     max_ms: row?.max_ms ?? null,
     sample_size: sampleSize,
     suggested_ms: suggestedMs,
-    // Under-provision flag threshold (suggested x tolerance). The panel's amber
-    // tone compares against this so it agrees with the canvas badge and never
-    // nags a config that already sits at the suggested value.
-    warn_below_ms: suggestedMs != null ? warnBelowMs(suggestedMs) : null,
     // The node-type floor and why it exists. Sent unconditionally (even with no
     // run history) so the config UI can hard-flag a timeout set below the floor —
     // a value the percentiles can't catch when a node has thin/no completed runs.
