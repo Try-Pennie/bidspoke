@@ -8,6 +8,8 @@ import { api } from '@/lib/api'
 import * as execCache from '@/lib/execution-cache'
 import type { ExecutionDetail } from '@/lib/execution-cache'
 import WorkflowCanvas from '@/components/canvas/WorkflowCanvas'
+import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
+import { isNotFoundError } from '@/lib/execution-retention'
 import type { Workflow, ExecutionStep } from '@/types/workflow'
 
 function WorkflowEditorInner() {
@@ -42,6 +44,7 @@ function WorkflowEditorInner() {
   const [executionStartedAt, setExecutionStartedAt] = useState<string | null>(null)
   const [executionParentId, setExecutionParentId] = useState<string | null>(null)
   const [executionChildren, setExecutionChildren] = useState<Array<{ id: string; started_at: string; status: string }>>([])
+  const [executionMissing, setExecutionMissing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -131,10 +134,15 @@ function WorkflowEditorInner() {
     // Stale-while-revalidate: refetch in the background if the cached row was
     // still running. A miss kicks off the foreground fetch (deduped if a
     // prefetch is already in flight).
+    setExecutionMissing(false)
     if (cached) {
       execCache.revalidateIfRunning(executionId)
     } else {
-      execCache.fetchExec(executionId).catch(() => {})
+      execCache.fetchExec(executionId).catch((e) => {
+        // Old Slack links land here when the row aged out of retention or its
+        // logs never persisted. Surface a notice instead of a silent blank.
+        if (isNotFoundError(e)) setExecutionMissing(true)
+      })
     }
 
     // Subscribe to cache writes for this id — covers background revalidation
@@ -224,23 +232,42 @@ function WorkflowEditorInner() {
   }
 
   return (
-    <WorkflowCanvas
-      workflow={workflow}
-      mode={mode}
-      onModeChange={changeMode}
-      executionId={executionId}
-      executionSteps={executionSteps}
-      executionPayload={executionPayload}
-      executionSource={executionSource}
-      executionTraceId={executionTraceId}
-      executionStartedAt={executionStartedAt}
-      executionParentId={executionParentId}
-      executionChildren={executionChildren}
-      onLoadStepDetail={loadStepDetail}
-      onClearExecution={clearExecution}
-      onSelectExecution={selectExecution}
-      focusNodeId={urlFocusNodeId}
-    />
+    <>
+      <WorkflowCanvas
+        workflow={workflow}
+        mode={mode}
+        onModeChange={changeMode}
+        executionId={executionMissing ? undefined : executionId}
+        executionSteps={executionSteps}
+        executionPayload={executionPayload}
+        executionSource={executionSource}
+        executionTraceId={executionTraceId}
+        executionStartedAt={executionStartedAt}
+        executionParentId={executionParentId}
+        executionChildren={executionChildren}
+        onLoadStepDetail={loadStepDetail}
+        onClearExecution={clearExecution}
+        onSelectExecution={selectExecution}
+        focusNodeId={urlFocusNodeId}
+      />
+      {executionMissing && executionId && (
+        <div className="fixed left-1/2 top-16 z-50 w-full max-w-lg -translate-x-1/2 px-4">
+          <div className="shadow-lg">
+            <ExecutionNotFoundNotice
+              executionId={executionId}
+              action={
+                <button
+                  onClick={() => { setExecutionMissing(false); clearExecution() }}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
+                >
+                  Dismiss
+                </button>
+              }
+            />
+          </div>
+        </div>
+      )}
+    </>
   )
 }
 
