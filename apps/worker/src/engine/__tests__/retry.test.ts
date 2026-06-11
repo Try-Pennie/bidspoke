@@ -147,3 +147,37 @@ describe('withRetry — timeout', () => {
     await Promise.all([vi.advanceTimersByTimeAsync(200), expect(p).rejects.toThrow('timed out')])
   })
 })
+
+describe('saturation signals (2026-06-10 create_prospect incident)', () => {
+  const config = { retries: 3, backoff: 'linear' as const, timeout_ms: 1000 }
+  const alwaysTransient = () => 'transient' as const
+
+  it('does not retry a transient error carrying REQUEST_LIMIT_EXCEEDED', async () => {
+    const fn = vi.fn().mockRejectedValue(
+      new Error('Salesforce API error (403): [{"errorCode":"REQUEST_LIMIT_EXCEEDED","message":"ConcurrentRequests (Concurrent API Requests) Limit exceeded."}]')
+    )
+    await expect(withRetry(fn, config, alwaysTransient)).rejects.toThrow('REQUEST_LIMIT_EXCEEDED')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not retry an error explicitly marked saturated', async () => {
+    const err = Object.assign(new Error('partner concurrency limit'), { saturated: true })
+    const fn = vi.fn().mockRejectedValue(err)
+    await expect(withRetry(fn, config, alwaysTransient)).rejects.toThrow('partner concurrency limit')
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('still retries ordinary transient errors', async () => {
+    const fn = vi.fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue('ok')
+    await expect(withRetry(fn, config, alwaysTransient)).resolves.toBe('ok')
+    expect(fn).toHaveBeenCalledTimes(2)
+  })
+
+  it('timeout error explains the abandoned upstream call', async () => {
+    const never = () => new Promise(() => {})
+    await expect(withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient))
+      .rejects.toThrow(/Step timed out after 10ms \(any in-flight upstream call was abandoned/)
+  })
+})

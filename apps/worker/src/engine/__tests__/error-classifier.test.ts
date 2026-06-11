@@ -4,6 +4,7 @@ import {
   classifyTransportError,
   evaluateResponseClassification,
   shouldSuppressAlert,
+  isSaturationError,
 } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 
@@ -311,5 +312,22 @@ describe('shouldSuppressAlert', () => {
       permanent_errors: { alert: false },
     }
     expect(shouldSuppressAlert(config, null)).toBe(false)
+  })
+})
+
+describe('isSaturationError', () => {
+  it('matches the SF REQUEST_LIMIT_EXCEEDED body text wherever it appears in the message', () => {
+    expect(isSaturationError(new Error('Salesforce API error (403): REQUEST_LIMIT_EXCEEDED ConcurrentRequests'))).toBe(true)
+  })
+
+  it('matches errors explicitly marked saturated by an executor', () => {
+    expect(isSaturationError(Object.assign(new Error('x'), { saturated: true }))).toBe(true)
+  })
+
+  it('does not match ordinary transient or permanent errors', () => {
+    expect(isSaturationError(new Error('fetch failed'))).toBe(false)
+    expect(isSaturationError(new Error('Salesforce API error (400): REQUIRED_FIELD_MISSING'))).toBe(false)
+    expect(isSaturationError(null)).toBe(false)
+    expect(isSaturationError('REQUEST_LIMIT_EXCEEDED')).toBe(false)
   })
 })

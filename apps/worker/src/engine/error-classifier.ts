@@ -206,3 +206,24 @@ export function shouldSuppressAlert(
   }
   return false
 }
+
+// ── Saturation signals — transient for classification, never retried in-execution ──
+//
+// During the 2026-06-10 create_prospect incident, Salesforce 403
+// REQUEST_LIMIT_EXCEEDED (the ConcurrentRequests governor) was opted into a
+// node's transient_errors and retried immediately. Each Bidspoke-side timeout
+// had ALSO abandoned a call that kept running server-side (~74s each), so
+// every retry stacked another request onto the saturated 25-slot long-running
+// pool — retries actively deepened the outage. A saturation signal means "the
+// upstream has no capacity right now": the transient classification stays
+// (alerting and circuit breakers should see it), but withRetry skips further
+// in-execution attempts instead of amplifying. Executors can also mark an
+// error explicitly via `err.saturated = true` for partner-specific signals.
+const SATURATION_MARKERS = ['REQUEST_LIMIT_EXCEEDED']
+
+export function isSaturationError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  if ((err as { saturated?: boolean }).saturated === true) return true
+  const message = err instanceof Error ? err.message : ''
+  return SATURATION_MARKERS.some((m) => message.includes(m))
+}
