@@ -32,3 +32,17 @@ export function timeoutBelowFloor(nodeType: string | undefined, config: Record<s
   const floor = timeoutFloorMs(nodeType)
   return timeout < floor ? floor : null
 }
+
+// Plain-language reason the floor exists. MIRROR of suggestionFloorReason in
+// apps/worker/src/lib/timeout-floor.ts, guarded by the same sync test. Needed
+// client-side when the config panel builds its callout from the shared batch
+// stats instead of the per-node endpoint (which carries the reason).
+export function timeoutFloorReason(nodeType?: string): string | null {
+  if (nodeType && nodeType === 'code')
+    return 'Code nodes run in a sandboxed worker that takes time to dispatch, so a cold run can take 100ms+ before your code even starts.'
+  if (nodeType && nodeType === 'constants')
+    return 'The constants step reads from KV and queries the database on a cold cache, so the first run after a gap is a full round-trip.'
+  if (nodeType && NETWORK_NODE_TYPES.has(nodeType))
+    return 'This step makes an outbound API call, so every run pays a network round-trip plus TLS setup.'
+  return null
+}

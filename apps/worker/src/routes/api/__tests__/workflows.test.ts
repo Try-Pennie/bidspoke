@@ -540,15 +540,15 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
     const rpc = vi.fn()
       .mockResolvedValueOnce({
         data: [
-          { step_namespace: 'equifax', p99: 5000, max_ms: 11000, sample_size: 1996 },
-          { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
+          { step_namespace: 'equifax', p50: 438, p99: 5000, max_ms: 11000, sample_size: 1996 },
+          { step_namespace: 'thin', p50: 50, p99: 100, max_ms: 200, sample_size: 3 },
         ],
         error: null,
       })
       .mockResolvedValue({
         data: [
-          { step_namespace: 'equifax', p99: 9000, max_ms: 20000, sample_size: 5000 },
-          { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
+          { step_namespace: 'equifax', p50: 900, p99: 9000, max_ms: 20000, sample_size: 5000 },
+          { step_namespace: 'thin', p50: 50, p99: 100, max_ms: 200, sample_size: 3 },
         ],
         error: null,
       })
@@ -573,15 +573,17 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
       configured_ms: 4000,
       retries: 2,
       suggested_ms: 7500,
+      p50: 438,
       p99: 5000,
       sample_size: 1996,
+      window_days: 2 / 24,
     })
     // 'thin' never reached a confident sample, so the route widened through all
     // three windows before giving up on it.
     expect(rpc).toHaveBeenCalledTimes(3)
     expect(body.window_days).toBe(7)
     expect(kv.put).toHaveBeenCalledWith(
-      'timeout-suggestions:v2:wf-1:2026-06-11T00:00:00Z',
+      'timeout-suggestions:v3:wf-1:2026-06-11T00:00:00Z',
       expect.any(String),
       { expirationTtl: 1800 }
     )

@@ -86,6 +86,10 @@ export interface NodeDurationStats {
   p99: number | null
   max_ms: number | null
   sample_size: number
+  /** Median, used by the config panel copy ("usually finishes in ..."). */
+  p50?: number | null
+  /** The window (in days) this namespace's stats locked at. */
+  window_days?: number
 }
 
 // Flag a node only when it is configured well above what it needs and we have
@@ -312,9 +316,15 @@ export async function collectWorkflowDurationStats(
       p_since: w.since,
     })
     if (error) break
-    for (const r of (data ?? []) as Array<{ step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }>) {
+    for (const r of (data ?? []) as Array<{ step_namespace: string; p50?: number | null; p99: number | null; max_ms: number | null; sample_size: number }>) {
       if (locked(r.step_namespace)) continue
-      stats.set(r.step_namespace, { p99: r.p99, max_ms: r.max_ms, sample_size: Number(r.sample_size) })
+      stats.set(r.step_namespace, {
+        p99: r.p99,
+        max_ms: r.max_ms,
+        sample_size: Number(r.sample_size),
+        p50: r.p50 ?? null,
+        window_days: w.days,
+      })
     }
     windowDays = w.days
   }

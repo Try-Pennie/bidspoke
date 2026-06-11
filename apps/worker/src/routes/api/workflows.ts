@@ -221,8 +221,8 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
     .single()
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
-  // v2: per-namespace lock-in at SAMPLE_CONFIDENT replaced fill-at-10
-  const cacheKey = `timeout-suggestions:v2:${id}:${wf.updated_at}`
+  // v3: added p50 + per-node window_days (panel and badge share this payload)
+  const cacheKey = `timeout-suggestions:v3:${id}:${wf.updated_at}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -248,9 +248,11 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
       configured_ms: typeof node.config?.timeout_ms === 'number' ? node.config.timeout_ms : null,
       retries,
       suggested_ms: suggestedTimeoutMs(node.type, row.p99, row.max_ms, retries),
+      p50: row.p50 ?? null,
       p99: row.p99,
       max_ms: row.max_ms,
       sample_size: sampleSize,
+      window_days: row.window_days ?? 7,
     }]
   })
 

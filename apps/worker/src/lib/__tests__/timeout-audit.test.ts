@@ -263,7 +263,7 @@ describe('collectWorkflowDurationStats', () => {
     const { stats, windowDays } = await collectWorkflowDurationStats(client, 'wf-1', ['a'])
     expect(rpc).toHaveBeenCalledTimes(1)
     expect(windowDays).toBeLessThan(1)
-    expect(stats.get('a')).toEqual({ p99: 100, max_ms: 200, sample_size: 5000 })
+    expect(stats.get('a')).toMatchObject({ p99: 100, max_ms: 200, sample_size: 5000 })
   })
 
   it('locks a confident namespace at its first window while widening for thin ones', async () => {
@@ -280,8 +280,8 @@ describe('collectWorkflowDurationStats', () => {
     const { stats } = await collectWorkflowDurationStats(client, 'wf-1', ['busy', 'quiet'])
     expect(rpc).toHaveBeenCalledTimes(3)
     // busy locked at window 1; quiet kept widening and took the later stats
-    expect(stats.get('busy')).toEqual({ p99: 400, max_ms: 450, sample_size: 1000 })
-    expect(stats.get('quiet')).toEqual({ p99: 739, max_ms: 1250, sample_size: 166 })
+    expect(stats.get('busy')).toMatchObject({ p99: 400, max_ms: 450, sample_size: 1000 })
+    expect(stats.get('quiet')).toMatchObject({ p99: 739, max_ms: 1250, sample_size: 166 })
   })
 
   it('degrades on RPC error, keeping the narrower windows results', async () => {
@@ -292,6 +292,6 @@ describe('collectWorkflowDurationStats', () => {
     const { stats, windowDays } = await collectWorkflowDurationStats(client, 'wf-1', ['a'])
     expect(rpc).toHaveBeenCalledTimes(2)
     expect(windowDays).toBeLessThan(1)
-    expect(stats.get('a')).toEqual({ p99: 100, max_ms: 200, sample_size: 22 })
+    expect(stats.get('a')).toMatchObject({ p99: 100, max_ms: 200, sample_size: 22 })
   })
 })

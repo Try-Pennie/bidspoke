@@ -9,10 +9,12 @@ import { api } from '@/lib/api'
  */
 export interface NodeTimeoutSuggestion {
   suggested_ms: number
+  p50: number | null
   p99: number
   max_ms: number
   retries: number
   sample_size: number
+  window_days: number
 }
 
 const TimeoutSuggestionsContext = createContext<Map<string, NodeTimeoutSuggestion>>(new Map())

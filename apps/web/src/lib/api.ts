@@ -211,9 +211,11 @@ export interface WorkflowTimeoutSuggestions {
     configured_ms: number | null
     retries: number
     suggested_ms: number
+    p50: number | null
     p99: number
     max_ms: number
     sample_size: number
+    window_days: number
   }>
 }
 

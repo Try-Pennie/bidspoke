@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -13,6 +13,9 @@ import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy,
 import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
+import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
+import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
+import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import JsonTreeView from './JsonTreeView'
 
 interface Props {
@@ -3532,36 +3535,65 @@ function TimeoutField({
   // (retries → long tail self-heals).
   const retries = (config.retries as number | undefined) ?? 2
 
-  // Seed from the module cache so reopening the same panel within 30 min skips
-  // the loading flash entirely.
+  // Preferred source: the batch stats the canvas badge already uses, fetched
+  // once per page load. Deriving the panel's callout from the SAME object the
+  // badge reads makes disagreement structurally impossible — a suggestion of
+  // 8000 at page load can't be 8001 when the panel opens, and clicking the
+  // suggestion silences the badge for the rest of the session.
+  const shared = useTimeoutSuggestion(namespace)
+  const sharedStats: StepStats | null = useMemo(() => {
+    if (!shared || shared.p50 == null) return null
+    return {
+      p50: shared.p50,
+      p95: null,
+      p99: shared.p99,
+      max_ms: shared.max_ms,
+      sample_size: shared.sample_size,
+      suggested_ms: suggestedTimeoutMs(nodeType, shared.p99, shared.max_ms, retries),
+      floor_ms: timeoutFloorMs(nodeType),
+      floor_reason: timeoutFloorReason(nodeType),
+      window_days: shared.window_days,
+      source: 'history',
+      subtype: null,
+      retries_assumed: retries,
+    }
+  }, [shared, nodeType, retries])
+
+  // Fallback: nodes the batch has no confident sample for (thin history,
+  // cross-workflow 'similar' candidates, or a failed batch fetch) still use
+  // the per-node endpoint. The badge shows nothing for those, so the two
+  // surfaces can't conflict on this path either.
   const cached = workflowId && namespace
     ? stepStatsCache.get(statsCacheKey(workflowId, namespace, nodeType, subtype, retries))
     : undefined
   const isFresh = cached && Date.now() - cached.fetchedAt < STEP_STATS_TTL_MS
-  const [stats, setStats] = useState<StepStats | null>(isFresh ? cached.stats : null)
-  const [loading, setLoading] = useState(!isFresh)
+  const [fetchedStats, setFetchedStats] = useState<StepStats | null>(isFresh ? cached.stats : null)
+  const [fetchLoading, setFetchLoading] = useState(!isFresh)
 
   useEffect(() => {
-    if (!workflowId || !namespace) return
+    if (!workflowId || !namespace || sharedStats) return
     const key = statsCacheKey(workflowId, namespace, nodeType, subtype, retries)
     const hit = stepStatsCache.get(key)
     if (hit && Date.now() - hit.fetchedAt < STEP_STATS_TTL_MS) {
-      setStats(hit.stats)
-      setLoading(false)
+      setFetchedStats(hit.stats)
+      setFetchLoading(false)
       return
     }
     let cancelled = false
-    setLoading(true)
+    setFetchLoading(true)
     api.executions.stepDurationStats(workflowId, namespace, { node_type: nodeType, subtype, retries })
       .then((s) => {
         if (cancelled) return
-        setStats(s)
+        setFetchedStats(s)
         stepStatsCache.set(key, { stats: s, fetchedAt: Date.now() })
       })
-      .catch(() => { if (!cancelled) setStats(null) })
-      .finally(() => { if (!cancelled) setLoading(false) })
+      .catch(() => { if (!cancelled) setFetchedStats(null) })
+      .finally(() => { if (!cancelled) setFetchLoading(false) })
     return () => { cancelled = true }
-  }, [workflowId, namespace, nodeType, subtype, retries])
+  }, [workflowId, namespace, nodeType, subtype, retries, sharedStats])
+
+  const stats = sharedStats ?? fetchedStats
+  const loading = sharedStats ? false : fetchLoading
 
   // Render every callout value in ms to match the input field — the timeout is
   // entered in ms, so showing '2.3s' forces mental math to compare against what

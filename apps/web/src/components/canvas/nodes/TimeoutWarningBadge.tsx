@@ -1,5 +1,6 @@
 import { AlertTriangle } from 'lucide-react'
 import { timeoutBelowFloor } from '@/lib/timeout-floor'
+import { DEFAULT_RETRIES, redThresholdMs, suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './timeout-suggestions'
 
 /**
@@ -44,22 +45,28 @@ export function TimeoutWarningBadge({
   // Mirror the config panel: an unset timeout means the engine default (30s),
   // which can still sit below the suggestion for a slow step.
   const effective = typeof config?.timeout_ms === 'number' ? config.timeout_ms : 30000
-  if (effective >= suggestion.suggested_ms) return null
+  // Derive the suggested value HERE, from the shared stats plus the node's
+  // current (possibly unsaved) retries — the panel computes from the same
+  // stats object with the same mirrored math, so the two can never disagree.
+  // Stats only change on a fresh batch fetch, so clicking the suggestion
+  // clears the badge for the rest of the session by construction.
+  const retries = typeof config?.retries === 'number' ? config.retries : DEFAULT_RETRIES
+  const suggestedMs = suggestedTimeoutMs(type, suggestion.p99, suggestion.max_ms, retries)
+  if (effective >= suggestedMs) return null
 
   const fmt = (ms: number) => `${Math.round(ms).toLocaleString()}ms`
-  const redThreshold = suggestion.retries >= 1 ? suggestion.p99 : suggestion.max_ms
-  if (effective < redThreshold) {
+  if (effective < redThresholdMs(suggestion.p99, suggestion.max_ms, retries)) {
     return (
       <Badge
         tone="red"
-        title={`Timeout (${fmt(effective)}) is below what this step usually needs: most runs would time out (p99 ${fmt(suggestion.p99)} over ${suggestion.sample_size.toLocaleString()} runs). Try ${fmt(suggestion.suggested_ms)} for safety.`}
+        title={`Timeout (${fmt(effective)}) is below what this step usually needs: most runs would time out (p99 ${fmt(suggestion.p99)} over ${suggestion.sample_size.toLocaleString()} runs). Try ${fmt(suggestedMs)} for safety.`}
       />
     )
   }
   return (
     <Badge
       tone="amber"
-      title={`Timeout (${fmt(effective)}) is below the suggested ${fmt(suggestion.suggested_ms)}: slower runs will time out and burn retries (p99 ${fmt(suggestion.p99)} over ${suggestion.sample_size.toLocaleString()} runs). Try ${fmt(suggestion.suggested_ms)} for more headroom.`}
+      title={`Timeout (${fmt(effective)}) is below the suggested ${fmt(suggestedMs)}: slower runs will time out and burn retries (p99 ${fmt(suggestion.p99)} over ${suggestion.sample_size.toLocaleString()} runs). Try ${fmt(suggestedMs)} for more headroom.`}
     />
   )
 }
