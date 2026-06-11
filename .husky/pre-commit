@@ -1,2 +1,2 @@
-pnpm typecheck
+node scripts/typecheck-tracked.mjs
 pnpm lint
