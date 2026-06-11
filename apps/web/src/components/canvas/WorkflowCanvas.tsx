@@ -3491,7 +3491,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           </div>
         </div>
 
-        <div ref={sidePanelRef} className="contents">
+        {/* nokey: React Flow's window-level key handlers (Space = pan,
+            Backspace = delete node) skip targets inside a .nokey element.
+            Monaco 0.55+ types via an EditContext div that isn't a
+            textarea/contenteditable, so without this the canvas eats
+            Space and Backspace while editing code in the panel. */}
+        <div ref={sidePanelRef} className="nokey contents">
           {/* TestRunPanel stays mounted while the test tool is open so its
               local state (steps, result banner, running status) survives
               when the user clicks into a node and back to the trigger. */}
