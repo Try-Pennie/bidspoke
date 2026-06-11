@@ -5,6 +5,8 @@
 **Date:** April 1, 2026
 **Status:** Draft
 
+> **This is the original design spec, kept for rationale and history.** For how the platform actually behaves today, the code-grounded docs under [docs/](./docs/README.md) (published at the public `/docs` site) are the source of truth. Known places where shipped behavior diverged from this spec are marked inline with a **Drift** note (see Sections 10.4 and 11.1). When this document and `docs/` disagree, trust `docs/`.
+
 ---
 
 ## 1. Overview
@@ -1266,6 +1268,8 @@ To trace a single lead end-to-end: search by `trace_id` in Cloudflare Logpush ou
 
 ### 10.4 Execution Log Retention
 
+> **Drift (what shipped):** retention is implemented as **daily partitions with ~7-day retention** (nightly partition drops, plus the Snowflake lead-sightings export for long-term analytics), not the 14-day compaction / 90-day purge model below. Partition drops reclaim space instantly and avoid the UPDATE churn the compaction queries would generate. The 14/90-day retention notes on the Section 3 schemas describe this original plan, not current behavior.
+
 Every step of every execution writes to `execution_steps` with JSONB `input`/`output` payloads. At ~5,000 leads/day × ~10 steps × ~2KB average JSONB per step, that's roughly 100MB/day — 3GB/month. Without cleanup, the 8GB Supabase Pro storage limit is reached in under 3 months.
 
 #### Three-tier retention model
@@ -1299,6 +1303,8 @@ With 14-day JSONB compaction, the hot tier stays at ~1.4GB (14 days × 100MB/day
 ## 11. Error Handling
 
 ### 11.1 Error Classification
+
+> **Drift (what shipped):** the engine classifies **errors** as transient vs permanent, as described below. A business rejection is not a third engine error type — it is a successful step whose output downstream nodes route on (a Filter/Branch/BidGroup reads the "no" and takes the rejection path). The never-retried / never-alerted behavior still holds because the step completes normally. See the error-handling pages under docs/ for current behavior.
 
 Every step outcome falls into one of three categories:
 
