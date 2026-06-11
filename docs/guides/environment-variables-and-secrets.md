@@ -38,8 +38,6 @@ Put partner and workflow credentials here, on the Environment Variables page, as
 
 Cloudflare Worker secrets are reserved for a small set of platform-level secrets (the Supabase service key, the encryption key, the API key map, and similar). Everything a workflow needs at runtime, including partner API keys, partner usernames and passwords, Salesforce tokens, and Equifax credentials, belongs in the Environment Variables UI. A Code node and an Integration node both read these identically as `env.<KEY>`.
 
-This matters when you [import from Pipedream](./importing-from-pipedream.md): the importer rewrites Pipedream credential references into env-var reads like `env.SALESFORCE_ACCESS_TOKEN`, `env.EQUIFAX_USERNAME`, and `env.EQUIFAX_PASSWORD`. Add those keys here before running the imported workflow.
-
 ## How nodes read env values
 
 Inside a [Code node](../nodes/code.md), `env` is a plain object of your keys:
@@ -64,5 +62,4 @@ Keep stable groupings and flags as separate constants or env values rather than 
 
 - [Data references](../concepts/data-references.md) for the full `trigger.*`, `steps.*`, `env.*` syntax.
 - [Code node](../nodes/code.md) for the `env` object and the sandboxed execution model.
-- [Importing from Pipedream](./importing-from-pipedream.md) for the credential references the importer rewrites to `env.*`.
 - [Configure a partner](./configuring-a-partner.md) for partner settings that are stored on the partner, not as env vars.

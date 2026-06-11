@@ -37,7 +37,6 @@ Task-oriented walkthroughs.
 - [Getting started](guides/getting-started.md) - build, save, test, and trigger your first workflow.
 - [Building a bidding workflow](guides/building-a-bidding-workflow.md) - an end-to-end outbound routing flow.
 - [Configuring a partner](guides/configuring-a-partner.md) - add and configure a bidding partner.
-- [Importing from Pipedream](guides/importing-from-pipedream.md) - reconstruct a Pipedream workflow on the canvas.
 - [Testing and debugging](guides/testing-and-debugging.md) - the Test Runner, execution overlay, replay, and resume.
 - [Environment variables and secrets](guides/environment-variables-and-secrets.md) - where credentials live and how nodes read them.
 - [Versioning and backup](guides/versioning-and-backup.md) - version snapshots, restore, and GitHub backup.

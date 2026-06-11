@@ -235,7 +235,7 @@
 ### Critical path to cutover (all must land before engine is rerouted)
 
 - [ ] **4.3 Shadow mirror mode — Phase A (dry_run)** — Pipedream-side mirror step fires fire-and-forget to a Bidspoke shadow endpoint; Bidspoke returns 204 and runs workflow with `shadow_mode: 'dry_run'` (skips all outbound calls). Goal: prove volume handling this week. See scope §3.3.
-- [ ] **4.1 Engine bidding workflow — lift and shift** — import the Pipedream JSON via the existing Pipedream importer, then reshape each step per scope §3.1. Response-shape contract must match Pipedream byte-for-byte.
+- [ ] **4.1 Engine bidding workflow — lift and shift** — port the Pipedream JSON node-by-node by hand per scope §3.1 (the Pipedream importer was removed in issue #17; manual ports against a live reference workflow are the established path). Response-shape contract must match Pipedream byte-for-byte.
   - Tripoint approved result codes are **1000-1001 and 1013-2017 only** (not 2019 — codes 2018-2019 are fraud-flagged).
   - After a successful Tripoint bid, write `leadId` back to Salesforce prospect as `Tripoint_Lead_ID__c`.
 - [ ] **4.1a Equifax integration** — Worker secrets (EQUIFAX_USERNAME, EQUIFAX_PASSWORD) + equifax_credit_report as a Code node with rewritten script. See scope §3.1a.
