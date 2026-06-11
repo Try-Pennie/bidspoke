@@ -142,3 +142,92 @@ describe('warnDroppedBodyFields', () => {
     spy.mockRestore()
   })
 })
+
+describe('resolveValue — arithmetic expressions', () => {
+  it('multiplies two step references', () => {
+    const c = ctxWith({ ping: { data: { bid_amount: 100 } }, constants: { multiplier: 0.65 } })
+    expect(resolveValue('{{steps.ping.output.data.bid_amount * steps.constants.output.multiplier}}', c)).toBe(65)
+  })
+
+  it('supports number literals as operands', () => {
+    const c = ctxWith({ x: { amount: 200 } })
+    expect(resolveValue('{{steps.x.amount * 0.65}}', c)).toBe(130)
+    expect(resolveValue('{{steps.x.amount + 50}}', c)).toBe(250)
+    expect(resolveValue('{{steps.x.amount - 25}}', c)).toBe(175)
+    expect(resolveValue('{{steps.x.amount / 4}}', c)).toBe(50)
+  })
+
+  it('applies standard precedence (* and / before + and -)', () => {
+    const c = ctxWith({ x: { a: 2, b: 3, c: 4 } })
+    expect(resolveValue('{{steps.x.a + steps.x.b * steps.x.c}}', c)).toBe(14)
+    expect(resolveValue('{{steps.x.c - steps.x.b / steps.x.b}}', c)).toBe(3)
+  })
+
+  it('fails closed when an operand is missing or non-numeric', () => {
+    const c = ctxWith({ x: { amount: 100, name: 'abc' } })
+    expect(resolveValue('{{steps.x.nope * 2}}', c)).toBeUndefined()
+    expect(resolveValue('{{steps.x.name * 2}}', c)).toBeUndefined()
+  })
+
+  it('fails closed on division by zero instead of serializing Infinity', () => {
+    const c = ctxWith({ x: { amount: 100 } })
+    expect(resolveValue('{{steps.x.amount / 0}}', c)).toBeUndefined()
+  })
+
+  it('does not treat dashed payload keys as subtraction', () => {
+    const c = buildContext({ 'some-key': 'kept' }, 'test', 'wf', 'trace', {}, 'org')
+    expect(resolveValue('{{trigger.payload.some-key}}', c)).toBe('kept')
+  })
+
+  it('requires whitespace around operators (a*b stays a plain lookup)', () => {
+    const c = ctxWith({ x: { 'a*b': 'literal' } })
+    expect(resolveValue('{{steps.x.a*b}}', c)).toBe('literal')
+  })
+
+  it('combines with ?? coalesce (arithmetic per operand)', () => {
+    const c = ctxWith({ a: { x: 10 } })
+    expect(resolveValue('{{steps.a.x * 2 ?? steps.b.y}}', c)).toBe(20)
+    expect(resolveValue('{{steps.missing.x * 2 ?? steps.a.x}}', c)).toBe(10)
+  })
+
+  it('interpolates arithmetic results inside strings', () => {
+    const c = ctxWith({ x: { amount: 100 } })
+    expect(resolveValue('bid is {{steps.x.amount * 0.5}} dollars', c)).toBe('bid is 50 dollars')
+  })
+})
+
+describe('resolveValue — bracket key lookup', () => {
+  it('resolves a dynamic key from another reference', () => {
+    const c = buildContext({ subAccountUuid: 'abc-123' }, 'test', 'wf', 'trace', {}, 'org')
+    recordStepOutput(c, 'constants', { output: { uuid_map: { 'abc-123': 'tripoint' } }, status: 'completed' })
+    expect(resolveValue('{{steps.constants.output.uuid_map[trigger.payload.subAccountUuid]}}', c)).toBe('tripoint')
+  })
+
+  it('resolves numeric array indexes', () => {
+    const c = ctxWith({ x: { arr: [{ id: 'first' }, { id: 'second' }] } })
+    expect(resolveValue('{{steps.x.output.arr[0].id}}', c)).toBe('first')
+    expect(resolveValue('{{steps.x.arr[1].id}}', c)).toBe('second')
+  })
+
+  it('resolves quoted string keys (including keys with dots and spaces)', () => {
+    const c = ctxWith({ x: { obj: { 'weird key.name': 'found' } } })
+    expect(resolveValue("{{steps.x.obj['weird key.name']}}", c)).toBe('found')
+  })
+
+  it('fails closed when the dynamic key does not resolve', () => {
+    const c = ctxWith({ constants: { uuid_map: { k: 'v' } } })
+    expect(resolveValue('{{steps.constants.uuid_map[trigger.payload.missing]}}', c)).toBeUndefined()
+  })
+
+  it('fails closed on malformed brackets', () => {
+    const c = ctxWith({ x: { arr: [1] } })
+    expect(resolveValue('{{steps.x.arr[0}}', c)).toBeUndefined()
+    expect(resolveValue('{{steps.x.arr[]}}', c)).toBeUndefined()
+  })
+
+  it('bracket lookup works as an arithmetic operand', () => {
+    const c = buildContext({ tier: 'gold' }, 'test', 'wf', 'trace', {}, 'org')
+    recordStepOutput(c, 'rates', { output: { by_tier: { gold: 1.5 } }, status: 'completed' })
+    expect(resolveValue('{{steps.rates.by_tier[trigger.payload.tier] * 100}}', c)).toBe(150)
+  })
+})
