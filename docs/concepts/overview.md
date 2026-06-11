@@ -68,9 +68,8 @@ Every save creates a version snapshot. You can browse, preview, and restore any 
 2. [Build a bidding workflow](../guides/building-a-bidding-workflow.md) - the end-to-end outbound flow.
 3. [Configure a partner](../guides/configuring-a-partner.md) - add a buyer or source on the Partners page.
 4. [Test and debug](../guides/testing-and-debugging.md) - saved payloads, step-by-step replay, why a lead got no bid.
-5. [Import from Pipedream](../guides/importing-from-pipedream.md) - bring an existing Pipedream workflow in.
-6. [Environment variables and secrets](../guides/environment-variables-and-secrets.md) - where credentials live.
-7. [Versioning and backup](../guides/versioning-and-backup.md) - snapshots, restore, GitHub.
+5. [Environment variables and secrets](../guides/environment-variables-and-secrets.md) - where credentials live.
+6. [Versioning and backup](../guides/versioning-and-backup.md) - snapshots, restore, GitHub.
 
 ## See also
 

@@ -43,7 +43,6 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 
 - [Building a bidding workflow](https://bidspoke.trypennie.dev/docs/guides/building-a-bidding-workflow.md): an end-to-end outbound routing flow.
 - [Configuring a partner](https://bidspoke.trypennie.dev/docs/guides/configuring-a-partner.md): add and configure a bidding partner.
-- [Importing from Pipedream](https://bidspoke.trypennie.dev/docs/guides/importing-from-pipedream.md): reconstruct a Pipedream workflow on the canvas.
 - [Testing and debugging](https://bidspoke.trypennie.dev/docs/guides/testing-and-debugging.md): the Test Runner, execution overlay, replay, and resume.
 - [Environment variables and secrets](https://bidspoke.trypennie.dev/docs/guides/environment-variables-and-secrets.md): where credentials live and how nodes read them.
 - [Versioning and backup](https://bidspoke.trypennie.dev/docs/guides/versioning-and-backup.md): version snapshots, restore, and GitHub backup.

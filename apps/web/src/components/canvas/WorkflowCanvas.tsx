@@ -50,12 +50,10 @@ import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
 import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
-import ImportDialog from './ImportDialog'
 import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
-import type { ImportResult } from '@/lib/pipedream-import'
-import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Upload, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, MoreHorizontal, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
+import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
 import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -956,7 +954,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const draftReqIdRef = useRef(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
-  const [showImport, setShowImport] = useState(false)
   const [envKeys, setEnvKeys] = useState<string[]>([])
   const [replaying, setReplaying] = useState(false)
   const [refreshSignal, setRefreshSignal] = useState(0)
@@ -967,7 +964,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
   const [testRunning, setTestRunning] = useState(false)
   const [lastTestExecId, setLastTestExecId] = useState<string | null>(null)
-  const [showOverflow, setShowOverflow] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
   const [edgeContextMenu, setEdgeContextMenu] = useState<{ edgeId: string; x: number; y: number } | null>(null)
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
@@ -1008,7 +1004,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     if (typeof window === 'undefined') return
     window.localStorage.setItem('bidspoke.sidePanelWidth', String(sidePanelWidth))
   }, [sidePanelWidth])
-  const overflowRef = useRef<HTMLDivElement>(null)
   const sidePanelRef = useRef<HTMLDivElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   // Undo/redo
@@ -1176,17 +1171,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     window.addEventListener('beforeunload', handleBeforeUnload)
     return () => window.removeEventListener('beforeunload', handleBeforeUnload)
   }, [isDirty])
-
-  useEffect(() => {
-    if (!showOverflow) return
-    function handler(e: MouseEvent) {
-      if (overflowRef.current && !overflowRef.current.contains(e.target as globalThis.Node)) {
-        setShowOverflow(false)
-      }
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showOverflow])
 
   // Sync node.data.executionStep with the current execution. When executionSteps
   // is cleared (e.g. user clicked Clear), this also strips executionStep from
@@ -2741,20 +2725,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
   }
 
-  // ── Import ──────────────────────────────────────────────────────────────────
-
-  function handleImport(result: ImportResult) {
-    snapshot()
-    // Set nodes first so ReactFlow registers them before edges try to connect
-    setNodes(defToNodes(result.def.nodes, result.def.edges, result.def.trigger))
-    setEdges(defToEdges(result.def.edges))
-    setName(result.name)
-    setIsDirty(true)
-    setShowImport(false)
-    // Fit after the render cycle so the new graph is in view
-    requestAnimationFrame(() => fitView({ padding: 0.4, maxZoom: 0.5 }))
-  }
-
   // ── Version restore ─────────────────────────────────────────────────────────
 
   async function handleVersionRestore(versionId: string) {
@@ -2894,30 +2864,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           >
             <Clock className="h-4 w-4" />
           </button>
-
-          {/* Overflow menu — Import */}
-          {mode === 'edit' && (
-            <div ref={overflowRef} className="relative">
-              <button
-                onClick={() => setShowOverflow((s) => !s)}
-                className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${showOverflow ? 'bg-gray-100 text-gray-600' : ''}`}
-                title="More options"
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </button>
-              {showOverflow && (
-                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
-                  <button
-                    onClick={() => { setShowImport(true); setShowOverflow(false) }}
-                    className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                  >
-                    <Upload className="h-4 w-4 text-gray-400" />
-                    Import from Pipedream
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
 
           {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
 
@@ -3629,13 +3575,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           />
         )}
       </div>
-
-      {showImport && (
-        <ImportDialog
-          onImport={handleImport}
-          onClose={() => setShowImport(false)}
-        />
-      )}
 
       {renamePrompt && (
         <RenameConfirmDialog

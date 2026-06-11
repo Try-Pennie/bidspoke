@@ -44,5 +44,4 @@ After duplicating, open the clone, adjust it, and save (creating its next versio
 
 - [Build a bidding workflow](./building-a-bidding-workflow.md) for the save step in context.
 - [Testing and debugging](./testing-and-debugging.md) for replay and resume, which re-run past executions (distinct from restoring a definition version).
-- [Importing from Pipedream](./importing-from-pipedream.md), which adds nodes you then save as v1.
 - [Overview](../concepts/overview.md) for where versioning fits among the core pieces.
