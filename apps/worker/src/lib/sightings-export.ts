@@ -10,10 +10,12 @@ import { executeStatement, type SnowflakeConfig } from './snowflake'
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
 const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
 
-// Column names + Snowflake types for value formatting.
-type ColType = 'varchar' | 'number' | 'boolean' | 'timestamp_tz' | 'timestamp_ntz'
+// Column names + Snowflake types for value formatting. 'variant' carries JSON:
+// the value travels as an escaped string in the VALUES list (Snowflake VALUES
+// only allows constants) and the USING projection wraps it in PARSE_JSON.
+export type ColType = 'varchar' | 'number' | 'boolean' | 'timestamp_tz' | 'timestamp_ntz' | 'variant'
 
-interface ColSpec {
+export interface ColSpec {
   name: string
   type: ColType
 }
@@ -157,7 +159,7 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
 // Internals
 // ============================================================
 
-function readSnowflakeConfig(env: Env): SnowflakeConfig {
+export function readSnowflakeConfig(env: Env): SnowflakeConfig {
   return {
     account: env.SNOWFLAKE_ACCOUNT,
     user: env.SNOWFLAKE_USER,
@@ -171,7 +173,7 @@ function readSnowflakeConfig(env: Env): SnowflakeConfig {
 
 type FilterFn = <T extends { eq: (k: string, v: unknown) => T; is: (k: string, v: unknown) => T }>(q: T) => T
 
-async function exportTable(
+export async function exportTable(
   supabase: SupabaseClient,
   config: SnowflakeConfig,
   tableName: string,
@@ -206,7 +208,7 @@ async function exportTable(
   return totalExported
 }
 
-function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
+export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
   const colList = cols.map((c) => c.name).join(', ')
   const sourceColList = cols.map((c) => `s.${c.name}`).join(', ')
   // UPDATE clause covers every column except id (the join key). Lets us
@@ -220,11 +222,16 @@ function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<st
     .map((r) => '(' + cols.map((c) => formatValue(r[c.name], c.type)).join(', ') + ')')
     .join(', ')
   const tupleAlias = '(' + cols.map((c) => c.name).join(', ') + ')'
+  // Variant columns travel as escaped JSON strings (VALUES only allows
+  // constants) and get PARSE_JSON applied in this projection.
+  const projection = cols
+    .map((c) => (c.type === 'variant' ? `PARSE_JSON(${c.name}) AS ${c.name}` : c.name))
+    .join(', ')
 
   return `
 MERGE INTO ${tableName} t
 USING (
-  SELECT * FROM (VALUES ${valuesList}) AS s${tupleAlias}
+  SELECT ${projection} FROM (VALUES ${valuesList}) AS s${tupleAlias}
 ) s
 ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET ${updateSet}
@@ -232,7 +239,7 @@ WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${sourceColList})
 `.trim()
 }
 
-function formatValue(v: unknown, type: ColType): string {
+export function formatValue(v: unknown, type: ColType): string {
   if (v === null || v === undefined || v === '') return 'NULL'
   switch (type) {
     case 'varchar':
@@ -245,10 +252,12 @@ function formatValue(v: unknown, type: ColType): string {
       return `'${String(v).replace(/'/g, "''")}'::TIMESTAMP_TZ`
     case 'timestamp_ntz':
       return `'${String(v).replace(/'/g, "''")}'::TIMESTAMP_NTZ`
+    case 'variant':
+      return `'${JSON.stringify(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
   }
 }
 
-async function purgeOldExported(supabase: SupabaseClient, tableName: string): Promise<number> {
+export async function purgeOldExported(supabase: SupabaseClient, tableName: string): Promise<number> {
   const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
   const { error, count } = await supabase
     .from(tableName)

@@ -8,6 +8,7 @@ import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runSightingsExport } from './lib/sightings-export'
+import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runMatrixAudit } from './lib/sf-matrix-audit'
@@ -134,6 +135,11 @@ export default {
         runSightingsExport(supabase, env)
           .then((s) => console.log('[sightings-export]', JSON.stringify(s)))
           .catch((e) => console.error('[sightings-export] failed:', e))
+      )
+      ctx.waitUntil(
+        runAchieveExport(supabase, env)
+          .then((s) => console.log('[achieve-export]', JSON.stringify(s)))
+          .catch((e) => console.error('[achieve-export] failed:', e))
       )
     } else if (event.cron === '0 13 * * *') {
       ctx.waitUntil(
