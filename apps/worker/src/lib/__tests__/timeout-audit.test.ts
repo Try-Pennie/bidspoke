@@ -262,6 +262,8 @@ describe('collectWorkflowDurationStats', () => {
     ])
     const { stats, windowDays } = await collectWorkflowDurationStats(client, 'wf-1', ['a'])
     expect(rpc).toHaveBeenCalledTimes(1)
+    // The grouped RPC samples per namespace, so the caller supplies the list.
+    expect(rpc).toHaveBeenCalledWith('step_duration_percentiles_by_workflow', expect.objectContaining({ p_namespaces: ['a'] }))
     expect(windowDays).toBeLessThan(1)
     expect(stats.get('a')).toMatchObject({ p99: 100, max_ms: 200, sample_size: 5000 })
   })

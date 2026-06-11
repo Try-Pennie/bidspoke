@@ -49,15 +49,19 @@ export async function writeStepLog(
 // to flush all step logs in a single round-trip instead of one-per-step.
 // Returns the Postgres error message when the insert is rejected so callers
 // can downgrade the execution outcome instead of silently completing.
+// workflow_id + is_test are stamped here (one site) so the percentile RPCs
+// can sample steps per (workflow, namespace) without joining executions.
 export async function flushStepLogs(
   supabase: SupabaseClient,
   queue: StepLogEntry[],
-  piiFieldsRaw: string
+  piiFieldsRaw: string,
+  meta?: { workflowId: string; isTest: boolean }
 ): Promise<string | null> {
   if (queue.length === 0) return null
   const piiFields = parsePiiFields(piiFieldsRaw)
   const rows = queue.map((entry) => ({
     ...entry,
+    ...(meta ? { workflow_id: meta.workflowId, is_test: meta.isTest } : {}),
     input: redactPii(entry.input, piiFields),
     output: redactPii(entry.output, piiFields),
   }))

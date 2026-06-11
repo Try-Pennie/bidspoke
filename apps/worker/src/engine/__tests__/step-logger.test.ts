@@ -97,3 +97,31 @@ describe('updateExecutionRecord', () => {
     )
   })
 })
+
+describe('flushStepLogs stamping', () => {
+  it('stamps workflow_id and is_test on every row (issue #32: per-namespace percentile sampling)', async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null })
+    const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+    const { flushStepLogs } = await import('../step-logger')
+
+    const entry = {
+      execution_id: 'exec-1',
+      execution_started_at: '2026-06-11T00:00:00Z',
+      step_namespace: 'equifax',
+      step_type: 'code',
+      status: 'completed' as const,
+      input: {},
+      output: {},
+      retries_used: 0,
+      started_at: '2026-06-11T00:00:00Z',
+      completed_at: '2026-06-11T00:00:01Z',
+      duration_ms: 1000,
+      step_order: 1,
+    }
+    await flushStepLogs(client, [entry], '', { workflowId: 'wf-1', isTest: false })
+
+    expect(insert).toHaveBeenCalledWith([
+      expect.objectContaining({ workflow_id: 'wf-1', is_test: false, step_namespace: 'equifax' }),
+    ])
+  })
+})

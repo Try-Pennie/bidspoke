@@ -314,6 +314,10 @@ export async function collectWorkflowDurationStats(
     const { data, error } = await supabase.rpc('step_duration_percentiles_by_workflow', {
       p_workflow_id: workflowId,
       p_since: w.since,
+      // The RPC samples per (workflow, namespace) — the most recent 3000 steps
+      // of each namespace — so sparse nodes get the full window instead of the
+      // rolling ~22h an execution-driven bound gave them on busy workflows.
+      p_namespaces: namespaces,
     })
     if (error) break
     for (const r of (data ?? []) as Array<{ step_namespace: string; p50?: number | null; p99: number | null; max_ms: number | null; sample_size: number }>) {
