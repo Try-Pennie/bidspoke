@@ -9,6 +9,8 @@ import NavLayout from '@/components/NavLayout'
 import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
+import { isNotFoundError } from '@/lib/execution-retention'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
 type Step = Execution['steps'][number]
@@ -534,6 +536,7 @@ export default function ExecutionDetailPage() {
   const [execution, setExecution] = useState<Execution | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notFound, setNotFound] = useState(false)
   const [copied, setCopied] = useState(false)
 
   async function copyReport() {
@@ -565,7 +568,10 @@ export default function ExecutionDetailPage() {
   useEffect(() => {
     api.executions.get(executionId)
       .then(setExecution)
-      .catch((e) => setError(e.message))
+      .catch((e) => {
+        setError(e.message)
+        setNotFound(isNotFoundError(e))
+      })
       .finally(() => setLoading(false))
   }, [executionId])
 
@@ -639,9 +645,21 @@ export default function ExecutionDetailPage() {
           </div>
         )}
 
-        {error && (
+        {error && (notFound ? (
+          <ExecutionNotFoundNotice
+            executionId={executionId}
+            action={
+              <button
+                onClick={() => router.push(`/workflows/${workflowId}`)}
+                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
+              >
+                Back to the workflow
+              </button>
+            }
+          />
+        ) : (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
-        )}
+        ))}
 
         {execution && (
           <div className="space-y-6">
