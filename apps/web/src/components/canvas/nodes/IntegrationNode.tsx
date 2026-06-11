@@ -42,7 +42,7 @@ export function IntegrationNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="webhook" config={config} />
+      <TimeoutWarningBadge type="webhook" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-teal-50 border-b border-teal-100 px-3 py-2">

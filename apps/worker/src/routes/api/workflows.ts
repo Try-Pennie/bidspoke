@@ -11,6 +11,7 @@ import { buildContext } from '../../engine/context'
 import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes, deployTestCodeBundle, deleteTestBundles } from '../../lib/code-node-deployer'
 import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
+import { DEFAULT_RETRIES, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 
 type Variables = AuthVariables
@@ -189,6 +190,92 @@ workflows.get('/:id', async (c) => {
 
   if (error) return c.json({ error: 'Workflow not found' }, 404)
   return c.json(data)
+})
+
+// GET /api/workflows/:id/timeout-suggestions
+//
+// Batched timeout suggestions for every node in one workflow, so the canvas can
+// badge nodes whose configured timeout sits below the suggested value without a
+// per-node step-duration-stats round-trip. One grouped percentile RPC per
+// window instead of N: step_duration_percentiles_by_workflow returns all
+// namespaces at once.
+//
+// Adaptive window, shortest-first, same rationale as step-duration-stats: a
+// busy workflow fills every active namespace's sample within a couple of hours,
+// and the 7-day join on a high-volume workflow can blow the DB statement
+// timeout. We widen only while some node's sample is still thin, and on RPC
+// error stop widening and serve whatever the narrower windows returned.
+//
+// Cached in KV for 30 minutes, keyed on updated_at so a save (which can change
+// per-node retries, and with them the suggestion math) busts it immediately.
+workflows.get('/:id/timeout-suggestions', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id') as string
+  const supabase = createSupabaseClient(c.env)
+
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('id, updated_at, definition')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (!wf) return c.json({ error: 'Workflow not found' }, 404)
+
+  const cacheKey = `timeout-suggestions:v1:${id}:${wf.updated_at}`
+  const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
+  if (cached) return c.json(JSON.parse(cached))
+
+  const definition = wf.definition as WorkflowDefinition | null
+  const defNodes = Array.isArray(definition?.nodes) ? definition.nodes : []
+
+  const SAMPLE_FLOOR = 10
+  const HOUR = 60 * 60 * 1000
+  const WINDOWS: Array<{ since: string; days: number }> = [
+    { since: new Date(Date.now() - 2 * HOUR).toISOString(), days: 2 / 24 },
+    { since: new Date(Date.now() - 24 * HOUR).toISOString(), days: 1 },
+    { since: new Date(Date.now() - 7 * 24 * HOUR).toISOString(), days: 7 },
+  ]
+
+  type StatRow = { step_namespace: string; p99: number | null; max_ms: number | null; sample_size: number }
+  const stats = new Map<string, StatRow>()
+  let windowDays = 0
+  for (const w of WINDOWS) {
+    const { data: rows, error } = await supabase.rpc('step_duration_percentiles_by_workflow', {
+      p_workflow_id: id,
+      p_since: w.since,
+    })
+    if (error) break // degrade to whatever narrower windows returned
+    // A wider window is a strict superset per namespace — always take the
+    // latest success.
+    for (const r of (rows ?? []) as StatRow[]) stats.set(r.step_namespace, r)
+    windowDays = w.days
+    const allFilled = defNodes.every((n) => Number(stats.get(n.namespace)?.sample_size ?? 0) >= SAMPLE_FLOOR)
+    if (allFilled) break
+  }
+
+  const nodes = defNodes.flatMap((node) => {
+    const row = stats.get(node.namespace)
+    if (!row || row.p99 == null || row.max_ms == null) return []
+    const sampleSize = Number(row.sample_size)
+    if (sampleSize < SAMPLE_FLOOR) return []
+    const retries = typeof node.config?.retries === 'number' ? node.config.retries : DEFAULT_RETRIES
+    return [{
+      node_id: node.id,
+      namespace: node.namespace,
+      type: node.type,
+      configured_ms: typeof node.config?.timeout_ms === 'number' ? node.config.timeout_ms : null,
+      retries,
+      suggested_ms: suggestedTimeoutMs(node.type, row.p99, row.max_ms, retries),
+      p99: row.p99,
+      max_ms: row.max_ms,
+      sample_size: sampleSize,
+    }]
+  })
+
+  const payload = { window_days: windowDays, nodes }
+  await c.env.WORKFLOW_CACHE.put(cacheKey, JSON.stringify(payload), { expirationTtl: 1800 })
+  return c.json(payload)
 })
 
 // PUT /api/workflows/:id — save definition, create version snapshot, invalidate KV cache

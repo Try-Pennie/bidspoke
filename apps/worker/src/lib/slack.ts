@@ -377,7 +377,7 @@ export async function sendMatrixChangeAlert(
   await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)
 }
 
-// Structural shape of one workflow's offending nodes. Defined here (rather than
+// Structural shapes of one workflow's offending nodes. Defined here (rather than
 // imported from timeout-audit) so slack.ts has no dependency back on its caller.
 interface TimeoutConfigWarning {
   workflow_id: string
@@ -385,50 +385,97 @@ interface TimeoutConfigWarning {
   nodes: Array<{ node_id: string; label: string | null; namespace: string; type: string; configured_ms: number; floor_ms: number }>
 }
 
+interface TimeoutUnderProvisionedWarning {
+  workflow_id: string
+  workflow_name: string
+  nodes: Array<{
+    node_id: string
+    label: string | null
+    namespace: string
+    type: string
+    configured_ms: number
+    suggested_ms: number
+    p99_ms: number
+    sample_size: number
+    severity: 'red' | 'amber'
+  }>
+}
+
 /**
  * Alert that one or more active workflows have a step whose timeout is below the
- * node-type reliability floor. Posted by the daily audit cron, deduped upstream
- * so it fires only when the offending set changes. The caller passes an already
- * fetched connection and has already checked config_alerts_enabled.
+ * node-type reliability floor (fails on cold runs) or below the history-based
+ * suggested value (real runs time out or burn retries). Posted by the daily
+ * audit cron, deduped upstream so it fires only when the offending set changes.
+ * The caller passes an already fetched connection and has already checked
+ * config_alerts_enabled.
  */
 export async function sendTimeoutConfigAlert(
   connection: SlackConnection,
   warnings: TimeoutConfigWarning[],
+  underProvisioned: TimeoutUnderProvisionedWarning[],
   appUrl: string
 ): Promise<void> {
-  if (warnings.length === 0) return
+  const subFloorCount = warnings.reduce((sum, w) => sum + w.nodes.length, 0)
+  const underCount = underProvisioned.reduce((sum, w) => sum + w.nodes.length, 0)
+  const totalNodes = subFloorCount + underCount
+  if (totalNodes === 0) return
 
-  const totalNodes = warnings.reduce((sum, w) => sum + w.nodes.length, 0)
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: 'Timeout Below Reliable Minimum', emoji: false } },
-    {
+    { type: 'header', text: { type: 'plain_text', text: 'Step Timeout Warnings', emoji: false } },
+  ]
+
+  if (subFloorCount > 0) {
+    blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${totalNodes} step${totalNodes === 1 ? '' : 's'} across ${warnings.length} active workflow${warnings.length === 1 ? '' : 's'} ${totalNodes === 1 ? 'has' : 'have'} a timeout set below the minimum that reliably works for the node type. On a cold run the step exceeds it before the work starts, so it times out and fails on every retry. Raise each to at least the listed minimum.`,
+        text: `*Below the reliable minimum:* ${subFloorCount} step${subFloorCount === 1 ? '' : 's'} ${subFloorCount === 1 ? 'has' : 'have'} a timeout below the minimum that reliably works for the node type. On a cold run the step exceeds it before the work starts, so it times out and fails on every retry. Raise each to at least the listed minimum.`,
       },
-    },
-  ]
-
-  for (const w of warnings) {
-    const lines = w.nodes
-      .slice(0, 20)
-      .map((n) => {
-        const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
-        return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`
+    })
+    for (const w of warnings) {
+      const lines = w.nodes
+        .slice(0, 20)
+        .map((n) => {
+          const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
+          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms}ms, needs at least ${n.floor_ms}ms`
+        })
+      const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
       })
-    const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
+    }
+  }
+
+  if (underCount > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
+      text: {
+        type: 'mrkdwn',
+        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout below what recent run history needs. Slower-than-typical runs hit the timeout and burn retries, or fail outright when the value sits below p99.`,
+      },
     })
+    for (const w of underProvisioned) {
+      const lines = w.nodes
+        .slice(0, 20)
+        .map((n) => {
+          const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
+          const impact = n.severity === 'red' ? 'most runs would time out' : 'slow runs will time out'
+          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms.toLocaleString()}ms, ${impact}. Try ${n.suggested_ms.toLocaleString()}ms (p99 ${n.p99_ms.toLocaleString()}ms over ${n.sample_size.toLocaleString()} runs)`
+        })
+      const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*${w.workflow_name}*\n${lines.join('\n')}${more}` },
+      })
+    }
   }
 
   await postMessage(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Timeout config warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} below the reliable minimum`
+    `Step timeout warnings: ${totalNodes} step${totalNodes === 1 ? '' : 's'} need a higher timeout`
   )
 }
 

@@ -45,6 +45,7 @@ import { DataStoreNode } from './nodes/DataStoreNode'
 import { LatencyGateNode } from './nodes/LatencyGateNode'
 import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
+import { TimeoutSuggestionsProvider } from './nodes/timeout-suggestions'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
 import NodePalette from './NodePalette'
@@ -3788,6 +3789,7 @@ export default function WorkflowCanvas({
 }) {
   return (
     <ReactFlowProvider>
+      <TimeoutSuggestionsProvider workflowId={workflow.id}>
       <CanvasInner
         workflow={workflow}
         mode={mode}
@@ -3805,6 +3807,7 @@ export default function WorkflowCanvas({
         onSelectExecution={onSelectExecution}
         focusNodeId={focusNodeId}
       />
+      </TimeoutSuggestionsProvider>
     </ReactFlowProvider>
   )
 }

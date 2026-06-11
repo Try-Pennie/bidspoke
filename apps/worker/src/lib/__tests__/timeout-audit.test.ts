@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, suggestedTimeoutMs, type NodeDurationStats } from '../timeout-audit'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, type NodeDurationStats } from '../timeout-audit'
+import { suggestedTimeoutMs, timeoutSeverity } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 
 function node(partial: Partial<NodeDefinition> & { id: string; type: NodeDefinition['type'] }): NodeDefinition {
@@ -77,13 +78,30 @@ describe('warningsSignature', () => {
 })
 
 describe('suggestedTimeoutMs', () => {
-  it('uses p99 x1.5 with max headroom, never below the floor', () => {
-    // code floor = 150; p99 != max so max*1.05 applies
-    expect(suggestedTimeoutMs('code', 200, 300)).toBe(315) // max(300, 315, 150)
-    // p99 == max: just p99*1.5
-    expect(suggestedTimeoutMs('code', 200, 200)).toBe(300)
-    // tiny durations clamp up to the node-type floor
-    expect(suggestedTimeoutMs('code', 10, 20)).toBe(150)
+  it('with retries, p99 x1.5 drives the suggestion (max self-heals)', () => {
+    // max(200*1.5, 150 floor) = 300, rounded to 50ms increments
+    expect(suggestedTimeoutMs('code', 200, 900, 2)).toBe(300)
+  })
+
+  it('without retries, the suggestion must also clear max x1.05', () => {
+    // max(300, 315, 150) = 315, rounded up to 350
+    expect(suggestedTimeoutMs('code', 200, 300, 0)).toBe(350)
+  })
+
+  it('never suggests below the node-type floor', () => {
+    expect(suggestedTimeoutMs('code', 10, 20, 2)).toBe(150)
+  })
+})
+
+describe('timeoutSeverity', () => {
+  it('with retries, red below p99, amber above', () => {
+    expect(timeoutSeverity(180, 200, 300, 2)).toBe('red')
+    expect(timeoutSeverity(250, 200, 300, 2)).toBe('amber')
+  })
+
+  it('without retries, red below max', () => {
+    expect(timeoutSeverity(250, 200, 300, 0)).toBe('red')
+    expect(timeoutSeverity(310, 200, 300, 0)).toBe('amber')
   })
 })
 
@@ -92,20 +110,37 @@ describe('findOverProvisionedNodes', () => {
     ({ p99: 200, max_ms: 300, sample_size: 100, ...s })
 
   it('flags a node configured far above its suggested value', () => {
-    // suggested = 315; 3x = 945; configured 5000 > 945
+    // default retries (2) -> suggested = 300; 3x = 900; configured 5000 > 900
     const out = findOverProvisionedNodes(
       def([node({ id: 'n1', type: 'code', config: { timeout_ms: 5000 } })]),
       new Map([['n1', stats({})]])
     )
-    expect(out[0]).toMatchObject({ node_id: 'n1', configured_ms: 5000, suggested_ms: 315, p99_ms: 200, sample_size: 100 })
+    expect(out[0]).toMatchObject({ node_id: 'n1', configured_ms: 5000, suggested_ms: 300, p99_ms: 200, sample_size: 100 })
   })
 
   it('does not flag when configured is within 3x of suggested', () => {
     const out = findOverProvisionedNodes(
-      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 900 } })]), // < 945
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 900 } })]), // not > 900
       new Map([['n1', stats({})]])
     )
     expect(out).toEqual([])
+  })
+
+  it('without retries, also requires clearing max x2', () => {
+    // retries 0 -> suggested 350; 3x = 1050; max*2 = 600
+    const flagged = findOverProvisionedNodes(
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 1100, retries: 0 } })]),
+      new Map([['n1', stats({})]])
+    )
+    expect(flagged).toHaveLength(1)
+    // above 3x suggested but the fat tail (max 300 -> x2 = 600) protects... use a
+    // case where 3x suggested passes but max x2 does not: max 600 -> suggested
+    // without retries = max(300, 630, 150) -> 650; 3x = 1950; max*2 = 1200
+    const protectedOut = findOverProvisionedNodes(
+      def([node({ id: 'n1', type: 'code', config: { timeout_ms: 1100, retries: 0 } })]),
+      new Map([['n1', stats({ max_ms: 600 })]])
+    )
+    expect(protectedOut).toEqual([])
   })
 
   it('does not flag without enough run history', () => {
@@ -122,5 +157,93 @@ describe('findOverProvisionedNodes', () => {
       node({ id: 'no_timeout', type: 'code', config: {} }),
     ])
     expect(findOverProvisionedNodes(d, new Map())).toEqual([])
+  })
+})
+
+describe('findUnderProvisionedNodes', () => {
+  const stats = (s: Partial<NodeDurationStats>): NodeDurationStats =>
+    ({ p99: 5000, max_ms: 11000, sample_size: 1996, ...s })
+
+  it('flags a node configured below the suggested value, amber above p99', () => {
+    // default retries (2) -> suggested = p99*1.5 = 7500
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', label: 'Equifax', config: { timeout_ms: 6000 } })]),
+      new Map([['equifax', stats({})]])
+    )
+    expect(out).toEqual([{
+      node_id: 'equifax',
+      namespace: 'equifax',
+      label: 'Equifax',
+      type: 'code',
+      configured_ms: 6000,
+      suggested_ms: 7500,
+      p99_ms: 5000,
+      max_ms: 11000,
+      sample_size: 1996,
+      severity: 'amber',
+    }])
+  })
+
+  it('marks red when typical runs would time out (below p99 with retries)', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 4000 } })]),
+      new Map([['equifax', stats({})]])
+    )
+    expect(out[0]).toMatchObject({ configured_ms: 4000, severity: 'red' })
+  })
+
+  it('does not flag a timeout at or above the suggested value', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 7500 } })]),
+      new Map([['equifax', stats({})]])
+    )
+    expect(out).toEqual([])
+  })
+
+  it('leaves sub-floor nodes to the sub-floor scan', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'c', type: 'code', config: { timeout_ms: 50 } })]),
+      new Map([['c', stats({})]])
+    )
+    expect(out).toEqual([])
+  })
+
+  it('does not flag with thin history', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 4000 } })]),
+      new Map([['equifax', stats({ sample_size: 9 })]])
+    )
+    expect(out).toEqual([])
+  })
+
+  it('respects per-node retries: 0 retries compares against max', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 10000, retries: 0 } })]),
+      new Map([['equifax', stats({})]])
+    )
+    // suggested without retries = max(7500, 11550) -> 11750; 10000 < max -> red
+    expect(out[0]).toMatchObject({ suggested_ms: 11750, severity: 'red' })
+  })
+})
+
+describe('warningsSignature with under-provisioned entries', () => {
+  const under = [{
+    workflow_id: 'wf1',
+    workflow_name: 'A',
+    nodes: [{
+      node_id: 'n1', namespace: 'n1', label: null, type: 'code',
+      configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
+      sample_size: 1996, severity: 'red' as const,
+    }],
+  }]
+
+  it('is stable when only the drifting stats change', () => {
+    const shifted = [{ ...under[0], nodes: [{ ...under[0].nodes[0], suggested_ms: 8000, p99_ms: 5400 }] }]
+    expect(warningsSignature([], under)).toBe(warningsSignature([], shifted))
+  })
+
+  it('changes when the configured value changes', () => {
+    const changed = [{ ...under[0], nodes: [{ ...under[0].nodes[0], configured_ms: 5000 }] }]
+    expect(warningsSignature([], changed)).not.toBe(warningsSignature([], under))
   })
 })

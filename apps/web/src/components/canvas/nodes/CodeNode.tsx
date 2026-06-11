@@ -27,7 +27,7 @@ export function CodeNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="code" config={config} />
+      <TimeoutWarningBadge type="code" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 

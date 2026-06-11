@@ -492,3 +492,117 @@ describe('POST /workflows/:id/test', () => {
     expect(res.headers.get('X-Trace-Id')).toBe('trace-xyz')
   })
 })
+
+describe('GET /workflows/:id/timeout-suggestions', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const wfRow = {
+    id: 'wf-1',
+    updated_at: '2026-06-11T00:00:00Z',
+    definition: {
+      nodes: [
+        { id: 'equifax', namespace: 'equifax', type: 'code', config: { timeout_ms: 4000 } },
+        { id: 'thin', namespace: 'thin', type: 'code', config: { timeout_ms: 1000 } },
+      ],
+    },
+  }
+
+  function kvEnv(kv: { get: ReturnType<typeof vi.fn>; put: ReturnType<typeof vi.fn> }) {
+    return { ...testEnv, WORKFLOW_CACHE: kv } as unknown as Env
+  }
+
+  function requestWithEnv(env: Env) {
+    return app.request('/workflows/wf-1/timeout-suggestions', {
+      method: 'GET',
+      headers: { Authorization: 'Bearer tok' },
+    }, env, mockCtx)
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  it('returns 404 when the workflow does not belong to the org', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { single: null } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn() }
+    const res = await requestWithEnv(kvEnv(kv))
+    expect(res.status).toBe(404)
+  })
+
+  it('returns per-node suggestions from the grouped RPC and caches the payload', async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [
+        { step_namespace: 'equifax', p99: 5000, max_ms: 11000, sample_size: 1996 },
+        { step_namespace: 'thin', p99: 100, max_ms: 200, sample_size: 3 },
+      ],
+      error: null,
+    })
+    const sb = Object.assign(makeSupabase({
+      users: { single: testUser },
+      workflows: { single: wfRow },
+    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+
+    const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(undefined) }
+    const res = await requestWithEnv(kvEnv(kv))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { window_days: number; nodes: Array<Record<string, unknown>> }
+
+    // equifax has a real sample: default retries (2) -> suggested = p99 * 1.5
+    expect(body.nodes).toHaveLength(1)
+    expect(body.nodes[0]).toMatchObject({
+      node_id: 'equifax',
+      namespace: 'equifax',
+      configured_ms: 4000,
+      retries: 2,
+      suggested_ms: 7500,
+      p99: 5000,
+      sample_size: 1996,
+    })
+    // 'thin' stayed under the sample floor at every window, so the route widened
+    // through all three windows before giving up on it.
+    expect(rpc).toHaveBeenCalledTimes(3)
+    expect(body.window_days).toBe(7)
+    expect(kv.put).toHaveBeenCalledWith(
+      'timeout-suggestions:v1:wf-1:2026-06-11T00:00:00Z',
+      expect.any(String),
+      { expirationTtl: 1800 }
+    )
+  })
+
+  it('serves the KV-cached payload without hitting the RPC', async () => {
+    const rpc = vi.fn()
+    const sb = Object.assign(makeSupabase({
+      users: { single: testUser },
+      workflows: { single: wfRow },
+    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+
+    const cached = { window_days: 1, nodes: [] }
+    const kv = { get: vi.fn().mockResolvedValue(JSON.stringify(cached)), put: vi.fn() }
+    const res = await requestWithEnv(kvEnv(kv))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(cached)
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('degrades to an empty node list when the RPC errors (statement timeout)', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'statement timeout' } })
+    const sb = Object.assign(makeSupabase({
+      users: { single: testUser },
+      workflows: { single: wfRow },
+    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    vi.mocked(createSupabaseClient).mockReturnValue(sb)
+
+    const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(undefined) }
+    const res = await requestWithEnv(kvEnv(kv))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { nodes: unknown[] }
+    expect(body.nodes).toEqual([])
+    expect(rpc).toHaveBeenCalledTimes(1)
+  })
+})

@@ -9,7 +9,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createClient } from '@supabase/supabase-js'
-import { suggestedTimeoutMs, OVER_PROVISION_FACTOR, OVER_PROVISION_MIN_SAMPLE } from '../src/lib/timeout-audit'
+import { OVER_PROVISION_FACTOR, OVER_PROVISION_MIN_SAMPLE } from '../src/lib/timeout-audit'
+import { DEFAULT_RETRIES, suggestedTimeoutMs } from '../src/lib/timeout-suggestion'
 import type { WorkflowDefinition } from '../src/types'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -54,7 +55,8 @@ async function main() {
       if (!r || r.p99 == null || r.max_ms == null) continue
       const sample = Number(r.sample_size)
       if (sample < OVER_PROVISION_MIN_SAMPLE) continue
-      const suggested = suggestedTimeoutMs(node.type, r.p99, r.max_ms)
+      const retries = typeof node.config?.retries === 'number' ? node.config.retries : DEFAULT_RETRIES
+      const suggested = suggestedTimeoutMs(node.type, r.p99, r.max_ms, retries)
       if (timeout > suggested * OVER_PROVISION_FACTOR) {
         hits.push(`${node.label || node.namespace}(${node.type}): set ${timeout}ms, suggested ~${suggested}ms (p99 ${r.p99}ms, ${sample} runs)`)
       }

@@ -43,7 +43,7 @@ export function PartnerBidNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="partner_bid" config={config} />
+      <TimeoutWarningBadge type="partner_bid" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-sky-50 border-b border-sky-100 px-3 py-2">

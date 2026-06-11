@@ -165,6 +165,25 @@ export interface ConfigWarningsResponse {
       floor_ms: number
     }>
   }>
+  // Nodes whose timeout is below the history-based suggested value: slower
+  // runs hit the timeout and burn retries (amber) or typical runs fail
+  // outright (red). Also included in the daily Slack alert.
+  under_provisioned: Array<{
+    workflow_id: string
+    workflow_name: string
+    nodes: Array<{
+      node_id: string
+      namespace: string
+      label: string | null
+      type: string
+      configured_ms: number
+      suggested_ms: number
+      p99_ms: number
+      max_ms: number
+      sample_size: number
+      severity: 'red' | 'amber'
+    }>
+  }>
   // Nodes whose timeout is far above what their run history needs (could be
   // lower). Low-urgency cleanup, shown separately from the sub-floor list.
   over_provisioned: Array<{
@@ -180,6 +199,21 @@ export interface ConfigWarningsResponse {
       p99_ms: number
       sample_size: number
     }>
+  }>
+}
+
+export interface WorkflowTimeoutSuggestions {
+  window_days: number
+  nodes: Array<{
+    node_id: string
+    namespace: string
+    type: string
+    configured_ms: number | null
+    retries: number
+    suggested_ms: number
+    p99: number
+    max_ms: number
+    sample_size: number
   }>
 }
 
@@ -294,6 +328,10 @@ export const api = {
     // definition), unlike a name+definition copy which restarts at v1.
     duplicate: (id: string) =>
       req<Workflow>(`/api/workflows/${id}/duplicate`, { method: 'POST' }),
+    // Batched per-node timeout suggestions for canvas badges — one call per
+    // workflow instead of a step-duration-stats round-trip per node.
+    timeoutSuggestions: (id: string) =>
+      req<WorkflowTimeoutSuggestions>(`/api/workflows/${id}/timeout-suggestions`),
     setActive: (id: string, is_active: boolean) =>
       req<{ id: string; is_active: boolean }>(`/api/workflows/${id}`, {
         method: 'PATCH',

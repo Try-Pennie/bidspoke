@@ -4,6 +4,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { executeWorkflow } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
+import { suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 
 type Variables = AuthVariables
 
@@ -197,27 +198,11 @@ executions.get('/step-duration-stats', async (c) => {
   const sampleSize = Number(row?.sample_size ?? 0)
   const p99 = row?.p99 ?? null
   const maxMs = row?.max_ms ?? null
-  // Suggestion math depends on whether the step retries on failure:
-  //   retries == 0: must clear max × 1.05 — a single timeout = permanent fail.
-  //   retries >= 1: drop the max-clamp; a long-tail outlier just retries.
-  //                 Use p99 × 1.5 as the baseline (most calls succeed first try).
-  // Node-type floor (below): the percentiles are computed over COMPLETED steps,
-  // so any attempt slow enough to hit the current timeout is censored out of the
-  // distribution. For dispatch-/network-bound steps that floor is exactly the
-  // overhead the data can't see — a code node's Dynamic Worker cold-dispatch can
-  // exceed its compute-time p99 by an order of magnitude, and retries don't help
-  // when the slowness is correlated within a run (cold worker = every attempt is
-  // slow). So we never suggest below the type's known irreducible floor.
-  // Magnitude-aware rounding keeps sub-100ms suggestions readable, sub-1s at
-  // 50ms, above at 250ms.
+  // Retries-aware math + node-type floor + magnitude-aware rounding all live in
+  // lib/timeout-suggestion.ts, shared with the batched canvas endpoint and the
+  // timeout audit so every surface agrees on the suggested value.
   const floorMs = suggestionFloorMs(nodeType)
-  const rawSuggested =
-    p99 != null && maxMs != null
-      ? retries >= 1
-        ? Math.max(p99 * 1.5, floorMs)
-        : Math.max(p99 * 1.5, maxMs * 1.05, floorMs)
-      : null
-  const suggestedMs = rawSuggested != null ? roundUpSmart(rawSuggested) : null
+  const suggestedMs = p99 != null && maxMs != null ? suggestedTimeoutMs(nodeType, p99, maxMs, retries) : null
 
   const payload = {
     p50: row?.p50 ?? null,
@@ -254,15 +239,6 @@ function pctRow(data: unknown): PctRow {
 // guard the two against drift. Re-exported here so existing imports/tests that
 // reference '../executions' keep working.
 export { suggestionFloorMs, suggestionFloorReason }
-
-// Round suggestions to readable increments that scale with magnitude. Without
-// this a sub-100ms value would get rounded to 250ms (defeating the hard floor)
-// and a 30s value would have noisy 250ms granularity.
-function roundUpSmart(ms: number): number {
-  if (ms <= 100) return Math.ceil(ms / 5) * 5
-  if (ms <= 1000) return Math.ceil(ms / 50) * 50
-  return Math.ceil(ms / 250) * 250
-}
 
 // Node types whose duration distribution is consistent enough across workflows
 // that a cross-workflow aggregate is a useful fallback when a fresh workflow
