@@ -607,8 +607,12 @@ export async function walkGraph(
       lastOutput = priorOutput
       if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
         if (node.type === 'response' && priorOutput !== null && typeof priorOutput === 'object' && 'body' in (priorOutput as object)) {
-          const r = priorOutput as { status_code?: number; headers?: Record<string, string>; body?: unknown }
-          return { body: r.body ?? null, status: r.status_code ?? 200, headers: r.headers }
+          // status_code fallback: Response steps persisted before 2026-06-11
+          // used that output key. Only reachable when resuming an execution
+          // whose Response step predates the rename — removable once those
+          // age out of the 90-day retention window.
+          const r = priorOutput as { status?: number; status_code?: number; headers?: Record<string, string>; body?: unknown }
+          return { body: r.body ?? null, status: r.status ?? r.status_code ?? 200, headers: r.headers }
         }
         return { body: priorOutput, status: 200 }
       }
@@ -1212,8 +1216,8 @@ export async function walkGraph(
     // (mirrors the code-node continueExecution sentinel).
     if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
       if (node.type === 'response' && output !== null && typeof output === 'object' && 'body' in (output as object)) {
-        const r = output as { status_code?: number; headers?: Record<string, string>; body?: unknown }
-        return { body: r.body ?? null, status: r.status_code ?? 200, headers: r.headers }
+        const r = output as { status?: number; headers?: Record<string, string>; body?: unknown }
+        return { body: r.body ?? null, status: r.status ?? 200, headers: r.headers }
       }
       return { body: output, status: 200 }
     }

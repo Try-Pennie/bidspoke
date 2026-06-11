@@ -63,7 +63,7 @@ export interface BidResolverResult {
    */
   bid_reason?: string
   /** HTTP status from the partner API. null for formula/matrix resolvers. */
-  http_status?: number | null
+  status?: number | null
   /** Response headers from the partner API (sensitive headers stripped). null for formula/matrix. */
   response_headers?: Record<string, string> | null
   /** Partner-specific extras pulled from the API response (clickUrl, leadId, classification, …). */
@@ -246,7 +246,7 @@ async function callBidApi(
         bid: null,
         raw,
         rejected: true,
-        http_status: httpStatus,
+        status: httpStatus,
         response_headers: safeHeaders,
         ...(rejectedExtra ? { extra: rejectedExtra } : {}),
         resolved_input: resolvedInputForCaller,
@@ -258,18 +258,18 @@ async function callBidApi(
         `Partner API returned ${res.status} (classified as ${override} by override)`,
         override,
         suppress
-      ) as PartnerApiError & { resolved_input?: Record<string, unknown>; http_status?: number; response_headers?: Record<string, string> }
+      ) as PartnerApiError & { resolved_input?: Record<string, unknown>; status?: number; response_headers?: Record<string, string> }
       apiErr.resolved_input = resolvedInputForCaller
-      apiErr.http_status = httpStatus
+      apiErr.status = httpStatus
       apiErr.response_headers = safeHeaders
       throw apiErr
     }
   }
 
   if (!res.ok) {
-    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown>; http_status?: number; response_headers?: Record<string, string> }
+    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown>; status?: number; response_headers?: Record<string, string> }
     httpErr.resolved_input = resolvedInputForCaller
-    httpErr.http_status = httpStatus
+    httpErr.status = httpStatus
     httpErr.response_headers = safeHeaders
     throw httpErr
   }
@@ -299,7 +299,7 @@ async function callBidApi(
   return {
     bid,
     raw,
-    http_status: httpStatus,
+    status: httpStatus,
     response_headers: safeHeaders,
     ...(extra ? { extra } : {}),
     ...(bidReason ? { bid_reason: bidReason } : {}),

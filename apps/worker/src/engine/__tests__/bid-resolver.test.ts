@@ -70,6 +70,8 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     })
     const result = await resolveBid(partner, makeCtx({ debt: 5000 }), env)
     expect(result.bid).toBe(42)
+    expect(result.status).toBe(200)
+    expect(result).not.toHaveProperty('http_status')
     expect(fetchSpy).toHaveBeenCalledOnce()
     const [url, init] = fetchSpy.mock.calls[0]
     expect(url).toBe('https://partner.example/bid')
@@ -139,6 +141,7 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     const result = await resolveBid(partner, makeCtx(), env)
     expect(result.rejected).toBe(true)
     expect(result.bid).toBeNull()
+    expect(result.status).toBe(200)
   })
 
   it('extra_extraction: dot-path values land on result.extra', async () => {

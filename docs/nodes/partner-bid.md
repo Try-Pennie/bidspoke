@@ -66,7 +66,7 @@ A partner can be set to `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'
   "bid": 19.82,
   "accepted": true,
   "skipped": false,
-  "http_status": 200,
+  "status": 200,
   "response_headers": { "content-type": "application/json" },
   "cap_count": 41,
   "resolver_type": "api",
@@ -83,7 +83,7 @@ A partner can be set to `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'
 | `accepted` | boolean | `true` when a usable bid was returned (`bid` is non-null and not skipped). |
 | `skipped` | boolean | `true` when the node short-circuited before or after resolving. |
 | `skip_reason` | enum \| absent | Why it skipped. One of `partner_inactive`, `circuit_open`, `cap_exceeded`, `duplicate`, `bid_below_min`, `rejected`. Absent on a clean accept. |
-| `http_status` | number \| null | HTTP status from the partner API. Null/absent for formula and matrix resolvers. |
+| `status` | number \| null | HTTP status from the partner API. Null/absent for formula and matrix resolvers. (Named `http_status` before 2026-06-11; old executions show the old key.) |
 | `response_headers` | object \| null | Partner API response headers, with sensitive headers (`authorization`, `cookie`, `set-cookie`, `proxy-authorization`) stripped. Null for non-API resolvers. |
 | `cap_count` | number \| absent | Today's daily-cap count after this request. Absent when the partner has no cap. |
 | `resolver_type` | `'formula'` \| `'matrix'` \| `'api'` \| null | Which resolver produced the bid. Used by the execution detail "why no bid?" view. |

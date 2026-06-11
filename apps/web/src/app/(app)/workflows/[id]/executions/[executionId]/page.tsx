@@ -31,6 +31,10 @@ interface PartnerBidOutputShape {
   skip_reason?: string
   cap_count?: number
   resolver_type?: 'formula' | 'api' | 'matrix' | null
+  status?: number | null
+  /** Legacy key for executions persisted before the 2026-06-11 output rename
+   *  (status used to be http_status). Removable once pre-rename executions
+   *  age out of the 90-day retention window. */
   http_status?: number | null
   response_headers?: Record<string, string> | null
   raw_response?: unknown
@@ -373,11 +377,11 @@ function BidAttemptRow({
 }) {
   // step.input carries { template, resolved } where resolved.outbound_body is
   // the JSON we sent over the wire. raw_response on the attempt is the parsed
-  // response. http_status/response_headers were added to PartnerBidOutput so
+  // response. status/response_headers were added to PartnerBidOutput so
   // they ride along on the attempt too.
   const outboundBody = step ? readOutboundBody(step.input) : null
   const duration = step?.duration_ms ?? null
-  const httpStatus = attempt.http_status ?? null
+  const httpStatus = attempt.status ?? attempt.http_status ?? null
   const headers = attempt.response_headers ?? null
   const rawResponse = attempt.raw_response ?? null
   void index

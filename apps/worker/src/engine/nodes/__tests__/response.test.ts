@@ -20,14 +20,20 @@ describe('executeResponseNode', () => {
   describe('defaults', () => {
     it('returns status 200 with empty headers and null body by default', () => {
       const result = executeResponseNode(node({}), ctx())
-      expect(result.output).toEqual({ status_code: 200, headers: {}, body: null })
+      expect(result.output).toEqual({ status: 200, headers: {}, body: null })
+    })
+
+    it('does not emit the retired status_code output key', () => {
+      const result = executeResponseNode(node({ status_code: 201 }), ctx())
+      expect(result.output).not.toHaveProperty('status_code')
+      expect((result.output as { status: number }).status).toBe(201)
     })
   })
 
   describe('static config', () => {
     it('uses configured status code', () => {
       const result = executeResponseNode(node({ status_code: 201 }), ctx())
-      expect((result.output as { status_code: number }).status_code).toBe(201)
+      expect((result.output as { status: number }).status).toBe(201)
     })
 
     it('uses configured headers', () => {
@@ -52,7 +58,7 @@ describe('executeResponseNode', () => {
         node({ status_code: '{{steps.engine_call.output.status}}' }),
         ctx({ steps: { engine_call: { status: 502 } } })
       )
-      expect((result.output as { status_code: number }).status_code).toBe(502)
+      expect((result.output as { status: number }).status).toBe(502)
     })
 
     it('coerces a stringified number to number', () => {
@@ -60,7 +66,7 @@ describe('executeResponseNode', () => {
         node({ status_code: '{{steps.engine_call.output.status_str}}' }),
         ctx({ steps: { engine_call: { status_str: '418' } } })
       )
-      expect((result.output as { status_code: number }).status_code).toBe(418)
+      expect((result.output as { status: number }).status).toBe(418)
     })
 
     it('falls back to 200 when the template resolves to undefined', () => {
@@ -68,12 +74,20 @@ describe('executeResponseNode', () => {
         node({ status_code: '{{steps.missing.output.status}}' }),
         ctx()
       )
-      expect((result.output as { status_code: number }).status_code).toBe(200)
+      expect((result.output as { status: number }).status).toBe(200)
     })
 
     it('numeric literal still works (back-compat)', () => {
       const result = executeResponseNode(node({ status_code: 201 }), ctx())
-      expect((result.output as { status_code: number }).status_code).toBe(201)
+      expect((result.output as { status: number }).status).toBe(201)
+    })
+
+    it('can relay another Response step status via {{steps.X.output.status}}', () => {
+      const result = executeResponseNode(
+        node({ status_code: '{{steps.first_response.output.status}}' }),
+        ctx({ steps: { first_response: { status: 202, headers: {}, body: null } } })
+      )
+      expect((result.output as { status: number }).status).toBe(202)
     })
   })
 

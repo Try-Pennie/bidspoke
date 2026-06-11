@@ -280,6 +280,29 @@ describe('executePartnerBidNode', () => {
       expect(output.skip_reason).toBe('bid_below_min')
     })
   })
+
+  describe('API bid — output status key', () => {
+    it('exposes the partner API HTTP status as output.status (not http_status)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ bid: 12.5 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ bid_resolver_type: 'api', api_endpoint: 'https://partner.example/bid', bid_formula: null })) as any
+      )
+      const output = result.output as PartnerBidOutput
+      expect(output.bid).toBe(12.5)
+      expect(output.accepted).toBe(true)
+      expect(output.status).toBe(200)
+      expect(output).not.toHaveProperty('http_status')
+    })
+  })
 })
 
 // ── Formula evaluator unit tests ──────────────────────────────────────────────

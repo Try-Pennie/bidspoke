@@ -1,6 +1,10 @@
 // Response node — structured HTTP response (PRD Section 5.6)
 // Config: { status_code?: number, headers?: Record<string, string>, body?: unknown,
 //           continue_after_response?: boolean }
+// Output: { status, headers, body } — the config key stays status_code (it's
+// saved in live workflow definitions), but the OUTPUT key is status, matching
+// the integration/salesforce/achieve nodes so {{steps.X.output.status}} works
+// against any node type.
 // Body strings and header values support {{...}} template references (trigger, steps, env).
 // By default, the engine returns this node's output as the final HTTP response and
 // terminates the walk. With continue_after_response: true, the engine sends the
@@ -28,10 +32,10 @@ export function executeResponseNode(
   const headers = resolveHeaders(config.headers, ctx)
   const body = resolveValue(config.body ?? null, ctx)
 
-  const output = { status_code: status, headers, body }
+  const output = { status, headers, body }
   const resolvedInput: ResolvedStepInput = {
     template: { status_code: config.status_code, headers: config.headers, body: config.body, continue_after_response: config.continue_after_response },
-    resolved: { status_code: status, headers, body },
+    resolved: { status, headers, body },
   }
 
   if (config.continue_after_response) {

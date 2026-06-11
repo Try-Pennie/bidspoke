@@ -29,7 +29,7 @@ In the editor: "Status code", "Body (JSON or template)", a "Headers" key/value e
 
 ```json
 {
-  "status_code": 200,
+  "status": 200,
   "headers": { "Content-Type": "application/json" },
   "body": { "offer": 42.0, "approved": true }
 }
@@ -37,7 +37,7 @@ In the editor: "Status code", "Body (JSON or template)", a "Headers" key/value e
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status_code` | number | The resolved status code. |
+| `status` | number | The resolved status code. Note the asymmetry: the config key is `status_code`, but the output key is `status`, matching the Integration and Salesforce nodes. |
 | `headers` | object | The headers after `{{...}}` templates in values are resolved. |
 | `body` | any | The body after `{{...}}` templates are resolved. |
 

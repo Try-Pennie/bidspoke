@@ -152,3 +152,64 @@ describe('resume — filter node routing preserved', () => {
     expect(calledNamespaces).not.toContain('exit_step')
   })
 })
+
+// ── Terminal Response status extraction ───────────────────────────────────────
+// The Response node emits its HTTP status under `status` (renamed from
+// status_code 2026-06-11). The walk must read the new key on fresh runs, and
+// fall back to the legacy key when resuming an execution whose Response step
+// was persisted before the rename.
+
+describe('terminal response status extraction', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns the status from a freshly executed Response node output', async () => {
+    vi.mocked(executeNode).mockImplementation(async (n: NodeDefinition) =>
+      n.type === 'response'
+        ? { output: { status: 502, headers: { 'X-Reason': 'upstream' }, body: { error: 'engine down' } } }
+        : { output: { result: 'ok' } }
+    )
+    const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
+    const result = await walkGraph(makeCtx(), def, 'exec', new Date().toISOString(), supabase, env)
+    expect(result.status).toBe(502)
+    expect(result.body).toEqual({ error: 'engine down' })
+    expect(result.headers).toEqual({ 'X-Reason': 'upstream' })
+  })
+
+  it('resume: reuses a prior Response step output in the current shape', async () => {
+    vi.mocked(executeNode).mockResolvedValue({ output: { result: 'fresh' } })
+    const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
+    const ctx = makeCtx({
+      step_a: { ok: true },
+      step_b: { status: 201, headers: {}, body: { accepted: true } },
+    })
+    const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
+    expect(result.status).toBe(201)
+    expect(result.body).toEqual({ accepted: true })
+  })
+
+  it('resume: falls back to the legacy status_code key for pre-rename Response steps', async () => {
+    vi.mocked(executeNode).mockResolvedValue({ output: { result: 'fresh' } })
+    const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
+    const ctx = makeCtx({
+      step_a: { ok: true },
+      step_b: { status_code: 503, headers: {}, body: { error: 'old shape' } },
+    })
+    const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    expect(result.status).toBe(503)
+    expect(result.body).toEqual({ error: 'old shape' })
+  })
+
+  it('resume: prior Response output without any status key defaults to 200', async () => {
+    vi.mocked(executeNode).mockResolvedValue({ output: { result: 'fresh' } })
+    const def = chain(node('a', 'step_a'), node('b', 'step_b', 'response'))
+    const ctx = makeCtx({
+      step_a: { ok: true },
+      step_b: { headers: {}, body: { ok: true } },
+    })
+    const result = await walkGraph(ctx, def, 'exec', new Date().toISOString(), supabase, env)
+    expect(result.status).toBe(200)
+  })
+})
