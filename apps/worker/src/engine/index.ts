@@ -323,7 +323,7 @@ export async function executeWorkflow(
   // post-response steps get their logs written too.
   const flushPromise: Promise<string | null> = walkPromiseCaught
     .then(() => executionRecordPromise)
-    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? ''))
+    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
       return e instanceof Error ? e.message : String(e)
