@@ -220,3 +220,50 @@ describe('executeResponseNode', () => {
     })
   })
 })
+
+describe('status fallback warning (issue #31)', () => {
+  it('warns when a status template resolves to undefined and falls back to 200', () => {
+    const result = executeResponseNode(
+      node({ status_code: '{{steps.build.output.status_code}}' }),
+      ctx({ steps: { build: { status: 200 } } }) // node emits status, template reads status_code
+    )
+    expect((result.output as { status: number }).status).toBe(200)
+    expect(result.logs).toHaveLength(1)
+    expect(result.logs![0].level).toBe('warn')
+    expect(result.logs![0].message).toContain('{{steps.build.output.status_code}}')
+    expect(result.logs![0].message).toContain('undefined')
+    expect(result.logs![0].message).toContain('200 fallback')
+  })
+
+  it('warns when a status template resolves to a non-numeric value', () => {
+    const result = executeResponseNode(
+      node({ status_code: '{{steps.build.output.label}}' }),
+      ctx({ steps: { build: { label: 'accepted' } } })
+    )
+    expect((result.output as { status: number }).status).toBe(200)
+    expect(result.logs![0].message).toContain('"accepted"')
+  })
+
+  it('stays silent for an unset status (the common default case)', () => {
+    const result = executeResponseNode(node({}), ctx())
+    expect(result.logs).toBeUndefined()
+  })
+
+  it('stays silent when the template resolves to a usable number', () => {
+    const result = executeResponseNode(
+      node({ status_code: '{{steps.build.output.status}}' }),
+      ctx({ steps: { build: { status: 403 } } })
+    )
+    expect((result.output as { status: number }).status).toBe(403)
+    expect(result.logs).toBeUndefined()
+  })
+
+  it('carries the warning through the continue_after_response path', () => {
+    const result = executeResponseNode(
+      node({ status_code: '{{steps.missing.output.status}}', continue_after_response: true }),
+      ctx()
+    )
+    expect(result.continueAfterResponse).toBe(true)
+    expect(result.logs).toHaveLength(1)
+  })
+})

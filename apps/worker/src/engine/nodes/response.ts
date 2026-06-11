@@ -11,7 +11,7 @@
 // response immediately and keeps walking the graph (mirrors the code-node
 // continueExecution sentinel).
 
-import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
+import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
 import { resolveValue } from '../context'
 
 interface ResponseConfig {
@@ -28,7 +28,7 @@ export function executeResponseNode(
   ctx: ExecutionContext
 ): StepExecutionResult {
   const config = node.config as ResponseConfig
-  const status = resolveStatus(config.status_code, ctx)
+  const { status, warning } = resolveStatus(config.status_code, ctx)
   const headers = resolveHeaders(config.headers, ctx)
   const body = resolveValue(config.body ?? null, ctx)
 
@@ -37,6 +37,9 @@ export function executeResponseNode(
     template: { status_code: config.status_code, headers: config.headers, body: config.body, continue_after_response: config.continue_after_response },
     resolved: { status, headers, body },
   }
+  const logs: StepLogEntry[] | undefined = warning
+    ? [{ level: 'warn', message: warning, ts: new Date().toISOString() }]
+    : undefined
 
   if (config.continue_after_response) {
     return {
@@ -44,10 +47,11 @@ export function executeResponseNode(
       earlyResponse: { status, headers, body },
       continueAfterResponse: true,
       resolvedInput,
+      ...(logs ? { logs } : {}),
     }
   }
 
-  return { output, resolvedInput }
+  return { output, resolvedInput, ...(logs ? { logs } : {}) }
 }
 
 // Header values are template-resolved and coerced to strings (HTTP headers are
@@ -68,13 +72,25 @@ function resolveHeaders(
   return out
 }
 
-function resolveStatus(raw: unknown, ctx: ExecutionContext): number {
-  if (raw === undefined || raw === null) return 200
+// Falls back to 200 when the configured status doesn't resolve to a finite
+// number — but a CONFIGURED string that falls back gets a step-level warning.
+// A silent 200 is exactly what hid the pre-d0bbc2d key mismatch:
+// {{steps.X.output.status}} against a node emitting status_code just returned
+// 200 with no signal. An unset status (the common case) stays silent.
+function resolveStatus(raw: unknown, ctx: ExecutionContext): { status: number; warning?: string } {
+  if (raw === undefined || raw === null) return { status: 200 }
   const resolved = typeof raw === 'string' ? resolveValue(raw, ctx) : raw
-  if (typeof resolved === 'number' && Number.isFinite(resolved)) return Math.trunc(resolved)
+  if (typeof resolved === 'number' && Number.isFinite(resolved)) return { status: Math.trunc(resolved) }
   if (typeof resolved === 'string') {
     const n = parseInt(resolved, 10)
-    if (Number.isFinite(n)) return n
+    if (Number.isFinite(n)) return { status: n }
   }
-  return 200
+  if (typeof raw === 'string') {
+    const resolvedDesc = resolved === undefined ? 'undefined' : JSON.stringify(resolved)
+    return {
+      status: 200,
+      warning: `Status template ${JSON.stringify(raw)} resolved to ${resolvedDesc}; responded with the 200 fallback. Check the referenced step output key.`,
+    }
+  }
+  return { status: 200 }
 }
