@@ -117,7 +117,7 @@ admin.post('/backfill-sightings', async (c) => {
 
     const { data: executions, error: execErr } = await supabase
       .from('workflow_executions')
-      .select('id, started_at, completed_at, duration_ms, response_body, trigger_payload, source, trace_id, workflow_version_id, is_test, status')
+      .select('id, started_at, completed_at, duration_ms, response_body, response_status, trigger_payload, source, trace_id, workflow_version_id, is_test, status')
       .eq('workflow_id', body.workflow_id)
       .gte('started_at', cursor)
       .eq('is_test', false)
@@ -194,7 +194,11 @@ admin.post('/backfill-sightings', async (c) => {
         : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
         : null
 
-      const responseStatusCode = (exec.response_body as { status_code?: number } | null)?.status_code ?? null
+      // response_body only ever stores the BODY; the status lives in the
+      // response_status column written at finalize. Rows from before that
+      // column existed stay null and deriveRejectReason treats them as
+      // unclassifiable, same as today.
+      const responseStatusCode = (exec.response_status as number | null) ?? null
 
       const rejectReason = deriveRejectReason({
         winning_partner_slug: bidSummary.winner_slug,

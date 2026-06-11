@@ -159,6 +159,7 @@ export async function updateExecutionRecord(
     completed_at: string
     duration_ms: number
     response_body?: unknown
+    response_status?: number
     error_message?: string
     cost_usd?: number
   }
