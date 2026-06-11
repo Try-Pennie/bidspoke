@@ -1,4 +1,5 @@
 import type { ErrorType } from '../types'
+import { isSaturationError } from './error-classifier'
 
 export interface RetryConfig {
   retries: number
@@ -35,6 +36,14 @@ export async function withRetry<T>(
       if (errorType !== 'transient' || attempt === config.retries) {
         throw err
       }
+      // Saturated upstream (e.g. SF REQUEST_LIMIT_EXCEEDED): retrying within
+      // the same execution stacks more load onto a pool that has no capacity
+      // and slows its recovery — and any timeout-abandoned call is still
+      // running server-side. Stay transient for alerting/breakers, but stop
+      // here; on_error/fallback_node handles routing.
+      if (isSaturationError(err)) {
+        throw err
+      }
       await sleep(backoffMs(attempt, config.backoff))
     }
   }
@@ -45,7 +54,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Step timed out after ${ms}ms`)), ms)
+      setTimeout(
+        // The race abandons the work client-side but cannot cancel it: an
+        // in-flight upstream call keeps running on the server. Say so in the
+        // surfaced error so operators understand the amplification during
+        // saturation incidents (each retry-after-timeout stacks another
+        // still-running request onto the upstream).
+        () => reject(new Error(`Step timed out after ${ms}ms (any in-flight upstream call was abandoned, not canceled; it may still be running server-side)`)),
+        ms
+      )
     ),
   ])
 }
