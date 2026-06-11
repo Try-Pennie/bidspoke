@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "docs:sync": "node scripts/sync-docs.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
     "predev": "node scripts/sync-docs.mjs",
     "dev": "next dev",
     "prebuild": "node scripts/sync-docs.mjs",

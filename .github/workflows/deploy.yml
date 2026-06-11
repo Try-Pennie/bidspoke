@@ -37,6 +37,14 @@ jobs:
       - name: Test
         run: pnpm -r test
 
+      # Docs are published to the public /docs site by sync-docs.mjs during
+      # pages:build; this gate fails the build on broken relative links,
+      # moved/renamed pages, or stale llms.txt entries before they go live.
+      - name: Docs integrity (sync + link check)
+        run: |
+          pnpm --filter=web docs:sync
+          pnpm --filter=web docs:check
+
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
         with:
