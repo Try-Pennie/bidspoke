@@ -345,6 +345,66 @@ describe('executePartnerBidNode', () => {
     })
   })
 
+  // Issue #75: a failing dedup endpoint must fail open AND be logged (a silent
+  // down dedup endpoint re-submits every duplicate with no signal).
+  describe('dedup failure observability (#75)', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    function loggedEvents(spy: ReturnType<typeof vi.spyOn>): string[] {
+      return spy.mock.calls.map((c: unknown[]) => String(c[0]))
+    }
+
+    it('fails open and logs dedup_check_failed on a non-2xx dedup response', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('err', { status: 500 }))
+
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ dedup_endpoint: 'https://dedup.example' })) as any
+      )
+
+      // Fail open — the lead is NOT skipped as a duplicate, so the bid proceeds.
+      const output = result.output as PartnerBidOutput
+      expect(output.skip_reason).not.toBe('duplicate')
+      // Observability — a dedup_check_failed line was emitted.
+      expect(loggedEvents(logSpy).some((l) => l.includes('dedup_check_failed') && l.includes('non_2xx'))).toBe(true)
+    })
+
+    it('fails open and logs dedup_check_failed when the dedup endpoint errors', async () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'))
+
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ dedup_endpoint: 'https://dedup.example' })) as any
+      )
+
+      const output = result.output as PartnerBidOutput
+      expect(output.skip_reason).not.toBe('duplicate')
+      const lines = loggedEvents(logSpy)
+      expect(lines.some((l) => l.includes('dedup_check_failed') && l.includes('"reason":"error"'))).toBe(true)
+      expect(lines.some((l) => l.includes('ECONNREFUSED'))).toBe(true)
+    })
+
+    it('a positive duplicate response still skips the bid (no false fail-open)', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ duplicate: true }), { status: 200 }))
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ dedup_endpoint: 'https://dedup.example' })) as any
+      )
+      expect((result.output as PartnerBidOutput).skip_reason).toBe('duplicate')
+    })
+  })
+
   // Issue #52: a lead that claims the half-open probe must always report back,
   // or the partner is excluded from all bidding until the lease expires / a
   // manual reset. cap/dedup skips release the probe (partner not called);
