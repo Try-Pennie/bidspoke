@@ -191,6 +191,29 @@ async function querySalesforceMatrixRows(
   return all
 }
 
+// Read every row of a (possibly large) result set, paging around PostgREST's
+// 1000-row default cap. An unpaginated read silently truncated a matrix with
+// >1000 rows, so the diff snapshot missed the tail and reported those rows as
+// "added" on every hourly sync (false alerts + corrupt history). A stable
+// ORDER BY is required — without it Postgres recomputes each OFFSET against an
+// independent scan and skips/duplicates rows.
+export const PAGE_SIZE = 1000
+// Exported for unit testing.
+export async function fetchAllPaged<T>(
+  makeQuery: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
+  label: string,
+): Promise<T[]> {
+  const out: T[] = []
+  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
+    const { data, error } = await makeQuery(offset, offset + PAGE_SIZE - 1)
+    if (error) throw new Error(`${label} failed: ${error.message}`)
+    if (!data || data.length === 0) break
+    out.push(...(data as T[]))
+    if (data.length < PAGE_SIZE) break
+  }
+  return out
+}
+
 async function applyToDb(
   config: BidConfigForSync,
   rows: SalesforceBidRow[],
@@ -198,13 +221,15 @@ async function applyToDb(
   supabase: SupabaseClient
 ): Promise<{ upserted: number; deleted: number; diff: MatrixConfigChange | null }> {
   // Snapshot existing rows BEFORE the upsert so we can diff against the new state.
-  const { data: existingRaw, error: existingErr } = await supabase
-    .from('bid_matrix_rows')
-    .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount')
-    .eq('config_id', config.id)
-
-  if (existingErr) throw new Error(`existing-row query failed: ${existingErr.message}`)
-  const existing = (existingRaw ?? []) as unknown as MatrixRowSnapshot[]
+  const existing = await fetchAllPaged<MatrixRowSnapshot>(
+    (from, to) => supabase
+      .from('bid_matrix_rows')
+      .select('id, source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount')
+      .eq('config_id', config.id)
+      .order('id', { ascending: true })
+      .range(from, to),
+    'existing-row query',
+  )
 
   // Upsert all rows keyed on (config_id, source_id).
   if (rows.length > 0) {
@@ -228,14 +253,16 @@ async function applyToDb(
   }
 
   // Delete rows that weren't part of this sync (no longer present in SF).
-  const { data: stale, error: staleErr } = await supabase
-    .from('bid_matrix_rows')
-    .select('id, source_id')
-    .eq('config_id', config.id)
-    .or(`source_synced_at.lt.${syncedAt},source_synced_at.is.null`)
-
-  if (staleErr) throw new Error(`stale-row query failed: ${staleErr.message}`)
-  const staleRows = (stale ?? []) as unknown as { id: string; source_id: string | null }[]
+  const staleRows = await fetchAllPaged<{ id: string; source_id: string | null }>(
+    (from, to) => supabase
+      .from('bid_matrix_rows')
+      .select('id, source_id')
+      .eq('config_id', config.id)
+      .or(`source_synced_at.lt.${syncedAt},source_synced_at.is.null`)
+      .order('id', { ascending: true })
+      .range(from, to),
+    'stale-row query',
+  )
   const deleteIds = staleRows.map((r) => r.id)
   const removedSourceIds = new Set(staleRows.map((r) => r.source_id).filter((s): s is string => !!s))
 
