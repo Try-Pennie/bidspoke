@@ -109,6 +109,19 @@ executions.get('/step-duration-stats', async (c) => {
   const retries = Math.max(0, parseInt(c.req.query('retries') ?? '2'))
   if (!workflowId || !namespace) return c.json({ error: 'workflow_id and namespace required' }, 400)
 
+  const supabase = createSupabaseClient(c.env)
+
+  // Verify org owns the workflow BEFORE the cache read — otherwise a cross-org
+  // caller who knows a workflow_id + namespace could read another org's cached
+  // duration percentiles for the ~30 min a legitimate request keeps them warm.
+  const { data: wf } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', workflowId)
+    .eq('organization_id', orgId)
+    .single()
+  if (!wf) return c.json({ error: 'Workflow not found' }, 404)
+
   // v9 prefix: bump when the suggestion math changes so stale entries expire
   // immediately instead of lingering 30 min. (v5 added the per-workflow RPC
   // bound; v6 added the node-type floor; v7 moved `constants` to the DB floor;
@@ -118,17 +131,6 @@ executions.get('/step-duration-stats', async (c) => {
   const cacheKey = `step-stats:v9:${workflowId}:${namespace}:${nodeType ?? ''}:${subtype ?? ''}:${retries}`
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
-
-  const supabase = createSupabaseClient(c.env)
-
-  // Verify org owns the workflow before exposing any stats
-  const { data: wf } = await supabase
-    .from('workflows')
-    .select('id')
-    .eq('id', workflowId)
-    .eq('organization_id', orgId)
-    .single()
-  if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const SAMPLE_FLOOR = 10
   const HOUR = 60 * 60 * 1000

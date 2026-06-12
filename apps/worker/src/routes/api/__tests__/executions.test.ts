@@ -306,3 +306,58 @@ describe('POST /executions/:id/resume', () => {
     )
   })
 })
+
+// Issue #79: the org-ownership check must run BEFORE the KV cache read, or a
+// cross-org caller could read another org's cached duration percentiles.
+describe('GET /executions/step-duration-stats — org check precedes cache', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  function envWithCache(cacheGet: ReturnType<typeof vi.fn>) {
+    return {
+      ...testEnv,
+      WORKFLOW_CACHE: { get: cacheGet, put: vi.fn() },
+    } as unknown as Env
+  }
+
+  it('returns 404 without reading the cache when the workflow is in another org', async () => {
+    const cacheGet = vi.fn().mockResolvedValue(JSON.stringify({ leaked: true }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: null }, // cross-org: not owned
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await app.request(
+      '/executions/step-duration-stats?workflow_id=wf-other&namespace=foo',
+      { method: 'GET', headers: { Authorization: 'Bearer tok' } },
+      envWithCache(cacheGet),
+      mockCtx,
+    )
+    expect(res.status).toBe(404)
+    expect(cacheGet).not.toHaveBeenCalled() // never reached the cache
+  })
+
+  it('serves the cache for a workflow the caller owns', async () => {
+    const cacheGet = vi.fn().mockResolvedValue(JSON.stringify({ p50: 42 }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: testWorkflow }, // owned
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await app.request(
+      '/executions/step-duration-stats?workflow_id=wf-1&namespace=foo',
+      { method: 'GET', headers: { Authorization: 'Bearer tok' } },
+      envWithCache(cacheGet),
+      mockCtx,
+    )
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ p50: 42 })
+    expect(cacheGet).toHaveBeenCalled()
+  })
+})
