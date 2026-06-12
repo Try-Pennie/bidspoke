@@ -1,6 +1,9 @@
 // Source API key management
-// GET    /api/sources        — list sources (keys masked)
-// POST   /api/sources        — create new source, returns key once
+// GET    /api/sources        — list sources, including the full api_key. Keys are
+//                              org-scoped (a user only sees their own org's) and
+//                              power the Sources page reveal/copy + curl example.
+//                              Intra-org visibility is acceptable for this team.
+// POST   /api/sources        — create new source, returns the new api_key
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
