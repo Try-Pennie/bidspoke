@@ -4,7 +4,7 @@
  * in `runSlowExecutionCheck`; pure logic is tested here.
  */
 import { describe, it, expect } from 'vitest'
-import { detectSlowSpike, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
+import { detectSlowSpike, buildSlowDurations, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
 
 const THRESHOLD = 5000 // 5s
 
@@ -81,5 +81,66 @@ describe('detectSlowSpike()', () => {
     const result = detectSlowSpike(runs(2, 9000, 8), THRESHOLD, 2, 10)
     expect(result).not.toBeNull()
     expect(result!.slowCount).toBe(2)
+  })
+})
+
+// Issue #83: the monitor was blind to runs longer than its 5-min window (they
+// leave the started_at window before completing). buildSlowDurations combines
+// completed-in-window runs with the ongoing duration of in-flight runs, so a
+// live hang is counted before it finishes.
+describe('buildSlowDurations()', () => {
+  const NOW = 1_000_000_000
+
+  it('uses each completed run\'s final duration_ms', () => {
+    const per = buildSlowDurations(
+      [{ workflow_id: 'wf', duration_ms: 8000 }, { workflow_id: 'wf', duration_ms: 200 }],
+      [],
+      ['wf'],
+      NOW,
+    )
+    expect(per.get('wf')).toEqual([8000, 200])
+  })
+
+  it('counts an in-flight run\'s ongoing duration (now - started_at)', () => {
+    const startedAt = new Date(NOW - 8000).toISOString() // running for 8s
+    const per = buildSlowDurations([], [{ workflow_id: 'wf', started_at: startedAt }], ['wf'], NOW)
+    expect(per.get('wf')).toEqual([8000])
+  })
+
+  it('ignores rows for workflows that are not monitored', () => {
+    const per = buildSlowDurations(
+      [{ workflow_id: 'other', duration_ms: 9000 }],
+      [{ workflow_id: 'other', started_at: new Date(NOW - 9000).toISOString() }],
+      ['wf'],
+      NOW,
+    )
+    expect(per.get('wf')).toEqual([])
+    expect(per.has('other')).toBe(false)
+  })
+
+  it('a cluster of in-flight runs past the threshold fires a spike before any finishes', () => {
+    // 5 runs each hung for 8s (> 5s threshold), none completed yet.
+    const startedAt = new Date(NOW - 8000).toISOString()
+    const running = Array.from({ length: 5 }, () => ({ workflow_id: 'wf', started_at: startedAt }))
+    const per = buildSlowDurations([], running, ['wf'], NOW)
+    const spike = detectSlowSpike(per.get('wf')!, THRESHOLD)
+    expect(spike).not.toBeNull()
+    expect(spike!.slowCount).toBe(5)
+    expect(spike!.totalCount).toBe(5)
+  })
+
+  it('a fresh in-flight run (under threshold) counts toward total but not slow', () => {
+    const per = buildSlowDurations(
+      [],
+      [
+        ...Array.from({ length: 5 }, () => ({ workflow_id: 'wf', started_at: new Date(NOW - 8000).toISOString() })), // slow
+        { workflow_id: 'wf', started_at: new Date(NOW - 100).toISOString() }, // just started
+      ],
+      ['wf'],
+      NOW,
+    )
+    const spike = detectSlowSpike(per.get('wf')!, THRESHOLD)
+    expect(spike!.slowCount).toBe(5)
+    expect(spike!.totalCount).toBe(6)
   })
 })
