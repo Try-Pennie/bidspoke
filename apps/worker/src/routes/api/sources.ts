@@ -25,6 +25,39 @@ function parseKeyMap(raw: string): Record<string, string> {
   }
 }
 
+// Rebuild the global API_KEY_MAP from the api_sources table (the authoritative
+// record of every UI-managed key) rather than read-modify-writing the c.env
+// snapshot. The snapshot is point-in-time, so two concurrent mutations — or one
+// issued before a prior setCfSecret reaches the isolate — would clobber each
+// other and silently drop an unrelated source's key. Deriving from the table on
+// every mutation makes each write reflect the current DB state.
+//
+// Keys present in the live secret but NOT in the table (manually-seeded keys,
+// which have no org association and can't live in api_sources) are preserved.
+// `removeKeys` drops specific keys from the result even though they may still be
+// in the table — used on delete to revoke the key before the row is removed.
+async function rebuildKeyMap(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  currentEnvMap: Record<string, string>,
+  removeKeys: Set<string> = new Set(),
+): Promise<Record<string, string>> {
+  const { data } = await supabase.from('api_sources').select('name, api_key')
+  const rows = (data ?? []) as { name: string; api_key: string }[]
+  const dbMap: Record<string, string> = {}
+  const dbKeys = new Set<string>()
+  for (const r of rows) {
+    dbMap[r.api_key] = r.name
+    dbKeys.add(r.api_key)
+  }
+  const preserved: Record<string, string> = {}
+  for (const [k, v] of Object.entries(currentEnvMap)) {
+    if (!dbKeys.has(k)) preserved[k] = v
+  }
+  const merged: Record<string, string> = { ...preserved, ...dbMap }
+  for (const k of removeKeys) delete merged[k]
+  return merged
+}
+
 // GET /api/sources — return list of {name, api_key} from Supabase
 sources.get('/', async (c) => {
   const { orgId } = c.get('user')
@@ -46,29 +79,31 @@ sources.post('/', async (c) => {
   if (!body.name) return c.json({ error: 'name is required' }, 400)
   const name = body.name.trim().toLowerCase().replace(/\s+/g, '_')
 
-  const map = parseKeyMap(c.env.API_KEY_MAP)
-
-  // Check name not already in use
-  if (Object.values(map).includes(name)) {
-    return c.json({ error: `Source "${name}" already exists` }, 409)
-  }
-
   // Generate a 32-char hex key
   const keyBytes = crypto.getRandomValues(new Uint8Array(16))
   const apiKey = Array.from(keyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
 
-  map[apiKey] = name
-  try {
-    await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
-  } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
-  }
-
   const supabase = createSupabaseClient(c.env)
+
+  // Insert first so the rebuilt map (derived from the table) includes the new
+  // source. UNIQUE(organization_id, name) enforces uniqueness race-free.
   const { error: insertError } = await supabase
     .from('api_sources')
     .insert({ organization_id: orgId, name, api_key: apiKey })
-  if (insertError) return c.json({ error: insertError.message }, 500)
+  if (insertError) {
+    if (insertError.code === '23505') return c.json({ error: `Source "${name}" already exists` }, 409)
+    return c.json({ error: insertError.message }, 500)
+  }
+
+  const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'))
+  try {
+    await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+  } catch (err) {
+    // Roll back so a half-created source (in the table but not the auth map)
+    // doesn't linger and block re-creation with a 409.
+    await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
+    return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
+  }
 
   await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'created', userId, {
     source_name: name,
@@ -188,22 +223,21 @@ sources.delete('/:name', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
-  // Use Supabase as the authoritative existence check
-  const { data: existing } = await supabase
+  // Authoritative existence check + grab the key(s) being revoked.
+  const { data: existingRows } = await supabase
     .from('api_sources')
-    .select('name')
+    .select('api_key')
     .eq('organization_id', orgId)
     .eq('name', name)
-    .single()
 
-  if (!existing) return c.json({ error: 'Source not found' }, 404)
+  if (!existingRows || existingRows.length === 0) return c.json({ error: 'Source not found' }, 404)
+  const deletedKeys = new Set((existingRows as { api_key: string }[]).map((r) => r.api_key))
 
-  // Best-effort: remove from API_KEY_MAP secret (no-op locally if credentials not set)
-  const map = parseKeyMap(c.env.API_KEY_MAP ?? '{}')
-  for (const [key, src] of Object.entries(map)) {
-    if (src === name) delete map[key]
-  }
-  await setCfSecret('API_KEY_MAP', JSON.stringify(map), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+  // Revoke first: rebuild the map from the table minus the deleted key(s), so
+  // auth is cut before the row is removed and a stale-snapshot read-modify-write
+  // can't drop an unrelated source's key. Manual keys are preserved.
+  const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
+  await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
 
   await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
 
