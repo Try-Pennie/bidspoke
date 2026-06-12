@@ -110,6 +110,18 @@ endpoints.post('/', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
+  // Verify the workflow belongs to this org — the service-role key bypasses RLS,
+  // so without this an org-A caller could publish a public endpoint that
+  // executes an org-B workflow (with org B's env vars/secrets at runtime).
+  const { data: ownWf } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', body.workflow_id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
+
   const { data, error } = await supabase
     .from('webhook_endpoints')
     .insert({
@@ -171,7 +183,18 @@ endpoints.put('/:id', async (c) => {
     if (err) return c.json({ error: err }, 400)
     updates.path = p
   }
-  if (body.workflow_id !== undefined) updates.workflow_id = body.workflow_id
+  if (body.workflow_id !== undefined) {
+    // Re-pointing the endpoint at a different workflow must stay within the org.
+    const { data: ownWf } = await supabase
+      .from('workflows')
+      .select('id')
+      .eq('id', body.workflow_id)
+      .eq('organization_id', orgId)
+      .is('deleted_at', null)
+      .single()
+    if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
+    updates.workflow_id = body.workflow_id
+  }
   if (body.source_name !== undefined) {
     updates.source_name = body.source_name.trim().toLowerCase().replace(/\s+/g, '_')
   }
