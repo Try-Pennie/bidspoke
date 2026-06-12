@@ -54,26 +54,89 @@ export async function executeStatement(
     body.bindings = bindMap
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${jwt}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'User-Agent': 'bidspoke-worker/1.0',
-      'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
-    },
-    body: JSON.stringify(body),
-  })
+  const headers: Record<string, string> = {
+    'Authorization': `Bearer ${jwt}`,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent': 'bidspoke-worker/1.0',
+    'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
+  }
+
+  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
   const text = await res.text()
   if (!res.ok) {
     throw new Error(`Snowflake ${res.status}: ${text}`)
   }
+  return resolveStatementResult(config, headers, res.status, text)
+}
+
+// Decide the result of a 2xx statement response. A 200 carries the completed
+// result; a 202 means the statement is still running (it didn't finish within
+// the body `timeout`, e.g. a cold-warehouse resume) and only carries a
+// statementHandle to poll. Treating 202 as success would let the export stamp
+// exported_at and purge the source rows 24h later even if the MERGE never
+// completed — so poll the statement to a terminal state instead.
+// Exported for unit testing.
+export async function resolveStatementResult(
+  config: SnowflakeConfig,
+  headers: Record<string, string>,
+  status: number,
+  text: string,
+  pollOpts?: PollOptions,
+): Promise<SnowflakeStatementResponse> {
+  if (status === 202) {
+    const parsed = parseResponse(text)
+    const handle = parsed.statementHandle
+    if (!handle) throw new Error(`Snowflake returned 202 without a statementHandle: ${text}`)
+    return pollStatement(config, headers, handle, pollOpts)
+  }
+  return parseResponse(text)
+}
+
+interface PollOptions {
+  intervalMs?: number
+  maxAttempts?: number
+}
+
+const POLL_INTERVAL_MS = 2000
+const POLL_MAX_ATTEMPTS = 30 // ~60s of polling on top of the 60s server-side timeout
+
+// Poll GET /api/v2/statements/{handle} until the statement reaches a terminal
+// state. 202 = still running (keep polling); 2xx = complete (return the body);
+// non-2xx = failed (throw, so the export batch fails and retries next run
+// without stamping exported_at). Exhausting the attempts also throws.
+// Exported for unit testing.
+export async function pollStatement(
+  config: SnowflakeConfig,
+  headers: Record<string, string>,
+  handle: string,
+  pollOpts: PollOptions = {},
+): Promise<SnowflakeStatementResponse> {
+  const intervalMs = pollOpts.intervalMs ?? POLL_INTERVAL_MS
+  const maxAttempts = pollOpts.maxAttempts ?? POLL_MAX_ATTEMPTS
+  const url = `https://${snowflakeHost(config.account)}/api/v2/statements/${handle}?partition=0`
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await sleep(intervalMs)
+    const res = await fetch(url, { method: 'GET', headers })
+    const text = await res.text()
+    if (res.status === 202) continue // still running
+    if (!res.ok) throw new Error(`Snowflake poll ${res.status}: ${text}`)
+    return parseResponse(text)
+  }
+  throw new Error(`Snowflake statement ${handle} did not complete after ${maxAttempts} polls`)
+}
+
+function parseResponse(text: string): SnowflakeStatementResponse {
   try {
     return JSON.parse(text) as SnowflakeStatementResponse
   } catch {
     return { message: text }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // ============================================================
