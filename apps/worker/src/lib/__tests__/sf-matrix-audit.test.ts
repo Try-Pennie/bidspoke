@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest'
-import { computeAuditDiff, PARTNER_FLAG_FIELDS } from '../sf-matrix-audit'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { computeAuditDiff, notifyAllOrgsWithSlack, PARTNER_FLAG_FIELDS } from '../sf-matrix-audit'
+import type { MatrixConfigChange } from '../slack'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 function row(overrides: Record<string, unknown> = {}) {
   const flags: Record<string, boolean> = {}
@@ -147,5 +149,53 @@ describe('computeAuditDiff', () => {
     expect(result!.added).toHaveLength(1)
     expect(result!.edited).toHaveLength(1)
     expect(result!.removed).toHaveLength(1)
+  })
+})
+
+// Issue #85: the audit advanced its snapshot before delivering the alert, so a
+// failed notify lost the change forever (next run diffs clean). The caller now
+// gates the snapshot on notifyAllOrgsWithSlack returning true, so this must
+// return false whenever a configured, opted-in alert fails to deliver.
+describe('notifyAllOrgsWithSlack — delivery gates the snapshot', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const change: MatrixConfigChange = {
+    partner_slug: 'sofi', config_name: 'SoFi',
+    added: [{ row_id: 'r2', range: '550–649', is_sell_off: false, bid_amount: 60 }],
+    edited: [], removed: [],
+  }
+
+  // service_connections serves both the org-list query (awaited → `then`) and
+  // each getSlackConnection lookup (`maybeSingle`).
+  function makeSupabase(orgIds: string[], config: Record<string, unknown> | null) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const proxy: any = new Proxy({}, {
+      get(_, prop) {
+        if (prop === 'maybeSingle') return async () => config ? { data: { config }, error: null } : { data: null, error: null }
+        if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: orgIds.map((id) => ({ organization_id: id })), error: null }).then(res)
+        return () => proxy
+      },
+    })
+    return { from: () => proxy } as unknown as SupabaseClient
+  }
+
+  const enabled = { bot_token: 't', default_channel: '#c', matrix_alerts_enabled: true }
+
+  it('returns true when there are no Slack-connected orgs', async () => {
+    expect(await notifyAllOrgsWithSlack(makeSupabase([], null), change, '2024-01-15T18:00:00.000Z', undefined)).toBe(true)
+  })
+
+  it('returns true when the alert delivers (Slack ok:true with a ts)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
+    expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], enabled), change, '2024-01-15T18:00:00.000Z', undefined)).toBe(true)
+  })
+
+  it('returns false when Slack reports ok:false, so the caller defers the snapshot', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ ok: false, error: 'channel_not_found' }), { status: 200 }))
+    expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], enabled), change, '2024-01-15T18:00:00.000Z', undefined)).toBe(false)
+  })
+
+  it('returns true when the org opted out of matrix alerts (no-op, nothing lost)', async () => {
+    expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], { ...enabled, matrix_alerts_enabled: false }), change, '2024-01-15T18:00:00.000Z', undefined)).toBe(true)
   })
 })
