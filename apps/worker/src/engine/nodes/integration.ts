@@ -55,6 +55,26 @@ export interface IntegrationOutput {
   headers: Record<string, string>
 }
 
+// Header names whose values must never be persisted to step logs. Includes the
+// standard auth-bearing headers; the node's configured api_key header name is
+// added dynamically (see maskHeadersForLog). The real values still go on the
+// wire — only the logged/displayed copy in resolvedInput is masked.
+const SENSITIVE_HEADER_KEYS = new Set(['authorization', 'cookie', 'set-cookie', 'proxy-authorization'])
+const REDACTED = '[redacted]'
+
+function maskHeadersForLog(
+  headers: Record<string, string>,
+  apiKeyHeader?: string,
+): Record<string, string> {
+  const sensitive = new Set(SENSITIVE_HEADER_KEYS)
+  if (apiKeyHeader) sensitive.add(apiKeyHeader.toLowerCase())
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(headers)) {
+    out[k] = sensitive.has(k.toLowerCase()) ? REDACTED : v
+  }
+  return out
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function executeIntegrationNode(
@@ -145,7 +165,10 @@ export async function executeIntegrationNode(
     resolved: {
       method,
       url: resolvedUrl,
-      headers,
+      // Mask auth-bearing headers — resolvedInput is persisted to execution_steps
+      // and rendered in the Results panel, and PII redaction ships disabled, so
+      // the raw token/key would otherwise sit in plaintext in the warm log tier.
+      headers: maskHeadersForLog(headers, auth?.type === 'api_key' ? (auth.header ?? 'X-API-Key') : undefined),
       body: resolvedBodyForInput,
     },
   }
