@@ -452,4 +452,30 @@ describe('evaluateFormula', () => {
   it('returns null for a formula that produces Infinity', () => {
     expect(evaluateFormula('1 / 0', ctx({}))).toBeNull()
   })
+
+  // Issue #74: dotted bare payload references must resolve, not silently no-bid.
+  it('resolves a dotted bare payload reference', () => {
+    expect(evaluateFormula('loanInformation.loanAmount * 0.1', ctx({ loanInformation: { loanAmount: 10000 } })))
+      .toBe(1000)
+  })
+
+  it('resolves multiple dotted references in one formula', () => {
+    const payload = { financialInformation: { debt: 20000, income: 5000 } }
+    expect(evaluateFormula('financialInformation.debt - financialInformation.income', ctx(payload)))
+      .toBe(15000)
+  })
+
+  it('mixes a dotted reference with a non-dotted one', () => {
+    expect(evaluateFormula('loanInformation.loanAmount * rate', ctx({ loanInformation: { loanAmount: 1000 }, rate: 0.5 })))
+      .toBe(500)
+  })
+
+  it('still supports Math with a dotted reference', () => {
+    expect(evaluateFormula('Math.floor(loanInformation.loanAmount * 0.333)', ctx({ loanInformation: { loanAmount: 1000 } })))
+      .toBe(333)
+  })
+
+  it('returns null when a dotted reference does not resolve to a number', () => {
+    expect(evaluateFormula('loanInformation.missing * 2', ctx({ loanInformation: {} }))).toBeNull()
+  })
 })

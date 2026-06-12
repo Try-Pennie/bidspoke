@@ -515,33 +515,47 @@ export function evaluateFormula(formula: string, ctx: ExecutionContext): number 
     return name
   })
 
+  // Second pass: substitute bare payload references (e.g. `amount`, or the dotted
+  // `loanInformation.amount`) with generated identifiers too. A dotted bare
+  // reference cannot be a JS parameter name, so passing it straight to the
+  // Function constructor — as the old code did — threw a SyntaxError that the
+  // catch below swallowed, silently yielding no bid. Longest-first so a dotted
+  // id is replaced before any prefix of it.
   const identifiers = Array.from(
     new Set(stage1.match(/[a-zA-Z_][a-zA-Z0-9_.]*/g) ?? [])
   ).filter(
     (id) =>
       !/^(Math|floor|ceil|round|min|max|abs|sqrt|pow|true|false|null)$/.test(id) &&
       !(id in pathVars)
-  )
+  ).sort((a, b) => b.length - a.length)
 
-  const payloadVars: Record<string, number> = {}
   const payload = ctx.trigger.payload
+  const payloadVars: Record<string, number> = {}
+  let stage2 = stage1
+  let varIdx = 0
   for (const id of identifiers) {
-    const val = getPath(payload, id.split('.'))
-    const num = toNumber(val)
-    if (num !== null) payloadVars[id] = num
+    const num = toNumber(getPath(payload, id.split('.')))
+    if (num === null) continue // unresolved → leave as-is (evaluates to null below)
+    const name = `__var${varIdx++}`
+    payloadVars[name] = num
+    stage2 = stage2.replace(new RegExp(`\\b${escapeRegExp(id)}\\b`, 'g'), name)
   }
 
   try {
     const paramNames = ['Math', ...Object.keys(pathVars), ...Object.keys(payloadVars)]
     const paramValues = [Math, ...Object.values(pathVars), ...Object.values(payloadVars)]
     // eslint-disable-next-line no-new-func
-    const fn = new Function(...paramNames, `return (${stage1})`)
+    const fn = new Function(...paramNames, `return (${stage2})`)
     const result = fn(...paramValues)
     if (typeof result !== 'number' || !isFinite(result)) return null
     return result
   } catch {
     return null
   }
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function toNumber(val: unknown): number | null {
