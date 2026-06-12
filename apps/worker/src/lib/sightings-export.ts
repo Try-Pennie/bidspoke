@@ -98,6 +98,7 @@ const BID_COLS: ColSpec[] = [
 // ============================================================
 
 export interface ExportSummary {
+  stale_swept: number
   sightings_exported: number
   bids_exported: number
   sightings_purged: number
@@ -105,14 +106,57 @@ export interface ExportSummary {
   errors: string[]
 }
 
+const STALE_IN_FLIGHT_HOURS = 2        // grace past any execution + finalize window
+const STALE_IN_FLIGHT_FLOOR_DAYS = 90  // partition-pruning floor; the daily sweep means no row survives unswept this long
+
+// A sighting only exports once finalizeSighting flips it to 'finalized', and
+// only purges once it's exported. finalize is a best-effort waitUntil with no
+// retry, so a lost finalize (worker eviction, a statement timeout) leaves the
+// row 'in_flight' forever — never exported, never purged. This sweep finalizes
+// rows well past any execution window as 'abandoned' so they export (with the
+// identity fields written at insert) and then purge normally. The lower bound
+// keeps the scan partition-pruned on the (execution_started_at_utc-partitioned)
+// table.
+export async function sweepStaleInFlightSightings(supabase: SupabaseClient): Promise<number> {
+  const now = Date.now()
+  const cutoff = new Date(now - STALE_IN_FLIGHT_HOURS * 3600 * 1000).toISOString()
+  const floor = new Date(now - STALE_IN_FLIGHT_FLOOR_DAYS * 24 * 3600 * 1000).toISOString()
+  const { error, count } = await supabase
+    .from('lead_sightings')
+    .update(
+      {
+        outcome_state: 'finalized',
+        outcome: 'abandoned',
+        reject_reason: 'never_finalized',
+        updated_at: new Date().toISOString(),
+      },
+      { count: 'exact' },
+    )
+    .eq('outcome_state', 'in_flight')
+    .eq('is_test', false)
+    .gte('execution_started_at_utc', floor)
+    .lt('execution_started_at_utc', cutoff)
+  if (error) throw new Error(`stale in_flight sweep failed: ${error.message}`)
+  return count ?? 0
+}
+
 export async function runSightingsExport(supabase: SupabaseClient, env: Env): Promise<ExportSummary> {
   const config = readSnowflakeConfig(env)
   const summary: ExportSummary = {
+    stale_swept: 0,
     sightings_exported: 0,
     bids_exported: 0,
     sightings_purged: 0,
     bids_purged: 0,
     errors: [],
+  }
+
+  // Sweep stale in_flight rows to 'finalized' FIRST so they're picked up by the
+  // sightings export in this same run.
+  try {
+    summary.stale_swept = await sweepStaleInFlightSightings(supabase)
+  } catch (e) {
+    summary.errors.push(`stale in_flight sweep: ${formatErr(e)}`)
   }
 
   try {
