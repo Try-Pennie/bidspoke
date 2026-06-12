@@ -611,6 +611,20 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const versionId = c.req.param('version_id') as string
   const supabase = createSupabaseClient(c.env)
 
+  // Verify ownership — the service-role key bypasses RLS, so without this an
+  // org-B caller who knows an org-A (workflow_id, version_id) pair could
+  // overwrite org A's live definition and insert into its version history.
+  // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
+  const { error: ownerError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+
+  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+
   const { data: version, error: versionError } = await supabase
     .from('workflow_versions')
     .select('definition, version_number')

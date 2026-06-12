@@ -382,11 +382,30 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
+        workflows: { single: existingWorkflow },  // ownership passes — exercise the version lookup
         workflow_versions: { single: null },
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-ghost/restore')
     expect(res.status).toBe(404)
+  })
+
+  it('returns 404 and writes nothing when the workflow belongs to another org', async () => {
+    // Ownership lookup is org-scoped — a workflow in another org yields no row,
+    // so the handler must bail before touching versions, the definition, or the
+    // cache. (Service-role key bypasses RLS, so this check is the only guard.)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: null },                 // cross-org: ownership fails
+        workflow_versions: { single: { id: 'ver-1', definition: { nodes: [] }, version_number: 1 } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-other/versions/ver-1/restore')
+    expect(res.status).toBe(404)
+    // No definition overwrite, no version-history insert, no cache bust, no audit.
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
   it('returns 200 with the new version number', async () => {
