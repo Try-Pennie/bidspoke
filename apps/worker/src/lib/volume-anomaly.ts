@@ -61,9 +61,14 @@ export function detectAnomaly(
   const yesterdayCount = dailyCounts[yesterday] ?? 0
   const yesterdayIsWeekend = isWeekend(yesterday)
 
-  // Baseline = same-day-type prior days (weekend vs weekday), sorted ascending
+  // Baseline = same-day-type days STRICTLY BEFORE the measured day, sorted
+  // ascending. `day < yesterday` excludes both yesterday and today: the rollup
+  // refreshes every 5 minutes and the check runs at 13:00 UTC, so today's
+  // partial (~13h) count would otherwise be averaged in as a full baseline day,
+  // deflating the baseline and flipping the alert (drops under-fire, spikes
+  // over-fire).
   const baselineDays = Object.entries(dailyCounts)
-    .filter(([day]) => day !== yesterday && isWeekend(day) === yesterdayIsWeekend)
+    .filter(([day]) => day < yesterday && isWeekend(day) === yesterdayIsWeekend)
     .sort(([a], [b]) => a.localeCompare(b))
 
   if (baselineDays.length < MIN_BASELINE_DAYS) return null  // not enough same-day-type data
