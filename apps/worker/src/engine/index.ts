@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
-import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult } from './idempotency'
+import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult, clearIdempotency } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
 import { loadEnvVars } from '../lib/env-loader'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
@@ -123,14 +123,16 @@ export async function executeWorkflow(
 
   // Resolve idempotency key (needs definition)
   const idempotencyConfig = definition.trigger.config.idempotency
-  let idempotencyKey: string | null = null
+  let resolvedIdempotencyKey: string | null = null
 
   if (idempotencyConfig?.enabled) {
-    idempotencyKey = options.idempotencyKeyHeader ?? null
-    if (!idempotencyKey && idempotencyConfig.derive_from_fields?.length) {
-      idempotencyKey = await deriveIdempotencyKey(payload, idempotencyConfig.derive_from_fields)
+    resolvedIdempotencyKey = options.idempotencyKeyHeader ?? null
+    if (!resolvedIdempotencyKey && idempotencyConfig.derive_from_fields?.length) {
+      resolvedIdempotencyKey = await deriveIdempotencyKey(payload, idempotencyConfig.derive_from_fields)
     }
   }
+  // const so the useIdempotency alias below narrows it at the call sites
+  const idempotencyKey = resolvedIdempotencyKey
 
   // Clamp the configured TTL: `?? 300` alone wouldn't catch a 0 (the UI can
   // persist ttl_seconds: 0 from a cleared number input), and Cloudflare KV
@@ -139,12 +141,25 @@ export async function executeWorkflow(
   // same lead could fire duplicate partner bids. Floor at the KV minimum.
   const ttl = Math.max(idempotencyConfig?.ttl_seconds || 300, 60)
 
+  // Resume/replay are deliberate operator recovery actions: they must always
+  // execute, never be answered from the cache (the key derives from the same
+  // stored payload, so without this the recovery action is exactly the request
+  // most likely to hit the cached entry). They still write back on success so
+  // a subsequent source retry of the same lead replays the recovered response
+  // instead of re-running partner bids. Test runs never touch the cache at
+  // all — a test payload matching a live lead must neither read nor poison
+  // the production entry.
+  const isRecoveryRun = Boolean(options.resumeFromExecutionId || options.parentExecutionId)
+  const useIdempotency = idempotencyKey !== null && !options.isTest
+
   // Parallel: idempotency check + env var load (both independent once we have definition/org_id)
   const executionId = options.executionId ?? crypto.randomUUID()
   const startedAt = new Date().toISOString()
 
   const [idempotencyCached, envVars] = await Promise.all([
-    idempotencyKey ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey) : Promise.resolve(null),
+    useIdempotency && !isRecoveryRun
+      ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey)
+      : Promise.resolve(null),
     loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
     // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
@@ -158,7 +173,16 @@ export async function executeWorkflow(
       return { executionId, response: { error: 'Duplicate request in progress' }, status: 409, traceId }
     }
     log({ event: 'idempotency_hit', trace_id: traceId, workflow_id: workflowId, status: 'replay' })
-    return { executionId, response: idempotencyCached.response, status: 200, traceId, idempotentReplay: true }
+    return {
+      executionId,
+      response: idempotencyCached.response,
+      // Replay the original wire contract. Entries cached before
+      // responseStatus existed carry neither field — default to 200.
+      status: idempotencyCached.responseStatus ?? 200,
+      traceId,
+      idempotentReplay: true,
+      responseHeaders: idempotencyCached.responseHeaders,
+    }
   }
 
   // Fire the idempotency-processing KV write and the execution-record insert
@@ -167,7 +191,7 @@ export async function executeWorkflow(
   // FK on workflow_executions.id, so the record must exist before the batch
   // insert). This removes ~50-100ms of Supabase insert latency from the
   // critical path before the first step runs.
-  const idempotencyProcessingPromise = idempotencyKey
+  const idempotencyProcessingPromise = useIdempotency && !isRecoveryRun
     ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
     : Promise.resolve()
   const executionRecordPromise = createExecutionRecord(supabase, {
@@ -559,12 +583,30 @@ export async function executeWorkflow(
     )
   }
 
-  // Cache idempotency result
-  if (idempotencyKey) {
-    executionCtx.waitUntil(
-      setIdempotencyResult(env.IDEMPOTENCY, workflowId, idempotencyKey, response, ttl)
-        .catch((e) => console.error('[idempotency] failed to cache result:', e))
-    )
+  // Cache idempotency result — only for completed executions. A failed run
+  // clears the entry instead: caching the error would hand the source's retry
+  // the stale failure (previously as a bare 200, so upstream stopped retrying
+  // and the lead was lost for the whole TTL). Recovery runs (resume/replay)
+  // write back on success but leave the cache untouched on failure — a failed
+  // replay must not clobber a legitimately cached result for the same lead.
+  // Both writes chain on the processing put so the earlier unawaited PUT can't
+  // land after them on a fast walk.
+  if (useIdempotency) {
+    if (executionStatus === 'completed') {
+      executionCtx.waitUntil(
+        idempotencyProcessingPromise
+          .catch(() => {})
+          .then(() => setIdempotencyResult(env.IDEMPOTENCY, workflowId, idempotencyKey, response, ttl, walkStatus, walkHeaders))
+          .catch((e) => console.error('[idempotency] failed to cache result:', e))
+      )
+    } else if (!isRecoveryRun) {
+      executionCtx.waitUntil(
+        idempotencyProcessingPromise
+          .catch(() => {})
+          .then(() => clearIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey))
+          .catch((e) => console.error('[idempotency] failed to clear failed-run entry:', e))
+      )
+    }
   }
 
   return {
