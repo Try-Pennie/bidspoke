@@ -69,7 +69,9 @@ import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import {
   renameStepReferences,
   countStepReferences,
-  renameFallbackNamespace,
+  countBareNamespaceRefs,
+  renameBareNamespaceFields,
+  renameNamespaceInList,
 } from '@/lib/rename-step-references'
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 
@@ -1030,10 +1032,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     if (!selectedNode) return false
     const ns = (selectedNode.data as unknown as CanvasNodeData).namespace
     if (!ns) return false
+    if ((triggerRef.current.config.success_node_namespaces ?? []).includes(ns)) return true
     return nodes.some((n) => {
       if (n.id === selectedNode.id) return false
       const data = n.data as unknown as CanvasNodeData
-      if ((data?.config as Record<string, unknown> | undefined)?.fallback_node === ns) return true
+      if (countBareNamespaceRefs(data?.config, ns) > 0) return true
       return countStepReferences(data?.config, ns) > 0 || countStepReferences(data?.variables, ns) > 0
     })
   }, [selectedNode, nodes])
@@ -2071,22 +2074,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nextData.namespace = newNs
             changed = true
           } else {
-            // Other nodes: rewrite references inside config + variables.
+            // Other nodes: rewrite steps.X references plus the bare-namespace
+            // fields (fallback_node, parallel_source) inside config + variables.
             const config = (nextData.config ?? {}) as Record<string, unknown>
-            const newConfig = renameStepReferences(config, oldNs, newNs) as Record<string, unknown>
+            let newConfig = renameStepReferences(config, oldNs, newNs) as Record<string, unknown>
+            newConfig = renameBareNamespaceFields(newConfig, oldNs, newNs) as Record<string, unknown>
             if (newConfig !== config) {
-              // Also fix fallback_node which stores a bare namespace.
-              const withFallback = {
-                ...newConfig,
-                fallback_node: renameFallbackNamespace(newConfig.fallback_node, oldNs, newNs),
-              }
-              nextData.config = withFallback
-              changed = true
-            } else if (renameFallbackNamespace(config.fallback_node, oldNs, newNs) !== config.fallback_node) {
-              nextData.config = {
-                ...config,
-                fallback_node: renameFallbackNamespace(config.fallback_node, oldNs, newNs),
-              }
+              nextData.config = newConfig
               changed = true
             }
             const variables = nextData.variables as Record<string, string> | undefined
@@ -2101,9 +2095,20 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           return changed ? { ...n, data: nextData } : n
         })
       )
+      // The trigger's success_node_namespaces is a bare-namespace list that
+      // lives on the trigger ref, not on a node config, so rewrite it here too.
+      const successList = triggerRef.current.config.success_node_namespaces
+      const renamedSuccess = renameNamespaceInList(successList, oldNs, newNs)
+      if (renamedSuccess !== successList) {
+        triggerRef.current = {
+          ...triggerRef.current,
+          config: { ...triggerRef.current.config, success_node_namespaces: renamedSuccess as string[] },
+        }
+        setTriggerVersion((v) => v + 1)
+      }
       setIsDirty(true)
     },
-    [setNodes]
+    [setNodes, setTriggerVersion]
   )
 
   const handleRenameRequest = useCallback(
@@ -2115,9 +2120,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         if (data?.namespace === oldNs) continue
         canvasRefs += countStepReferences(data?.config, oldNs)
         canvasRefs += countStepReferences(data?.variables, oldNs)
-        if ((data?.config as Record<string, unknown> | undefined)?.fallback_node === oldNs) {
-          canvasRefs += 1
-        }
+        // Bare-namespace fields: fallback_node + parallel_source.
+        canvasRefs += countBareNamespaceRefs(data?.config, oldNs)
+      }
+      // The trigger's success_node_namespaces references nodes by bare namespace.
+      if ((triggerRef.current.config.success_node_namespaces ?? []).includes(oldNs)) {
+        canvasRefs += 1
       }
       // Partner formula impact (workflow + cross-workflow analysis).
       let partnerFormulas: PartnerFormulaImpact[] = []

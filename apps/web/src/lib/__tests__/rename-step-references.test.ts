@@ -3,6 +3,9 @@ import {
   renameStepReferences,
   countStepReferences,
   renameFallbackNamespace,
+  countBareNamespaceRefs,
+  renameBareNamespaceFields,
+  renameNamespaceInList,
 } from '../rename-step-references'
 
 describe('renameStepReferences', () => {
@@ -127,5 +130,52 @@ describe('renameFallbackNamespace', () => {
   it('leaves non-strings untouched', () => {
     expect(renameFallbackNamespace(null, 'old', 'new')).toBe(null)
     expect(renameFallbackNamespace(undefined, 'old', 'new')).toBe(undefined)
+  })
+})
+
+// Issue #60: parallel_source and the trigger's success_node_namespaces are bare
+// namespaces missed by the steps.X rename machinery.
+describe('countBareNamespaceRefs', () => {
+  it('counts fallback_node and parallel_source pointing at the namespace', () => {
+    expect(countBareNamespaceRefs({ fallback_node: 'old' }, 'old')).toBe(1)
+    expect(countBareNamespaceRefs({ parallel_source: 'old' }, 'old')).toBe(1)
+    expect(countBareNamespaceRefs({ fallback_node: 'old', parallel_source: 'old' }, 'old')).toBe(2)
+  })
+
+  it('is 0 when nothing matches', () => {
+    expect(countBareNamespaceRefs({ parallel_source: 'other' }, 'old')).toBe(0)
+    expect(countBareNamespaceRefs({}, 'old')).toBe(0)
+    expect(countBareNamespaceRefs(null, 'old')).toBe(0)
+  })
+})
+
+describe('renameBareNamespaceFields', () => {
+  it('rewrites parallel_source on a bid_evaluation config', () => {
+    expect(renameBareNamespaceFields({ strategy: 'highest_bid', parallel_source: 'bid_race' }, 'bid_race', 'bids'))
+      .toEqual({ strategy: 'highest_bid', parallel_source: 'bids' })
+  })
+
+  it('rewrites fallback_node', () => {
+    expect(renameBareNamespaceFields({ fallback_node: 'old' }, 'old', 'new')).toEqual({ fallback_node: 'new' })
+  })
+
+  it('returns the same reference when nothing changed', () => {
+    const cfg = { parallel_source: 'other', x: 1 }
+    expect(renameBareNamespaceFields(cfg, 'old', 'new')).toBe(cfg)
+  })
+})
+
+describe('renameNamespaceInList', () => {
+  it('renames the namespace within the list', () => {
+    expect(renameNamespaceInList(['a', 'win_node', 'b'], 'win_node', 'winner')).toEqual(['a', 'winner', 'b'])
+  })
+
+  it('returns the same reference when the namespace is absent', () => {
+    const list = ['a', 'b']
+    expect(renameNamespaceInList(list, 'old', 'new')).toBe(list)
+  })
+
+  it('leaves non-arrays untouched', () => {
+    expect(renameNamespaceInList(undefined, 'old', 'new')).toBeUndefined()
   })
 })

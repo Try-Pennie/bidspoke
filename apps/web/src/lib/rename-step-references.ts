@@ -103,3 +103,50 @@ export function renameFallbackNamespace(value: unknown, oldNs: string, newNs: st
   if (typeof value === 'string' && value === oldNs) return newNs
   return value
 }
+
+// Config fields that store a raw namespace (no `steps.` prefix), so they aren't
+// caught by renameStepReferences/countStepReferences. They must be rewritten and
+// counted on a step rename or they silently break at runtime:
+//   - fallback_node:    on_error fallback target.
+//   - parallel_source:  bid_evaluation reads ctx.steps[config.parallel_source]
+//                       and throws if the parallel step was renamed.
+const BARE_NAMESPACE_FIELDS = ['fallback_node', 'parallel_source'] as const
+
+/**
+ * How many bare-namespace config fields point at `ns`. Used so a rename that
+ * only touches these fields still prompts (instead of taking the silent path).
+ */
+export function countBareNamespaceRefs(config: unknown, ns: string): number {
+  if (!ns || !config || typeof config !== 'object') return 0
+  let n = 0
+  for (const field of BARE_NAMESPACE_FIELDS) {
+    if ((config as Record<string, unknown>)[field] === ns) n += 1
+  }
+  return n
+}
+
+/**
+ * Rewrite every bare-namespace config field equal to oldNs → newNs. Returns a
+ * new config only when something changed (same reference otherwise).
+ */
+export function renameBareNamespaceFields(config: unknown, oldNs: string, newNs: string): unknown {
+  if (oldNs === newNs || !oldNs || !newNs || !config || typeof config !== 'object') return config
+  let changed = false
+  const out: Record<string, unknown> = { ...(config as Record<string, unknown>) }
+  for (const field of BARE_NAMESPACE_FIELDS) {
+    if (out[field] === oldNs) {
+      out[field] = newNs
+      changed = true
+    }
+  }
+  return changed ? out : config
+}
+
+/**
+ * Rename a bare namespace within a list of namespaces — e.g. the trigger's
+ * `success_node_namespaces`. Returns a new array only when something changed.
+ */
+export function renameNamespaceInList(value: unknown, oldNs: string, newNs: string): unknown {
+  if (oldNs === newNs || !oldNs || !newNs || !Array.isArray(value) || !value.includes(oldNs)) return value
+  return value.map((v) => (v === oldNs ? newNs : v))
+}
