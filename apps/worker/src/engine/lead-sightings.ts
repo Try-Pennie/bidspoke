@@ -433,9 +433,15 @@ export async function finalizeSighting(
   }
 
   if (fields.winning_partner_slug) {
+    // Also clear exported_at: if this bid was already exported with the insert-
+    // time is_winner=false (an execution in flight at the nightly export instant),
+    // the row's winner flag was corrected only in Supabase and would never reach
+    // Snowflake. Nulling exported_at re-queues it for the next export, which
+    // re-MERGEs the corrected flag (the MERGE is idempotent on id). In the common
+    // case the bid hasn't exported yet, so exported_at is already null — a no-op.
     const { error: bidError } = await supabase
       .from('lead_sighting_bids')
-      .update({ is_winner: true })
+      .update({ is_winner: true, exported_at: null })
       .eq('execution_id', execution_id)
       .eq('partner_slug', fields.winning_partner_slug)
 
