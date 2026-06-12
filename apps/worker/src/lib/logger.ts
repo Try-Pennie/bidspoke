@@ -19,6 +19,7 @@ export type LogEvent =
   | 'partner_bid'
   | 'circuit_open'
   | 'cap_check'
+  | 'dedup_check_failed'
   | 'idempotency_hit'
 
 export interface LogFields {

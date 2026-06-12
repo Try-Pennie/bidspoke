@@ -236,7 +236,7 @@ export async function executePartnerBidNode(
 
   // 5. Dedup check
   if (p.dedup_endpoint) {
-    const isDuplicate = await checkDedup(p.dedup_endpoint, ctx)
+    const isDuplicate = await checkDedup(p.dedup_endpoint, ctx, p.slug)
     if (isDuplicate) {
       // Partner never called — release the half-open probe so the next lead can.
       if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
@@ -415,21 +415,47 @@ function skip(slug: string, reason: SkipReason): StepExecutionResult {
   return { output }
 }
 
+const DEDUP_TIMEOUT_MS = 5000
+
+// Returns true only when the partner's dedup endpoint positively reports a
+// duplicate. Any failure (non-2xx, network error, timeout) fails OPEN — returns
+// false so the lead still bids — but is now logged: a silently-down dedup
+// endpoint would otherwise re-submit every duplicate (potentially double-charged)
+// with no signal. (Whether dedup should fail open vs closed is a separate
+// product decision — see issue notes — not changed here.)
 async function checkDedup(
   endpoint: string,
-  ctx: ExecutionContext
+  ctx: ExecutionContext,
+  slug: string,
 ): Promise<boolean> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), DEDUP_TIMEOUT_MS)
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Trace-Id': ctx.trigger.trace_id },
       body: JSON.stringify(ctx.trigger.payload),
+      signal: controller.signal,
     })
-    if (!res.ok) return false
+    if (!res.ok) {
+      log({ event: 'dedup_check_failed', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: slug, reason: 'non_2xx', http_status: res.status })
+      return false
+    }
     const data = await res.json() as Record<string, unknown>
     return !!(data.duplicate || data.is_duplicate)
-  } catch {
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === 'AbortError'
+    log({
+      event: 'dedup_check_failed',
+      trace_id: ctx.trigger.trace_id,
+      workflow_id: ctx.trigger.workflow_id,
+      partner_id: slug,
+      reason: aborted ? 'timeout' : 'error',
+      error_message: err instanceof Error ? err.message : String(err),
+    })
     return false
+  } finally {
+    clearTimeout(timer)
   }
 }
 
