@@ -29,6 +29,11 @@ export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const WINDOW_MINUTES = 5
 export const MIN_SLOW_COUNT = 5
 export const SLOW_FRACTION_PCT = 50
+// How far back to bound started_at so the scan stays partition-pruned on the
+// (started_at-partitioned) workflow_executions table. Long enough to cover any
+// run that completes within the alerting window; runs hung beyond this are
+// caught by the in-flight pass while they're still running.
+export const LOOKBACK_MINUTES = 60
 
 export interface SlowSpike {
   slowCount: number
@@ -70,6 +75,26 @@ interface KvLike {
 }
 
 /**
+ * Pure combine: per-workflow duration lists for detectSlowSpike, mixing runs
+ * that completed in the window (their final duration_ms) with runs still in
+ * flight (their ongoing duration so far, now - started_at). A still-running run
+ * is treated like any other: slow iff its ongoing duration already exceeds the
+ * threshold — so a live hang is counted before it ever finishes.
+ */
+export function buildSlowDurations(
+  completed: { workflow_id: string; duration_ms: number }[],
+  running: { workflow_id: string; started_at: string }[],
+  monitoredIds: string[],
+  now: number,
+): Map<string, number[]> {
+  const perWorkflow = new Map<string, number[]>()
+  for (const id of monitoredIds) perWorkflow.set(id, [])
+  for (const r of completed) perWorkflow.get(r.workflow_id)?.push(r.duration_ms)
+  for (const r of running) perWorkflow.get(r.workflow_id)?.push(now - new Date(r.started_at).getTime())
+  return perWorkflow
+}
+
+/**
  * Run the slow-execution-spike check across all active workflows that have a
  * duration_alert_ms configured, in orgs with Slack connected. Called from the
  * Worker scheduled handler on the minute cron.
@@ -108,33 +133,60 @@ export async function runSlowExecutionCheck(
 
   const now = Date.now()
   const windowStart = new Date(now - WINDOW_MINUTES * 60 * 1000).toISOString()
+  // A slow run only gets a duration_ms when it COMPLETES — and by then its
+  // started_at has left the window, so windowing on started_at made the monitor
+  // structurally blind to exactly the long runs it exists to catch. Window the
+  // completed set on completed_at, and separately count in-flight runs already
+  // past their threshold. Both queries keep a started_at floor so the scan stays
+  // partition-pruned on the started_at-partitioned table.
+  const lookbackStart = new Date(now - LOOKBACK_MINUTES * 60 * 1000).toISOString()
   const monitoredIds = [...thresholds.keys()]
 
   // Page around PostgREST's 1000-row cap. At high volume a single page would
   // truncate the window and undercount both slow runs and the denominator.
+  // Stable ordering is required across pages — without it Postgres recomputes
+  // each OFFSET against an independent scan, silently skipping/duplicating rows.
   const PAGE_SIZE = 1000
-  const rows: { workflow_id: string; duration_ms: number }[] = []
+
+  // 1. Runs that COMPLETED within the alerting window (final duration known).
+  const completed: { workflow_id: string; duration_ms: number }[] = []
   for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
     const { data: page } = await supabase
       .from('workflow_executions')
       .select('workflow_id, duration_ms')
       .in('workflow_id', monitoredIds)
-      .gte('started_at', windowStart)
+      .gte('started_at', lookbackStart)
+      .gte('completed_at', windowStart)
       .eq('is_test', false)
       .not('duration_ms', 'is', null)
-      // Stable ordering is required across pages — without it Postgres recomputes
-      // each OFFSET against an independent scan, silently skipping/duplicating rows.
+      .order('completed_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1)
+    if (!page || page.length === 0) break
+    completed.push(...(page as { workflow_id: string; duration_ms: number }[]))
+    if (page.length < PAGE_SIZE) break
+  }
+
+  // 2. Runs STILL IN FLIGHT — buildSlowDurations counts the ones already past
+  //    their threshold as slow now, so a live hang fires before any run finishes.
+  const running: { workflow_id: string; started_at: string }[] = []
+  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
+    const { data: page } = await supabase
+      .from('workflow_executions')
+      .select('workflow_id, started_at')
+      .in('workflow_id', monitoredIds)
+      .gte('started_at', lookbackStart)
+      .eq('is_test', false)
+      .eq('status', 'running')
       .order('started_at', { ascending: true })
       .order('id', { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1)
     if (!page || page.length === 0) break
-    rows.push(...(page as { workflow_id: string; duration_ms: number }[]))
+    running.push(...(page as { workflow_id: string; started_at: string }[]))
     if (page.length < PAGE_SIZE) break
   }
 
-  const perWorkflow = new Map<string, number[]>()
-  for (const id of monitoredIds) perWorkflow.set(id, [])
-  for (const r of rows) perWorkflow.get(r.workflow_id)?.push(r.duration_ms)
+  const perWorkflow = buildSlowDurations(completed, running, monitoredIds, now)
 
   for (const wf of workflows) {
     const wfId = wf.id as string
