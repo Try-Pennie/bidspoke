@@ -81,25 +81,6 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
   const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
   const diff = computeAuditDiff(existing, sfRows)
 
-  // Apply state to the snapshot table — upsert all fetched rows, delete missing ones.
-  if (sfRows.length > 0) {
-    const records = sfRows.map((r) => toSnapshotRow(r, startedAt))
-    const { error } = await supabase
-      .from('sf_bid_matrix_audit')
-      .upsert(records, { onConflict: 'source_id' })
-    if (error) throw new Error(`sf_bid_matrix_audit upsert failed: ${error.message}`)
-  }
-
-  const fetchedIds = new Set(sfRows.map((r) => r.Id))
-  const removedIds = existing.filter((e) => !fetchedIds.has(e.source_id)).map((e) => e.source_id)
-  if (removedIds.length > 0) {
-    const { error } = await supabase
-      .from('sf_bid_matrix_audit')
-      .delete()
-      .in('source_id', removedIds)
-    if (error) throw new Error(`sf_bid_matrix_audit delete failed: ${error.message}`)
-  }
-
   const result: AuditResult = {
     rows_fetched: sfRows.length,
     rows_added: diff?.added.length ?? 0,
@@ -108,9 +89,38 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
     alerted: false,
   }
 
+  // Alert BEFORE advancing the snapshot. This audit exists because a silent
+  // mid-day matrix edit broke bidding for ~3 hours, so a lost alert is the one
+  // failure mode it must not have. If delivery fails we leave the snapshot
+  // stale so the next hourly run re-diffs the same change and retries. (A
+  // duplicate alert to an already-notified org on a partial failure is
+  // acceptable; a lost matrix-change alert is not.)
+  let delivered = true
   if (diff) {
-    await notifyAllOrgsWithSlack(supabase, diff, startedAt, deriveBidMatrixListUrl(instanceUrl))
-    result.alerted = true
+    delivered = await notifyAllOrgsWithSlack(supabase, diff, startedAt, deriveBidMatrixListUrl(instanceUrl))
+    result.alerted = delivered
+  }
+
+  // Advance the snapshot only when there's nothing pending to alert, or the
+  // alert was delivered.
+  if (!diff || delivered) {
+    if (sfRows.length > 0) {
+      const records = sfRows.map((r) => toSnapshotRow(r, startedAt))
+      const { error } = await supabase
+        .from('sf_bid_matrix_audit')
+        .upsert(records, { onConflict: 'source_id' })
+      if (error) throw new Error(`sf_bid_matrix_audit upsert failed: ${error.message}`)
+    }
+
+    const fetchedIds = new Set(sfRows.map((r) => r.Id))
+    const removedIds = existing.filter((e) => !fetchedIds.has(e.source_id)).map((e) => e.source_id)
+    if (removedIds.length > 0) {
+      const { error } = await supabase
+        .from('sf_bid_matrix_audit')
+        .delete()
+        .in('source_id', removedIds)
+      if (error) throw new Error(`sf_bid_matrix_audit delete failed: ${error.message}`)
+    }
   }
 
   return result
@@ -251,27 +261,35 @@ async function querySalesforceMatrixRows(env: Env): Promise<SalesforceBidRow[]> 
 
 // ── Slack notify ──────────────────────────────────────────────────────────────
 
-async function notifyAllOrgsWithSlack(
+// Returns true only when EVERY org's alert was delivered (or was a no-op —
+// org opted out / no Slack). A false return means the caller must NOT advance
+// the snapshot, so the change is re-diffed and retried next run.
+// Exported for unit testing.
+export async function notifyAllOrgsWithSlack(
   supabase: SupabaseClient,
   change: MatrixConfigChange,
   changedAt: string,
   matrixUrl: string | undefined
-): Promise<void> {
+): Promise<boolean> {
   const { data: orgs } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
 
   const orgIds = Array.from(new Set(((orgs ?? []) as { organization_id: string }[]).map((r) => r.organization_id)))
-  if (orgIds.length === 0) return
+  if (orgIds.length === 0) return true
 
+  let allDelivered = true
   for (const orgId of orgIds) {
     try {
-      await sendMatrixChangeAlert(supabase, orgId, null, { changed_at: changedAt, changes: [change], matrix_url: matrixUrl })
+      const delivered = await sendMatrixChangeAlert(supabase, orgId, null, { changed_at: changedAt, changes: [change], matrix_url: matrixUrl })
+      if (!delivered) allDelivered = false
     } catch (err) {
       console.error(`[sf-matrix-audit] slack alert failed for org ${orgId}:`, err)
+      allDelivered = false
     }
   }
+  return allDelivered
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

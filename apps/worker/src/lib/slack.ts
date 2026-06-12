@@ -315,16 +315,20 @@ export interface MatrixRowEdit {
   source_url?: string
 }
 
+// Returns true when there was nothing to deliver (no Slack connection, matrix
+// alerts opted out, or no changes) OR the message was delivered; false when a
+// configured, opted-in alert failed to send. Callers that defer state on a
+// failed alert (sf-matrix-audit) gate on this.
 export async function sendMatrixChangeAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
   payload: MatrixChangeAlertPayload
-): Promise<void> {
+): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
-  if (!connection) return
-  if (!connection.matrix_alerts_enabled) return
-  if (payload.changes.length === 0) return
+  if (!connection) return true
+  if (!connection.matrix_alerts_enabled) return true
+  if (payload.changes.length === 0) return true
 
   const channel = channelOverride || connection.matrix_alerts_channel || connection.default_channel
   const totalAdded = payload.changes.reduce((s, c) => s + c.added.length, 0)
@@ -385,7 +389,7 @@ export async function sendMatrixChangeAlert(
     })
   }
 
-  await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)
+  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)) !== null
 }
 
 // Structural shapes of one workflow's offending nodes. Defined here (rather than
