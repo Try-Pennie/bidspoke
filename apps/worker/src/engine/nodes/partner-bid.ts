@@ -167,7 +167,7 @@ export async function executePartnerBidNode(
   const attemptedAt = new Date()
   const logBid = (input: Partial<Parameters<typeof recordBidAttempt>[1]> & { partner_slug: string; attempted_at_utc: Date }) => {
     if (!ctx.trigger.sighting_id) return
-    void recordBidAttempt(supabase, {
+    const write = recordBidAttempt(supabase, {
       sighting_id: ctx.trigger.sighting_id,
       trace_id: ctx.trigger.trace_id,
       execution_id: ctx.trigger.execution_id ?? '',
@@ -184,6 +184,11 @@ export async function executePartnerBidNode(
       skip_reason: input.skip_reason ?? null,
       is_test: false,
     })
+    // Track the insert so finalizeSighting can await it before its winner
+    // UPDATE. Otherwise the UPDATE (matched on execution_id + partner_slug)
+    // races the unawaited insert, matches zero rows, and the winning bid stays
+    // is_winner=false permanently (#88). recordBidAttempt never rejects.
+    ;(ctx.pendingBidWrites ??= []).push(write)
   }
 
   // 2. Inactive check
