@@ -2,11 +2,39 @@ import { describe, it, expect } from 'vitest'
 import {
   classifyHttpError,
   classifyTransportError,
+  classifyStepError,
   evaluateResponseClassification,
   shouldSuppressAlert,
   isSaturationError,
 } from '../error-classifier'
+import { PartnerApiError } from '../partner-bid-error'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
+
+// ── classifyStepError (issue #53) ─────────────────────────────────────────────
+
+describe('classifyStepError', () => {
+  it('honors a PartnerApiError errorType of permanent (so the retry logic does not retry it)', () => {
+    expect(classifyStepError(new PartnerApiError('declined', 'permanent', false))).toBe('permanent')
+  })
+
+  it('honors a PartnerApiError errorType of transient', () => {
+    expect(classifyStepError(new PartnerApiError('blip', 'transient', false))).toBe('transient')
+  })
+
+  it('passes through a PartnerApiError business-rejection (null) — not transient, so not retried', () => {
+    expect(classifyStepError(new PartnerApiError('rejected', null, false))).toBeNull()
+  })
+
+  it('classifies a thrown Response by its HTTP status', () => {
+    expect(classifyStepError(new Response(null, { status: 400 }))).toBe('permanent')
+    expect(classifyStepError(new Response(null, { status: 503 }))).toBe('transient')
+  })
+
+  it('falls back to the transport heuristic for a generic error', () => {
+    expect(classifyStepError(new Error('fetch failed'))).toBe('transient')
+    expect(classifyStepError(Object.assign(new Error('x'), { permanent: true }))).toBe('permanent')
+  })
+})
 
 // ── classifyHttpError ─────────────────────────────────────────────────────────
 

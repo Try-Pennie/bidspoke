@@ -374,7 +374,16 @@ export async function executePartnerBidNode(
       errorType = classifyHttpError(err.status)
       httpStatus = err.status
     } else {
-      errorType = 'transient'
+      // callBidApi throws a plain Error with `.status` attached for a non-ok
+      // response that has no response_classification override. Classify by that
+      // status so a permanent 4xx isn't mislabeled transient (and then retried).
+      const status = (err as { status?: number }).status
+      if (typeof status === 'number') {
+        errorType = classifyHttpError(status)
+        httpStatus = status
+      } else {
+        errorType = 'transient'
+      }
     }
 
     logBid({

@@ -1,4 +1,17 @@
 import type { ErrorType } from '../types'
+import { PartnerApiError } from './partner-bid-error'
+
+// Unified classification for an error thrown by a step executor. A
+// PartnerApiError already carries an authoritative errorType (set by the
+// resolver's response_classification override or the partner-bid catch), so
+// honor it first — otherwise it falls through to the transport default and a
+// permanent partner 4xx is misread as transient and retried. Falls back to
+// HTTP status (thrown Response) and then the transport heuristic.
+export function classifyStepError(err: unknown): ErrorType {
+  if (err instanceof PartnerApiError) return err.errorType
+  if (err instanceof Response) return classifyHttpError(err.status)
+  return classifyTransportError(err)
+}
 
 // PRD Section 11.1 — default classification by HTTP status
 export function classifyHttpError(status: number): ErrorType {
