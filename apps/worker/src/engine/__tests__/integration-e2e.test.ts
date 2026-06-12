@@ -509,23 +509,26 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
 
 // ── Parallel resume ───────────────────────────────────────────────────────────
 
-describe('end-to-end: parallel resume — completed parallel group skipped on re-run', () => {
+describe('end-to-end: parallel resume — completed parallel group re-runs on resume (#50)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'log').mockImplementation(() => {})
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('when parallel node is pre-loaded as completed, children are not re-run', async () => {
-    // Simulate a prior run: parallel group completed with tripoint=fulfilled, m1=rejected
+  it('re-runs the parallel children even when the group is pre-loaded as completed', async () => {
+    // A prior run completed the group with tripoint=fulfilled, m1=skipped.
+    // Resume must NOT trust that — it re-runs both children from scratch.
     const priorParallelOutput: ParallelChildResult[] = [
       partnerBid('tripoint', 50),
       partnerSkip('m1', 'rejected'),
     ]
 
     setupMocks({
-      route_lead: { salesforce_id: 'SF-999' },
-      respond:    { accepted: true, partner: 'tripoint', offer: 50 },
+      tripoint_bid: partnerBid('tripoint', 50).output,
+      m1_bid:       partnerSkip('m1', 'rejected').output,
+      route_lead:   { salesforce_id: 'SF-999' },
+      respond:      { accepted: true, partner: 'tripoint', offer: 50 },
     })
 
     const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
@@ -542,13 +545,14 @@ describe('end-to-end: parallel resume — completed parallel group skipped on re
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, routeNode, respondNode],
       edges: [
-        edge('bids', 'pick'),
+        // Legacy parallel (no parallel_end): continuation wires off the last child.
+        edge('m1_bid', 'pick'),
         edge('pick', 'route', 'winner'),
         edge('route', 'respond'),
       ],
     }
 
-    // Pre-load the parallel group as completed from prior run
+    // Pre-load the parallel group as completed from the prior run — should be ignored.
     const ctx = makeCtx()
     ctx.steps['partner_bids'] = { output: priorParallelOutput, status: 'completed' }
 
@@ -560,14 +564,17 @@ describe('end-to-end: parallel resume — completed parallel group skipped on re
       return baseMock ? baseMock(n, ctx2, _env, _supabase) : { output: null }
     })
 
-    await walkGraph(ctx, def, 'exec-resume', new Date().toISOString(), supabase, env)
+    const result = await walkGraph(ctx, def, 'exec-resume', new Date().toISOString(), supabase, env)
 
-    // Neither tripoint_bid nor m1_bid should have been called — parallel group was pre-loaded
-    expect(bidCallCount).toBe(0)
+    // Both children re-ran (the prior completed group did not short-circuit them).
+    expect(bidCallCount).toBe(2)
+    // And the fresh run flowed all the way through to the response.
+    expect(result.body).toEqual({ accepted: true, partner: 'tripoint', offer: 50 })
   })
 
-  it('bid evaluation uses cached parallel results from prior run', async () => {
-    // Prior run: tripoint bid $50 (won), m1 skipped
+  it('bid evaluation sees the FRESH parallel results, not the pre-loaded ones', async () => {
+    // Prior run: tripoint bid $50. Fresh run: tripoint bids $75 — bid_eval must
+    // see $75 (re-executed), proving the stale preload is discarded.
     const priorParallelOutput: ParallelChildResult[] = [
       partnerBid('tripoint', 50),
       partnerSkip('m1', 'rejected'),
@@ -575,10 +582,10 @@ describe('end-to-end: parallel resume — completed parallel group skipped on re
 
     let bidEvalInput: ParallelChildResult[] | undefined
     vi.mocked(executeNode).mockImplementation(async (n, ctx) => {
+      if (n.namespace === 'tripoint_bid') return { output: partnerBid('tripoint', 75).output }
+      if (n.namespace === 'm1_bid')       return { output: partnerBid('m1', 40).output }
       if (n.type === 'bid_evaluation') {
-        // Capture what bid_eval sees as input
-        const bidsOutput = ctx.steps['partner_bids']?.output
-        bidEvalInput = bidsOutput as ParallelChildResult[]
+        bidEvalInput = ctx.steps['partner_bids']?.output as ParallelChildResult[]
         return executeBidEvaluationNode(n, ctx)
       }
       return { output: null }
@@ -596,7 +603,7 @@ describe('end-to-end: parallel resume — completed parallel group skipped on re
 
     const def = {
       nodes: [bidsNode, tripointNode, m1Node, pickNode, exitNode],
-      edges: [edge('bids', 'pick'), edge('pick', 'exit', 'winner')],
+      edges: [edge('m1_bid', 'pick'), edge('pick', 'exit', 'winner')],
     }
 
     const ctx = makeCtx()
@@ -604,8 +611,10 @@ describe('end-to-end: parallel resume — completed parallel group skipped on re
 
     await walkGraph(ctx, def, 'exec-resume2', new Date().toISOString(), supabase, env)
 
-    // Bid eval should have seen the cached results from the prior run
-    expect(bidEvalInput).toEqual(priorParallelOutput)
+    // Fresh results, not the stale prior output.
+    expect(bidEvalInput).not.toEqual(priorParallelOutput)
+    const tripoint = bidEvalInput?.find((r) => r.namespace === 'tripoint_bid')
+    expect((tripoint?.output as PartnerBidOutput | undefined)?.bid).toBe(75)
   })
 })
 

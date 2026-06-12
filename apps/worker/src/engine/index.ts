@@ -250,10 +250,15 @@ export async function executeWorkflow(
   const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
   if (options.codeBundleName) ctx.codeBundleName = options.codeBundleName
 
-  // If resuming, pre-populate completed steps
-  if (options.resumeFromExecutionId) {
-    await preloadResumeContext(ctx, options.resumeFromExecutionId, supabase)
-  }
+  // Resume re-runs the workflow from the entry node — no completed steps are
+  // pre-loaded and nothing is skipped (it behaves like a fresh run, same as
+  // replay, differing only in lineage via resumed_from_execution_id). The
+  // prior skip-and-reuse path mis-routed past completed multi-output nodes
+  // (a bid_group that routed no_winner resumed down the winner arm) and
+  // re-fired never-completed wait_for:first parallel children. Running every
+  // node fresh removes that whole class of resume-routing bugs. Trade-off:
+  // resume re-fires partner calls, which is acceptable for a manual recovery
+  // action (correctness over cost).
 
   // Walk the graph
   let response: unknown = null
@@ -645,37 +650,6 @@ export async function walkGraph(
 
   while (current) {
     const node = current
-
-    // Resume: step was already completed in a prior execution — skip re-execution, reuse output
-    const priorStep = ctx.steps[node.namespace]
-    if (priorStep?.status === 'completed') {
-      const priorOutput = priorStep.output
-      lastOutput = priorOutput
-      if (node.type === 'exit' || (node.type === 'response' && !node.config.continue_after_response)) {
-        if (node.type === 'response' && priorOutput !== null && typeof priorOutput === 'object' && 'body' in (priorOutput as object)) {
-          // status_code fallback: Response steps persisted before 2026-06-11
-          // used that output key. Only reachable when resuming an execution
-          // whose Response step predates the rename — removable once those
-          // age out of the 90-day retention window.
-          const r = priorOutput as { status?: number; status_code?: number; headers?: Record<string, string>; body?: unknown }
-          return { body: r.body ?? null, status: r.status ?? r.status_code ?? 200, headers: r.headers }
-        }
-        return { body: priorOutput, status: 200 }
-      }
-      const resumeEdges = outgoingEdges(node.id, definition.edges)
-      let resumeNext: NodeDefinition | undefined
-      if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation') && priorOutput !== null && typeof priorOutput === 'object') {
-        const route = (priorOutput as Record<string, unknown>)._route as string | undefined
-        if (route) resumeNext = findNode(resumeEdges.find((e) => e.source_handle === route)?.target ?? '', definition.nodes)
-      }
-      if (!resumeNext) {
-        const nextEdge = resumeEdges.find((e) => evaluateEdge(e, ctx))
-        resumeNext = nextEdge ? findNode(nextEdge.target, definition.nodes) : undefined
-      }
-      current = resumeNext
-      stepOrder++
-      continue
-    }
 
     // ── Parallel node — fan out to children concurrently ───────────────────────
     if (node.type === 'parallel') {
@@ -1538,25 +1512,6 @@ async function runParallelChild(
   }
 
   return { namespace: slotNamespace, status: 'fulfilled', output: lastOutput }
-}
-
-async function preloadResumeContext(
-  ctx: ExecutionContext,
-  parentExecutionId: string,
-  supabase: SupabaseClient
-): Promise<void> {
-  const { data: steps } = await supabase
-    .from('execution_steps')
-    .select('step_namespace, output, status')
-    .eq('execution_id', parentExecutionId)
-    .eq('status', 'completed')
-
-  for (const step of (steps ?? [])) {
-    ctx.steps[step.step_namespace] = {
-      output: step.output,
-      status: 'completed',
-    }
-  }
 }
 
 // Cloudflare ExecutionContext type alias (avoid conflict with our ExecutionContext)
