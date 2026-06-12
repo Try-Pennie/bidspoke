@@ -205,7 +205,7 @@ export async function executeWorkflow(
     is_test: options.isTest ?? false,
     parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
     resumed_from_execution_id: options.resumeFromExecutionId,
-  })
+  }, undefined, env)
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
@@ -352,7 +352,7 @@ export async function executeWorkflow(
   // post-response steps get their logs written too.
   const flushPromise: Promise<string | null> = walkPromiseCaught
     .then(() => executionRecordPromise)
-    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
+    .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }, env))
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
       return e instanceof Error ? e.message : String(e)
@@ -459,7 +459,7 @@ export async function executeWorkflow(
           response_status: executionStatus === 'completed' ? walkStatus : 500,
           error_message: finalErrorMessage,
           cost_usd: cost,
-        })
+        }, env)
 
         // Mirror the immediate alert gate: skip business rejections
         // (errorType === null) and explicitly suppressed failures so a

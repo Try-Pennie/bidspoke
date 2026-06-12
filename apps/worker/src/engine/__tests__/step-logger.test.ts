@@ -76,7 +76,100 @@ describe('createExecutionRecord', () => {
   })
 })
 
+describe('createExecutionRecord — error classification (2026-06-12 schema-cache 503)', () => {
+  it('retries a PostgREST schema-cache 503 and succeeds once the reload finishes', async () => {
+    const { client, insert } = clientWith([
+      { error: { code: 'PGRST002', message: 'Could not query the database for the schema cache. Retrying.' } },
+      { error: null },
+    ])
+    await createExecutionRecord(client, record, [1, 1])
+    expect(insert).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails fast on a permanent data error without burning the retry budget', async () => {
+    const { client, insert } = clientWith([
+      { error: { code: '23502', message: 'null value in column "workflow_id" violates not-null constraint' } },
+    ])
+    await expect(createExecutionRecord(client, record, [1, 1])).rejects.toThrow('violates not-null constraint')
+    expect(insert).toHaveBeenCalledTimes(1)
+  })
+})
+
+const stepEntry = {
+  execution_id: 'exec-1',
+  execution_started_at: '2026-06-11T00:00:00Z',
+  step_namespace: 'equifax',
+  step_type: 'code',
+  status: 'completed' as const,
+  input: {},
+  output: {},
+  retries_used: 0,
+  started_at: '2026-06-11T00:00:00Z',
+  completed_at: '2026-06-11T00:00:01Z',
+  duration_ms: 1000,
+  step_order: 1,
+}
+
+describe('flushStepLogs — transient retry', () => {
+  it('retries the batch on a schema-cache 503 then succeeds (no per-row fallback)', async () => {
+    vi.useFakeTimers()
+    try {
+      const insert = vi
+        .fn()
+        .mockResolvedValueOnce({ error: { code: 'PGRST002', message: 'schema cache' } })
+        .mockResolvedValueOnce({ error: null })
+      const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+      const { flushStepLogs } = await import('../step-logger')
+      const p = flushStepLogs(client, [stepEntry], '')
+      await vi.advanceTimersByTimeAsync(2100)
+      await expect(p).resolves.toBeNull()
+      expect(insert).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry a permanent row error; isolates it per-row instead', async () => {
+    const insert = vi
+      .fn()
+      .mockResolvedValue({ error: { code: '22P02', message: 'invalid input syntax for type uuid' } })
+    const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+    const { flushStepLogs } = await import('../step-logger')
+    const result = await flushStepLogs(client, [stepEntry], '')
+    // One batch attempt (permanent -> no retry) plus one per-row isolation attempt.
+    expect(insert).toHaveBeenCalledTimes(2)
+    expect(result).toContain('1/1 step rows failed')
+  })
+})
+
 describe('updateExecutionRecord', () => {
+  it('retries a schema-cache 503 on the finalize update then succeeds', async () => {
+    vi.useFakeTimers()
+    try {
+      let call = 0
+      const results = [
+        { error: { code: 'PGRST002', message: 'schema cache' } },
+        { data: [{ id: 'exec-1' }] },
+      ]
+      const select = vi.fn().mockImplementation(() => Promise.resolve(results[Math.min(call++, results.length - 1)]))
+      const eq2 = vi.fn().mockReturnValue({ select })
+      const eq1 = vi.fn().mockReturnValue({ eq: eq2 })
+      const update = vi.fn().mockReturnValue({ eq: eq1 })
+      const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+
+      const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', {
+        status: 'completed',
+        completed_at: '2026-06-11T00:00:01Z',
+        duration_ms: 1000,
+      })
+      await vi.advanceTimersByTimeAsync(2100)
+      await p
+      expect(select).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('passes response_status through to the workflow_executions update (issue #30)', async () => {
     const select = vi.fn().mockResolvedValue({ data: [{ id: 'exec-1' }] })
     const eq2 = vi.fn().mockReturnValue({ select })

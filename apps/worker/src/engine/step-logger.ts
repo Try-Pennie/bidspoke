@@ -1,6 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
+import type { Env } from '../index'
 import { redactPii, parsePiiFields } from './pii-redactor'
+import {
+  hyperdriveEnabled,
+  pgInsert,
+  pgUpdate,
+  EXECUTION_JSONB_COLS,
+  STEP_JSONB_COLS,
+} from '../lib/pg-writer'
 
 export interface StepLogEntry {
   execution_id: string
@@ -21,6 +29,124 @@ export interface StepLogEntry {
   duration_ms: number
   step_order: number
   parallel_group_id?: string
+}
+
+// --- Shared insert/update plumbing for the execution-log hot path ----------
+//
+// These two tables (workflow_executions, execution_steps) normally persist via
+// PostgREST. The nightly partition-purge cron runs DDL on them, which forces a
+// PostgREST schema-cache reload that 503s inserts for a few seconds ("Could not
+// query the database for the schema cache."). Two defenses:
+//   1. A direct-Postgres (Hyperdrive) path, used when the binding is present —
+//      no schema cache, so DDL can never 503 it. See lib/pg-writer.ts.
+//   2. A retry ladder long enough to outlast the lock/reload window, with a
+//      PostgREST fallback so a transient Hyperdrive problem never drops a write.
+
+export interface DbError {
+  code?: string
+  message: string
+}
+
+// SQLSTATE / PostgREST codes where retrying or failing over cannot help — the
+// row is malformed or the schema drifted. Everything else is treated as
+// transient (lock contention, schema-cache reload, connection blips) and is
+// retried. 23505 (unique_violation) is handled separately: for our append-only
+// audit inserts a duplicate means the row already exists, which is success.
+const PERMANENT_DB_CODES = new Set([
+  '23502', // not_null_violation
+  '23503', // foreign_key_violation
+  '23514', // check_violation
+  '22P02', // invalid_text_representation (bad uuid / enum)
+  '22007', // invalid_datetime_format
+  '22008', // datetime_field_overflow
+  '42703', // undefined_column (migration drift)
+  '42P01', // undefined_table
+  '42804', // datatype_mismatch
+  'PGRST204', // PostgREST: column not in schema cache (drift, not transient)
+])
+
+export function isPermanentDbError(err: DbError | null): boolean {
+  return !!err?.code && PERMANENT_DB_CODES.has(err.code)
+}
+
+const isDuplicateError = (err: DbError | null): boolean => err?.code === '23505'
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+function toDbError(e: unknown): DbError {
+  const err = e as { code?: unknown; message?: unknown }
+  return {
+    code: typeof err?.code === 'string' ? err.code : undefined,
+    message: typeof err?.message === 'string' ? err.message : String(e),
+  }
+}
+
+// One insert attempt. Uses the direct-Postgres (Hyperdrive) path when the
+// binding is present, and falls over to PostgREST if that path fails for any
+// reason other than a permanent data error (which would fail identically on
+// PostgREST). Returns a normalized DbError so both call sites share retry logic.
+async function insertRowsOnce(
+  env: Env | undefined,
+  supabase: SupabaseClient,
+  table: string,
+  rows: Record<string, unknown>[],
+  jsonbCols: Set<string>
+): Promise<{ error: DbError | null }> {
+  if (hyperdriveEnabled(env)) {
+    try {
+      await pgInsert(env, table, rows, jsonbCols)
+      return { error: null }
+    } catch (e) {
+      const err = toDbError(e)
+      if (isPermanentDbError(err)) return { error: err }
+      console.warn('[step-logger] Hyperdrive insert failed, falling back to PostgREST', {
+        table,
+        error: err.message,
+      })
+    }
+  }
+  const { error } = await supabase.from(table).insert(rows)
+  return { error: error ? { code: error.code, message: error.message } : null }
+}
+
+// One update attempt for workflow_executions, keyed by (id, started_at) with an
+// id-only fallback for the partition-pruning case. Mirrors insertRowsOnce:
+// Hyperdrive when present, PostgREST otherwise / on transient Hyperdrive error.
+async function updateExecutionOnce(
+  env: Env | undefined,
+  supabase: SupabaseClient,
+  id: string,
+  started_at: string,
+  update: Record<string, unknown>
+): Promise<{ error: DbError | null }> {
+  if (hyperdriveEnabled(env)) {
+    try {
+      const matched = await pgUpdate(env, 'workflow_executions', update, { id, started_at }, EXECUTION_JSONB_COLS)
+      if (matched === 0) {
+        await pgUpdate(env, 'workflow_executions', update, { id }, EXECUTION_JSONB_COLS)
+      }
+      return { error: null }
+    } catch (e) {
+      const err = toDbError(e)
+      if (isPermanentDbError(err)) return { error: err }
+      console.warn('[step-logger] Hyperdrive update failed, falling back to PostgREST', {
+        error: err.message,
+      })
+    }
+  }
+  // Use started_at for partition pruning; fall back to id-only if no rows matched.
+  const { data, error } = await supabase
+    .from('workflow_executions')
+    .update(update)
+    .eq('id', id)
+    .eq('started_at', started_at)
+    .select('id')
+  if (error) return { error: { code: error.code, message: error.message } }
+  if (!data?.length) {
+    const { error: e2 } = await supabase.from('workflow_executions').update(update).eq('id', id)
+    if (e2) return { error: { code: e2.code, message: e2.message } }
+  }
+  return { error: null }
 }
 
 export async function writeStepLog(
@@ -45,6 +171,16 @@ export async function writeStepLog(
   }
 }
 
+// Retry delays. These inserts run inside waitUntil(), off the request critical
+// path, so the added wall-clock is free. The ladder must outlast the nightly
+// partition-purge lock/reload window (the purge bounds its own lock to ~2s, but
+// the PostgREST schema-cache reload it triggers can 503 for a few seconds).
+// Lost 8 executions' audit trail on 2026-06-10 and several more on 2026-06-12
+// before this was hardened.
+const CREATE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
+const FLUSH_RETRY_DELAYS_MS = [2_000, 5_000]
+const UPDATE_RETRY_DELAYS_MS = [2_000, 5_000]
+
 // Batch-insert an accumulated queue of step logs. Used at end of execution
 // to flush all step logs in a single round-trip instead of one-per-step.
 // Returns the Postgres error message when the insert is rejected so callers
@@ -55,7 +191,8 @@ export async function flushStepLogs(
   supabase: SupabaseClient,
   queue: StepLogEntry[],
   piiFieldsRaw: string,
-  meta?: { workflowId: string; isTest: boolean }
+  meta?: { workflowId: string; isTest: boolean },
+  env?: Env
 ): Promise<string | null> {
   if (queue.length === 0) return null
   const piiFields = parsePiiFields(piiFieldsRaw)
@@ -65,13 +202,25 @@ export async function flushStepLogs(
     input: redactPii(entry.input, piiFields),
     output: redactPii(entry.output, piiFields),
   }))
-  const { error } = await supabase.from('execution_steps').insert(rows)
-  if (!error) return null
+
+  // Retry the batch on transient errors (schema-cache reload / partition-lock
+  // window) so a nightly-purge collision doesn't wipe the whole step history
+  // and leave the run showing "unknown step".
+  let lastError: DbError | null = null
+  for (let attempt = 0; attempt <= FLUSH_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(FLUSH_RETRY_DELAYS_MS[attempt - 1])
+    const { error } = await insertRowsOnce(env, supabase, 'execution_steps', rows, STEP_JSONB_COLS)
+    if (!error) return null
+    lastError = error
+    // A permanent error means one malformed row poisons the whole atomic batch
+    // — stop retrying and isolate it per-row below.
+    if (isPermanentDbError(error)) break
+  }
 
   console.error('[step-logger] execution_steps batch insert failed', {
     count: rows.length,
     execution_id: queue[0]?.execution_id,
-    error,
+    error: lastError,
   })
   // The batch insert is atomic, so one malformed row (e.g. a bad uuid) drops
   // EVERY step for the run — the execution then shows no path and the canvas
@@ -81,7 +230,7 @@ export async function flushStepLogs(
   let failed = 0
   let firstRowError: string | null = null
   for (const row of rows) {
-    const { error: rowErr } = await supabase.from('execution_steps').insert(row)
+    const { error: rowErr } = await insertRowsOnce(env, supabase, 'execution_steps', [row], STEP_JSONB_COLS)
     if (rowErr) {
       failed++
       if (!firstRowError) firstRowError = rowErr.message
@@ -93,19 +242,8 @@ export async function flushStepLogs(
     }
   }
   if (failed === 0) return null
-  return `${failed}/${rows.length} step rows failed: ${firstRowError ?? error.message}`
+  return `${failed}/${rows.length} step rows failed: ${firstRowError ?? lastError?.message}`
 }
-
-// Retry delays for the execution-row insert. The nightly partition-purge cron
-// takes an ACCESS EXCLUSIVE lock on workflow_executions for up to ~15s; inserts
-// queue behind it past the 8s statement timeout and fail — which lost 8
-// executions' entire audit trail on 2026-06-10 (and a similar burst 2026-05-30,
-// create-daily-partitions). The lock clears within seconds, so a short backoff
-// saves the row. This runs inside waitUntil(), off the request critical path,
-// so the added wall-clock is free.
-const CREATE_RETRY_DELAYS_MS = [3_000, 8_000]
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 export async function createExecutionRecord(
   supabase: SupabaseClient,
@@ -121,13 +259,15 @@ export async function createExecutionRecord(
     started_at: string
     is_test: boolean
   },
-  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS
+  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS,
+  env?: Env
 ): Promise<void> {
   // Throw on (final) insert failure. The caller chains this into flushStepLogs
   // via `.then().catch()`, so a thrown error surfaces as a clear "Step logs
   // failed to persist: <actual cause>" instead of a downstream FK violation
   // when the missing parent row blocks the step batch insert.
-  let lastError: { code?: string; message: string } | null = null
+  const row = { ...record, status: 'running', trigger_type: 'http_webhook' }
+  let lastError: DbError | null = null
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
     if (attempt > 0) {
       console.warn('[step-logger] retrying workflow_executions insert', {
@@ -137,15 +277,16 @@ export async function createExecutionRecord(
       })
       await sleep(retryDelaysMs[attempt - 1])
     }
-    const { error } = await supabase.from('workflow_executions').insert({
-      ...record,
-      status: 'running',
-      trigger_type: 'http_webhook',
-    })
+    const { error } = await insertRowsOnce(env, supabase, 'workflow_executions', [row], EXECUTION_JSONB_COLS)
     if (!error) return
-    // Unique violation on a retry means a prior attempt actually landed and
-    // only its response was lost — the row exists, which is all we want.
-    if (attempt > 0 && error.code === '23505') return
+    // A duplicate means the row already exists — whether a prior attempt landed
+    // and only its response was lost, or the id genuinely collides. Either way
+    // the audit row is present, which is all we want.
+    if (isDuplicateError(error)) return
+    // Malformed row / schema drift won't be fixed by waiting — fail fast.
+    if (isPermanentDbError(error)) {
+      throw new Error(`workflow_executions insert failed: ${error.message}`)
+    }
     lastError = error
   }
   throw new Error(`workflow_executions insert failed: ${lastError?.message}`)
@@ -166,21 +307,26 @@ export async function updateExecutionRecord(
     response_status?: number
     error_message?: string
     cost_usd?: number
-  }
+  },
+  env?: Env
 ): Promise<void> {
-  // Use started_at for partition pruning; fall back to id-only if no rows matched
-  const { data } = await supabase
-    .from('workflow_executions')
-    .update(update)
-    .eq('id', id)
-    .eq('started_at', started_at)
-    .select('id')
-
-  if (!data?.length) {
-    // Partition key mismatch — update without started_at filter
-    await supabase
-      .from('workflow_executions')
-      .update(update)
-      .eq('id', id)
+  // The finalize update lands in the same partition-purge window as the insert,
+  // so it gets the same Hyperdrive routing + transient retry. Failure is logged,
+  // not thrown: the HTTP response already went out, and a stuck 'running' row is
+  // less harmful than aborting the finalize chain.
+  let lastError: DbError | null = null
+  for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
+    const { error } = await updateExecutionOnce(env, supabase, id, started_at, update)
+    if (!error) return
+    if (isPermanentDbError(error)) {
+      console.error('[step-logger] workflow_executions update failed (permanent)', { id, error: error.message })
+      return
+    }
+    lastError = error
   }
+  console.error('[step-logger] workflow_executions update failed after retries', {
+    id,
+    error: lastError?.message,
+  })
 }

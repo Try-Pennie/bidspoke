@@ -81,6 +81,14 @@ export interface Env {
   // Anthropic API — used to draft changelog summaries on workflow save
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
   ANTHROPIC_API_KEY?: string
+
+  // Hyperdrive — direct Postgres connection for the execution-log hot path
+  // (workflow_executions + execution_steps inserts/updates), bypassing
+  // PostgREST so a schema-cache reload (triggered by the nightly partition
+  // purge DDL) can't 503 the audit-trail writes. Optional: when the binding is
+  // absent the engine stays on PostgREST. See wrangler.toml for the provisioning
+  // runbook and lib/pg-writer.ts for the writer.
+  HYPERDRIVE?: Hyperdrive
 }
 
 const app = new Hono<{ Bindings: Env }>()

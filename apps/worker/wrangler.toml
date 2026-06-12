@@ -1,6 +1,12 @@
 name = "bidspoke-worker"
 main = "src/index.ts"
-compatibility_date = "2024-05-24"
+# Bumped 2024-05-24 -> 2024-09-23 on 2026-06-12 so node-postgres (pg) bundles:
+# its transitive deps require() bare node builtins (fs, stream), which only
+# resolve under the nodejs_compat v2 runtime that becomes default on this date.
+# pg backs the Hyperdrive execution-log writer (lib/pg-writer.ts). This is the
+# one runtime-affecting change in that work; the pg path itself stays dormant
+# until the HYPERDRIVE binding below is provisioned.
+compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
 
@@ -51,6 +57,26 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 [[dispatch_namespaces]]
 binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
+
+# Hyperdrive — direct Postgres for the execution-log hot path. When this binding
+# exists, workflow_executions + execution_steps writes go straight to Postgres
+# (lib/pg-writer.ts) instead of PostgREST, so the nightly partition-purge DDL
+# can't 503 them via a schema-cache reload (incident 2026-06-12 03:30 UTC). The
+# engine falls back to PostgREST automatically when the binding is absent, so
+# adding/removing it is non-breaking.
+#
+# To enable:
+#   1. Get the Supabase pooler (Supavisor, transaction mode, port 6543)
+#      connection string from the Supabase dashboard (Database -> Connection
+#      pooling). Use a dedicated role, not the service key.
+#   2. wrangler hyperdrive create bidspoke-pg --connection-string="postgres://USER:PASS@HOST:6543/postgres"
+#   3. Paste the returned id below and uncomment this block.
+#   4. Deploy. Verify a fresh execution's row appears, then confirm at the next
+#      03:30 UTC purge that no "schema cache" alerts fire.
+# (compatibility_date is already at 2024-09-23, the floor node-postgres needs.)
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = ""  # output of `wrangler hyperdrive create`
 
 # Custom endpoint routing — partner subdomains (e.g. tripoint.trypennie.dev)
 # The worker reads the Host header to route *.trypennie.dev requests.
