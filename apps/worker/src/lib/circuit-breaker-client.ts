@@ -48,6 +48,12 @@ export class CircuitBreakerClient {
     return res.json()
   }
 
+  // Release a claimed half-open probe without recording success or error —
+  // used when the lead never actually called the partner (cap/dedup skip).
+  async releaseProbe(): Promise<void> {
+    await this.stub.fetch('http://do/release-probe', { method: 'POST' })
+  }
+
   async reset(): Promise<void> {
     await this.stub.fetch('http://do/reset', { method: 'POST' })
   }
