@@ -180,4 +180,9 @@ export interface LoadedWorkflow {
 export interface IdempotencyState {
   status: 'processing' | 'complete'
   response?: unknown
+  // Wire contract of the original response. Optional for backward
+  // compatibility with entries cached before these fields existed —
+  // readers default to 200 / no headers.
+  responseStatus?: number
+  responseHeaders?: Record<string, string>
 }

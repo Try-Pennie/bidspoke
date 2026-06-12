@@ -3,6 +3,7 @@ import {
   checkIdempotency,
   setIdempotencyProcessing,
   setIdempotencyResult,
+  clearIdempotency,
 } from '../idempotency'
 
 // ── In-memory KV mock ─────────────────────────────────────────────────────────
@@ -76,6 +77,24 @@ describe('setIdempotencyResult', () => {
     expect(state).toEqual({ status: 'complete', response })
   })
 
+  it('stores the response status and headers when provided', async () => {
+    const kv = makeKV()
+    const headers = { 'x-submission-id': 'sub-123' }
+    await setIdempotencyResult(kv, 'wf-1', 'key-1', { rejected: true }, 300, 422, headers)
+    const state = await checkIdempotency(kv, 'wf-1', 'key-1')
+    expect(state?.responseStatus).toBe(422)
+    expect(state?.responseHeaders).toEqual(headers)
+  })
+
+  it('legacy entries without status/headers still parse', async () => {
+    const kv = makeKV()
+    await setIdempotencyResult(kv, 'wf-1', 'key-1', { ok: true }, 300)
+    const state = await checkIdempotency(kv, 'wf-1', 'key-1')
+    expect(state?.status).toBe('complete')
+    expect(state?.responseStatus).toBeUndefined()
+    expect(state?.responseHeaders).toBeUndefined()
+  })
+
   it('overwrites a processing state with complete', async () => {
     const kv = makeKV()
     await setIdempotencyProcessing(kv, 'wf-1', 'key-1', 300)
@@ -83,6 +102,29 @@ describe('setIdempotencyResult', () => {
     const state = await checkIdempotency(kv, 'wf-1', 'key-1')
     expect(state?.status).toBe('complete')
     expect(state?.response).toEqual({ ok: true })
+  })
+})
+
+describe('clearIdempotency', () => {
+  it('removes an existing entry so the next check misses', async () => {
+    const kv = makeKV()
+    await setIdempotencyProcessing(kv, 'wf-1', 'key-1', 300)
+    await clearIdempotency(kv, 'wf-1', 'key-1')
+    expect(await checkIdempotency(kv, 'wf-1', 'key-1')).toBeNull()
+  })
+
+  it('is a no-op when no entry exists', async () => {
+    const kv = makeKV()
+    await expect(clearIdempotency(kv, 'wf-1', 'missing')).resolves.toBeUndefined()
+  })
+
+  it('only clears the targeted workflow/key pair', async () => {
+    const kv = makeKV()
+    await setIdempotencyResult(kv, 'wf-1', 'key-1', { ok: true }, 300)
+    await setIdempotencyResult(kv, 'wf-2', 'key-1', { ok: true }, 300)
+    await clearIdempotency(kv, 'wf-1', 'key-1')
+    expect(await checkIdempotency(kv, 'wf-1', 'key-1')).toBeNull()
+    expect(await checkIdempotency(kv, 'wf-2', 'key-1')).not.toBeNull()
   })
 })
 
