@@ -66,6 +66,7 @@ import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
+import { onBeforeNodeDelete } from '@/lib/delete-routing'
 import {
   renameStepReferences,
   countStepReferences,
@@ -3294,6 +3295,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nodesDraggable={mode === 'edit'}
             nodesConnectable={mode === 'edit'}
             deleteKeyCode={mode === 'edit' ? 'Backspace' : null}
+            // Route keyboard deletes through the curated handler (snapshot/undo,
+            // pair expansion, container-contents confirm) instead of RF's raw
+            // remove path. Edge-only deletes fall through to RF.
+            onBeforeDelete={async ({ nodes: toDelete }) => onBeforeNodeDelete(toDelete, handleNodesDelete)}
             snapToGrid={false}
             fitView
             fitViewOptions={{ padding: 0.4, maxZoom: 0.5 }}
