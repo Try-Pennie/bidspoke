@@ -148,6 +148,30 @@ describe('detectAnomaly()', () => {
     expect(detectAnomaly(counts, SATURDAY)).toBeNull()
   })
 
+  // Issue #80: today's partial day (the day AFTER yesterday) must not be in the
+  // baseline. It's a low partial count at 13:00 UTC and would deflate the avg.
+  const TODAY = '2026-04-08' // Wed, the day after YESTERDAY=2026-04-07 (Tue), same day-type
+
+  it('excludes today and does not over-fire a spike', () => {
+    const counts = buildCounts(BASELINE_DAYS, 100) // 7 prior weekdays @ 100
+    counts[YESTERDAY] = 190 // below the 200% spike threshold vs a baseline of 100
+    counts[TODAY] = 5       // partial-day low count
+    // If today were averaged in, the baseline drops to ~86 and 190 would exceed
+    // 2x → false spike. Excluded → baseline stays 100 → no anomaly.
+    expect(detectAnomaly(counts, YESTERDAY)).toBeNull()
+  })
+
+  it('excludes today and does not under-fire a real drop', () => {
+    const counts = buildCounts(BASELINE_DAYS, 100)
+    counts[YESTERDAY] = 45 // a genuine drop vs a baseline of 100 (< 50%)
+    counts[TODAY] = 5      // partial-day low count
+    // If today were averaged in, the baseline drops to ~86 and 45 would be above
+    // 50% of it → the real drop would be missed. Excluded → the drop fires.
+    const result = detectAnomaly(counts, YESTERDAY)
+    expect(result?.kind).toBe('drop')
+    expect(result?.baselineAvg).toBe(100)
+  })
+
   it('detects a drop on a weekday relative to weekday-only baseline', () => {
     // YESTERDAY=Tue. Mix in weekend days that should be ignored.
     const counts: Record<string, number> = {
