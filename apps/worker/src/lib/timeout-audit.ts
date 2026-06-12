@@ -412,15 +412,28 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
     // Unchanged since the last run: nothing new to surface, stay quiet.
     if (signature === (previous ?? '')) continue
 
-    // Record the new state regardless, so a one-time alert does not repeat daily.
-    await kv.put(key, signature, { expirationTtl: SIGNATURE_TTL_SECONDS })
+    // Transition to "all clear" (nothing to act on): record the new state so we
+    // don't re-evaluate it, and stay quiet — resolution is self-evident in the UI.
+    if (warnings.length === 0 && underProvisioned.length === 0) {
+      await kv.put(key, signature, { expirationTtl: SIGNATURE_TTL_SECONDS })
+      continue
+    }
 
-    // Only alert when there is something to act on. A transition to "all clear"
-    // updates KV above but does not post (resolution is self-evident in the UI).
-    if (warnings.length === 0 && underProvisioned.length === 0) continue
-
+    // Don't record the signature unless the alert is actually delivered.
+    // Recording it before sending meant a disabled-then-reenabled org, or a
+    // transient Slack failure, deduped this state forever (until the set changed
+    // or the 30-day TTL lapsed). Re-checking a non-alerting org is cheap+silent.
     const connection = await getSlackConnection(supabase, orgId)
     if (!connection || !connection.config_alerts_enabled) continue
-    await sendTimeoutConfigAlert(connection, warnings, underProvisioned, appUrl)
+
+    try {
+      await sendTimeoutConfigAlert(connection, warnings, underProvisioned, appUrl)
+      // Record only after a confirmed send.
+      await kv.put(key, signature, { expirationTtl: SIGNATURE_TTL_SECONDS })
+    } catch (e) {
+      // Transient failure: leave the signature unrecorded so it retries next
+      // run, and don't abort the remaining orgs.
+      console.error(`[timeout-audit] alert failed for org ${orgId}:`, e)
+    }
   }
 }

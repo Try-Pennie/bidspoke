@@ -1,7 +1,15 @@
-import { describe, it, expect, vi } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, type NodeDurationStats } from '../timeout-audit'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, type NodeDurationStats } from '../timeout-audit'
 import { suggestedTimeoutMs, timeoutSeverity } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+vi.mock('../slack', async (orig) => ({
+  ...(await orig<typeof import('../slack')>()),
+  getSlackConnection: vi.fn(),
+  sendTimeoutConfigAlert: vi.fn(),
+}))
+import { getSlackConnection, sendTimeoutConfigAlert } from '../slack'
 
 function node(partial: Partial<NodeDefinition> & { id: string; type: NodeDefinition['type'] }): NodeDefinition {
   return { namespace: partial.id, config: {}, ...partial }
@@ -295,5 +303,90 @@ describe('collectWorkflowDurationStats', () => {
     expect(rpc).toHaveBeenCalledTimes(2)
     expect(windowDays).toBeLessThan(1)
     expect(stats.get('a')).toMatchObject({ p99: 100, max_ms: 200, sample_size: 22 })
+  })
+})
+
+// Issue #81: the dedup signature must be recorded only after a confirmed Slack
+// send (and for an all-clear transition), so a disabled org or a transient send
+// failure doesn't permanently swallow the alert for a config-warning state.
+describe('runTimeoutAuditCheck — signature recorded only after a delivered alert', () => {
+  const subFloorWf = { id: 'wf1', name: 'Engine Bidding', definition: def([node({ id: 'n', type: 'code', config: { timeout_ms: 50 } })]) }
+  const cleanWf = { id: 'wf2', name: 'Clean', definition: def([node({ id: 'n', type: 'code', config: { timeout_ms: 1000 } })]) }
+
+  function makeSupabase(workflows: unknown[], orgs = ['org-1']) {
+    return {
+      from: (table: string) => {
+        const data = table === 'service_connections'
+          ? orgs.map((id) => ({ organization_id: id }))
+          : table === 'workflows' ? workflows : []
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const chain: any = new Proxy({}, {
+          get(_, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    } as unknown as SupabaseClient
+  }
+
+  function makeKv(seed: Record<string, string> = {}) {
+    const store = new Map<string, string>(Object.entries(seed))
+    return {
+      store,
+      get: vi.fn(async (k: string) => store.get(k) ?? null),
+      put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
+    }
+  }
+
+  const enabled = { bot_token: 't', default_channel: 'c', config_alerts_enabled: true }
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('records the signature after a successful send', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
+    vi.mocked(sendTimeoutConfigAlert).mockResolvedValue(undefined as never)
+    const kv = makeKv()
+    await runTimeoutAuditCheck(makeSupabase([subFloorWf]), kv, 'https://app')
+    expect(vi.mocked(sendTimeoutConfigAlert)).toHaveBeenCalledTimes(1)
+    expect(kv.put).toHaveBeenCalled()
+  })
+
+  it('does NOT record the signature when the send fails (so it retries next run)', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
+    vi.mocked(sendTimeoutConfigAlert).mockRejectedValue(new Error('Slack 429'))
+    const kv = makeKv()
+    await expect(runTimeoutAuditCheck(makeSupabase([subFloorWf]), kv, 'https://app')).resolves.toBeUndefined()
+    expect(vi.mocked(sendTimeoutConfigAlert)).toHaveBeenCalledTimes(1)
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('does NOT record the signature when alerts are disabled (so re-enabling fires)', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue({ ...enabled, config_alerts_enabled: false } as never)
+    const kv = makeKv()
+    await runTimeoutAuditCheck(makeSupabase([subFloorWf]), kv, 'https://app')
+    expect(vi.mocked(sendTimeoutConfigAlert)).not.toHaveBeenCalled()
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('records an all-clear transition without sending', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
+    // Seed a stale prior signature so the now-clean state is a real transition.
+    const kv = makeKv({ 'timeout-audit:sig:org-1': 'STALE-PRIOR-SIGNATURE' })
+    await runTimeoutAuditCheck(makeSupabase([cleanWf]), kv, 'https://app')
+    expect(vi.mocked(sendTimeoutConfigAlert)).not.toHaveBeenCalled()
+    expect(kv.put).toHaveBeenCalled()
+  })
+
+  it("one org's send failure does not abort the remaining orgs", async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(enabled as never)
+    vi.mocked(sendTimeoutConfigAlert)
+      .mockRejectedValueOnce(new Error('Slack 429'))
+      .mockResolvedValueOnce(undefined as never)
+    const kv = makeKv()
+    await runTimeoutAuditCheck(makeSupabase([subFloorWf], ['org-1', 'org-2']), kv, 'https://app')
+    expect(vi.mocked(sendTimeoutConfigAlert)).toHaveBeenCalledTimes(2) // loop continued past the failure
   })
 })
