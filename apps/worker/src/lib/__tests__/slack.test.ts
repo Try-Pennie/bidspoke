@@ -4,8 +4,8 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert } from '../slack'
-import type { FailureAlertPayload } from '../slack'
+import { sendFailureAlert, postMessage, sendSlowSpikeAlert } from '../slack'
+import type { FailureAlertPayload, SlowSpikeAlertPayload } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -199,5 +199,55 @@ describe('sendFailureAlert', () => {
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
     expect(allText).toContain('failed on first attempt (no retry)')
+  })
+})
+
+// Issue #82: Slack returns HTTP 200 with { ok: false } for channel_not_found /
+// not_in_channel / invalid_auth. postMessage (and the senders/cooldowns that
+// gate on its result) must treat that as a failure, not a silent success.
+describe('postMessage — ok:false detection', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock) })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('returns the ts on a delivered message', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '171.99' }) })
+    expect(await postMessage('tok', '#c', [], 'hi')).toBe('171.99')
+  })
+
+  it('returns null on an HTTP-200 ok:false (e.g. channel_not_found)', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
+    expect(await postMessage('tok', '#c', [], 'hi')).toBeNull()
+  })
+
+  it('returns null on an HTTP error', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) })
+    expect(await postMessage('tok', '#c', [], 'hi')).toBeNull()
+  })
+})
+
+describe('sendSlowSpikeAlert — propagates delivery result (for cooldown gating)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock) })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const spikePayload: SlowSpikeAlertPayload = {
+    workflow_id: 'wf-1', workflow_name: 'Engine Bidding', slow_count: 8, total_count: 20,
+    threshold_ms: 30000, slowest_ms: 60000, median_slow_ms: 40000, window_minutes: 5,
+    timestamp: '2024-01-15T18:00:00.000Z',
+  }
+
+  it('returns null when Slack reports ok:false (so the caller skips the cooldown)', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'not_in_channel' }) })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendSlowSpikeAlert(makeSupabase(slackConnection) as any, 'org-1', null, spikePayload, 'https://app')
+    expect(sent).toBeNull()
+  })
+
+  it('returns the ts when delivered', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '200.1' }) })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendSlowSpikeAlert(makeSupabase(slackConnection) as any, 'org-1', null, spikePayload, 'https://app')
+    expect(sent).toBe('200.1')
   })
 })
