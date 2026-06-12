@@ -548,6 +548,14 @@ export async function executeWorkflow(
               ? 'failed'
               : passedThroughSuccessNs ? 'successful' : 'completed'
 
+          // Wait for every bid-attempt insert to commit before finalize's
+          // winner UPDATE runs (#88). The UPDATE matches lead_sighting_bids on
+          // execution_id + partner_slug; if it ran before an insert committed it
+          // would match zero rows and leave the winner is_winner=false forever.
+          // These inserts are otherwise unawaited (registered here, not in the
+          // walk), so this await is also what keeps them alive past teardown.
+          await Promise.allSettled(ctx.pendingBidWrites ?? [])
+
           await finalizeSighting(supabase, {
             sighting_id: sightingId,
             execution_id: executionId,

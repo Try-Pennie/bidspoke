@@ -131,6 +131,12 @@ export interface ExecutionContext {
    * binds these to specific step outputs at the workflow level).
    */
   bidGroupContext?: Record<string, unknown>
+  /**
+   * Bid-attempt insert promises (lead_sighting_bids) registered by partner-bid
+   * nodes. finalizeSighting awaits these before its winner UPDATE so the UPDATE
+   * doesn't race the inserts and match zero rows (#88). Populated lazily.
+   */
+  pendingBidWrites?: Promise<void>[]
 }
 
 export interface StepOutput {
