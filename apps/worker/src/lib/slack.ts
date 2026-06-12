@@ -213,9 +213,9 @@ export async function sendSlowSpikeAlert(
   channelOverride: string | null,
   payload: SlowSpikeAlertPayload,
   appUrl: string
-): Promise<void> {
+): Promise<string | null> {
   const connection = await getSlackConnection(supabase, orgId)
-  if (!connection) return
+  if (!connection) return null
 
   const channel = channelOverride || connection.default_channel
   const thresholdSeconds = (payload.threshold_ms / 1000).toFixed(0)
@@ -247,7 +247,7 @@ export async function sendSlowSpikeAlert(
     },
   ]
 
-  await postMessage(
+  return postMessage(
     connection.bot_token,
     channel,
     blocks,
@@ -256,19 +256,30 @@ export async function sendSlowSpikeAlert(
 }
 
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
-  await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${handle.bot_token}`,
-    },
-    body: JSON.stringify({
-      channel: handle.channel,
-      thread_ts: handle.ts,
-      text,
-      unfurl_links: false,
-    }),
-  }).catch((e) => console.error('[slack] thread reply failed:', e))
+  try {
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${handle.bot_token}`,
+      },
+      body: JSON.stringify({
+        channel: handle.channel,
+        thread_ts: handle.ts,
+        text,
+        unfurl_links: false,
+      }),
+    })
+    if (!res.ok) {
+      console.error(`[slack] thread reply HTTP error ${res.status}`)
+      return
+    }
+    // Slack signals delivery failures with HTTP 200 + { ok: false }.
+    const data = (await res.json()) as { ok: boolean; error?: string }
+    if (!data.ok) console.error(`[slack] thread reply API error: ${data.error}`)
+  } catch (e) {
+    console.error('[slack] thread reply failed:', e)
+  }
 }
 
 export interface MatrixChangeAlertPayload {
@@ -534,7 +545,11 @@ export async function sendCircuitAlert(
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
-async function postMessage(
+// Post a Slack message. Returns the message ts on success, or null on any
+// failure — an HTTP error OR an API-level error (Slack returns HTTP 200 with
+// { ok: false, error } for channel_not_found / not_in_channel / invalid_auth).
+// Callers that gate a cooldown must treat null as "not delivered".
+export async function postMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],

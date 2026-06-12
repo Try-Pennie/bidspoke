@@ -152,7 +152,7 @@ export async function runSlowExecutionCheck(
       continue
     }
 
-    await sendSlowSpikeAlert(
+    const sent = await sendSlowSpikeAlert(
       supabase,
       wf.organization_id as string,
       (wf.slack_channel as string | null) ?? null,
@@ -170,6 +170,8 @@ export async function runSlowExecutionCheck(
       appUrl
     )
 
-    await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    // Start the cooldown only once the alert delivered — a kicked bot (Slack
+    // ok:false) would otherwise suppress retries while the spike kept going.
+    if (sent) await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
   }
 }

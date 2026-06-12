@@ -15,7 +15,7 @@
  * Cooldown: 30 min per workflow via KV (prevents repeat alerts during a sustained outage).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { getSlackConnection } from './slack'
+import { getSlackConnection, postMessage } from './slack'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const ALERT_THRESHOLD_PCT = 25
@@ -174,7 +174,7 @@ export async function runVolumeCliffCheck(
 
     const selfCheck = await getSelfCheck()
 
-    await sendCliffAlert(slack, {
+    const sent = await sendCliffAlert(slack, {
       workflow_id: wfId,
       workflow_name: wf.name as string,
       organization_id: wf.organization_id as string,
@@ -182,7 +182,10 @@ export async function runVolumeCliffCheck(
       baseline_per_min: cliff.baselinePerMin,
     }, appUrl, selfCheck)
 
-    await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    // Only start the cooldown once the alert actually delivered — otherwise a
+    // kicked bot (Slack ok:false) would suppress retries for 30 min while the
+    // outage went unannounced.
+    if (sent) await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
   }
 }
 
@@ -209,12 +212,14 @@ async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
   }
 }
 
+// Returns the message ts on success, or null if the alert was not delivered
+// (HTTP error or Slack ok:false) — the caller gates the cooldown on this.
 async function sendCliffAlert(
   slack: { bot_token: string; default_channel: string },
   cliff: CliffDetection,
   appUrl: string,
   selfCheck: SelfCheckResult
-): Promise<void> {
+): Promise<string | null> {
   const expected = cliff.baseline_per_min * RECENT_WINDOW_MINUTES
   const ratePct = expected > 0 ? Math.round((cliff.recent_count / expected) * 100) : 0
   const workflowUrl = `${appUrl}/workflows/${cliff.workflow_id}`
@@ -238,15 +243,5 @@ async function sendCliffAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` } },
   ]
 
-  const res = await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${slack.bot_token}` },
-    body: JSON.stringify({
-      channel: slack.default_channel,
-      blocks,
-      text: `Workflow volume cliff: ${cliff.workflow_name}`,
-      unfurl_links: false,
-    }),
-  })
-  if (!res.ok) console.error(`[volume-cliff] Slack HTTP error ${res.status}`)
+  return postMessage(slack.bot_token, slack.default_channel, blocks, `Workflow volume cliff: ${cliff.workflow_name}`)
 }

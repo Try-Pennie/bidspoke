@@ -24,7 +24,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { getSlackConnection } from './slack'
+import { getSlackConnection, postMessage } from './slack'
 
 export const DEFAULT_LOW_THRESHOLD_PCT = 50
 export const DEFAULT_HIGH_THRESHOLD_PCT = 200
@@ -195,10 +195,7 @@ async function sendVolumeAlert(
     },
   ]
 
-  const res = await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${connection.bot_token}` },
-    body: JSON.stringify({ channel: connection.default_channel, blocks, text: header, unfurl_links: false }),
-  })
-  if (!res.ok) console.error(`[volume-anomaly] Slack HTTP error ${res.status}`)
+  // postMessage detects both HTTP errors and Slack's HTTP-200 ok:false
+  // failures (channel_not_found / not_in_channel / invalid_auth) and logs them.
+  await postMessage(connection.bot_token, connection.default_channel, blocks, header)
 }
