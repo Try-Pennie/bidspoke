@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executePartnerBidNode, evaluateFormula } from '../partner-bid'
+import { PartnerApiError } from '../../partner-bid-error'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 import type { PartnerBidOutput } from '../partner-bid'
@@ -301,6 +302,46 @@ describe('executePartnerBidNode', () => {
       expect(output.accepted).toBe(true)
       expect(output.status).toBe(200)
       expect(output).not.toHaveProperty('http_status')
+    })
+  })
+
+  // Issue #53: a partner API error with no response_classification override is
+  // a plain Error with `.status` attached. The catch must classify it by that
+  // status (permanent 4xx) instead of hardcoding transient, so the wrapped
+  // PartnerApiError carries the right errorType for the retry logic.
+  describe('API error classification (#53)', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    async function bidAgainstStatus(status: number) {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('upstream error', { status }))
+      try {
+        await executePartnerBidNode(
+          makeNode({ partner_id: 'p1' }),
+          makeCtx({ debt_amount: 1000 }),
+          makeEnv(),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          makeSupabase(makePartner({ api_endpoint: 'https://partner.example/bid' })) as any
+        )
+        return null
+      } catch (err) {
+        return err
+      }
+    }
+
+    it('classifies a permanent 400 as permanent', async () => {
+      const err = await bidAgainstStatus(400)
+      expect(err).toBeInstanceOf(PartnerApiError)
+      expect((err as PartnerApiError).errorType).toBe('permanent')
+    })
+
+    it('classifies a 403 as permanent', async () => {
+      const err = await bidAgainstStatus(403)
+      expect((err as PartnerApiError).errorType).toBe('permanent')
+    })
+
+    it('classifies a transient 503 as transient', async () => {
+      const err = await bidAgainstStatus(503)
+      expect((err as PartnerApiError).errorType).toBe('transient')
     })
   })
 

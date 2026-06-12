@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { withRetry } from '../retry'
+import { classifyStepError } from '../error-classifier'
+import { PartnerApiError } from '../partner-bid-error'
 import type { ErrorType } from '../../types'
 
 const permanent = (): ErrorType => 'permanent'
@@ -179,5 +181,30 @@ describe('saturation signals (2026-06-10 create_prospect incident)', () => {
     const never = () => new Promise(() => {})
     await expect(withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient))
       .rejects.toThrow(/Step timed out after 10ms \(any in-flight upstream call was abandoned/)
+  })
+})
+
+// Issue #53: a permanent PartnerApiError must NOT be retried (re-POSTing the
+// lead and burning a cap slot each time). The retry classifier must read
+// PartnerApiError.errorType, not fall through to the transport default.
+describe('withRetry + classifyStepError — partner errors', () => {
+  const config = { retries: 2, backoff: 'linear' as const, timeout_ms: 5000 }
+
+  it('does not retry a permanent PartnerApiError', async () => {
+    const fn = vi.fn().mockRejectedValue(new PartnerApiError('Partner API returned 400', 'permanent', false))
+    await expect(withRetry(fn, config, classifyStepError)).rejects.toBeInstanceOf(PartnerApiError)
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('still retries a transient PartnerApiError', async () => {
+    const fn = vi.fn().mockRejectedValue(new PartnerApiError('Partner API returned 503', 'transient', false))
+    await expect(withRetry(fn, config, classifyStepError)).rejects.toBeInstanceOf(PartnerApiError)
+    expect(fn).toHaveBeenCalledTimes(3) // first attempt + 2 retries
+  })
+
+  it('does not retry a business-rejection PartnerApiError (null errorType)', async () => {
+    const fn = vi.fn().mockRejectedValue(new PartnerApiError('rejected', null, false))
+    await expect(withRetry(fn, config, classifyStepError)).rejects.toBeInstanceOf(PartnerApiError)
+    expect(fn).toHaveBeenCalledTimes(1)
   })
 })

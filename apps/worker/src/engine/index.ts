@@ -13,7 +13,7 @@ import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { buildCodeStepInput } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
-import { classifyHttpError, classifyTransportError } from './error-classifier'
+import { classifyHttpError, classifyTransportError, classifyStepError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
@@ -895,9 +895,7 @@ export async function walkGraph(
         } catch (err) {
           attemptStatus = 'failed'
           attemptError = err instanceof Error ? err.message : String(err)
-          if (err instanceof PartnerApiError) attemptErrorType = err.errorType
-          else if (err instanceof Response) attemptErrorType = classifyHttpError(err.status)
-          else attemptErrorType = classifyTransportError(err)
+          attemptErrorType = classifyStepError(err)
           attemptResolvedInput = extractResolvedInput(err)
         }
 
@@ -1137,10 +1135,7 @@ export async function walkGraph(
       const result = await withRetry(
         () => executeNode(node, ctx, env, supabase),
         retryConfig,
-        (err) => {
-          if (err instanceof Response) return classifyHttpError(err.status)
-          return classifyTransportError(err)
-        },
+        classifyStepError,
         retryStats
       )
       retriesUsed = retryStats.retries
@@ -1473,10 +1468,7 @@ async function runParallelChild(
       const result = await withRetry(
         () => executeNode(node, ctx, env, supabase),
         retryConfig,
-        (err) => {
-          if (err instanceof Response) return classifyHttpError(err.status)
-          return classifyTransportError(err)
-        },
+        classifyStepError,
         retryStats
       )
       output = result.output
