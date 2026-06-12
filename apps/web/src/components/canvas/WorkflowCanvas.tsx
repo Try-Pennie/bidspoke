@@ -65,6 +65,7 @@ import TriggerConfigPanel from './TriggerConfigPanel'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
+import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import {
   renameStepReferences,
   countStepReferences,
@@ -2311,29 +2312,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       if (idsToRemove.size === 0) return
       snapshot()
 
-      const upstreamSources = new Set<string>()
-      const downstreamTargets = new Set<string>()
-      for (const e of edges) {
-        if (idsToRemove.has(e.target) && !idsToRemove.has(e.source)) upstreamSources.add(e.source)
-        if (idsToRemove.has(e.source) && !idsToRemove.has(e.target)) downstreamTargets.add(e.target)
-      }
-
-      const keptEdges = edges.filter((e) => !idsToRemove.has(e.source) && !idsToRemove.has(e.target))
-
-      const spliceEdges = [] as typeof edges
-      for (const source of upstreamSources) {
-        for (const target of downstreamTargets) {
-          const already = keptEdges.some((e) => e.source === source && e.target === target)
-          if (already) continue
-          spliceEdges.push({
-            id: `splice-${source}-${target}-${Date.now()}`,
-            source,
-            target,
-          })
-        }
-      }
-
-      const newEdges = [...keptEdges, ...spliceEdges]
+      // Splice surviving upstream → downstream across the gap, preserving the
+      // upstream edge's sourceHandle so deleting a node on a branch/filter arm
+      // doesn't dead-end that arm at runtime. See computeEdgesAfterDelete.
+      const newEdges = computeEdgesAfterDelete(edges, idsToRemove)
       const newNodes = nodes.filter((n) => !idsToRemove.has(n.id))
       // Any node that lost all paths back to the trigger gets pushed off to the
       // right of the surviving flow so the visible chain isn't muddled by an
