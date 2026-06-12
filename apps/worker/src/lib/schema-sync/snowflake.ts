@@ -8,9 +8,36 @@ interface SnowflakeCredentials {
   schema?: string    // optional — filter to one schema
 }
 
-export async function fetchSnowflakeSchema(credsJson: string): Promise<SchemaCache> {
+// Shape of a Snowflake SQL API /statements response. Note there is no `status`
+// field — completion is signalled by the HTTP status (200 done, 202 still
+// running), and an async response carries a statementHandle to poll.
+interface SnowflakeStatementResponse {
+  data?: string[][]
+  statementHandle?: string
+  message?: string
+  code?: string
+}
+
+export interface SnowflakeFetchOptions {
+  pollIntervalMs?: number  // delay between status polls (default 1500)
+  pollTimeoutMs?: number   // give up polling after this long (default 20000)
+}
+
+const DEFAULT_POLL_INTERVAL_MS = 1500
+const DEFAULT_POLL_TIMEOUT_MS = 20000
+
+export async function fetchSnowflakeSchema(
+  credsJson: string,
+  opts: SnowflakeFetchOptions = {},
+): Promise<SchemaCache> {
   const creds = JSON.parse(credsJson) as SnowflakeCredentials
   const { account, username, password, database = 'BIDSPOKE', schema } = creds
+
+  const headers = {
+    'Authorization': `Basic ${btoa(`${username}:${password}`)}`,
+    'Content-Type': 'application/json',
+    'X-Snowflake-Authorization-Token-Type': 'BASIC',
+  }
 
   const schemaFilter = schema
     ? `AND TABLE_SCHEMA = '${schema.toUpperCase().replace(/'/g, '')}'`
@@ -26,25 +53,34 @@ export async function fetchSnowflakeSchema(credsJson: string): Promise<SchemaCac
 
   const res = await fetch(`https://${account}.snowflakecomputing.com/api/v2/statements`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Basic ${btoa(`${username}:${password}`)}`,
-      'Content-Type': 'application/json',
-      'X-Snowflake-Authorization-Token-Type': 'BASIC',
-    },
+    headers,
     body: JSON.stringify({ statement: sqlText, timeout: 30 }),
   })
 
-  if (!res.ok) throw new Error(`Snowflake schema fetch failed (${res.status})`)
-
-  const result = await res.json() as {
-    data?: string[][]
-    status?: string
-    message?: string
+  // 202 is success-ish (query accepted, running async) — let it through to the
+  // poll path below; only a genuine non-2xx is a hard failure.
+  if (!res.ok && res.status !== 202) {
+    throw new Error(`Snowflake schema fetch failed (${res.status})`)
   }
 
-  // Snowflake SQL API can return async — surface a clear error rather than silently returning empty
-  if (result.status && result.status !== 'success') {
-    throw new Error(`Snowflake query status: ${result.status} — ${result.message ?? 'try again'}`)
+  let result = await res.json() as SnowflakeStatementResponse
+
+  // Async path: the query ran past the inline 30s timeout, so Snowflake returned
+  // 202 + a statementHandle instead of rows. Poll the handle until it completes
+  // rather than caching an empty schema, which would wipe Integration-node
+  // autocomplete (#89).
+  if (res.status === 202) {
+    const handle = result.statementHandle
+    if (!handle) {
+      throw new Error('Snowflake returned 202 with no statementHandle to poll')
+    }
+    result = await pollSnowflakeStatement(
+      account,
+      handle,
+      headers,
+      opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      opts.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS,
+    )
   }
 
   const rows = result.data ?? []
@@ -69,4 +105,30 @@ export async function fetchSnowflakeSchema(credsJson: string): Promise<SchemaCac
   }))
 
   return { objects }
+}
+
+// Polls a running statement (GET /api/v2/statements/{handle}) until it returns
+// rows (HTTP 200) or the timeout elapses. A 202 means still running. Throws on a
+// hard error or when the query never completes — both leave the existing
+// schema_cache untouched (the caller's catch returns 502 without overwriting).
+async function pollSnowflakeStatement(
+  account: string,
+  handle: string,
+  headers: Record<string, string>,
+  intervalMs: number,
+  timeoutMs: number,
+): Promise<SnowflakeStatementResponse> {
+  const deadline = Date.now() + timeoutMs
+  const url = `https://${account}.snowflakecomputing.com/api/v2/statements/${encodeURIComponent(handle)}`
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+
+    const res = await fetch(url, { method: 'GET', headers })
+    if (res.status === 202) continue  // still running — poll again
+    if (!res.ok) throw new Error(`Snowflake schema poll failed (${res.status})`)
+    return await res.json() as SnowflakeStatementResponse
+  }
+
+  throw new Error('Snowflake query still running after polling — try Sync again in a moment')
 }
