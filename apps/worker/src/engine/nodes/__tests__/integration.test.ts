@@ -218,6 +218,67 @@ describe('executeIntegrationNode', () => {
     expect(fetchMock.mock.calls[0][1].headers['X-API-Key']).toBe('mykey')
   })
 
+  // ── Logged headers are masked (#73) ───────────────────────────────────────────
+
+  it('masks the Authorization value in resolvedInput while sending the real token', async () => {
+    fetchMock.mockResolvedValue(mockResponse(200, '{}'))
+    const node = makeNode({
+      url: 'https://api.example.com/data',
+      auth: { type: 'bearer', token: '{{env.API_TOKEN}}' },
+    })
+    const ctx = makeCtx({ env: { API_TOKEN: 'tok-abc123' } })
+    const result = await executeIntegrationNode(node, ctx, makeEnv())
+    // Wire gets the real token…
+    expect(fetchMock.mock.calls[0][1].headers['Authorization']).toBe('Bearer tok-abc123')
+    // …but the persisted/displayed copy is redacted.
+    const logged = (result.resolvedInput!.resolved as { headers: Record<string, string> }).headers
+    expect(logged['Authorization']).toBe('[redacted]')
+    expect(JSON.stringify(result.resolvedInput)).not.toContain('tok-abc123')
+  })
+
+  it('masks a custom api_key header in resolvedInput', async () => {
+    fetchMock.mockResolvedValue(mockResponse(200, '{}'))
+    const node = makeNode({
+      url: 'https://api.example.com/data',
+      auth: { type: 'api_key', header: 'X-Scout-Key', key: '{{env.SCOUT_KEY}}' },
+    })
+    const ctx = makeCtx({ env: { SCOUT_KEY: 'sk-xyz' } })
+    const result = await executeIntegrationNode(node, ctx, makeEnv())
+    expect(fetchMock.mock.calls[0][1].headers['X-Scout-Key']).toBe('sk-xyz')
+    const logged = (result.resolvedInput!.resolved as { headers: Record<string, string> }).headers
+    expect(logged['X-Scout-Key']).toBe('[redacted]')
+  })
+
+  it('leaves non-sensitive headers visible in resolvedInput', async () => {
+    fetchMock.mockResolvedValue(mockResponse(200, '{}'))
+    const node = makeNode({
+      url: 'https://api.example.com/data',
+      headers: { 'X-Request-Id': '{{trigger.payload.ssn}}' },
+      auth: { type: 'bearer', token: '{{env.API_TOKEN}}' },
+    })
+    const ctx = makeCtx({ env: { API_TOKEN: 'tok-abc123' } })
+    const result = await executeIntegrationNode(node, ctx, makeEnv())
+    const logged = (result.resolvedInput!.resolved as { headers: Record<string, string> }).headers
+    expect(logged['X-Request-Id']).toBe('123-45-6789') // non-sensitive — preserved for debugging
+    expect(logged['Authorization']).toBe('[redacted]')
+  })
+
+  it('masks the Authorization value on the error path too (thrown Response resolvedInput)', async () => {
+    fetchMock.mockResolvedValue(mockResponse(403, 'forbidden'))
+    const node = makeNode({
+      url: 'https://api.example.com/data',
+      auth: { type: 'bearer', token: '{{env.API_TOKEN}}' },
+    })
+    const ctx = makeCtx({ env: { API_TOKEN: 'tok-abc123' } })
+    try {
+      await executeIntegrationNode(node, ctx, makeEnv())
+      throw new Error('expected throw')
+    } catch (err) {
+      const ri = (err as { resolvedInput?: { resolved: { headers: Record<string, string> } } }).resolvedInput
+      expect(ri?.resolved.headers['Authorization']).toBe('[redacted]')
+    }
+  })
+
   it('sets no Authorization header when auth type is none', async () => {
     fetchMock.mockResolvedValue(mockResponse(200, '{}'))
     const node = makeNode({ url: 'https://api.example.com/data', auth: { type: 'none' } })
