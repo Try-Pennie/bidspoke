@@ -51,6 +51,11 @@ async function recordSuccess(do_: CircuitBreakerObject): Promise<{ ok: boolean; 
   return res.json()
 }
 
+async function releaseProbe(do_: CircuitBreakerObject): Promise<{ ok: boolean; state: string }> {
+  const res = await do_.fetch(req('/release-probe'))
+  return res.json()
+}
+
 async function status(do_: CircuitBreakerObject) {
   const res = await do_.fetch(req('/status'))
   return res.json<{ state: string; error_count_in_window: number }>()
@@ -170,6 +175,67 @@ describe('CircuitBreakerObject', () => {
       const probe2 = await check(do_)
       expect(probe2.allowed).toBe(false)
       expect(probe2.reason).toBe('probe_in_flight')
+    })
+
+    it('reclaims the probe once its lease expires (stranded probe is not permanent)', async () => {
+      vi.useFakeTimers()
+      const do_ = makeDO()
+      await tripBreaker(do_, 3, 60)
+      vi.advanceTimersByTime(61_000)
+
+      // Claim the probe but never report back (simulates a crash / lost call).
+      const probe1 = await check(do_)
+      expect(probe1.allowed).toBe(true)
+
+      // Within the lease, still blocked.
+      vi.advanceTimersByTime(59_000)
+      expect((await check(do_)).reason).toBe('probe_in_flight')
+
+      // Past the 60s lease, the next lead reclaims a fresh probe.
+      vi.advanceTimersByTime(2_000)
+      const probe2 = await check(do_)
+      expect(probe2.allowed).toBe(true)
+      expect(probe2.state).toBe('half_open')
+    })
+  })
+
+  describe('release-probe', () => {
+    it('releases a half-open probe so the next lead can claim it', async () => {
+      vi.useFakeTimers()
+      const do_ = makeDO()
+      await tripBreaker(do_, 3, 60)
+      vi.advanceTimersByTime(61_000)
+
+      await check(do_)  // claim the probe
+      // Without releasing, the next check is blocked…
+      expect((await check(do_)).reason).toBe('probe_in_flight')
+
+      // …release it (partner was never called — cap/dedup skip)…
+      const released = await releaseProbe(do_)
+      expect(released.state).toBe('half_open')
+
+      // …and the next lead immediately gets a fresh probe.
+      const next = await check(do_)
+      expect(next.allowed).toBe(true)
+      expect(next.state).toBe('half_open')
+    })
+
+    it('does not record success — the circuit stays half_open, it does not close', async () => {
+      vi.useFakeTimers()
+      const do_ = makeDO()
+      await tripBreaker(do_, 3, 60)
+      vi.advanceTimersByTime(61_000)
+      await check(do_)
+
+      await releaseProbe(do_)
+      expect((await status(do_)).state).toBe('half_open')
+    })
+
+    it('is a no-op when the circuit is closed', async () => {
+      const do_ = makeDO()
+      const res = await releaseProbe(do_)
+      expect(res.state).toBe('closed')
+      expect((await check(do_)).allowed).toBe(true)
     })
   })
 

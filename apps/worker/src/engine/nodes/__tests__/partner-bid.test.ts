@@ -2,7 +2,7 @@
  * Partner Bid node — PRD Section 5.3
  * Tests: cap enforcement, circuit breaker, formula evaluation, API call, skips.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executePartnerBidNode, evaluateFormula } from '../partner-bid'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -301,6 +301,79 @@ describe('executePartnerBidNode', () => {
       expect(output.accepted).toBe(true)
       expect(output.status).toBe(200)
       expect(output).not.toHaveProperty('http_status')
+    })
+  })
+
+  // Issue #52: a lead that claims the half-open probe must always report back,
+  // or the partner is excluded from all bidding until the lease expires / a
+  // manual reset. cap/dedup skips release the probe (partner not called);
+  // a business rejection records success (partner answered healthily).
+  describe('circuit breaker probe reporting (#52)', () => {
+    afterEach(() => vi.restoreAllMocks())
+
+    function cbUrls(cbStub: { fetch: ReturnType<typeof vi.fn> }): string[] {
+      return cbStub.fetch.mock.calls.map((c) => String(c[0]))
+    }
+
+    function halfOpenEnv() {
+      const cbStub = makeCbStub(true, 'half_open')
+      const env = makeEnv({
+        CIRCUIT_BREAKER: { idFromName: vi.fn().mockReturnValue('cb-id'), get: vi.fn().mockReturnValue(cbStub) },
+      })
+      return { cbStub, env }
+    }
+
+    it('releases the probe when the lead is skipped by the daily cap', async () => {
+      const { cbStub, env } = halfOpenEnv()
+      env.DAILY_CAP = { idFromName: vi.fn().mockReturnValue('do-id'), get: vi.fn().mockReturnValue(makeCapStub(false, 100)) } as unknown as typeof env.DAILY_CAP
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await executePartnerBidNode(makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 1000 }), env, makeSupabase(makePartner({ daily_cap: 100 })) as any)
+
+      expect(cbUrls(cbStub).some((u) => u.includes('release-probe'))).toBe(true)
+    })
+
+    it('releases the probe when the lead is a duplicate', async () => {
+      const { cbStub, env } = halfOpenEnv()
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ duplicate: true }), { status: 200 }))
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await executePartnerBidNode(makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 1000 }), env, makeSupabase(makePartner({ dedup_endpoint: 'https://dedup.example' })) as any)
+
+      expect(cbUrls(cbStub).some((u) => u.includes('release-probe'))).toBe(true)
+    })
+
+    it('does NOT release the probe when the breaker was closed (no probe claimed)', async () => {
+      const cbStub = makeCbStub(true, 'closed')
+      const env = makeEnv({
+        CIRCUIT_BREAKER: { idFromName: vi.fn().mockReturnValue('cb-id'), get: vi.fn().mockReturnValue(cbStub) },
+        DAILY_CAP: { idFromName: vi.fn().mockReturnValue('do-id'), get: vi.fn().mockReturnValue(makeCapStub(false, 100)) },
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await executePartnerBidNode(makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 1000 }), env, makeSupabase(makePartner({ daily_cap: 100 })) as any)
+
+      expect(cbUrls(cbStub).some((u) => u.includes('release-probe'))).toBe(false)
+    })
+
+    it('records success on a business rejection (healthy partner response)', async () => {
+      const { cbStub, env } = halfOpenEnv()
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ status: 'rejected' }), { status: 200 }))
+
+      await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        env,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({
+          api_endpoint: 'https://partner.example/bid',
+          response_classification: { rejection_signals: [{ field: 'status', equals: 'rejected' }] },
+        })) as any
+      )
+
+      // recordSuccess is fire-and-forget.
+      await vi.waitFor(() => expect(cbUrls(cbStub).some((u) => u.includes('record-success'))).toBe(true), { timeout: 200 })
+      expect(cbUrls(cbStub).some((u) => u.includes('release-probe'))).toBe(false)
     })
   })
 })

@@ -11,6 +11,7 @@ interface CircuitBreakerStorage {
   windowSeconds: number
   errorThreshold: number
   probingInFlight: boolean    // half-open: only one probe at a time
+  probeStartedAt: number | null // half-open: when the in-flight probe was claimed (lease)
   consecutiveCooldowns: number // tracks repeated failures for backoff
 }
 
@@ -21,7 +22,14 @@ export interface CheckResult {
   opens_at?: number
 }
 
-const DEFAULTS: Omit<CircuitBreakerStorage, 'errorTimestamps' | 'openedAt'> = {
+// A half-open probe is leased for this long. If the caller never reports back
+// (a crash, a lost DO call, or a skip path that forgot to release), the lease
+// expires so the next eligible lead can claim a fresh probe — otherwise the
+// partner is excluded from all bidding until a manual reset. 60s comfortably
+// exceeds one bid attempt including retries.
+const PROBE_LEASE_MS = 60_000
+
+const DEFAULTS: Omit<CircuitBreakerStorage, 'errorTimestamps' | 'openedAt' | 'probeStartedAt'> = {
   state: 'closed',
   cooldownSeconds: 300,
   windowSeconds: 60,
@@ -45,6 +53,7 @@ export class CircuitBreakerObject implements DurableObject {
       case '/check':  return this.handleCheck()
       case '/record-success': return this.handleRecordSuccess()
       case '/record-error':   return this.handleRecordError(request)
+      case '/release-probe':  return this.handleReleaseProbe()
       case '/reset':          return this.handleReset()
       case '/status':         return this.handleStatus()
       default:
@@ -54,7 +63,13 @@ export class CircuitBreakerObject implements DurableObject {
 
   private async load(): Promise<CircuitBreakerStorage> {
     const stored = await this.state.storage.get<CircuitBreakerStorage>('data')
-    return stored ?? { ...DEFAULTS, errorTimestamps: [], openedAt: null }
+    if (stored) {
+      // Normalize entries persisted before probeStartedAt existed — a stuck
+      // probe with no recorded start is then treated as expired (see check).
+      if (stored.probeStartedAt === undefined) stored.probeStartedAt = null
+      return stored
+    }
+    return { ...DEFAULTS, errorTimestamps: [], openedAt: null, probeStartedAt: null }
   }
 
   private async save(data: CircuitBreakerStorage): Promise<void> {
@@ -80,9 +95,10 @@ export class CircuitBreakerObject implements DurableObject {
       const opensAt = (data.openedAt ?? now) + cooldownMs
 
       if (now >= opensAt) {
-        // Cooldown elapsed — transition to half-open
+        // Cooldown elapsed — transition to half-open and claim the probe
         data.state = 'half_open'
         data.probingInFlight = true
+        data.probeStartedAt = now
         await this.save(data)
         return json<CheckResult>({ allowed: true, state: 'half_open' })
       }
@@ -96,13 +112,19 @@ export class CircuitBreakerObject implements DurableObject {
       })
     }
 
-    // half_open
-    if (data.probingInFlight) {
+    // half_open: block only while a FRESH probe is in flight. A probe whose
+    // lease has expired (caller never reported back) is reclaimed so the
+    // partner isn't excluded indefinitely. A null start (legacy entry, or a
+    // breaker already stuck at deploy time) counts as expired.
+    const probeStale =
+      data.probeStartedAt == null || now - data.probeStartedAt >= PROBE_LEASE_MS
+    if (data.probingInFlight && !probeStale) {
       await this.save(data)
       return json<CheckResult>({ allowed: false, state: 'half_open', reason: 'probe_in_flight' })
     }
 
     data.probingInFlight = true
+    data.probeStartedAt = now
     await this.save(data)
     return json<CheckResult>({ allowed: true, state: 'half_open' })
   }
@@ -116,6 +138,7 @@ export class CircuitBreakerObject implements DurableObject {
       data.errorTimestamps = []
       data.openedAt = null
       data.probingInFlight = false
+      data.probeStartedAt = null
       data.consecutiveCooldowns = 0
       await this.save(data)
       // Slack recovery alert is sent by the caller (Phase 2 Partner Bid node) when it sees state transition
@@ -145,6 +168,7 @@ export class CircuitBreakerObject implements DurableObject {
       data.state = 'open'
       data.openedAt = now
       data.probingInFlight = false
+      data.probeStartedAt = null
       data.consecutiveCooldowns++
       await this.save(data)
       // Slack alert sent by caller when tripped === true (Phase 2 Partner Bid node)
@@ -172,12 +196,26 @@ export class CircuitBreakerObject implements DurableObject {
     return json({ ok: true, state: data.state, tripped: false })
   }
 
+  // Release a half-open probe WITHOUT recording success or error. Used by the
+  // caller when a lead claimed the probe but never actually called the partner
+  // (skipped by daily cap or dedup), so the next eligible lead can probe.
+  private async handleReleaseProbe(): Promise<Response> {
+    const data = await this.load()
+    if (data.state === 'half_open' && data.probingInFlight) {
+      data.probingInFlight = false
+      data.probeStartedAt = null
+      await this.save(data)
+    }
+    return json({ ok: true, state: data.state })
+  }
+
   private async handleReset(): Promise<Response> {
     const data = await this.load()
     data.state = 'closed'
     data.errorTimestamps = []
     data.openedAt = null
     data.probingInFlight = false
+    data.probeStartedAt = null
     data.consecutiveCooldowns = 0
     await this.save(data)
     console.log(`[circuit-breaker] Circuit manually reset`)

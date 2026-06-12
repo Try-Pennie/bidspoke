@@ -192,15 +192,24 @@ export async function executePartnerBidNode(
     return { ...skip(p.slug, 'partner_inactive'), resolvedInput: buildInput({ skip_reason: 'partner_inactive' }) }
   }
 
+  // One breaker client reused across the check, the cap/dedup probe release,
+  // and the success/error reports below.
+  const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
+  // True only when THIS lead claimed the half-open probe. The cap/dedup skips
+  // below use it to release the probe — the partner was never actually called,
+  // so it must neither record success nor stay claimed (which would exclude
+  // the partner until the lease expires).
+  let probeClaimed = false
+
   // 3. Circuit breaker check
-  if (p.circuit_enabled) {
-    const cb = new CircuitBreakerClient(env, p.slug)
+  if (cb) {
     const cbCheck = await cb.check()
     if (!cbCheck.allowed) {
       log({ event: 'circuit_open', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug })
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'circuit_open' })
       return { ...skip(p.slug, 'circuit_open'), resolvedInput: buildInput({ skip_reason: 'circuit_open' }) }
     }
+    probeClaimed = cbCheck.state === 'half_open'
   }
 
   // 4. Daily cap check
@@ -218,6 +227,8 @@ export async function executePartnerBidNode(
     capCount = capResult.count
     log({ event: 'cap_check', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, allowed: capResult.allowed, count: capCount, cap: p.daily_cap })
     if (!capResult.allowed) {
+      // Partner never called — release the half-open probe so the next lead can.
+      if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'cap_exceeded' })
       return { ...skip(p.slug, 'cap_exceeded'), resolvedInput: buildInput({ skip_reason: 'cap_exceeded', cap_count: capCount, daily_cap: p.daily_cap }) }
     }
@@ -227,6 +238,8 @@ export async function executePartnerBidNode(
   if (p.dedup_endpoint) {
     const isDuplicate = await checkDedup(p.dedup_endpoint, ctx)
     if (isDuplicate) {
+      // Partner never called — release the half-open probe so the next lead can.
+      if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'duplicate' })
       return { ...skip(p.slug, 'duplicate'), resolvedInput: buildInput({ skip_reason: 'duplicate' }) }
     }
@@ -237,7 +250,6 @@ export async function executePartnerBidNode(
   let rawResponse: unknown = null
   let matrixInfo: PartnerBidOutput['matrix'] = null
   let extra: Record<string, unknown> | undefined
-  const cb = p.circuit_enabled ? new CircuitBreakerClient(env, p.slug) : null
 
   try {
     const result = await resolveBid(p, ctx, env, supabase)
@@ -246,6 +258,9 @@ export async function executePartnerBidNode(
     extra = result.extra
     const resolverInput = result.resolved_input ?? {}
     if (result.rejected) {
+      // A business rejection is a HEALTHY partner response — record success so
+      // a half-open breaker closes (no-op when the breaker is already closed).
+      if (cb) cb.recordSuccess().catch(() => {})
       logBid({
         partner_slug: p.slug,
         attempted_at_utc: attemptedAt,
