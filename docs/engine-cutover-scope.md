@@ -50,7 +50,7 @@ Import the Pipedream "engine bidding" workflow into Bidspoke. Dan shared the ful
 
 Parity-level migration. New features (win-aware dedup, internal person table) layer on after cutover.
 
-**Tripoint result code range (correction from Bruno call 2026-04-21):** Approved codes are **1000-1001 and 1013-2017 only**. Codes 2018 and 2019 are fraud-flagged/known-bad and must be treated as rejections, not approvals. Do not use the range 1013-2019.
+**Tripoint result code range:** Approved codes are **1000-1001 and 1013-1017 only** — this matches the live classifier `tripointResult` in `apps/worker/src/engine/bid-resolver.ts` (1002-1005 and 1020 are Duplicate; everything else, including the fraud-flagged 2018-2019, is a rejection). NOTE: an earlier transcription of the Bruno call 2026-04-21 recorded "1013-2017" — that was wrong; 1013-1017 is correct. The live classifier is the source of truth; don't "fix" it toward the old range.
 
 **Tripoint lead ID write-back (required, confirmed Bruno call 2026-04-21):** When Tripoint returns a successful response, they include a `leadId` field. This must be written back to the Salesforce prospect as `Tripoint_Lead_ID__c` so Denise can pull it for the click-through submission flow. Required in both the engine bidding workflow and the main flow. Wire as a Salesforce PATCH step immediately after a successful Tripoint bid.
 
@@ -246,7 +246,7 @@ Critical path to engine cutover (target: 1-2 weeks — realistic risk called out
   3.3 shadow Phase A (dry_run) ──→ volume test live (goal: this week)
                                           │
   3.1  engine workflow lift-and-shift ────┤
-       + result codes 1013-2017 only      │
+       + result codes 1013-1017 only      │
        + Tripoint lead ID → SF write      │
   3.1a Equifax integration (new) ─────────┤
   3.1b Tripoint token DO (new) ───────────┤
@@ -355,7 +355,7 @@ Not deal-breakers — but worth flagging so we don't build the wrong thing.
 - **Phase B duplicate-prospect strategy is N/A** — Dan will flip engine's routing and disable the Pipedream workflow in the same step at cutover, so both systems never run for real in parallel. Pipedream stays warm purely as a rollback target, not as a second live system.
 
 **Additional answers from Bruno call 2026-04-21:**
-- **Tripoint result codes are 1000-1001 and 1013-2017.** Codes 2018 and 2019 are fraud-flagged/known-bad — treat as rejection. (§3.1 updated.)
+- **Tripoint result codes are 1000-1001 and 1013-1017.** Anything outside (including the fraud-flagged 2018-2019) is a rejection. The earlier "1013-2017" here was a transcription error — 1013-1017 matches the live classifier. (§3.1 updated.)
 - **Tripoint lead ID must be written to Salesforce prospect** (`Tripoint_Lead_ID__c`) after every successful bid so Denise can close the loop on click-through. Required in engine bidding and main flow. (§3.1 updated.)
 - **Tripoint outbound auth requires a shared token Durable Object** (§3.1b). Bruno already built this for the Pipedream proxy; Bidspoke needs the same pattern. Per-request token fetching causes 401 races under concurrent load.
 - **Three workflows to migrate, not two.** Engine bidding, main flow, and Tripoint submission (§3.1c). The submission workflow is triggered by Denise when a user clicks through.
