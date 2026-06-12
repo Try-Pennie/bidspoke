@@ -23,7 +23,7 @@ import { setCfSecret } from '../../../lib/cf-secrets'
 type TableConfig = {
   single?: Record<string, unknown> | null
   list?: Record<string, unknown>[]
-  insertError?: { message: string }
+  insertError?: { message: string; code?: string }
 }
 
 function makeSupabase(tables: Record<string, TableConfig> = {}) {
@@ -147,10 +147,14 @@ describe('POST /sources', () => {
   })
 
   it('returns 409 when source name already exists', async () => {
+    // Uniqueness is now enforced by UNIQUE(organization_id, name) — the insert
+    // returns a 23505 unique-violation.
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({
+        users: { single: testUser },
+        api_sources: { insertError: { code: '23505', message: 'duplicate key value' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    // 'website_form' is already in EXISTING_KEY_MAP
     const res = await request(app, 'POST', '/sources', { body: { name: 'website_form' } })
     expect(res.status).toBe(409)
   })
@@ -176,9 +180,14 @@ describe('POST /sources', () => {
     expect(body.name).toBe('crm_intake')
   })
 
-  it('calls setCfSecret to persist the updated key map', async () => {
+  it('rebuilds the key map from the table (derived, not read-modify-write)', async () => {
+    // The rebuilt map comes from api_sources (post-insert state), so the new
+    // source appears via the table, not by mutating the c.env snapshot.
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({
+        users: { single: testUser },
+        api_sources: { list: [{ name: 'new_source', api_key: 'newkey' }] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'POST', '/sources', { body: { name: 'new_source' } })
     expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith(
@@ -187,6 +196,22 @@ describe('POST /sources', () => {
       'acct-123',
       'tok-abc'
     )
+  })
+
+  it('preserves a manually-seeded key not present in the table', async () => {
+    // EXISTING_KEY_MAP has abcd1234 → website_form. If website_form is NOT in
+    // the table, it's a "manual" key and must survive the rebuild.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        api_sources: { list: [{ name: 'new_source', api_key: 'newkey' }] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'POST', '/sources', { body: { name: 'new_source' } })
+    const [, mapJson] = vi.mocked(setCfSecret).mock.calls[0]
+    const parsed = JSON.parse(mapJson)
+    expect(parsed['abcd1234']).toBe('website_form') // manual key preserved
+    expect(parsed['newkey']).toBe('new_source')     // table-derived key present
   })
 })
 
@@ -212,7 +237,7 @@ describe('DELETE /sources/:name', () => {
 
   it('returns 200 when source is deleted', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: { single: { name: 'website_form' } } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'website_form', api_key: 'abcd1234' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/sources/website_form')
     expect(res.status).toBe(200)
@@ -220,13 +245,27 @@ describe('DELETE /sources/:name', () => {
     expect(body.ok).toBe(true)
   })
 
-  it('removes the key from the map before calling setCfSecret', async () => {
+  it('rebuilds the map without the deleted key before calling setCfSecret', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: { single: { name: 'website_form' } } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'website_form', api_key: 'abcd1234' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/sources/website_form')
     const [, updatedMap] = vi.mocked(setCfSecret).mock.calls[0]
     const parsed = JSON.parse(updatedMap)
     expect(Object.values(parsed)).not.toContain('website_form')
+    expect(parsed['abcd1234']).toBeUndefined() // deleted key revoked
+  })
+
+  it('preserves a manually-seeded key when deleting a different source', async () => {
+    // EXISTING_KEY_MAP: abcd1234→website_form. Delete a table source ('crm') whose
+    // key isn't the manual one — the manual abcd1234 must survive.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'crm', api_key: 'crmkey' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'DELETE', '/sources/crm')
+    const [, updatedMap] = vi.mocked(setCfSecret).mock.calls[0]
+    const parsed = JSON.parse(updatedMap)
+    expect(parsed['abcd1234']).toBe('website_form') // manual key preserved
+    expect(parsed['crmkey']).toBeUndefined()        // deleted source's key gone
   })
 })
