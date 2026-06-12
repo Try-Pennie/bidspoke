@@ -725,6 +725,22 @@ workflows.post('/:id/test-node', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id') as string
   const supabase = createSupabaseClient(c.env)
+
+  // Verify ownership before deploying code or executing anything. Code bundles
+  // are keyed by workflow id (deployCodeNodes), and the service-role key
+  // bypasses RLS, so without this a cross-org caller could overwrite a victim
+  // workflow's live code-node bundle with attacker-supplied script. The
+  // execution_id path below only scopes the execution, not this workflow id.
+  // 404 (not 403) to avoid leaking which ids exist, matching siblings.
+  const { error: ownerError } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .is('deleted_at', null)
+    .single()
+  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+
   const body = await c.req.json<{
     namespace: string
     definition?: WorkflowDefinition

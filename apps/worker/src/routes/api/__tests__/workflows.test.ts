@@ -640,3 +640,44 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
     expect(rpc).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('POST /workflows/:id/test-node', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  const nodeBody = {
+    namespace: 'n1',
+    definition: { trigger: { id: 't', type: 'trigger', config: {} }, nodes: [{ id: 'n1', namespace: 'n1', type: 'filter', config: {} }], edges: [] },
+    trigger_payload: {},
+  }
+
+  it('returns 404 when the workflow belongs to another org (before any deploy/execute)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: null },  // cross-org: ownership fails
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-other/test-node', { body: nodeBody })
+    expect(res.status).toBe(404)
+  })
+
+  it('passes ownership for the caller’s own workflow (reaches the handler body)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    // Omit `definition` so the handler answers 400 — proves it got PAST the
+    // ownership check (404) into its own validation, without exercising the
+    // code-deploy / executeNode path.
+    const res = await request(app, 'POST', '/workflows/wf-1/test-node', { body: { namespace: 'n1' } })
+    expect(res.status).toBe(400)
+  })
+})
