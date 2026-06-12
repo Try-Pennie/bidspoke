@@ -65,18 +65,16 @@ namespace = "bidspoke-code-nodes"
 # engine falls back to PostgREST automatically when the binding is absent, so
 # adding/removing it is non-breaking.
 #
-# To enable:
-#   1. Get the Supabase pooler (Supavisor, transaction mode, port 6543)
-#      connection string from the Supabase dashboard (Database -> Connection
-#      pooling). Use a dedicated role, not the service key.
-#   2. wrangler hyperdrive create bidspoke-pg --connection-string="postgres://USER:PASS@HOST:6543/postgres"
-#   3. Paste the returned id below and uncomment this block.
-#   4. Deploy. Verify a fresh execution's row appears, then confirm at the next
-#      03:30 UTC purge that no "schema cache" alerts fire.
-# (compatibility_date is already at 2024-09-23, the floor node-postgres needs.)
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = ""  # output of `wrangler hyperdrive create`
+# Provisioned 2026-06-12 against the Supabase IPv4 shared pooler (Supavisor,
+# transaction mode, aws-1-us-west-2.pooler.supabase.com:6543). The connection
+# string (with the DB password) lives only in the Hyperdrive config, never in
+# git. To rotate: wrangler hyperdrive update d20e883f2ffb4809b9b80d1ff30933c0
+# --connection-string="...". (compatibility_date is at 2024-09-23, the floor
+# node-postgres needs.) After deploy: verify a fresh execution's row appears,
+# then confirm at the next 03:30 UTC purge that no "schema cache" alerts fire.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "d20e883f2ffb4809b9b80d1ff30933c0"
 
 # Custom endpoint routing — partner subdomains (e.g. tripoint.trypennie.dev)
 # The worker reads the Host header to route *.trypennie.dev requests.
