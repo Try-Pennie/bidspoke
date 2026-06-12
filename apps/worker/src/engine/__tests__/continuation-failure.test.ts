@@ -1,0 +1,182 @@
+/**
+ * Post-response (continue_after_response) failure surfacing — issue #51.
+ *
+ * When a Response node has continue_after_response:true, the response is sent
+ * to the caller early and the walk keeps running post-response steps in the
+ * background (the "Offer Response then patch Salesforce" pattern). If one of
+ * those steps throws, the walk error used to be destructured away in the
+ * finalize closure, leaving the execution recorded as completed/successful
+ * with no failure alert. These tests guard that:
+ *   - the caller still gets the early (successful) response, and
+ *   - the execution record is promoted to failed and the alert fires.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../../index'
+import type { WorkflowDefinition, NodeDefinition } from '../../types'
+import { PartnerApiError } from '../partner-bid-error'
+
+vi.mock('../definition-loader')
+vi.mock('../../lib/env-loader', () => ({ loadEnvVars: vi.fn().mockResolvedValue({}) }))
+vi.mock('../../lib/partner-constants-loader', () => ({ loadPartnerConstants: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../step-logger', () => ({
+  createExecutionRecord: vi.fn().mockResolvedValue(undefined),
+  updateExecutionRecord: vi.fn().mockResolvedValue(undefined),
+  flushStepLogs: vi.fn().mockResolvedValue(null),
+}))
+vi.mock('../nodes/index')
+vi.mock('../achieve-log', () => ({
+  extractAchieveEvaluations: vi.fn().mockReturnValue([]),
+  insertAchieveEvaluations: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
+
+import { executeWorkflow } from '../index'
+import { loadWorkflowDefinition } from '../definition-loader'
+import { executeNode } from '../nodes/index'
+import { updateExecutionRecord } from '../step-logger'
+import { fireExecutionAlert } from '../../lib/execution-alerts'
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const WF_ID = 'wf-continuation'
+const EARLY_RESPONSE = { status: 200, headers: {}, body: { accepted: true, offer: 50 } }
+
+// trigger → offer_response (continue_after_response) → patch_sf
+const definition = {
+  trigger: { id: 'trigger', type: 'trigger', config: {} },
+  nodes: [
+    { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+    { id: 'p', namespace: 'patch_sf', type: 'salesforce', config: { retries: 0 } },
+  ],
+  edges: [{ id: 'e0', source: 'r', target: 'p' }],
+} as unknown as WorkflowDefinition
+
+function makeKV() {
+  const store = new Map<string, string>()
+  return {
+    async get(k: string, t?: string) { const v = store.get(k); return v === undefined ? null : t === 'json' ? JSON.parse(v) : v },
+    async put(k: string, v: string) { store.set(k, v) },
+    async delete(k: string) { store.delete(k) },
+  } as unknown as KVNamespace
+}
+
+function makeHarness() {
+  const background: Promise<unknown>[] = []
+  const env = {
+    IDEMPOTENCY: makeKV(),
+    WORKFLOW_CACHE: makeKV(),
+    APP_URL: 'https://app.test',
+    PII_REDACTION_FIELDS: '',
+  } as unknown as Env
+  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  // Drain across iterations — the finalize closure schedules the alert in a
+  // nested waitUntil, so newly-added promises must be awaited too.
+  const flush = async () => {
+    for (let i = 0; i < 6 && background.length; i++) {
+      await Promise.all(background.splice(0))
+    }
+  }
+  return { env, executionCtx, flush }
+}
+
+const supabase = {} as SupabaseClient
+
+function run() {
+  const harness = makeHarness()
+  return {
+    harness,
+    result: executeWorkflow(
+      { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine' },
+      harness.env,
+      supabase,
+      harness.executionCtx
+    ),
+  }
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+    definition,
+    workflow_version_id: 'v1',
+    workflow_name: 'Continuation Test',
+    org_id: 'org-1',
+    slack_channel: null,
+    capture_sightings: false,
+  })
+})
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('post-response step failure', () => {
+  it('promotes the execution to failed and fires the alert, while the caller still gets the early response', async () => {
+    vi.mocked(executeNode).mockImplementation(async (node: NodeDefinition) => {
+      if (node.type === 'response') {
+        return { output: EARLY_RESPONSE, earlyResponse: EARLY_RESPONSE, continueAfterResponse: true }
+      }
+      throw new Error('Salesforce patch failed: 400')
+    })
+
+    const { harness, result } = run()
+    const r = await result
+
+    // Caller got the early, successful response — unaffected by the post-response failure.
+    expect(r.status).toBe(200)
+    expect(r.response).toEqual(EARLY_RESPONSE.body)
+
+    await harness.flush()
+
+    // Execution record promoted to failed, blaming the post-response step.
+    const updateCalls = vi.mocked(updateExecutionRecord).mock.calls
+    const lastUpdate = updateCalls[updateCalls.length - 1][3] as Record<string, unknown>
+    expect(lastUpdate.status).toBe('failed')
+    expect(lastUpdate.outcome).toBe('failed')
+    expect(String(lastUpdate.error_message)).toContain('Salesforce patch failed')
+    // The status the caller actually received is still recorded as 200.
+    expect(lastUpdate.response_status).toBe(200)
+
+    // Failure alert fired for the post-response step.
+    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
+    expect(alert.alertType).toBe('failure')
+    expect(alert.failedStep).toBe('patch_sf')
+  })
+
+  it('a successful continuation stays completed with no alert', async () => {
+    vi.mocked(executeNode).mockImplementation(async (node: NodeDefinition) => {
+      if (node.type === 'response') {
+        return { output: EARLY_RESPONSE, earlyResponse: EARLY_RESPONSE, continueAfterResponse: true }
+      }
+      return { output: { patched: true } }
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const updateCalls = vi.mocked(updateExecutionRecord).mock.calls
+    const lastUpdate = updateCalls[updateCalls.length - 1][3] as Record<string, unknown>
+    expect(lastUpdate.status).toBe('completed')
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
+  })
+
+  it('a suppressed / business-rejection continuation records failed but does not alert', async () => {
+    vi.mocked(executeNode).mockImplementation(async (node: NodeDefinition) => {
+      if (node.type === 'response') {
+        return { output: EARLY_RESPONSE, earlyResponse: EARLY_RESPONSE, continueAfterResponse: true }
+      }
+      // errorType null + suppressAlert true → mirrors a business rejection.
+      throw new PartnerApiError('downstream declined', null, true)
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const updateCalls = vi.mocked(updateExecutionRecord).mock.calls
+    const lastUpdate = updateCalls[updateCalls.length - 1][3] as Record<string, unknown>
+    expect(lastUpdate.status).toBe('failed')
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
+  })
+})

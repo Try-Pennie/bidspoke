@@ -390,18 +390,41 @@ export async function executeWorkflow(
   // reports true cpuTime for the invocation.
   executionCtx.waitUntil(
     Promise.all([walkPromiseCaught, flushPromise])
-      .then(async ([, flushError]) => {
+      .then(async ([walkResult, flushError]) => {
         const finalNodeNamespace = ctx.lastCompletedNamespace ?? null
 
-        // Backstop: a "completed" execution that never advanced past the
-        // trigger (no node recorded a successful output) or whose step rows
-        // were rejected by Postgres (e.g. missing-column migration drift) is
-        // not actually a success — we have no audit trail and the workflow
-        // body did not visibly run. Promote to failed so the dashboard,
-        // Slack alert, and outcome all reflect reality.
+        // Continuation failure: a post-response step (continue_after_response)
+        // threw AFTER the early response was already sent to the caller. The
+        // walk error is swallowed into walkPromiseCaught and the race already
+        // resolved 'early', so executionStatus is still 'completed' even though
+        // the background work failed (e.g. the Salesforce patch after Offer
+        // Response). Without surfacing it here the run is silently recorded as
+        // a success with no alert — the failed step row is the only trace.
+        const continuationError =
+          walkResult && typeof walkResult === 'object' && '__error' in walkResult
+            ? (walkResult as { __error: unknown }).__error
+            : null
+
+        // Backstop: a "completed" execution that actually failed downstream of
+        // the response, never advanced past the trigger (no node recorded a
+        // successful output), or whose step rows were rejected by Postgres
+        // (e.g. missing-column migration drift) is not a success. Promote to
+        // failed so the dashboard, Slack alert, and outcome reflect reality.
+        // The HTTP response already sent to the caller is unaffected;
+        // response_status below still records what they actually received.
         let finalStatus = executionStatus
         let finalErrorMessage = errorMessage
-        if (finalStatus === 'completed' && flushError) {
+        if (finalStatus === 'completed' && continuationError) {
+          finalStatus = 'failed'
+          if (continuationError instanceof StepFailureError) {
+            failedStep = continuationError.stepNamespace
+            failedErrorType = continuationError.errorType
+            failedSuppressAlert = continuationError.suppressAlert
+          } else {
+            failedErrorType = failedErrorType ?? 'permanent'
+          }
+          finalErrorMessage = continuationError instanceof Error ? continuationError.message : String(continuationError)
+        } else if (finalStatus === 'completed' && flushError) {
           finalStatus = 'failed'
           failedErrorType = failedErrorType ?? 'permanent'
           finalErrorMessage = `Step logs failed to persist: ${flushError}`
@@ -438,7 +461,18 @@ export async function executeWorkflow(
           cost_usd: cost,
         })
 
-        if (finalStatus === 'failed' && executionStatus === 'completed' && !options.isTest) {
+        // Mirror the immediate alert gate: skip business rejections
+        // (errorType === null) and explicitly suppressed failures so a
+        // post-response business-rejection records as failed but doesn't page.
+        // No-op for the flush-error/never-advanced promotions above (those set
+        // a non-null 'permanent' type and never suppress).
+        if (
+          finalStatus === 'failed' &&
+          executionStatus === 'completed' &&
+          !options.isTest &&
+          failedErrorType !== null &&
+          !failedSuppressAlert
+        ) {
           executionCtx.waitUntil(
             fireExecutionAlert({
               alertType: 'failure',
