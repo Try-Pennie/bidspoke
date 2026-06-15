@@ -565,14 +565,27 @@ export default function ExecutionDetailPage() {
     }
   }
 
+  // The replay-lineage links navigate to a different executionId on the SAME
+  // route segment, so this component instance is reused. Reset state on every
+  // executionId change (otherwise a stale error banner / the old execution shows
+  // under the new one and there's no loading indicator), and guard with a
+  // cancellation flag so a slower earlier request can't overwrite newer data or
+  // setState after unmount (#101).
   useEffect(() => {
+    let cancelled = false
+    setExecution(null)
+    setError(null)
+    setNotFound(false)
+    setLoading(true)
     api.executions.get(executionId)
-      .then(setExecution)
+      .then((e) => { if (!cancelled) setExecution(e) })
       .catch((e) => {
+        if (cancelled) return
         setError(e.message)
         setNotFound(isNotFoundError(e))
       })
-      .finally(() => setLoading(false))
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
   }, [executionId])
 
   return (
