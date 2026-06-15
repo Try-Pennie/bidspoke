@@ -42,6 +42,32 @@ describe('evaluateEdge', () => {
     })
     expect(evaluateEdge(e, ctx({ approved: false }))).toBe(false)
   })
+
+  // #93: a branch arm whose condition has no actual conditions must not match
+  // every lead. An unconfigured arm edge has a condition object with empty
+  // groups (or an empty conditions list) — both must fail closed.
+  it('blocks traversal for an empty groups array (unconfigured arm)', () => {
+    expect(evaluateEdge(edge({ groups: [], logic: 'AND' }), ctx({ anything: 1 }))).toBe(false)
+  })
+
+  it('blocks traversal for a group with no conditions (cleared rule builder)', () => {
+    const e = edge({ groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' })
+    expect(evaluateEdge(e, ctx({ anything: 1 }))).toBe(false)
+  })
+})
+
+describe('evaluateConditionGroups — empty fails closed (#93)', () => {
+  it('returns false for no groups under AND (was true: AND-of-nothing)', () => {
+    expect(evaluateConditionGroups([], 'AND', ctx())).toBe(false)
+  })
+
+  it('returns false for no groups under OR', () => {
+    expect(evaluateConditionGroups([], 'OR', ctx())).toBe(false)
+  })
+
+  it('returns false for a single group with no conditions', () => {
+    expect(evaluateConditionGroups([{ conditions: [], logic: 'AND' }], 'AND', ctx())).toBe(false)
+  })
 })
 
 // --- evaluateConditionGroups — all operators ---
