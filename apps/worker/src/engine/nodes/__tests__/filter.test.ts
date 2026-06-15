@@ -27,6 +27,22 @@ describe('executeFilterNode', () => {
       const result = executeFilterNode(node({ rules: { groups: [], logic: 'AND' } }), ctx())
       expect(result.output).toEqual({ passed: true, _route: 'pass' })
     })
+
+    // #93 follow-up: a rules group present but with no field-bearing condition is
+    // unconfigured. It must keep the "unconfigured filter passes" default, not
+    // flip to exit under the fail-closed empty handling.
+    it('passes with a rules group that has no conditions', () => {
+      const result = executeFilterNode(node({ rules: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } }), ctx())
+      expect(result.output).toEqual({ passed: true, _route: 'pass' })
+    })
+
+    it('passes with a half-filled rules group (blank field row)', () => {
+      const result = executeFilterNode(
+        node({ rules: { groups: [{ conditions: [{ field: '', operator: 'eq', value: '' }], logic: 'AND' }], logic: 'AND' } }),
+        ctx()
+      )
+      expect(result.output).toEqual({ passed: true, _route: 'pass' })
+    })
   })
 
   describe('single condition group', () => {

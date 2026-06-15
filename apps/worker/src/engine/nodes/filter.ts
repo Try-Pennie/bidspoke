@@ -4,7 +4,7 @@
 // The engine routes to the edge whose source_handle matches _route.
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ConditionGroup, EdgeCondition, ResolvedStepInput } from '../../types'
-import { evaluateConditionGroups, resolveField } from '../graph'
+import { evaluateConditionGroups, resolveField, hasConfiguredCondition } from '../graph'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,11 @@ export function executeFilterNode(
       'AND',
       ctx
     )
-  } else if (config.rules?.groups?.length) {
+  } else if (config.rules?.groups?.length && hasConfiguredCondition(config.rules.groups)) {
+    // Only evaluate a legacy rules set that actually has a field-bearing
+    // condition. An empty or half-filled rules group keeps conditionMet=true
+    // (pass), matching the "unconfigured filter passes" default — without this
+    // the fail-closed empty handling (#93) would flip such a filter to exit.
     conditionMet = evaluateConditionGroups(config.rules.groups, config.rules.logic ?? 'AND', ctx)
   }
 
