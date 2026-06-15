@@ -180,6 +180,24 @@ describe('POST /sources', () => {
     expect(body.name).toBe('crm_intake')
   })
 
+  it('strips URL-breaking characters from the name (#100)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/sources', { body: { name: '100%le/ads?' } })
+    expect(res.status).toBe(201)
+    const body = await res.json() as { name: string }
+    expect(body.name).toBe('100leads')
+  })
+
+  it('rejects a name that sanitizes to empty (#100)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/sources', { body: { name: '///' } })
+    expect(res.status).toBe(400)
+  })
+
   it('rebuilds the key map from the table (derived, not read-modify-write)', async () => {
     // The rebuilt map comes from api_sources (post-insert state), so the new
     // source appears via the table, not by mutating the c.env snapshot.
