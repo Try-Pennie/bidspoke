@@ -21,7 +21,7 @@ import type { NodeDefinition, ExecutionContext, ConditionGroup } from '../../typ
 import type { PartnerBidOutput } from './partner-bid'
 import { executePartnerBidNode } from './partner-bid'
 import { PartnerApiError } from '../partner-bid-error'
-import { evaluateConditionGroups } from '../graph'
+import { evaluateConditionGroups, hasConfiguredCondition } from '../graph'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -362,11 +362,13 @@ async function runTiered(
   }
 
   for (const tier of tiers) {
-    if (tier.advance_condition && !evaluateConditionGroups(
-      tier.advance_condition.groups,
-      tier.advance_condition.logic ?? 'AND',
-      ctx
-    )) {
+    // Only gate the tier on a configured advance_condition. An empty or
+    // half-filled gate (no field-bearing condition) is treated as no gate, so
+    // the tier runs — without this the fail-closed empty handling (#93) would
+    // silently skip the tier and exclude its partners from bidding.
+    const gate = tier.advance_condition
+    const gateActive = gate ? hasConfiguredCondition(gate.groups) : false
+    if (gateActive && !evaluateConditionGroups(gate!.groups, gate!.logic ?? 'AND', ctx)) {
       tiersSkipped.push(tier.id)
       continue
     }

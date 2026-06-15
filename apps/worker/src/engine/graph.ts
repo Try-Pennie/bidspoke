@@ -31,6 +31,19 @@ export function evaluateEdge(edge: EdgeDefinition, ctx: ExecutionContext): boole
   return evaluateConditionGroups(edge.condition.groups, edge.condition.logic, ctx)
 }
 
+// True only if some group has a condition with a real (non-blank) field. The
+// rule builder seeds a fresh arm with `conditions: []` and an added-but-unfilled
+// row as `{ field: '', ... }`, so both an empty and a half-filled rule are "not
+// configured". Filter and bid-group tier gates use this to treat an unconfigured
+// condition set as absent (their prior behavior) rather than as the fail-closed
+// "matches nothing" the branch path wants (#93). Mirrors the web-side branch
+// validation's field-bearing check so the two layers agree.
+export function hasConfiguredCondition(groups: ConditionGroup[]): boolean {
+  return groups.some((g) =>
+    g.conditions.some((c) => typeof c.field === 'string' && c.field.trim() !== '')
+  )
+}
+
 export function evaluateConditionGroups(
   groups: ConditionGroup[],
   logic: 'AND' | 'OR',

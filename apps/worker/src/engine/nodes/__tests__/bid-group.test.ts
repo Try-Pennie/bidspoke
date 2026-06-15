@@ -392,6 +392,50 @@ describe('BidGroup tiered mode', () => {
     expect(result.tier_winner).toBe('t2')
   })
 
+  // #93 follow-up: a fresh "add gate" seeds advance_condition with no conditions,
+  // and a half-filled row is { field: '', ... }. An unconfigured gate must be
+  // treated as no gate (tier runs), not fail-closed to "skip" (which would
+  // silently drop the tier's partners from bidding).
+  it('empty advance_condition (no conditions) -> tier runs, not skipped', async () => {
+    const seen: string[] = []
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      seen.push(partner_id)
+      return attempt(partner_id, { partner: partner_id, bid: 40, accepted: true })
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'cascade', partner_ids: ['p1'], advance_condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } },
+        ],
+      }),
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(seen).toEqual(['p1'])
+    expect(result.tiers_skipped ?? []).toEqual([])
+    expect(result.winner?.partner).toBe('p1')
+  })
+
+  it('half-filled advance_condition (blank field row) -> tier runs', async () => {
+    const seen: string[] = []
+    const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+      seen.push(partner_id)
+      return attempt(partner_id, { partner: partner_id, bid: 40, accepted: true })
+    }
+    const result = await executeBidGroupNode(
+      makeNode({
+        mode: 'tiered',
+        tiers: [
+          { id: 't1', mode: 'cascade', partner_ids: ['p1'], advance_condition: { groups: [{ conditions: [{ field: '', operator: 'eq', value: '' }], logic: 'AND' }], logic: 'AND' } },
+        ],
+      }),
+      makeCtx(), env, supabase, runAttempt
+    )
+    expect(seen).toEqual(['p1'])
+    expect(result.tiers_skipped ?? []).toEqual([])
+    expect(result.winner?.partner).toBe('p1')
+  })
+
   it('all tiers skipped -> no_winner with reason all_tiers_skipped', async () => {
     const runAttempt = vi.fn()
     const ctxWithState = {
