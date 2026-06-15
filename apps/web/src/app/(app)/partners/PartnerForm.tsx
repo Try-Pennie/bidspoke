@@ -2,6 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
+import {
+  buildPartnerBody, parseList, listToString,
+  type FormSnapshot, type SignalRules, type SubAccountFloor,
+  type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory,
+} from './partner-body'
 import { api } from '@/lib/api'
 import { Save, Trash2, Loader2, Plus, X, Check } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
@@ -17,69 +22,10 @@ export const UNSAVED_CHANGES_MESSAGE = 'You have unsaved changes. Leave without 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 
 type RuleKind = 'body' | 'status'
-type BodyCondition = 'equals' | 'contains' | 'in' | 'not_in' | 'present'
-type StatusCondition = 'contains' | 'in' | 'not_in' | 'present'
-type SignalCategory = 'rejection' | 'transient' | 'permanent'
-
-/** Parse a comma-separated value list for in/not_in. Numeric tokens coerced to numbers. */
-function parseList(s: string): unknown[] {
-  return s
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0)
-    .map((t) => {
-      const n = Number(t)
-      return Number.isFinite(n) && /^-?\d+(\.\d+)?$/.test(t) ? n : t
-    })
-}
-
-function listToString(arr: unknown[]): string {
-  return arr.map((v) => (v == null ? '' : String(v))).join(',')
-}
-
-interface BodyRule   { id: string; kind: 'body';   field: string; condition: BodyCondition;   value: string }
-interface StatusRule { id: string; kind: 'status'; code: string;  bodyField: string; condition: StatusCondition; value: string }
-type Rule = BodyRule | StatusRule
-type SignalRules = Record<SignalCategory, Rule[]>
-
-interface SubAccountFloor { id: string; uuid: string; bid: string }
-
-interface FormSnapshot {
-  name: string; apiEndpoint: string; cfSecretKey: string; clickUrl: string; isActive: boolean
-  priority: string; dailyCap: string; minBid: string; bidFormula: string
-  resolverType: BidResolverType; resolverConfig: Record<string, unknown>
-  outboundMapping: Record<string, unknown> | null
-  bidMode: BidMode; bidComparisonSource: BidComparisonSource
-  extraExtraction: ExtraExtractionConfig | null; lastProbeResponse: unknown
-  dedupEndpoint: string; circuitEnabled: boolean; circuitThreshold: string
-  circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
-  alertTransient: boolean; alertPermanent: boolean
-  sellOffOfferTitle: string; sellOffOfferDetails: string
-  partnerType: 'source' | 'buyer'
-  confirmationWindowMs: string
-  subAccountFloors: SubAccountFloor[]
-}
 
 function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
   if (!map) return []
   return Object.entries(map).map(([uuid, bid]) => ({ id: uid(), uuid, bid: String(bid) }))
-}
-
-function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {
-  const out: Record<string, number> = {}
-  for (const f of floors) {
-    const uuid = f.uuid.trim()
-    if (!uuid) continue
-    // A blank bid is "no override", not a $0 floor. Number('') === 0 passes
-    // isFinite, so without this guard an unfilled row would persist a floor of
-    // 0 — which accepts any bid and silently bypasses the partner-wide min_bid.
-    // Treat blank or non-positive as no floor.
-    if (f.bid.trim() === '') continue
-    const n = Number(f.bid)
-    if (!Number.isFinite(n) || n <= 0) continue
-    out[uuid] = n
-  }
-  return Object.keys(out).length > 0 ? out : null
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
@@ -124,39 +70,6 @@ function parseRules(raw: unknown): SignalRules {
     }
   }
   return result
-}
-
-function serializeRules(rules: SignalRules): unknown {
-  const map: [SignalCategory, string][] = [
-    ['rejection', 'rejection_signals'],
-    ['transient', 'transient_signals'],
-    ['permanent', 'permanent_signals'],
-  ]
-  const result: Record<string, unknown[]> = {}
-  let hasAny = false
-  for (const [cat, key] of map) {
-    const signals: unknown[] = []
-    for (const r of rules[cat]) {
-      if (r.kind === 'body' && r.field.trim()) {
-        if      (r.condition === 'present')  signals.push({ field: r.field, present: true })
-        else if (r.condition === 'in')       signals.push({ field: r.field, in: parseList(r.value) })
-        else if (r.condition === 'not_in')   signals.push({ field: r.field, not_in: parseList(r.value) })
-        else if (r.condition === 'contains') signals.push({ field: r.field, contains: r.value })
-        else                                 signals.push({ field: r.field, equals: r.value })
-      } else if (r.kind === 'status' && (r.code.trim() || r.bodyField.trim())) {
-        const obj: Record<string, unknown> = {}
-        if (r.code.trim())      obj.status_code = parseInt(r.code)
-        if (r.bodyField.trim()) obj.body_field   = r.bodyField
-        if (r.condition === 'present')        obj.present  = true
-        else if (r.condition === 'in')        obj.in       = parseList(r.value)
-        else if (r.condition === 'not_in')    obj.not_in   = parseList(r.value)
-        else if (r.value.trim())              obj.contains = r.value
-        signals.push(obj)
-      }
-    }
-    if (signals.length > 0) { result[key] = signals; hasAny = true }
-  }
-  return hasAny ? result : null
 }
 
 const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = [
@@ -503,6 +416,10 @@ export default function PartnerForm({
   const baselineDirtyKey = useRef<string | null>(null)
   if (baselineDirtyKey.current === null) baselineDirtyKey.current = dirtyKey
   const dirty = baselineDirtyKey.current !== dirtyKey
+  // The restorable pre-edit baseline (values at mount / after the last save). Undo
+  // re-saves THIS, not the values that were just saved (#98).
+  const baselineSnapshot = useRef<FormSnapshot | null>(null)
+  if (baselineSnapshot.current === null) baselineSnapshot.current = captureSnapshot()
 
   // Tell the parent so it can guard partner-switch / New (those are <button>s the
   // link interceptor below can't see).
@@ -552,59 +469,45 @@ export default function PartnerForm({
     setSubAccountFloors(snap.subAccountFloors)
   }
 
-  function handleUndo() {
+  async function handleUndo() {
     if (!undoSnapshot) return
-    restoreSnapshot(undoSnapshot)
+    const snap = undoSnapshot
     setUndoSnapshot(null)
     setUndoSecondsLeft(0)
+    restoreSnapshot(snap)
+    setError(null)
+    setSaveState('saving')
+    try {
+      // Re-save the pre-edit values so the revert reaches the server, not just the
+      // form — without this the Undo button looked like it worked but the DB kept
+      // the just-saved change (#98).
+      await onSave(buildPartnerBody(snap, { slug, isExisting: !!partner }), partner?.id, undefined)
+      baselineDirtyKey.current = JSON.stringify({ ...snap, slug })
+      baselineSnapshot.current = snap
+      setSaveState('saved')
+      setTimeout(() => setSaveState('idle'), 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to undo')
+      setSaveState('idle')
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
     const snapshot = captureSnapshot()
+    // Capture the pre-edit baseline BEFORE we advance it — this is what Undo restores.
+    const preEdit = baselineSnapshot.current
     setSaveState('saving')
     try {
-      const body: PartnerBody = {
-        name,
-        slug: partner ? undefined : slug,
-        partner_type: partnerType,
-        api_endpoint: apiEndpoint || null,
-        cf_secret_key: cfSecretKey || null,
-        click_url: clickUrl || null,
-        is_active: isActive,
-        priority: parseInt(priority) || 0,
-        daily_cap: dailyCap ? parseInt(dailyCap) : null,
-        min_bid: minBid ? parseFloat(minBid) : null,
-        bid_formula: bidFormula || null,
-        bid_resolver_type: resolverType,
-        bid_resolver_config: resolverConfig,
-        outbound_field_mapping: outboundMapping,
-        bid_mode: bidMode,
-        bid_comparison_source: bidComparisonSource,
-        extra_extraction: extraExtraction,
-        last_probe_response: lastProbeResponse,
-        dedup_endpoint: dedupEndpoint || null,
-        circuit_enabled: circuitEnabled,
-        circuit_error_threshold: parseInt(circuitThreshold) || 5,
-        circuit_window_seconds: parseInt(circuitWindow) || 60,
-        circuit_cooldown_seconds: parseInt(circuitCooldown) || 300,
-        response_classification: serializeRules(signalRules),
-        alert_config: {
-          transient_errors: { alert: alertTransient },
-          permanent_errors: { alert: alertPermanent },
-        },
-        sell_off_offer_title: sellOffOfferTitle || null,
-        sell_off_offer_details: sellOffOfferDetails || null,
-        sub_account_min_bids: floorsToMap(subAccountFloors),
-        confirmation_window_ms: confirmationWindowMs ? parseInt(confirmationWindowMs) : null,
-      }
-      await onSave(body, partner?.id, isNew ? pendingUuids : undefined)
+      await onSave(buildPartnerBody(snapshot, { slug, isExisting: !!partner }), partner?.id, isNew ? pendingUuids : undefined)
       // The saved values are now the clean baseline — clears the dirty flag.
       baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
+      baselineSnapshot.current = snapshot
       setSaveState('saved')
-      if (!isNew) {
-        setUndoSnapshot(snapshot)
+      // Offer Undo for an existing partner: restore + re-save the PRE-edit values.
+      if (!isNew && preEdit) {
+        setUndoSnapshot(preEdit)
         setUndoSecondsLeft(5)
       }
       setTimeout(() => setSaveState('idle'), 1500)
