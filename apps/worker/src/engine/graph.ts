@@ -31,17 +31,24 @@ export function evaluateEdge(edge: EdgeDefinition, ctx: ExecutionContext): boole
   return evaluateConditionGroups(edge.condition.groups, edge.condition.logic, ctx)
 }
 
-// True only if some group has a condition with a real (non-blank) field. The
-// rule builder seeds a fresh arm with `conditions: []` and an added-but-unfilled
-// row as `{ field: '', ... }`, so both an empty and a half-filled rule are "not
-// configured". Filter and bid-group tier gates use this to treat an unconfigured
-// condition set as absent (their prior behavior) rather than as the fail-closed
-// "matches nothing" the branch path wants (#93). Mirrors the web-side branch
-// validation's field-bearing check so the two layers agree.
+// A single condition is "configured" only if it has a real (non-blank) field.
+// The rule builder seeds an added-but-unfilled row as `{ field: '', ... }`.
+function isConfiguredCondition(c: { field?: string }): boolean {
+  return typeof c.field === 'string' && c.field.trim() !== ''
+}
+
+// A group is "configured" if it has at least one field-bearing condition. A fresh
+// arm seeds `conditions: []`, and a half-added row is blank, so both are unconfigured.
+function isConfiguredGroup(group: ConditionGroup): boolean {
+  return group.conditions.some(isConfiguredCondition)
+}
+
+// True if any group is configured. Filter and bid-group tier gates use this to
+// treat a wholly-unconfigured condition set as absent (their prior behavior)
+// rather than the fail-closed "matches nothing" the branch path wants (#93).
+// Mirrors the web-side branch validation's field-bearing check so the layers agree.
 export function hasConfiguredCondition(groups: ConditionGroup[]): boolean {
-  return groups.some((g) =>
-    g.conditions.some((c) => typeof c.field === 'string' && c.field.trim() !== '')
-  )
+  return groups.some(isConfiguredGroup)
 }
 
 export function evaluateConditionGroups(
@@ -49,19 +56,22 @@ export function evaluateConditionGroups(
   logic: 'AND' | 'OR',
   ctx: ExecutionContext
 ): boolean {
-  // Fail closed: a condition with no groups has nothing to match, so it must NOT
-  // match. Otherwise AND-of-nothing evaluates true and an unconfigured branch arm
-  // routes every lead down it (#93). Filters are unaffected — filter.ts guards on
-  // groups.length before calling, so its intentional "no rules = pass" still holds.
-  if (groups.length === 0) return false
-  const results = groups.map((g) => evaluateGroup(g, ctx))
+  // Ignore unconfigured groups so a half-built rule evaluates on its real parts
+  // only — "state=NY AND <blank row>" means "state=NY", not "never match", and
+  // an empty OR-arm doesn't force the whole rule true. If NOTHING is configured,
+  // fail closed: nothing to match must not match everything, or an unconfigured
+  // branch arm would route every lead down it (#93).
+  const configured = groups.filter(isConfiguredGroup)
+  if (configured.length === 0) return false
+  const results = configured.map((g) => evaluateGroup(g, ctx))
   return logic === 'AND' ? results.every(Boolean) : results.some(Boolean)
 }
 
 function evaluateGroup(group: ConditionGroup, ctx: ExecutionContext): boolean {
-  // Same fail-closed rule for an empty conditions list (#93).
-  if (group.conditions.length === 0) return false
-  const results = group.conditions.map((c) => evaluateCondition(c, ctx))
+  // Drop blank, half-added condition rows so they don't affect the result.
+  const conditions = group.conditions.filter(isConfiguredCondition)
+  if (conditions.length === 0) return false
+  const results = conditions.map((c) => evaluateCondition(c, ctx))
   return group.logic === 'AND' ? results.every(Boolean) : results.some(Boolean)
 }
 
