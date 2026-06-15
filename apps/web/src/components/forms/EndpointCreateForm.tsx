@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
 import type { WorkflowSummary } from '@/types/workflow'
+import { deriveSourceName } from './endpoint-source-name'
 
 const HOOK_BASE = 'https://hook.trypennie.dev'
 
@@ -47,6 +48,8 @@ export default function EndpointCreateForm({
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Stop mirroring subdomain → source_name once the user edits source_name (#99).
+  const [sourceNameEdited, setSourceNameEdited] = useState(false)
   const subdomainInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -55,11 +58,6 @@ export default function EndpointCreateForm({
       return () => cancelAnimationFrame(frame)
     }
   }, [autoFocus])
-
-  useEffect(() => {
-    if (!form.subdomain) return
-    setForm((f) => ({ ...f, source_name: f.subdomain }))
-  }, [form.subdomain])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -110,7 +108,10 @@ export default function EndpointCreateForm({
               className="min-w-0 flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-400"
               placeholder="partner-name"
               value={form.subdomain}
-              onChange={(e) => setForm((f) => ({ ...f, subdomain: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') }))}
+              onChange={(e) => {
+                const subdomain = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')
+                setForm((f) => ({ ...f, subdomain, source_name: deriveSourceName(subdomain, f.source_name, sourceNameEdited) }))
+              }}
               required
             />
           </div>
@@ -162,7 +163,10 @@ export default function EndpointCreateForm({
           className="input w-full font-mono"
           placeholder={form.subdomain || 'custom-name'}
           value={form.source_name}
-          onChange={(e) => setForm((f) => ({ ...f, source_name: e.target.value.toLowerCase().replace(/\s+/g, '_') }))}
+          onChange={(e) => {
+            setSourceNameEdited(true)
+            setForm((f) => ({ ...f, source_name: e.target.value.toLowerCase().replace(/\s+/g, '_') }))
+          }}
         />
         <p className="mt-1 text-xs text-gray-400">
           Available as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflow steps.
