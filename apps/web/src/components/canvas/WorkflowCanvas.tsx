@@ -67,6 +67,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
+import { resolvePostSaveState } from '@/lib/save-dirty-guard'
 import {
   renameStepReferences,
   countStepReferences,
@@ -958,6 +959,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const draftReqIdRef = useRef(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
+  // Monotonic edit counter for the mid-save dirty guard (#92). handleSave snapshots
+  // it before its awaits and re-checks after, so edits made during the save window
+  // aren't marked clean. Only snapshots are compared, so the absolute value and the
+  // mount tick don't matter — the effect below bumps it on any definition change.
+  const editCounterRef = useRef(0)
   const [envKeys, setEnvKeys] = useState<string[]>([])
   const [replaying, setReplaying] = useState(false)
   const [refreshSignal, setRefreshSignal] = useState(0)
@@ -1165,6 +1171,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   useEffect(() => {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
+
+  // Bump the edit counter on any definition-relevant change (#92). Reference
+  // identity changes on an edit, so this fires once per edit. Keep this dep list
+  // in sync with what handleSave serializes (flowToDef inputs + name + Slack).
+  useEffect(() => {
+    editCounterRef.current += 1
+  }, [nodes, edges, triggerVersion, name, slackChannel])
 
   // Warn on browser close / refresh when there are unsaved changes
   useEffect(() => {
@@ -2674,6 +2687,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     setShowCommitMenu(false)
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
+      // Snapshot the edit counter before any await so we can tell whether the user
+      // edited during the save window (#92).
+      const editCountAtSaveStart = editCounterRef.current
       const trimmed = message?.trim()
       const result = await api.workflows.save(workflow.id, {
         name,
@@ -2681,7 +2697,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         slack_channel: slackChannel || null,
         ...(trimmed ? { message: trimmed } : {}),
       })
-      setIsDirty(false)
       setCommitMessage('')
       aiDraftKeyRef.current = null
       // Apply any queued partner-formula rewrites from Step ID renames during
@@ -2699,6 +2714,15 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           setSaveError(`Saved, but failed to rewrite partner formulas for ${rn.oldNs}→${rn.newNs}: ${msg}`)
         }
       }
+      // #92: if the user edited during the save window (any await above), the
+      // snapshot we just persisted is already stale. Keep the workflow dirty and
+      // stay in edit mode so the edit isn't silently dropped; otherwise mark clean.
+      const { remainDirty, switchToView } = resolvePostSaveState(
+        editCountAtSaveStart,
+        editCounterRef.current,
+      )
+      setIsDirty(remainDirty)
+
       if (result.deploy_errors?.length) {
         const msg = result.deploy_errors
           .map((e) => `${e.namespace}: ${e.error}`)
@@ -2707,7 +2731,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       } else {
         setSavedOk(true)
         setTimeout(() => setSavedOk(false), 2500)
-        switchMode('view')
+        if (switchToView) switchMode('view')
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed')
