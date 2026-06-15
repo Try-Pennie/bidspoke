@@ -535,9 +535,13 @@ export const api = {
         throw new Error('Not authenticated')
       }
       const res = await fetch(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', headers })
-      if (res.status === 401) {
-        redirectToLogin()
-        throw new Error('Not authenticated')
+      if (!res.ok) {
+        if (res.status === 401) {
+          redirectToLogin()
+          throw new Error('Not authenticated')
+        }
+        const errBody = await res.text().catch(() => '')
+        throw new Error(`API ${res.status}: ${errBody}`)
       }
       const newId = res.headers.get('X-Execution-Id')
       const body = await res.json().catch(() => null)
@@ -552,9 +556,13 @@ export const api = {
         throw new Error('Not authenticated')
       }
       const res = await fetch(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', headers })
-      if (res.status === 401) {
-        redirectToLogin()
-        throw new Error('Not authenticated')
+      if (!res.ok) {
+        if (res.status === 401) {
+          redirectToLogin()
+          throw new Error('Not authenticated')
+        }
+        const errBody = await res.text().catch(() => '')
+        throw new Error(`API ${res.status}: ${errBody}`)
       }
       const newId = res.headers.get('X-Execution-Id')
       const body = await res.json().catch(() => null)
