@@ -16,8 +16,17 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       return null
     }
     case 'branch': {
-      const branches = config.branches as unknown[] | undefined
+      const branches = config.branches as
+        | Array<{ condition?: { groups?: Array<{ conditions?: Array<{ field?: string }> }> } }>
+        | undefined
       if (!branches?.length) return 'No branches defined'
+      // An arm with no field-bearing condition matches every lead in the engine
+      // (empty AND group), so a fresh/cleared arm is unconfigured, not valid (#93).
+      const hasEmptyArm = branches.some((b) => {
+        const conditions = (b.condition?.groups ?? []).flatMap((g) => g.conditions ?? [])
+        return !conditions.some((c) => c.field?.trim())
+      })
+      if (hasEmptyArm) return 'A branch arm has no conditions set'
       return null
     }
     case 'webhook': {

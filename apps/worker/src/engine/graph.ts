@@ -36,11 +36,18 @@ export function evaluateConditionGroups(
   logic: 'AND' | 'OR',
   ctx: ExecutionContext
 ): boolean {
+  // Fail closed: a condition with no groups has nothing to match, so it must NOT
+  // match. Otherwise AND-of-nothing evaluates true and an unconfigured branch arm
+  // routes every lead down it (#93). Filters are unaffected — filter.ts guards on
+  // groups.length before calling, so its intentional "no rules = pass" still holds.
+  if (groups.length === 0) return false
   const results = groups.map((g) => evaluateGroup(g, ctx))
   return logic === 'AND' ? results.every(Boolean) : results.some(Boolean)
 }
 
 function evaluateGroup(group: ConditionGroup, ctx: ExecutionContext): boolean {
+  // Same fail-closed rule for an empty conditions list (#93).
+  if (group.conditions.length === 0) return false
   const results = group.conditions.map((c) => evaluateCondition(c, ctx))
   return group.logic === 'AND' ? results.every(Boolean) : results.some(Boolean)
 }
