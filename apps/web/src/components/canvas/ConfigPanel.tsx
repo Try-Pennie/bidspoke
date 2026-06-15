@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -15,6 +15,7 @@ import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/
 import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
+import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import JsonTreeView from './JsonTreeView'
@@ -54,6 +55,9 @@ interface Props {
   // false if the user cancelled the prompt. ConfigPanel reverts the local Step ID
   // input when the result is false.
   onRenameRequest?: (oldNs: string, newNs: string) => Promise<boolean>
+  // Reports whether the open node's key/value editor (constants, headers, injected
+  // fields) is free of blank/duplicate keys. The canvas blocks save while false (#96).
+  onKeyEditorValidityChange?: (valid: boolean) => void
 }
 
 // Retries always resolves to a number (never null/empty): erasing the field
@@ -66,7 +70,7 @@ function clampRetries(raw: string): number {
   return Math.max(0, Math.min(5, n))
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest, onKeyEditorValidityChange }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -363,15 +367,15 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {/* Type-specific config */}
         {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
-        {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} />}
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} />}
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} />}
-        {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} reportValidity={onKeyEditorValidityChange} />}
+        {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} />}
         {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
@@ -1058,10 +1062,12 @@ function ResponseConfig({
   config,
   onChange,
   refs,
+  reportValidity,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
+  reportValidity?: (valid: boolean) => void
 }) {
   const bodyStr =
     config.body !== undefined
@@ -1074,32 +1080,15 @@ function ResponseConfig({
   // is undefined (untouched). Once the user touches anything, persist to config —
   // including an empty {} if they clear every row, so the default doesn't reappear.
   const persistedHeaders = config.headers as Record<string, string> | undefined
-  const isPristine = persistedHeaders === undefined
-  const headerRows: [string, string][] = isPristine
-    ? [['Content-Type', 'application/json']]
-    : Object.entries(persistedHeaders)
-
-  function updateHeader(index: number, key: string, value: string) {
-    const next: Record<string, string> = {}
-    headerRows.forEach(([k, v], i) => {
-      if (i === index) {
-        if (key) next[key] = value
-      } else {
-        next[k] = v
-      }
-    })
-    onChange({ headers: next })
-  }
-  function addHeader() {
-    onChange({ headers: { ...Object.fromEntries(headerRows), '': '' } })
-  }
-  function removeHeader(index: number) {
-    const next: Record<string, string> = {}
-    headerRows.forEach(([k, v], i) => {
-      if (i !== index) next[k] = v
-    })
-    onChange({ headers: next })
-  }
+  const initialHeaders = persistedHeaders ?? { 'Content-Type': 'application/json' }
+  const persistHeaders = useCallback(
+    (next: Record<string, string>) => onChange({ headers: next }),
+    [onChange],
+  )
+  // Stable-id rows so a key field keeps focus and a rename can't merge two headers
+  // (#96). Blank/duplicate header names mark the row and block save.
+  const { rows: headerRows, invalidIds: headerInvalid, setKey: setHeaderKey, setValue: setHeaderValue, addRow: addHeader, removeRow: removeHeader } =
+    useKeyValueRows<string>(initialHeaders, persistHeaders, '', reportValidity)
 
   return (
     <section className="space-y-3">
@@ -1154,26 +1143,27 @@ function ResponseConfig({
           </p>
         ) : (
           <div className="space-y-1.5">
-            {headerRows.map(([key, value], i) => (
-              <div key={i} className="flex items-center gap-1.5">
+            {headerRows.map((row) => (
+              <div key={row.id} className="flex items-center gap-1.5">
                 <input
-                  className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
-                  value={key}
-                  onChange={(e) => updateHeader(i, e.target.value, value)}
+                  className={`flex-1 rounded border px-2 py-1 font-mono text-xs focus:outline-none ${headerInvalid.has(row.id) ? 'border-red-400 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'}`}
+                  value={row.key}
+                  onChange={(e) => setHeaderKey(row.id, e.target.value)}
                   placeholder="Header"
+                  title={headerInvalid.has(row.id) ? 'Header name must be unique and non-empty' : undefined}
                 />
                 <TemplateTextarea
                   singleLine
                   containerClassName="flex-1"
                   className="block w-full resize-none overflow-hidden rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
-                  value={value}
-                  onChange={(val) => updateHeader(i, key, val)}
+                  value={row.value}
+                  onChange={(val) => setHeaderValue(row.id, val)}
                   placeholder="Value or {{template}}"
                   refs={refs}
                 />
                 <button
                   type="button"
-                  onClick={() => removeHeader(i)}
+                  onClick={() => removeHeader(row.id)}
                   className="text-xs text-gray-400 hover:text-red-600"
                   aria-label="Remove"
                 >
@@ -1773,10 +1763,12 @@ function IntegrationConfig({
   config,
   onChange,
   refs,
+  reportValidity,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
+  reportValidity?: (valid: boolean) => void
 }) {
   const service = (config.service as string | undefined) ?? 'custom'
   const method = (config.method as string | undefined) ?? 'POST'
@@ -1786,9 +1778,15 @@ function IntegrationConfig({
   // is undefined (untouched). The engine adds the same default; surfacing it
   // makes it editable/removable instead of an invisible behavior.
   const persistedHeaders = config.headers as Record<string, string> | undefined
-  const headersMap: Record<string, string> =
-    persistedHeaders ?? { 'Content-Type': 'application/json' }
-  const headerRows = Object.entries(headersMap)
+  const initialHeaders = persistedHeaders ?? { 'Content-Type': 'application/json' }
+  const persistHeaders = useCallback(
+    (next: Record<string, string>) => onChange({ headers: next }),
+    [onChange],
+  )
+  // Stable-id rows so a header key keeps focus and a rename can't merge two
+  // headers (#96). Blank/duplicate names mark the row and block save.
+  const { rows: headerRows, invalidIds: headerInvalid, setKey: setHeaderKey, setValue: setHeaderValue, addRow: addHeader, removeRow: removeHeader } =
+    useKeyValueRows<string>(initialHeaders, persistHeaders, '', reportValidity)
 
   const [userPresets, setUserPresets] = useState<ServicePreset[]>([])
   const [connections, setConnections] = useState<ServiceConnection[]>([])
@@ -1848,28 +1846,6 @@ function IntegrationConfig({
     const patch: Record<string, unknown> = { service: svc, service_label: label, auth: { ...auth, type: authType } }
     if (userPreset?.base_url) patch.url = userPreset.base_url
     onChange(patch)
-  }
-
-  function setHeaderValue(key: string, value: string) {
-    onChange({ headers: { ...headersMap, [key]: value } })
-  }
-
-  function setHeaderKey(oldKey: string, newKey: string) {
-    const updated: Record<string, string> = {}
-    for (const [k, v] of Object.entries(headersMap)) {
-      updated[k === oldKey ? newKey : k] = v
-    }
-    onChange({ headers: updated })
-  }
-
-  function addHeader() {
-    onChange({ headers: { ...headersMap, '': '' } })
-  }
-
-  function removeHeader(key: string) {
-    const updated = { ...headersMap }
-    delete updated[key]
-    onChange({ headers: updated })
   }
 
   const showBody = method !== 'GET' && method !== 'HEAD'
@@ -2104,24 +2080,25 @@ function IntegrationConfig({
           Custom headers
         </p>
         <div className="space-y-1.5">
-          {headerRows.map(([key, value]) => (
-            <div key={key} className="flex items-center gap-1.5">
+          {headerRows.map((row) => (
+            <div key={row.id} className="flex items-center gap-1.5">
               <input
-                className="min-w-0 w-28 flex-shrink-0 rounded-md border border-gray-200 px-2 py-1.5 text-xs font-mono focus:border-gray-400 focus:outline-none"
+                className={`min-w-0 w-28 flex-shrink-0 rounded-md border px-2 py-1.5 text-xs font-mono focus:outline-none ${headerInvalid.has(row.id) ? 'border-red-400 focus:border-red-400' : 'border-gray-200 focus:border-gray-400'}`}
                 placeholder="Header-Name"
-                value={key}
-                onChange={(e) => setHeaderKey(key, e.target.value)}
+                value={row.key}
+                onChange={(e) => setHeaderKey(row.id, e.target.value)}
+                title={headerInvalid.has(row.id) ? 'Header name must be unique and non-empty' : undefined}
               />
               <span className="text-gray-300 text-xs">:</span>
               <FieldAutocomplete
-                value={value}
-                onChange={(v) => setHeaderValue(key, v)}
+                value={row.value}
+                onChange={(v) => setHeaderValue(row.id, v)}
                 suggestions={refs}
                 placeholder="value or {{env.KEY}}"
                 className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs font-mono focus:border-gray-400 focus:outline-none"
               />
               <button
-                onClick={() => removeHeader(key)}
+                onClick={() => removeHeader(row.id)}
                 className="flex-shrink-0 text-gray-300 hover:text-red-400"
                 title="Remove"
               >
@@ -2703,10 +2680,12 @@ function SalesforceConfig({
   config,
   onChange,
   refs,
+  reportValidity,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
+  reportValidity?: (valid: boolean) => void
 }) {
   const operation = (config.operation as string | undefined) ?? 'create'
   const object    = (config.object as string | undefined) ?? ''
@@ -2719,7 +2698,14 @@ function SalesforceConfig({
   const expectedErrors = (config.expected_errors as { code: string; message_contains?: string; response_body?: unknown; response_status?: number }[] | undefined) ?? []
   const transientErrors = (config.transient_errors as { code: string; message_contains?: string }[] | undefined) ?? []
   const injectedFields = (config.injected_fields as Record<string, string> | undefined) ?? {}
-  const injectedRows = Object.entries(injectedFields)
+  const persistInjected = useCallback(
+    (next: Record<string, string>) => onChange({ injected_fields: Object.keys(next).length > 0 ? next : undefined }),
+    [onChange],
+  )
+  // Stable-id rows so a field key keeps focus and a rename can't merge two fields
+  // (#96). Blank/duplicate keys mark the row and block save.
+  const { rows: injectedRows, invalidIds: injectedInvalid, setKey: setInjectedKey, setValue: setInjectedValue, addRow: addInjectedField, removeRow: removeInjectedField } =
+    useKeyValueRows<string>(injectedFields, persistInjected, '', reportValidity)
 
   // Persisted default: pre-populate transient_errors with the SF concurrency-limit
   // entry on first mount of an unconfigured node. With key={node.id} at the render
@@ -2749,28 +2735,6 @@ function SalesforceConfig({
     // doesn't re-add rows the user deliberately cleared.
     const next = transientErrors.filter((_, i) => i !== index)
     onChange({ transient_errors: next })
-  }
-
-  function updateInjectedField(index: number, key: string, value: string) {
-    const next: Record<string, string> = {}
-    injectedRows.forEach(([k, v], i) => {
-      if (i === index) {
-        if (key) next[key] = value
-      } else {
-        next[k] = v
-      }
-    })
-    onChange({ injected_fields: Object.keys(next).length > 0 ? next : undefined })
-  }
-  function addInjectedField() {
-    onChange({ injected_fields: { ...injectedFields, '': '' } })
-  }
-  function removeInjectedField(index: number) {
-    const next: Record<string, string> = {}
-    injectedRows.forEach(([k, v], i) => {
-      if (i !== index) next[k] = v
-    })
-    onChange({ injected_fields: Object.keys(next).length > 0 ? next : undefined })
   }
 
   const [bodyText, setBodyText] = useState(() =>
@@ -2916,24 +2880,25 @@ function SalesforceConfig({
             </p>
           ) : (
             <div className="space-y-1.5">
-              {injectedRows.map(([key, value], i) => (
-                <div key={i} className="flex items-center gap-1.5">
+              {injectedRows.map((row) => (
+                <div key={row.id} className="flex items-center gap-1.5">
                   <input
-                    className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
-                    value={key}
-                    onChange={(e) => updateInjectedField(i, e.target.value, value)}
+                    className={`flex-1 rounded border px-2 py-1 font-mono text-xs focus:outline-none ${injectedInvalid.has(row.id) ? 'border-red-400 focus:border-red-400' : 'border-gray-200 focus:border-blue-400'}`}
+                    value={row.key}
+                    onChange={(e) => setInjectedKey(row.id, e.target.value)}
                     placeholder="Field__c"
+                    title={injectedInvalid.has(row.id) ? 'Field name must be unique and non-empty' : undefined}
                   />
                   <TemplateTextarea
-                    value={value}
-                    onChange={(v) => updateInjectedField(i, key, v)}
+                    value={row.value}
+                    onChange={(v) => setInjectedValue(row.id, v)}
                     refs={refs}
                     placeholder="{{execution.bidspoke_link}}"
                     className="flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                   />
                   <button
                     type="button"
-                    onClick={() => removeInjectedField(i)}
+                    onClick={() => removeInjectedField(row.id)}
                     className="text-xs text-gray-400 hover:text-red-600"
                     aria-label="Remove"
                   >
@@ -3352,63 +3317,28 @@ function coerceForType(raw: string, type: ConstantType): unknown {
 function ConstantsConfig({
   config,
   onChange,
+  reportValidity,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  reportValidity?: (valid: boolean) => void
 }) {
   const data = (config.data ?? {}) as Record<string, unknown>
+  const persist = useCallback((next: Record<string, unknown>) => onChange({ data: next }), [onChange])
+  // Stable-id rows so a key field keeps focus while typed and a rename can't merge
+  // two entries (#96). typeOverrides key by row id, not the editable name.
+  const { rows, invalidIds, setKey, setValue, addRow, removeRow } = useKeyValueRows<unknown>(data, persist, '', reportValidity)
   const [typeOverrides, setTypeOverrides] = useState<Record<string, ConstantType>>({})
 
-  function effectiveType(key: string): ConstantType {
-    return typeOverrides[key] ?? detectType(data[key])
+  function effectiveType(id: string, value: unknown): ConstantType {
+    return typeOverrides[id] ?? detectType(value)
   }
 
-  function updateData(updatedData: Record<string, unknown>) {
-    onChange({ data: updatedData })
+  function changeType(id: string, value: unknown, nextType: ConstantType) {
+    setTypeOverrides((m) => ({ ...m, [id]: nextType }))
+    const asString = Array.isArray(value) ? value.join(', ') : String(value ?? '')
+    setValue(id, coerceForType(asString, nextType))
   }
-
-  function setKeyName(oldKey: string, newKey: string) {
-    if (oldKey === newKey) return
-    const updated: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(data)) {
-      updated[k === oldKey ? newKey : k] = v
-    }
-    updateData(updated)
-    setTypeOverrides((m) => {
-      if (!(oldKey in m)) return m
-      const { [oldKey]: t, ...rest } = m
-      return { ...rest, [newKey]: t }
-    })
-  }
-
-  function setValue(key: string, raw: string) {
-    updateData({ ...data, [key]: coerceForType(raw, effectiveType(key)) })
-  }
-
-  function setType(key: string, nextType: ConstantType) {
-    setTypeOverrides((m) => ({ ...m, [key]: nextType }))
-    const current = data[key]
-    const asString = Array.isArray(current) ? current.join(', ') : String(current ?? '')
-    updateData({ ...data, [key]: coerceForType(asString, nextType) })
-  }
-
-  function removeKey(key: string) {
-    const updated = { ...data }
-    delete updated[key]
-    updateData(updated)
-    setTypeOverrides((m) => {
-      if (!(key in m)) return m
-      const { [key]: _, ...rest } = m
-      return rest
-    })
-  }
-
-  function addKey() {
-    if ('' in data) return
-    updateData({ ...data, ['']: '' })
-  }
-
-  const entries = Object.entries(data)
 
   return (
     <section className="space-y-5">
@@ -3417,36 +3347,41 @@ function ConstantsConfig({
           <p className="text-xs font-medium text-gray-600">Workflow constants</p>
           <button
             type="button"
-            onClick={addKey}
+            onClick={addRow}
             className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
           >
             <Plus className="h-3 w-3" />
             Add key
           </button>
         </div>
-        {entries.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-400">
             No constants defined. Click &ldquo;Add key&rdquo; to start.
           </p>
         ) : (
           <div className="space-y-1.5">
-            {entries.map(([key, value]) => {
-              const type = effectiveType(key)
-              const displayValue = Array.isArray(value)
-                ? value.join(', ')
-                : String(value ?? '')
+            {rows.map((row) => {
+              const type = effectiveType(row.id, row.value)
+              const displayValue = Array.isArray(row.value)
+                ? row.value.join(', ')
+                : String(row.value ?? '')
+              const invalid = invalidIds.has(row.id)
+              const keyClass = invalid
+                ? 'w-32 flex-shrink-0 rounded border border-red-400 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-red-300'
+                : 'w-32 flex-shrink-0 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light'
               return (
-                <div key={key} className="flex items-center gap-1.5">
+                <div key={row.id} className="flex items-center gap-1.5">
                   <input
-                    className="w-32 flex-shrink-0 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-                    value={key}
-                    onChange={(e) => setKeyName(key, e.target.value)}
+                    className={keyClass}
+                    value={row.key}
+                    onChange={(e) => setKey(row.id, e.target.value)}
                     placeholder="key"
+                    title={invalid ? 'Key must be unique and non-empty' : undefined}
                   />
                   <select
                     className="flex-shrink-0 rounded border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
                     value={type}
-                    onChange={(e) => setType(key, e.target.value as ConstantType)}
+                    onChange={(e) => changeType(row.id, row.value, e.target.value as ConstantType)}
                     title="Value type"
                   >
                     <option value="string">string</option>
@@ -3457,8 +3392,8 @@ function ConstantsConfig({
                   {type === 'boolean' ? (
                     <select
                       className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
-                      value={value === true ? 'true' : 'false'}
-                      onChange={(e) => setValue(key, e.target.value)}
+                      value={row.value === true ? 'true' : 'false'}
+                      onChange={(e) => setValue(row.id, coerceForType(e.target.value, 'boolean'))}
                     >
                       <option value="true">true</option>
                       <option value="false">false</option>
@@ -3467,7 +3402,7 @@ function ConstantsConfig({
                     <input
                       className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
                       value={displayValue}
-                      onChange={(e) => setValue(key, e.target.value)}
+                      onChange={(e) => setValue(row.id, coerceForType(e.target.value, type))}
                       placeholder={
                         type === 'array' ? 'item1, item2, item3'
                           : type === 'number' ? '0'
@@ -3478,7 +3413,7 @@ function ConstantsConfig({
                   )}
                   <button
                     type="button"
-                    onClick={() => removeKey(key)}
+                    onClick={() => removeRow(row.id)}
                     className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
                   >
                     <X className="h-3.5 w-3.5" />

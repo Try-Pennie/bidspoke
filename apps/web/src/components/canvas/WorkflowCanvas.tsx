@@ -965,6 +965,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // aren't marked clean. Only snapshots are compared, so the absolute value and the
   // mount tick don't matter — the effect below bumps it on any definition change.
   const editCounterRef = useRef(0)
+  // True while the open node's key/value editor has a blank or duplicate key —
+  // blocks save until resolved, like duplicate Step IDs (#96). Reset on node
+  // switch; the newly-opened editor re-reports its own validity.
+  const [configKeyError, setConfigKeyError] = useState(false)
+  const handleKeyEditorValidity = useCallback((valid: boolean) => setConfigKeyError(!valid), [])
   const [envKeys, setEnvKeys] = useState<string[]>([])
   const [replaying, setReplaying] = useState(false)
   const [refreshSignal, setRefreshSignal] = useState(0)
@@ -1178,6 +1183,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   useEffect(() => {
     editCounterRef.current += 1
   }, [nodes, edges, triggerVersion, name, slackChannel])
+
+  // Clear any key-editor error when switching nodes; the newly-opened editor (if
+  // any) reports its own validity on mount (#96).
+  useEffect(() => {
+    setConfigKeyError(false)
+  }, [selectedNodeId])
 
   // Warn on browser close / refresh when there are unsaved changes
   useEffect(() => {
@@ -2674,6 +2685,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setSaveError(`Step IDs must be unique. Used by multiple nodes: ${duplicates.join(', ')}.`)
       return
     }
+    // Block saving while the open node's key/value editor has a blank or
+    // duplicate key (constants, headers, injected fields) — #96.
+    if (configKeyError) {
+      setSaveError('Resolve the blank or duplicate keys in the open node before saving.')
+      return
+    }
     // Block saving a live workflow that has unconfigured nodes
     if (workflow.is_active && validationErrors.size > 0) {
       const names = Array.from(validationErrors.values())
@@ -2896,7 +2913,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <div className="relative">
               <button
                 onClick={openSaveMenu}
-                disabled={saving || !isDirty}
+                disabled={saving || !isDirty || configKeyError}
                 className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-40 ${
                   saving    ? 'bg-p-blue-dark' :
                   savedOk   ? 'bg-green-600 hover:bg-green-700' :
@@ -3525,6 +3542,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               onResize={setSidePanelWidth}
               workflowId={workflow.id}
               onRenameRequest={handleRenameRequest}
+              onKeyEditorValidityChange={handleKeyEditorValidity}
             />
           )}
         </div>
