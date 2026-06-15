@@ -952,6 +952,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [triggerVersion, setTriggerVersion] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // Surfaced when a replay/resume request fails server-side (#97) — otherwise the
+  // spinner just stops and the operator can't tell the re-run never started.
+  const [replayError, setReplayError] = useState<string | null>(null)
   const [savedOk, setSavedOk] = useState(false)
   const [showCommitMenu, setShowCommitMenu] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
@@ -3047,10 +3050,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   disabled={replaying}
                   onClick={async () => {
                     setReplaying(true)
+                    setReplayError(null)
                     try {
                       const { executionId: newId } = await api.executions.replay(executionId)
                       setRefreshSignal((s) => s + 1)
                       if (newId) selectExecution(newId)
+                    } catch (e) {
+                      setReplayError(e instanceof Error ? e.message : 'Replay failed')
                     } finally {
                       setReplaying(false)
                     }
@@ -3117,6 +3123,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
               <AlertCircle className="h-3.5 w-3.5" />
               {saveError}
+            </div>
+          )}
+
+          {replayError && (
+            <div className="flex items-center gap-2 bg-red-50 px-4 py-2 text-xs text-red-600">
+              <AlertCircle className="h-3.5 w-3.5" />
+              Re-run failed: {replayError}
             </div>
           )}
 
@@ -3570,9 +3583,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
             onRetryFromFailure={async () => {
-              const { executionId: newId } = await api.executions.resume(executionId)
-              setRefreshSignal((s) => s + 1)
-              if (newId) selectExecution(newId)
+              setReplayError(null)
+              try {
+                const { executionId: newId } = await api.executions.resume(executionId)
+                setRefreshSignal((s) => s + 1)
+                if (newId) selectExecution(newId)
+              } catch (e) {
+                setReplayError(e instanceof Error ? e.message : 'Resume failed')
+              }
             }}
           />
         )}
