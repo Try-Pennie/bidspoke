@@ -141,7 +141,7 @@ export function extractSightingFields(payload: unknown): SightingPayloadFields {
     external_exchange_status: asString(p.externalExchangeStatus),
     offer_landing_page:       asString(p.offerLandingPage),
 
-    state:                    asString(personal.state),
+    state:                    normalizeState(personal.state),
     zip:                      asString(personal.zipcode)?.slice(0, 5) ?? null,
 
     fico_tier:                asString(credit.providedCreditRating),
@@ -194,7 +194,7 @@ export function extractPersonFields(
     street:      asString(personal.address1),
     apt:         asString(personal.address2),
     city:        asString(personal.city),
-    state:       asString(personal.state),
+    state:       normalizeState(personal.state),
     zip:         asString(personal.zipcode),
   }
 }
@@ -219,6 +219,37 @@ function asBool(v: unknown): boolean | null {
   if (v === 'true' || v === 1 || v === '1') return true
   if (v === 'false' || v === 0 || v === '0') return false
   return null
+}
+
+// US states + DC + territories, full name -> 2-letter code. Used to normalize a
+// payload state into the VARCHAR(2) column so an unnormalized source (e.g. one
+// sending "California") can't overflow the column and fail the whole insert.
+const US_STATE_CODES: Record<string, string> = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA',
+  colorado: 'CO', connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC',
+  florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL',
+  indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+  maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+  mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV',
+  'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+  'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK',
+  oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+  virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI',
+  wyoming: 'WY', 'puerto rico': 'PR', guam: 'GU', 'virgin islands': 'VI',
+  'american samoa': 'AS', 'northern mariana islands': 'MP',
+}
+
+// Normalizes a payload state to a 2-letter code (or null). Guarantees the result
+// fits VARCHAR(2): a 2-letter input is uppercased and passed through, a full
+// state name is mapped, anything else becomes null (field dropped, sighting kept)
+// rather than overflowing the column and failing the insert (#91).
+function normalizeState(v: unknown): string | null {
+  const s = asString(v)
+  if (!s) return null
+  const trimmed = s.trim()
+  if (/^[A-Za-z]{2}$/.test(trimmed)) return trimmed.toUpperCase()
+  return US_STATE_CODES[trimmed.toLowerCase()] ?? null
 }
 
 // ============================================================
@@ -349,7 +380,10 @@ export async function insertSighting(
     outcome_state: 'in_flight',
     execution_started_at_et: execution_started_at_et.toISOString(),
     execution_started_at_utc: execution_started_at_utc.toISOString(),
-    ssn: rest.ssn ?? null,
+    // ssn is VARCHAR(11) (XXX-XX-XXXX). A non-conforming value from an
+    // unnormalized source would overflow and fail the whole insert, so drop it
+    // to null rather than truncate a (then-wrong) SSN (#91).
+    ssn: rest.ssn && rest.ssn.length <= 11 ? rest.ssn : null,
     person_id: rest.person_id ?? null,
     ...payload_fields,
   }
