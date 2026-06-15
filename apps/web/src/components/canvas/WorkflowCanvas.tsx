@@ -68,6 +68,7 @@ import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
 import { resolvePostSaveState } from '@/lib/save-dirty-guard'
+import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
   renameStepReferences,
   countStepReferences,
@@ -1017,8 +1018,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const sidePanelRef = useRef<HTMLDivElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   // Undo/redo
-  const [history, setHistory] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
-  const [future, setFuture] = useState<{ nodes: Node[]; edges: Edge[] }[]>([])
+  const [hist, setHist] = useState<HistoryModel>(EMPTY_HISTORY)
   // Copy/paste clipboard — persisted to localStorage so it works across workflows
   function copyNode(node: Node) {
     const d = node.data as unknown as CanvasNodeData
@@ -1599,29 +1599,30 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // ── History helpers ─────────────────────────────────────────────────────────
 
   const snapshot = useCallback(() => {
-    setHistory((h) => [...h.slice(-30), { nodes, edges }])
-    setFuture([])
+    setHist((m) => pushSnapshot(m, { nodes, edges }))
   }, [nodes, edges])
 
   const undo = useCallback(() => {
-    setHistory((h) => {
-      if (h.length === 0) return h
-      const prev = h[h.length - 1]
-      setFuture((f) => [{ nodes, edges }, ...f])
-      setNodes(prev.nodes)
-      setEdges(prev.edges)
-      return h.slice(0, -1)
+    setHist((m) => {
+      const step = reduceUndo(m, { nodes, edges })
+      if (!step) return m
+      setNodes(step.restored.nodes)
+      setEdges(step.restored.edges)
+      // #94: an applied undo is an unsaved change — without this, a post-save
+      // Cmd+Z leaves Save disabled and the revert is never persisted.
+      setIsDirty(true)
+      return step.model
     })
   }, [nodes, edges, setNodes, setEdges])
 
   const redo = useCallback(() => {
-    setFuture((f) => {
-      if (f.length === 0) return f
-      const next = f[0]
-      setHistory((h) => [...h, { nodes, edges }])
-      setNodes(next.nodes)
-      setEdges(next.edges)
-      return f.slice(1)
+    setHist((m) => {
+      const step = reduceRedo(m, { nodes, edges })
+      if (!step) return m
+      setNodes(step.restored.nodes)
+      setEdges(step.restored.edges)
+      setIsDirty(true)
+      return step.model
     })
   }, [nodes, edges, setNodes, setEdges])
 
@@ -2837,7 +2838,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <>
               <button
                 onClick={undo}
-                disabled={history.length === 0}
+                disabled={hist.past.length === 0}
                 className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
                 title="Undo (⌘Z)"
               >
@@ -2845,7 +2846,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               </button>
               <button
                 onClick={redo}
-                disabled={future.length === 0}
+                disabled={hist.future.length === 0}
                 className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
                 title="Redo (⌘⇧Z)"
               >
