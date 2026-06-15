@@ -583,17 +583,20 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(assignWorkflowId ? { name, assign_workflow_id: assignWorkflowId } : { name }),
       }),
+    // encodeURIComponent the name so a source containing URL-special characters
+    // (legacy rows created before the charset was enforced) can still be revoked
+    // or assigned instead of mangling the path (#100).
     delete: (name: string) =>
-      req<{ ok: boolean }>(`/api/sources/${name}`, { method: 'DELETE' }),
+      req<{ ok: boolean }>(`/api/sources/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     listAssignments: () =>
       req<{ source_name: string; workflow_id: string }[]>('/api/sources/assignments'),
     assignWorkflow: (name: string, workflowId: string) =>
-      req<{ ok: boolean }>(`/api/sources/${name}/workflows`, {
+      req<{ ok: boolean }>(`/api/sources/${encodeURIComponent(name)}/workflows`, {
         method: 'POST',
         body: JSON.stringify({ workflow_id: workflowId }),
       }),
     unassignWorkflow: (name: string, workflowId: string) =>
-      req<{ ok: boolean }>(`/api/sources/${name}/workflows/${workflowId}`, { method: 'DELETE' }),
+      req<{ ok: boolean }>(`/api/sources/${encodeURIComponent(name)}/workflows/${encodeURIComponent(workflowId)}`, { method: 'DELETE' }),
   },
 
   partners: {

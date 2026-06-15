@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
+import { sanitizeSourceName } from '@/lib/source-name'
 
 interface Props {
   /** Auto-focus the name input on mount. */
@@ -57,7 +58,7 @@ export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, 
           className="input w-full font-mono"
           placeholder="wallet_owl"
           value={name}
-          onChange={(e) => setName(e.target.value.toLowerCase().replace(/\s/g, '_'))}
+          onChange={(e) => setName(sanitizeSourceName(e.target.value))}
           required
         />
         <p className="mt-1 text-xs text-gray-400">

@@ -77,7 +77,11 @@ sources.post('/', async (c) => {
   const body = await c.req.json<{ name: string; assign_workflow_id?: string }>()
 
   if (!body.name) return c.json({ error: 'name is required' }, 400)
-  const name = body.name.trim().toLowerCase().replace(/\s+/g, '_')
+  // Enforce the charset (lowercase, numbers, underscores). Source names are
+  // interpolated into API paths and used as trigger.source, so URL-breaking
+  // characters must never reach the DB (#100). Mirror of web sanitizeSourceName.
+  const name = body.name.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
+  if (!name) return c.json({ error: 'name must contain a letter, number, or underscore' }, 400)
 
   // Generate a 32-char hex key
   const keyBytes = crypto.getRandomValues(new Uint8Array(16))
