@@ -25,6 +25,13 @@ export async function encryptPii(plaintext: string, keyB64: string): Promise<Uin
   return out
 }
 
+// NOTE(#90): this expects the raw iv||ciphertext bytes encryptPii produced. The
+// persons table does NOT store them that way — upsertPerson base64s the bytes,
+// and PostgREST writes that string into BYTEA without a \x prefix, so the column
+// holds the ASCII bytes of the base64 string. Reading a persons row therefore
+// needs a shim (pg bytea -> hex-decode -> atob) before calling this. See the
+// detailed note in lead-sightings.ts upsertPerson. No reader exists today;
+// persons is slated for truncation, which resolves the mismatch.
 export async function decryptPii(encrypted: Uint8Array, keyB64: string): Promise<string> {
   const key = await importAesKey(keyB64)
   const iv = encrypted.slice(0, 12)

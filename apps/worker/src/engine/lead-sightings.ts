@@ -276,6 +276,17 @@ export async function upsertPerson(
   const ssnHash = await hashSsn(ssnDigits, pepper)
   const ssnEnc = await encryptPii(formatSsn(ssnDigits), encryptionKey)
 
+  // NOTE(#90): encryptPii returns raw iv||ciphertext bytes, but we base64 them
+  // before insert. PostgREST sends that string to the BYTEA columns without a
+  // \x prefix, so Postgres stores the *ASCII bytes of the base64 string*, not
+  // the raw ciphertext. decryptPii expects raw bytes and will NOT round-trip a
+  // row as stored. To read an existing row you must: pg bytea -> hex-decode ->
+  // (ASCII base64) -> atob -> iv||ciphertext -> decryptPii. All ~952K rows are
+  // in this format. This is intentionally left as-is: persons is write-only with
+  // no reader today and is slated for truncation/abandonment (see the
+  // "Stop writing the persons table" item in TODO.md / memory
+  // project_persons_dead_weight_2026_06_01), which resolves #90. If persons is
+  // ever kept as a live readable store, write proper \x-hex bytea here instead.
   const enc = async (v: string | null | undefined) =>
     v && v.length > 0 ? bytesToBase64(await encryptPii(v, encryptionKey)) : null
 
