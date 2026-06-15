@@ -70,6 +70,50 @@ describe('evaluateConditionGroups — empty fails closed (#93)', () => {
   })
 })
 
+// #93 follow-up: a half-built rule (one real part + one blank part) should
+// evaluate on its real parts only — the blank part is ignored, not treated as a
+// match that forces (OR) or breaks (AND) the whole rule.
+describe('evaluateConditionGroups — unconfigured parts ignored (#93 follow-up)', () => {
+  const realGroup: ConditionGroup = {
+    conditions: [{ field: 'trigger.payload.score', operator: 'gt', value: '700' }],
+    logic: 'AND',
+  }
+  const emptyGroup: ConditionGroup = { conditions: [], logic: 'AND' }
+  const blankRowGroup: ConditionGroup = {
+    conditions: [{ field: '', operator: 'eq', value: '' }],
+    logic: 'AND',
+  }
+
+  it('AND: a blank group is dropped, so the rule equals its one real group', () => {
+    const groups = [realGroup, emptyGroup]
+    expect(evaluateConditionGroups(groups, 'AND', ctx({ score: 750 }))).toBe(true)
+    expect(evaluateConditionGroups(groups, 'AND', ctx({ score: 600 }))).toBe(false)
+  })
+
+  it('OR: a blank group does not force the rule true', () => {
+    const groups = [realGroup, emptyGroup]
+    expect(evaluateConditionGroups(groups, 'OR', ctx({ score: 600 }))).toBe(false)
+    expect(evaluateConditionGroups(groups, 'OR', ctx({ score: 750 }))).toBe(true)
+  })
+
+  it('a blank condition row inside a group is dropped (AND)', () => {
+    const groups: ConditionGroup[] = [{
+      conditions: [
+        { field: 'trigger.payload.score', operator: 'gt', value: '700' },
+        { field: '', operator: 'eq', value: '' },
+      ],
+      logic: 'AND',
+    }]
+    expect(evaluateConditionGroups(groups, 'AND', ctx({ score: 750 }))).toBe(true)
+    expect(evaluateConditionGroups(groups, 'AND', ctx({ score: 600 }))).toBe(false)
+  })
+
+  it('when every group is unconfigured (empty + blank row) it still fails closed', () => {
+    expect(evaluateConditionGroups([emptyGroup, blankRowGroup], 'AND', ctx({ score: 750 }))).toBe(false)
+    expect(evaluateConditionGroups([emptyGroup, blankRowGroup], 'OR', ctx({ score: 750 }))).toBe(false)
+  })
+})
+
 // --- evaluateConditionGroups — all operators ---
 
 describe('evaluateConditionGroups — all operators', () => {
