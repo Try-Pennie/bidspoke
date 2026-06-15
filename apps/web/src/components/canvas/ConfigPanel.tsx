@@ -14,6 +14,7 @@ import { api } from '@/lib/api'
 import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
+import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import JsonTreeView from './JsonTreeView'
@@ -361,7 +362,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
 
         {/* Type-specific config */}
         {type === 'filter' && <FilterConfig config={data.config} onChange={updateConfig} refs={refs} />}
-        {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} />}
+        {type === 'branch' && <BranchConfig config={data.config} onChange={updateConfig} refs={refs} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'response' && <ResponseConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'bid_evaluation' && <BidEvaluationConfig config={data.config} onChange={updateConfig} nodeNamespaces={nodeNamespaces} />}
@@ -804,10 +805,16 @@ function BranchConfig({
   config,
   onChange,
   refs,
+  currentNodeId,
+  edges,
+  onEdgesChange,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
+  currentNodeId: string
+  edges: { id: string; source: string; target: string; sourceHandle?: string | null }[]
+  onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }) {
   const branches = (config.branches as Array<{ label: string; condition: { groups: ConditionGroup[]; logic: 'AND' | 'OR' } }> | undefined) ?? []
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
@@ -815,16 +822,27 @@ function BranchConfig({
   const elseLabel = (config.else_label as string | undefined) ?? ''
 
   function addBranch() {
+    // Unique label across current arms AND any handle still referenced by an edge
+    // from this node, so a new arm never collides or adopts a stale edge (#95).
+    const usedHandles = edges
+      .filter((e) => e.source === currentNodeId && e.sourceHandle)
+      .map((e) => e.sourceHandle as string)
+    const label = nextBranchLabel(branches.map((b) => b.label), usedHandles)
     onChange({
       branches: [
         ...branches,
-        { label: `branch_${branches.length + 1}`, condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } },
+        { label, condition: { groups: [{ conditions: [], logic: 'AND' }], logic: 'AND' } },
       ],
     })
   }
 
   function removeBranch(i: number) {
+    const removed = branches[i]
     onChange({ branches: branches.filter((_, idx) => idx !== i) })
+    // Delete edges wired to the removed arm so they don't linger in the saved
+    // definition (hidden-only) and re-activate if a same-named arm reappears (#95).
+    const removeIds = armEdgeIds(edges, currentNodeId, removed.label)
+    if (removeIds.length > 0) onEdgesChange?.([], removeIds)
   }
 
   function updateBranch(
