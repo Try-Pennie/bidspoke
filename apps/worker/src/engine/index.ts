@@ -32,7 +32,7 @@ import {
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
-import { enforceSourceAssignment, SourceNotAuthorizedError } from './source-assignment'
+import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
 import type {
@@ -64,7 +64,7 @@ class StepFailureError extends Error {
   }
 }
 
-export { SourceNotAuthorizedError }
+export { SourceNotAuthorizedError, SourceAuthUnavailableError }
 
 export interface ExecuteOptions {
   workflowId: string

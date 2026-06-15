@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
-import { executeWorkflow, SourceNotAuthorizedError } from '../engine/index'
+import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
 import { createSupabaseClient } from '../lib/supabase'
 
 const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -55,6 +55,12 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
   } catch (err) {
     if (err instanceof SourceNotAuthorizedError) {
       return c.json({ error: err.message }, 403)
+    }
+    // Couldn't verify the source→workflow restriction (DB error). Fail closed
+    // with a retryable 503 rather than allowing the request (#65); the engine's
+    // idempotency makes a sender retry safe.
+    if (err instanceof SourceAuthUnavailableError) {
+      return c.json({ error: err.message }, 503)
     }
 
     const message = err instanceof Error ? err.message : 'Internal error'

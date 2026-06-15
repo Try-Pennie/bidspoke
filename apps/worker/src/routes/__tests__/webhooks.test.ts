@@ -14,7 +14,7 @@ vi.mock('../../engine/index', async () => {
 })
 vi.mock('../../lib/supabase')
 
-import { executeWorkflow, SourceNotAuthorizedError } from '../../engine/index'
+import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../../engine/index'
 import { createSupabaseClient } from '../../lib/supabase'
 import webhooks from '../webhooks'
 
@@ -135,6 +135,14 @@ describe('POST /webhooks/:workflow_id', () => {
       expect(res.status).toBe(403)
       const body = await res.json() as { error: string }
       expect(body.error).toMatch(/not authorized/i)
+    })
+
+    it('returns a retryable 503 (fails closed) when the assignment lookup errors (#65)', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(
+        new SourceAuthUnavailableError('engine', 'connection reset')
+      )
+      const res = await request('wf-1', { apiKey: 'sk_test_key' })
+      expect(res.status).toBe(503)
     })
   })
 

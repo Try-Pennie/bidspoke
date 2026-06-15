@@ -6,6 +6,15 @@ export class SourceNotAuthorizedError extends Error {
   }
 }
 
+// Thrown when the assignment lookup itself fails (DB error), so the caller can
+// fail CLOSED with a retryable status instead of treating the missing data as
+// "no assignments → allow" (#65).
+export class SourceAuthUnavailableError extends Error {
+  constructor(source: string, cause: string) {
+    super(`Could not verify source authorization for "${source}": ${cause}`)
+  }
+}
+
 /**
  * Enforce source-to-workflow assignment on the generic /webhooks/:id path.
  *
@@ -23,12 +32,16 @@ export async function enforceSourceAssignment(
   source: string,
   workflowId: string
 ): Promise<void> {
-  const { data: assignments } = await supabase
+  const { data: assignments, error } = await supabase
     .from('source_workflow_assignments')
     .select('workflow_id')
     .eq('organization_id', orgId)
     .eq('source_name', source)
 
+  // Fail CLOSED on a lookup error: a null `data` from a failed query is
+  // indistinguishable from "no assignment rows", and treating it as the latter
+  // would silently lift a source's workflow restriction during a DB blip (#65).
+  if (error) throw new SourceAuthUnavailableError(source, error.message)
   if (!assignments || assignments.length === 0) return
   const allowed = assignments.some((a) => a.workflow_id === workflowId)
   if (!allowed) throw new SourceNotAuthorizedError(source, workflowId)
