@@ -4,10 +4,10 @@
  * Enforced on the generic /webhooks/:id path; custom endpoints are exempt.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { enforceSourceAssignment, SourceNotAuthorizedError } from '../source-assignment'
+import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../source-assignment'
 
-function makeSupabase(rows: { workflow_id: string }[] | null) {
-  const final = { data: rows, error: null }
+function makeSupabase(rows: { workflow_id: string }[] | null, error: { message: string } | null = null) {
+  const final = { data: rows, error }
   const chain: unknown = new Proxy({}, {
     get(_, prop) {
       if (typeof prop === 'symbol') return undefined
@@ -47,10 +47,19 @@ describe('enforceSourceAssignment', () => {
     expect(fromSpy).toHaveBeenCalledWith('source_workflow_assignments')
   })
 
-  it('treats a null data response as unrestricted', async () => {
+  it('treats a null data response (no error) as unrestricted', async () => {
     const sb = makeSupabase(null)
     await expect(
       enforceSourceAssignment(sb as never, 'org-1', 'x', 'wf-1')
     ).resolves.toBeUndefined()
+  })
+
+  it('fails CLOSED (throws SourceAuthUnavailableError) when the lookup errors (#65)', async () => {
+    // A DB error must NOT be read as "no assignments → allow" — that would lift a
+    // pinned source's workflow restriction during a database blip.
+    const sb = makeSupabase(null, { message: 'connection reset' })
+    await expect(
+      enforceSourceAssignment(sb as never, 'org-1', 'engine', 'wf-1')
+    ).rejects.toBeInstanceOf(SourceAuthUnavailableError)
   })
 })
