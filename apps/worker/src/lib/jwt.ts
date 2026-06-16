@@ -24,9 +24,20 @@ interface JwtPayload {
 }
 
 let cachedKeys: Map<string, CryptoKey> | null = null
+// When did we last refetch the JWKS because a token presented an unknown kid?
+// Used to rate-limit refetches so a flood of bogus-kid tokens can't hammer the
+// JWKS endpoint. 0 = never, so the first unknown kid always triggers a refetch.
+let lastUnknownKidRefetchMs = 0
+const UNKNOWN_KID_REFETCH_COOLDOWN_MS = 60_000
 
-async function getJwks(jwksUrl: string): Promise<Map<string, CryptoKey>> {
-  if (cachedKeys) return cachedKeys
+// Reset module-level JWKS state. Test-only.
+export function _resetJwksCacheForTest(): void {
+  cachedKeys = null
+  lastUnknownKidRefetchMs = 0
+}
+
+async function getJwks(jwksUrl: string, forceRefresh = false): Promise<Map<string, CryptoKey>> {
+  if (cachedKeys && !forceRefresh) return cachedKeys
 
   const res = await fetch(jwksUrl)
   if (!res.ok) throw new Error('Failed to fetch JWKS')
@@ -47,7 +58,11 @@ async function getJwks(jwksUrl: string): Promise<Map<string, CryptoKey>> {
   return keyMap
 }
 
-export async function verifyJwt(token: string, jwksUrl: string): Promise<JwtPayload> {
+export async function verifyJwt(
+  token: string,
+  jwksUrl: string,
+  expectedAud = 'authenticated'
+): Promise<JwtPayload> {
   const parts = token.split('.')
   if (parts.length !== 3) throw new Error('Invalid JWT format')
 
@@ -56,13 +71,32 @@ export async function verifyJwt(token: string, jwksUrl: string): Promise<JwtPayl
   const header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/'))) as { kid: string; alg: string }
   const payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'))) as JwtPayload
 
-  if (payload.exp < Math.floor(Date.now() / 1000)) {
-    throw new Error('JWT expired')
+  // A token with no (or a non-numeric) exp must NOT be trusted forever —
+  // `undefined < now` is false, so the original check silently accepted it.
+  if (typeof payload.exp !== 'number' || payload.exp < Math.floor(Date.now() / 1000)) {
+    throw new Error('JWT expired or missing exp')
   }
 
-  const keys = await getJwks(jwksUrl)
-  const key = keys.get(header.kid)
-  if (!key) throw new Error(`No key found for kid: ${header.kid}`)
+  // Audience must match. Supabase user tokens carry aud 'authenticated'.
+  const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud]
+  if (!auds.includes(expectedAud)) {
+    throw new Error('JWT aud mismatch')
+  }
+
+  let keys = await getJwks(jwksUrl)
+  let key = keys.get(header.kid)
+  if (!key) {
+    // Unknown kid — Supabase likely rotated signing keys. Refetch the JWKS so
+    // rotation self-heals instead of bricking auth until isolates recycle,
+    // rate-limited so bogus kids can't hammer the endpoint.
+    const now = Date.now()
+    if (now - lastUnknownKidRefetchMs >= UNKNOWN_KID_REFETCH_COOLDOWN_MS) {
+      lastUnknownKidRefetchMs = now
+      keys = await getJwks(jwksUrl, true)
+      key = keys.get(header.kid)
+    }
+    if (!key) throw new Error(`No key found for kid: ${header.kid}`)
+  }
 
   const signatureBytes = Uint8Array.from(
     atob(signatureB64.replace(/-/g, '+').replace(/_/g, '/')),
