@@ -5,7 +5,6 @@ import { Layers } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { TimeoutWarningBadge } from './TimeoutWarningBadge'
 import { nodeWidth } from '@/lib/layout'
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
@@ -59,7 +58,6 @@ export function BidGroupNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="bid_group" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-rose-50 border-b border-rose-100 px-3 py-2">

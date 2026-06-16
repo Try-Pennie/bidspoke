@@ -5,7 +5,6 @@ import { Package } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { TimeoutWarningBadge } from './TimeoutWarningBadge'
 
 export function ConstantsNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
@@ -31,7 +30,6 @@ export function ConstantsNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="constants" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 

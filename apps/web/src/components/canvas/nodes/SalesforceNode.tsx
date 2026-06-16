@@ -7,7 +7,6 @@ import { Cloud } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { TimeoutWarningBadge } from './TimeoutWarningBadge'
 
 const OPERATION_LABELS: Record<string, string> = {
   create: 'Create',
@@ -40,7 +39,6 @@ export function SalesforceNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="salesforce" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">

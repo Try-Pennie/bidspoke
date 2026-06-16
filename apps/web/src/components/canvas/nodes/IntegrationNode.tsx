@@ -5,7 +5,6 @@ import { Plug } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
-import { TimeoutWarningBadge } from './TimeoutWarningBadge'
 
 // Fallback labels for nodes saved before service_label was stored in config
 const SERVICE_LABELS: Record<string, string> = {
@@ -42,7 +41,6 @@ export function IntegrationNode({ data, selected }: NodeProps) {
     >
       <SuccessBadge visible={isSuccessNode} />
       <NoteBadge note={note} />
-      <TimeoutWarningBadge type="webhook" config={config} namespace={namespace} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-teal-50 border-b border-teal-100 px-3 py-2">

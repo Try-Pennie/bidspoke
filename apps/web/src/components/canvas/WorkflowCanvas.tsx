@@ -62,6 +62,7 @@ import { reachableFromTrigger } from './reachability'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
+import { withTimeoutBadge } from './nodes/withTimeoutBadge'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
@@ -79,7 +80,11 @@ import {
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 
 // Defined outside component to prevent re-render on each render
-const nodeTypes: NodeTypes = {
+// Source registry. Every node type a workflow can render MUST be listed here, so
+// this is the single chokepoint where the timeout-warning badge is attached —
+// withTimeoutBadge wraps each entry below, meaning a newly added node type gets
+// the indicator automatically with no per-card wiring.
+const baseNodeTypes = {
   trigger: TriggerNode,
   filter: FilterNode,
   branch: BranchNode,
@@ -101,6 +106,10 @@ const nodeTypes: NodeTypes = {
   achieve_offers: AchieveOffersNode,
   region: RegionNode,
 }
+
+const nodeTypes: NodeTypes = Object.fromEntries(
+  Object.entries(baseNodeTypes).map(([type, Component]) => [type, withTimeoutBadge(Component)]),
+)
 
 const edgeTypes = {
   converge: ConvergeEdge,
