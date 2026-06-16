@@ -762,7 +762,7 @@ export async function walkGraph(
       let output: unknown = null
       let stepStatus: StepStatus = 'completed'
       let errorMessage: string | undefined
-      const errorType: ErrorType = null
+      let errorType: ErrorType = null
 
       try {
         // Slot handle ids parallel to resolvedChildren — needed when wait_for='specific'.
@@ -802,6 +802,11 @@ export async function walkGraph(
       } catch (err) {
         stepStatus = 'failed'
         errorMessage = err instanceof Error ? err.message : String(err)
+        // A parallel failure (a child rejected, or the group timed out) is an
+        // operational error, never a clean business rejection — give it a real
+        // type so the failure alert fires. A null type is read as a business
+        // rejection and stays silent (#64).
+        errorType = classifyStepError(err) ?? 'transient'
       }
 
       const parallelDurationMs = Date.now() - new Date(stepStartedAt).getTime()
@@ -954,11 +959,16 @@ export async function walkGraph(
       let groupOutput: BidGroupOutput | null = null
       let groupStatus: StepStatus = 'completed'
       let groupErrorMessage: string | undefined
+      let groupErrorType: ErrorType = null
       try {
         groupOutput = await executeBidGroupNode(node, ctx, env, supabase, runAttempt, (id) => slugByPartnerId.get(id))
       } catch (err) {
         groupStatus = 'failed'
         groupErrorMessage = err instanceof Error ? err.message : String(err)
+        // A bid_group execution error is operational, not a business rejection
+        // (a no-winner routes via _route, it doesn't throw) — give it a real type
+        // so the failure alert fires (#64).
+        groupErrorType = classifyStepError(err) ?? 'transient'
       } finally {
         // Clear bidGroupContext so subsequent steps (or nested groups, if ever)
         // don't see stale values. Idempotent — safe even when context wasn't set.
@@ -972,7 +982,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: groupDurationMs, error_message: groupErrorMessage })
       }
 
-      recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: null })
+      recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: groupErrorType })
       const groupResolvedInput: ResolvedStepInput = {
         template: {
           mode: config.mode,
@@ -992,12 +1002,12 @@ export async function walkGraph(
           context: resolvedContext,
         },
       }
-      logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, groupResolvedInput, groupOutput, groupErrorMessage, null, 0, groupStartedAt, groupStartOrder)
+      logStep(stepLogQueue, executionId, executionStartedAt, node, groupStatus, groupResolvedInput, groupOutput, groupErrorMessage, groupErrorType, 0, groupStartedAt, groupStartOrder)
 
       lastOutput = groupOutput
 
       if (groupStatus === 'failed') {
-        throw new StepFailureError(groupErrorMessage!, node.namespace, null)
+        throw new StepFailureError(groupErrorMessage!, node.namespace, groupErrorType)
       }
 
       // no_winner_behavior: 'exit' short-circuits the workflow with the group's output.
