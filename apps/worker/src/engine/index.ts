@@ -185,12 +185,14 @@ export async function executeWorkflow(
     }
   }
 
-  // Fire the idempotency-processing KV write and the execution-record insert
-  // in parallel WITH the walk — they're independent of step execution. We
-  // await them before flushing step logs at the end (execution_steps has a
-  // FK on workflow_executions.id, so the record must exist before the batch
-  // insert). This removes ~50-100ms of Supabase insert latency from the
-  // critical path before the first step runs.
+  // Kick off the idempotency-processing KV write and the execution-record
+  // insert. The execution-record insert runs in parallel WITH the walk — it's
+  // independent of step execution and we await it before flushing step logs at
+  // the end (execution_steps has a FK on workflow_executions.id, so the record
+  // must exist before the batch insert). The processing marker, by contrast, is
+  // awaited before the first step runs (see below, #67) so a concurrent
+  // duplicate can observe it. We start it here so it overlaps the synchronous
+  // setup that follows and adds minimal latency before that await.
   const idempotencyProcessingPromise = useIdempotency && !isRecoveryRun
     ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
     : Promise.resolve()
@@ -282,6 +284,16 @@ export async function executeWorkflow(
   // background via ctx.waitUntil, matching Pipedream's $.respond() semantics.
   let earlyResponseResolve: (r: WalkGraphResult) => void = () => {}
   const earlyResponsePromise = new Promise<WalkGraphResult>((res) => { earlyResponseResolve = res })
+
+  // #67: the idempotency processing marker must be durably written before the
+  // first outbound side effect. The put was kicked off above and has overlapped
+  // all the synchronous setup since, so awaiting it here adds minimal latency —
+  // but it closes the window where two duplicates arriving a few milliseconds
+  // apart both pass the unawaited check-then-set and both fire partner bids.
+  // What remains is only KV's own (inherent, PRD 2.9) check-then-set race.
+  // Errors are swallowed: a failed marker write must not fail the execution
+  // (the end-of-run handlers already chain on this same promise's catch).
+  await idempotencyProcessingPromise.catch(() => {})
 
   const walkPromise = walkGraph(
     ctx, definition, executionId, startedAt, supabase, env, workflow_version_id, stepLogQueue,
