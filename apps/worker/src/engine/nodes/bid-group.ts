@@ -376,6 +376,12 @@ async function runTiered(
       mode: tier.mode,
       partner_ids: tier.partner_ids,
       min_bid_threshold: config.min_bid_threshold,
+      // Propagate the group's race deadlines into each tier (#72). Without these
+      // a highest_bid tier ran with timeout_ms undefined (no deadline — one hung
+      // partner stalled the whole tiered race) and a cascade tier silently used
+      // the 30000ms default instead of the group's cascade_total_timeout_ms.
+      timeout_ms: config.timeout_ms,
+      cascade_total_timeout_ms: config.cascade_total_timeout_ms,
       // Tiers don't have their own fallback — fallback fires once at the group
       // level, after all tiers exhaust without a winner.
     }
