@@ -359,9 +359,9 @@ describe('executePartnerBidNode', () => {
       expect(output.skip_reason).toBe('bid_below_min')
     })
 
-    // #109: a $0 bid (a common decline encoding) must not count as a winnable bid
-    // unless the partner opts in with min_bid: 0.
-    it('declines a $0 bid when no min_bid is set', async () => {
+    // #109: a $0 bid is accepted by default; a partner declines $0 by setting a
+    // positive min_bid. Negative bids are always rejected.
+    it('accepts a $0 bid by default (no min_bid)', async () => {
       const result = await executePartnerBidNode(
         makeNode({ partner_id: 'p1' }),
         makeCtx({ debt_amount: 0 }), // formula → 0
@@ -370,36 +370,35 @@ describe('executePartnerBidNode', () => {
         makeSupabase(makePartner({ bid_formula: 'debt_amount * 0.65', min_bid: null })) as any
       )
       const output = result.output as PartnerBidOutput
-      expect(output.accepted).toBe(false)
-      expect(output.skipped).toBe(true)
-      expect(output.skip_reason).toBe('bid_below_min')
+      expect(output.bid).toBe(0)
+      expect(output.accepted).toBe(true)
+      expect(output.skipped).toBe(false)
     })
 
-    it('accepts a $0 bid when the partner sets min_bid: 0', async () => {
+    it('declines a $0 bid when a positive min_bid is set', async () => {
       const result = await executePartnerBidNode(
         makeNode({ partner_id: 'p1' }),
         makeCtx({ debt_amount: 0 }), // formula → 0
         makeEnv(),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        makeSupabase(makePartner({ bid_formula: 'debt_amount * 0.65', min_bid: 0 })) as any
+        makeSupabase(makePartner({ bid_formula: 'debt_amount * 0.65', min_bid: 1 })) as any
       )
       const output = result.output as PartnerBidOutput
-      expect(output.bid).toBe(0)
-      expect(output.accepted).toBe(true)
-      expect(output.skipped).toBe(false)
+      expect(output.accepted).toBe(false)
+      expect(output.skipped).toBe(true)
+      expect(output.skip_reason).toBe('bid_below_min')
     })
   })
 
   describe('meetsBidFloor (#109)', () => {
-    it('requires a strictly positive bid when no min_bid is set', () => {
-      expect(meetsBidFloor(0, null)).toBe(false)
+    it('accepts $0 by default but rejects negatives when no min_bid is set', () => {
+      expect(meetsBidFloor(0, null)).toBe(true)
+      expect(meetsBidFloor(0, undefined)).toBe(true)
       expect(meetsBidFloor(-1, null)).toBe(false)
-      expect(meetsBidFloor(0.01, undefined)).toBe(true)
       expect(meetsBidFloor(50, null)).toBe(true)
     })
-    it('honors an explicit min_bid, including 0 (allows $0, rejects negatives)', () => {
-      expect(meetsBidFloor(0, 0)).toBe(true)
-      expect(meetsBidFloor(-0.01, 0)).toBe(false)
+    it('honors an explicit positive min_bid (declines $0 and anything below it)', () => {
+      expect(meetsBidFloor(0, 1)).toBe(false)
       expect(meetsBidFloor(2.99, 3)).toBe(false)
       expect(meetsBidFloor(3, 3)).toBe(true)
     })

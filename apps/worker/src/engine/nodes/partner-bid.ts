@@ -158,13 +158,13 @@ export async function recordBreakerOutcome(
 }
 
 // A bid must clear the partner's floor to count as a real, winnable bid. With an
-// explicit min_bid (including 0) the floor is `bid >= min_bid`; with no min_bid
-// the floor is `bid > 0`, so a $0 (a common decline encoding) or a negative bid
-// is treated as a decline rather than a winnable bid (#109). A partner that
-// should win at $0 opts in by setting min_bid: 0 explicitly.
+// explicit min_bid the floor is `bid >= min_bid`; with no min_bid the floor is
+// `bid >= 0`, so a $0 bid is accepted by default. A partner that treats $0 as a
+// decline opts in by setting a positive min_bid (e.g. 0.01), which rejects $0
+// and anything below it. Negative bids are always rejected (#109).
 export function meetsBidFloor(bid: number, minBid: number | null | undefined): boolean {
   if (minBid != null) return bid >= minBid
-  return bid > 0
+  return bid >= 0
 }
 
 export async function executePartnerBidNode(
