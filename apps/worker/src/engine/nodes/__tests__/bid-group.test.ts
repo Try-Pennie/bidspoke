@@ -362,6 +362,61 @@ describe('BidGroup tiered mode', () => {
     expect(result.all_bids).toHaveLength(3)
   })
 
+  // #72: the group's race deadlines must propagate into each tier's config.
+  it('a highest_bid tier honors the group timeout_ms (#72)', async () => {
+    vi.useFakeTimers()
+    try {
+      const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+        if (partner_id === 'fast') return attempt('fast', { partner: 'fast', bid: 25, accepted: true })
+        return new Promise(() => {}) as Promise<BidGroupAttempt> // hangs forever
+      }
+      const promise = executeBidGroupNode(
+        makeNode({
+          mode: 'tiered',
+          timeout_ms: 5000,
+          tiers: [{ id: 't1', mode: 'highest_bid', partner_ids: ['fast', 'slow'] }],
+        }),
+        makeCtx(), env, supabase, runAttempt
+      )
+      // Without the fix the tier runs with no deadline and this never resolves.
+      await vi.advanceTimersByTimeAsync(5000)
+      const result = await promise
+      expect(result.winner?.partner).toBe('fast')
+      expect(result.tier_winner).toBe('t1')
+      const slow = result.all_bids.find((b) => b.partner === 'slow')
+      expect(slow?.error).toMatch(/within 5000ms/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a cascade tier honors the group cascade_total_timeout_ms (#72)', async () => {
+    vi.useFakeTimers()
+    try {
+      const seen: string[] = []
+      const runAttempt: RunAttemptFn = async ({ partner_id }) => {
+        seen.push(partner_id)
+        await new Promise((r) => setTimeout(r, 100)) // each attempt takes 100ms
+        return attempt(partner_id, { partner: partner_id, skipped: true, skip_reason: 'rejected' })
+      }
+      const promise = executeBidGroupNode(
+        makeNode({
+          mode: 'tiered',
+          cascade_total_timeout_ms: 50,
+          tiers: [{ id: 't1', mode: 'cascade', partner_ids: ['p1', 'p2', 'p3'] }],
+        }),
+        makeCtx(), env, supabase, runAttempt
+      )
+      await vi.advanceTimersByTimeAsync(500)
+      await promise
+      // p1 alone exceeds the 50ms total deadline, so the cascade stops before
+      // p2/p3. Without the fix the tier uses the 30000ms default and runs all three.
+      expect(seen).toEqual(['p1'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('advance_condition false -> tier skipped, recorded in tiers_skipped', async () => {
     const seen: string[] = []
     const runAttempt: RunAttemptFn = async ({ partner_id }) => {
