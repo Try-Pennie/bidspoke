@@ -1589,7 +1589,24 @@ interface ChainStepResult {
  * - A node with multiple incoming/outgoing edges (branching)
  * Returns [start, ...rest] — always includes `start`. Chain of 1 means no chain.
  */
-function collectCodeChain(start: NodeDefinition, definition: { nodes: NodeDefinition[]; edges: import('../types').EdgeDefinition[] }): NodeDefinition[] {
+// A code node is safe to BATCH into a chain dispatch only if it carries no custom
+// retry / on_error / timeout config. Those take effect only on the single-node
+// path (withRetry / on_error handling / withTimeout); a batched node bypasses all
+// three. So a node that sets any of them must run individually to honor them (#62).
+export function isChainableCodeNode(node: NodeDefinition): boolean {
+  if (node.type !== 'code') return false
+  const c = node.config ?? {}
+  if ((c.retries as number | undefined) && (c.retries as number) > 0) return false
+  if (c.on_error !== undefined && c.on_error !== 'fail') return false
+  if (c.timeout_ms !== undefined) return false
+  if (typeof c.service === 'string') return false
+  return true
+}
+
+export function collectCodeChain(start: NodeDefinition, definition: { nodes: NodeDefinition[]; edges: import('../types').EdgeDefinition[] }): NodeDefinition[] {
+  // If the START has custom retry/error/timeout config, don't batch it — return it
+  // alone so the caller runs it on the single-node path that honors that config (#62).
+  if (!isChainableCodeNode(start)) return [start]
   const chain: NodeDefinition[] = [start]
   let current = start
   // Safety cap — chains longer than 20 steps are unusual and we don't want to
@@ -1600,10 +1617,7 @@ function collectCodeChain(start: NodeDefinition, definition: { nodes: NodeDefini
     const edge = outs[0]
     if (edge.condition) break
     const next = definition.nodes.find((n) => n.id === edge.target)
-    if (!next) break
-    if (next.type !== 'code') break
-    if ((next.config?.retries as number | undefined) && (next.config.retries as number) > 0) break
-    if (typeof next.config?.service === 'string') break
+    if (!next || !isChainableCodeNode(next)) break
     const incoming = definition.edges.filter((e) => e.target === next.id)
     if (incoming.length !== 1) break
     chain.push(next)
@@ -1616,7 +1630,7 @@ function collectCodeChain(start: NodeDefinition, definition: { nodes: NodeDefini
  * Dispatch a chain of code nodes to the bundled worker's /execute-chain
  * endpoint. Returns per-step results including timing and sentinel detection.
  */
-async function executeCodeChain(
+export async function executeCodeChain(
   chain: NodeDefinition[],
   ctx: ExecutionContext,
   env: Env
@@ -1648,17 +1662,36 @@ async function executeCodeChain(
     execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
   })
 
+  // Bound the whole chain dispatch so a hung code node can't stall the walk
+  // forever (#62). Chained nodes carry no custom timeout (isChainableCodeNode
+  // excludes them), so each gets the default budget; the chain's budget is their
+  // sum — the time it would take to run them one after another on the bundle.
+  const chainTimeoutMs = chain.reduce((sum, n) => sum + ((n.config?.timeout_ms as number | undefined) ?? 30000), 0)
+  const controller = new AbortController()
+  const chainTimer = setTimeout(() => controller.abort(), chainTimeoutMs)
+
   const bundleBinding = env.DYNAMIC_WORKER_LOADER.get(codeBundleName(ctx.trigger.workflow_id))
   let bundleRes: Response | undefined
   let bindingError: unknown
+  let timedOut = false
   try {
     bundleRes = await bundleBinding.fetch('https://worker/execute-chain', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
+      signal: controller.signal,
     })
   } catch (err) {
-    bindingError = err
+    if (err instanceof Error && err.name === 'AbortError') timedOut = true
+    else bindingError = err
+  } finally {
+    clearTimeout(chainTimer)
+  }
+
+  // A timeout fails the chain (the caller throws StepFailureError) — do NOT fall
+  // back to per-node, which would re-run the chain and could repeat side effects.
+  if (timedOut) {
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: `Code chain timed out after ${chainTimeoutMs}ms`, durationMs: chainTimeoutMs }] }
   }
 
   // Fallback: if the bundled worker is old (no /execute-chain) or missing,
