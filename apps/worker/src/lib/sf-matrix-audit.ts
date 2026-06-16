@@ -17,6 +17,7 @@ import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { sendMatrixChangeAlert } from './slack'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
+import { fetchAllPaged } from './paginate'
 
 /** Partner flag columns on BidRangeRow__c we capture as a JSONB blob. */
 export const PARTNER_FLAG_FIELDS = [
@@ -133,23 +134,15 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
  * through with .range() until a short page comes back.
  */
 async function readSnapshot(supabase: SupabaseClient): Promise<AuditSnapshot[]> {
-  const PAGE_SIZE = 1000
-  const all: AuditSnapshot[] = []
-  let from = 0
-  while (true) {
-    const { data, error } = await supabase
+  return fetchAllPaged<AuditSnapshot>(
+    (from, to) => supabase
       .from('sf_bid_matrix_audit')
       .select('source_id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, partner_flags')
       // Stable ordering keeps OFFSET pagination from skipping/duplicating rows across pages.
       .order('source_id', { ascending: true })
-      .range(from, from + PAGE_SIZE - 1)
-    if (error) throw new Error(`sf_bid_matrix_audit read failed: ${error.message}`)
-    const page = (data ?? []) as unknown as AuditSnapshot[]
-    all.push(...page)
-    if (page.length < PAGE_SIZE) break
-    from += PAGE_SIZE
-  }
-  return all
+      .range(from, to),
+    'sf_bid_matrix_audit read',
+  )
 }
 
 // ── Diff ──────────────────────────────────────────────────────────────────────
