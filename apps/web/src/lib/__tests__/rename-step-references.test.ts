@@ -150,7 +150,7 @@ describe('countBareNamespaceRefs', () => {
 })
 
 describe('renameBareNamespaceFields', () => {
-  it('rewrites parallel_source on a bid_evaluation config', () => {
+  it('rewrites a parallel_source bare-namespace field', () => {
     expect(renameBareNamespaceFields({ strategy: 'highest_bid', parallel_source: 'bid_race' }, 'bid_race', 'bids'))
       .toEqual({ strategy: 'highest_bid', parallel_source: 'bids' })
   })

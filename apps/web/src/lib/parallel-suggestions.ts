@@ -14,7 +14,6 @@ const STRUCTURAL_TYPES = new Set([
   'filter',
   'branch',
   'branch_end',
-  'bid_evaluation',
   'parallel',
   'parallel_end',
   'exit',

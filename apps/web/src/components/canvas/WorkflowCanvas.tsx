@@ -32,7 +32,6 @@ import { ResponseNode } from './nodes/ResponseNode'
 import { ExitNode } from './nodes/ExitNode'
 import { TriggerNode } from './nodes/TriggerNode'
 import { GenericNode } from './nodes/GenericNode'
-import { BidEvaluationNode } from './nodes/BidEvaluationNode'
 import { BidGroupNode } from './nodes/BidGroupNode'
 import { TransformNode } from './nodes/TransformNode'
 import { IntegrationNode } from './nodes/IntegrationNode'
@@ -97,7 +96,6 @@ const baseNodeTypes = {
   transform: TransformNode,
   parallel: ParallelNode,
   parallel_end: ParallelEndNode,
-  bid_evaluation: BidEvaluationNode,
   bid_group: BidGroupNode,
   constants: ConstantsNode,
   salesforce: SalesforceNode,
@@ -759,7 +757,7 @@ function chooseSourceHandle(
     )
   }
 
-  if (type === 'bid_evaluation' || type === 'bid_group') {
+  if (type === 'bid_group') {
     return nearestHandleId(
       [
         { id: 'winner', x: source.position.x + NODE_W * 0.3 },
@@ -3396,7 +3394,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   exit:           '#ef4444', // red
                   transform:      '#f97316', // orange
                   webhook:        '#14b8a6', // teal
-                  bid_evaluation: '#f43f5e', // rose
                   partner_bid:    '#0ea5e9', // sky
                   parallel:       '#64748b', // slate
                   parallel_end:   '#64748b', // slate

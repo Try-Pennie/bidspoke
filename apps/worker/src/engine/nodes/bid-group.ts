@@ -13,8 +13,7 @@
  * tried — linked via parallel_group_id (reused as a generic group id).
  *
  * Output: { winner, all_bids, mode, reason, _route: 'winner' | 'no_winner' }.
- * The two outgoing edges are picked by _route — same convention as
- * bid_evaluation and branch.
+ * The two outgoing edges are picked by _route — same convention as branch.
  */
 
 import type { NodeDefinition, ExecutionContext, ConditionGroup } from '../../types'

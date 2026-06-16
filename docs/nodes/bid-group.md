@@ -9,7 +9,7 @@ Use a Bid Group whenever you want to bid a lead out to more than one partner and
 A Bid Group does not replace partner-bid logic, it composes it. Internally, for each partner it tries, the engine synthesizes a `partner_bid` step that runs the same executor as a standalone [Partner Bid node](./partner-bid.md). Those synthesized attempts appear as their own step rows in the execution detail (one parent `bid_group` row plus one `partner_bid` row per partner tried), linked together so you can see every attempt and why each won, lost, declined, or was skipped.
 
 - Use a **Bid Group** for the normal case: bid one lead to N partners and pick a winner.
-- Use a standalone **Partner Bid** node only when you need a single, explicit partner attempt on the canvas, or when you are hand-composing partner attempts with [Parallel](./parallel.md) and a separate [Bid Evaluation](./bid-evaluation.md) node.
+- Use a standalone **Partner Bid** node only when you need a single, explicit partner attempt on the canvas.
 
 ## Modes
 
@@ -74,8 +74,6 @@ When the group produces no winner (`_route` is `no_winner`), `no_winner_behavior
 | `'route'` (default) | Take the `no_winner` outgoing edge and continue normal execution. Does not fail the step. |
 | `'fail'` | Legacy alias for `'route'`. It has always meant "fall through to the no_winner edge", never "throw". Treated identically to `'route'`. |
 | `'exit'` | Short-circuit the workflow and return the group output as the HTTP response with status 200. No edge routing. |
-
-Note: the editor offers "Take no_winner edge" (`route`) and "Exit workflow" (`exit`). The standalone [Bid Evaluation node](./bid-evaluation.md) uses a different `no_winner_behavior` vocabulary (`'exit'` vs `'fail'`, where `'fail'` does throw). They are separate nodes; do not carry one's semantics to the other.
 
 ## Output shape
 
@@ -244,7 +242,6 @@ Tier 1 runs first. If it produces no winner, tier 2 runs only when `finalDebt` i
 ## See also
 
 - [Partner Bid node](./partner-bid.md) for the single-partner attempt this node fans out to internally.
-- [Bid Evaluation node](./bid-evaluation.md) for the manual Parallel-then-evaluate alternative.
 - [Partners reference](../reference/partners.md) for resolver types, the bid matrix, formulas, daily caps, circuit breakers, and outbound field mapping.
 - [Bidding model](../concepts/bidding-model.md) for how bids, partners, and winners fit together.
 - [Data references](../concepts/data-references.md) for the `context.*`, `steps.*`, `trigger.*`, `env.*` syntax.

@@ -98,7 +98,6 @@ The valid `type` values. Each links to its config and output shape where a dedic
 | `parallel_end` | Join node for a `parallel`. | Single next edge | ../nodes/parallel.md |
 | `partner_bid` | Request a bid from one partner. | Single next edge | ../nodes/partner-bid.md |
 | `bid_group` | Fan out to N partners and pick a winner. | `winner` / `no_winner` handles | ../nodes/bid-group.md |
-| `bid_evaluation` | Pick a winner from already-collected bids. | `_route` handle | ../nodes/bid-evaluation.md |
 | `transform` | Map/reshape data into a new object. | Single next edge | ../nodes/transform.md |
 | `webhook` | Outbound HTTP call (Integration node). | Single next edge | ../nodes/webhook.md |
 | `salesforce` | Salesforce create/update/query. | Single next edge | ../nodes/salesforce.md |
@@ -126,7 +125,7 @@ The valid `type` values. Each links to its config and output shape where a dedic
 How the engine picks the next node from a node's outgoing edges:
 
 - **Trigger edge.** The entry node is the target of the edge whose `source` is the literal `"trigger"`. If there is no trigger edge, the engine falls back to the node with no incoming edges from other nodes.
-- **Handle-routed nodes.** `filter`, `branch`, `bid_evaluation`, `bid_group`, and `latency_gate` return a `_route` value in their output. The engine follows the outgoing edge whose `source_handle` equals that `_route`.
+- **Handle-routed nodes.** `filter`, `branch`, `bid_group`, and `latency_gate` return a `_route` value in their output. The engine follows the outgoing edge whose `source_handle` equals that `_route`.
   - `filter`: `_route` is `"pass"` or `"exit"`.
   - `branch`: `_route` is the matched branch's `label`, or `"else"` when no branch matches.
   - `bid_group`: `_route` is `"winner"` or `"no_winner"`.

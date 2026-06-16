@@ -175,7 +175,7 @@ Common node types and what they do:
 - branch: N-way conditional split
 - code: arbitrary JS in a sandbox
 - partner_bid: outbound bid request to a partner
-- bid_evaluation: pick winner from parallel partner bids
+- bid_group: fan out to partners and pick a winner
 - parallel: fan-out to children
 - transform: field mapping
 - response/exit: terminate with HTTP response

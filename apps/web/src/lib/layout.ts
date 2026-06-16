@@ -29,7 +29,6 @@ const NODE_H: Record<string, number> = {
   webhook:       STANDARD_NODE_H,
   partner_bid:   STANDARD_NODE_H,
   transform:     STANDARD_NODE_H,
-  bid_evaluation: STANDARD_NODE_H,
   bid_group:     STANDARD_NODE_H,
   constants:     STANDARD_NODE_H,
   default:       STANDARD_NODE_H,
@@ -160,7 +159,7 @@ export function findFreePosition(
  * left-to-right on the canvas to match the visual handle positions on the node.
  *
  * filter:         pass=0 (30% left), exit=1 (70% left)
- * bid_evaluation: winner=0, no_winner=1
+ * bid_group:      winner=0, no_winner=1
  * branch:         branch labels in order + else last
  */
 /**
@@ -183,7 +182,7 @@ export function configuredHandleIds(node: Node): string[] | null {
     return ids.length > 0 ? ids : null
   }
   if (type === 'filter') return ['pass', 'exit']
-  if (type === 'bid_evaluation' || type === 'bid_group') return ['winner', 'no_winner']
+  if (type === 'bid_group') return ['winner', 'no_winner']
   if (type === 'latency_gate') {
     const op = (config?.operation as string | undefined) ?? 'mark'
     return op === 'check' ? ['within', 'exceeded'] : null
@@ -209,7 +208,7 @@ function handleSortIndex(
     if (handleId === 'pass') return 0
     if (handleId === 'exit') return 1
   }
-  if (nodeType === 'bid_evaluation') {
+  if (nodeType === 'bid_group') {
     if (handleId === 'winner') return 0
     if (handleId === 'no_winner') return 1
   }
@@ -237,7 +236,7 @@ function handleSortIndex(
  * Auto-layout a React Flow graph top-to-bottom using dagre.
  * Returns a new nodes array with updated positions; edges are unchanged.
  *
- * For multi-output nodes (filter, branch, bid_evaluation) the children are
+ * For multi-output nodes (filter, branch, bid_group) the children are
  * guaranteed to be ordered left-to-right to match the handle positions on
  * the node, so edges never cross.
  */
@@ -307,7 +306,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   // it's a 2-way gate, not a fan-out splitter, so it stays a fixed-width card and
   // its pass/exit wires just bend to their targets — otherwise a filter whose arm
   // points at a wide subtree (e.g. a bid_group) balloons across the canvas.
-  const FANOUT_TYPES = new Set(['branch', 'parallel', 'bid_group', 'bid_evaluation', 'latency_gate'])
+  const FANOUT_TYPES = new Set(['branch', 'parallel', 'bid_group', 'latency_gate'])
 
   // Cross-path edges: a node can be deliberately wired from a second, deeper
   // path (e.g. a filter on one branch routing into a bid_group on another).
@@ -425,7 +424,7 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
   //
   // The card-render side of each of these types MUST read `_spanWidth` and
   // `_handleOffsets` from `data`. See `BranchNode.tsx`, `ParallelNode.tsx`,
-  // `BranchEndNode.tsx`, `BidGroupNode.tsx`, `BidEvaluationNode.tsx`. New node
+  // `BranchEndNode.tsx`, `BidGroupNode.tsx`. New node
   // types that opt in here must do the same. (`filter` is excluded — see
   // FANOUT_TYPES above; it renders fixed-width with handles at 30%/70%.)
   for (const n of nodes) {

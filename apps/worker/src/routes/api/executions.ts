@@ -254,7 +254,7 @@ export { suggestionFloorMs, suggestionFloorReason }
 // — those are too workflow-specific (custom script / partner / external API).
 const SIMILAR_FALLBACK_STABLE = new Set([
   'constants', 'transform', 'branch', 'filter', 'exit', 'response',
-  'parallel', 'parallel_end', 'bid_evaluation',
+  'parallel', 'parallel_end',
 ])
 const SIMILAR_FALLBACK_BY_SUBTYPE = new Set(['salesforce'])
 

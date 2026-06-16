@@ -1,6 +1,6 @@
 # Parallel node
 
-Fans a lead out to several child branches that run at the same time, then collects their results into an array. Use it to call multiple partners or services concurrently instead of one after another, then hand the combined results to a downstream step like a Bid Evaluation node.
+Fans a lead out to several child branches that run at the same time, then collects their results into an array. Use it to call multiple partners or services concurrently instead of one after another, then hand the combined results to a downstream step.
 
 A Parallel node owns a set of slots. Each slot is one branch (one child node, which may itself lead a small chain). The engine runs every slot concurrently and waits according to the `wait_for` mode.
 
@@ -32,7 +32,7 @@ The `children` slot list also lives in `node.config`; the editor manages it for 
 
 ### `all` (default)
 
-Waits for every child (`Promise.allSettled`). When the timeout fires before all settle, `on_timeout` decides: `partial` continues with the settled results and marks the rest `timeout`; `fail` throws. After all settle, if `on_child_error` is `fail` and any child rejected or timed out, the node throws. Set `on_child_error: 'continue'` when a Bid Evaluation node downstream handles rejections itself.
+Waits for every child (`Promise.allSettled`). When the timeout fires before all settle, `on_timeout` decides: `partial` continues with the settled results and marks the rest `timeout`; `fail` throws. After all settle, if `on_child_error` is `fail` and any child rejected or timed out, the node throws. Set `on_child_error: 'continue'` when a downstream step handles rejections itself.
 
 ### `first`
 
@@ -65,7 +65,7 @@ A downstream step reads the array, for example `steps.<id>.output[0].output.bid`
 
 ## Example
 
-Three partners in parallel, continue even if some fail so a Bid Evaluation node can pick the winner:
+Three partners in parallel, continue even if some fail so a downstream step can pick the winner:
 
 ```json
 {

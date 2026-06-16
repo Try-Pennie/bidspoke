@@ -29,7 +29,6 @@ describe('nodeTypeGetsTimeoutBadge', () => {
     'salesforce',
     'partner_bid',
     'bid_group',
-    'bid_evaluation',
     'webhook',
     'filter',
     'branch',

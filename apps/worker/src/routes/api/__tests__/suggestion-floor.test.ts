@@ -17,7 +17,7 @@ describe('suggestionFloorMs', () => {
   })
 
   it('keeps in-memory nodes at the 10ms floor', () => {
-    for (const t of ['filter', 'branch', 'transform', 'exit', 'response', 'parallel', 'bid_evaluation']) {
+    for (const t of ['filter', 'branch', 'transform', 'exit', 'response', 'parallel']) {
       expect(suggestionFloorMs(t)).toBe(10)
     }
   })
