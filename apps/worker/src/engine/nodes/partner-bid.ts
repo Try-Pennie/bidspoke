@@ -221,6 +221,12 @@ export async function executePartnerBidNode(
 
   // 4. Daily cap check
   let capCount: number | undefined
+  // Set once a slot is reserved below. Refunds it (decrement) when the lead is
+  // NOT a real partner submission — a duplicate or an error/timeout — so the cap
+  // counts leads the partner actually evaluated, and retries (which re-run this
+  // whole node) don't multiply consumption (#68). Kept for accept / below-min /
+  // business rejection (the partner received and responded).
+  let refundCap: (() => Promise<void>) | null = null
   if (p.daily_cap !== null) {
     const today = new Date().toISOString().slice(0, 10)
     const doId = env.DAILY_CAP.idFromName(`cap-${p.slug}-${today}`)
@@ -239,14 +245,19 @@ export async function executePartnerBidNode(
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'cap_exceeded' })
       return { ...skip(p.slug, 'cap_exceeded'), resolvedInput: buildInput({ skip_reason: 'cap_exceeded', cap_count: capCount, daily_cap: p.daily_cap }) }
     }
+    refundCap = async () => {
+      await stub.fetch('http://do/decrement', { method: 'POST' }).catch(() => {})
+    }
   }
 
   // 5. Dedup check
   if (p.dedup_endpoint) {
     const isDuplicate = await checkDedup(p.dedup_endpoint, ctx, p.slug, signal)
     if (isDuplicate) {
-      // Partner never called — release the half-open probe so the next lead can.
+      // Partner never called — release the half-open probe + refund the cap slot
+      // reserved above (a duplicate is not a real submission, #68).
       if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
+      if (refundCap) await refundCap()
       logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'duplicate' })
       return { ...skip(p.slug, 'duplicate'), resolvedInput: buildInput({ skip_reason: 'duplicate' }) }
     }
@@ -353,6 +364,11 @@ export async function executePartnerBidNode(
     return { output, resolvedInput: buildInput({ ...resolverInput, bid }) }
   } catch (err) {
     const respondedAt = new Date()
+    // The call failed (network/timeout/HTTP error), so the partner didn't get a
+    // real submission — refund the reserved cap slot. This also stops retries from
+    // multiplying consumption: each failed attempt refunds before withRetry
+    // re-runs this node and reserves a fresh slot (#68).
+    if (refundCap) await refundCap()
     if (cb) cb.recordError({
       error_threshold: p.circuit_error_threshold,
       window_seconds: p.circuit_window_seconds,

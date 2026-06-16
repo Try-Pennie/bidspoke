@@ -31,6 +31,7 @@ export class DailyCapObject implements DurableObject {
 
     switch (path) {
       case '/check-and-increment': return this.handleCheckAndIncrement(request)
+      case '/decrement':           return this.handleDecrement()
       case '/get-count':           return this.handleGetCount()
       case '/reset':               return this.handleReset()
       default:
@@ -65,6 +66,19 @@ export class DailyCapObject implements DurableObject {
     }
 
     return json<CapCheckResult>({ allowed: false, count: data.count, cap })
+  }
+
+  /**
+   * Refund a previously-reserved slot. Used when a lead reserved a slot via
+   * check-and-increment but was never really submitted (duplicate / error), so
+   * the cap reflects actual partner submissions (#68). Floors at 0 so a stray
+   * extra refund can't drive the count negative and silently widen the cap.
+   */
+  private async handleDecrement(): Promise<Response> {
+    const data = await this.load()
+    data.count = Math.max(0, data.count - 1)
+    await this.save(data)
+    return json({ count: data.count })
   }
 
   private async handleGetCount(): Promise<Response> {
