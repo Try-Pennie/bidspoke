@@ -82,6 +82,19 @@ function makeCapStub(allowed: boolean, count = allowed ? 1 : 100) {
   }
 }
 
+// A cap stub whose fetch records every path, so refund (#68) can be asserted.
+function capStubSpy(allowed = true, count = 1) {
+  return {
+    fetch: vi.fn().mockResolvedValue({ ok: true, json: async () => ({ allowed, count, cap: 100 }) }),
+  }
+}
+function envWithCap(capStub: { fetch: ReturnType<typeof vi.fn> }) {
+  return makeEnv({ DAILY_CAP: { idFromName: vi.fn().mockReturnValue('do-id'), get: vi.fn().mockReturnValue(capStub) } })
+}
+function capPaths(capStub: { fetch: ReturnType<typeof vi.fn> }): string[] {
+  return capStub.fetch.mock.calls.map((c) => String(c[0]))
+}
+
 function makeEnv(overrides: Partial<Record<string, unknown>> = {}) {
   const cbStub = makeCbStub(true)
   const capStub = makeCapStub(true)
@@ -124,6 +137,48 @@ describe('executePartnerBidNode', () => {
     )
     expect(captured?.aborted).toBe(true)
     vi.unstubAllGlobals()
+  })
+
+  // #68: a reserved cap slot is refunded when the lead wasn't really submitted
+  // (duplicate / error), kept on a real partner response (accept/below-min/reject).
+  describe('daily cap refund (#68)', () => {
+    it('refunds the slot on a duplicate', async () => {
+      const capStub = capStubSpy()
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ duplicate: true }) }))
+      await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 10000 }), envWithCap(capStub),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ daily_cap: 100, dedup_endpoint: 'https://dedup.example' })) as any
+      )
+      const paths = capPaths(capStub)
+      expect(paths.some((p) => p.includes('/check-and-increment'))).toBe(true)
+      expect(paths.some((p) => p.includes('/decrement'))).toBe(true)
+      vi.unstubAllGlobals()
+    })
+
+    it('refunds the slot when the partner call errors', async () => {
+      const capStub = capStubSpy()
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+      await expect(executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 10000 }), envWithCap(capStub),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ daily_cap: 100, bid_resolver_type: 'api', api_endpoint: 'https://partner.example/bid' })) as any
+      )).rejects.toBeDefined()
+      expect(capPaths(capStub).some((p) => p.includes('/decrement'))).toBe(true)
+      vi.unstubAllGlobals()
+    })
+
+    it('keeps the slot on an accepted bid (no refund)', async () => {
+      const capStub = capStubSpy()
+      await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }), makeCtx({ debt_amount: 10000 }), envWithCap(capStub),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ daily_cap: 100 })) as any
+      )
+      const paths = capPaths(capStub)
+      expect(paths.some((p) => p.includes('/check-and-increment'))).toBe(true)
+      expect(paths.some((p) => p.includes('/decrement'))).toBe(false)
+    })
   })
 
   describe('config validation', () => {

@@ -48,6 +48,12 @@ async function reset(do_: DailyCapObject): Promise<void> {
   await do_.fetch(req('/reset'))
 }
 
+async function decrement(do_: DailyCapObject): Promise<number> {
+  const res = await do_.fetch(req('/decrement'))
+  const body = await res.json<{ count: number }>()
+  return body.count
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('DailyCapObject', () => {
@@ -92,6 +98,28 @@ describe('DailyCapObject', () => {
       const result = await checkAndIncrement(do_, null)
       expect(result.allowed).toBe(true)
       expect(result.count).toBe(10000)
+    })
+  })
+
+  // #68: a reserved slot is refunded (decrement) when the lead wasn't really
+  // submitted (duplicate / error), so the cap reflects actual partner submissions.
+  describe('decrement (refund)', () => {
+    it('returns a reserved slot', async () => {
+      const do_ = makeDO({ count: 3 })
+      expect(await decrement(do_)).toBe(2)
+      expect(await getCount(do_)).toBe(2)
+    })
+
+    it('floors at zero (a stray refund cannot drive the count negative)', async () => {
+      const do_ = makeDO({ count: 0 })
+      expect(await decrement(do_)).toBe(0)
+    })
+
+    it('round-trips: reserve then refund nets to no change', async () => {
+      const do_ = makeDO({ count: 5 })
+      await checkAndIncrement(do_, 100) // 6
+      await decrement(do_)              // back to 5
+      expect(await getCount(do_)).toBe(5)
     })
   })
 
