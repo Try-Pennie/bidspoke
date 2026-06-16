@@ -42,7 +42,6 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
   branch_end: 'no-http-status',
   parallel_end: 'no-http-status',
   transform: 'no-http-status',
-  bid_evaluation: 'no-http-status',
   exit: 'no-http-status',
   constants: 'no-http-status',
   data_store: 'no-http-status',

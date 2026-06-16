@@ -108,8 +108,8 @@ export function renameFallbackNamespace(value: unknown, oldNs: string, newNs: st
 // caught by renameStepReferences/countStepReferences. They must be rewritten and
 // counted on a step rename or they silently break at runtime:
 //   - fallback_node:    on_error fallback target.
-//   - parallel_source:  bid_evaluation reads ctx.steps[config.parallel_source]
-//                       and throws if the parallel step was renamed.
+//   - parallel_source:  a node reading ctx.steps[config.parallel_source] throws
+//                       if the referenced step was renamed.
 const BARE_NAMESPACE_FIELDS = ['fallback_node', 'parallel_source'] as const
 
 /**

@@ -22,7 +22,6 @@ const NODE_TYPES = [
   'transform',
   'parallel',
   'parallel_end',
-  'bid_evaluation',
   'response',
   'exit',
   'trigger',

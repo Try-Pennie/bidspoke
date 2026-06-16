@@ -6,7 +6,6 @@ import { executeBranchNode } from './branch'
 import { executeResponseNode } from './response'
 import { executeCodeNode } from './code'
 import { executePartnerBidNode } from './partner-bid'
-import { executeBidEvaluationNode } from './bid-evaluation'
 import { executeTransformNode } from './transform'
 import { executeIntegrationNode } from './integration'
 import { executeConstantsNode } from './constants'
@@ -57,8 +56,6 @@ export async function executeNode(
       return executeIntegrationNode(node, ctx, env, signal)
     case 'transform':
       return executeTransformNode(node, ctx)
-    case 'bid_evaluation':
-      return executeBidEvaluationNode(node, ctx, supabase)
     case 'constants':
       if (!supabase) throw new Error('Constants node requires a Supabase client')
       return executeConstantsNode(node, ctx, env, supabase)

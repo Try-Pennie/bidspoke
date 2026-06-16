@@ -1302,15 +1302,15 @@ export async function walkGraph(
     }
 
     // Follow the appropriate outgoing edge.
-    // Filter/branch/bid_evaluation nodes signal their chosen output via
-    // output._route which maps to edge source_handle. Branches additionally
-    // carry a hidden backbone edge to their paired branch_end (source_handle
-    // 'output'); for branch routing only, we skip non-route edges so the
-    // backbone never short-circuits an unwired handle.
+    // Filter/branch nodes signal their chosen output via output._route which
+    // maps to edge source_handle. Branches additionally carry a hidden backbone
+    // edge to their paired branch_end (source_handle 'output'); for branch
+    // routing only, we skip non-route edges so the backbone never short-circuits
+    // an unwired handle.
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
-    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation' || node.type === 'latency_gate') &&
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'latency_gate') &&
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)
@@ -1319,8 +1319,8 @@ export async function walkGraph(
       // true — for a branch the hidden backbone edge, for a filter the OTHER
       // handle (only `pass` wired would send an `exit` lead down `pass`).
       // Terminating is the safe behavior: an unwired output just stops.
-      // (bid_evaluation/latency_gate are intentionally NOT here — their no-match
-      // routing is governed by no_winner_behavior / their own semantics.)
+      // (latency_gate is intentionally NOT here — its no-match routing is
+      // governed by its own semantics.)
       if (!nextEdge && (node.type === 'branch' || node.type === 'filter')) {
         current = undefined
         stepOrder++
@@ -1566,7 +1566,7 @@ export async function runParallelChild(
     const edges = outgoingEdges(node.id, definition.edges)
     let nextEdge: import('../types').EdgeDefinition | undefined
 
-    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'bid_evaluation' || node.type === 'latency_gate') &&
+    if ((node.type === 'filter' || node.type === 'branch' || node.type === 'latency_gate') &&
         output !== null && typeof output === 'object') {
       const route = (output as Record<string, unknown>)._route as string | undefined
       if (route) nextEdge = edges.find((e) => e.source_handle === route)

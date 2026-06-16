@@ -50,10 +50,6 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!config.partner_id) return 'No partner selected'
       return null
     }
-    case 'bid_evaluation': {
-      if (!config.parallel_source) return 'No bids source step selected'
-      return null
-    }
     case 'code': {
       if (!config.script) return 'No script written'
       return null

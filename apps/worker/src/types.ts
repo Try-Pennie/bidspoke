@@ -13,7 +13,6 @@ export type NodeType =
   | 'bid_group'
   | 'webhook'
   | 'transform'
-  | 'bid_evaluation'
   | 'response'
   | 'exit'
   | 'constants'

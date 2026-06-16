@@ -18,7 +18,7 @@ A bid attempt produces a number, no bid (a decline or an out-of-range matrix), o
 
 A lead arrives at Pennie. The workflow validates it, enriches it (credit pull, scoring), then fans the lead out to several buyer partners at once and collects their bids. The highest acceptable bid wins and the lead is routed to that partner. If no partner bids, the workflow falls back to a default buyer (in Pennie's case, the Engine) so the lead is never wasted.
 
-This is the common shape for lead routing. The fan-out, bid collection, winner selection, and fallback are handled by a single [Bid Group node](../nodes/bid-group.md), or assembled from a [Parallel node](../nodes/parallel.md) plus a [Bid Evaluation node](../nodes/bid-evaluation.md).
+This is the common shape for lead routing. The fan-out, bid collection, winner selection, and fallback are all handled by a single [Bid Group node](../nodes/bid-group.md).
 
 ### Inbound: ping-post bid response
 
@@ -66,16 +66,9 @@ A [Bid Group node](../nodes/bid-group.md) is one canvas node that owns a set of 
 
 It also carries a group-level fallback partner and a `no_winner_behavior` of `fail` or `exit`. Use a Bid Group when the bidding is self-contained: a set of partners, one winner, route accordingly. It keeps the canvas to a single node and synthesizes the per-partner attempt records for you.
 
-### Parallel node plus Bid Evaluation node
-
-When you need the bid attempts and the selection to be visibly separate on the canvas, or you are doing something the Bid Group modes do not cover, wire a [Parallel node](../nodes/parallel.md) of [Partner Bid nodes](../nodes/partner-bid.md) into a [Bid Evaluation node](../nodes/bid-evaluation.md). The Parallel node runs the partner bids concurrently and collects results; the Bid Evaluation node applies the winner rule (highest bid, weighted score, tiebreaker, fallback, no-winner behavior) over those results.
-
-Reach for this combination when the fan-out and the comparison need different inputs, when you want to insert steps between bidding and selection, or when the selection logic (weighted scoring, custom tiebreakers) goes beyond a single Bid Group mode. For a standard "fan out, take the highest, route" flow, the Bid Group node is simpler.
-
 ## See also
 
 - [Partner configuration reference](../reference/partners.md)
 - [Partner Bid node](../nodes/partner-bid.md)
 - [Bid Group node](../nodes/bid-group.md)
-- [Bid Evaluation node](../nodes/bid-evaluation.md)
 - [Parallel node](../nodes/parallel.md)

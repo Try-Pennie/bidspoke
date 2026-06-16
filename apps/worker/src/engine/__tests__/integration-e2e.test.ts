@@ -7,35 +7,50 @@
  *
  * Strategy:
  *  - Use walkGraph with real graph traversal
- *  - Mock executeNode per namespace for external-calling nodes (code, integration, partner_bid)
- *  - Delegate bid_evaluation to its real implementation so winner selection logic runs
+ *  - Mock executeNode per namespace for external-calling nodes (code, integration, response)
+ *  - Use the real bid_group executor so winner selection logic runs, mocking only
+ *    executePartnerBidNode (the per-partner call the engine hands to bid_group)
  *  - Use real parallel and filter/branch routing (handled inside walkGraph, not via executeNode)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { Env } from '../../index'
-import type { ParallelChildResult } from '../nodes/parallel'
 import type { PartnerBidOutput } from '../nodes/partner-bid'
-
-vi.mock('../../lib/circuit-breaker-client', () => ({
-  CircuitBreakerClient: class {
-    check() { return Promise.resolve({ allowed: true, state: 'closed' }) }
-    recordSuccess() { return Promise.resolve() }
-    recordError() { return Promise.resolve({ ok: true, state: 'closed', tripped: false }) }
-  },
-}))
+import type { BidGroupOutput } from '../nodes/bid-group'
 
 vi.mock('../nodes/index')
 vi.mock('../step-logger')
+// Keep the real bid_group executor; replace only the per-partner call so each
+// test can script partner outputs (bid / skip) by partner id.
+vi.mock('../nodes/partner-bid', async (orig) => ({
+  ...(await orig() as object),
+  executePartnerBidNode: vi.fn(),
+}))
 
 import { executeNode } from '../nodes/index'
-import { executeBidEvaluationNode } from '../nodes/bid-evaluation'
+import { executePartnerBidNode } from '../nodes/partner-bid'
 import { walkGraph } from '../index'
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
-const supabase = {} as SupabaseClient
+// partner_id → slug. The engine resolves these via supabase before running a
+// bid_group so synthesized attempt rows use slugs, not UUIDs.
+const PARTNER_SLUG: Record<string, string> = {
+  'p-tripoint': 'tripoint',
+  'p-m1': 'm1',
+  'p-engine': 'engine',
+}
+
+const supabase = {
+  from: () => ({
+    select: () => ({
+      in: (_col: string, ids: string[]) =>
+        Promise.resolve({ data: ids.map((id) => ({ id, slug: PARTNER_SLUG[id] ?? id })), error: null }),
+    }),
+  }),
+} as unknown as SupabaseClient
+
 const env = {} as Env
 
 function makeCtx(payload: Record<string, unknown> = {}): ExecutionContext {
@@ -54,32 +69,41 @@ function parallelNode(id: string, namespace: string, childIds: string[], config:
   return { id, namespace, type: 'parallel', config: { wait_for: 'all', timeout_ms: 5000, ...config }, children: childIds }
 }
 
+// A bid_group node fanning out to the given partner ids (highest_bid by default).
+function bidGroupNode(id: string, namespace: string, partnerIds: string[], config: Record<string, unknown> = {}): NodeDefinition {
+  return { id, namespace, type: 'bid_group', config: { mode: 'highest_bid', partner_ids: partnerIds, ...config } }
+}
+
 function edge(source: string, target: string, handle?: string) {
   return { id: `${source}→${target}`, source, target, ...(handle ? { source_handle: handle } : {}) }
 }
 
-function partnerBid(partner: string, bid: number): ParallelChildResult {
-  const output: PartnerBidOutput = { partner, bid, accepted: true, skipped: false }
-  return { namespace: `${partner}_bid`, status: 'fulfilled', output }
+function bidOut(partner: string, bid: number): PartnerBidOutput {
+  return { partner, bid, accepted: true, skipped: false }
 }
 
-function partnerSkip(partner: string, reason: PartnerBidOutput['skip_reason']): ParallelChildResult {
-  const output: PartnerBidOutput = { partner, bid: null, accepted: false, skipped: true, skip_reason: reason }
-  return { namespace: `${partner}_bid`, status: 'fulfilled', output }
+function skipOut(partner: string, reason: PartnerBidOutput['skip_reason']): PartnerBidOutput {
+  return { partner, bid: null, accepted: false, skipped: true, skip_reason: reason }
 }
 
-// ── Setup helper: namespace-keyed mock outputs ────────────────────────────────
+// ── Setup helpers ─────────────────────────────────────────────────────────────
 
-function setupMocks(outputs: Record<string, unknown>) {
-  vi.mocked(executeNode).mockImplementation(async (n, ctx, _env, _supabase) => {
-    // Delegate bid_evaluation to real implementation — tests actual winner selection
-    if (n.type === 'bid_evaluation') {
-      return executeBidEvaluationNode(n, ctx, _supabase)
-    }
-    if (n.namespace in outputs) {
-      return { output: outputs[n.namespace] }
-    }
+// Mock executeNode (code / webhook / response / filter etc.) by namespace.
+function setupNodes(outputs: Record<string, unknown>) {
+  vi.mocked(executeNode).mockImplementation(async (n) => {
+    if (n.namespace in outputs) return { output: outputs[n.namespace] }
     return { output: null }
+  })
+}
+
+// Script per-partner bid_group attempts. The engine calls executePartnerBidNode
+// with a synthesized child node whose config.partner_id identifies the partner.
+function mockPartners(byId: Record<string, PartnerBidOutput | (() => PartnerBidOutput)>) {
+  vi.mocked(executePartnerBidNode).mockImplementation(async (childNode) => {
+    const pid = (childNode.config as { partner_id?: string }).partner_id ?? ''
+    const v = byId[pid]
+    if (v === undefined) throw new Error(`integration-e2e: no partner mock for ${pid}`)
+    return { output: typeof v === 'function' ? v() : v }
   })
 }
 
@@ -92,40 +116,28 @@ describe('end-to-end: outbound lead routing — happy path', () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('lead flows through validate → enrich → parallel bids → highest bid wins → respond', async () => {
+  it('lead flows through validate → enrich → bid group → highest bid wins → respond', async () => {
     // Tripoint bids $45, M1 bids $60 — M1 should win
-    setupMocks({
-      validate:    { valid: true, lead_id: 'L1' },
-      enrich:      { score: 720, debt_amount: 15000 },
-      tripoint_bid: partnerBid('tripoint', 45).output,
-      m1_bid:       partnerBid('m1', 60).output,
-      route_lead:  { salesforce_id: 'SF-001' },
-      respond:     { accepted: true, partner: 'm1', offer: 60 },
+    setupNodes({
+      validate:   { valid: true, lead_id: 'L1' },
+      enrich:     { score: 720, debt_amount: 15000 },
+      route_lead: { salesforce_id: 'SF-001' },
+      respond:    { accepted: true, partner: 'm1', offer: 60 },
     })
-
-    const tripointNode  = node('tripoint_bid',  'tripoint_bid',  'partner_bid')
-    const m1Node        = node('m1_bid',         'm1_bid',        'partner_bid')
-    const bidsNode      = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode      = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const routeNode  = node('route',   'route_lead',  'webhook')
-    const respondNode = node('respond', 'respond',    'response')
+    mockPartners({ 'p-tripoint': bidOut('tripoint', 45), 'p-m1': bidOut('m1', 60) })
 
     const def = {
       nodes: [
         node('validate', 'validate', 'code'),
         node('enrich',   'enrich',   'code'),
-        bidsNode, tripointNode, m1Node,
-        pickNode, routeNode, respondNode,
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('route',   'route_lead', 'webhook'),
+        node('respond', 'respond',    'response'),
       ],
       edges: [
         edge('validate', 'enrich'),
         edge('enrich', 'bids'),
-        edge('m1_bid', 'pick'),
-        edge('pick', 'route', 'winner'),
+        edge('bids', 'route', 'winner'),
         edge('route', 'respond'),
       ],
     }
@@ -141,40 +153,29 @@ describe('end-to-end: outbound lead routing — happy path', () => {
       if (n.namespace === 'route_lead') {
         seenCtxAtRoute.push({ ...ctx.steps })
       }
-      if (n.type === 'bid_evaluation') return executeBidEvaluationNode(n, ctx)
       return { output: n.namespace === 'respond' ? { done: true } : { ok: true } }
     })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
+    mockPartners({ 'p-tripoint': bidOut('tripoint', 45), 'p-m1': bidOut('m1', 60) })
 
     const def = {
       nodes: [
         node('validate', 'validate', 'code'),
-        bidsNode, tripointNode, m1Node,
-        pickNode,
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
         node('route_lead', 'route_lead', 'webhook'),
         node('respond',    'respond',    'response'),
       ],
       edges: [
         edge('validate', 'bids'),
-        edge('m1_bid', 'pick'),
-        edge('pick', 'route_lead', 'winner'),
+        edge('bids', 'route_lead', 'winner'),
         edge('route_lead', 'respond'),
       ],
     }
 
     await walkGraph(makeCtx(), def, 'exec-2', new Date().toISOString(), supabase, env)
 
-    // route_lead step should have seen validate and partner_bids in ctx.steps
+    // route_lead step should have seen validate and the bid group in ctx.steps
     expect(seenCtxAtRoute[0]).toHaveProperty('validate')
-    expect(seenCtxAtRoute[0]).toHaveProperty('partner_bids')
+    expect(seenCtxAtRoute[0]).toHaveProperty('bid_race')
   })
 })
 
@@ -187,30 +188,22 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('all bids rejected → bid evaluation takes no_winner exit path', async () => {
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'rejected').output,
-      m1_bid:       partnerSkip('m1',       'rejected').output,
+  it('all bids rejected → bid group takes no_winner route', async () => {
+    setupNodes({
+      respond_winner: { accepted: true },
       fallback_respond: { accepted: false, reason: 'no_bids' },
     })
-
-    const tripointNode  = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node        = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode      = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode      = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondWinner   = node('respond_winner',   'respond_winner',   'response')
-    const respondNoWinner = node('respond_no_winner', 'fallback_respond', 'response')
+    mockPartners({ 'p-tripoint': skipOut('tripoint', 'rejected'), 'p-m1': skipOut('m1', 'rejected') })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondWinner, respondNoWinner],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1'], { no_winner_behavior: 'route' }),
+        node('respond_winner',   'respond_winner',   'response'),
+        node('respond_no_winner', 'fallback_respond', 'response'),
+      ],
       edges: [
-        edge('m1_bid', 'pick'),
-        edge('pick', 'respond_winner',   'winner'),
-        edge('pick', 'respond_no_winner', 'no_winner'),
+        edge('bids', 'respond_winner',   'winner'),
+        edge('bids', 'respond_no_winner', 'no_winner'),
       ],
     }
 
@@ -219,29 +212,19 @@ describe('end-to-end: outbound lead routing — all bids rejected', () => {
   })
 
   it('all bids rejected with fallback_partner → fallback partner selected as winner', async () => {
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'rejected').output,
-      m1_bid:       partnerSkip('m1',       'rejected').output,
-      respond:      { accepted: true, partner: 'engine', offer: 0 },
+    setupNodes({ respond: { accepted: true, partner: 'engine', offer: 0 } })
+    mockPartners({
+      'p-tripoint': skipOut('tripoint', 'rejected'),
+      'p-m1':       skipOut('m1', 'rejected'),
+      'p-engine':   bidOut('engine', 0),
     })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source:  'partner_bids',
-      strategy:         'highest_bid',
-      fallback_partner: 'engine',
-      no_winner_behavior: 'exit',
-    })
-    const respondNode = node('respond', 'respond', 'response')
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [
-        edge('m1_bid', 'pick'),
-        edge('pick', 'respond', 'winner'),
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1'], { fallback_partner_id: 'p-engine' }),
+        node('respond', 'respond', 'response'),
       ],
+      edges: [edge('bids', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-4', new Date().toISOString(), supabase, env)
@@ -259,28 +242,15 @@ describe('end-to-end: Tripoint dedup rejects → M1 wins', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('Tripoint skipped (dedup), M1 returns valid bid — M1 wins', async () => {
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'duplicate').output,
-      m1_bid:       partnerBid('m1', 55).output,
-      respond:      { accepted: true, partner: 'm1', offer: 55 },
-    })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondNode = node('respond', 'respond', 'response')
+    setupNodes({ respond: { accepted: true, partner: 'm1', offer: 55 } })
+    mockPartners({ 'p-tripoint': skipOut('tripoint', 'duplicate'), 'p-m1': bidOut('m1', 55) })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [
-        edge('m1_bid', 'pick'),
-        edge('pick', 'respond', 'winner'),
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('respond', 'respond', 'response'),
       ],
+      edges: [edge('bids', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-5', new Date().toISOString(), supabase, env)
@@ -298,7 +268,7 @@ describe('end-to-end: inbound bidding', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('Engine ping → validate → decision engine → respond with bid', async () => {
-    setupMocks({
+    setupNodes({
       validate:        { valid: true, applicant_id: 'A1' },
       decision_engine: { approved: true, bid: 42.50, rate: 0.189 },
       respond:         { bid: 42.50, accepted: true },
@@ -322,8 +292,7 @@ describe('end-to-end: inbound bidding', () => {
 
   it('invalid lead → validate rejects → gate routes to exit → early termination', async () => {
     // validate returns invalid → gate filter decides _route:'exit' → engine terminates early
-    vi.mocked(executeNode).mockImplementation(async (n, ctx) => {
-      if (n.type === 'bid_evaluation') return executeBidEvaluationNode(n, ctx)
+    vi.mocked(executeNode).mockImplementation(async (n) => {
       if (n.namespace === 'validate') return { output: { valid: false, reason: 'missing_ssn' } }
       // gate reads validate output and routes to 'exit' since valid=false
       if (n.namespace === 'gate') return { output: { _route: 'exit' } }
@@ -366,55 +335,37 @@ describe('end-to-end: partner hits daily cap — excluded from bidding', () => {
 
   it('capped partner skipped, remaining partner wins', async () => {
     // Tripoint is capped, M1 bids — M1 should win
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'cap_exceeded').output,
-      m1_bid:       partnerBid('m1', 38).output,
-      respond:      { accepted: true, partner: 'm1', offer: 38 },
-    })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondNode = node('respond', 'respond', 'response')
+    setupNodes({ respond: { accepted: true, partner: 'm1', offer: 38 } })
+    mockPartners({ 'p-tripoint': skipOut('tripoint', 'cap_exceeded'), 'p-m1': bidOut('m1', 38) })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('respond', 'respond', 'response'),
+      ],
+      edges: [edge('bids', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-8', new Date().toISOString(), supabase, env)
     expect(result.body).toEqual({ accepted: true, partner: 'm1', offer: 38 })
   })
 
-  it('both partners capped → no winner exit path', async () => {
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'cap_exceeded').output,
-      m1_bid:       partnerSkip('m1',       'cap_exceeded').output,
-      fallback:     { accepted: false, reason: 'all_partners_capped' },
+  it('both partners capped → no winner route', async () => {
+    setupNodes({
+      respond_winner: { accepted: true },
+      fallback: { accepted: false, reason: 'all_partners_capped' },
     })
-
-    const tripointNode  = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node        = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode      = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode      = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondWinner   = node('rw', 'respond_winner',  'response')
-    const respondFallback = node('rf', 'fallback',         'response')
+    mockPartners({ 'p-tripoint': skipOut('tripoint', 'cap_exceeded'), 'p-m1': skipOut('m1', 'cap_exceeded') })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondWinner, respondFallback],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1'], { no_winner_behavior: 'route' }),
+        node('rw', 'respond_winner',  'response'),
+        node('rf', 'fallback',         'response'),
+      ],
       edges: [
-        edge('m1_bid', 'pick'),
-        edge('pick', 'rw', 'winner'),
-        edge('pick', 'rf', 'no_winner'),
+        edge('bids', 'rw', 'winner'),
+        edge('bids', 'rf', 'no_winner'),
       ],
     }
 
@@ -433,25 +384,15 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
   afterEach(() => vi.restoreAllMocks())
 
   it('open circuit partner skipped, remaining partner wins', async () => {
-    setupMocks({
-      tripoint_bid: partnerSkip('tripoint', 'circuit_open').output,
-      m1_bid:       partnerBid('m1', 70).output,
-      respond:      { accepted: true, partner: 'm1', offer: 70 },
-    })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondNode = node('respond', 'respond', 'response')
+    setupNodes({ respond: { accepted: true, partner: 'm1', offer: 70 } })
+    mockPartners({ 'p-tripoint': skipOut('tripoint', 'circuit_open'), 'p-m1': bidOut('m1', 70) })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('respond', 'respond', 'response'),
+      ],
+      edges: [edge('bids', 'respond', 'winner')],
     }
 
     const result = await walkGraph(makeCtx(), def, 'exec-10', new Date().toISOString(), supabase, env)
@@ -459,162 +400,109 @@ describe('end-to-end: partner circuit breaker trips — excluded, other partner 
   })
 
   it('half-open recovery: circuit re-closed after successful bid', async () => {
-    // First run: tripoint circuit is open → skipped
-    // Second run (half-open probe): tripoint allowed through, succeeds
-    // Both runs: M1 also bids — first run M1 wins, second run tripoint wins (higher bid)
+    // First run: tripoint circuit is open → skipped (M1 wins)
+    // Second run (half-open probe): tripoint allowed through, bids $80 → tripoint wins
     let tripointCallCount = 0
-    vi.mocked(executeNode).mockImplementation(async (n, ctx) => {
-      if (n.type === 'bid_evaluation') return executeBidEvaluationNode(n, ctx)
-      if (n.namespace === 'tripoint_bid') {
+    vi.mocked(executePartnerBidNode).mockImplementation(async (childNode) => {
+      const pid = (childNode.config as { partner_id?: string }).partner_id
+      if (pid === 'p-tripoint') {
         tripointCallCount++
-        // First call: circuit open (skipped); second call: circuit closed (bid 80)
-        return tripointCallCount === 1
-          ? { output: partnerSkip('tripoint', 'circuit_open').output }
-          : { output: partnerBid('tripoint', 80).output }
+        return { output: tripointCallCount === 1 ? skipOut('tripoint', 'circuit_open') : bidOut('tripoint', 80) }
       }
-      if (n.namespace === 'm1_bid') return { output: partnerBid('m1', 60).output }
-      return { output: { ok: true } }
+      if (pid === 'p-m1') return { output: bidOut('m1', 60) }
+      throw new Error(`unexpected partner ${pid}`)
     })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const respondNode = node('respond', 'respond', 'response', {})
+    setupNodes({ respond: { ok: true } })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, respondNode],
-      edges: [edge('m1_bid', 'pick'), edge('pick', 'respond', 'winner')],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('respond', 'respond', 'response'),
+      ],
+      edges: [edge('bids', 'respond', 'winner')],
     }
 
     // First execution: tripoint circuit open → M1 wins
     const firstResult = await walkGraph(makeCtx(), def, 'exec-11a', new Date().toISOString(), supabase, env)
-    const firstOutput = firstResult as { winner?: { partner: string } }
-    // winner is from bid_evaluation which returns BidEvaluationOutput, respond returns its own mocked output
-    // The respond node mock returns { ok: true }, but the engine returns respond's output
-    expect(firstOutput).toBeDefined()
+    expect(firstResult).toBeDefined()
 
     // Second execution: tripoint half-open, now bids $80 → tripoint wins
-    const ctx2 = makeCtx()
-    const secondResult = await walkGraph(ctx2, def, 'exec-11b', new Date().toISOString(), supabase, env)
+    const secondResult = await walkGraph(makeCtx(), def, 'exec-11b', new Date().toISOString(), supabase, env)
     expect(secondResult).toBeDefined()
-    // Verify tripoint was called twice (once skipped, once through)
+    // Verify tripoint was attempted in both runs (once skipped, once through)
     expect(tripointCallCount).toBe(2)
   })
 })
 
-// ── Parallel resume ───────────────────────────────────────────────────────────
+// ── Bid group resume ──────────────────────────────────────────────────────────
 
-describe('end-to-end: parallel resume — completed parallel group re-runs on resume (#50)', () => {
+describe('end-to-end: bid group resume — completed group re-runs on resume (#50)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(console, 'log').mockImplementation(() => {})
   })
   afterEach(() => vi.restoreAllMocks())
 
-  it('re-runs the parallel children even when the group is pre-loaded as completed', async () => {
-    // A prior run completed the group with tripoint=fulfilled, m1=skipped.
-    // Resume must NOT trust that — it re-runs both children from scratch.
-    const priorParallelOutput: ParallelChildResult[] = [
-      partnerBid('tripoint', 50),
-      partnerSkip('m1', 'rejected'),
-    ]
-
-    setupMocks({
-      tripoint_bid: partnerBid('tripoint', 50).output,
-      m1_bid:       partnerSkip('m1', 'rejected').output,
-      route_lead:   { salesforce_id: 'SF-999' },
-      respond:      { accepted: true, partner: 'tripoint', offer: 50 },
+  it('re-runs the partner attempts even when the group is pre-loaded as completed', async () => {
+    setupNodes({
+      route_lead: { salesforce_id: 'SF-999' },
+      respond:    { accepted: true, partner: 'tripoint', offer: 50 },
     })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
+    let bidCallCount = 0
+    vi.mocked(executePartnerBidNode).mockImplementation(async (childNode) => {
+      const pid = (childNode.config as { partner_id?: string }).partner_id
+      bidCallCount++
+      if (pid === 'p-tripoint') return { output: bidOut('tripoint', 50) }
+      if (pid === 'p-m1') return { output: skipOut('m1', 'rejected') }
+      throw new Error(`unexpected partner ${pid}`)
     })
-    const routeNode   = node('route',   'route_lead', 'webhook')
-    const respondNode = node('respond', 'respond',    'response')
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, routeNode, respondNode],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('route',   'route_lead', 'webhook'),
+        node('respond', 'respond',    'response'),
+      ],
       edges: [
-        // Legacy parallel (no parallel_end): continuation wires off the last child.
-        edge('m1_bid', 'pick'),
-        edge('pick', 'route', 'winner'),
+        edge('bids', 'route', 'winner'),
         edge('route', 'respond'),
       ],
     }
 
-    // Pre-load the parallel group as completed from the prior run — should be ignored.
+    // Pre-load the group as completed from a prior run — should be ignored.
     const ctx = makeCtx()
-    ctx.steps['partner_bids'] = { output: priorParallelOutput, status: 'completed' }
-
-    let bidCallCount = 0
-    const baseMock = vi.mocked(executeNode).getMockImplementation()
-    vi.mocked(executeNode).mockImplementation(async (n, ctx2, _env, _supabase) => {
-      if (n.namespace === 'tripoint_bid' || n.namespace === 'm1_bid') bidCallCount++
-      if (n.type === 'bid_evaluation') return executeBidEvaluationNode(n, ctx2, _supabase)
-      return baseMock ? baseMock(n, ctx2, _env, _supabase) : { output: null }
-    })
+    ctx.steps['bid_race'] = { output: { winner: { partner: 'stale', bid: 1 } }, status: 'completed' }
 
     const result = await walkGraph(ctx, def, 'exec-resume', new Date().toISOString(), supabase, env)
 
-    // Both children re-ran (the prior completed group did not short-circuit them).
+    // Both partner attempts re-ran (the prior completed group did not short-circuit them).
     expect(bidCallCount).toBe(2)
     // And the fresh run flowed all the way through to the response.
     expect(result.body).toEqual({ accepted: true, partner: 'tripoint', offer: 50 })
   })
 
-  it('bid evaluation sees the FRESH parallel results, not the pre-loaded ones', async () => {
-    // Prior run: tripoint bid $50. Fresh run: tripoint bids $75 — bid_eval must
-    // see $75 (re-executed), proving the stale preload is discarded.
-    const priorParallelOutput: ParallelChildResult[] = [
-      partnerBid('tripoint', 50),
-      partnerSkip('m1', 'rejected'),
-    ]
-
-    let bidEvalInput: ParallelChildResult[] | undefined
-    vi.mocked(executeNode).mockImplementation(async (n, ctx) => {
-      if (n.namespace === 'tripoint_bid') return { output: partnerBid('tripoint', 75).output }
-      if (n.namespace === 'm1_bid')       return { output: partnerBid('m1', 40).output }
-      if (n.type === 'bid_evaluation') {
-        bidEvalInput = ctx.steps['partner_bids']?.output as ParallelChildResult[]
-        return executeBidEvaluationNode(n, ctx)
-      }
-      return { output: null }
-    })
-
-    const tripointNode = node('tripoint_bid', 'tripoint_bid', 'partner_bid')
-    const m1Node       = node('m1_bid',        'm1_bid',       'partner_bid')
-    const bidsNode     = parallelNode('bids', 'partner_bids', ['tripoint_bid', 'm1_bid'])
-    const pickNode     = node('pick', 'pick_winner', 'bid_evaluation', {
-      parallel_source: 'partner_bids',
-      strategy: 'highest_bid',
-      no_winner_behavior: 'exit',
-    })
-    const exitNode = node('exit', 'done', 'exit')
+  it('the group sees FRESH partner results, not the pre-loaded ones', async () => {
+    // Prior run: tripoint bid $50. Fresh run: tripoint bids $75 — the winner must
+    // reflect $75 (re-executed), proving the stale preload is discarded.
+    mockPartners({ 'p-tripoint': bidOut('tripoint', 75), 'p-m1': bidOut('m1', 40) })
 
     const def = {
-      nodes: [bidsNode, tripointNode, m1Node, pickNode, exitNode],
-      edges: [edge('m1_bid', 'pick'), edge('pick', 'exit', 'winner')],
+      nodes: [
+        bidGroupNode('bids', 'bid_race', ['p-tripoint', 'p-m1']),
+        node('exit', 'done', 'exit'),
+      ],
+      edges: [edge('bids', 'exit', 'winner')],
     }
 
     const ctx = makeCtx()
-    ctx.steps['partner_bids'] = { output: priorParallelOutput, status: 'completed' }
+    ctx.steps['bid_race'] = { output: { winner: { partner: 'tripoint', bid: 50 } }, status: 'completed' }
 
     await walkGraph(ctx, def, 'exec-resume2', new Date().toISOString(), supabase, env)
 
-    // Fresh results, not the stale prior output.
-    expect(bidEvalInput).not.toEqual(priorParallelOutput)
-    const tripoint = bidEvalInput?.find((r) => r.namespace === 'tripoint_bid')
-    expect((tripoint?.output as PartnerBidOutput | undefined)?.bid).toBe(75)
+    // The group re-ran with fresh bids: tripoint $75 wins, not the stale $50.
+    const groupOut = ctx.steps['bid_race']?.output as BidGroupOutput
+    expect(groupOut.winner?.partner).toBe('tripoint')
+    expect(groupOut.winner?.bid).toBe(75)
   })
 })
 

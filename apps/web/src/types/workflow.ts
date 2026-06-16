@@ -11,7 +11,6 @@ export type NodeType =
   | 'bid_group'
   | 'webhook'
   | 'transform'
-  | 'bid_evaluation'
   | 'constants'
   | 'salesforce'
   | 'data_store'

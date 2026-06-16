@@ -2,7 +2,7 @@
 
 Requests a bid from a single partner and returns the result. It loads that partner's saved config, runs a fixed sequence of pre-flight checks (circuit breaker, daily cap, dedup), resolves a bid (by formula, matrix lookup, or live API call), classifies the response, and returns a structured outcome. Use it when you want one explicit partner attempt on the canvas.
 
-For the common case of sending one lead to several partners and picking a winner, use the [Bid Group node](./bid-group.md) instead. A Bid Group fans out to N partners internally as a single canvas node, runs the exact same partner-bid logic for each, and picks a winner. Reach for a standalone Partner Bid node only when you need a single partner wired in on its own, or when you are composing partner attempts with [Parallel](./parallel.md) and a [Bid Evaluation](./bid-evaluation.md) node by hand.
+For the common case of sending one lead to several partners and picking a winner, use the [Bid Group node](./bid-group.md) instead. A Bid Group fans out to N partners internally as a single canvas node, runs the exact same partner-bid logic for each, and picks a winner. Reach for a standalone Partner Bid node only when you need a single partner wired in on its own.
 
 ## How a bid is produced
 
@@ -157,7 +157,6 @@ Continues only when the partner returned a usable bid; otherwise routes to the f
 ## See also
 
 - [Bid Group node](./bid-group.md) for the primary "bid to N partners, pick a winner" node.
-- [Bid Evaluation node](./bid-evaluation.md) for picking a winner from a Parallel fan-out.
 - [Partners reference](../reference/partners.md) for resolver types, the bid matrix, formulas, daily caps, circuit breakers, and outbound field mapping.
 - [Bidding model](../concepts/bidding-model.md) for how bids, partners, and winners fit together.
 - [Data references](../concepts/data-references.md) for the `trigger.*`, `steps.*`, `env.*`, and `context.*` syntax used in formulas.

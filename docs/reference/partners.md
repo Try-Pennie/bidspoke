@@ -329,5 +329,4 @@ For reference, the values a partner produces flow into the [Partner Bid node](..
 - [The bidding model](../concepts/bidding-model.md)
 - [Partner Bid node](../nodes/partner-bid.md)
 - [Bid Group node](../nodes/bid-group.md)
-- [Bid Evaluation node](../nodes/bid-evaluation.md)
 - [Data references](../concepts/data-references.md)

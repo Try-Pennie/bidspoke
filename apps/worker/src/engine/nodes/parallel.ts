@@ -14,7 +14,7 @@
  *                          output if not yet settled. The named slot's status
  *                          drives the parallel's success — failure throws.
  *
- * Output: ParallelOutput — array of child results consumed by BidEvaluation node.
+ * Output: ParallelOutput — array of child results consumed downstream.
  */
 import type { NodeDefinition, StepExecutionResult } from '../../types'
 
