@@ -724,7 +724,7 @@ export default function PartnerForm({
             <Field label="Daily cap" hint="Max leads per day. Leave blank for unlimited.">
               <Input value={dailyCap} onChange={setDailyCap} type="number" placeholder="∞" />
             </Field>
-            <Field label="Minimum bid ($)" hint="Reject bids below this amount.">
+            <Field label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to require a positive bid (a $0 bid is treated as a decline). Set 0 to explicitly allow $0 bids to win.">
               <Input value={minBid} onChange={setMinBid} type="number" placeholder="0.00" />
             </Field>
           </div>
