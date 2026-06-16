@@ -76,6 +76,25 @@ describe('executeIntegrationNode', () => {
       .rejects.toThrow('resolved to empty string')
   })
 
+  // #66: the step-level abort signal must reach the executor's fetch, so a step
+  // timeout cancels the outbound call (here a pre-aborted parent makes the
+  // executor's fetch signal aborted via linkAbort). Reverting that wiring fails this.
+  it('cancels the outbound fetch when the step-level signal aborts (#66)', async () => {
+    let captured: AbortSignal | undefined
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      captured = init.signal as AbortSignal
+      return Promise.resolve(mockResponse(200, '{}'))
+    })
+    const parent = new AbortController()
+    parent.abort()
+    await executeIntegrationNode(
+      makeNode({ url: 'https://api.example.com', method: 'POST' }),
+      makeCtx(), makeEnv(), parent.signal
+    )
+    expect(captured).toBeDefined()
+    expect(captured!.aborted).toBe(true)
+  })
+
   // ── Basic HTTP call ─────────────────────────────────────────────────────────
 
   it('makes a POST request and returns parsed JSON body', async () => {

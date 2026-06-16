@@ -1141,7 +1141,7 @@ export async function walkGraph(
 
     try {
       const result = await withRetry(
-        () => executeNode(node, ctx, env, supabase),
+        (signal) => executeNode(node, ctx, env, supabase, signal),
         retryConfig,
         classifyStepError,
         retryStats
@@ -1474,7 +1474,7 @@ async function runParallelChild(
 
     try {
       const result = await withRetry(
-        () => executeNode(node, ctx, env, supabase),
+        (signal) => executeNode(node, ctx, env, supabase, signal),
         retryConfig,
         classifyStepError,
         retryStats

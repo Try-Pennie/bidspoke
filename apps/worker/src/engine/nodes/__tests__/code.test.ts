@@ -49,6 +49,17 @@ describe('executeCodeNode', () => {
     expect(url).toBe('https://worker/execute/code_step')
   })
 
+  // #66: a step-level timeout must cancel the dispatch to the code worker.
+  it('passes the step-level abort signal to the dispatch fetch (#66)', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const env = makeEnv(() => bundleFetch)
+    const parent = new AbortController()
+    parent.abort()
+    await executeCodeNode(node({ script: 'return {}' }), ctx(), env, parent.signal)
+    const init = bundleFetch.mock.calls[0][1] as RequestInit
+    expect((init.signal as AbortSignal | undefined)?.aborted).toBe(true)
+  })
+
   it('sends payload, steps, env, and execution to the worker', async () => {
     const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
     const env = makeEnv(() => bundleFetch)

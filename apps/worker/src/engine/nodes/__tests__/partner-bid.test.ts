@@ -103,6 +103,29 @@ function makeEnv(overrides: Partial<Record<string, unknown>> = {}) {
 describe('executePartnerBidNode', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  // #66: a step-level timeout must cancel the partner dedup call. A pre-aborted
+  // parent signal makes the dedup fetch's signal aborted via linkAbort.
+  it('cancels the dedup fetch when the step-level signal aborts (#66)', async () => {
+    let captured: AbortSignal | undefined
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      captured = init?.signal ?? undefined
+      return Promise.resolve({ ok: true, json: async () => ({ duplicate: false }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const parent = new AbortController()
+    parent.abort()
+    await executePartnerBidNode(
+      makeNode({ partner_id: 'p1' }),
+      makeCtx({ debt_amount: 10000 }),
+      makeEnv(),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      makeSupabase(makePartner({ dedup_endpoint: 'https://dedup.example' })) as any,
+      parent.signal
+    )
+    expect(captured?.aborted).toBe(true)
+    vi.unstubAllGlobals()
+  })
+
   describe('config validation', () => {
     it('throws when partner_id is missing', async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

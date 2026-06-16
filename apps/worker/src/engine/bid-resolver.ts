@@ -16,6 +16,7 @@ import type { ExecutionContext } from '../types'
 import type { Env } from '../index'
 import type { ResponseClassificationConfig, AlertConfig } from './error-classifier'
 import { evaluateResponseClassification, shouldSuppressAlert } from './error-classifier'
+import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { applyOutboundMapping } from '../lib/field-mapper'
@@ -112,7 +113,8 @@ export async function resolveBid(
   partner: PartnerForResolver,
   ctx: ExecutionContext,
   env: Env,
-  supabase?: SupabaseClient
+  supabase?: SupabaseClient,
+  signal?: AbortSignal
 ): Promise<BidResolverResult> {
   const type = effectiveResolverType(partner)
 
@@ -128,7 +130,7 @@ export async function resolveBid(
     }
     case 'api': {
       if (!partner.api_endpoint) return { bid: null, raw: null }
-      return callBidApi(partner, ctx, env)
+      return callBidApi(partner, ctx, env, signal)
     }
     case 'matrix': {
       if (!supabase) {
@@ -184,7 +186,8 @@ function readFormula(partner: PartnerForResolver): string | null {
 async function callBidApi(
   partner: PartnerForResolver,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  signal?: AbortSignal
 ): Promise<BidResolverResult> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -208,6 +211,7 @@ async function callBidApi(
   }
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 15000)
+  linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
 
   let res: Response
   try {

@@ -86,6 +86,17 @@ afterEach(() => {
 })
 
 describe('executeAchieveOffersNode', () => {
+  // #66: a step-level timeout must cancel the Achieve POST. A pre-aborted parent
+  // signal makes the fetch's signal aborted via linkAbort.
+  it('cancels the fetch when the step-level signal aborts (#66)', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    const parent = new AbortController()
+    parent.abort()
+    await executeAchieveOffersNode(makeNode(), makeCtx(), parent.signal)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect((init.signal as AbortSignal).aborted).toBe(true)
+  })
+
   it('sends an accepted lead and returns marked output with offers', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(2))
     const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())

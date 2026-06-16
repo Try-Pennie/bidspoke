@@ -105,6 +105,24 @@ describe('executeSalesforceNode', () => {
       .rejects.toThrow()
   })
 
+  // #66: a step-level timeout must cancel the Salesforce write (double DML is
+  // harmful). With a pre-aborted parent signal, the write fetch's signal is
+  // aborted via linkAbort. Reverting that wiring fails this.
+  it('cancels the write fetch when the step-level signal aborts (#66)', async () => {
+    const signals: (AbortSignal | undefined)[] = []
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      signals.push(init?.signal ?? undefined)
+      return Promise.resolve(signals.length === 1 ? mockTokenResponse() : mockResponse(201, '{"id":"X"}'))
+    })
+    const parent = new AbortController()
+    parent.abort()
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(), makeEnv(), parent.signal
+    )
+    expect(signals[1]?.aborted).toBe(true) // the write call carries the aborted signal
+  })
+
   // ── Token fetch + cache ─────────────────────────────────────────────────────
 
   it('fetches a new token on cache miss and stores it', async () => {
