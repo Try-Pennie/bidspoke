@@ -19,6 +19,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
+import { linkAbort } from '../retry'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -80,7 +81,8 @@ function maskHeadersForLog(
 export async function executeIntegrationNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const config = node.config as unknown as IntegrationConfig
 
@@ -176,6 +178,7 @@ export async function executeIntegrationNode(
   // Fetch with timeout
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
 
   let res: Response
   try {

@@ -74,7 +74,8 @@ function extractReferencedSteps(script: string): Set<string> | null {
 export async function executeCodeNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const script = (node.config?.script as string | undefined)?.trim()
   if (!script) {
@@ -138,7 +139,7 @@ export async function executeCodeNode(
     props: resolvedProps,
   })
 
-  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName)
+  const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName, signal)
   const text = await res.text()
 
   // Parse the response, then unwrap the {__bsv: 1, output, logs} envelope if
@@ -214,7 +215,8 @@ async function dispatchWithFallback(
   workflowId: string,
   namespace: string,
   body: string,
-  bundleNameOverride?: string
+  bundleNameOverride?: string,
+  signal?: AbortSignal
 ): Promise<Response> {
   // Test runs pass an ephemeral content-hashed bundle name so unsaved edits run
   // immediately; prod runs use the stable per-workflow bundle.
@@ -226,6 +228,7 @@ async function dispatchWithFallback(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
+      signal,  // cancel the dispatch on the step-level timeout (#66)
     })
   } catch (err) {
     bindingError = err
@@ -252,5 +255,6 @@ async function dispatchWithFallback(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
+    signal,  // cancel the dispatch on the step-level timeout (#66)
   })
 }

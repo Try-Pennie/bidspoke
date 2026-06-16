@@ -26,6 +26,7 @@ import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid } from '../bid-resolver'
+import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
 import { recordBidAttempt } from '../lead-sightings'
 
@@ -122,7 +123,8 @@ export async function executePartnerBidNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
   env: Env,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const config = node.config as unknown as PartnerBidConfig
 
@@ -241,7 +243,7 @@ export async function executePartnerBidNode(
 
   // 5. Dedup check
   if (p.dedup_endpoint) {
-    const isDuplicate = await checkDedup(p.dedup_endpoint, ctx, p.slug)
+    const isDuplicate = await checkDedup(p.dedup_endpoint, ctx, p.slug, signal)
     if (isDuplicate) {
       // Partner never called — release the half-open probe so the next lead can.
       if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
@@ -257,7 +259,7 @@ export async function executePartnerBidNode(
   let extra: Record<string, unknown> | undefined
 
   try {
-    const result = await resolveBid(p, ctx, env, supabase)
+    const result = await resolveBid(p, ctx, env, supabase, signal)
     const respondedAt = new Date()
     matrixInfo = result.matrix ?? null
     extra = result.extra
@@ -432,9 +434,11 @@ async function checkDedup(
   endpoint: string,
   ctx: ExecutionContext,
   slug: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEDUP_TIMEOUT_MS)
+  linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
   try {
     const res = await fetch(endpoint, {
       method: 'POST',

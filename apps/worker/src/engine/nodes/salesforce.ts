@@ -18,6 +18,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
+import { linkAbort } from '../retry'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -84,7 +85,8 @@ export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: s
 export async function executeSalesforceNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
-  env: Env
+  env: Env,
+  signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const config = node.config as unknown as SalesforceConfig
 
@@ -207,6 +209,7 @@ export async function executeSalesforceNode(
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
+  linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
 
   const fetchStart = Date.now()
   let res: Response

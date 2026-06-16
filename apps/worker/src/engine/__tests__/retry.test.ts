@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { withRetry } from '../retry'
+import { withRetry, linkAbort } from '../retry'
 import { classifyStepError } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
 import type { ErrorType } from '../../types'
@@ -177,10 +177,67 @@ describe('saturation signals (2026-06-10 create_prospect incident)', () => {
     expect(fn).toHaveBeenCalledTimes(2)
   })
 
-  it('timeout error explains the abandoned upstream call', async () => {
+  it('rejects with a timeout error noting the in-flight call was canceled', async () => {
     const never = () => new Promise(() => {})
     await expect(withRetry(never, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient))
-      .rejects.toThrow(/Step timed out after 10ms \(any in-flight upstream call was abandoned/)
+      .rejects.toThrow(/Step timed out after 10ms \(in-flight upstream call canceled/)
+  })
+
+  // #66: the per-attempt signal must actually abort on timeout, so the executor's
+  // outbound call is canceled before any retry (no double-fire).
+  it('aborts the signal passed to fn when the attempt times out', async () => {
+    let captured: AbortSignal | undefined
+    const fn = (signal: AbortSignal) => {
+      captured = signal
+      return new Promise<never>(() => {}) // never settles on its own
+    }
+    await expect(withRetry(fn, { retries: 0, backoff: 'linear', timeout_ms: 10 }, alwaysTransient))
+      .rejects.toThrow(/timed out/)
+    expect(captured?.aborted).toBe(true)
+  })
+
+  it('gives each retry a fresh, un-aborted signal', async () => {
+    const signals: AbortSignal[] = []
+    let attempt = 0
+    const fn = (signal: AbortSignal) => {
+      signals.push(signal)
+      attempt++
+      // First attempt hangs (will time out + abort); second resolves immediately.
+      return attempt === 1 ? new Promise<string>(() => {}) : Promise.resolve('ok')
+    }
+    await expect(
+      withRetry(fn, { retries: 1, backoff: 'linear', timeout_ms: 10 }, alwaysTransient)
+    ).resolves.toBe('ok')
+    expect(signals).toHaveLength(2)
+    expect(signals[0].aborted).toBe(true)   // first attempt was canceled
+    expect(signals[1].aborted).toBe(false)  // retry got a fresh signal
+  })
+})
+
+// #66: linkAbort connects an executor's own fetch controller to the step-level
+// signal, so a step timeout cancels the in-flight outbound call.
+describe('linkAbort', () => {
+  it('aborts the controller when the parent signal aborts', () => {
+    const parent = new AbortController()
+    const child = new AbortController()
+    linkAbort(child, parent.signal)
+    expect(child.signal.aborted).toBe(false)
+    parent.abort()
+    expect(child.signal.aborted).toBe(true)
+  })
+
+  it('aborts immediately when the parent is already aborted', () => {
+    const parent = new AbortController()
+    parent.abort()
+    const child = new AbortController()
+    linkAbort(child, parent.signal)
+    expect(child.signal.aborted).toBe(true)
+  })
+
+  it('is a no-op with no parent signal', () => {
+    const child = new AbortController()
+    linkAbort(child, undefined)
+    expect(child.signal.aborted).toBe(false)
   })
 })
 

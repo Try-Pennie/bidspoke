@@ -57,6 +57,20 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     expect(result.bid).toBe(65)
   })
 
+  it('api resolver: cancels the bid POST when the step-level signal aborts (#66)', async () => {
+    let captured: AbortSignal | undefined
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => {
+      captured = (init as RequestInit | undefined)?.signal ?? undefined
+      return Promise.resolve(new Response('{"bid":1}', { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    })
+    const partner = makePartner({ bid_resolver_type: 'api', api_endpoint: 'https://partner.example/bid' })
+    const parent = new AbortController()
+    parent.abort()
+    await resolveBid(partner, makeCtx({ debt: 5000 }), env, undefined, parent.signal)
+    expect(captured).toBeDefined()
+    expect(captured!.aborted).toBe(true)
+  })
+
   it('api resolver: POSTs to api_endpoint and reads bid', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ bid: 42 }), {

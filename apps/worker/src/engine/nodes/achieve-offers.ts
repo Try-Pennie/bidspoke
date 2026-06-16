@@ -33,6 +33,7 @@
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import { resolveValue } from '../context'
+import { linkAbort } from '../retry'
 
 export interface AchieveOffersConfig {
   targeted_products?: string[]
@@ -92,7 +93,8 @@ interface LeadPayload {
 
 export async function executeAchieveOffersNode(
   node: NodeDefinition,
-  ctx: ExecutionContext
+  ctx: ExecutionContext,
+  signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const config = node.config as unknown as AchieveOffersConfig
   const products = (config.targeted_products ?? ['fdr']).filter((p) => VALID_PRODUCTS.has(p))
@@ -121,6 +123,11 @@ export async function executeAchieveOffersNode(
 
   const baseUrl = ctx.env.ACHIEVE_API_URL || DEFAULT_BASE_URL
 
+  // Own controller so the internal 12s timeout AND the step-level timeout (#66)
+  // can both cancel the call.
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  linkAbort(controller, signal)
   try {
     const res = await fetch(`${baseUrl}/evaluations`, {
       method: 'POST',
@@ -129,7 +136,7 @@ export async function executeAchieveOffersNode(
         Authorization: 'Basic ' + btoa(`${ctx.env.ACHIEVE_USERNAME}:${ctx.env.ACHIEVE_PASSWORD}`),
       },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: controller.signal,
     })
 
     const responseBody = (await res.json().catch(() => null)) as
@@ -158,11 +165,14 @@ export async function executeAchieveOffersNode(
       resolvedInput,
     }
   } catch (err) {
+    const name = (err as { name?: string })?.name
     const message = err instanceof Error ? err.message : String(err)
-    const reason = message.includes('timed out') || (err as { name?: string })?.name === 'TimeoutError'
+    const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
       ? `Achieve API timed out after ${FETCH_TIMEOUT_MS}ms`
       : message
     return { output: result(false, 0, 'error', reason, request, null), resolvedInput }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
