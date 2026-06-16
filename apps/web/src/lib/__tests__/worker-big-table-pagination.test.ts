@@ -38,6 +38,12 @@ const BIG_TABLES = [
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 const BOUND_METHODS = new Set(['single', 'maybeSingle', 'range', 'limit'])
+// `<recv>.from(<identifier>)` where recv is one of these is a JS built-in
+// (Array.from, Uint8Array.from, ...), not a Supabase table read.
+const BUILTIN_FROM_RECEIVERS = new Set([
+  'Array', 'Uint8Array', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Int16Array',
+  'Int32Array', 'Float32Array', 'Float64Array', 'Buffer', 'Object', 'String', 'Number',
+])
 
 function listTsFiles(root: string): string[] {
   const out: string[] = []
@@ -96,42 +102,56 @@ interface Finding { file: string; line: number; table: string; methods: string[]
 function scanFile(file: string): Finding[] {
   const src = readFileSync(file, 'utf8')
   const findings: Finding[] = []
+
+  // Classify a single `<recv>.from(...)` occurrence. `start` is the index of the
+  // occurrence, `afterFromCall` is the index just past its closing `)`.
+  const classify = (start: number, afterFromCall: number, table: string): void => {
+    const { methods, end } = walkChain(src, afterFromCall)
+    // Writes aren't list reads.
+    if (methods.some((x) => WRITE_METHODS.has(x))) return
+    // Only `.select()` produces a row list to truncate.
+    if (!methods.includes('select')) return
+    // Bounded by a row-count limiter?
+    if (methods.some((x) => BOUND_METHODS.has(x))) return
+    // Count/head queries return a number, not rows.
+    const chainText = src.slice(start, end)
+    if (/\bcount\s*:/.test(chainText) || /\bhead\s*:\s*true/.test(chainText)) return
+    // Explicit opt-out for a read bounded another way (small filtered set).
+    // Recognize a `// paginate-ok` anywhere on the statement: walk up from the
+    // .from() line past chain-continuation (`.`) lines to the statement head,
+    // then include the contiguous leading // comments, through the chain end.
+    const allLines = src.split('\n')
+    const fromLineIdx = src.slice(0, start).split('\n').length - 1
+    const endLineIdx = src.slice(0, end).split('\n').length - 1
+    let li = fromLineIdx
+    while (li > 0 && allLines[li].trim().startsWith('.')) li--
+    while (li > 0 && allLines[li - 1].trim().startsWith('//')) li--
+    const stmtText = allLines.slice(li, endLineIdx + 1).join('\n')
+    if (/paginate-ok/.test(stmtText)) return
+
+    findings.push({ file: path.relative(WORKER_SRC, file), line: fromLineIdx + 1, table, methods })
+  }
+
+  // 1. Reads of a known big table named by a string literal.
   for (const table of BIG_TABLES) {
     const needle = new RegExp(`\\.from\\((['"\`])${table}\\1\\)`, 'g')
     let m: RegExpExecArray | null
     while ((m = needle.exec(src)) !== null) {
-      const afterFrom = m.index + m[0].length
-      const { methods, end } = walkChain(src, afterFrom)
-      // Writes aren't list reads.
-      if (methods.some((x) => WRITE_METHODS.has(x))) continue
-      // Only `.select()` produces a row list to truncate.
-      if (!methods.includes('select')) continue
-      // Bounded by a row-count limiter?
-      if (methods.some((x) => BOUND_METHODS.has(x))) continue
-      // Count/head queries return a number, not rows.
-      const chainText = src.slice(m.index, end)
-      if (/\bcount\s*:/.test(chainText) || /\bhead\s*:\s*true/.test(chainText)) continue
-      // Explicit opt-out for a read bounded another way (small filtered set).
-      // Recognize a `// paginate-ok` anywhere on the statement: walk up from the
-      // .from() line past chain-continuation (`.`) lines to the statement head,
-      // then include the contiguous leading // comments, through the chain end.
-      const allLines = src.split('\n')
-      const fromLineIdx = src.slice(0, m.index).split('\n').length - 1
-      const endLineIdx = src.slice(0, end).split('\n').length - 1
-      let li = fromLineIdx
-      while (li > 0 && allLines[li].trim().startsWith('.')) li--
-      while (li > 0 && allLines[li - 1].trim().startsWith('//')) li--
-      const stmtText = allLines.slice(li, endLineIdx + 1).join('\n')
-      if (/paginate-ok/.test(stmtText)) continue
-
-      findings.push({
-        file: path.relative(WORKER_SRC, file),
-        line: src.slice(0, m.index).split('\n').length,
-        table,
-        methods,
-      })
+      classify(m.index, m.index + m[0].length, table)
     }
   }
+
+  // 2. Reads where the table name is a VARIABLE (e.g. an export job looping over
+  //    tables): `supabase.from(tableName)`. We can't know the table, so we hold
+  //    these to the same bar — they must be bounded or marked. Excludes JS
+  //    built-ins like Array.from(...)/Uint8Array.from(...).
+  const dyn = /(\w+)\.from\(\s*([A-Za-z_$][\w$]*)\s*\)/g
+  let d: RegExpExecArray | null
+  while ((d = dyn.exec(src)) !== null) {
+    if (BUILTIN_FROM_RECEIVERS.has(d[1])) continue
+    classify(d.index, d.index + d[0].length, `<${d[2]}>`)
+  }
+
   return findings
 }
 
