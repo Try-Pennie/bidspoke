@@ -6,7 +6,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext } from '../types'
-import { fetchAllPaged } from './bid-matrix-sync'
+import { fetchAllPaged } from './paginate'
 
 export interface MatrixDimension {
   name: string

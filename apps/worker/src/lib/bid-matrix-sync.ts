@@ -17,6 +17,7 @@ import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { sendMatrixChangeAlert } from './slack'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
+import { fetchAllPaged } from './paginate'
 
 export interface SyncResult {
   config_id: string
@@ -189,29 +190,6 @@ async function querySalesforceMatrixRows(
     next = body.done ? undefined : body.nextRecordsUrl ? `${instanceUrl}${body.nextRecordsUrl}` : undefined
   }
   return all
-}
-
-// Read every row of a (possibly large) result set, paging around PostgREST's
-// 1000-row default cap. An unpaginated read silently truncated a matrix with
-// >1000 rows, so the diff snapshot missed the tail and reported those rows as
-// "added" on every hourly sync (false alerts + corrupt history). A stable
-// ORDER BY is required — without it Postgres recomputes each OFFSET against an
-// independent scan and skips/duplicates rows.
-export const PAGE_SIZE = 1000
-// Exported for unit testing.
-export async function fetchAllPaged<T>(
-  makeQuery: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
-  label: string,
-): Promise<T[]> {
-  const out: T[] = []
-  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
-    const { data, error } = await makeQuery(offset, offset + PAGE_SIZE - 1)
-    if (error) throw new Error(`${label} failed: ${error.message}`)
-    if (!data || data.length === 0) break
-    out.push(...(data as T[]))
-    if (data.length < PAGE_SIZE) break
-  }
-  return out
 }
 
 async function applyToDb(

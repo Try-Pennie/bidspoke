@@ -24,6 +24,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
+import { fetchAllPaged } from './paginate'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const WINDOW_MINUTES = 5
@@ -142,16 +143,15 @@ export async function runSlowExecutionCheck(
   const lookbackStart = new Date(now - LOOKBACK_MINUTES * 60 * 1000).toISOString()
   const monitoredIds = [...thresholds.keys()]
 
-  // Page around PostgREST's 1000-row cap. At high volume a single page would
-  // truncate the window and undercount both slow runs and the denominator.
-  // Stable ordering is required across pages — without it Postgres recomputes
-  // each OFFSET against an independent scan, silently skipping/duplicating rows.
-  const PAGE_SIZE = 1000
+  // Page around PostgREST's 1000-row cap via the shared helper. At high volume
+  // a single page would truncate the window and undercount both slow runs and
+  // the denominator. The stable .order(...).range() per page is required —
+  // without it Postgres recomputes each OFFSET against an independent scan,
+  // silently skipping/duplicating rows.
 
   // 1. Runs that COMPLETED within the alerting window (final duration known).
-  const completed: { workflow_id: string; duration_ms: number }[] = []
-  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
-    const { data: page } = await supabase
+  const completed = await fetchAllPaged<{ workflow_id: string; duration_ms: number }>(
+    (from, to) => supabase
       .from('workflow_executions')
       .select('workflow_id, duration_ms')
       .in('workflow_id', monitoredIds)
@@ -161,17 +161,14 @@ export async function runSlowExecutionCheck(
       .not('duration_ms', 'is', null)
       .order('completed_at', { ascending: true })
       .order('id', { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1)
-    if (!page || page.length === 0) break
-    completed.push(...(page as { workflow_id: string; duration_ms: number }[]))
-    if (page.length < PAGE_SIZE) break
-  }
+      .range(from, to),
+    'slow-exec completed query',
+  )
 
   // 2. Runs STILL IN FLIGHT — buildSlowDurations counts the ones already past
   //    their threshold as slow now, so a live hang fires before any run finishes.
-  const running: { workflow_id: string; started_at: string }[] = []
-  for (let offset = 0; offset < 200_000; offset += PAGE_SIZE) {
-    const { data: page } = await supabase
+  const running = await fetchAllPaged<{ workflow_id: string; started_at: string }>(
+    (from, to) => supabase
       .from('workflow_executions')
       .select('workflow_id, started_at')
       .in('workflow_id', monitoredIds)
@@ -180,11 +177,9 @@ export async function runSlowExecutionCheck(
       .eq('status', 'running')
       .order('started_at', { ascending: true })
       .order('id', { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1)
-    if (!page || page.length === 0) break
-    running.push(...(page as { workflow_id: string; started_at: string }[]))
-    if (page.length < PAGE_SIZE) break
-  }
+      .range(from, to),
+    'slow-exec running query',
+  )
 
   const perWorkflow = buildSlowDurations(completed, running, monitoredIds, now)
 
