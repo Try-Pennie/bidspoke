@@ -1,0 +1,180 @@
+/**
+ * Issue #64: a parallel-node failure or a bid_group execution error never fired
+ * the failure Slack alert.
+ *
+ * The execution-level alert gate only fires when `failedErrorType !== null` — a
+ * null type is read as a clean business rejection and stays deliberately silent.
+ * Both the parallel block and the bid_group block recorded/threw their failure
+ * with `errorType = null`, so an operational failure (a child rejected, the
+ * group timed out, the bid executor threw) was promoted to a failed execution
+ * but produced NO alert. These tests guard that both blocks now classify the
+ * error (falling back to 'transient'), so the failure alert fires.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../../index'
+import type { WorkflowDefinition } from '../../types'
+
+vi.mock('../definition-loader')
+vi.mock('../../lib/env-loader', () => ({ loadEnvVars: vi.fn().mockResolvedValue({}) }))
+vi.mock('../../lib/partner-constants-loader', () => ({ loadPartnerConstants: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../step-logger', () => ({
+  createExecutionRecord: vi.fn().mockResolvedValue(undefined),
+  updateExecutionRecord: vi.fn().mockResolvedValue(undefined),
+  flushStepLogs: vi.fn().mockResolvedValue(null),
+}))
+vi.mock('../nodes/index')
+vi.mock('../nodes/bid-group', () => ({ executeBidGroupNode: vi.fn() }))
+vi.mock('../achieve-log', () => ({
+  extractAchieveEvaluations: vi.fn().mockReturnValue([]),
+  insertAchieveEvaluations: vi.fn().mockResolvedValue(undefined),
+}))
+vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
+
+import { executeWorkflow } from '../index'
+import { loadWorkflowDefinition } from '../definition-loader'
+import { executeNode } from '../nodes/index'
+import { executeBidGroupNode } from '../nodes/bid-group'
+import { updateExecutionRecord } from '../step-logger'
+import { fireExecutionAlert } from '../../lib/execution-alerts'
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
+
+const WF_ID = 'wf-64'
+
+// trigger → parallel(bid_parallel) --child-0--> child(partner_a)
+const parallelDefinition = {
+  trigger: { id: 'trigger', type: 'trigger', config: {} },
+  nodes: [
+    { id: 'p', namespace: 'bid_parallel', type: 'parallel', config: { wait_for: 'all', on_child_error: 'fail', timeout_ms: 15000 } },
+    { id: 'c', namespace: 'partner_a', type: 'salesforce', config: { retries: 0 } },
+  ],
+  edges: [{ id: 'e0', source: 'p', target: 'c', source_handle: 'child-0' }],
+} as unknown as WorkflowDefinition
+
+// trigger → bid_group(bid_race)
+const bidGroupDefinition = {
+  trigger: { id: 'trigger', type: 'trigger', config: {} },
+  nodes: [
+    { id: 'g', namespace: 'bid_race', type: 'bid_group', config: { mode: 'highest_bid', partner_ids: [] } },
+  ],
+  edges: [],
+} as unknown as WorkflowDefinition
+
+function makeKV() {
+  const store = new Map<string, string>()
+  return {
+    async get(k: string, t?: string) { const v = store.get(k); return v === undefined ? null : t === 'json' ? JSON.parse(v) : v },
+    async put(k: string, v: string) { store.set(k, v) },
+    async delete(k: string) { store.delete(k) },
+  } as unknown as KVNamespace
+}
+
+function makeHarness() {
+  const background: Promise<unknown>[] = []
+  const env = {
+    IDEMPOTENCY: makeKV(),
+    WORKFLOW_CACHE: makeKV(),
+    APP_URL: 'https://app.test',
+    PII_REDACTION_FIELDS: '',
+  } as unknown as Env
+  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const flush = async () => {
+    for (let i = 0; i < 6 && background.length; i++) {
+      await Promise.all(background.splice(0))
+    }
+  }
+  return { env, executionCtx, flush }
+}
+
+// partner_configs lookups in the bid_group block must not blow up — return empty.
+const supabase = {
+  from: () => ({
+    select: () => ({ in: () => Promise.resolve({ data: [] }) }),
+  }),
+} as unknown as SupabaseClient
+
+function run() {
+  const harness = makeHarness()
+  return {
+    harness,
+    result: executeWorkflow(
+      { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine' },
+      harness.env,
+      supabase,
+      harness.executionCtx
+    ),
+  }
+}
+
+function lastUpdate() {
+  const calls = vi.mocked(updateExecutionRecord).mock.calls
+  return calls[calls.length - 1][3] as Record<string, unknown>
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
+
+function loadDef(definition: WorkflowDefinition) {
+  vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+    definition,
+    workflow_version_id: 'v1',
+    workflow_name: 'Alert Test',
+    org_id: 'org-1',
+    slack_channel: null,
+    capture_sightings: false,
+  })
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+describe('parallel-node failure fires the failure alert (#64)', () => {
+  it('classifies the failure (non-null type) so the alert fires', async () => {
+    loadDef(parallelDefinition)
+    vi.mocked(executeNode).mockImplementation(async () => {
+      throw new Error('Salesforce child failed: 500')
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    // Execution promoted to failed, blaming the parallel node.
+    const update = lastUpdate()
+    expect(update.status).toBe('failed')
+    expect(String(update.error_message)).toContain('Parallel failed')
+
+    // The fix: a classified (non-null) error type, so the alert gate opens.
+    expect(update.error_type).not.toBeNull()
+
+    // Failure alert fired for the parallel node.
+    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
+    expect(alert.alertType).toBe('failure')
+    expect(alert.failedStep).toBe('bid_parallel')
+    expect(alert.errorType).not.toBeNull()
+  })
+})
+
+describe('bid_group execution error fires the failure alert (#64)', () => {
+  it('classifies the failure (non-null type) so the alert fires', async () => {
+    loadDef(bidGroupDefinition)
+    vi.mocked(executeBidGroupNode).mockRejectedValue(new Error('bid group exploded'))
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const update = lastUpdate()
+    expect(update.status).toBe('failed')
+    expect(String(update.error_message)).toContain('bid group exploded')
+    expect(update.error_type).not.toBeNull()
+
+    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
+    expect(alert.alertType).toBe('failure')
+    expect(alert.failedStep).toBe('bid_race')
+    expect(alert.errorType).not.toBeNull()
+  })
+})
