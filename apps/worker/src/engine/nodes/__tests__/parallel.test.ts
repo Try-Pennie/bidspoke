@@ -136,6 +136,29 @@ describe('executeParallelNode', () => {
         expect(output[1].status).toBe('timeout')
       })
 
+      // #63: a straggler that settles AFTER the group timed out must see the
+      // abandon signal aborted, which is what tells runParallelChild to skip
+      // recording (so it can't double-log / overwrite ctx.steps).
+      it('aborts the abandon signal for a straggler that settles after the timeout', async () => {
+        let lateSignalAborted: boolean | undefined
+        const runChild = vi.fn().mockImplementation(
+          async (_child: NodeDefinition, i: number, signal: AbortSignal) => {
+            if (i === 0) return fulfilled('bid_fast')
+            await new Promise((r) => setTimeout(r, 40)) // settles long after the 10ms timeout
+            lateSignalAborted = signal.aborted
+            return fulfilled('bid_slow')
+          }
+        )
+        const out = await executeParallelNode(
+          makeNode({ wait_for: 'all', timeout_ms: 10, on_timeout: 'partial', on_child_error: 'continue' }),
+          [makeChild('bid_fast'), makeChild('bid_slow')],
+          runChild
+        )
+        expect((out.output as ParallelChildResult[]).find((c) => c.namespace === 'bid_slow')?.status).toBe('timeout')
+        await new Promise((r) => setTimeout(r, 50)) // let the straggler finish
+        expect(lateSignalAborted).toBe(true)
+      })
+
       it('throws when on_timeout is fail and a child does not settle', async () => {
         const children = [makeChild('bid_fast'), makeChild('bid_slow')]
         const runChild = vi.fn().mockImplementation(async (child: NodeDefinition) => {

@@ -777,8 +777,8 @@ export async function walkGraph(
         const result = await executeParallelNode(
           execNode,
           resolvedChildren,
-          (child, childIndex) =>
-            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId),
+          (child, childIndex, abandonSignal) =>
+            runParallelChild(child, ctx, env, supabase, executionId, executionStartedAt, childOrderBase + childIndex, node.id, workflowVersionId, stepLogQueue, definition, chainEndId, abandonSignal),
           slotHandleIds
         )
         output = result.output
@@ -1423,7 +1423,7 @@ function deriveStepSubtype(node: NodeDefinition): string | undefined {
 // Execute a single child node within a parallel group — simplified version of
 // the main walkGraph step loop: retries + logging, but no on_error branching
 // (parallel children always contribute their result, fulfilled or rejected).
-async function runParallelChild(
+export async function runParallelChild(
   child: NodeDefinition,
   ctx: ExecutionContext,
   env: Env,
@@ -1438,7 +1438,11 @@ async function runParallelChild(
   // Chain-walking only fires when a parallel_end exists for this parallel.
   // The walker follows edges until it reaches this node (or runs out).
   // Legacy parallels (no parallel_end) get single-node behavior.
-  chainEndId?: string
+  chainEndId?: string,
+  // Tripped when the parent parallel stops waiting (timeout / first-winner /
+  // specific-target). A late-completing child must not write a second step row
+  // or overwrite ctx.steps after that (#63).
+  abandonSignal?: AbortSignal
 ): Promise<ParallelChildResult> {
   // The slot's identifying namespace is always the FIRST node in the chain.
   // Bid Evaluation and other downstream consumers key off this namespace.
@@ -1512,6 +1516,14 @@ async function runParallelChild(
       log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: nodeDurationMs, error_message: errorMessage, error_type: errorType })
     }
 
+    // The parent already stopped waiting and (for an unsettled child) wrote a
+    // synthesized timeout row. Recording now would append a SECOND conflicting
+    // row and overwrite ctx.steps with this late output, so downstream reads of
+    // steps.<child> become nondeterministic — bail without writing (#63). No
+    // await between this check and the writes below, so it can't race the abort.
+    if (abandonSignal?.aborted) {
+      return { namespace: slotNamespace, status: 'timeout' }
+    }
     recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
     logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retryStats.retries, stepStartedAt, baseStepOrder + chainIndex, parallelGroupId, stepLogs)
 

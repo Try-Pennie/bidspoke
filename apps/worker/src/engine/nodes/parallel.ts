@@ -46,7 +46,7 @@ interface ParallelConfig {
 export async function executeParallelNode(
   node: NodeDefinition,
   childNodes: NodeDefinition[],
-  runChild: (child: NodeDefinition, childIndex: number) => Promise<ParallelChildResult>,
+  runChild: (child: NodeDefinition, childIndex: number, abandonSignal: AbortSignal) => Promise<ParallelChildResult>,
   slotHandleIds: string[] = []
 ): Promise<StepExecutionResult> {
   if (childNodes.length === 0) {
@@ -59,54 +59,64 @@ export async function executeParallelNode(
   const onTimeout = config.on_timeout ?? 'partial'
   const onChildError = config.on_child_error ?? 'fail'
 
-  if (waitFor === 'specific') {
-    const targetIdx = slotHandleIds.indexOf(config.wait_for_slot ?? '')
-    if (targetIdx < 0) {
-      throw new Error(`Parallel "specific" wait references slot "${config.wait_for_slot}" which is not connected`)
+  // Tripped the moment this node stops waiting (timeout / first-winner /
+  // specific-target). Children that keep running in the background see it and
+  // must NOT log a second step row or overwrite ctx.steps after we've moved on
+  // (#63). Aborted in finally so it fires on every exit path, including throws.
+  const abandon = new AbortController()
+  try {
+    if (waitFor === 'specific') {
+      const targetIdx = slotHandleIds.indexOf(config.wait_for_slot ?? '')
+      if (targetIdx < 0) {
+        throw new Error(`Parallel "specific" wait references slot "${config.wait_for_slot}" which is not connected`)
+      }
+      const output = await runSpecific(childNodes, runChild, timeoutMs, targetIdx, abandon.signal)
+      const named = output[targetIdx]
+      if (named && (named.status === 'rejected' || named.status === 'timeout')) {
+        const reason = named.status === 'timeout'
+          ? `slot "${named.namespace}" did not complete in time`
+          : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
+        throw new Error(`Parallel failed — ${reason}`)
+      }
+      return { output }
     }
-    const output = await runSpecific(childNodes, runChild, timeoutMs, targetIdx)
-    const named = output[targetIdx]
-    if (named && (named.status === 'rejected' || named.status === 'timeout')) {
-      const reason = named.status === 'timeout'
-        ? `slot "${named.namespace}" did not complete in time`
-        : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
-      throw new Error(`Parallel failed — ${reason}`)
+
+    const output: ParallelOutput =
+      waitFor === 'first'
+        ? await runFirst(childNodes, runChild, timeoutMs, abandon.signal)
+        : await runAll(childNodes, runChild, timeoutMs, onTimeout, abandon.signal)
+
+    // wait_for:'all' with on_child_error:'fail' — bail if any child failed
+    if (waitFor === 'all' && onChildError === 'fail') {
+      const failed = output.find((c) => c.status === 'rejected' || c.status === 'timeout')
+      if (failed) {
+        const reason = failed.status === 'timeout'
+          ? `child "${failed.namespace}" did not complete in time`
+          : `child "${failed.namespace}" failed: ${failed.error ?? 'unknown error'}`
+        throw new Error(`Parallel failed — ${reason}`)
+      }
     }
+
     return { output }
+  } finally {
+    abandon.abort()
   }
-
-  const output: ParallelOutput =
-    waitFor === 'first'
-      ? await runFirst(childNodes, runChild, timeoutMs)
-      : await runAll(childNodes, runChild, timeoutMs, onTimeout)
-
-  // wait_for:'all' with on_child_error:'fail' — bail if any child failed
-  if (waitFor === 'all' && onChildError === 'fail') {
-    const failed = output.find((c) => c.status === 'rejected' || c.status === 'timeout')
-    if (failed) {
-      const reason = failed.status === 'timeout'
-        ? `child "${failed.namespace}" did not complete in time`
-        : `child "${failed.namespace}" failed: ${failed.error ?? 'unknown error'}`
-      throw new Error(`Parallel failed — ${reason}`)
-    }
-  }
-
-  return { output }
 }
 
 // ── wait_for: 'all' ───────────────────────────────────────────────────────────
 
 async function runAll(
   childNodes: NodeDefinition[],
-  runChild: (child: NodeDefinition, i: number) => Promise<ParallelChildResult>,
+  runChild: (child: NodeDefinition, i: number, abandonSignal: AbortSignal) => Promise<ParallelChildResult>,
   timeoutMs: number,
-  onTimeout: 'partial' | 'fail'
+  onTimeout: 'partial' | 'fail',
+  abandonSignal: AbortSignal
 ): Promise<ParallelOutput> {
   // Track settled results as children complete
   const settled: Array<ParallelChildResult | null> = childNodes.map(() => null)
 
   const childPromises = childNodes.map(async (child, i) => {
-    const result = await runChild(child, i)
+    const result = await runChild(child, i, abandonSignal)
     settled[i] = result
   })
 
@@ -136,9 +146,10 @@ async function runAll(
 
 async function runSpecific(
   childNodes: NodeDefinition[],
-  runChild: (child: NodeDefinition, i: number) => Promise<ParallelChildResult>,
+  runChild: (child: NodeDefinition, i: number, abandonSignal: AbortSignal) => Promise<ParallelChildResult>,
   timeoutMs: number,
-  targetIdx: number
+  targetIdx: number,
+  abandonSignal: AbortSignal
 ): Promise<ParallelOutput> {
   const settled: Array<ParallelChildResult | null> = childNodes.map(() => null)
 
@@ -147,7 +158,7 @@ async function runSpecific(
   let resolveTarget: (r: ParallelChildResult) => void
   const targetSettled = new Promise<ParallelChildResult>((res) => { resolveTarget = res })
   childNodes.forEach((child, i) => {
-    runChild(child, i).then((result) => {
+    runChild(child, i, abandonSignal).then((result) => {
       settled[i] = result
       if (i === targetIdx) resolveTarget(result)
     }).catch((err) => {
@@ -179,13 +190,14 @@ async function runSpecific(
 
 async function runFirst(
   childNodes: NodeDefinition[],
-  runChild: (child: NodeDefinition, i: number) => Promise<ParallelChildResult>,
-  timeoutMs: number
+  runChild: (child: NodeDefinition, i: number, abandonSignal: AbortSignal) => Promise<ParallelChildResult>,
+  timeoutMs: number,
+  abandonSignal: AbortSignal
 ): Promise<ParallelOutput> {
   // Each child is started; Promise.any resolves with the first fulfilled (status='fulfilled') result.
   // Rejected / timeout children are logged by runChild internally and discarded here.
   const racePromises = childNodes.map(async (child, i) => {
-    const result = await runChild(child, i)
+    const result = await runChild(child, i, abandonSignal)
     if (result.status === 'rejected') {
       // Rethrow so Promise.any sees it as a rejection
       throw Object.assign(new Error(result.error ?? 'child rejected'), { childResult: result })
