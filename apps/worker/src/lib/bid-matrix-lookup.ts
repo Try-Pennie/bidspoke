@@ -6,6 +6,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext } from '../types'
+import { fetchAllPaged } from './bid-matrix-sync'
 
 export interface MatrixDimension {
   name: string
@@ -98,17 +99,27 @@ export async function lookupMatrixBid(
 
   const isSellOff = options.use_sell_off ?? false
 
-  const { data: rowsRaw, error: rowsErr } = await supabase
-    .from('bid_matrix_rows')
-    .select('id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount')
-    .eq('config_id', configId)
-    .eq('is_sell_off', isSellOff)
-
-  if (rowsErr) {
-    throw new Error(`bid_matrix_rows query failed: ${rowsErr.message}`)
-  }
-
-  const rows = (rowsRaw ?? []) as unknown as MatrixRow[]
+  // Fetch every row for this config, deterministically ordered, and paged so a
+  // matrix larger than the PostgREST page cap isn't silently truncated (#71).
+  // Order: row_low, then range_low, then id. With inclusive bands, the first
+  // matching row in this order is the LOWEST band, so an overlap or a lead
+  // sitting exactly on a shared boundary always resolves to the same row
+  // (lower band wins) instead of whatever the database happened to return
+  // first. nullsFirst puts an unbounded-low row (row_low/range_low = null)
+  // first — it is the lowest possible band. The id tiebreaker makes the order
+  // fully stable, which fetchAllPaged needs to page without skips or dupes.
+  const rows = await fetchAllPaged<MatrixRow>(
+    (from, to) => supabase
+      .from('bid_matrix_rows')
+      .select('id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount')
+      .eq('config_id', configId)
+      .eq('is_sell_off', isSellOff)
+      .order('row_low', { ascending: true, nullsFirst: true })
+      .order('range_low', { ascending: true, nullsFirst: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+    'bid_matrix_rows lookup',
+  )
 
   const match = rows.find((r) => {
     if (!withinBand(rowVal, r.row_low, r.row_high)) return false

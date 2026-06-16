@@ -25,19 +25,25 @@ interface FakeRow {
   bid_amount: number
 }
 
-function makeSupabase(config: unknown, rows: FakeRow[]): SupabaseClient {
-  const builder = {
-    select() { return this },
-    eq() { return this },
-    single() {
-      return Promise.resolve(config ? { data: config, error: null } : { data: null, error: { message: 'not found' } })
-    },
-    // For rows query (.eq().eq() then await):
-    then(resolve: (v: { data: FakeRow[]; error: null }) => void) {
-      resolve({ data: rows, error: null })
-    },
-  }
+// Replicate PostgREST's ORDER BY row_low, range_low, id (ascending, nulls first)
+// so the mock serves rows in the same order the real query would — the lookup
+// relies on that order to make "lowest band wins" deterministic.
+function cmpNumNullsFirst(a: number | null, b: number | null): number {
+  if (a === null && b === null) return 0
+  if (a === null) return -1
+  if (b === null) return 1
+  return a - b
+}
+function sortRows(rows: FakeRow[]): FakeRow[] {
+  return [...rows].sort(
+    (x, y) =>
+      cmpNumNullsFirst(x.row_low, y.row_low) ||
+      cmpNumNullsFirst(x.range_low, y.range_low) ||
+      (x.id < y.id ? -1 : x.id > y.id ? 1 : 0)
+  )
+}
 
+function makeSupabase(config: unknown, rows: FakeRow[]): SupabaseClient {
   return {
     from(table: string) {
       if (table === 'partner_bid_configs') {
@@ -51,14 +57,20 @@ function makeSupabase(config: unknown, rows: FakeRow[]): SupabaseClient {
           },
         } as never
       }
-      if (table === 'bid_matrix_rows') {
-        return {
-          select() { return this },
-          eq(_col: string, _val: unknown) { return this },
-          then(resolve: (v: { data: FakeRow[]; error: null }) => void) {
-            resolve({ data: rows, error: null })
-          },
-        } as never
+      // bid_matrix_rows: chainable select/eq/order, with range() paging like
+      // PostgREST. The mock serves rows in INSERTION order and only applies the
+      // (row_low, range_low, id) sort if the query actually called .order() —
+      // so a lookup that forgets to order gets unsorted rows, and the
+      // lower-band-wins tests fail (the fix is genuinely guarded).
+      let ordered = false
+      const builder = {
+        select() { return this },
+        eq() { return this },
+        order() { ordered = true; return this },
+        range(from: number, to: number) {
+          const served = ordered ? sortRows(rows) : rows
+          return Promise.resolve({ data: served.slice(from, to + 1), error: null })
+        },
       }
       return builder as never
     },
@@ -138,5 +150,56 @@ describe('lookupMatrixBid', () => {
     const supabase = makeSupabase(baseConfig, rows)
     const result = await lookupMatrixBid('c-1', makeCtx({ debt_amount: -50, vantage_score: 800 }), supabase)
     expect(result.bid).toBe(75)
+  })
+
+  // ── #71: deterministic lower-band-wins + pagination ──────────────────────────
+
+  const oneDim = {
+    ...baseConfig,
+    dimensions: [{ name: 'debt', payload_field: 'debt_amount', column: 'row' }],
+  }
+
+  it('overlapping rows resolve deterministically to the lower band (#71)', async () => {
+    // Both bands contain 650. Passed high-band-first to prove the result does
+    // not depend on input/DB return order — the lower band (row_low 500) wins.
+    const rows: FakeRow[] = [
+      { id: 'r-high', is_sell_off: false, row_id: 'B', row_low: 600, row_high: 800, range_low: null, range_high: null, bid_amount: 50 },
+      { id: 'r-low',  is_sell_off: false, row_id: 'A', row_low: 500, row_high: 700, range_low: null, range_high: null, bid_amount: 25 },
+    ]
+    const supabase = makeSupabase(oneDim, rows)
+    const result = await lookupMatrixBid('c-1', makeCtx({ debt_amount: 650 }), supabase)
+    expect(result.bid).toBe(25)
+    expect(result.matched_row?.id).toBe('r-low')
+  })
+
+  it('a lead on a shared boundary resolves to the lower band (#71)', async () => {
+    // Inclusive bands: 650 matches both the 600-650 and 650-700 rows; lower wins.
+    const rows: FakeRow[] = [
+      { id: 'r-upper', is_sell_off: false, row_id: 'B', row_low: 650, row_high: 700, range_low: null, range_high: null, bid_amount: 50 },
+      { id: 'r-lower', is_sell_off: false, row_id: 'A', row_low: 600, row_high: 650, range_low: null, range_high: null, bid_amount: 25 },
+    ]
+    const supabase = makeSupabase(oneDim, rows)
+    const result = await lookupMatrixBid('c-1', makeCtx({ debt_amount: 650 }), supabase)
+    expect(result.bid).toBe(25)
+    expect(result.matched_row?.id).toBe('r-lower')
+  })
+
+  it('paginates beyond the 1000-row page cap (#71)', async () => {
+    // 1001 non-overlapping rows; the matching band is the last one, on page 2.
+    // Without pagination it would be dropped and report no_matching_cell.
+    const rows: FakeRow[] = Array.from({ length: 1001 }, (_, i) => ({
+      id: `r${String(i).padStart(4, '0')}`,
+      is_sell_off: false,
+      row_id: `R${i}`,
+      row_low: i * 10,
+      row_high: i * 10 + 9,
+      range_low: null,
+      range_high: null,
+      bid_amount: i,
+    }))
+    const supabase = makeSupabase(oneDim, rows)
+    const result = await lookupMatrixBid('c-1', makeCtx({ debt_amount: 10005 }), supabase)
+    expect(result.bid).toBe(1000)
+    expect(result.matched_row?.id).toBe('r1000')
   })
 })
