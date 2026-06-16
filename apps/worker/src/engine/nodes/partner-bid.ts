@@ -119,6 +119,44 @@ const PARTNER_SELECT =
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
   'circuit_enabled, is_active'
 
+// Record a circuit-breaker outcome with a bounded retry so a transient
+// Durable Object blip (network hiccup, brief overload) doesn't silently drop
+// the count. A dropped record-error is the dangerous case: the failure never
+// reaches the sliding-error window, so the breaker can fail to OPEN on a real
+// outage and we keep hammering a down partner. On final failure we log a
+// structured event so the under-count is visible instead of silent (#129).
+//
+// The caller decides whether to await: record-error (and other terminal-path
+// records) are awaited so the count durably lands; the success record on the
+// live winning-bid path is fired without awaiting so a healthy bid never waits.
+export async function recordBreakerOutcome(
+  ctx: ExecutionContext,
+  slug: string,
+  kind: 'success' | 'error',
+  call: () => Promise<unknown>,
+): Promise<void> {
+  const MAX_ATTEMPTS = 3
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await call()
+      return
+    } catch (err) {
+      if (attempt === MAX_ATTEMPTS) {
+        log({
+          event: 'circuit_breaker_record_failed',
+          trace_id: ctx.trigger.trace_id,
+          workflow_id: ctx.trigger.workflow_id,
+          partner_id: slug,
+          kind,
+          error_message: err instanceof Error ? err.message : String(err),
+        })
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt))
+    }
+  }
+}
+
 export async function executePartnerBidNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
@@ -278,7 +316,8 @@ export async function executePartnerBidNode(
     if (result.rejected) {
       // A business rejection is a HEALTHY partner response — record success so
       // a half-open breaker closes (no-op when the breaker is already closed).
-      if (cb) cb.recordSuccess().catch(() => {})
+      // Non-blocking with background retry + visibility on failure (#129).
+      if (cb) void recordBreakerOutcome(ctx, p.slug, 'success', () => cb.recordSuccess())
       logBid({
         partner_slug: p.slug,
         attempted_at_utc: attemptedAt,
@@ -308,7 +347,9 @@ export async function executePartnerBidNode(
     bid = result.bid
     rawResponse = result.raw
 
-    if (cb) cb.recordSuccess().catch(() => {})
+    // Live winning-bid path — fire-and-forget so a healthy bid never waits on the
+    // breaker write; still retried + logged in the background (#129).
+    if (cb) void recordBreakerOutcome(ctx, p.slug, 'success', () => cb.recordSuccess())
 
     if (bid !== null && p.min_bid !== null && bid < p.min_bid) {
       logBid({
@@ -369,11 +410,15 @@ export async function executePartnerBidNode(
     // multiplying consumption: each failed attempt refunds before withRetry
     // re-runs this node and reserves a fresh slot (#68).
     if (refundCap) await refundCap()
-    if (cb) cb.recordError({
+    // Await the error record so the count durably lands (with retry) — a dropped
+    // record-error is the dangerous case: the breaker fails to OPEN on a real
+    // outage. This is the terminal error path (the node rethrows below), so the
+    // extra round-trip is off the live winning-bid path (#129).
+    if (cb) await recordBreakerOutcome(ctx, p.slug, 'error', () => cb.recordError({
       error_threshold: p.circuit_error_threshold,
       window_seconds: p.circuit_window_seconds,
       cooldown_seconds: p.circuit_cooldown_seconds,
-    }).catch(() => {})
+    }))
 
     // Pull resolver-side input off the thrown error (callBidApi attaches its
     // outbound body before throwing). Then re-wrap and attach to the rethrow

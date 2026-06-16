@@ -3,7 +3,7 @@
  * Tests: cap enforcement, circuit breaker, formula evaluation, API call, skips.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executePartnerBidNode, evaluateFormula } from '../partner-bid'
+import { executePartnerBidNode, evaluateFormula, recordBreakerOutcome } from '../partner-bid'
 import { PartnerApiError } from '../../partner-bid-error'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -615,5 +615,48 @@ describe('evaluateFormula', () => {
 
   it('returns null when a dotted reference does not resolve to a number', () => {
     expect(evaluateFormula('loanInformation.missing * 2', ctx({ loanInformation: {} }))).toBeNull()
+  })
+})
+
+// ── recordBreakerOutcome — retry + visibility on a failed DO write (#129) ──────
+
+describe('recordBreakerOutcome (#129)', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => { logSpy = vi.spyOn(console, 'log').mockImplementation(() => {}) })
+  afterEach(() => { logSpy.mockRestore() })
+
+  const loggedFailures = (): Record<string, unknown>[] =>
+    logSpy.mock.calls
+      .map((c: unknown[]) => { try { return JSON.parse(c[0] as string) as Record<string, unknown> } catch { return {} } })
+      .filter((o: Record<string, unknown>) => o.event === 'circuit_breaker_record_failed')
+
+  it('records on the first try and does not retry or log a failure', async () => {
+    const call = vi.fn().mockResolvedValue(undefined)
+    await recordBreakerOutcome(makeCtx(), 'tripoint', 'error', call)
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(loggedFailures()).toHaveLength(0)
+  })
+
+  it('retries a transient blip and succeeds without logging a failure', async () => {
+    const call = vi.fn()
+      .mockRejectedValueOnce(new Error('DO blip'))
+      .mockRejectedValueOnce(new Error('DO blip'))
+      .mockResolvedValue(undefined)
+    await recordBreakerOutcome(makeCtx(), 'tripoint', 'error', call)
+    expect(call).toHaveBeenCalledTimes(3)
+    expect(loggedFailures()).toHaveLength(0)
+  })
+
+  it('logs a visible failure event (and does not throw) when every attempt fails', async () => {
+    const call = vi.fn().mockRejectedValue(new Error('DO down'))
+    await expect(
+      recordBreakerOutcome(makeCtx(), 'tripoint', 'error', call)
+    ).resolves.toBeUndefined()
+    expect(call).toHaveBeenCalledTimes(3)
+    const failures = loggedFailures()
+    expect(failures).toHaveLength(1)
+    expect(failures[0].kind).toBe('error')
+    expect(failures[0].partner_id).toBe('tripoint')
+    expect(String(failures[0].error_message)).toContain('DO down')
   })
 })
