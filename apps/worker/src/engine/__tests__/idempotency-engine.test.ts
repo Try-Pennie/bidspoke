@@ -284,6 +284,67 @@ describe('resume and replay (recovery runs)', () => {
   })
 })
 
+describe('processing marker ordering (#67)', () => {
+  it('writes and awaits the processing marker before the first step runs', async () => {
+    mockNodesSucceed()
+
+    // KV whose processing-marker put is gated on a manual release, so we can
+    // observe whether the walk starts before the marker is durable.
+    let releaseProcessing!: () => void
+    const processingWritten = new Promise<void>((res) => { releaseProcessing = res })
+    let markerValue: string | undefined
+    const store = new Map<string, string>()
+    const kv = {
+      async get(k: string, type?: string) {
+        const raw = store.get(k)
+        if (raw === undefined) return null
+        return type === 'json' ? JSON.parse(raw) : raw
+      },
+      async put(k: string, value: string) {
+        store.set(k, value)
+        if (value.includes('"status":"processing"')) {
+          markerValue = value
+          await processingWritten
+        }
+      },
+      async delete(k: string) { store.delete(k) },
+    } as unknown as KVNamespace
+
+    const background: Promise<unknown>[] = []
+    const env = {
+      IDEMPOTENCY: kv,
+      WORKFLOW_CACHE: makeKV().kv,
+      APP_URL: 'https://app.test',
+      PII_REDACTION_FIELDS: '',
+    } as unknown as Env
+    const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+
+    const result = executeWorkflow(
+      { workflowId: WF_ID, payload: PAYLOAD, source: 'test-source' },
+      env,
+      supabase,
+      executionCtx
+    )
+
+    // Wait until the processing marker has been written (the async digest that
+    // derives the key resolves on a later tick). Once it is, the walk must be
+    // suspended on the awaited marker — no step has executed yet. Without the
+    // fix the walk runs concurrently with the unawaited put, so executeNode is
+    // already called by the time the marker lands.
+    for (let i = 0; i < 50 && markerValue === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    expect(markerValue).toContain('"status":"processing"')
+    expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
+
+    // Release the marker write — only now may the walk proceed.
+    releaseProcessing()
+    await result
+    await Promise.all(background)
+    expect(vi.mocked(executeNode)).toHaveBeenCalled()
+  })
+})
+
 describe('test runs', () => {
   it('neither read from nor write to the idempotency cache', async () => {
     mockNodesSucceed()
