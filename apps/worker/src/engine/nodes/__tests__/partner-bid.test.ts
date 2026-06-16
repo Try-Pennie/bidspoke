@@ -3,7 +3,7 @@
  * Tests: cap enforcement, circuit breaker, formula evaluation, API call, skips.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executePartnerBidNode, evaluateFormula, recordBreakerOutcome } from '../partner-bid'
+import { executePartnerBidNode, evaluateFormula, recordBreakerOutcome, meetsBidFloor } from '../partner-bid'
 import { PartnerApiError } from '../../partner-bid-error'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -357,6 +357,51 @@ describe('executePartnerBidNode', () => {
       const output = result.output as PartnerBidOutput
       expect(output.skipped).toBe(true)
       expect(output.skip_reason).toBe('bid_below_min')
+    })
+
+    // #109: a $0 bid (a common decline encoding) must not count as a winnable bid
+    // unless the partner opts in with min_bid: 0.
+    it('declines a $0 bid when no min_bid is set', async () => {
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 0 }), // formula → 0
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ bid_formula: 'debt_amount * 0.65', min_bid: null })) as any
+      )
+      const output = result.output as PartnerBidOutput
+      expect(output.accepted).toBe(false)
+      expect(output.skipped).toBe(true)
+      expect(output.skip_reason).toBe('bid_below_min')
+    })
+
+    it('accepts a $0 bid when the partner sets min_bid: 0', async () => {
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 0 }), // formula → 0
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ bid_formula: 'debt_amount * 0.65', min_bid: 0 })) as any
+      )
+      const output = result.output as PartnerBidOutput
+      expect(output.bid).toBe(0)
+      expect(output.accepted).toBe(true)
+      expect(output.skipped).toBe(false)
+    })
+  })
+
+  describe('meetsBidFloor (#109)', () => {
+    it('requires a strictly positive bid when no min_bid is set', () => {
+      expect(meetsBidFloor(0, null)).toBe(false)
+      expect(meetsBidFloor(-1, null)).toBe(false)
+      expect(meetsBidFloor(0.01, undefined)).toBe(true)
+      expect(meetsBidFloor(50, null)).toBe(true)
+    })
+    it('honors an explicit min_bid, including 0 (allows $0, rejects negatives)', () => {
+      expect(meetsBidFloor(0, 0)).toBe(true)
+      expect(meetsBidFloor(-0.01, 0)).toBe(false)
+      expect(meetsBidFloor(2.99, 3)).toBe(false)
+      expect(meetsBidFloor(3, 3)).toBe(true)
     })
   })
 

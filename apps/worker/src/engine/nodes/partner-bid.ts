@@ -157,6 +157,16 @@ export async function recordBreakerOutcome(
   }
 }
 
+// A bid must clear the partner's floor to count as a real, winnable bid. With an
+// explicit min_bid (including 0) the floor is `bid >= min_bid`; with no min_bid
+// the floor is `bid > 0`, so a $0 (a common decline encoding) or a negative bid
+// is treated as a decline rather than a winnable bid (#109). A partner that
+// should win at $0 opts in by setting min_bid: 0 explicitly.
+export function meetsBidFloor(bid: number, minBid: number | null | undefined): boolean {
+  if (minBid != null) return bid >= minBid
+  return bid > 0
+}
+
 export async function executePartnerBidNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
@@ -351,7 +361,7 @@ export async function executePartnerBidNode(
     // breaker write; still retried + logged in the background (#129).
     if (cb) void recordBreakerOutcome(ctx, p.slug, 'success', () => cb.recordSuccess())
 
-    if (bid !== null && p.min_bid !== null && bid < p.min_bid) {
+    if (bid !== null && !meetsBidFloor(bid, p.min_bid)) {
       logBid({
         partner_slug: p.slug,
         attempted_at_utc: attemptedAt,
