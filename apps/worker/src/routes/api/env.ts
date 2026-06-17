@@ -100,6 +100,11 @@ env.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ key?: string; value?: string; folder_id?: string | null }>()
 
+  // `body.key ?? existing.key` would otherwise store an empty-string key.
+  if (body.key !== undefined && !body.key.trim()) {
+    return c.json({ error: 'key cannot be empty' }, 400)
+  }
+
   const { data: existing, error: fetchError } = await supabase
     .from('environment_variables')
     .select('*')
@@ -109,16 +114,37 @@ env.put('/:id', async (c) => {
 
   if (fetchError || !existing) return c.json({ error: 'Variable not found' }, 404)
 
+  const newKey = body.key ?? existing.key
+  const isRename = existing.is_secret && newKey !== existing.key
+
   let updatedValue: string | null | undefined
-  if (existing.is_secret && body.value) {
-    await setCfSecret(existing.key, body.value, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
-    updatedValue = await encryptSecret(body.value, c.env.SECRET_ENCRYPTION_KEY)
-  } else if (!existing.is_secret) {
+  if (existing.is_secret) {
+    // Resolve the plaintext to write to Cloudflare: the new value on a rotation,
+    // else (a rename with no new value) the current value decrypted from storage
+    // so the secret can be copied to the new name. A rename that touches neither
+    // a new value nor a recoverable stored value can't be carried over (#104).
+    let plaintext: string | null = body.value ?? null
+    if (plaintext === null && isRename) {
+      if (!existing.value) {
+        return c.json({ error: 'Provide a new value to rename this secret' }, 400)
+      }
+      plaintext = await decryptSecret(existing.value, c.env.SECRET_ENCRYPTION_KEY)
+    }
+    if (plaintext !== null) {
+      // Write under the NEW name first (no window without a secret), then drop
+      // the old name so it isn't orphaned in Cloudflare.
+      await setCfSecret(newKey, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+      updatedValue = await encryptSecret(plaintext, c.env.SECRET_ENCRYPTION_KEY)
+    }
+    if (isRename) {
+      await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+    }
+  } else {
     updatedValue = body.value ?? existing.value
   }
 
   const updates: Record<string, unknown> = {
-    key: body.key ?? existing.key,
+    key: newKey,
     value: updatedValue ?? existing.value,
     updated_by: userId,
     updated_by_email: email,
@@ -148,7 +174,10 @@ env.put('/:id', async (c) => {
   if (error) return c.json({ error: error.message }, 500)
 
   await Promise.all([
-    writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, { key: existing.key }),
+    writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, {
+      key: existing.key,
+      ...(newKey !== existing.key ? { renamed_to: newKey } : {}),
+    }),
     invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
   ])
 
