@@ -20,8 +20,12 @@ import { getSlackConnection, postMessage } from './slack'
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const ALERT_THRESHOLD_PCT = 25
 export const MIN_BASELINE_PER_MIN = 10
-export const BASELINE_WINDOW_MINUTES = 55  // [-60, -5)
-export const RECENT_WINDOW_MINUTES = 5     // [-5, 0)
+export const BASELINE_WINDOW_MINUTES = 55  // indices 0-54, minutes [-59, -5]
+// The recent window is the last 4 COMPLETE minutes [-4, -1]. The current minute
+// (index 59) is in progress and ~empty at cron-fire time, so including it would
+// deflate the recent count and fire the alert ~6 percentage points more eagerly
+// than ALERT_THRESHOLD_PCT configures (#110). It is dropped in detectCliff.
+export const RECENT_WINDOW_MINUTES = 4     // [-4, -1]
 
 // External URL we hit when a cliff fires, to confirm the worker is reachable from
 // outside Cloudflare. A 200 here means the issue is upstream of CF (caller stopped
@@ -59,14 +63,17 @@ export function detectCliff(
   if (perMinuteCounts.length !== 60) return null
 
   const baseline = perMinuteCounts.slice(0, BASELINE_WINDOW_MINUTES)
-  const recent = perMinuteCounts.slice(BASELINE_WINDOW_MINUTES)
+  // Drop the final bucket (index 59) — the current, in-progress minute is ~empty
+  // at cron-fire time and would deflate the recent count (#110). Compare the last
+  // 4 complete minutes against median * 4.
+  const recent = perMinuteCounts.slice(BASELINE_WINDOW_MINUTES, perMinuteCounts.length - 1)
 
   const sorted = [...baseline].sort((a, b) => a - b)
   const median = sorted[Math.floor(sorted.length / 2)]
   if (median < minBaseline) return null
 
   const recentCount = recent.reduce((sum, n) => sum + n, 0)
-  const expected = median * RECENT_WINDOW_MINUTES
+  const expected = median * recent.length
   const threshold = expected * (lowPct / 100)
   if (recentCount >= threshold) return null
 
@@ -98,7 +105,7 @@ export async function runVolumeCliffCheck(
 
   const { data: workflows } = await supabase
     .from('workflows')
-    .select('id, name, organization_id')
+    .select('id, name, organization_id, slack_channel')
     .in('organization_id', slackOrgIds)
     .eq('is_active', true)
     .is('deleted_at', null)
@@ -174,7 +181,10 @@ export async function runVolumeCliffCheck(
 
     const selfCheck = await getSelfCheck()
 
-    const sent = await sendCliffAlert(slack, {
+    // Honor the per-workflow channel override, like every other alert path;
+    // fall back to the org default (#110).
+    const channel = (wf.slack_channel as string | null) ?? slack.default_channel
+    const sent = await sendCliffAlert(slack, channel, {
       workflow_id: wfId,
       workflow_name: wf.name as string,
       organization_id: wf.organization_id as string,
@@ -214,8 +224,9 @@ async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
 
 // Returns the message ts on success, or null if the alert was not delivered
 // (HTTP error or Slack ok:false) — the caller gates the cooldown on this.
-async function sendCliffAlert(
-  slack: { bot_token: string; default_channel: string },
+export async function sendCliffAlert(
+  slack: { bot_token: string },
+  channel: string,
   cliff: CliffDetection,
   appUrl: string,
   selfCheck: SelfCheckResult
@@ -236,12 +247,12 @@ async function sendCliffAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `<!here> *${cliff.workflow_name}* received *${cliff.recent_count} executions in the last 5 minutes*. Only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
+        text: `<!here> *${cliff.workflow_name}* received *${cliff.recent_count} executions in the last ${RECENT_WINDOW_MINUTES} minutes*. Only *${ratePct}% of expected* based on the prior hour's rate of ~${cliff.baseline_per_min}/min.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: checkLine } },
     { type: 'section', text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` } },
   ]
 
-  return postMessage(slack.bot_token, slack.default_channel, blocks, `Workflow volume cliff: ${cliff.workflow_name}`)
+  return postMessage(slack.bot_token, channel, blocks, `Workflow volume cliff: ${cliff.workflow_name}`)
 }
