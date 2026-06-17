@@ -17,6 +17,7 @@ import {
   ChevronRight,
   ChevronDown,
   Pencil,
+  RefreshCw,
 } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -65,6 +66,24 @@ export default function EnvPage() {
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
   const folderMoveMenuRef = useRef<HTMLDivElement>(null)
   const [rowMenuOpen, setRowMenuOpen] = useState<string | null>(null)
+
+  // Re-sync secrets to Cloudflare (#199) — repairs drift the daily check alerts on.
+  const [resyncing, setResyncing] = useState(false)
+  const [resyncResult, setResyncResult] = useState<{ resynced: string[]; skipped: { key: string; reason: string }[] } | null>(null)
+
+  async function handleResyncSecrets() {
+    setResyncing(true)
+    setResyncResult(null)
+    setError(null)
+    try {
+      const r = await api.env.resyncSecrets()
+      setResyncResult({ resynced: r.resynced, skipped: r.skipped })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to re-sync secrets')
+    } finally {
+      setResyncing(false)
+    }
+  }
   const rowMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -859,6 +878,15 @@ export default function EnvPage() {
           <div className="flex items-center gap-3">
             <SearchInput ref={searchRef} onChange={setSearchQuery} />
             <button
+              onClick={handleResyncSecrets}
+              disabled={resyncing}
+              className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige disabled:opacity-50"
+              title="Re-push any secrets the app expects but Cloudflare is missing"
+            >
+              {resyncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Re-sync secrets
+            </button>
+            <button
               onClick={() => setCreatingFolderParent(null)}
               className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
               title="New folder"
@@ -875,6 +903,23 @@ export default function EnvPage() {
             </button>
           </div>
         </div>
+
+        {resyncResult && (
+          <div className="mb-4 rounded-lg border border-gray-200 bg-beige px-4 py-3 text-sm text-graphite">
+            {resyncResult.resynced.length === 0 && resyncResult.skipped.length === 0
+              ? 'All secrets are already in sync with Cloudflare.'
+              : (
+                <>
+                  {resyncResult.resynced.length > 0 && (
+                    <p>Re-synced {resyncResult.resynced.length} secret{resyncResult.resynced.length === 1 ? '' : 's'} to Cloudflare: {resyncResult.resynced.join(', ')}.</p>
+                  )}
+                  {resyncResult.skipped.length > 0 && (
+                    <p className="mt-1 text-amber-700">Could not re-sync {resyncResult.skipped.map((s) => s.key).join(', ')} — rotate {resyncResult.skipped.length === 1 ? 'it' : 'them'} to re-enable sync.</p>
+                  )}
+                </>
+              )}
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

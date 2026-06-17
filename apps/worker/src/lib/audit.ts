@@ -23,6 +23,7 @@ export type AuditAction =
   | 'circuit_force_closed'
   | 'secret_rotated'
   | 'secret_revealed'
+  | 'secrets_resynced'
   | 'schema_synced'
 
 export async function writeAuditLog(

@@ -4,8 +4,8 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, postMessage, sendSlowSpikeAlert } from '../slack'
-import type { FailureAlertPayload, SlowSpikeAlertPayload } from '../slack'
+import { sendFailureAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert } from '../slack'
+import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -249,5 +249,43 @@ describe('sendSlowSpikeAlert — propagates delivery result (for cooldown gating
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sent = await sendSlowSpikeAlert(makeSupabase(slackConnection) as any, 'org-1', null, spikePayload, 'https://app')
     expect(sent).toBe('200.1')
+  })
+})
+
+describe('sendSecretDriftAlert (#199)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
+
+  it('posts a Block Kit message naming the missing secrets', async () => {
+    const sent = await sendSecretDriftAlert(
+      conn,
+      [
+        { key: 'STRIPE_KEY', scope: 'global', workflow_id: null },
+        { key: 'WF_TOKEN', scope: 'workflow', workflow_id: 'wf-9' },
+      ],
+      'https://app.test',
+    )
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.channel).toBe('#alerts')
+    expect(body.unfurl_links).toBe(false)
+    const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
+      ...(b.fields ?? []).map((f) => f.text), b.text?.text ?? '',
+    ]).join('\n')
+    expect(text).toContain('Secret Out of Sync')
+    expect(text).toContain('STRIPE_KEY')
+    expect(text).toContain('WF_TOKEN')
+    expect(text).toContain('missing from Cloudflare')
+  })
+
+  it('does nothing and reports not-sent when there are no missing secrets', async () => {
+    expect(await sendSecretDriftAlert(conn, [], 'https://app.test')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

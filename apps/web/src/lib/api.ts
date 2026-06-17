@@ -410,6 +410,11 @@ export const api = {
       req<EnvVar>(`/api/env/${id}`, { method: 'PUT', body: JSON.stringify({ folder_id }) }),
     reveal: (id: string) => req<{ value: string }>(`/api/env/${id}/reveal`),
     delete: (id: string) => req<{ ok: boolean }>(`/api/env/${id}`, { method: 'DELETE' }),
+    resyncSecrets: () =>
+      req<{ missing: number; resynced: string[]; skipped: { key: string; reason: string }[] }>(
+        '/api/env/resync-secrets',
+        { method: 'POST' },
+      ),
   },
 
   executions: {
