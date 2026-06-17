@@ -58,6 +58,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
 import { reachableFromTrigger } from './reachability'
+import { migrateParallelEdges, migrateDefinition } from './migrate'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
@@ -408,80 +409,6 @@ function computeRegionNodes(nodes: Node[], edges: Edge[]): Node[] {
   })
 }
 
-function migrateParallelEdges(nodes: NodeDef[], edges: EdgeDef[]): EdgeDef[] {
-  const parallelNodes = nodes.filter((n) => n.type === 'parallel' && (n.children?.length ?? 0) > 0)
-  if (parallelNodes.length === 0) return edges
-
-  let result = [...edges]
-
-  for (const pNode of parallelNodes) {
-    const childIds = new Set(pNode.children ?? [])
-    // Already has fan-out edges — skip migration
-    if (result.some((e) => e.source === pNode.id && (e.source_handle ?? '').startsWith('child-'))) continue
-
-    // Remove sequential edges between children
-    result = result.filter((e) => !(childIds.has(e.source) && childIds.has(e.target)))
-    // Remove the old single sequential edge from parallel to its first child
-    result = result.filter((e) => !(e.source === pNode.id && childIds.has(e.target)))
-
-    // Add fan-out edges from parallel to each child
-    const children = pNode.children ?? []
-    for (let i = 0; i < children.length; i++) {
-      result.push({
-        id: `${pNode.id}-child-${i}`,
-        source: pNode.id,
-        target: children[i],
-        source_handle: `child-${i}`,
-      })
-    }
-  }
-
-  return result
-}
-
-// Backfill branch_end nodes for any branch that doesn't already have one.
-// Mirrors the parallel start/end pattern. The synthesized backbone edge is
-// hidden but persists through save → load round-trips so the pairing
-// sticks; the engine never traverses backbone edges (branch routing requires
-// a `_route`-matched named handle), so this is safe for live workflows.
-function backfillBranchEnds(nodes: NodeDef[], edges: EdgeDef[]): { nodes: NodeDef[]; edges: EdgeDef[] } {
-  const branchesNeedingEnd = nodes.filter((n) => {
-    if (n.type !== 'branch') return false
-    const incomingToEnds = edges
-      .filter((e) => e.source === n.id)
-      .map((e) => nodes.find((x) => x.id === e.target))
-    return !incomingToEnds.some((t) => t?.type === 'branch_end')
-  })
-  if (branchesNeedingEnd.length === 0) return { nodes, edges }
-
-  const usedNamespaces = new Set(nodes.map((n) => n.namespace))
-  const newNodes: NodeDef[] = []
-  const newEdges: EdgeDef[] = []
-  for (const branch of branchesNeedingEnd) {
-    const baseNs = `${branch.namespace}_end`
-    let ns = baseNs
-    let i = 2
-    while (usedNamespaces.has(ns)) ns = `${baseNs}_${i++}`
-    usedNamespaces.add(ns)
-    const endId = crypto.randomUUID()
-    newNodes.push({
-      id: endId,
-      namespace: ns,
-      type: 'branch_end',
-      position: { x: 0, y: 0 }, // dagre will place it on the next layout pass
-      config: {},
-      variables: {},
-    })
-    newEdges.push({
-      id: crypto.randomUUID(),
-      source: branch.id,
-      target: endId,
-      source_handle: 'output',
-    })
-  }
-  return { nodes: [...nodes, ...newNodes], edges: [...edges, ...newEdges] }
-}
-
 // Push any nodes that are no longer reachable from the trigger off to the right
 // of the main flow, keeping them at their current Y and marking manualPosition
 // so dagre won't re-align them. Used by every code path that can orphan nodes
@@ -606,6 +533,18 @@ function defToEdges(edges: EdgeDef[]): Edge[] {
     data: { condition: e.condition },
     ...(e.hidden ? { hidden: true } : {}),
   }))
+}
+
+// Build React Flow nodes + edges from a raw definition, running the legacy-shape
+// migrations first. Both the initial mount and version restore (#114) go through
+// this single path so they can't drift — a restore that skips the migrations
+// would leave the canvas in a half-migrated state the next save would persist.
+function defToFlow(definition: WorkflowDef | null | undefined): { nodes: Node[]; edges: Edge[] } {
+  const m = migrateDefinition(definition)
+  return {
+    nodes: defToNodes(m.nodes, m.edges, m.trigger),
+    edges: defToEdges(m.edges),
+  }
 }
 
 function flowToDef(
@@ -942,18 +881,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [layoutSettled, setLayoutSettled] = useState(false)
   const layoutSettleDoneRef = useRef(false)
 
-  // Backfill any legacy branches with a paired branch_end + hidden backbone
-  // BEFORE both nodes and edges are computed so the synthesized edges land
-  // in the React Flow edge state, not just the node state.
-  const backfilled = backfillBranchEnds(
-    workflow.definition?.nodes ?? [],
-    workflow.definition?.edges ?? []
-  )
-  const initEdges = defToEdges(migrateParallelEdges(backfilled.nodes, backfilled.edges))
-  const [nodes, setNodes, onNodesChange] = useNodesState(
-    defToNodes(backfilled.nodes, backfilled.edges, workflow.definition?.trigger)
-  )
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges)
+  // Backfill any legacy branches with a paired branch_end + hidden backbone and
+  // migrate legacy parallel children into fan-out edges BEFORE both nodes and
+  // edges are computed, so the synthesized edges land in the React Flow edge
+  // state, not just the node state. Restore goes through the same defToFlow.
+  const initFlow = defToFlow(workflow.definition)
+  const [nodes, setNodes, onNodesChange] = useNodesState(initFlow.nodes)
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initFlow.edges)
   const [name, setName] = useState(workflow.name)
   const [isDirty, setIsDirty] = useState(false)
   const [triggerVersion, setTriggerVersion] = useState(0)
@@ -2773,14 +2707,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   async function handleVersionRestore(versionId: string) {
     await api.versions.restore(workflow.id, versionId)
     const updated = await api.workflows.get(workflow.id)
-    const newNodes = defToNodes(
-      updated.definition?.nodes ?? [],
-      updated.definition?.edges ?? [],
-      updated.definition?.trigger
-    )
-    const newEdges = defToEdges(updated.definition?.edges ?? [])
-    setNodes(newNodes)
-    setEdges(newEdges)
+    // Run the same migration pipeline the initial mount does (#114) — restoring
+    // an old version is exactly when legacy shapes appear, and skipping the
+    // migrations here left the canvas half-migrated for the next save to persist.
+    const restored = defToFlow(updated.definition)
+    setNodes(restored.nodes)
+    setEdges(restored.edges)
     triggerRef.current = updated.definition?.trigger ?? DEFAULT_TRIGGER
     setName(updated.name)
     setIsDirty(false)
