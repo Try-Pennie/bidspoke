@@ -3,11 +3,9 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Package } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
-import { SuccessBadge } from './SuccessBadge'
-import { NoteBadge } from './NoteBadge'
 
 export function ConstantsNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const dataObj = config.data as Record<string, unknown> | undefined
   const keyCount = dataObj ? Object.keys(dataObj).length : 0
   const outputPreview = getOutputPreview(executionStep)
@@ -28,8 +26,6 @@ export function ConstantsNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(execForStyle, hasError, isReachable)}`}
       style={getExecutionStyle(execForStyle)}
     >
-      <SuccessBadge visible={isSuccessNode} />
-      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
       <Handle type="source" position={Position.Bottom} id="output" />
 

@@ -3,8 +3,6 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData, EdgeCondition } from '@/types/workflow'
 import { Filter } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
-import { SuccessBadge } from './SuccessBadge'
-import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
 
 const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
@@ -14,7 +12,7 @@ const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
 }
 
 export function FilterNode({ data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
   const condition = config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined
   const outputPreview = getOutputPreview(executionStep)
@@ -45,8 +43,6 @@ export function FilterNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={{ ...getExecutionStyle(executionStep), width }}
     >
-      <SuccessBadge visible={isSuccessNode} />
-      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-p-blue-light border-b border-p-blue-light px-3 py-2">

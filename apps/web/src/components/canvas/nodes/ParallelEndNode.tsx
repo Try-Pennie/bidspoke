@@ -5,8 +5,6 @@ import type { NodeProps, Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
-import { SuccessBadge } from './SuccessBadge'
-import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
 
 interface ParallelChildResult {
@@ -15,7 +13,7 @@ interface ParallelChildResult {
 }
 
 export function ParallelEndNode({ data, selected }: NodeProps) {
-  const { executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
+  const { executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const pairId = (data as { _pairId?: string })._pairId
 
   // Look up the paired start node to derive the end node's display.
@@ -55,8 +53,6 @@ export function ParallelEndNode({ data, selected }: NodeProps) {
       } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
       style={{ ...getExecutionStyle(effectiveStep), width }}
     >
-      <SuccessBadge visible={isSuccessNode} />
-      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-beige border-b border-gray-100 px-3 py-2">
