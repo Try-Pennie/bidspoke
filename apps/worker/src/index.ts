@@ -6,6 +6,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runSecretDriftCheck } from './lib/secret-drift'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runSightingsExport } from './lib/sightings-export'
@@ -162,6 +163,11 @@ export default {
       ctx.waitUntil(
         runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[timeout-audit] check failed:', e))
+      )
+      ctx.waitUntil(
+        runSecretDriftCheck(supabase, env)
+          .then((r) => console.log(`[secret-drift] checked=${r.checked} missing=${r.missing} alerted=${r.alerted}`))
+          .catch((e) => console.error('[secret-drift] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(

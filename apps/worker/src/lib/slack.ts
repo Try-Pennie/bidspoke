@@ -578,6 +578,46 @@ export async function sendTimeoutConfigAlert(
   )
 }
 
+/**
+ * Alert that one or more secret env vars the database expects are missing from
+ * Cloudflare — so any workflow referencing them resolves to nothing (#199).
+ * Posted by the daily secret-drift cron; the caller has already fetched the
+ * connection and checked config_alerts_enabled. Returns true when delivered.
+ */
+export async function sendSecretDriftAlert(
+  connection: SlackConnection,
+  missing: { key: string; scope: string; workflow_id: string | null }[],
+  appUrl: string
+): Promise<boolean> {
+  if (missing.length === 0) return false
+
+  const lines = missing.slice(0, 30).map((s) => {
+    const where = s.scope === 'global' || !s.workflow_id ? 'global' : `workflow ${s.workflow_id}`
+    return `• \`${s.key}\` (${where})`
+  })
+  const more = missing.length > 30 ? `\n_and ${missing.length - 30} more_` : ''
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Secret Out of Sync', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${missing.length} secret${missing.length === 1 ? '' : 's'} the app expects ${missing.length === 1 ? 'is' : 'are'} missing from Cloudflare.* Any workflow referencing ${missing.length === 1 ? 'it' : 'them'} resolves to nothing. Re-sync from the saved copy on the Environment Variables page.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') + more } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/env|Open Environment Variables →>` } },
+  ]
+
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Secrets out of sync: ${missing.length} missing from Cloudflare`
+  )) !== null
+}
+
 function linkSuffix(url: string | undefined): string {
   return url ? ` · <${url}|view in SF>` : ''
 }

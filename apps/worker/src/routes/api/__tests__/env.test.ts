@@ -16,7 +16,7 @@ vi.mock('../../../lib/secret-crypto', () => ({
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
-import { setCfSecret, deleteCfSecret } from '../../../lib/cf-secrets'
+import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../../lib/cf-secrets'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -404,5 +404,53 @@ describe('DELETE /env/:id', () => {
     )
     await request(app, 'DELETE', '/env/v1')
     expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /env/resync-secrets (#199)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('re-pushes only the secrets Cloudflare is missing, skipping ones with no saved value', async () => {
+    vi.mocked(listCfSecretNames).mockResolvedValue(new Set(['PRESENT_KEY']))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: {
+          list: [
+            { id: 'v1', key: 'PRESENT_KEY', value: 'enc' },   // in CF — left alone
+            { id: 'v2', key: 'MISSING_KEY', value: 'enc' },    // missing — re-pushed
+            { id: 'v3', key: 'NOVALUE_KEY', value: null },     // missing but no saved value — skipped
+          ],
+        },
+      }) as never
+    )
+
+    const res = await request(app, 'POST', '/env/resync-secrets')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { missing: number; resynced: string[]; skipped: { key: string }[] }
+    expect(body.missing).toBe(2)
+    expect(body.resynced).toEqual(['MISSING_KEY'])
+    expect(body.skipped.map((s) => s.key)).toEqual(['NOVALUE_KEY'])
+    // Only the missing-with-value secret is pushed; the present one is not touched.
+    expect(vi.mocked(setCfSecret)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('MISSING_KEY', 'decrypted-test-value', 'acct-123', 'tok-abc')
+  })
+
+  it('returns 503 when Cloudflare secret sync is not configured', async () => {
+    vi.mocked(listCfSecretNames).mockResolvedValue(null)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser } }) as never
+    )
+    const res = await request(app, 'POST', '/env/resync-secrets')
+    expect(res.status).toBe(503)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
   })
 })

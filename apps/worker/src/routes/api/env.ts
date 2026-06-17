@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
-import { setCfSecret, deleteCfSecret } from '../../lib/cf-secrets'
+import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../lib/cf-secrets'
 import { writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret } from '../../lib/secret-crypto'
@@ -227,6 +227,53 @@ env.get('/:id/reveal', async (c) => {
   )
 
   return c.json({ value: plaintext })
+})
+
+// POST /api/env/resync-secrets — re-push secrets the database has but Cloudflare
+// is missing, from the saved encrypted copy (#199). Repairs the drift the daily
+// secret-drift check alerts on. Secrets with no recoverable value (created before
+// encryption was enabled) can't be re-pushed and are reported as skipped.
+env.post('/resync-secrets', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+
+  const cfNames = await listCfSecretNames(c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+  if (cfNames === null) return c.json({ error: 'Cloudflare secret sync is not configured' }, 503)
+
+  const { data, error } = await supabase
+    .from('environment_variables')
+    .select('id, key, value')
+    .eq('organization_id', orgId)
+    .eq('is_secret', true)
+  if (error) return c.json({ error: error.message }, 500)
+
+  const missing = (data ?? []).filter((s) => !cfNames.has(s.key as string))
+  const resynced: string[] = []
+  const skipped: { key: string; reason: string }[] = []
+
+  for (const s of missing) {
+    const key = s.key as string
+    const enc = s.value as string | null
+    if (!enc) {
+      skipped.push({ key, reason: 'no saved value (rotate the secret to re-enable sync)' })
+      continue
+    }
+    try {
+      const plaintext = await decryptSecret(enc, c.env.SECRET_ENCRYPTION_KEY)
+      await setCfSecret(key, plaintext, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
+      resynced.push(key)
+    } catch (e) {
+      skipped.push({ key, reason: e instanceof Error ? e.message : 'resync failed' })
+    }
+  }
+
+  if (resynced.length > 0) {
+    c.executionCtx.waitUntil(
+      writeAuditLog(supabase, orgId, 'environment_variable', orgId, 'secrets_resynced', userId, { keys: resynced })
+    )
+  }
+
+  return c.json({ missing: missing.length, resynced, skipped })
 })
 
 // DELETE /api/env/:id

@@ -3,6 +3,30 @@
 
 const WORKER_NAME = 'bidspoke-worker'
 
+// List the names of the worker's Cloudflare secrets (names only — the API never
+// returns secret values). Used by the secret-drift check to compare against the
+// secrets the database expects (#199). Returns null when CF isn't configured
+// (dev) so callers can skip rather than treat it as "no secrets exist".
+export async function listCfSecretNames(
+  accountId: string | undefined,
+  apiToken: string | undefined
+): Promise<Set<string> | null> {
+  if (!accountId || !apiToken) {
+    console.warn('[dev] Skipping CF secret list — CLOUDFLARE_ACCOUNT_ID/API_TOKEN not configured')
+    return null
+  }
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER_NAME}/secrets`,
+    { method: 'GET', headers: { Authorization: `Bearer ${apiToken}` } }
+  )
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Failed to list Cloudflare secrets (${res.status}): ${body}`)
+  }
+  const data = await res.json() as { result?: { name: string }[] | null }
+  return new Set((data.result ?? []).map((s) => s.name))
+}
+
 export async function setCfSecret(
   key: string,
   value: string,
