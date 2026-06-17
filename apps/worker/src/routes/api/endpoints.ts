@@ -142,7 +142,7 @@ endpoints.post('/', async (c) => {
     return c.json({ error: error.message }, 500)
   }
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', data.id, 'created', userId, {
+  await writeAuditLog(supabase, orgId, 'webhook_endpoint', data.id, 'created', userId, {
     subdomain,
     path,
     action: 'webhook_endpoint_created',
@@ -224,7 +224,7 @@ endpoints.put('/:id', async (c) => {
   await c.env.WORKFLOW_CACHE.delete(oldKey)
   if (newKey !== oldKey) await c.env.WORKFLOW_CACHE.delete(newKey)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', id, 'updated', userId, {
+  await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'updated', userId, {
     action: 'webhook_endpoint_updated',
   })
 
@@ -257,7 +257,7 @@ endpoints.delete('/:id', async (c) => {
 
   await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, {
+  await writeAuditLog(supabase, orgId, 'webhook_endpoint', id, 'deleted', userId, {
     subdomain: existing.subdomain,
     path: existing.path,
     action: 'webhook_endpoint_deleted',

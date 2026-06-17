@@ -24,6 +24,7 @@ type TableConfig = {
   single?: Record<string, unknown> | null
   list?: Record<string, unknown>[]
   insertError?: { message: string; code?: string }
+  insertResult?: Record<string, unknown> | null
 }
 
 function makeSupabase(tables: Record<string, TableConfig> = {}) {
@@ -49,8 +50,11 @@ function makeSupabase(tables: Record<string, TableConfig> = {}) {
               const ic: unknown = new Proxy({}, {
                 get(__, p) {
                   if (typeof p === 'symbol') return undefined
+                  // .insert(...).select('id').single() resolves to the inserted row.
+                  if (p === 'single') return () =>
+                    Promise.resolve({ data: cfg.insertResult ?? null, error: cfg.insertError ?? null })
                   if (p === 'then') return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: cfg.insertError ?? null }).then(resolve)
+                    Promise.resolve({ data: cfg.insertResult ?? null, error: cfg.insertError ?? null }).then(resolve)
                   return () => ic
                 },
               })
@@ -161,7 +165,7 @@ describe('POST /sources', () => {
 
   it('returns 201 with name and a 32-char hex api_key', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { insertResult: { id: 'src-new' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/sources', { body: { name: 'crm_intake' } })
     expect(res.status).toBe(201)
@@ -172,7 +176,7 @@ describe('POST /sources', () => {
 
   it('normalizes the name (lowercase, spaces → underscores)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { insertResult: { id: 'src-new' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/sources', { body: { name: 'CRM Intake' } })
     expect(res.status).toBe(201)
@@ -182,7 +186,7 @@ describe('POST /sources', () => {
 
   it('strips URL-breaking characters from the name (#100)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { insertResult: { id: 'src-new' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/sources', { body: { name: '100%le/ads?' } })
     expect(res.status).toBe(201)
@@ -192,10 +196,20 @@ describe('POST /sources', () => {
 
   it('rejects a name that sanitizes to empty (#100)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: { insertResult: { id: 'src-new' } } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/sources', { body: { name: '///' } })
     expect(res.status).toBe(400)
+  })
+
+  it('audits creation as api_source with the real source id, not a random uuid (#105)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, api_sources: { insertResult: { id: 'src-7' } } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'POST', '/sources', { body: { name: 'newsrc' } })
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(), USER_ORG, 'api_source', 'src-7', 'created', 'user-1', expect.anything()
+    )
   })
 
   it('rebuilds the key map from the table (derived, not read-modify-write)', async () => {
@@ -204,7 +218,7 @@ describe('POST /sources', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        api_sources: { list: [{ name: 'new_source', api_key: 'newkey' }] },
+        api_sources: { insertResult: { id: 'src-new' }, list: [{ name: 'new_source', api_key: 'newkey' }] },
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'POST', '/sources', { body: { name: 'new_source' } })
@@ -222,7 +236,7 @@ describe('POST /sources', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        api_sources: { list: [{ name: 'new_source', api_key: 'newkey' }] },
+        api_sources: { insertResult: { id: 'src-new' }, list: [{ name: 'new_source', api_key: 'newkey' }] },
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'POST', '/sources', { body: { name: 'new_source' } })
