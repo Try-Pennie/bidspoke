@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { timeoutFloorMs, timeoutBelowFloor } from '../timeout-floor'
 
 describe('timeoutFloorMs', () => {
-  it('uses the dispatch/DB floor for code and constants', () => {
+  it('uses the dispatch/DB floor for code, constants, and data_store', () => {
     expect(timeoutFloorMs('code')).toBe(150)
     expect(timeoutFloorMs('constants')).toBe(150)
+    // data_store is a Cloudflare KV round-trip, not in-memory (#172).
+    expect(timeoutFloorMs('data_store')).toBe(150)
   })
 
   it('uses the network floor for outbound nodes', () => {
