@@ -52,26 +52,36 @@ export async function pushWorkflowToGitHub(
   const contentBase64 = btoa(unescape(encodeURIComponent(content)))
   const commitMessage = message?.trim() || `chore: update workflow "${workflowName}" to v${versionNumber}`
 
-  // Fetch existing file SHA (required for updates; null for new files)
-  const existingSha = await getCurrentFileSha(repo, filePath, token)
-
-  const body: Record<string, unknown> = {
-    message: commitMessage,
-    content: contentBase64,
-    branch: BRANCH,
+  async function putWithSha(sha: string | null): Promise<Response> {
+    const body: Record<string, unknown> = {
+      message: commitMessage,
+      content: contentBase64,
+      branch: BRANCH,
+    }
+    if (sha) body.sha = sha
+    return fetch(apiUrl(repo!, filePath), {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token!}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify(body),
+    })
   }
-  if (existingSha) body.sha = existingSha
 
-  const res = await fetch(apiUrl(repo, filePath), {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'Content-Type': 'application/json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-    body: JSON.stringify(body),
-  })
+  // Fetch existing file SHA (required for updates; null for new files)
+  let res = await putWithSha(await getCurrentFileSha(repo, filePath, token))
+
+  // 409 means a concurrent save committed between our SHA read and this PUT, so
+  // our SHA is now stale (TOCTOU). Re-fetch the current SHA and retry once so the
+  // losing save still lands its commit and records commit_sha, instead of being
+  // silently dropped (#111). Last write wins by wall-clock — fine for a mirror;
+  // workflow_versions in Supabase is the source of truth.
+  if (res.status === 409) {
+    res = await putWithSha(await getCurrentFileSha(repo, filePath, token))
+  }
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '')
