@@ -774,6 +774,7 @@ workflows.post('/:id/test-node', async (c) => {
     source = (exec.source as string | null) ?? source
     traceId = (exec.trace_id as string | null) ?? traceId
 
+    // paginate-ok: one execution's steps, used to rebuild the test-node context
     const { data: stepRows } = await supabase
       .from('execution_steps')
       .select('step_namespace, status, output, error_message, error_type')

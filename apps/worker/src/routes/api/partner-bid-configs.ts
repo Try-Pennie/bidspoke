@@ -10,6 +10,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { syncBidConfig } from '../../lib/bid-matrix-sync'
+import { fetchAllPaged } from '../../lib/paginate'
 
 type Variables = AuthVariables
 
@@ -64,15 +65,24 @@ route.get('/:id', async (c) => {
 
   if (error || !config) return c.json({ error: 'Config not found' }, 404)
 
-  const { data: rows } = await supabase
-    .from('bid_matrix_rows')
-    .select('id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, source_synced_at')
-    .eq('config_id', id)
-    .order('is_sell_off', { ascending: true })
-    .order('row_low', { ascending: true })
-    .order('range_low', { ascending: true })
+  // Page the full matrix — a fine-grained matrix (score bands × debt bands ×
+  // sell-off) can exceed the 1,000-row PostgREST cap, which would silently
+  // truncate the matrix shown in the viewer. The engine's matrix lookup pages
+  // this same read for the same reason (#185).
+  const rows = await fetchAllPaged<Record<string, unknown>>(
+    (from, to) => supabase
+      .from('bid_matrix_rows')
+      .select('id, is_sell_off, row_id, row_low, row_high, range_low, range_high, bid_amount, source_synced_at')
+      .eq('config_id', id)
+      .order('is_sell_off', { ascending: true })
+      .order('row_low', { ascending: true })
+      .order('range_low', { ascending: true })
+      .order('id', { ascending: true })
+      .range(from, to),
+    'partner matrix rows',
+  )
 
-  return c.json({ config, rows: rows ?? [] })
+  return c.json({ config, rows })
 })
 
 // ── Create ────────────────────────────────────────────────────────────────────

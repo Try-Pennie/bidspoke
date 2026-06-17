@@ -128,6 +128,7 @@ admin.post('/backfill-sightings', async (c) => {
 
     // Skip executions that already have a sighting backfilled
     const execIds = executions.map((e) => e.id as string)
+    // paginate-ok: bounded to one backfill page of execution ids (one sighting each)
     const { data: existingSightings } = await supabase
       .from('lead_sightings')
       .select('execution_id')
@@ -160,6 +161,7 @@ admin.post('/backfill-sightings', async (c) => {
       // Pull execution_steps for this run to extract terminal info + enrichment + bids.
       // Order by step_order (monotonic, unique per execution); started_at is too coarse
       // when many steps share the same second, producing non-deterministic "last step".
+      // paginate-ok: one execution's steps (tens of rows, well under the cap)
       const { data: steps } = await supabase
         .from('execution_steps')
         .select('step_namespace, step_type, status, output, started_at, step_order')
