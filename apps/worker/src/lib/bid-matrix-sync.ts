@@ -420,7 +420,7 @@ async function notifyMatrixChanges(
 
 // Alert on structurally malformed matrices (#182). Aggregated per org and fired
 // every sync while a matrix stays broken — the hourly cadence is the rate limit.
-async function notifyMatrixProblems(
+export async function notifyMatrixProblems(
   supabase: SupabaseClient,
   successes: SyncResult[]
 ): Promise<void> {
