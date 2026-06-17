@@ -3,7 +3,7 @@
  * Cache hit skips Supabase, cache miss fetches and stores, invalidate removes key.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { loadWorkflowDefinition, invalidateWorkflowCache } from '../definition-loader'
+import { loadWorkflowDefinition, invalidateWorkflowCache, WorkflowNotFoundError } from '../definition-loader'
 
 const WF_ID = 'wf-abc'
 const CACHE_KEY = `workflow-def-${WF_ID}`
@@ -92,11 +92,11 @@ describe('loadWorkflowDefinition', () => {
     expect(parsed.workflow_version_id).toBe('ver-1')
   })
 
-  it('throws when workflow not found or inactive', async () => {
+  it('throws a typed WorkflowNotFoundError when not found or inactive (#107)', async () => {
     const kv = makeKv(null)
     const sb = makeSupabase(null)
 
-    await expect(loadWorkflowDefinition(WF_ID, kv, sb as never)).rejects.toThrow(WF_ID)
+    await expect(loadWorkflowDefinition(WF_ID, kv, sb as never)).rejects.toBeInstanceOf(WorkflowNotFoundError)
   })
 
   it('throws when workflow has no versions', async () => {

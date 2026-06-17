@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import api from './routes/api/index'
@@ -111,10 +112,14 @@ app.use(
   })
 )
 
-app.onError((err, c) => {
+// Log the real error server-side, but return a generic message — never echo raw
+// err.message to callers, which can leak internal/DB details (#107). Exported
+// for unit testing.
+export function genericOnError(err: Error, c: Context) {
   console.error(err)
-  return c.json({ error: err.message ?? 'Internal server error' }, 500)
-})
+  return c.json({ error: 'Internal server error' }, 500)
+}
+app.onError(genericOnError)
 
 app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
 

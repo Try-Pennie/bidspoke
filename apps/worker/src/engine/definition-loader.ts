@@ -1,6 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { LoadedWorkflow, WorkflowDefinition } from '../types'
 
+// Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
+// A typed error so routes can map it to 404 by instanceof rather than matching
+// substrings in a message (which mis-maps any internal error containing "not
+// found"/"inactive") — and so the external response can stay generic (#107).
+export class WorkflowNotFoundError extends Error {
+  constructor(workflowId: string, inactive: boolean) {
+    super(`Workflow ${workflowId} ${inactive ? 'not found or inactive' : 'not found'}`)
+    this.name = 'WorkflowNotFoundError'
+  }
+}
+
 const CACHE_TTL_SECONDS = 300
 const cacheKey = (workflowId: string) => `workflow-def-${workflowId}`
 
@@ -55,11 +66,7 @@ export async function loadWorkflowDefinition(
   const { data, error } = await query.single()
 
   if (error || !data) {
-    throw new Error(
-      allowInactive
-        ? `Workflow ${workflowId} not found`
-        : `Workflow ${workflowId} not found or inactive`
-    )
+    throw new WorkflowNotFoundError(workflowId, !allowInactive)
   }
 
   const versions = data.workflow_versions as { id: string }[]

@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Env } from '../index'
 import { apiKeyAuth, type Variables } from '../middleware/api-key-auth'
 import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../engine/index'
+import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 
 const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -53,24 +54,24 @@ webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
 
     return c.json(result.response, result.status as 200 | 409 | 500, headers)
   } catch (err) {
+    // Map known cases by error TYPE (not message substring) and return a
+    // generic message to the external caller — never echo raw err.message,
+    // which can leak internal/DB details (#107). The real error is logged.
     if (err instanceof SourceNotAuthorizedError) {
-      return c.json({ error: err.message }, 403)
+      return c.json({ error: 'Source not authorized for this workflow' }, 403)
     }
     // Couldn't verify the source→workflow restriction (DB error). Fail closed
     // with a retryable 503 rather than allowing the request (#65); the engine's
     // idempotency makes a sender retry safe.
     if (err instanceof SourceAuthUnavailableError) {
-      return c.json({ error: err.message }, 503)
+      return c.json({ error: 'Service temporarily unavailable' }, 503)
+    }
+    if (err instanceof WorkflowNotFoundError) {
+      return c.json({ error: 'Workflow not found' }, 404)
     }
 
-    const message = err instanceof Error ? err.message : 'Internal error'
-
-    // 404 for unknown/inactive workflows
-    if (message.includes('not found') || message.includes('inactive')) {
-      return c.json({ error: message }, 404)
-    }
-
-    return c.json({ error: message }, 500)
+    console.error('[webhook] execution error:', err)
+    return c.json({ error: 'Internal error' }, 500)
   }
 })
 
