@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { computeDiff } from '../bid-matrix-sync'
-import { sendMatrixChangeAlert } from '../slack'
-import type { MatrixConfigChange } from '../slack'
+import { computeDiff, validateSyncedRows } from '../bid-matrix-sync'
+import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
+import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
 
 const config = { slug: 'sofi', name: 'SoFi default' }
 
@@ -227,6 +227,106 @@ describe('sendMatrixChangeAlert', () => {
     })
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.channel).toBe('#bid-changes')
+  })
+})
+
+describe('validateSyncedRows (#182)', () => {
+  function sfRow(o: Partial<{ RowLow__c: number | null; RowHigh__c: number | null; RangeLow__c: number | null; RangeHigh__c: number | null; IsSellOff__c: boolean }> = {}) {
+    return {
+      Id: 'sf-x', RowId__c: null, RangeValue__c: 50,
+      RowLow__c: null, RowHigh__c: null, RangeLow__c: null, RangeHigh__c: null, IsSellOff__c: false,
+      ...o,
+    }
+  }
+
+  it('returns no problems for a clean matrix', () => {
+    const cfg = { dimensions: [{ column: 'row' as const, payload_field: 'credit_score' }] }
+    const rows = [sfRow({ RowLow__c: null, RowHigh__c: 659 }), sfRow({ RowLow__c: 660, RowHigh__c: null })]
+    expect(validateSyncedRows(cfg, rows)).toEqual([])
+  })
+
+  it('uses the dimension payload field as the axis label in problem detail', () => {
+    const cfg = { dimensions: [{ column: 'row' as const, payload_field: 'credit_score' }] }
+    const rows = [sfRow({ RowLow__c: null, RowHigh__c: 659 }), sfRow({ RowLow__c: 700, RowHigh__c: null })]
+    const problems = validateSyncedRows(cfg, rows)
+    expect(problems).toHaveLength(1)
+    expect(problems[0].detail).toContain('credit_score')
+  })
+})
+
+describe('sendMatrixValidationAlert (#182)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  function makeSupabase(connection: Record<string, unknown> | null) {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'maybeSingle') return () =>
+          connection
+            ? Promise.resolve({ data: { config: connection }, error: null })
+            : Promise.resolve({ data: null, error: null })
+        return () => chain
+      },
+    })
+    return { from: () => chain }
+  }
+
+  const slackConnection = { bot_token: 'xoxb-test', default_channel: '#alerts' }
+  const configs: MatrixConfigProblems[] = [{
+    partner_slug: 'sofi',
+    config_name: 'SoFi default',
+    problems: [
+      { kind: 'overlap', axis: 'row', is_sell_off: false, detail: 'score 600-720 overlaps 700-800' },
+      { kind: 'gap', axis: 'range', is_sell_off: true, detail: 'no coverage for debt between 5000 and 8000 (within score 700-719)' },
+    ],
+  }]
+
+  it('does nothing when slack is not configured', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase(null) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when there are no problem configs', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase(slackConnection) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs: [] })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('is suppressed when matrix alerts are opted out', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase({ ...slackConnection, matrix_alerts_enabled: false }) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('posts a Block Kit message listing overlaps and gaps', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase(slackConnection) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.unfurl_links).toBe(false)
+    expect(body.channel).toBe('#alerts')
+    const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
+      ...(b.fields ?? []).map((f) => f.text),
+      b.text?.text ?? '',
+    ]).join('\n')
+    expect(text).toContain('Bid Matrix Problem')
+    expect(text).toContain('2 problems across 1 partner')
+    expect(text).toContain('Overlap')
+    expect(text).toContain('Gap (sell-off)')
+    expect(text).toContain('overlaps 700-800')
+  })
+
+  it('respects the channel override', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase(slackConnection) as any, 'org-1', '#bid-health', { checked_at: '2024-01-15T18:00:00.000Z', configs })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.channel).toBe('#bid-health')
   })
 })
 
