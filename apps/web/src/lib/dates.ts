@@ -34,6 +34,20 @@ export function formatTime(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
+/** "14:34:12.482" — 24-hour ET with milliseconds, for step log lines.
+ * Logs fire many times per second, so seconds + millis matter; the column is
+ * labeled ET once rather than repeating a timezone suffix on every line. */
+export function formatLogTime(dateStr: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ET,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    fractionalSecondDigits: 3,
+    hour12: false,
+  }).format(new Date(dateStr))
+}
+
 /** "Today" / "Yesterday" / "Apr 7" — for execution list date group headers */
 export function getDateLabel(dateStr: string): string {
   const d = new Date(dateStr)
