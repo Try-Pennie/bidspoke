@@ -26,3 +26,18 @@ export function resolvePostSaveState(
     switchToView: !editsLandedDuringSave,
   }
 }
+
+// Issue #160: the edit counter that powers the #92 mid-save check used to bump on
+// any React Flow node/edge array change, including selection and dimension
+// measurement — non-content churn. Clicking Save can deselect a node, bumping
+// the counter during the save's await, so a clean save was wrongly judged
+// "edited mid-save" and stayed dirty, firing the unsaved-changes warning right
+// after saving. The counter now bumps only when this signature — the exact
+// serialized payload that gets saved — actually changes.
+export function computeEditSignature(
+  definition: unknown,
+  name: string,
+  slackChannel: string | null,
+): string {
+  return JSON.stringify({ definition, name, slackChannel: slackChannel ?? null })
+}
