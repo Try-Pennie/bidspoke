@@ -103,6 +103,54 @@ describe('fetchSnowflakeSchema', () => {
     await expect(fetchSnowflakeSchema(CREDS, FAST_POLL)).rejects.toThrow('Snowflake schema poll failed (500)')
   })
 
+  it('fetches every partition and concatenates the rows (#151)', async () => {
+    // POST returns partition 0 + a 3-partition manifest; GETs return parts 1 and 2.
+    const mockFetch = fetchSequence([
+      res(200, {
+        statementHandle: 'h-9',
+        data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+        resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }, { rowCount: 1 }] },
+      }),
+      res(200, { data: [['PUBLIC', 'B', 'ID', 'VARCHAR', 'NO']] }),
+      res(200, { data: [['STAGING', 'C', 'ID', 'NUMBER', 'YES']] }),
+    ])
+    vi.stubGlobal('fetch', mockFetch)
+
+    const schema = await fetchSnowflakeSchema(CREDS)
+    // Without partition paging this would only see PUBLIC.A.
+    expect(schema.objects.map((o) => o.name).sort()).toEqual(['PUBLIC.A', 'PUBLIC.B', 'STAGING.C'])
+
+    // It fetched partition 1 and 2 by handle, not partition 0 again.
+    expect(mockFetch.mock.calls[1][0]).toContain('/api/v2/statements/h-9?partition=1')
+    expect(mockFetch.mock.calls[2][0]).toContain('/api/v2/statements/h-9?partition=2')
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not fetch extra partitions for a single-partition result (#151)', async () => {
+    const mockFetch = fetchReturning({
+      data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+      resultSetMetaData: { partitionInfo: [{ rowCount: 1 }] },
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const schema = await fetchSnowflakeSchema(CREDS)
+    expect(schema.objects).toHaveLength(1)
+    expect(mockFetch).toHaveBeenCalledTimes(1)  // POST only, no partition GETs
+  })
+
+  it('throws when a partition fetch fails, leaving the cache untouched (#151)', async () => {
+    const mockFetch = fetchSequence([
+      res(200, {
+        statementHandle: 'h-err',
+        data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+        resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }] },
+      }),
+      res(500, { message: 'partition gone' }),
+    ])
+    vi.stubGlobal('fetch', mockFetch)
+    await expect(fetchSnowflakeSchema(CREDS)).rejects.toThrow('Snowflake partition 1 fetch failed (500)')
+  })
+
   it('sends Basic auth with base64-encoded credentials', async () => {
     const mockFetch = fetchReturning({ data: [] })
     vi.stubGlobal('fetch', mockFetch)
