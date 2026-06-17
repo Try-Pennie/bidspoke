@@ -15,18 +15,22 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
-import { sendMatrixChangeAlert } from './slack'
-import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
+import { sendMatrixChangeAlert, sendMatrixValidationAlert } from './slack'
+import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary, MatrixConfigProblems } from './slack'
 import { fetchAllPaged } from './paginate'
+import { validateMatrix } from './bid-matrix-validate'
+import type { MatrixProblem } from './bid-matrix-validate'
 
 export interface SyncResult {
   config_id: string
   config_slug: string
+  config_name: string
   rows_fetched: number
   rows_upserted: number
   rows_deleted: number
   last_synced_at: string
   diff: MatrixConfigChange | null
+  problems: MatrixProblem[]
   organization_id: string
   error?: string
 }
@@ -60,6 +64,7 @@ interface BidConfigForSync {
   sf_filters: { partner_flag?: string; extra?: string } | null
   sync_source: 'salesforce' | 'manual'
   is_active: boolean
+  dimensions: { column: 'row' | 'range'; payload_field?: string }[] | null
 }
 
 interface SalesforceBidRow {
@@ -80,7 +85,7 @@ export async function syncBidConfig(
 ): Promise<SyncResult> {
   const { data: rawConfig, error: configErr } = await supabase
     .from('partner_bid_configs')
-    .select('id, slug, name, organization_id, sf_object, sf_filters, sync_source, is_active')
+    .select('id, slug, name, organization_id, sf_object, sf_filters, sync_source, is_active, dimensions')
     .eq('id', configId)
     .single()
 
@@ -102,6 +107,7 @@ export async function syncBidConfig(
   try {
     const rows = await querySalesforceMatrixRows(config, env)
     const { upserted, deleted, diff } = await applyToDb(config, rows, startedAt, supabase)
+    const problems = validateSyncedRows(config, rows)
 
     await supabase
       .from('partner_bid_configs')
@@ -122,12 +128,14 @@ export async function syncBidConfig(
     return {
       config_id: configId,
       config_slug: config.slug,
+      config_name: config.name,
       organization_id: config.organization_id,
       rows_fetched: rows.length,
       rows_upserted: upserted,
       rows_deleted: deleted,
       last_synced_at: startedAt,
       diff,
+      problems,
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -351,6 +359,30 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false
 }
 
+// Validate the just-synced matrix structure (#182). Uses the SF rows we just
+// wrote (the new DB state) so no re-query is needed. Axis labels come from the
+// config's dimensions (the payload field name) so messages read in domain terms
+// (e.g. "credit_score") instead of the generic "row"/"range".
+export function validateSyncedRows(
+  config: { dimensions: { column: 'row' | 'range'; payload_field?: string }[] | null },
+  rows: SalesforceBidRow[]
+): MatrixProblem[] {
+  const dims = config.dimensions ?? []
+  const rowLabel = dims.find((d) => d.column === 'row')?.payload_field || 'row'
+  const rangeLabel = dims.find((d) => d.column === 'range')?.payload_field || 'range'
+  return validateMatrix(
+    rows.map((r) => ({
+      is_sell_off: r.IsSellOff__c === true,
+      row_low: r.RowLow__c,
+      row_high: r.RowHigh__c,
+      range_low: r.RangeLow__c,
+      range_high: r.RangeHigh__c,
+    })),
+    rowLabel,
+    rangeLabel,
+  )
+}
+
 async function writeHistory(
   configId: string,
   supabase: SupabaseClient,
@@ -386,6 +418,31 @@ async function notifyMatrixChanges(
   }
 }
 
+// Alert on structurally malformed matrices (#182). Aggregated per org and fired
+// every sync while a matrix stays broken — the hourly cadence is the rate limit.
+export async function notifyMatrixProblems(
+  supabase: SupabaseClient,
+  successes: SyncResult[]
+): Promise<void> {
+  const byOrg = new Map<string, MatrixConfigProblems[]>()
+  for (const r of successes) {
+    if (r.problems.length === 0) continue
+    const list = byOrg.get(r.organization_id) ?? []
+    list.push({ partner_slug: r.config_slug, config_name: r.config_name, problems: r.problems })
+    byOrg.set(r.organization_id, list)
+  }
+  if (byOrg.size === 0) return
+
+  const checkedAt = new Date().toISOString()
+  for (const [orgId, configs] of byOrg) {
+    try {
+      await sendMatrixValidationAlert(supabase, orgId, null, { checked_at: checkedAt, configs })
+    } catch (err) {
+      console.error(`[bid-matrix-sync] validation alert failed for org ${orgId}:`, err)
+    }
+  }
+}
+
 /**
  * Cron entry point — sync every active partner_bid_config with sync_source='salesforce'.
  * Errors on one config don't stop the others; they're recorded on the config's
@@ -416,6 +473,7 @@ export async function syncAllSalesforceConfigs(
   }
 
   await notifyMatrixChanges(supabase, successes)
+  await notifyMatrixProblems(supabase, successes)
 
   return { successes, failures }
 }

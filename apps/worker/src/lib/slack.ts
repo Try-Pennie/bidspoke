@@ -392,6 +392,90 @@ export async function sendMatrixChangeAlert(
   return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix changed: ${summary}`)) !== null
 }
 
+// One problem found in a matrix's structure. Mirrors MatrixProblem in
+// bid-matrix-validate.ts; redeclared here so slack.ts has no dependency on its
+// caller (same pattern as the timeout warning shapes below).
+export interface MatrixValidationProblem {
+  kind: 'overlap' | 'gap'
+  axis: 'row' | 'range'
+  is_sell_off: boolean
+  detail: string
+}
+
+export interface MatrixConfigProblems {
+  partner_slug: string
+  config_name: string
+  problems: MatrixValidationProblem[]
+}
+
+export interface MatrixValidationAlertPayload {
+  checked_at: string
+  configs: MatrixConfigProblems[]
+  /** Optional one-click link to the matrix list view in SF Lightning. */
+  matrix_url?: string
+}
+
+/**
+ * Alert that one or more partner bid matrices are structurally malformed —
+ * overlapping cells (two cells claim the same lead) or gaps (a lead falls in a
+ * hole no cell covers). Posted by the hourly sync after it detects problems,
+ * gated on the same matrix_alerts_enabled toggle as the change alert. Returns
+ * true when nothing needed sending or the send succeeded; false on a real send
+ * failure. The hourly cadence is the natural rate limit, so this re-fires each
+ * sync while a matrix stays broken.
+ */
+export async function sendMatrixValidationAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: MatrixValidationAlertPayload
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return true
+  if (!connection.matrix_alerts_enabled) return true
+  if (payload.configs.length === 0) return true
+
+  const channel = channelOverride || connection.matrix_alerts_channel || connection.default_channel
+  const total = payload.configs.reduce((s, c) => s + c.problems.length, 0)
+
+  const blocks: unknown[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: 'Bid Matrix Problem', emoji: false },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Checked at:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.checked_at))}` },
+        { type: 'mrkdwn', text: `*Found:* ${total} ${total === 1 ? 'problem' : 'problems'} across ${payload.configs.length} ${payload.configs.length === 1 ? 'partner' : 'partners'}` },
+      ],
+    },
+  ]
+
+  for (const cfg of payload.configs) {
+    if (cfg.problems.length === 0) continue
+    const lines = cfg.problems.slice(0, 20).map((p) => {
+      const sellOff = p.is_sell_off ? ' (sell-off)' : ''
+      const tag = p.kind === 'overlap' ? 'Overlap' : 'Gap'
+      return `• ${tag}${sellOff}: ${p.detail}`
+    })
+    const body = lines.join('\n') + (cfg.problems.length > 20 ? `\n_…and ${cfg.problems.length - 20} more_` : '')
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*${cfg.partner_slug}* — _${cfg.config_name}_\n${body}` },
+    })
+  }
+
+  if (payload.matrix_url) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${payload.matrix_url}|View bid matrix →>` },
+    })
+  }
+
+  return (await postMessage(connection.bot_token, channel, blocks, `Bid matrix problem: ${total} found`)) !== null
+}
+
 // Structural shapes of one workflow's offending nodes. Defined here (rather than
 // imported from timeout-audit) so slack.ts has no dependency back on its caller.
 interface TimeoutConfigWarning {
