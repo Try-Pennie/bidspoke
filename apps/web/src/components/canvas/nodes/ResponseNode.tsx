@@ -4,11 +4,9 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
-import { SuccessBadge } from './SuccessBadge'
-import { NoteBadge } from './NoteBadge'
 
 export function ResponseNode({ id, data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const statusRaw = config.status_code as number | string | undefined
   // When the status is a {{template}}, the literal can be long and overflow the
   // node body. Show a compact "dynamic" badge and surface the full expression on
@@ -34,8 +32,6 @@ export function ResponseNode({ id, data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
-      <SuccessBadge visible={isSuccessNode} />
-      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
       {continueAfter && <Handle type="source" position={Position.Bottom} id="output" />}
 

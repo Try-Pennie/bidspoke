@@ -62,7 +62,7 @@ import { migrateParallelEdges, migrateDefinition } from './migrate'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
-import { withTimeoutBadge } from './nodes/withTimeoutBadge'
+import { withNodeBadges } from './nodes/withNodeBadges'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
@@ -83,8 +83,9 @@ import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmD
 // Defined outside component to prevent re-render on each render
 // Source registry. Every node type a workflow can render MUST be listed here, so
 // this is the single chokepoint where the timeout-warning badge is attached —
-// withTimeoutBadge wraps each entry below, meaning a newly added node type gets
-// the indicator automatically with no per-card wiring.
+// withNodeBadges wraps each entry below, meaning a newly added node type gets
+// the corner badges (timeout warning, success, note) automatically with no
+// per-card wiring.
 const baseNodeTypes = {
   trigger: TriggerNode,
   filter: FilterNode,
@@ -108,7 +109,7 @@ const baseNodeTypes = {
 }
 
 const nodeTypes: NodeTypes = Object.fromEntries(
-  Object.entries(baseNodeTypes).map(([type, Component]) => [type, withTimeoutBadge(Component)]),
+  Object.entries(baseNodeTypes).map(([type, Component]) => [type, withNodeBadges(Component)]),
 )
 
 const edgeTypes = {

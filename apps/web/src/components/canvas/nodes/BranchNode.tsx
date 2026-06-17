@@ -4,14 +4,12 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
-import { SuccessBadge } from './SuccessBadge'
-import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
 
 interface BranchEntry { label: string }
 
 export function BranchNode({ id, data, selected }: NodeProps) {
-  const { namespace, label, config, executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
+  const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const branches = (config.branches as BranchEntry[] | undefined) ?? []
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
     ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
@@ -63,8 +61,6 @@ export function BranchNode({ id, data, selected }: NodeProps) {
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={{ ...getExecutionStyle(executionStep), width }}
     >
-      <SuccessBadge visible={isSuccessNode} />
-      <NoteBadge note={note} />
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-purple-50 border-b border-purple-100 px-3 py-2">
