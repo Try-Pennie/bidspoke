@@ -3,6 +3,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
+import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
 
@@ -27,7 +28,7 @@ partnerUuids.get('/', async (c) => {
 // ── Create ────────────────────────────────────────────────────────────────────
 
 partnerUuids.post('/', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ partner_slug?: string; uuid?: string }>()
 
@@ -45,6 +46,11 @@ partnerUuids.post('/', async (c) => {
     return c.json({ error: error.message }, 500)
   }
 
+  await writeAuditLog(supabase, orgId, 'partner_uuid', (data as { id: string }).id, 'created', userId, {
+    partner_slug: body.partner_slug,
+    uuid: body.uuid,
+  })
+
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   return c.json(data, 201)
 })
@@ -52,7 +58,7 @@ partnerUuids.post('/', async (c) => {
 // ── Delete ────────────────────────────────────────────────────────────────────
 
 partnerUuids.delete('/:id', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
@@ -63,6 +69,8 @@ partnerUuids.delete('/:id', async (c) => {
     .eq('org_id', orgId)
 
   if (error) return c.json({ error: error.message }, 500)
+
+  await writeAuditLog(supabase, orgId, 'partner_uuid', id, 'deleted', userId)
 
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   return c.json({ ok: true })

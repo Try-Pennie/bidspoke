@@ -59,6 +59,26 @@ describe('writeAuditLog', () => {
     ).resolves.toBeUndefined()
   })
 
+  // #105: a dropped audit row used to vanish silently (that's how the stale
+  // CHECK constraints rejected newer entity types for months). It must log.
+  it('logs (does not silently drop) when the insert fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = makeSupabase({ message: 'check constraint violation' })
+    await writeAuditLog(sb as never, 'org-1', 'partner_uuid', 'pu-1', 'created', 'user-1')
+    expect(errSpy).toHaveBeenCalled()
+    const logged = JSON.stringify(errSpy.mock.calls)
+    expect(logged).toContain('partner_uuid')
+    expect(logged).toContain('check constraint violation')
+    errSpy.mockRestore()
+  })
+
+  it('does not log on a successful insert', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await writeAuditLog(makeSupabase() as never, 'org-1', 'api_source', 's-1', 'created', 'user-1')
+    expect(errSpy).not.toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
   it('supports all entity types without throwing', async () => {
     const entityTypes = ['partner_config', 'environment_variable', 'service_connection', 'workflow', 'circuit_breaker'] as const
     for (const entityType of entityTypes) {

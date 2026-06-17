@@ -122,6 +122,10 @@ describe('POST /endpoints — workflow org check', () => {
     )
     const res = await request(app, 'POST', '/endpoints', { ...body, workflow_id: 'wf-mine' })
     expect(res.status).toBe(201)
+    // #105: audited as webhook_endpoint (was mislabeled environment_variable) with the real id.
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(), USER_ORG, 'webhook_endpoint', 'ep-1', 'created', 'user-1', expect.anything()
+    )
   })
 })
 

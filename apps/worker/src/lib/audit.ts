@@ -12,6 +12,9 @@ export type AuditEntityType =
   | 'app_setting'
   | 'folder'
   | 'env_var_folder'
+  | 'webhook_endpoint'
+  | 'api_source'
+  | 'partner_uuid'
 
 export type AuditAction =
   | 'created'
@@ -31,7 +34,11 @@ export async function writeAuditLog(
   changedBy: string,
   changes?: Record<string, unknown>
 ): Promise<void> {
-  await supabase.from('audit_log').insert({
+  // Best-effort: an audit failure must not fail the user's mutation. But it must
+  // not vanish silently either — a dropped audit row defeats the audit-everything
+  // invariant (this is exactly how the stale entity_type/action CHECK constraints
+  // silently rejected newer audits for months, #105). Log so it's visible.
+  const { error } = await supabase.from('audit_log').insert({
     organization_id: orgId,
     entity_type: entityType,
     entity_id: entityId,
@@ -39,4 +46,7 @@ export async function writeAuditLog(
     changed_by: changedBy,
     changes: changes ?? null,
   })
+  if (error) {
+    console.error('[audit] failed to write audit row:', { entityType, action, message: error.message })
+  }
 }

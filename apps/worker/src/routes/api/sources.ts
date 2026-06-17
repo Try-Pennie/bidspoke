@@ -91,9 +91,11 @@ sources.post('/', async (c) => {
 
   // Insert first so the rebuilt map (derived from the table) includes the new
   // source. UNIQUE(organization_id, name) enforces uniqueness race-free.
-  const { error: insertError } = await supabase
+  const { data: created, error: insertError } = await supabase
     .from('api_sources')
     .insert({ organization_id: orgId, name, api_key: apiKey })
+    .select('id')
+    .single()
   if (insertError) {
     if (insertError.code === '23505') return c.json({ error: `Source "${name}" already exists` }, 409)
     return c.json({ error: insertError.message }, 500)
@@ -109,7 +111,7 @@ sources.post('/', async (c) => {
     return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
   }
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'created', userId, {
+  await writeAuditLog(supabase, orgId, 'api_source', (created as { id: string }).id, 'created', userId, {
     source_name: name,
     action: 'api_key_created',
   })
@@ -164,7 +166,7 @@ sources.post('/:name/workflows', async (c) => {
   // Verify the source exists in this org
   const { data: src } = await supabase
     .from('api_sources')
-    .select('name')
+    .select('id, name')
     .eq('organization_id', orgId)
     .eq('name', name)
     .single()
@@ -187,7 +189,7 @@ sources.post('/:name/workflows', async (c) => {
     )
   if (insertError) return c.json({ error: insertError.message }, 500)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'updated', userId, {
+  await writeAuditLog(supabase, orgId, 'api_source', (src as { id: string }).id, 'updated', userId, {
     source_name: name,
     workflow_id: body.workflow_id,
     action: 'source_assigned_to_workflow',
@@ -211,7 +213,13 @@ sources.delete('/:name/workflows/:workflow_id', async (c) => {
     .eq('workflow_id', workflowId)
   if (error) return c.json({ error: error.message }, 500)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'updated', userId, {
+  const { data: src } = await supabase
+    .from('api_sources')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('name', name)
+    .single()
+  await writeAuditLog(supabase, orgId, 'api_source', (src as { id: string } | null)?.id ?? workflowId, 'updated', userId, {
     source_name: name,
     workflow_id: workflowId,
     action: 'source_unassigned_from_workflow',
@@ -227,15 +235,17 @@ sources.delete('/:name', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
-  // Authoritative existence check + grab the key(s) being revoked.
+  // Authoritative existence check + grab the id and key(s) being revoked.
   const { data: existingRows } = await supabase
     .from('api_sources')
-    .select('api_key')
+    .select('id, api_key')
     .eq('organization_id', orgId)
     .eq('name', name)
 
   if (!existingRows || existingRows.length === 0) return c.json({ error: 'Source not found' }, 404)
-  const deletedKeys = new Set((existingRows as { api_key: string }[]).map((r) => r.api_key))
+  const rows = existingRows as { id: string; api_key: string }[]
+  const deletedKeys = new Set(rows.map((r) => r.api_key))
+  const sourceId = rows[0].id
 
   // Revoke first: rebuild the map from the table minus the deleted key(s), so
   // auth is cut before the row is removed and a stale-snapshot read-modify-write
@@ -245,7 +255,7 @@ sources.delete('/:name', async (c) => {
 
   await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
 
-  await writeAuditLog(supabase, orgId, 'environment_variable', crypto.randomUUID(), 'deleted', userId, {
+  await writeAuditLog(supabase, orgId, 'api_source', sourceId, 'deleted', userId, {
     source_name: name,
     action: 'api_key_revoked',
   })
