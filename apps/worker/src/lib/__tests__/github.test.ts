@@ -109,6 +109,41 @@ describe('pushWorkflowToGitHub', () => {
     expect(putUrl).toContain(`workflows/${WF_ID}.json`)
   })
 
+  it('retries once on 409 (stale SHA from a concurrent save) and lands the commit (#111)', async () => {
+    const staleSha = 'sha-A'
+    const freshSha = 'sha-B'
+    const commitSha = 'commit-after-retry'
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ sha: staleSha }))                 // GET — first SHA read
+      .mockResolvedValueOnce(makeResponse({ message: 'conflict' }, 409))      // PUT — loses the race
+      .mockResolvedValueOnce(makeResponse({ sha: freshSha }))                 // GET — re-read SHA
+      .mockResolvedValueOnce(makeResponse({ commit: { sha: commitSha } }))    // PUT — retry succeeds
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await pushWorkflowToGitHub(TOKEN, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
+    expect(result).toBe(commitSha)
+    expect(mockFetch).toHaveBeenCalledTimes(4)
+
+    // The retry PUT must carry the freshly re-fetched SHA, not the stale one.
+    const [, retryInit] = mockFetch.mock.calls[3] as [string, RequestInit]
+    const retryBody = JSON.parse(retryInit.body as string) as Record<string, unknown>
+    expect(retryBody.sha).toBe(freshSha)
+  })
+
+  it('throws if the 409 retry also fails (does not loop forever) (#111)', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(makeResponse({ sha: 'sha-A' }))               // GET
+      .mockResolvedValueOnce(makeResponse({ message: 'conflict' }, 409))   // PUT — 409
+      .mockResolvedValueOnce(makeResponse({ sha: 'sha-B' }))               // GET — re-read
+      .mockResolvedValueOnce(makeResponse({ message: 'conflict' }, 409))   // PUT — still 409
+    vi.stubGlobal('fetch', mockFetch)
+
+    await expect(
+      pushWorkflowToGitHub(TOKEN, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
+    ).rejects.toThrow('GitHub push failed (409)')
+    expect(mockFetch).toHaveBeenCalledTimes(4)  // no third PUT attempt
+  })
+
   it('throws when the PUT request fails', async () => {
     const mockFetch = vi.fn()
       .mockResolvedValueOnce(makeResponse({}, 404))
