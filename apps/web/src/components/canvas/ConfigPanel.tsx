@@ -16,6 +16,7 @@ import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/
 import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
+import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -821,6 +822,9 @@ function BranchConfig({
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
 }) {
   const branches = (config.branches as Array<{ label: string; condition: { groups: ConditionGroup[]; logic: 'AND' | 'OR' } }> | undefined) ?? []
+  // Arms whose label collides with another arm — marked so a duplicate route is
+  // visible before save (the save itself is also blocked, #164).
+  const duplicateArmIndices = duplicateBranchArmIndices(branches)
   const elseBehavior = (config.else_behavior as 'output' | 'none' | 'error' | undefined)
     ?? ((config.use_else as boolean | undefined) === false ? 'none' : 'output')
   const elseLabel = (config.else_label as string | undefined) ?? ''
@@ -863,7 +867,7 @@ function BranchConfig({
         <div key={i} className="rounded-lg border border-gray-200 p-3 space-y-3">
           <div className="flex items-center gap-2">
             <input
-              className="input flex-1"
+              className={`input flex-1 ${duplicateArmIndices.has(i) ? 'border-red-400 ring-1 ring-red-300' : ''}`}
               placeholder="branch label"
               value={branch.label}
               onChange={(e) => updateBranch(i, { label: e.target.value })}
@@ -872,6 +876,9 @@ function BranchConfig({
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
+          {duplicateArmIndices.has(i) && (
+            <p className="text-xs text-red-500">Duplicate label. Each branch arm must be unique or routing is ambiguous.</p>
+          )}
           <RuleBuilder
             groups={branch.condition.groups}
             logic={branch.condition.logic}
