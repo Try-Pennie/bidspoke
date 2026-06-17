@@ -8,6 +8,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
+import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
 /**
@@ -82,12 +83,9 @@ export async function executeCodeNode(
     throw new Error(`Code node "${node.namespace}" has no script configured`)
   }
 
-  const rawEnv = env as unknown as Record<string, unknown>
-  const cfSecrets: Record<string, string> = {}
-  for (const key of Object.keys(rawEnv)) {
-    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key] as string
-  }
-  const mergedEnv = { ...cfSecrets, ...ctx.env }
+  // Withhold platform master secrets from the sandbox; partner creds + DB env
+  // vars still flow (#108).
+  const mergedEnv = { ...sandboxEnvBindings(env), ...ctx.env }
 
   // Filter the steps payload to only what this script actually references.
   // For workflows like engine bidding where Equifax/trade responses are 20-80KB
