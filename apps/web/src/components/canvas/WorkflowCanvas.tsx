@@ -2293,10 +2293,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     outerIds: string[]
     innerIds: string[]
     containerLabel: string
+    edgeIds: string[]
   } | null>(null)
 
   const executeNodesDelete = useCallback(
-    (ids: string[]) => {
+    (ids: string[], alsoRemoveEdgeIds: string[] = []) => {
       const idsToRemove = new Set(ids.filter((id) => id !== 'trigger'))
       if (idsToRemove.size === 0) return
       snapshot()
@@ -2304,7 +2305,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       // Splice surviving upstream → downstream across the gap, preserving the
       // upstream edge's sourceHandle so deleting a node on a branch/filter arm
       // doesn't dead-end that arm at runtime. See computeEdgesAfterDelete.
-      const newEdges = computeEdgesAfterDelete(edges, idsToRemove)
+      const splicedEdges = computeEdgesAfterDelete(edges, idsToRemove)
+      // Also drop any edges the user co-selected with the nodes — RF's own delete
+      // was cancelled when we rerouted, so these would otherwise survive (#130).
+      const edgeIdsToRemove = new Set(alsoRemoveEdgeIds)
+      const newEdges = edgeIdsToRemove.size > 0
+        ? splicedEdges.filter((e) => !edgeIdsToRemove.has(e.id))
+        : splicedEdges
       const newNodes = nodes.filter((n) => !idsToRemove.has(n.id))
       // Any node that lost all paths back to the trigger gets pushed off to the
       // right of the surviving flow so the visible chain isn't muddled by an
@@ -2319,7 +2326,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   )
 
   const handleNodesDelete = useCallback(
-    (ids: string[]) => {
+    (ids: string[], alsoRemoveEdgeIds: string[] = []) => {
       const seedIds = ids.filter((id) => id !== 'trigger')
       if (seedIds.length === 0) return
 
@@ -2352,7 +2359,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       for (const id of seedIds) innerIds.delete(id)
 
       if (innerIds.size === 0) {
-        executeNodesDelete([...outerIds])
+        executeNodesDelete([...outerIds], alsoRemoveEdgeIds)
         return
       }
 
@@ -2360,6 +2367,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         outerIds: [...outerIds],
         innerIds: [...innerIds],
         containerLabel,
+        edgeIds: alsoRemoveEdgeIds,
       })
     },
     [nodes, resolvePairId, collectInnerIds, executeNodesDelete]
@@ -3315,7 +3323,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             // Route keyboard deletes through the curated handler (snapshot/undo,
             // pair expansion, container-contents confirm) instead of RF's raw
             // remove path. Edge-only deletes fall through to RF.
-            onBeforeDelete={async ({ nodes: toDelete }) => onBeforeNodeDelete(toDelete, handleNodesDelete)}
+            onBeforeDelete={async ({ nodes: toDelete, edges: toDeleteEdges }) => onBeforeNodeDelete(toDelete, toDeleteEdges, handleNodesDelete)}
             snapToGrid={false}
             fitView
             fitViewOptions={{ padding: 0.4, maxZoom: 0.5 }}
@@ -3605,11 +3613,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       )}
 
       {pendingContainerDelete && (() => {
-        const { outerIds, innerIds, containerLabel } = pendingContainerDelete
+        const { outerIds, innerIds, containerLabel, edgeIds } = pendingContainerDelete
         const innerCount = innerIds.length
         const cancel = () => setPendingContainerDelete(null)
-        const leave = () => { executeNodesDelete(outerIds); setPendingContainerDelete(null) }
-        const includeInner = () => { executeNodesDelete([...outerIds, ...innerIds]); setPendingContainerDelete(null) }
+        const leave = () => { executeNodesDelete(outerIds, edgeIds); setPendingContainerDelete(null) }
+        const includeInner = () => { executeNodesDelete([...outerIds, ...innerIds], edgeIds); setPendingContainerDelete(null) }
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
             <div
