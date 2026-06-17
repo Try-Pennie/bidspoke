@@ -69,6 +69,7 @@ import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
 import { resolvePostSaveState } from '@/lib/save-dirty-guard'
+import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
   renameStepReferences,
@@ -2627,6 +2628,18 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     const duplicates = Array.from(nsCount.entries()).filter(([, c]) => c > 1).map(([ns]) => ns)
     if (duplicates.length > 0) {
       setSaveError(`Step IDs must be unique. Used by multiple nodes: ${duplicates.join(', ')}.`)
+      return
+    }
+    // Block saving when a branch node has two arms with the same label — the
+    // label is the edge handle and the engine's _route key, so duplicates make
+    // routing between those arms arbitrary (#164). Always block: the workflow is
+    // broken at runtime regardless of is_active.
+    const branchConflicts = findBranchLabelConflicts(nodes as Parameters<typeof findBranchLabelConflicts>[0])
+    if (branchConflicts.length > 0) {
+      const detail = branchConflicts
+        .map((c) => `${c.node} (${c.labels.map((l) => l || 'blank').join(', ')})`)
+        .join('; ')
+      setSaveError(`Branch arms must have unique labels within a node. Duplicates: ${detail}.`)
       return
     }
     // Block saving while the open node's key/value editor has a blank or
