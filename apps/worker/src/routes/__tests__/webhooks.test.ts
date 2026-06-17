@@ -15,6 +15,7 @@ vi.mock('../../engine/index', async () => {
 vi.mock('../../lib/supabase')
 
 import { executeWorkflow, SourceNotAuthorizedError, SourceAuthUnavailableError } from '../../engine/index'
+import { WorkflowNotFoundError } from '../../engine/definition-loader'
 import { createSupabaseClient } from '../../lib/supabase'
 import webhooks from '../webhooks'
 
@@ -95,23 +96,40 @@ describe('POST /webhooks/:workflow_id', () => {
     })
   })
 
-  describe('workflow not found / inactive', () => {
-    it('returns 404 when executeWorkflow throws "not found"', async () => {
-      vi.mocked(executeWorkflow).mockRejectedValue(new Error('Workflow not found'))
+  describe('workflow not found / inactive (#107)', () => {
+    it('returns 404 with a generic message for WorkflowNotFoundError', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(new WorkflowNotFoundError('wf-missing', true))
       const res = await request('wf-missing', { apiKey: 'sk_test_key' })
       expect(res.status).toBe(404)
+      expect(await res.json()).toEqual({ error: 'Workflow not found' })
     })
 
-    it('returns 404 when executeWorkflow throws "inactive"', async () => {
-      vi.mocked(executeWorkflow).mockRejectedValue(new Error('Workflow is inactive'))
-      const res = await request('wf-inactive', { apiKey: 'sk_test_key' })
-      expect(res.status).toBe(404)
-    })
-
-    it('returns 500 for unexpected errors', async () => {
-      vi.mocked(executeWorkflow).mockRejectedValue(new Error('Database connection failed'))
+    // The old code mapped any error whose text contained "not found"/"inactive"
+    // to 404 by substring; an internal error must NOT be miscued as 404 now.
+    it('returns 500 (not 404) for an internal error whose message contains "not found"', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(new Error('partner_bid_config not found: abc'))
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
       expect(res.status).toBe(500)
+    })
+
+    it('returns a generic 500 body, never echoing the raw error message', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(new Error('Database connection failed at 10.0.0.5:5432'))
+      const res = await request('wf-1', { apiKey: 'sk_test_key' })
+      expect(res.status).toBe(500)
+      const body = await res.json() as { error: string }
+      expect(body.error).toBe('Internal error')
+      expect(body.error).not.toContain('Database')
+      expect(body.error).not.toContain('10.0.0.5')
+    })
+
+    it('returns 503 with a generic message when source auth verification fails', async () => {
+      vi.mocked(executeWorkflow).mockRejectedValue(new SourceAuthUnavailableError('website_form', 'pg: connection refused at db-host'))
+      const res = await request('wf-1', { apiKey: 'sk_test_key' })
+      expect(res.status).toBe(503)
+      const body = await res.json() as { error: string }
+      expect(body.error).toBe('Service temporarily unavailable')
+      expect(body.error).not.toContain('pg:')
+      expect(body.error).not.toContain('db-host')
     })
   })
 
@@ -134,7 +152,10 @@ describe('POST /webhooks/:workflow_id', () => {
       const res = await request('wf-1', { apiKey: 'sk_test_key' })
       expect(res.status).toBe(403)
       const body = await res.json() as { error: string }
-      expect(body.error).toMatch(/not authorized/i)
+      // Generic message (#107) — does not echo the source name or workflow id.
+      expect(body.error).toBe('Source not authorized for this workflow')
+      expect(body.error).not.toContain('website_form')
+      expect(body.error).not.toContain('wf-1')
     })
 
     it('returns a retryable 503 (fails closed) when the assignment lookup errors (#65)', async () => {

@@ -15,6 +15,7 @@
 import type { Context } from 'hono'
 import type { Env } from '../index'
 import { executeWorkflow } from '../engine/index'
+import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
 
 const HOOK_HOST = 'hook.trypennie.dev'
@@ -173,10 +174,12 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
 
     return c.json(result.response, result.status as 200 | 409 | 500, headers)
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Internal error'
-    if (message.includes('not found') || message.includes('inactive')) {
-      return c.json({ error: message }, 404)
+    // Map by error type, not message substring, and keep the external message
+    // generic so internal/DB details don't leak (#107). Real error is logged.
+    if (err instanceof WorkflowNotFoundError) {
+      return c.json({ error: 'Workflow not found' }, 404)
     }
-    return c.json({ error: message }, 500)
+    console.error('[custom-endpoint] execution error:', err)
+    return c.json({ error: 'Internal error' }, 500)
   }
 }
