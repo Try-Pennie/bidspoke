@@ -57,6 +57,12 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
                 : Promise.resolve({ data: null, error: null })
           }
 
+          // .maybeSingle() returns the row or null without a not-found error —
+          // used by the key-collision check on rename.
+          if (prop === 'maybeSingle') {
+            return () => Promise.resolve({ data: cfg.single ?? null, error: null })
+          }
+
           if (prop === 'insert') {
             return () => {
               const ic: unknown = new Proxy({}, {
@@ -284,14 +290,15 @@ describe('PUT /env/:id', () => {
 
   // #104: renaming a secret must move the Cloudflare secret to the new name and
   // remove the old one, even when no new value is supplied.
+  // keyChanged PUTs do fetch → collision-check → update (3 env_var reads).
   it('renames a secret with no new value: copies CF secret to the new name and deletes the old', async () => {
     vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
-    const existing = { id: 'v3', key: 'OLD_KEY', value: 'ciphertext', is_secret: true }
+    const existing = { id: 'v3', key: 'OLD_KEY', value: 'ciphertext', is_secret: true, scope: 'global', workflow_id: null }
     const updated = { id: 'v3', key: 'NEW_KEY', value: 'encrypted-test-value', is_secret: true }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        environment_variables: [{ single: existing }, { updateResult: updated }],
+        environment_variables: [{ single: existing }, { single: null }, { updateResult: updated }],
       }) as never
     )
     const res = await request(app, 'PUT', '/env/v3', { body: { key: 'NEW_KEY' } })
@@ -304,17 +311,32 @@ describe('PUT /env/:id', () => {
 
   it('rotating and renaming a secret together puts the new value under the new name and deletes the old', async () => {
     vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
-    const existing = { id: 'v4', key: 'OLD_KEY', value: 'ciphertext', is_secret: true }
+    const existing = { id: 'v4', key: 'OLD_KEY', value: 'ciphertext', is_secret: true, scope: 'global', workflow_id: null }
     const updated = { id: 'v4', key: 'NEW_KEY', value: 'encrypted-test-value', is_secret: true }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        environment_variables: [{ single: existing }, { updateResult: updated }],
+        environment_variables: [{ single: existing }, { single: null }, { updateResult: updated }],
       }) as never
     )
     await request(app, 'PUT', '/env/v4', { body: { key: 'NEW_KEY', value: 'rotated' } })
     expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('NEW_KEY', 'rotated', 'acct-123', 'tok-abc')
     expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('OLD_KEY', 'acct-123', 'tok-abc')
+  })
+
+  it('rejects a rename that collides with another variable, without touching Cloudflare (#104)', async () => {
+    const existing = { id: 'v7', key: 'OLD_KEY', value: 'ciphertext', is_secret: true, scope: 'global', workflow_id: null }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        // collision check finds another row under NEW_KEY
+        environment_variables: [{ single: existing }, { single: { id: 'other' } }],
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v7', { body: { key: 'NEW_KEY' } })
+    expect(res.status).toBe(409)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
   })
 
   it('rejects an empty key', async () => {
@@ -326,9 +348,9 @@ describe('PUT /env/:id', () => {
   })
 
   it('rejects renaming a secret whose stored value cannot be recovered, without a new value', async () => {
-    const existing = { id: 'v6', key: 'OLD_KEY', value: null, is_secret: true }
+    const existing = { id: 'v6', key: 'OLD_KEY', value: null, is_secret: true, scope: 'global', workflow_id: null }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, environment_variables: { single: existing } }) as never
+      makeSupabase({ users: { single: testUser }, environment_variables: [{ single: existing }, { single: null }] }) as never
     )
     const res = await request(app, 'PUT', '/env/v6', { body: { key: 'NEW_KEY' } })
     expect(res.status).toBe(400)

@@ -115,7 +115,26 @@ env.put('/:id', async (c) => {
   if (fetchError || !existing) return c.json({ error: 'Variable not found' }, 404)
 
   const newKey = body.key ?? existing.key
-  const isRename = existing.is_secret && newKey !== existing.key
+  const keyChanged = newKey !== existing.key
+  const isRename = existing.is_secret && keyChanged
+
+  // Reject a rename that collides with another var of the same (key, scope,
+  // workflow) BEFORE touching Cloudflare — otherwise we'd overwrite that other
+  // secret's CF value and only then fail the DB unique constraint (#104).
+  if (keyChanged) {
+    let dupQuery = supabase
+      .from('environment_variables')
+      .select('id')
+      .eq('organization_id', orgId)
+      .eq('key', newKey)
+      .eq('scope', existing.scope)
+      .neq('id', id)
+    dupQuery = existing.workflow_id === null
+      ? dupQuery.is('workflow_id', null)
+      : dupQuery.eq('workflow_id', existing.workflow_id)
+    const { data: dup } = await dupQuery.maybeSingle()
+    if (dup) return c.json({ error: 'An environment variable with that name already exists' }, 409)
+  }
 
   let updatedValue: string | null | undefined
   if (existing.is_secret) {
