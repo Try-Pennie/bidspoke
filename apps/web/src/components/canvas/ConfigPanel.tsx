@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic'
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
+import { formatLogTime } from '@/lib/dates'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
@@ -653,11 +654,11 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
           )}
           {exec.logs && exec.logs.length > 0 && (
             <div>
-              <p className="mb-1.5 text-xs font-medium text-gray-500">Logs</p>
+              <p className="mb-1.5 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-400">(ET)</span></p>
               <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-100">
                 {exec.logs.map((entry, j) => (
                   <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
-                    <span className="text-gray-500">{entry.ts.slice(11, 23)}</span>{' '}
+                    <span className="text-gray-500">{formatLogTime(entry.ts)}</span>{' '}
                     <span className="font-semibold">{entry.level}</span>{' '}
                     {entry.message}
                   </div>
