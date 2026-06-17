@@ -68,7 +68,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
-import { resolvePostSaveState } from '@/lib/save-dirty-guard'
+import { resolvePostSaveState, computeEditSignature } from '@/lib/save-dirty-guard'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
@@ -910,6 +910,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // aren't marked clean. Only snapshots are compared, so the absolute value and the
   // mount tick don't matter — the effect below bumps it on any definition change.
   const editCounterRef = useRef(0)
+  // Last serialized definition signature the counter saw — lets the effect below
+  // ignore non-content node/edge churn (selection, measurement) so it only counts
+  // real edits (#160).
+  const lastEditSignatureRef = useRef<string | null>(null)
   // True while the open node's key/value editor has a blank or duplicate key —
   // blocks save until resolved, like duplicate Step IDs (#96). Reset on node
   // switch; the newly-opened editor re-reports its own validity.
@@ -1122,10 +1126,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
 
-  // Bump the edit counter on any definition-relevant change (#92). Reference
-  // identity changes on an edit, so this fires once per edit. Keep this dep list
-  // in sync with what handleSave serializes (flowToDef inputs + name + Slack).
+  // Bump the edit counter on any definition-relevant change (#92), but only when
+  // the serialized payload actually changes — React Flow churns the nodes/edges
+  // array on selection and dimension measurement, and those non-content changes
+  // must not count as edits or a clean save is wrongly judged "edited mid-save"
+  // and stays dirty (#160). Keep the dep list in sync with what handleSave
+  // serializes (flowToDef inputs + name + Slack).
   useEffect(() => {
+    const sig = computeEditSignature(flowToDef(nodes, edges, triggerRef.current), name, slackChannel)
+    if (sig === lastEditSignatureRef.current) return
+    lastEditSignatureRef.current = sig
     editCounterRef.current += 1
   }, [nodes, edges, triggerVersion, name, slackChannel])
 
