@@ -5,8 +5,8 @@
  * partitioned table silently truncates past the cap (and shuffles rows without a
  * stable order). This has been found and fixed one site at a time (volume-cliff,
  * bid-matrix sync/lookup, sf-matrix-audit, slow-execution-rate). This test scans
- * the worker's scheduled/engine code (src/lib + src/engine — not the
- * request-scoped API routes) and fails if a read of a known big table isn't
+ * the worker's scheduled/engine code (src/lib + src/engine) AND the request-scoped
+ * API routes (src/routes — #185) and fails if a read of a known big table isn't
  * bounded by .single()/.maybeSingle()/.range()/.limit()/a count, or routed
  * through fetchAllPaged.
  *
@@ -21,7 +21,10 @@ import { fileURLToPath } from 'node:url'
 
 const dir = fileURLToPath(new URL('.', import.meta.url))
 const WORKER_SRC = path.resolve(dir, '../../../../..', 'apps/worker/src')
-const SCAN_DIRS = ['lib', 'engine'].map((d) => path.join(WORKER_SRC, d))
+// Scheduled/engine code plus the request-scoped API routes (#185). Routes are
+// mostly bounded by design (keyset cursors, .single(), .limit()), but a new
+// unbounded list read there (e.g. an admin export) would truncate the same way.
+const SCAN_DIRS = ['lib', 'engine', 'routes'].map((d) => path.join(WORKER_SRC, d))
 
 // Tables that are partitioned or known to exceed the 1,000-row PostgREST cap.
 const BIG_TABLES = [
@@ -155,8 +158,8 @@ function scanFile(file: string): Finding[] {
   return findings
 }
 
-describe('worker big-table reads are paginated (#115)', () => {
-  it('every list read of a large/partitioned table in scheduled/engine code is bounded or paged', () => {
+describe('worker big-table reads are paginated (#115, #185)', () => {
+  it('every list read of a large/partitioned table in scheduled/engine code and API routes is bounded or paged', () => {
     const findings = SCAN_DIRS.flatMap((d) => listTsFiles(d)).flatMap(scanFile)
     const report = findings
       .map((f) => `  ${f.file}:${f.line} — .from('${f.table}').${f.methods.join('.')}() has no .range()/.limit()/.single() and no // paginate-ok`)

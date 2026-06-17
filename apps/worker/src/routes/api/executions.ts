@@ -80,6 +80,7 @@ executions.get('/', async (c) => {
   // so the IN list stays small. This makes the "replayed" marker accurate
   // even when the replay row scrolled off the visible page.
   const pageIds = data.map((r) => r.id)
+  // paginate-ok: bounded to one page (<=100) of parent ids; few children each
   const { data: parents } = await supabase
     .from('workflow_executions')
     .select('parent_execution_id')
@@ -314,12 +315,14 @@ executions.get('/:id', async (c) => {
   // gotcha on the list endpoint.
   const execStartedAt = execution.started_at
   const [stepsRes, childrenRes] = await Promise.all([
+    // paginate-ok: one execution's steps (tens of rows, well under the cap)
     supabase
       .from('execution_steps')
       .select(stepColumns)
       .eq('execution_id', id)
       .gte('started_at', execStartedAt)
       .order('step_order', { ascending: true }),
+    // paginate-ok: one execution's replay/resume children (a handful)
     supabase
       .from('workflow_executions')
       .select('id, started_at, status, outcome, source')
@@ -342,6 +345,7 @@ executions.get('/:id', async (c) => {
     // partitions newer than the current execution. Doesn't bound the lower end
     // tightly (we'd need parent.started_at for that), but is still a big win
     // once daily partitions accumulate.
+    // paginate-ok: one resumed-from execution's completed steps (tens of rows)
     const { data: parentSteps } = await supabase
       .from('execution_steps')
       .select(stepColumns)
