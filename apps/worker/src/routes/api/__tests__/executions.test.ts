@@ -148,6 +148,38 @@ describe('GET /executions', () => {
     const res = await request(app, 'GET', '/executions?workflow_id=wf-other')
     expect(res.status).toBe(404)
   })
+
+  // #106: cursor params are interpolated into the .or() filter, so a malformed
+  // value (e.g. one containing a comma/paren) must be rejected, not passed through.
+  it('returns 400 for a malformed keyset cursor', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { list: [testWorkflow] },
+        workflow_executions: { list: [testExecution] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const inject = encodeURIComponent('2026-01-01T00:00:00Z,id.lt.x')
+    const res = await request(app, 'GET', `/executions?before=${inject}&before_id=not-a-uuid`)
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'Invalid cursor' })
+  })
+
+  it('accepts a well-formed keyset cursor', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { list: [testWorkflow] },
+        workflow_executions: { list: [testExecution] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(
+      app,
+      'GET',
+      '/executions?before=2026-01-01T00:00:00Z&before_id=3f9c1e2a-1d23-496c-b046-b11d64edae29'
+    )
+    expect(res.status).toBe(200)
+  })
 })
 
 describe('GET /executions/:id', () => {

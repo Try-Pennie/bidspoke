@@ -5,6 +5,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { executeWorkflow } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
+import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
 
 type Variables = AuthVariables
 
@@ -60,8 +61,13 @@ executions.get('/', async (c) => {
   if (to) query = query.lte('started_at', to)
   // Keyset cursor for infinite scroll: load executions strictly older than
   // (before, before_id). Tiebreak on id when timestamps collide — rare but
-  // possible at high volume.
+  // possible at high volume. These values are interpolated raw into the .or()
+  // filter string, so validate them first (a ',' or '(' would break the filter
+  // grammar or inject extra OR branches) — #106.
   if (before && before_id) {
+    if (!isIsoTimestamp(before) || !isUuid(before_id)) {
+      return c.json({ error: 'Invalid cursor' }, 400)
+    }
     query = query.or(`started_at.lt.${before},and(started_at.eq.${before},id.lt.${before_id})`)
   }
 
