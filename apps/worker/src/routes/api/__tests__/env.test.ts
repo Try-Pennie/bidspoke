@@ -281,6 +281,59 @@ describe('PUT /env/:id', () => {
     await request(app, 'PUT', '/env/v2', { body: { value: 'new_secret_value' } })
     expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('SECRET_KEY', 'new_secret_value', 'acct-123', 'tok-abc')
   })
+
+  // #104: renaming a secret must move the Cloudflare secret to the new name and
+  // remove the old one, even when no new value is supplied.
+  it('renames a secret with no new value: copies CF secret to the new name and deletes the old', async () => {
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    const existing = { id: 'v3', key: 'OLD_KEY', value: 'ciphertext', is_secret: true }
+    const updated = { id: 'v3', key: 'NEW_KEY', value: 'encrypted-test-value', is_secret: true }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { updateResult: updated }],
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v3', { body: { key: 'NEW_KEY' } })
+    expect(res.status).toBe(200)
+    // Wrote the decrypted current value under the NEW name…
+    expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('NEW_KEY', 'decrypted-test-value', 'acct-123', 'tok-abc')
+    // …and removed the orphaned old name.
+    expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('OLD_KEY', 'acct-123', 'tok-abc')
+  })
+
+  it('rotating and renaming a secret together puts the new value under the new name and deletes the old', async () => {
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    const existing = { id: 'v4', key: 'OLD_KEY', value: 'ciphertext', is_secret: true }
+    const updated = { id: 'v4', key: 'NEW_KEY', value: 'encrypted-test-value', is_secret: true }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { updateResult: updated }],
+      }) as never
+    )
+    await request(app, 'PUT', '/env/v4', { body: { key: 'NEW_KEY', value: 'rotated' } })
+    expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith('NEW_KEY', 'rotated', 'acct-123', 'tok-abc')
+    expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('OLD_KEY', 'acct-123', 'tok-abc')
+  })
+
+  it('rejects an empty key', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser } }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v5', { body: { key: '   ' } })
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects renaming a secret whose stored value cannot be recovered, without a new value', async () => {
+    const existing = { id: 'v6', key: 'OLD_KEY', value: null, is_secret: true }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, environment_variables: { single: existing } }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v6', { body: { key: 'NEW_KEY' } })
+    expect(res.status).toBe(400)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+  })
 })
 
 describe('DELETE /env/:id', () => {
