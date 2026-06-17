@@ -7,7 +7,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
-import { formatDatetime } from '@/lib/dates'
+import { formatDatetime, formatLogTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
 import { isNotFoundError } from '@/lib/execution-retention'
@@ -879,11 +879,11 @@ export default function ExecutionDetailPage() {
 
                       {step.logs && step.logs.length > 0 && (
                         <div className="mt-3">
-                          <p className="mb-1 text-xs font-medium text-gray-500">Logs</p>
+                          <p className="mb-1 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-400">(ET)</span></p>
                           <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-3 text-xs text-gray-100">
                             {step.logs.map((entry, j) => (
                               <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
-                                <span className="text-gray-500">{entry.ts.slice(11, 23)}</span>{' '}
+                                <span className="text-gray-500">{formatLogTime(entry.ts)}</span>{' '}
                                 <span className="font-semibold">{entry.level}</span>{' '}
                                 {entry.message}
                               </div>
