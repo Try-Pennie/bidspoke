@@ -13,7 +13,7 @@
 const DISPATCH_OR_DB_FLOOR_MS = 150
 const NETWORK_FLOOR_MS = 50
 const INMEMORY_FLOOR_MS = 10
-const DISPATCH_OR_DB_NODE_TYPES = new Set(['code', 'constants'])
+const DISPATCH_OR_DB_NODE_TYPES = new Set(['code', 'constants', 'data_store'])
 const NETWORK_NODE_TYPES = new Set(['partner_bid', 'integration', 'salesforce', 'webhook', 'bid_group', 'achieve_offers'])
 
 export function timeoutFloorMs(nodeType?: string): number {
@@ -42,6 +42,8 @@ export function timeoutFloorReason(nodeType?: string): string | null {
     return 'Code nodes run in a sandboxed worker that takes time to dispatch, so a cold run can take 100ms+ before your code even starts.'
   if (nodeType && nodeType === 'constants')
     return 'The constants step reads from KV and queries the database on a cold cache, so the first run after a gap is a full round-trip.'
+  if (nodeType && nodeType === 'data_store')
+    return 'The data store step reads or writes Cloudflare KV, a storage round-trip that can take 100ms+ on a cold read.'
   if (nodeType && NETWORK_NODE_TYPES.has(nodeType))
     return 'This step makes an outbound API call, so every run pays a network round-trip plus TLS setup.'
   return null
