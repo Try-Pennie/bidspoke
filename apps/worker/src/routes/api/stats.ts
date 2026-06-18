@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -40,7 +41,7 @@ stats.get('/', async (c) => {
     p_org_id: orgId,
     p_since: since,
   })
-  if (rollupError) return c.json({ error: rollupError.message }, 500)
+  if (rollupError) return dbError(c, rollupError)
   // The rollup RPC's aggregate columns are Postgres BIGINT (run_count,
   // duration_ms_sum, duration_ms_count) and NUMERIC (cost_usd_sum). PostgREST
   // serializes both as JSON STRINGS to preserve precision, so without coercion

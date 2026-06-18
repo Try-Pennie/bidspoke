@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -21,7 +22,7 @@ partnerUuids.get('/', async (c) => {
     .eq('org_id', orgId)
     .order('partner_slug', { ascending: true })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -43,7 +44,7 @@ partnerUuids.post('/', async (c) => {
 
   if (error) {
     if (error.code === '23505') return c.json({ error: `UUID "${body.uuid}" already exists` }, 409)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'partner_uuid', (data as { id: string }).id, 'created', userId, {
@@ -68,7 +69,7 @@ partnerUuids.delete('/:id', async (c) => {
     .eq('id', id)
     .eq('org_id', orgId)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'partner_uuid', id, 'deleted', userId)
 

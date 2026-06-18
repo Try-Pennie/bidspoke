@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -71,7 +72,7 @@ endpoints.get('/', async (c) => {
     .order('subdomain')
     .order('path')
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   // Flatten the workflows join (Supabase returns the related row as an array)
   const rows = (data ?? []).map((row) => {
@@ -139,7 +140,7 @@ endpoints.post('/', async (c) => {
     if (error.code === '23505') {
       return c.json({ error: `An endpoint already exists at ${subdomain}.trypennie.dev${path}` }, 409)
     }
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'webhook_endpoint', data.id, 'created', userId, {
@@ -212,7 +213,7 @@ endpoints.put('/:id', async (c) => {
     if (error.code === '23505') {
       return c.json({ error: 'An endpoint already exists at that subdomain + path' }, 409)
     }
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   // Invalidate KV cache for old and new subdomain+path
@@ -253,7 +254,7 @@ endpoints.delete('/:id', async (c) => {
     .eq('id', id)
     .eq('organization_id', orgId)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
 

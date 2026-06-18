@@ -5,6 +5,7 @@
 // DELETE /api/integrations/slack        — disconnect
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -82,7 +83,7 @@ integrations.post('/slack', async (c) => {
     .select('id, created_at, updated_at')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   const isNew = upserted.created_at === upserted.updated_at
   await writeAuditLog(supabase, orgId, 'service_connection', upserted.id, isNew ? 'created' : 'updated', userId, {
@@ -213,7 +214,7 @@ integrations.patch('/slack/settings', async (c) => {
     .update({ config: nextConfig, updated_by: userId })
     .eq('id', existing.id)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'updated', userId, {
     service_type: 'slack',
@@ -244,7 +245,7 @@ integrations.delete('/slack', async (c) => {
     .eq('organization_id', orgId)
     .eq('service_type', 'slack')
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   if (existing) {
     await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'deleted', userId, { service_type: 'slack' })

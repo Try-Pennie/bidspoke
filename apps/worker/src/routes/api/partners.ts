@@ -3,6 +3,7 @@
  * CRUD for partner_configs. Daily cap count comes from the DailyCapDO.
  */
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -72,7 +73,7 @@ partners.get('/', async (c) => {
     .eq('organization_id', orgId)
     .order('priority', { ascending: true })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -149,7 +150,7 @@ partners.post('/', async (c) => {
 
   if (error) {
     if (error.code === '23505') return c.json({ error: `Slug "${slug}" already exists` }, 409)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'partner_config', data.id, 'created', userId, {
@@ -208,7 +209,7 @@ partners.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
@@ -250,7 +251,7 @@ partners.delete('/:id', async (c) => {
     .eq('id', id)
     .eq('organization_id', orgId)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'deleted', userId, {
     name: existing.name,

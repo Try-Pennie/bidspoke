@@ -5,6 +5,7 @@
 // POST   /api/connections/:service_type/sync-schema — trigger schema refresh
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -36,7 +37,7 @@ connections.get('/', async (c) => {
     .eq('organization_id', orgId)
     .in('service_type', ['salesforce', 'supabase', 'snowflake'])
     .order('service_type')
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -86,7 +87,7 @@ connections.post('/', async (c) => {
     .select('id, service_type, auth_type, schema_cache, schema_synced_at, created_at, updated_at, updated_by_email')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'service_connection', data.id, existing ? 'updated' : 'created', userId, {
     service_type: serviceType,
@@ -160,7 +161,7 @@ connections.post('/:service_type/sync-schema', async (c) => {
     .update({ schema_cache: schema, schema_synced_at: new Date().toISOString() })
     .eq('id', conn.id)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'service_connection', conn.id, 'schema_synced', userId, {
     service_type: serviceType,

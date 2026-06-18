@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -72,7 +73,7 @@ executions.get('/', async (c) => {
   }
 
   const { data, error } = await query
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   if (!data || data.length === 0) return c.json([])
 
   // Resolve which rows have been replayed at least once. We only ever care

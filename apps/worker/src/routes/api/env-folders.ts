@@ -5,6 +5,7 @@
 // DELETE /api/env-folders/:id    — delete if empty; 409 with child counts otherwise
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -22,7 +23,7 @@ envFolders.get('/', async (c) => {
     .select('id, organization_id, parent_id, name, created_at, updated_at')
     .eq('organization_id', orgId)
     .order('name')
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -53,7 +54,7 @@ envFolders.post('/', async (c) => {
     })
     .select('id, organization_id, parent_id, name, created_at, updated_at')
     .single()
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'env_var_folder', data.id, 'created', userId, {
     name: data.name,
@@ -110,7 +111,7 @@ envFolders.patch('/:id', async (c) => {
     .single()
   if (error) {
     if (error.message?.includes('cycle')) return c.json({ error: 'cannot move a folder into one of its descendants' }, 400)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'env_var_folder', id, 'updated', userId, {
@@ -152,7 +153,7 @@ envFolders.delete('/:id', async (c) => {
   }
 
   const { error } = await supabase.from('env_var_folders').delete().eq('id', id).eq('organization_id', orgId)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'env_var_folder', id, 'deleted', userId, { name: existing.name })
 

@@ -5,6 +5,7 @@
 // DELETE /api/folders/:id    — delete if empty; 409 with child counts otherwise
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -22,7 +23,7 @@ folders.get('/', async (c) => {
     .select('id, organization_id, parent_id, name, created_at, updated_at')
     .eq('organization_id', orgId)
     .order('name')
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -54,7 +55,7 @@ folders.post('/', async (c) => {
     })
     .select('id, organization_id, parent_id, name, created_at, updated_at')
     .single()
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'folder', data.id, 'created', userId, {
     name: data.name,
@@ -112,7 +113,7 @@ folders.patch('/:id', async (c) => {
   if (error) {
     // Cycle trigger raises a SQLSTATE the supabase-js layer surfaces as message
     if (error.message?.includes('cycle')) return c.json({ error: 'cannot move a folder into one of its descendants' }, 400)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'folder', id, 'updated', userId, {
@@ -154,7 +155,7 @@ folders.delete('/:id', async (c) => {
   }
 
   const { error } = await supabase.from('folders').delete().eq('id', id).eq('organization_id', orgId)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'folder', id, 'deleted', userId, { name: existing.name })
 

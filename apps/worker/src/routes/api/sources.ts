@@ -7,6 +7,7 @@
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { setCfSecret } from '../../lib/cf-secrets'
@@ -67,7 +68,7 @@ sources.get('/', async (c) => {
     .select('name, api_key, created_at')
     .eq('organization_id', orgId)
     .order('name')
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -98,7 +99,7 @@ sources.post('/', async (c) => {
     .single()
   if (insertError) {
     if (insertError.code === '23505') return c.json({ error: `Source "${name}" already exists` }, 409)
-    return c.json({ error: insertError.message }, 500)
+    return dbError(c, insertError)
   }
 
   const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'))
@@ -136,7 +137,7 @@ sources.get('/assignments', async (c) => {
     .from('source_workflow_assignments')
     .select('source_name, workflow_id')
     .eq('organization_id', orgId)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -150,7 +151,7 @@ sources.get('/:name/workflows', async (c) => {
     .select('workflow_id')
     .eq('organization_id', orgId)
     .eq('source_name', name)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json((data ?? []).map((r) => r.workflow_id))
 })
 
@@ -187,7 +188,7 @@ sources.post('/:name/workflows', async (c) => {
       { organization_id: orgId, source_name: name, workflow_id: body.workflow_id },
       { onConflict: 'organization_id,source_name,workflow_id' }
     )
-  if (insertError) return c.json({ error: insertError.message }, 500)
+  if (insertError) return dbError(c, insertError)
 
   await writeAuditLog(supabase, orgId, 'api_source', (src as { id: string }).id, 'updated', userId, {
     source_name: name,
@@ -211,7 +212,7 @@ sources.delete('/:name/workflows/:workflow_id', async (c) => {
     .eq('organization_id', orgId)
     .eq('source_name', name)
     .eq('workflow_id', workflowId)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   const { data: src } = await supabase
     .from('api_sources')

@@ -5,6 +5,7 @@
  * exactly one is_default. Rows live in bid_matrix_rows.
  */
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -45,7 +46,7 @@ route.get('/', async (c) => {
   if (partnerId) query = query.eq('partner_id', partnerId)
 
   const { data, error } = await query
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -120,7 +121,7 @@ route.post('/', async (c) => {
 
   if (error) {
     if (error.code === '23505') return c.json({ error: 'Slug already exists for this partner' }, 409)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'partner_bid_config', data.id, 'created', userId, { slug, name: body.name })
@@ -163,7 +164,7 @@ route.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   await writeAuditLog(supabase, orgId, 'partner_bid_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => !k.startsWith('updated_')),
   })
@@ -191,7 +192,7 @@ route.delete('/:id', async (c) => {
     .eq('id', id)
     .eq('organization_id', orgId)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   await writeAuditLog(supabase, orgId, 'partner_bid_config', id, 'deleted', userId, existing)
   return c.json({ ok: true })
 })
@@ -242,7 +243,7 @@ route.get('/:id/history', async (c) => {
     .order('changed_at', { ascending: false })
     .limit(50)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 

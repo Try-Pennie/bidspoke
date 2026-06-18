@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { jwtAuth } from '../../middleware/jwt-auth'
@@ -65,7 +66,7 @@ api.get('/audit-log', async (c) => {
   if (to) query = query.lte('changed_at', to)
 
   const { data, error } = await query
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 

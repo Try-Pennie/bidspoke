@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -13,7 +14,7 @@ access.get('/', async (c) => {
     .from('user_allowlist')
     .select('email, added_by, added_at')
     .order('added_at', { ascending: true })
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -35,7 +36,7 @@ access.post('/', async (c) => {
     .insert({ email, added_by: addedByEmail ?? 'unknown' })
   if (error) {
     if (error.code === '23505') return c.json({ error: 'Already on the allowlist' }, 409)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
 
   await writeAuditLog(supabase, orgId, 'user_allowlist', crypto.randomUUID(), 'created', userId, { email })
@@ -57,7 +58,7 @@ access.delete('/:email', async (c) => {
     .from('user_allowlist')
     .delete()
     .eq('email', email)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'user_allowlist', crypto.randomUUID(), 'deleted', userId, { email })
   return c.json({ ok: true })

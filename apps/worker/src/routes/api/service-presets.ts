@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -16,7 +17,7 @@ servicePresets.get('/', async (c) => {
     .select('id, name, slug, auth_type, base_url, created_at')
     .eq('organization_id', orgId)
     .order('name')
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data ?? [])
 })
 
@@ -47,7 +48,7 @@ servicePresets.post('/', async (c) => {
 
   if (error) {
     if (error.code === '23505') return c.json({ error: `A service with slug "${slug}" already exists` }, 409)
-    return c.json({ error: error.message }, 500)
+    return dbError(c, error)
   }
   await writeAuditLog(supabase, orgId, 'service_preset', data.id, 'created', userId, { name: data.name, slug: data.slug })
   return c.json(data, 201)
@@ -76,7 +77,7 @@ servicePresets.put('/:id', async (c) => {
     .select('id, name, slug, auth_type, base_url, created_at')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   if (!data) return c.json({ error: 'not found' }, 404)
   await writeAuditLog(supabase, orgId, 'service_preset', id, 'updated', userId, patch)
   return c.json(data)
@@ -91,7 +92,7 @@ servicePresets.delete('/:id', async (c) => {
     .delete()
     .eq('id', id)
     .eq('organization_id', orgId)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   await writeAuditLog(supabase, orgId, 'service_preset', id, 'deleted', userId)
   return c.json({ ok: true })
 })

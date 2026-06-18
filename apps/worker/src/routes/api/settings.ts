@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -28,7 +29,7 @@ settings.get('/anthropic-key', async (c) => {
     .eq('key', ANTHROPIC_KEY_SETTING)
     .maybeSingle()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   if (!data?.value_encrypted) {
     return c.json({ configured: false })
@@ -80,7 +81,7 @@ settings.put('/anthropic-key', async (c) => {
       { onConflict: 'organization_id,key' }
     )
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'app_setting', ANTHROPIC_KEY_SETTING, 'updated', userId, {
     changed_by_email: email,
@@ -100,7 +101,7 @@ settings.delete('/anthropic-key', async (c) => {
     .eq('organization_id', orgId)
     .eq('key', ANTHROPIC_KEY_SETTING)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'app_setting', ANTHROPIC_KEY_SETTING, 'deleted', userId, {
     changed_by_email: email,

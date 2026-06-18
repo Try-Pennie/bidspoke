@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -22,7 +23,7 @@ env.get('/', async (c) => {
     .eq('organization_id', orgId)
     .order('key', { ascending: true })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   // Mask secret values
   const masked = (data ?? []).map((row) => ({
@@ -83,7 +84,7 @@ env.post('/', async (c) => {
     .select()
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', data.id, body.is_secret ? 'secret_rotated' : 'created', userId, { key: body.key }),
@@ -190,7 +191,7 @@ env.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, {
@@ -245,7 +246,7 @@ env.post('/resync-secrets', async (c) => {
     .select('id, key, value')
     .eq('organization_id', orgId)
     .eq('is_secret', true)
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   const missing = (data ?? []).filter((s) => !cfNames.has(s.key as string))
   const resynced: string[] = []

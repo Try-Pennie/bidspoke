@@ -2,6 +2,7 @@
 // All endpoints are scoped to the caller's org — no cross-org access.
 
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -36,7 +37,7 @@ admin.post('/migrate-code-workers', async (c) => {
     .eq('is_active', true)
     .is('deleted_at', null)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   if (!workflows) return c.json({ migrated: 0, results: [] })
 
   const results = await Promise.all(
@@ -123,7 +124,7 @@ admin.post('/backfill-sightings', async (c) => {
       .eq('is_test', false)
       .order('started_at', { ascending: true })
       .limit(pageLimit)
-    if (execErr) return c.json({ error: execErr.message }, 500)
+    if (execErr) return dbError(c, execErr)
     if (!executions || executions.length === 0) break
 
     // Skip executions that already have a sighting backfilled

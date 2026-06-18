@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -31,7 +32,7 @@ workflows.get('/', async (c) => {
     .is('deleted_at', null)
     .order('updated_at', { ascending: false })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -70,7 +71,7 @@ workflows.post('/', async (c) => {
     .select()
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'workflow', data.id, 'created', userId)
   return c.json(data, 201)
@@ -303,7 +304,7 @@ workflows.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (versionError) return c.json({ error: versionError.message }, 500)
+  if (versionError) return dbError(c, versionError)
 
   // Update workflow
   const updates: Record<string, unknown> = {
@@ -323,7 +324,7 @@ workflows.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (updateError) return c.json({ error: updateError.message }, 500)
+  if (updateError) return dbError(c, updateError)
 
   // Invalidate KV cache
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
@@ -489,7 +490,7 @@ workflows.patch('/:id', async (c) => {
     .select('id, name, is_active, capture_sightings, folder_id, updated_at')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
@@ -518,7 +519,7 @@ workflows.delete('/:id', async (c) => {
     .eq('organization_id', orgId)
     .is('deleted_at', null)
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
@@ -545,7 +546,7 @@ workflows.patch('/:id/test-payloads', async (c) => {
     .select('test_payloads')
     .single()
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -572,7 +573,7 @@ workflows.get('/:id/versions', async (c) => {
     .eq('workflow_id', id)
     .order('version_number', { ascending: false })
 
-  if (error) return c.json({ error: error.message }, 500)
+  if (error) return dbError(c, error)
   return c.json(data)
 })
 
@@ -921,7 +922,7 @@ workflows.get('/:id/rename-impact', async (c) => {
     .from('partner_configs')
     .select('id, name, slug, bid_formula, bid_resolver_config')
     .eq('organization_id', orgId)
-  if (partnersError) return c.json({ error: partnersError.message }, 500)
+  if (partnersError) return dbError(c, partnersError)
 
   const affected: PartnerForRename[] = []
   for (const p of (partners ?? []) as PartnerForRename[]) {
@@ -945,7 +946,7 @@ workflows.get('/:id/rename-impact', async (c) => {
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .neq('id', id)
-  if (wfError) return c.json({ error: wfError.message }, 500)
+  if (wfError) return dbError(c, wfError)
 
   function workflowsUsingPartner(partnerId: string): { id: string; name: string }[] {
     const out: { id: string; name: string }[] = []
@@ -1026,7 +1027,7 @@ workflows.post('/:id/rename-apply', async (c) => {
     .select('id, name, slug, bid_formula, bid_resolver_config')
     .eq('organization_id', orgId)
     .in('id', partnerIds)
-  if (partnersError) return c.json({ error: partnersError.message }, 500)
+  if (partnersError) return dbError(c, partnersError)
 
   let updated = 0
   for (const p of (partners ?? []) as PartnerForRename[]) {
@@ -1047,7 +1048,7 @@ workflows.post('/:id/rename-apply', async (c) => {
       .update(update)
       .eq('id', p.id)
       .eq('organization_id', orgId)
-    if (upErr) return c.json({ error: upErr.message }, 500)
+    if (upErr) return dbError(c, upErr)
 
     await writeAuditLog(supabase, orgId, 'partner_config', p.id, 'updated', userId, {
       reason: 'step_id_renamed',
