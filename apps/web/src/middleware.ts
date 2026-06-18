@@ -32,6 +32,9 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/auth') ||
     pathname.startsWith('/access-denied') ||
     pathname.startsWith('/mockup') ||
+    // Node-state preview gallery (#227) — static node cards, no data; reachable
+    // without auth so visual changes can be verified in a browser / Playwright.
+    pathname.startsWith('/dev') ||
     // Public documentation site and the AI crawl index. Reachable without auth
     // so external readers and AI crawlers (which point at the raw .md files and
     // /llms.txt) are not redirected to /login.

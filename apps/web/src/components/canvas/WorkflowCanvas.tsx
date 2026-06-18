@@ -109,7 +109,9 @@ const baseNodeTypes = {
   region: RegionNode,
 }
 
-const nodeTypes: NodeTypes = Object.fromEntries(
+// Exported so the dev node-state preview page (/dev/nodes) renders nodes through
+// the exact same registry + badge HOC the canvas uses (#227).
+export const nodeTypes: NodeTypes = Object.fromEntries(
   Object.entries(baseNodeTypes).map(([type, Component]) => [type, withNodeBadges(Component)]),
 )
 
