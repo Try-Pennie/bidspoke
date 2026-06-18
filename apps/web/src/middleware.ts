@@ -1,5 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
+import { isPublicPath } from './lib/public-paths'
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -27,24 +28,12 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
-  const isPublicPath =
-    pathname.startsWith('/login') ||
-    pathname.startsWith('/auth') ||
-    pathname.startsWith('/access-denied') ||
-    pathname.startsWith('/mockup') ||
-    // Node-state preview gallery (#227) — static node cards, no data; reachable
-    // without auth so visual changes can be verified in a browser / Playwright.
-    pathname.startsWith('/dev') ||
-    // Public documentation site and the AI crawl index. Reachable without auth
-    // so external readers and AI crawlers (which point at the raw .md files and
-    // /llms.txt) are not redirected to /login.
-    pathname.startsWith('/docs') ||
-    pathname === '/llms.txt'
+  const publicPath = isPublicPath(pathname)
 
   // Allowlist gate — only enforced on protected paths.
   // Public paths (/login, /auth, /access-denied) are exempt so we don't
   // create an infinite redirect loop when sending blocked users to /access-denied.
-  if (user && !isPublicPath) {
+  if (user && !publicPath) {
     const email = user.email ?? ''
     // Step 1: fast domain reject
     const domainOk = email.toLowerCase().endsWith('@trypennie.com')
@@ -66,7 +55,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  if (!user && !isPublicPath) {
+  if (!user && !publicPath) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
