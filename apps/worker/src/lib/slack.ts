@@ -736,7 +736,7 @@ export async function sendBigTableGrowthAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: 'Add each to `BIG_TABLES` (apps/web/.../worker-big-table-pagination.test.ts) and `KNOWN_NONPARTITIONED_BIG_TABLES` (apps/worker/src/lib/big-table-guard.ts), and make sure reads use `fetchAllPaged` / `.range()` / `.single()`.',
+        text: 'Add each to `BIG_TABLES` (apps/web/.../worker-big-table-pagination.test.ts) and the mirrored `KNOWN_BIG_TABLES` (apps/worker/src/lib/big-table-guard.ts), and make sure reads use `fetchAllPaged` / `.range()` / `.single()`.',
       },
     },
   ]

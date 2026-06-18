@@ -200,6 +200,29 @@ describe('big-table pagination guard list is complete', () => {
   })
 })
 
+describe('runtime big-table guard mirrors BIG_TABLES (#222)', () => {
+  it('KNOWN_BIG_TABLES in the worker guard matches BIG_TABLES here', () => {
+    // The daily runtime check (apps/worker/src/lib/big-table-guard.ts) excludes
+    // already-handled tables by this exact list. If it drifts from BIG_TABLES, the
+    // check either false-alerts on a handled table (a known big table not in the
+    // worker's set) or misses a real grower — exactly the drift that let it
+    // false-alert on sf_bid_matrix_audit. Mirror them verbatim.
+    const src = readFileSync(path.join(WORKER_SRC, 'lib/big-table-guard.ts'), 'utf8')
+    const m = src.match(/KNOWN_BIG_TABLES\s*=\s*new Set\(\[([\s\S]*?)\]\)/)
+    expect(m, 'KNOWN_BIG_TABLES = new Set([...]) not found in big-table-guard.ts').not.toBeNull()
+    const workerSet = new Set([...m![1].matchAll(/['"`]([^'"`]+)['"`]/g)].map((x) => x[1]))
+    const here = new Set(BIG_TABLES)
+    const missing = [...here].filter((t) => !workerSet.has(t)).sort()
+    const extra = [...workerSet].filter((t) => !here.has(t)).sort()
+    expect(
+      { missing, extra },
+      `KNOWN_BIG_TABLES (worker) must mirror BIG_TABLES (here).\n` +
+        `missing from worker: ${missing.join(', ') || '(none)'}\n` +
+        `extra in worker: ${extra.join(', ') || '(none)'}`,
+    ).toEqual({ missing: [], extra: [] })
+  })
+})
+
 describe('worker big-table reads are paginated (#115, #185)', () => {
   it('every list read of a large/partitioned table in scheduled/engine code and API routes is bounded or paged', () => {
     const findings = SCAN_DIRS.flatMap((d) => listTsFiles(d)).flatMap(scanFile)

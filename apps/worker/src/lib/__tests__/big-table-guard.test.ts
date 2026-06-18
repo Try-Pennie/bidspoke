@@ -2,9 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { filterUnhandledBigTables, runBigTableGuard } from '../big-table-guard'
 
 describe('filterUnhandledBigTables', () => {
-  it('drops known/handled tables and keeps unexpected growers', () => {
+  it('drops known/handled tables (including sf_bid_matrix_audit) and keeps unexpected growers', () => {
     const rows = [
       { table_name: 'persons', est_rows: 900000 },
+      // sf_bid_matrix_audit is a non-partitioned BIG_TABLE — must be excluded, or
+      // the daily check false-alerts on it (the bug this list fixes).
+      { table_name: 'sf_bid_matrix_audit', est_rows: 1230 },
       { table_name: 'audit_log', est_rows: 50000 },
       { table_name: 'some_new_table', est_rows: 4000 },
     ]

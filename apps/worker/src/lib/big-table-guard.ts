@@ -12,12 +12,26 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sendBigTableGrowthAlert } from './slack'
 
-// Non-partitioned tables already known to exceed the cap and handled (paginated +
-// in the web static guard's BIG_TABLES). The RPC already excludes partitioned
-// parents/children, so only the non-partitioned known entries are excluded here.
-// Keep in sync with the non-partitioned entries of BIG_TABLES in
-// apps/web/src/lib/__tests__/worker-big-table-pagination.test.ts.
-export const KNOWN_NONPARTITIONED_BIG_TABLES = new Set(['persons', 'audit_log'])
+// Tables already known to be big and handled (paginated). This is a verbatim
+// mirror of BIG_TABLES in the web static guard
+// (apps/web/src/lib/__tests__/worker-big-table-pagination.test.ts) — a sync test
+// there fails the build if the two drift. Including the partitioned entries is
+// harmless: the unpaginated_big_tables RPC already excludes partitioned
+// parents/children, so they never appear in its output anyway. Listing the FULL
+// set (not just the non-partitioned entries) is what makes the sync test trivial
+// and prevents the drift that would otherwise false-alert on a handled table
+// like sf_bid_matrix_audit.
+export const KNOWN_BIG_TABLES = new Set([
+  'execution_steps',
+  'workflow_executions',
+  'lead_sightings',
+  'lead_sighting_bids',
+  'bid_matrix_rows',
+  'sf_bid_matrix_audit',
+  'persons',
+  'achieve_evaluations',
+  'audit_log',
+])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads
 // actually start truncating.
@@ -30,7 +44,7 @@ export interface TableEstimate {
 
 /** Drop tables already known/handled, leaving only unexpected growers. */
 export function filterUnhandledBigTables(rows: TableEstimate[]): TableEstimate[] {
-  return rows.filter((r) => !KNOWN_NONPARTITIONED_BIG_TABLES.has(r.table_name))
+  return rows.filter((r) => !KNOWN_BIG_TABLES.has(r.table_name))
 }
 
 const COOLDOWN_PREFIX = 'bigtbl:alerted:'
