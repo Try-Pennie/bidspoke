@@ -1,0 +1,67 @@
+/**
+ * Runtime big-table guard (#222).
+ *
+ * The static guard (apps/web/.../worker-big-table-pagination.test.ts) only catches
+ * PARTITIONED tables. A non-partitioned table that grows past PostgREST's
+ * 1,000-row list cap (persons, audit_log both did) isn't caught until a human adds
+ * it to BIG_TABLES. This daily check reads live row estimates via the
+ * `unpaginated_big_tables` RPC and Slack-alerts any non-partitioned table over the
+ * threshold that isn't already known/handled — so it can be paginated + listed
+ * before unbounded reads start truncating.
+ */
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { sendBigTableGrowthAlert } from './slack'
+
+// Non-partitioned tables already known to exceed the cap and handled (paginated +
+// in the web static guard's BIG_TABLES). The RPC already excludes partitioned
+// parents/children, so only the non-partitioned known entries are excluded here.
+// Keep in sync with the non-partitioned entries of BIG_TABLES in
+// apps/web/src/lib/__tests__/worker-big-table-pagination.test.ts.
+export const KNOWN_NONPARTITIONED_BIG_TABLES = new Set(['persons', 'audit_log'])
+
+// Alert below the 1,000-row cap so there's lead time to paginate before reads
+// actually start truncating.
+export const BIG_TABLE_ROW_THRESHOLD = 500
+
+export interface TableEstimate {
+  table_name: string
+  est_rows: number
+}
+
+/** Drop tables already known/handled, leaving only unexpected growers. */
+export function filterUnhandledBigTables(rows: TableEstimate[]): TableEstimate[] {
+  return rows.filter((r) => !KNOWN_NONPARTITIONED_BIG_TABLES.has(r.table_name))
+}
+
+const COOLDOWN_PREFIX = 'bigtbl:alerted:'
+const COOLDOWN_TTL_SECONDS = 7 * 24 * 60 * 60
+
+export async function runBigTableGuard(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+): Promise<{ offenders: string[]; alerted: boolean }> {
+  const { data, error } = await supabase.rpc('unpaginated_big_tables', { p_min_rows: BIG_TABLE_ROW_THRESHOLD })
+  if (error) throw new Error(`unpaginated_big_tables rpc failed: ${error.message}`)
+
+  const offenders = filterUnhandledBigTables((data ?? []) as TableEstimate[])
+  if (offenders.length === 0) return { offenders: [], alerted: false }
+
+  const names = offenders.map((o) => o.table_name).sort()
+  // Dedup by the offending set: re-alert only when the set changes or after the
+  // cooldown, so a slow-to-fix table doesn't page every single day.
+  const sig = COOLDOWN_PREFIX + names.join(',')
+  if (await kv.get(sig)) return { offenders: names, alerted: false }
+
+  const { data: conns } = await supabase
+    .from('service_connections')
+    .select('organization_id')
+    .eq('service_type', 'slack')
+  const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
+
+  let alerted = false
+  for (const orgId of orgIds) {
+    if (await sendBigTableGrowthAlert(supabase, orgId, offenders)) alerted = true
+  }
+  if (alerted) await kv.put(sig, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  return { offenders: names, alerted }
+}

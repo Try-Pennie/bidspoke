@@ -8,6 +8,7 @@ import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runHyperdriveFallbackCheck } from './lib/hyperdrive-fallback'
+import { runBigTableGuard } from './lib/big-table-guard'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -173,6 +174,11 @@ export default {
         runSecretDriftCheck(supabase, env)
           .then((r) => console.log(`[secret-drift] checked=${r.checked} missing=${r.missing} alerted=${r.alerted}`))
           .catch((e) => console.error('[secret-drift] check failed:', e))
+      )
+      ctx.waitUntil(
+        runBigTableGuard(supabase, env.IDEMPOTENCY)
+          .then((r) => { if (r.offenders.length) console.log(`[big-table-guard] offenders=${r.offenders.join(',')} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[big-table-guard] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(

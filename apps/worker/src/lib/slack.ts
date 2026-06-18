@@ -710,6 +710,44 @@ export async function sendHyperdriveFallbackAlert(
   )) !== null
 }
 
+/**
+ * Alert that one or more non-partitioned tables have grown large enough that
+ * unbounded PostgREST list reads will truncate at the 1,000-row cap, and they
+ * aren't yet in the pagination guard's known list (#222).
+ */
+export async function sendBigTableGrowthAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  tables: { table_name: string; est_rows: number }[],
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const list = tables.map((t) => `• \`${t.table_name}\` (~${t.est_rows.toLocaleString()} rows)`).join('\n')
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Table approaching the 1,000-row read cap', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `These non-partitioned tables have grown large but aren't in the pagination guard's known list, so an unbounded \`.select()\` of them will silently truncate at PostgREST's 1,000-row cap:\n${list}`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: 'Add each to `BIG_TABLES` (apps/web/.../worker-big-table-pagination.test.ts) and `KNOWN_NONPARTITIONED_BIG_TABLES` (apps/worker/src/lib/big-table-guard.ts), and make sure reads use `fetchAllPaged` / `.range()` / `.single()`.',
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Big table approaching the 1,000-row cap: ${tables.map((t) => t.table_name).join(', ')}`,
+  )) !== null
+}
+
 function linkSuffix(url: string | undefined): string {
   return url ? ` · <${url}|view in SF>` : ''
 }
