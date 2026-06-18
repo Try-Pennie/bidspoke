@@ -29,6 +29,7 @@ import { resolveBid } from '../bid-resolver'
 import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
 import { recordBidAttempt } from '../lead-sightings'
+import { isShadowDryRun } from '../shadow'
 
 // Re-exports — keep external imports stable.
 export { PartnerApiError } from '../partner-bid-error'
@@ -64,7 +65,7 @@ interface PartnerConfig {
   is_active: boolean
 }
 
-type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected'
+type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected' | 'shadow'
 
 export interface PartnerBidOutput {
   partner: string         // slug
@@ -213,6 +214,13 @@ export async function executePartnerBidNode(
     template: baseTemplate,
     resolved: { partner_slug: p.slug, payload: ctx.trigger.payload, ...resolved },
   })
+
+  // Shadow dry-run: skip the partner submission, dedup call, and bid-attempt
+  // write. The partner config load above is a harmless DB read, so we still have
+  // the slug for a canonical skip.
+  if (isShadowDryRun(ctx)) {
+    return { ...skip(p.slug, 'shadow'), resolvedInput: buildInput({ skip_reason: 'shadow' }) }
+  }
 
   const attemptedAt = new Date()
   const logBid = (input: Partial<Parameters<typeof recordBidAttempt>[1]> & { partner_slug: string; attempted_at_utc: Date }) => {

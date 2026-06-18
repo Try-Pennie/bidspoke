@@ -17,19 +17,6 @@ export function shadowSalesforceStub(): StepExecutionResult {
   return { output: { status: 200, body: { _shadow: true } } }
 }
 
-export function shadowPartnerBidStub(slug: string): StepExecutionResult {
-  return {
-    output: {
-      partner: slug,
-      bid: null,
-      accepted: false,
-      skipped: true,
-      skip_reason: 'shadow',
-      _shadow: true,
-    },
-  }
-}
-
 export function shadowAchieveStub(): StepExecutionResult {
   return {
     output: { accepted: false, status: 200, reason: 'shadow', request: {}, offers: [], _shadow: true },

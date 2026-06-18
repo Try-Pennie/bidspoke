@@ -4,7 +4,6 @@ import {
   isShadowDryRun,
   shadowIntegrationStub,
   shadowSalesforceStub,
-  shadowPartnerBidStub,
   shadowAchieveStub,
 } from '../shadow'
 
@@ -31,16 +30,6 @@ describe('shadow stubs', () => {
   })
   it('salesforce stub is a tagged 200', () => {
     expect(shadowSalesforceStub().output).toEqual({ status: 200, body: { _shadow: true } })
-  })
-  it('partner bid stub is a tagged skip carrying the slug', () => {
-    expect(shadowPartnerBidStub('tripoint').output).toEqual({
-      partner: 'tripoint',
-      bid: null,
-      accepted: false,
-      skipped: true,
-      skip_reason: 'shadow',
-      _shadow: true,
-    })
   })
   it('achieve stub is a tagged non-accept with no evaluation marker', () => {
     const out = shadowAchieveStub().output as Record<string, unknown>
