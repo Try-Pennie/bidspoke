@@ -46,6 +46,7 @@ import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
 import { computeWarningNodeIds } from '@/lib/minimap-warnings'
+import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
 import NodePalette from './NodePalette'
@@ -1070,6 +1071,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     () => computeWarningNodeIds(nodes, new Set(validationErrors.keys()), timeoutSuggestions),
     [nodes, validationErrors, timeoutSuggestions]
   )
+  // When many nodes warn at once, drop the glow's pulse (keep a static glow) so a
+  // busy workflow isn't a wall of competing motion (#228).
+  const calmWarnings = shouldCalmWarnings(warningNodeIds.size)
 
   // Translucent backdrops behind each branch / parallel cluster. Recomputed
   // whenever nodes or edges change so they track positions / membership in
@@ -3130,6 +3134,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             style={layoutSettled ? undefined : { visibility: 'hidden', pointerEvents: 'none' }}
           >
           <ReactFlow
+            className={calmWarnings ? 'calm-warnings' : undefined}
             nodes={renderedNodes}
             edges={renderedEdges}
             onNodesChange={(changes) => {
