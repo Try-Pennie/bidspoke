@@ -31,7 +31,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-blue-400 ring-2 ring-blue-100' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
+        selected ? 'border-blue-400 ring-2 ring-blue-100' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >

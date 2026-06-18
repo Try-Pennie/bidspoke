@@ -49,7 +49,7 @@ export function ParallelEndNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-slate-400 ring-2 ring-slate-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
+        selected ? 'border-slate-400 ring-2 ring-slate-200' : 'border-gray-200'
       } ${getNodeClasses(effectiveStep, hasError, isReachable)}`}
       style={{ ...getExecutionStyle(effectiveStep), width }}
     >

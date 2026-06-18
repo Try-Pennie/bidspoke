@@ -34,7 +34,7 @@ export function PartnerBidNode({ data, selected }: NodeProps) {
   return (
     <div
       className={`relative w-52 rounded-lg border bg-white shadow-sm ${
-        selected ? 'border-sky-400 ring-2 ring-sky-200' : hasError ? 'border-amber-400 ring-2 ring-amber-100' : 'border-gray-200'
+        selected ? 'border-sky-400 ring-2 ring-sky-200' : 'border-gray-200'
       } ${getNodeClasses(executionStep, hasError, isReachable)}`}
       style={getExecutionStyle(executionStep)}
     >
