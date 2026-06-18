@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -217,6 +217,41 @@ describe('sendFailureAlert', () => {
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
     expect(allText).toContain('failed on first attempt (no retry)')
+  })
+})
+
+describe('sendDurationAlert', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const durationPayload = {
+    workflow_id: 'wf-1',
+    workflow_name: 'Lead Routing',
+    execution_id: 'exec-abc',
+    duration_ms: 12000,
+    threshold_ms: 8000,
+    timestamp: '2024-01-15T18:00:00.000Z',
+  }
+
+  it('appends node= to the execution URL when the bottleneck step has a node id', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendDurationAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...durationPayload, node_id: 'node-slow' }, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(allText).toContain('node=node-slow')
+    expect(allText).toContain('execution=exec-abc')
+  })
+
+  it('omits the node param when no bottleneck node id is present', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendDurationAlert(makeSupabase(slackConnection) as any, 'org-1', null, durationPayload, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(allText).not.toContain('node=')
   })
 })
 

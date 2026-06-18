@@ -78,6 +78,10 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
   // and the persisted snapshot can say "retried N times before failing".
   let retriesUsed: number | undefined
   let failedNodeId: string | undefined
+  // Node id of the slowest step, for deep-linking the duration alert to it.
+  const bottleneckNodeId = args.stepLogQueue.find(
+    (s) => s.step_namespace === bottleneck.step_namespace
+  )?.step_node_id
   if (args.alertType === 'failure') {
     reason.error_message = args.errorMessage
     reason.error_type = args.errorType
@@ -113,6 +117,7 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
         duration_ms: args.durationMs,
         threshold_ms: args.thresholdMs!,
         timestamp: args.timestamp,
+        node_id: bottleneckNodeId,
       }, args.env.APP_URL).catch((e) => { console.error('[slack] duration alert failed:', e); return null })
     : await sendFailureAlert(args.supabase, args.orgId, args.slackChannel, {
         workflow_id: args.workflowId,

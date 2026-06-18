@@ -153,6 +153,9 @@ export async function sendDurationAlert(
     duration_ms: number
     threshold_ms: number
     timestamp: string
+    /** Node id of the slowest (bottleneck) step, when known — deep-links the
+     *  alert straight to that node on the canvas in addition to the execution. */
+    node_id?: string
   },
   appUrl: string
 ): Promise<SlackAlertHandle | null> {
@@ -162,7 +165,8 @@ export async function sendDurationAlert(
   const channel = channelOverride || connection.default_channel
   const seconds = (payload.duration_ms / 1000).toFixed(1)
   const thresholdSeconds = (payload.threshold_ms / 1000).toFixed(0)
-  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}`
+  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}` +
+    (payload.node_id ? `&node=${payload.node_id}` : '')
 
   const blocks = [
     {
