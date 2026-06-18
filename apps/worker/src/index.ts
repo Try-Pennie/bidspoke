@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
+import shadow from './routes/shadow'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
@@ -135,6 +136,9 @@ app.use('*', async (c, next) => {
 
 // Webhook execution endpoint — authenticated via X-API-Key (PRD 12.2)
 app.route('/webhooks', webhooks)
+
+// Shadow mirror endpoint — dry-run shadow of engine traffic (Phase 4.3)
+app.route('/shadow', shadow)
 
 // REST API — JWT authenticated
 app.route('/api', api)
