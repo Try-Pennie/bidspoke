@@ -618,6 +618,53 @@ export async function sendSecretDriftAlert(
   )) !== null
 }
 
+export interface BackupFailureAlert {
+  workflow_id: string
+  workflow_name: string
+  consecutive_failures: number
+  error_message: string
+}
+
+/**
+ * Alert that the off-Supabase GitHub backup for a workflow has failed repeatedly.
+ * Posted from the workflow save path once the per-org failure streak crosses the
+ * threshold; the caller has already fetched the connection and checked
+ * config_alerts_enabled. Returns true when delivered. See #206.
+ */
+export async function sendBackupFailureAlert(
+  connection: SlackConnection,
+  payload: BackupFailureAlert,
+  appUrl: string
+): Promise<boolean> {
+  const errText = payload.error_message.length > 300 ? `${payload.error_message.slice(0, 300)}…` : payload.error_message
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Workflow Backup Failing', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `The off-Supabase GitHub backup for *${payload.workflow_name}* has failed *${payload.consecutive_failures} saves in a row*. Recent saves are not being mirrored and their version history has no commit on GitHub until this is fixed.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: 'Check that the GitHub token is valid and the backup repo is configured correctly, or confirm GitHub is reachable.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/workflows/${payload.workflow_id}|Open workflow →>` } },
+  ]
+
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Workflow backup failing: ${payload.workflow_name}`
+  )) !== null
+}
+
 function linkSuffix(url: string | undefined): string {
   return url ? ` · <${url}|view in SF>` : ''
 }

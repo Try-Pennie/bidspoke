@@ -12,12 +12,16 @@ vi.mock('../../../lib/supabase')
 vi.mock('../../../engine/definition-loader')
 vi.mock('../../../lib/audit')
 vi.mock('../../../engine/index')
+vi.mock('../../../lib/github')
+vi.mock('../../../lib/github-backup-alert')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
+import { pushWorkflowToGitHub } from '../../../lib/github'
+import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -93,6 +97,10 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 const testEnv = {
   SUPABASE_JWKS_URL: 'https://fake.jwks',
   WORKFLOW_CACHE: {},
+  IDEMPOTENCY: {},
+  APP_URL: 'https://app.test',
+  GITHUB_TOKEN: 'gh-tok',
+  GITHUB_REPO: 'Try-Pennie/backups',
 } as unknown as Env
 
 async function makeApp() {
@@ -121,6 +129,12 @@ describe('PUT /workflows/:id', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    // Backup runs in waitUntil and chains .then/.catch — the auto-mock must return
+    // a promise. Default to "not configured" (null) / no-op so unrelated tests are
+    // unaffected; the backup-specific tests override these.
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
     app = await makeApp()
   })
 
@@ -172,6 +186,43 @@ describe('PUT /workflows/:id', () => {
     )
     await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
     expect(vi.mocked(invalidateWorkflowCache)).toHaveBeenCalledWith('wf-1', expect.anything())
+  })
+
+  // Drain the promises handed to ctx.waitUntil so the backup .then/.catch settles.
+  const drainWaitUntil = () =>
+    Promise.all(mockCtx.waitUntil.mock.calls.map((call: unknown[]) => call[0]))
+
+  it('records a successful backup (clears the failure streak) when the push returns a commit sha', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-sha-123')
+    const newVersion = { id: 'ver-bk1', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    await drainWaitUntil()
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+    expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
+  })
+
+  it('records a backup failure (for alerting) when the push throws', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
+    const newVersion = { id: 'ver-bk2', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    await drainWaitUntil()
+    expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1' }))
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
   })
 
   it('writes an audit log entry', async () => {

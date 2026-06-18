@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert } from '../slack'
+import { sendFailureAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -287,5 +287,46 @@ describe('sendSecretDriftAlert (#199)', () => {
   it('does nothing and reports not-sent when there are no missing secrets', async () => {
     expect(await sendSecretDriftAlert(conn, [], 'https://app.test')).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendBackupFailureAlert (#206)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
+
+  it('posts a Block Kit message naming the workflow, failure count, error, and link', async () => {
+    const sent = await sendBackupFailureAlert(
+      conn,
+      { workflow_id: 'wf-9', workflow_name: 'Main Flow', consecutive_failures: 3, error_message: 'GitHub push failed (401): Bad credentials' },
+      'https://app.test',
+    )
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.channel).toBe('#alerts')
+    expect(body.unfurl_links).toBe(false)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('Workflow Backup Failing')
+    expect(text).toContain('Main Flow')
+    expect(text).toContain('3 saves in a row')
+    expect(text).toContain('Bad credentials')
+    expect(text).toContain('https://app.test/workflows/wf-9')
+  })
+
+  it('truncates an overlong error message', async () => {
+    await sendBackupFailureAlert(
+      conn,
+      { workflow_id: 'wf-9', workflow_name: 'X', consecutive_failures: 2, error_message: 'e'.repeat(500) },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('…')
+    expect(text).not.toContain('e'.repeat(400))
   })
 })

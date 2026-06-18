@@ -5,6 +5,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidateWorkflowCache } from '../../engine/definition-loader'
 import { pushWorkflowToGitHub } from '../../lib/github'
+import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
 import { executeWorkflow } from '../../engine/index'
 import { executeNode } from '../../engine/nodes/index'
@@ -362,14 +363,24 @@ workflows.put('/:id', async (c) => {
       nextVersion,
       body.message
     )
-      .then((commitSha) => {
+      .then(async (commitSha) => {
+        // null = backup not configured (no token/repo) — not a failure, leave the streak alone.
         if (!commitSha) return
-        return supabase
-          .from('workflow_versions')
-          .update({ commit_sha: commitSha })
-          .eq('id', version.id)
+        await supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', version.id)
+        await recordBackupSuccess(c.env.IDEMPOTENCY, orgId)
       })
-      .catch((e) => console.error('[github] backup failed:', e))
+      .catch(async (e) => {
+        console.error('[github] backup failed:', e)
+        await recordBackupFailure({
+          supabase,
+          kv: c.env.IDEMPOTENCY,
+          orgId,
+          workflowId: id,
+          workflowName,
+          error: e,
+          appUrl: c.env.APP_URL,
+        }).catch((alertErr) => console.error('[github] backup alert failed:', alertErr))
+      })
   )
 
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
