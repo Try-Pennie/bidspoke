@@ -27,20 +27,19 @@ export function getExecutionStyle(exec: ExecutionStep | null | undefined): CSSPr
 /**
  * Use instead of getExecutionClasses when validation error state also applies.
  * Execution state always takes precedence over validation indicators.
- * `isReachable` is accepted for back-compat but no longer dims the node —
- * we keep all nodes looking uniform regardless of graph context, so the
- * grey region backdrop is the only visual signal of nesting / orphans.
+ *
+ * The unconfigured/invalid (hasError) glow is no longer applied here — it now
+ * lives in the withNodeBadges HOC (NodeWarningGlow), which overlays a pulsing
+ * `.node-warning` glow for BOTH unconfigured nodes and timeout-warning nodes,
+ * uniformly across every node type. `hasError`/`isReachable` are accepted for
+ * back-compat with existing callers but no longer change the result.
  */
 export function getNodeClasses(
   exec: ExecutionStep | null | undefined,
-  hasError?: boolean,
+  _hasError?: boolean,
   _isReachable?: boolean
 ): string {
   if (exec !== undefined) return getExecutionClasses(exec)
-  // Unconfigured / invalid node: a throbbing amber glow (see .node-warning in
-  // globals.css) so it stays findable when the canvas is zoomed out on a large
-  // workflow. The animated box-shadow overrides each node's static inline ring.
-  if (hasError) return 'node-warning'
   return ''
 }
 

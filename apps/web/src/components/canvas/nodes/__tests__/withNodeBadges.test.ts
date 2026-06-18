@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { ReactElement } from 'react'
 import { withNodeBadges } from '../withNodeBadges'
 import { TimeoutWarningBadge } from '../TimeoutWarningBadge'
+import { NodeWarningGlow } from '../NodeWarningGlow'
 import { SuccessBadge } from '../SuccessBadge'
 import { NoteBadge } from '../NoteBadge'
 
@@ -10,8 +11,9 @@ import { NoteBadge } from '../NoteBadge'
 // the wrapped component directly and inspect the returned tree (the original
 // node element plus the conditional badges) without rendering.
 //
-// Children order from the HOC: [node, timeoutBadge, successBadge, noteBadge].
-// Each badge slot is `false` when that badge is skipped for the type.
+// Children order from the HOC: [node, timeoutBadge, successBadge, noteBadge,
+// warningGlow]. Each badge slot is `false` when that badge is skipped for the
+// type.
 
 const FakeNode = () => null
 
@@ -29,6 +31,7 @@ function callWrapped(
     timeoutBadge: children[1],
     successBadge: children[2],
     noteBadge: children[3],
+    warningGlow: children[4],
   }
 }
 
@@ -86,6 +89,25 @@ describe('withNodeBadges', () => {
     expect((successBadge as ReactElement).type).toBe(SuccessBadge)
     expect((noteBadge as ReactElement).type).toBe(NoteBadge)
   })
+
+  it('appends the warning glow with the node type, config, namespace and hasError', () => {
+    const config = { timeout_ms: 500 }
+    const { warningGlow } = callWrapped('code', config, 'cn', { hasError: true })
+    const el = warningGlow as ReactElement
+    expect(el.type).toBe(NodeWarningGlow)
+    expect((el.props as { type: string }).type).toBe('code')
+    expect((el.props as { config: unknown }).config).toBe(config)
+    expect((el.props as { namespace: string }).namespace).toBe('cn')
+    expect((el.props as { hasError: boolean }).hasError).toBe(true)
+  })
+
+  it.each(['branch_end', 'region'])(
+    'skips the warning glow for non-card type %s',
+    (type) => {
+      const { warningGlow } = callWrapped(type, {}, 'x', { hasError: true })
+      expect(warningGlow).toBe(false)
+    },
+  )
 
   it('sets a descriptive displayName for devtools', () => {
     const Wrapped = withNodeBadges(FakeNode)

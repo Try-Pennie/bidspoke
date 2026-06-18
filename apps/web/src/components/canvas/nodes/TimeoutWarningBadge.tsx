@@ -1,6 +1,6 @@
 import { AlertTriangle } from 'lucide-react'
 import { timeoutBelowFloor } from '@/lib/timeout-floor'
-import { DEFAULT_RETRIES, redThresholdMs, suggestedTimeoutMs } from '@/lib/timeout-suggestion'
+import { DEFAULT_RETRIES, hasTimeoutWarning, redThresholdMs, suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './timeout-suggestions'
 
 /**
@@ -29,6 +29,11 @@ export function TimeoutWarningBadge({
   namespace?: string
 }) {
   const suggestion = useTimeoutSuggestion(namespace)
+
+  // Single source of truth for "needs attention", shared with the node warning
+  // glow (NodeWarningGlow) so the badge and the glow can never disagree. The
+  // branches below only decide which tier/message to show.
+  if (!hasTimeoutWarning(type, config, suggestion)) return null
 
   const floor = timeoutBelowFloor(type, config)
   if (floor != null) {

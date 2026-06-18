@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { nodeTypeGetsTimeoutBadge } from '@/lib/timeout-badge'
 import { TimeoutWarningBadge } from './TimeoutWarningBadge'
+import { NodeWarningGlow } from './NodeWarningGlow'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
 
@@ -32,7 +33,7 @@ const NO_CORNER_BADGE_TYPES = new Set(['branch_end', 'region'])
  */
 export function withNodeBadges(Node: ComponentType<NodeProps>): ComponentType<NodeProps> {
   function NodeWithBadges(props: NodeProps) {
-    const { config, namespace, isSuccessNode, note } = props.data as unknown as CanvasNodeData
+    const { config, namespace, isSuccessNode, note, hasError } = props.data as unknown as CanvasNodeData
     const cornerBadges = !NO_CORNER_BADGE_TYPES.has(props.type)
     return (
       <>
@@ -42,6 +43,9 @@ export function withNodeBadges(Node: ComponentType<NodeProps>): ComponentType<No
         )}
         {cornerBadges && <SuccessBadge visible={isSuccessNode} />}
         {cornerBadges && <NoteBadge note={note} />}
+        {cornerBadges && (
+          <NodeWarningGlow type={props.type} config={config} namespace={namespace} hasError={hasError} />
+        )}
       </>
     )
   }

@@ -2,18 +2,15 @@ import { describe, it, expect } from 'vitest'
 import type { ExecutionStep } from '@/types/workflow'
 import { getNodeClasses } from '../execution-status'
 
-describe('getNodeClasses — unconfigured node marker', () => {
-  it('returns the throbbing node-warning marker when the node has a validation error', () => {
-    // A custom class (globals.css) animates the border glow so it stands out at
-    // any zoom — Tailwind's animate-pulse only dims the whole card, too subtle.
-    expect(getNodeClasses(undefined, true)).toBe('node-warning')
-  })
-
-  it('adds no marker when there is no error and no execution', () => {
+describe('getNodeClasses', () => {
+  it('no longer owns the validation glow (moved to the NodeWarningGlow HOC)', () => {
+    // The pulsing .node-warning glow is applied by withNodeBadges now, so the
+    // class helper returns nothing for a plain unconfigured node.
+    expect(getNodeClasses(undefined, true)).toBe('')
     expect(getNodeClasses(undefined, false)).toBe('')
   })
 
-  it('lets execution state win over the validation marker', () => {
+  it('still reflects execution state, which takes precedence', () => {
     const cls = getNodeClasses({ status: 'failed' } as ExecutionStep, true)
     expect(cls).toContain('ring-red-500')
     expect(cls).not.toContain('node-warning')

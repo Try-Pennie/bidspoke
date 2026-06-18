@@ -8,10 +8,30 @@
 // still used by the audit and the per-node fallback endpoint). The two apps
 // share no package, so __tests__/timeout-suggestion-sync.test.ts imports both
 // and fails CI if they diverge.
-import { timeoutFloorMs } from './timeout-floor'
+import { timeoutFloorMs, timeoutBelowFloor } from './timeout-floor'
 
 /** The engine's default retries when a node doesn't configure them. */
 export const DEFAULT_RETRIES = 2
+
+/**
+ * Whether a node's configured timeout warrants a warning — sub-floor, or below
+ * the history-based suggestion. The single source of truth for both the corner
+ * TimeoutWarningBadge and the node warning glow, so they can never disagree.
+ * `suggestion` is the batched per-node stats (null when none / not yet loaded).
+ */
+export function hasTimeoutWarning(
+  nodeType: string | undefined,
+  config: Record<string, unknown> | undefined,
+  suggestion: { p99: number; max_ms: number } | null | undefined
+): boolean {
+  if (timeoutBelowFloor(nodeType, config) != null) return true
+  if (!suggestion) return false
+  // An unset timeout means the engine default (30s), which can still sit below
+  // the suggestion for a slow step.
+  const effective = typeof config?.timeout_ms === 'number' ? config.timeout_ms : 30000
+  const retries = typeof config?.retries === 'number' ? config.retries : DEFAULT_RETRIES
+  return effective < suggestedTimeoutMs(nodeType, suggestion.p99, suggestion.max_ms, retries)
+}
 
 export function roundUpSmart(ms: number): number {
   if (ms <= 100) return Math.ceil(ms / 5) * 5
