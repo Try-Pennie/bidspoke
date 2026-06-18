@@ -9,6 +9,7 @@ import {
   EXECUTION_JSONB_COLS,
   STEP_JSONB_COLS,
 } from '../lib/pg-writer'
+import { recordHyperdriveFallback } from '../lib/hyperdrive-fallback'
 
 export interface StepLogEntry {
   execution_id: string
@@ -103,6 +104,7 @@ async function insertRowsOnce(
         table,
         error: err.message,
       })
+      recordHyperdriveFallback(env)
     }
   }
   const { error } = await supabase.from(table).insert(rows)
@@ -132,6 +134,7 @@ async function updateExecutionOnce(
       console.warn('[step-logger] Hyperdrive update failed, falling back to PostgREST', {
         error: err.message,
       })
+      recordHyperdriveFallback(env)
     }
   }
   // Use started_at for partition pruning; fall back to id-only if no rows matched.

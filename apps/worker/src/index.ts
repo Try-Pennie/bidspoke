@@ -7,6 +7,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runHyperdriveFallbackCheck } from './lib/hyperdrive-fallback'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -196,6 +197,11 @@ export default {
       ctx.waitUntil(
         runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[slow-spike] check failed:', e))
+      )
+      ctx.waitUntil(
+        runHyperdriveFallbackCheck(supabase, env.IDEMPOTENCY)
+          .then((r) => { if (r.count > 0) console.log(`[hyperdrive-fallback] count=${r.count} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[hyperdrive-fallback] check failed:', e))
       )
     }
   },
