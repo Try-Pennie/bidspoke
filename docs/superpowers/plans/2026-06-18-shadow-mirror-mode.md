@@ -357,6 +357,8 @@ git commit -m "Stub Salesforce node in shadow dry-run"
 
 ### Task 4: Partner Bid node dry-run stub
 
+> **CORRECTION (found during execution — supersedes the steps below where they conflict):** The partner slug is NOT a simple `node.config` field — it comes from the partner config loaded from Supabase as `p.slug` (see `partner-bid.ts:201`). So the dry-run guard must go **after** the partner config is loaded (a DB *read*, which is acceptable in shadow) but **before** the circuit-breaker, cap, dedup, partner API call, and any `recordBidAttempt`/`logBid` write. Reuse the existing `skip(slug, reason)` helper (`partner-bid.ts:485`) — i.e. `return { ...skip(p.slug, 'shadow'), resolvedInput: buildInput({ skip_reason: 'shadow' }) }` styled to match the existing inactive-partner early return at `partner-bid.ts:246-247` — rather than the generic `shadowPartnerBidStub`. Add `'shadow'` to the `SkipReason` union at `partner-bid.ts:67`. The test must supply a Supabase mock that RETURNS a minimal active partner config (so the load succeeds) and assert (a) `fetch` is never called and (b) `recordBidAttempt` is never invoked — NOT "DB must not be touched". Confirm the exact partner-config load + `buildInput`/`skip` shapes by reading `partner-bid.ts:170-260` first.
+
 **Files:**
 - Modify: `apps/worker/src/engine/nodes/partner-bid.ts` — add `'shadow'` to the `SkipReason` union (find its `type SkipReason = ...` declaration) and add the dry-run guard immediately after the partner slug is resolved from `node.config`, before any Supabase config load, circuit-breaker, cap, dedup, or `resolveBid` call.
 - Test: `apps/worker/src/engine/nodes/__tests__/partner-bid-shadow.test.ts`

@@ -176,6 +176,8 @@ Dan flips both in the same step: engine rerouted to `engine.trypennie.dev/biddin
 
 The shadow endpoint used during Phase A is a separate route from the cutover endpoint — makes it trivial to remove the Pipedream mirror step at cutover without affecting the real route. The `shadow_mode` flag stays (not scaffolding): reusable for every future partner migration.
 
+**Implemented as (2026-06-18, branch `feature/shadow-mode`):** `shadow_mode: 'off' | 'dry_run'` on `ExecutionContext` (mapped from `ExecuteOptions.shadowMode`). The `/shadow/:workflow_id` route returns 204 and runs the workflow via `waitUntil` with `isTest: true` (so all existing test-run suppression applies — no sightings, no Slack alerts, excluded from prod dashboards) plus a `__shadow` source suffix for filtering, rather than a new `workflow_executions` column (which would be risky DDL on a hot partitioned table). Outbound first-class nodes (Integration, Salesforce, Partner Bid, Achieve Offers) check `isShadowDryRun(ctx)` and return a tagged stub; Data Store skips KV writes. The engine cannot introspect a Code node's sandbox, so it passes `shadow_mode` into the sandbox body and each outbound Code script self-stubs (e.g. the Equifax pull). See [shadow-mode.md](./shadow-mode.md).
+
 ### 3.4 Token-based auth for bidding endpoints (P0, hard blocker for cutover)
 Engine uses a two-step flow: hit `/token` to mint a token, send the token on `/bidding`. M1 already enforces this. Dan confirmed cutover does not happen until token auth is in place — no shipping on X-API-Key as an interim. Scope:
 - New `issued_tokens` table: `(token, source, issued_at, expires_at, last_used_at)`.
