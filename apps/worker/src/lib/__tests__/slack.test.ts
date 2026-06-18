@@ -136,6 +136,24 @@ describe('sendFailureAlert', () => {
     expect(allText).toContain('exec-abc')
   })
 
+  it('appends node= to the execution URL when the failed step has a node id', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, node_id: 'node-xyz' }, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(allText).toContain('node=node-xyz')
+    // Still carries the execution param so the overlay opens too.
+    expect(allText).toContain('execution=exec-abc')
+  })
+
+  it('omits the node param when the failed step has no node id', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(allText).not.toContain('node=')
+  })
+
   it('formats the timestamp in ET (EST, non-DST)', async () => {
     // 2024-01-15T18:00:00Z = 1:00 PM EST (UTC-5)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

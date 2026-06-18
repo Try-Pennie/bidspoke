@@ -37,7 +37,9 @@ export function getNodeClasses(
   _isReachable?: boolean
 ): string {
   if (exec !== undefined) return getExecutionClasses(exec)
-  if (hasError) return 'ring-2 ring-amber-400 ring-offset-1'
+  // Unconfigured / invalid node: a thick pulsing amber ring so it stays
+  // findable when the canvas is zoomed out on a large workflow.
+  if (hasError) return 'ring-4 ring-amber-400 ring-offset-1 animate-pulse'
   return ''
 }
 

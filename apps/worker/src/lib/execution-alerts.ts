@@ -28,6 +28,7 @@ const CONTAINER_STEP_TYPES = new Set(['parallel', 'parallel_end', 'branch', 'bra
 
 interface StepLogShape {
   step_namespace: string
+  step_node_id?: string
   step_type: string
   duration_ms: number
   status: StepStatus
@@ -76,12 +77,14 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
   // logged step (engine now records the real count) so both the Slack message
   // and the persisted snapshot can say "retried N times before failing".
   let retriesUsed: number | undefined
+  let failedNodeId: string | undefined
   if (args.alertType === 'failure') {
     reason.error_message = args.errorMessage
     reason.error_type = args.errorType
     const failedLog = args.failedStep
       ? args.stepLogQueue.find((s) => s.step_namespace === args.failedStep && s.status === 'failed')
       : undefined
+    failedNodeId = failedLog?.step_node_id
     retriesUsed = failedLog?.retries_used
     if (retriesUsed !== undefined) reason.retries_used = retriesUsed
   }
@@ -116,6 +119,7 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
         workflow_name: args.workflowName,
         execution_id: args.executionId,
         step_namespace: args.failedStep,
+        node_id: failedNodeId,
         error_message: args.errorMessage ?? 'Unknown error',
         error_type: args.errorType ?? 'permanent',
         retries_used: retriesUsed,

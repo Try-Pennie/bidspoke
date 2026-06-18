@@ -20,6 +20,9 @@ export interface FailureAlertPayload {
   workflow_name: string
   execution_id: string
   step_namespace?: string
+  /** Node id of the failed step, when known — deep-links the alert straight to
+   * the offending node on the canvas (in addition to opening the execution). */
+  node_id?: string
   error_message: string
   error_type: ErrorType
   /** Retries the failed step consumed before giving up. 0/undefined = failed on
@@ -86,7 +89,8 @@ export async function sendFailureAlert(
   const channel = channelOverride || connection.default_channel
   const errorLabel = payload.error_type === 'transient' ? 'Transient' : 'Permanent'
   const stepText = payload.step_namespace ? `\`${payload.step_namespace}\`` : 'unknown step'
-  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}`
+  const executionUrl = `${appUrl}/workflows/${payload.workflow_id}?execution=${payload.execution_id}` +
+    (payload.node_id ? `&node=${payload.node_id}` : '')
 
   // Only show the retry line when at least one retry actually happened — a step
   // that failed on its first attempt shouldn't add noise claiming "0 retries".
