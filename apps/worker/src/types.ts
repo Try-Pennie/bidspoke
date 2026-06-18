@@ -136,6 +136,13 @@ export interface ExecutionContext {
    * doesn't race the inserts and match zero rows (#88). Populated lazily.
    */
   pendingBidWrites?: Promise<void>[]
+  /**
+   * Shadow execution mode. 'dry_run' runs the workflow logic but every outbound
+   * node returns a stub instead of firing (no Salesforce/Equifax/partner/HTTP/KV
+   * side effects). Unset / 'off' = normal execution. See engine/shadow.ts and
+   * docs/engine-cutover-scope.md section 3.3.
+   */
+  shadow_mode?: 'off' | 'dry_run'
 }
 
 export interface StepOutput {

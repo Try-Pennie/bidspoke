@@ -84,6 +84,9 @@ export interface ExecuteOptions {
   codeBundleName?: string
   /** When true, verify the source is unrestricted or explicitly assigned to this workflow. */
   enforceSourceAssignment?: boolean
+  /** When 'dry_run', outbound node executors return stubs instead of firing —
+   *  the shadow-mirror volume test. See engine/shadow.ts. */
+  shadowMode?: 'off' | 'dry_run'
 }
 
 export interface ExecuteResult {
@@ -252,6 +255,7 @@ export async function executeWorkflow(
   // Build execution context
   const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
   if (options.codeBundleName) ctx.codeBundleName = options.codeBundleName
+  if (options.shadowMode) ctx.shadow_mode = options.shadowMode
 
   // Resume re-runs the workflow from the entry node — no completed steps are
   // pre-loaded and nothing is skipped (it behaves like a fresh run, same as

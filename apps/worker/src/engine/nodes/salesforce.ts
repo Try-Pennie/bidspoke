@@ -19,6 +19,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { linkAbort } from '../retry'
+import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -89,6 +90,9 @@ export async function executeSalesforceNode(
   signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   const config = node.config as unknown as SalesforceConfig
+
+  // Shadow dry-run: don't touch Salesforce (no token fetch, no write).
+  if (isShadowDryRun(ctx)) return shadowSalesforceStub()
 
   // Merge CF secrets so {{env.*}} templates resolve
   const rawEnv = env as unknown as Record<string, unknown>

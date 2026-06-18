@@ -20,6 +20,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { linkAbort } from '../retry'
+import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -89,6 +90,9 @@ export async function executeIntegrationNode(
   if (!config.url) {
     throw new Error('Webhook node requires config.url')
   }
+
+  // Shadow dry-run: don't make the outbound call.
+  if (isShadowDryRun(ctx)) return shadowIntegrationStub()
 
   // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves.
   // CF secrets are not in ctx.env (which only has non-secret Supabase vars).

@@ -17,6 +17,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
+import { isShadowDryRun } from '../shadow'
 
 type DataStoreName = 'submissions'
 
@@ -56,7 +57,9 @@ export async function executeDataStoreNode(
       if (typeof config.ttl_seconds === 'number' && config.ttl_seconds > 0) {
         putOpts.expirationTtl = Math.max(config.ttl_seconds, KV_MIN_TTL_SECONDS)
       }
-      await kv.put(key, JSON.stringify(value), putOpts)
+      if (!isShadowDryRun(ctx)) {
+        await kv.put(key, JSON.stringify(value), putOpts)
+      }
       const resolvedInput: ResolvedStepInput = {
         template: templateBase,
         resolved: { store, operation: 'set', key, value, ttl_seconds: putOpts.expirationTtl ?? null },
@@ -90,7 +93,9 @@ export async function executeDataStoreNode(
       }
     }
     case 'delete': {
-      await kv.delete(key)
+      if (!isShadowDryRun(ctx)) {
+        await kv.delete(key)
+      }
       const resolvedInput: ResolvedStepInput = {
         template: templateBase,
         resolved: { store, operation: 'delete', key },

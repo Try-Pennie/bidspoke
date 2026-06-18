@@ -126,16 +126,7 @@ export async function executeCodeNode(
     },
   }
 
-  const body = JSON.stringify({
-    payload: ctx.trigger.payload,
-    steps: stepsToSend,
-    env: mergedEnv,
-    // Pass the full execution metadata so scripts can use bidspoke_link,
-    // execution_id, workflow_id alongside trace_id. ctx.execution is
-    // populated by buildContext; if missing, fall back to {trace_id} only.
-    execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
-    props: resolvedProps,
-  })
+  const body = buildCodeSandboxBody(ctx, stepsToSend, mergedEnv, resolvedProps)
 
   const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName, signal)
   const text = await res.text()
@@ -187,6 +178,31 @@ export async function executeCodeNode(
   }
 
   return { output, logs, resolvedInput }
+}
+
+/**
+ * Build the JSON request body sent to the code sandbox. Extracted so the
+ * shadow_mode contract is unit-testable without dispatching a real isolate.
+ * Outbound code scripts read `shadow_mode` and self-stub on 'dry_run' — the
+ * engine can't introspect the sandbox. See docs/engine-cutover-scope.md 3.3.
+ */
+export function buildCodeSandboxBody(
+  ctx: ExecutionContext,
+  stepsToSend: Record<string, StepOutput | { payload: unknown }>,
+  mergedEnv: Record<string, string>,
+  resolvedProps: Record<string, unknown>,
+): string {
+  return JSON.stringify({
+    payload: ctx.trigger.payload,
+    steps: stepsToSend,
+    env: mergedEnv,
+    // Pass the full execution metadata so scripts can use bidspoke_link,
+    // execution_id, workflow_id alongside trace_id. ctx.execution is
+    // populated by buildContext; if missing, fall back to {trace_id} only.
+    execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
+    props: resolvedProps,
+    shadow_mode: ctx.shadow_mode ?? 'off',
+  })
 }
 
 function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string } {
