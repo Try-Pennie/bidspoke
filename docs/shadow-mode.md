@@ -29,6 +29,7 @@ These node types return a tagged `_shadow` stub instead of making their call:
 - Achieve Offers → a non-accept stub with no `_achieve_evaluation` marker, so the
   achieve-log hook writes nothing
 - Data Store → `set` and `delete` skip the KV write (a `get` still reads)
+- Latency Gate → `mark` skips its KV write (a `check` only reads)
 
 Everything else — filters, branches, transforms, matrix lookups, bid evaluation
 — runs for real. That is the point: the decision logic executes, the side

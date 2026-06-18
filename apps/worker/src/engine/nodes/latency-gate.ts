@@ -34,6 +34,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
+import { isShadowDryRun } from '../shadow'
 
 interface LatencyGateConfig {
   operation?: 'mark' | 'check'
@@ -78,7 +79,11 @@ export async function executeLatencyGateNode(
         : KV_DEFAULT_TTL_SECONDS,
       KV_MIN_TTL_SECONDS
     )
-    await kv.put(key, JSON.stringify({ marked_at: markedAt }), { expirationTtl: ttlSeconds })
+    // Shadow dry-run: don't write the mark to KV (a real side effect); still
+    // return the same output shape so downstream logic is unchanged.
+    if (!isShadowDryRun(ctx)) {
+      await kv.put(key, JSON.stringify({ marked_at: markedAt }), { expirationTtl: ttlSeconds })
+    }
     return {
       output: { operation: 'mark', key, marked_at: markedAt, ttl_seconds: ttlSeconds },
       resolvedInput: { template, resolved: { operation: 'mark', key, ttl_seconds: ttlSeconds } },
