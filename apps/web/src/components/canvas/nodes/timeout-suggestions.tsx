@@ -24,6 +24,12 @@ export function useTimeoutSuggestion(namespace: string | undefined): NodeTimeout
   return namespace ? map.get(namespace) : undefined
 }
 
+/** The full per-namespace suggestion map — for callers that need every node's
+ *  suggestion at once (e.g. the minimap warning highlight). */
+export function useAllTimeoutSuggestions(): Map<string, NodeTimeoutSuggestion> {
+  return useContext(TimeoutSuggestionsContext)
+}
+
 export function TimeoutSuggestionsProvider({ workflowId, children }: { workflowId: string; children: ReactNode }) {
   const [map, setMap] = useState<Map<string, NodeTimeoutSuggestion>>(new Map())
 

@@ -44,7 +44,8 @@ import { DataStoreNode } from './nodes/DataStoreNode'
 import { LatencyGateNode } from './nodes/LatencyGateNode'
 import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
-import { TimeoutSuggestionsProvider } from './nodes/timeout-suggestions'
+import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
+import { computeWarningNodeIds } from '@/lib/minimap-warnings'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
 import NodePalette from './NodePalette'
@@ -1057,6 +1058,15 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const validationErrors: Map<string, ValidationError> = useMemo(
     () => (mode === 'edit' ? validateWorkflow(nodes, edges) : new Map()),
     [mode, nodes, edges]
+  )
+
+  // Node ids to highlight on the minimap — unconfigured (validation) plus
+  // timeout-warning nodes — mirroring the on-canvas glow so the overview map
+  // lights up exactly the nodes that need attention, findable when zoomed out (#224).
+  const timeoutSuggestions = useAllTimeoutSuggestions()
+  const warningNodeIds = useMemo(
+    () => computeWarningNodeIds(nodes, new Set(validationErrors.keys()), timeoutSuggestions),
+    [nodes, validationErrors, timeoutSuggestions]
   )
 
   // Translucent backdrops behind each branch / parallel cluster. Recomputed
@@ -3347,6 +3357,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             )}
             <MiniMap
               nodeColor={(n) => {
+                // Nodes that need attention (unconfigured or timeout-warning) get a
+                // distinct red so they're findable on the overview map even when
+                // zoomed out — wins over the type color and the unreachable gray (#224).
+                if (warningNodeIds.has(n.id)) return '#dc2626' // red-600
                 const data = n.data as unknown as CanvasNodeData | undefined
                 if (data?.isReachable === false) return '#d1d5db' // gray-300
                 const colorMap: Record<string, string> = {
