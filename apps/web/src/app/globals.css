@@ -37,6 +37,25 @@ html {
   .check-path { animation: none; stroke-dashoffset: 0; }
 }
 
+/* Unconfigured / invalid canvas node: a throbbing amber glow that expands and
+   fades, so an attention-needed node is obvious even when the workflow is
+   zoomed out. Animates box-shadow directly so it overrides whatever static ring
+   the node component sets inline. */
+@keyframes node-warn-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px #f59e0b, 0 0 0 4px rgba(245, 158, 11, 0.35); }
+  50%      { box-shadow: 0 0 0 3px #f59e0b, 0 0 0 12px rgba(245, 158, 11, 0); }
+}
+.node-warning {
+  animation: node-warn-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* No throb, but keep a solid amber glow so the node still stands out. */
+  .node-warning {
+    animation: none;
+    box-shadow: 0 0 0 3px #f59e0b, 0 0 0 8px rgba(245, 158, 11, 0.3);
+  }
+}
+
 /* Env var table row — enter animation */
 .env-row {
   transition: opacity 150ms ease-out, transform 150ms ease-out;
