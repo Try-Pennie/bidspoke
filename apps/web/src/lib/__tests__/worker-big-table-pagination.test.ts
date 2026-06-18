@@ -20,7 +20,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const dir = fileURLToPath(new URL('.', import.meta.url))
-const WORKER_SRC = path.resolve(dir, '../../../../..', 'apps/worker/src')
+const REPO_ROOT = path.resolve(dir, '../../../../..')
+const WORKER_SRC = path.join(REPO_ROOT, 'apps/worker/src')
+const MIGRATIONS_DIR = path.join(REPO_ROOT, 'supabase/migrations')
 // Scheduled/engine code plus the request-scoped API routes (#185). Routes are
 // mostly bounded by design (keyset cursors, .single(), .limit()), but a new
 // unbounded list read there (e.g. an admin export) would truncate the same way.
@@ -157,6 +159,46 @@ function scanFile(file: string): Finding[] {
 
   return findings
 }
+
+// Extract the names of partitioned parent tables declared in a migration:
+//   CREATE TABLE [IF NOT EXISTS] <name> ( ...columns... ) PARTITION BY ...
+// We balance-match the column-list parens, then check whether PARTITION BY
+// immediately follows. Dynamic child-partition creation inside string literals
+// (`CREATE TABLE IF NOT EXISTS %I PARTITION OF ...`) is naturally excluded: its
+// name (`%I`, `foo_%s`) isn't followed by a column-list `(`.
+function partitionedTablesIn(sql: string): string[] {
+  const out: string[] = []
+  const head = /CREATE TABLE\s+(?:IF NOT EXISTS\s+)?([A-Za-z_][\w.]*)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = head.exec(sql)) !== null) {
+    const open = head.lastIndex - 1 // index of the '('
+    const afterCols = consumeParens(sql, open)
+    if (/^\s*PARTITION BY\b/i.test(sql.slice(afterCols))) {
+      // Strip any schema qualifier (public.foo -> foo) to match BIG_TABLES.
+      out.push(m[1].split('.').pop() as string)
+    }
+  }
+  return out
+}
+
+describe('big-table pagination guard list is complete', () => {
+  it('every partitioned table in supabase/migrations is covered by BIG_TABLES', () => {
+    const partitioned = new Set<string>()
+    for (const entry of readdirSync(MIGRATIONS_DIR)) {
+      if (!entry.endsWith('.sql')) continue
+      const sql = readFileSync(path.join(MIGRATIONS_DIR, entry), 'utf8')
+      for (const t of partitionedTablesIn(sql)) partitioned.add(t)
+    }
+    const known = new Set(BIG_TABLES)
+    const missing = [...partitioned].filter((t) => !known.has(t)).sort()
+    expect(
+      missing,
+      `Partitioned table(s) not in BIG_TABLES:\n${missing.map((t) => `  ${t}`).join('\n')}\n\n` +
+        `A new month/range-partitioned table will exceed the 1,000-row PostgREST cap. ` +
+        `Add it to BIG_TABLES in this file so unbounded reads of it are caught.`,
+    ).toEqual([])
+  })
+})
 
 describe('worker big-table reads are paginated (#115, #185)', () => {
   it('every list read of a large/partitioned table in scheduled/engine code and API routes is bounded or paged', () => {
