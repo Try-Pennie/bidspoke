@@ -34,6 +34,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
+import { isShadowDryRun, shadowAchieveStub } from '../shadow'
 
 export interface AchieveOffersConfig {
   targeted_products?: string[]
@@ -96,6 +97,10 @@ export async function executeAchieveOffersNode(
   ctx: ExecutionContext,
   signal?: AbortSignal
 ): Promise<StepExecutionResult> {
+  // Shadow dry-run: don't hit the Achieve API; return a stub that the achieve-log
+  // hook ignores (no _achieve_evaluation marker means no DB write).
+  if (isShadowDryRun(ctx)) return shadowAchieveStub()
+
   const config = node.config as unknown as AchieveOffersConfig
   const products = (config.targeted_products ?? ['fdr']).filter((p) => VALID_PRODUCTS.has(p))
   const waitForOffers = config.wait_for_offers !== false
