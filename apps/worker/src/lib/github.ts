@@ -4,6 +4,8 @@
 
 const BRANCH = 'main'
 const WORKFLOWS_DIR = 'workflows'
+// GitHub's REST API requires a User-Agent on every request (#240).
+const USER_AGENT = 'bidspoke-worker'
 
 interface GitHubFileResponse {
   sha?: string
@@ -28,6 +30,10 @@ async function getCurrentFileSha(
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
+      // GitHub's REST API rejects requests with no User-Agent (403 "Request
+      // forbidden by administrative rules"). Workers' fetch doesn't add one, so
+      // set it explicitly — this is why backups silently 403'd (#240).
+      'User-Agent': USER_AGENT,
     },
   })
   if (res.status === 404) return null
@@ -73,6 +79,7 @@ export async function pushWorkflowToGitHub(
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
         'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': USER_AGENT,
       },
       body: JSON.stringify(body),
     })

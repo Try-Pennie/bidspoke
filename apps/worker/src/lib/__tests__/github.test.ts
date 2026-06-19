@@ -144,6 +144,22 @@ describe('pushWorkflowToGitHub', () => {
     expect(mockFetch).toHaveBeenCalledTimes(4)  // no third PUT attempt
   })
 
+  it('sends a User-Agent header on both requests (GitHub returns 403 without one) (#240)', async () => {
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(makeResponse({}, 404))                     // GET
+      .mockResolvedValueOnce(makeResponse({ commit: { sha: 'sha' } }))  // PUT
+    vi.stubGlobal('fetch', mockFetch)
+
+    await pushWorkflowToGitHub(TOKEN, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
+
+    const [, getInit] = mockFetch.mock.calls[0] as [string, RequestInit]
+    const [, putInit] = mockFetch.mock.calls[1] as [string, RequestInit]
+    const getHeaders = getInit.headers as Record<string, string>
+    const putHeaders = putInit.headers as Record<string, string>
+    expect(getHeaders['User-Agent']).toBeTruthy()
+    expect(putHeaders['User-Agent']).toBeTruthy()
+  })
+
   it('includes the GitHub response body when the GET fails, so the alert shows the cause (#206)', async () => {
     const reason = 'Resource protected by organization SAML enforcement. You must grant your token access to this organization.'
     const mockFetch = vi.fn().mockResolvedValueOnce(makeResponse({ message: reason }, 403))
