@@ -1,23 +1,60 @@
 import { describe, it, expect } from 'vitest'
-import { resolvePostSaveState, computeEditSignature } from '../save-dirty-guard'
+import {
+  computeEditSignature,
+  isDirtyAgainst,
+  resolvePostSaveStateBySignature,
+  deriveDirty,
+} from '../save-dirty-guard'
 
-describe('resolvePostSaveState (#92)', () => {
-  it('marks clean and switches to view when no edit landed during the save', () => {
-    expect(resolvePostSaveState(7, 7)).toEqual({ remainDirty: false, switchToView: true })
+// #212: the single decision the derive effect makes each time the content
+// signature changes. A null baseline means "not yet baselined" — initial load and
+// post-restore adopt the first signature they see as the clean baseline; a
+// non-null baseline (set on save) is compared against to decide dirty.
+describe('deriveDirty (#212)', () => {
+  it('adopts the current signature as a clean baseline when none is set (load/restore)', () => {
+    expect(deriveDirty(null, 'sig-load')).toEqual({ baseline: 'sig-load', isDirty: false })
   })
 
-  it('keeps dirty and stays in edit mode when an edit landed mid-save', () => {
-    // One edit during the 1-3s save window bumped the counter.
-    expect(resolvePostSaveState(7, 8)).toEqual({ remainDirty: true, switchToView: false })
+  it('stays clean while the signature matches the saved baseline', () => {
+    expect(deriveDirty('sig-saved', 'sig-saved')).toEqual({ baseline: 'sig-saved', isDirty: false })
   })
 
-  it('keeps dirty when several edits landed during the save', () => {
-    expect(resolvePostSaveState(7, 12)).toEqual({ remainDirty: true, switchToView: false })
+  it('becomes dirty when an edit moves the signature off the baseline', () => {
+    expect(deriveDirty('sig-saved', 'sig-edited')).toEqual({ baseline: 'sig-saved', isDirty: true })
   })
 
-  it('treats any counter movement as dirty regardless of absolute values', () => {
-    expect(resolvePostSaveState(0, 1).remainDirty).toBe(true)
-    expect(resolvePostSaveState(100, 100).remainDirty).toBe(false)
+  it('keeps the existing baseline when comparing (does not adopt the current edit)', () => {
+    expect(deriveDirty('sig-saved', 'sig-edited').baseline).toBe('sig-saved')
+  })
+})
+
+// #212: dirty is derived by comparing the current content signature to the
+// last-saved one, replacing ~25 scattered setIsDirty(true) calls.
+describe('isDirtyAgainst (#212)', () => {
+  it('is not dirty when the current signature matches the last-saved one', () => {
+    expect(isDirtyAgainst('sig-A', 'sig-A')).toBe(false)
+  })
+
+  it('is dirty when the current signature differs from the last-saved one', () => {
+    expect(isDirtyAgainst('sig-A', 'sig-B')).toBe(true)
+  })
+})
+
+describe('resolvePostSaveStateBySignature (#212)', () => {
+  it('marks clean and switches to view when the saved signature is still current', () => {
+    // No edit landed during the save window: what we saved is what is on screen.
+    expect(resolvePostSaveStateBySignature('saved', 'saved')).toEqual({
+      remainDirty: false,
+      switchToView: true,
+    })
+  })
+
+  it('keeps dirty and stays in edit mode when an edit landed during the save', () => {
+    // The current signature moved past the snapshot we persisted.
+    expect(resolvePostSaveStateBySignature('saved', 'edited-mid-save')).toEqual({
+      remainDirty: true,
+      switchToView: false,
+    })
   })
 })
 

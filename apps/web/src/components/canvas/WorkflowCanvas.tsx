@@ -70,7 +70,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
-import { resolvePostSaveState, computeEditSignature } from '@/lib/save-dirty-guard'
+import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty } from '@/lib/save-dirty-guard'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
@@ -910,15 +910,20 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const draftReqIdRef = useRef(0)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [slackChannel, setSlackChannel] = useState(workflow.slack_channel ?? '')
-  // Monotonic edit counter for the mid-save dirty guard (#92). handleSave snapshots
-  // it before its awaits and re-checks after, so edits made during the save window
-  // aren't marked clean. Only snapshots are compared, so the absolute value and the
-  // mount tick don't matter — the effect below bumps it on any definition change.
-  const editCounterRef = useRef(0)
-  // Last serialized definition signature the counter saw — lets the effect below
-  // ignore non-content node/edge churn (selection, measurement) so it only counts
-  // real edits (#160).
-  const lastEditSignatureRef = useRef<string | null>(null)
+  // #212: dirty is derived, not manually toggled. The effect below compares the
+  // current content signature against the last-saved one — a single source of
+  // truth, so no edit handler can forget to flag its change.
+  //   lastSavedSignatureRef: signature as of load / last successful save (the
+  //     baseline). null means "not yet baselined" — the effect captures the first
+  //     signature it sees (initial load / post-restore) as clean.
+  //   currentSignatureRef: the live signature, kept current by the effect so
+  //     handleSave can detect a mid-save edit after its awaits without reading
+  //     stale state from its closure (#92).
+  const lastSavedSignatureRef = useRef<string | null>(null)
+  const currentSignatureRef = useRef<string>('')
+  // Bumped after a save/restore re-baselines lastSavedSignatureRef, so the derive
+  // effect re-runs and recomputes isDirty even though nodes/edges didn't change.
+  const [savedSignatureToken, setSavedSignatureToken] = useState(0)
   // True while the open node's key/value editor has a blank or duplicate key —
   // blocks save until resolved, like duplicate Step IDs (#96). Reset on node
   // switch; the newly-opened editor re-reports its own validity.
@@ -1145,18 +1150,23 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
   }, [])
 
-  // Bump the edit counter on any definition-relevant change (#92), but only when
-  // the serialized payload actually changes — React Flow churns the nodes/edges
-  // array on selection and dimension measurement, and those non-content changes
-  // must not count as edits or a clean save is wrongly judged "edited mid-save"
-  // and stays dirty (#160). Keep the dep list in sync with what handleSave
-  // serializes (flowToDef inputs + name + Slack).
+  // Derive isDirty from the content signature (#212). This is the ONLY place dirty
+  // is decided: compute the signature of exactly what handleSave serializes
+  // (flowToDef inputs + name + Slack) and compare it to the last-saved baseline.
+  // React Flow churns the nodes/edges arrays on selection and dimension
+  // measurement, but those don't change the serialized payload, so the signature
+  // (and isDirty) stays stable across them (#160). Keep the dep list in sync with
+  // what flowToDef serializes; savedSignatureToken re-runs this after a
+  // save/restore re-baselines.
   useEffect(() => {
     const sig = computeEditSignature(flowToDef(nodes, edges, triggerRef.current), name, slackChannel)
-    if (sig === lastEditSignatureRef.current) return
-    lastEditSignatureRef.current = sig
-    editCounterRef.current += 1
-  }, [nodes, edges, triggerVersion, name, slackChannel])
+    currentSignatureRef.current = sig
+    // First signature seen (initial load / post-restore) becomes the clean baseline;
+    // otherwise dirty = signature moved off the last-saved baseline (#212).
+    const { baseline, isDirty } = deriveDirty(lastSavedSignatureRef.current, sig)
+    lastSavedSignatureRef.current = baseline
+    setIsDirty(isDirty)
+  }, [nodes, edges, triggerVersion, name, slackChannel, savedSignatureToken])
 
   // Clear any key-editor error when switching nodes; the newly-opened editor (if
   // any) reports its own validity on mount (#96).
@@ -1595,7 +1605,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setEdges(step.restored.edges)
       // #94: an applied undo is an unsaved change — without this, a post-save
       // Cmd+Z leaves Save disabled and the revert is never persisted.
-      setIsDirty(true)
       return step.model
     })
   }, [nodes, edges, setNodes, setEdges])
@@ -1606,7 +1615,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       if (!step) return m
       setNodes(step.restored.nodes)
       setEdges(step.restored.edges)
-      setIsDirty(true)
       return step.model
     })
   }, [nodes, edges, setNodes, setEdges])
@@ -1641,7 +1649,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     layoutPreservingViewport(inEdges[0]?.source ?? outEdges[0]?.target ?? 'trigger', nodes, next)
     setEdges(newEdges)
     setNodes(next)
-    setIsDirty(true)
     setContextMenu(null)
   }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
@@ -1660,7 +1667,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     layoutPreservingViewport(cutEdges[0]?.source ?? 'trigger', nodes, next)
     setEdges(newEdges)
     setNodes(next)
-    setIsDirty(true)
     setContextMenu(null)
   }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
@@ -1675,7 +1681,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     layoutPreservingViewport(edge?.source ?? 'trigger', nodes, next)
     setEdges(newEdges)
     setNodes(next)
-    setIsDirty(true)
     setEdgeContextMenu(null)
   }, [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport])
 
@@ -1842,7 +1847,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       if (connection.source) layoutPreservingViewport(connection.source, nodes, nextNodes)
       setEdges(next)
       setNodes(nextNodes)
-      setIsDirty(true)
     },
     [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport]
   )
@@ -1893,7 +1897,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       layoutPreservingViewport(newConnection.source ?? oldEdge.source ?? 'trigger', nodes, nextNodes)
       setEdges(next)
       setNodes(nextNodes)
-      setIsDirty(true)
     },
     [snapshot, edges, nodes, shiftDisconnectedRight, setEdges, setNodes, layoutPreservingViewport]
   )
@@ -1977,7 +1980,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         setEdges(newEdges)
         setNodes(nextNodes)
         setSelectedNodeId(newId)
-        setIsDirty(true)
         return
       }
 
@@ -2020,7 +2022,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         setEdges(newEdges)
         setNodes(nextNodes)
         setSelectedNodeId(newId)
-        setIsDirty(true)
         return
       }
 
@@ -2053,7 +2054,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         setNodes((ns) => [...ns, { ...newNode, position: dropPos, draggable: true }])
       }
       setSelectedNodeId(newId)
-      setIsDirty(true)
     },
     [nodeNamespaces, snapshot, setNodes, setEdges, edges, nodes, screenToFlowPosition, layoutPreservingViewport]
   )
@@ -2106,7 +2106,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         }
         setTriggerVersion((v) => v + 1)
       }
-      setIsDirty(true)
     },
     [setNodes, setTriggerVersion]
   )
@@ -2238,7 +2237,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         }
         return patched
       })
-      setIsDirty(true)
     },
     [setNodes, setEdges, edges, nodes]
   )
@@ -2339,7 +2337,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setEdges(newEdges)
       setNodes(layoutWorkflow(shifted, newEdges))
       setSelectedNodeId(null)
-      setIsDirty(true)
     },
     [snapshot, nodes, edges, setNodes, setEdges]
   )
@@ -2427,7 +2424,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       },
     ]})
     setSelectedNodeId(newId)
-    setIsDirty(true)
   }
 
   function duplicateNode(node: Node) {
@@ -2584,7 +2580,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     setNodes((prev) => [...prev.map((n) => ({ ...n, selected: false })), ...builtNodes])
     setEdges((prev) => [...prev, ...newEdges])
     setSelectedNodeId(null)
-    setIsDirty(true)
   }
 
   const handleParallelEdgesChange = useCallback(
@@ -2604,7 +2599,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         }))
         return [...filtered, ...newEdges]
       })
-      setIsDirty(true)
     },
     [snapshot, setEdges] // eslint-disable-line react-hooks/exhaustive-deps
   )
@@ -2699,9 +2693,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     setShowCommitMenu(false)
     try {
       const definition = flowToDef(nodes, edges, triggerRef.current)
-      // Snapshot the edit counter before any await so we can tell whether the user
-      // edited during the save window (#92).
-      const editCountAtSaveStart = editCounterRef.current
+      // Snapshot the signature of exactly what we're persisting, before any await,
+      // so we can tell whether the user edited during the save window (#92).
+      const savedSignature = computeEditSignature(definition, name, slackChannel)
       const trimmed = message?.trim()
       const result = await api.workflows.save(workflow.id, {
         name,
@@ -2729,13 +2723,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         }
       }
       // #92: if the user edited during the save window (any await above), the
-      // snapshot we just persisted is already stale. Keep the workflow dirty and
-      // stay in edit mode so the edit isn't silently dropped; otherwise mark clean.
-      const { remainDirty, switchToView } = resolvePostSaveState(
-        editCountAtSaveStart,
-        editCounterRef.current,
-      )
-      setIsDirty(remainDirty)
+      // snapshot we just persisted is already stale. Re-baseline to what we saved,
+      // then compare against the live signature: if an edit landed, stay dirty and
+      // in edit mode so it isn't silently dropped; otherwise mark clean. The token
+      // bump re-runs the derive effect to settle isDirty from the new baseline.
+      lastSavedSignatureRef.current = savedSignature
+      setSavedSignatureToken((t) => t + 1)
+      const { switchToView } = resolvePostSaveStateBySignature(savedSignature, currentSignatureRef.current)
 
       if (result.deploy_errors?.length) {
         const msg = result.deploy_errors
@@ -2767,7 +2761,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     setEdges(restored.edges)
     triggerRef.current = updated.definition?.trigger ?? DEFAULT_TRIGGER
     setName(updated.name)
-    setIsDirty(false)
+    // Re-baseline: the restored content is the new clean state. Null tells the
+    // derive effect to adopt the next signature it sees as the baseline (#212).
+    lastSavedSignatureRef.current = null
+    setSavedSignatureToken((t) => t + 1)
     setShowVersions(false)
     requestAnimationFrame(() => fitView({ padding: 0.4, maxZoom: 0.5 }))
   }
@@ -2804,7 +2801,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   style={{ viewTransitionName: 'workflow-name' }}
                   className="rounded border-0 bg-transparent text-base font-bold tracking-tight text-graphite outline-none ring-0 px-2 py-1 hover:bg-gray-100/70 focus:bg-gray-100/70 focus:ring-1 focus:ring-p-blue-light"
                   value={name}
-                  onChange={(e) => { setName(e.target.value); setIsDirty(true) }}
+                  onChange={(e) => setName(e.target.value)}
                 />
                 <Pencil className="h-3 w-3 flex-shrink-0 text-gray-300 opacity-0 transition-opacity group-hover:opacity-100" />
               </>
@@ -3143,7 +3140,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             edges={renderedEdges}
             onNodesChange={(changes) => {
               onNodesChange(changes)
-              if (changes.some((c) => c.type === 'remove' || c.type === 'position')) setIsDirty(true)
 
               // Skip slot-in logic when multiple nodes just finished dragging
               // together — that's a group move, not a single-node re-placement.
@@ -3199,7 +3195,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     const newEdges = [...edges, { id: uid(), source: sourceNode.id, target: change.id, sourceHandle }]
                     setEdges(newEdges)
                     setNodes((ns) => layoutWorkflow(ns, newEdges))
-                    setIsDirty(true)
                   } else if (sourceNode && sourceHandle && existingOutEdge) {
                     // Insert between: remove sourceNode→oldTarget, add sourceNode→this→oldTarget
                     const newEdges = [
@@ -3209,7 +3204,6 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     ]
                     setEdges(newEdges)
                     setNodes((ns) => layoutWorkflow(ns, newEdges))
-                    setIsDirty(true)
                   } else {
                   // If no valid slot found, keep free-floating but push away from any overlap
                   if (overlapsAny(finalPos, node.type, otherNodes)) {
@@ -3275,14 +3269,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
                   setEdges(newEdges)
                   setNodes((ns) => layoutWorkflow(ns, newEdges))
-                  setIsDirty(true)
                 }
               }
             }}
             onEdgesChange={(changes) => {
               onEdgesChange(changes)
               if (changes.some((c) => c.type === 'remove')) {
-                setIsDirty(true)
                 const removedIds = new Set(
                   changes.filter((c) => c.type === 'remove').map((c) => c.id)
                 )
@@ -3520,12 +3512,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               workflowName={workflow.name}
               trigger={triggerRef.current}
               nodeNamespaces={orderedNamespaces}
-              onChange={(t) => { triggerRef.current = t; setIsDirty(true); setTriggerVersion(v => v + 1) }}
+              onChange={(t) => { triggerRef.current = t; setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
               width={sidePanelWidth}
               onResize={setSidePanelWidth}
               slackChannel={slackChannel}
-              onSlackChannelChange={(value) => { setSlackChannel(value); setIsDirty(true) }}
+              onSlackChannelChange={(value) => setSlackChannel(value)}
             />
           )}
           {selectedNode && mode === 'edit' && selectedNode.id !== 'trigger' && (
