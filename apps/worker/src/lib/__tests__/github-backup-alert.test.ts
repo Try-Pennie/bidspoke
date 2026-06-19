@@ -23,7 +23,7 @@ function makeKv(initial: Record<string, string> = {}) {
   }
 }
 
-const slackOn = { bot_token: 't', default_channel: '#c', config_alerts_enabled: true }
+const slackOn = { bot_token: 't', default_channel: '#c', config_alerts_enabled: true, backup_alerts_enabled: true }
 const ORG = 'org-1'
 const baseInput = (kv: ReturnType<typeof makeKv>, error: unknown = new Error('GitHub push failed (401): Bad credentials')) => ({
   supabase: {} as never,
@@ -93,11 +93,21 @@ describe('recordBackupFailure', () => {
     expect(sendBackupFailureAlert).not.toHaveBeenCalled()
   })
 
-  it('does not alert when config alerts are toggled off', async () => {
-    vi.mocked(getSlackConnection).mockResolvedValue({ ...slackOn, config_alerts_enabled: false } as never)
+  // #223: backup alerts have their own toggle, independent of config_alerts.
+  it('does not alert when the dedicated backup toggle is off', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue({ ...slackOn, backup_alerts_enabled: false } as never)
     const kv = makeKv({ 'github-backup-failures:org-1': String(BACKUP_FAILURE_THRESHOLD - 1) })
     expect(await recordBackupFailure(baseInput(kv))).toBe(false)
     expect(sendBackupFailureAlert).not.toHaveBeenCalled()
+  })
+
+  it('still alerts when config alerts are off but backup alerts are on (#223 independence)', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue(
+      { ...slackOn, config_alerts_enabled: false, backup_alerts_enabled: true } as never,
+    )
+    const kv = makeKv({ 'github-backup-failures:org-1': String(BACKUP_FAILURE_THRESHOLD - 1) })
+    expect(await recordBackupFailure(baseInput(kv))).toBe(true)
+    expect(sendBackupFailureAlert).toHaveBeenCalledTimes(1)
   })
 
   it('does not set the cooldown if delivery fails (so the next save retries the alert)', async () => {

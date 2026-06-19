@@ -117,6 +117,7 @@ integrations.get('/slack', async (c) => {
     volume_alerts_enabled: cfg?.volume_alerts_enabled !== false,
     matrix_alerts_enabled: cfg?.matrix_alerts_enabled !== false,
     config_alerts_enabled: cfg?.config_alerts_enabled !== false,
+    backup_alerts_enabled: cfg?.backup_alerts_enabled !== false,
     matrix_alerts_channel: (cfg?.matrix_alerts_channel as string | undefined) ?? null,
     // never return the token
     updated_at: data.updated_at,
@@ -189,7 +190,7 @@ integrations.get('/slack/channels', async (c) => {
 integrations.patch('/slack/settings', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean }>()
+  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
 
   const { data: existing } = await supabase
     .from('service_connections')
@@ -207,6 +208,7 @@ integrations.patch('/slack/settings', async (c) => {
     ...(body.matrix_alerts_enabled !== undefined ? { matrix_alerts_enabled: body.matrix_alerts_enabled } : {}),
     ...(body.matrix_alerts_channel !== undefined ? { matrix_alerts_channel: body.matrix_alerts_channel || null } : {}),
     ...(body.config_alerts_enabled !== undefined ? { config_alerts_enabled: body.config_alerts_enabled } : {}),
+    ...(body.backup_alerts_enabled !== undefined ? { backup_alerts_enabled: body.backup_alerts_enabled } : {}),
   }
 
   const { error } = await supabase
@@ -223,6 +225,7 @@ integrations.patch('/slack/settings', async (c) => {
     matrix_alerts_enabled: body.matrix_alerts_enabled,
     matrix_alerts_channel: body.matrix_alerts_channel,
     config_alerts_enabled: body.config_alerts_enabled,
+    backup_alerts_enabled: body.backup_alerts_enabled,
   })
 
   return c.json({ ok: true })

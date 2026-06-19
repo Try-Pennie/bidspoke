@@ -657,6 +657,7 @@ export const api = {
       volume_alerts_enabled?: boolean
       matrix_alerts_enabled?: boolean
       config_alerts_enabled?: boolean
+      backup_alerts_enabled?: boolean
       matrix_alerts_channel?: string | null
       updated_at?: string
       updated_by_email?: string | null
@@ -666,7 +667,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean }) =>
+    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }) =>
       req<{ ok: boolean }>('/api/integrations/slack/settings', {
         method: 'PATCH',
         body: JSON.stringify(data),

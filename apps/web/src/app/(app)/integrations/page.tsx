@@ -20,6 +20,7 @@ interface SlackStatus {
   volume_alerts_enabled?: boolean
   matrix_alerts_enabled?: boolean
   config_alerts_enabled?: boolean
+  backup_alerts_enabled?: boolean
   matrix_alerts_channel?: string | null
   updated_at?: string
   updated_by_email?: string | null
@@ -450,6 +451,27 @@ export default function IntegrationsPage() {
                     }
                   }}
                   label="Configuration warning alerts"
+                />
+              </div>
+              <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3">
+                <div className="text-sm">
+                  <p className="font-medium text-graphite">Backup failure alerts</p>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    Warns when workflow backups to GitHub keep failing (an expired token, wrong repo, or GitHub outage). Protects the off-Supabase copy of every workflow. Separate from configuration warnings so muting noise can&apos;t silently disable it.
+                  </p>
+                </div>
+                <SlackToggle
+                  checked={slack.backup_alerts_enabled !== false}
+                  onChange={async (next) => {
+                    setSlack((s) => (s ? { ...s, backup_alerts_enabled: next } : s))
+                    try {
+                      await api.integrations.updateSlackSettings({ backup_alerts_enabled: next })
+                    } catch (e) {
+                      setSlack((s) => (s ? { ...s, backup_alerts_enabled: !next } : s))
+                      setError(e instanceof Error ? e.message : 'Failed to update setting')
+                    }
+                  }}
+                  label="Backup failure alerts"
                 />
               </div>
               <div className="rounded-lg border border-gray-200 p-3">

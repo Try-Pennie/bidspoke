@@ -10,9 +10,9 @@
  * This tracks a per-org consecutive-failure streak in KV and posts a Slack alert
  * once the streak crosses the threshold — so a single transient blip stays quiet
  * but a sustained outage is announced. A cooldown prevents repeat alerts while the
- * outage persists, and the streak clears on the next successful backup. Reuses the
- * `config_alerts_enabled` ops-alert toggle (same as the timeout / secret-drift
- * alerts) to avoid new UI plumbing.
+ * outage persists, and the streak clears on the next successful backup. Gated on
+ * its own `backup_alerts_enabled` toggle (#223) so muting noisy config alerts
+ * doesn't silently disable this data-safety alert.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, sendBackupFailureAlert } from './slack'
@@ -67,7 +67,7 @@ export async function recordBackupFailure(input: BackupFailureInput): Promise<bo
   if (await kv.get(cooldownKey(orgId))) return false
 
   const slack = await getSlackConnection(input.supabase, orgId)
-  if (!slack || !slack.config_alerts_enabled) return false
+  if (!slack || !slack.backup_alerts_enabled) return false
 
   const sent = await sendBackupFailureAlert(
     slack,

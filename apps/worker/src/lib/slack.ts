@@ -11,6 +11,9 @@ export interface SlackConnection {
   volume_alerts_enabled: boolean
   matrix_alerts_enabled: boolean
   config_alerts_enabled: boolean
+  /** GitHub workflow-backup-failure alerts (#206). Own toggle so muting config
+   *  noise doesn't silently disable this data-safety alert (#223). */
+  backup_alerts_enabled: boolean
   /** Optional dedicated channel for matrix-change alerts. Falls back to default_channel when null. */
   matrix_alerts_channel: string | null
 }
@@ -64,6 +67,7 @@ export async function getSlackConnection(
     volume_alerts_enabled: cfg.volume_alerts_enabled !== false,
     matrix_alerts_enabled: cfg.matrix_alerts_enabled !== false,
     config_alerts_enabled: cfg.config_alerts_enabled !== false,
+    backup_alerts_enabled: cfg.backup_alerts_enabled !== false,
     matrix_alerts_channel: typeof cfg.matrix_alerts_channel === 'string' && cfg.matrix_alerts_channel ? cfg.matrix_alerts_channel : null,
   }
 }
