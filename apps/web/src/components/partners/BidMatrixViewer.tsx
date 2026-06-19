@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension } from '@/lib/api'
+import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension, MatrixProblem } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-react'
 
@@ -22,6 +22,10 @@ export function BidMatrixViewer(p: Props) {
   const [loadingRows, setLoadingRows] = useState(false)
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
+  // Structural problems (overlaps/gaps) from the last manual sync (#208). Surfaced
+  // inline so an editor who clicks Sync now to validate a Salesforce change sees
+  // the break immediately, instead of waiting for the next hourly Slack alert.
+  const [problems, setProblems] = useState<MatrixProblem[]>([])
   const [creating, setCreating] = useState(false)
 
   useEffect(() => {
@@ -33,6 +37,9 @@ export function BidMatrixViewer(p: Props) {
   useEffect(() => {
     if (!activeId) { setRows([]); return }
     let cancelled = false
+    // A different matrix is now in view — its problems (if any) come from its own
+    // sync, not the one we may have just shown.
+    setProblems([])
     setLoadingRows(true)
     api.partnerBidConfigs.get(activeId)
       .then((res) => { if (!cancelled) setRows(res.rows) })
@@ -47,14 +54,15 @@ export function BidMatrixViewer(p: Props) {
     if (!activeConfig) return
     setSyncState('syncing')
     setSyncError(null)
+    setProblems([])
     try {
       const result = await api.partnerBidConfigs.sync(activeConfig.id)
       const refreshed = await api.partnerBidConfigs.get(activeConfig.id)
       setRows(refreshed.rows)
+      setProblems(result.problems ?? [])
       p.onConfigsChange(p.configs.map((c) => c.id === activeConfig.id ? refreshed.config : c))
       setSyncState('synced')
       setTimeout(() => setSyncState('idle'), 2000)
-      void result
     } catch (err) {
       setSyncError(err instanceof Error ? err.message : 'Sync failed')
       setSyncState('error')
@@ -164,9 +172,34 @@ export function BidMatrixViewer(p: Props) {
               {syncError}
             </div>
           )}
+          {problems.length > 0 && <MatrixProblems problems={problems} />}
           <MatrixTable rows={rows} dimensions={activeConfig.dimensions} loading={loadingRows} />
         </div>
       )}
+    </div>
+  )
+}
+
+// Inline overlap/gap warnings from the last manual sync (#208). Mirrors the
+// content of the hourly Slack alert so the edit-check loop closes in the UI.
+function MatrixProblems({ problems }: { problems: MatrixProblem[] }) {
+  const overlaps = problems.filter((p) => p.kind === 'overlap')
+  const gaps = problems.filter((p) => p.kind === 'gap')
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <div className="mb-1 flex items-center gap-1.5 font-medium">
+        <AlertTriangle className="h-3.5 w-3.5" />
+        {problems.length} structural problem{problems.length === 1 ? '' : 's'} in this matrix
+        {overlaps.length > 0 && gaps.length > 0 && ` (${overlaps.length} overlap${overlaps.length === 1 ? '' : 's'}, ${gaps.length} gap${gaps.length === 1 ? '' : 's'})`}
+      </div>
+      <ul className="list-disc space-y-0.5 pl-4">
+        {problems.map((pr, i) => (
+          <li key={i}>
+            <span className="font-medium capitalize">{pr.kind}</span>
+            {pr.is_sell_off ? ' (sell-off)' : ''}: {pr.detail}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

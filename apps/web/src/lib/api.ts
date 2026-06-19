@@ -95,6 +95,16 @@ export interface PartnerBidConfigDetail {
   rows: BidMatrixRow[]
 }
 
+// A structural problem in a bid matrix found at sync time (#182): two bands
+// claiming the same lead (overlap) or a hole no band covers (gap). Mirrors the
+// worker's MatrixProblem (apps/worker/src/lib/bid-matrix-validate.ts).
+export interface MatrixProblem {
+  kind: 'overlap' | 'gap'
+  axis: 'row' | 'range'
+  is_sell_off: boolean
+  detail: string
+}
+
 export interface SyncResult {
   config_id: string
   config_slug: string
@@ -102,6 +112,7 @@ export interface SyncResult {
   rows_upserted: number
   rows_deleted: number
   last_synced_at: string
+  problems: MatrixProblem[]
 }
 
 export type PartnerBidConfigBody = Partial<Omit<PartnerBidConfig,
