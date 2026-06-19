@@ -111,6 +111,10 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [filter, setFilter] = useState<OutcomeFilter>('all')
+  // Shadow view: dry-run shadow runs are persisted is_test=true with a `__shadow`
+  // source suffix, so the default (live) list excludes them. This flips the list
+  // to those runs so a pre-cutover rehearsal is inspectable. See worker #231.
+  const [shadow, setShadow] = useState(false)
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
 
   // Refs so the IntersectionObserver callback always sees current state
@@ -132,7 +136,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   // response can land after the new filter's response and pollute the merged
   // list with rows that don't match the active filter.
   const genRef = useRef(0)
-  useEffect(() => { genRef.current += 1 }, [workflowId, filter])
+  useEffect(() => { genRef.current += 1 }, [workflowId, filter, shadow])
 
   function toggleError(id: string, e: React.MouseEvent) {
     e.preventDefault()
@@ -148,7 +152,9 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   // merges so older pages already loaded via loadMore aren't dropped.
   const loadFirstPage = useCallback((silent = false) => {
     if (!silent) setLoading(true)
-    const opts = filter === 'all' ? undefined : { outcome: filter }
+    const opts: Parameters<typeof api.executions.list>[1] = {}
+    if (filter !== 'all') opts.outcome = filter
+    if (shadow) opts.shadow = true
     const gen = genRef.current
     api.executions
       .list(workflowId, opts)
@@ -168,7 +174,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .finally(() => {
         if (gen === genRef.current) setLoading(false)
       })
-  }, [workflowId, filter])
+  }, [workflowId, filter, shadow])
 
   const loadMore = useCallback(() => {
     if (loadingMoreRef.current || !hasMoreRef.current) return
@@ -180,6 +186,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       beforeId: oldest.id,
     }
     if (filter !== 'all') opts.outcome = filter
+    if (shadow) opts.shadow = true
     const gen = genRef.current
     api.executions
       .list(workflowId, opts)
@@ -196,7 +203,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
       .finally(() => {
         if (gen === genRef.current) setLoadingMore(false)
       })
-  }, [workflowId, filter])
+  }, [workflowId, filter, shadow])
 
   const loadVersions = useCallback(() => {
     api.versions.list(workflowId).then(setVersions).catch(() => {})
@@ -207,7 +214,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     setExecutions([])
     setHasMore(true)
     pagesLoadedRef.current = 0
-  }, [workflowId, filter])
+  }, [workflowId, filter, shadow])
 
   // Initial load + 1s polling for executions; versions load once (refresh on save signal)
   useEffect(() => {
@@ -341,8 +348,25 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
 
   return (
     <aside className="flex w-72 flex-col border-r border-gray-200 bg-white">
-      <div className="border-b border-gray-100 px-3 py-3">
+      <div className="flex items-center justify-between border-b border-gray-100 px-3 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Executions</p>
+        <div className="flex rounded-md border border-gray-200 p-0.5">
+          {([
+            { key: false, label: 'Live' },
+            { key: true, label: 'Shadow' },
+          ] as const).map((opt) => (
+            <button
+              key={opt.label}
+              onClick={() => setShadow(opt.key)}
+              title={opt.key ? 'Dry-run shadow rehearsal runs (no live side effects)' : 'Real production runs'}
+              className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
+                shadow === opt.key ? 'bg-p-blue-dark text-white' : 'text-gray-400 hover:text-gray-600'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
       <div className="flex justify-around border-b border-gray-100">
         {FILTER_TABS.map((tab) => (
@@ -376,7 +400,12 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-3 py-6 text-center">
-            {filter === 'all' ? (
+            {shadow ? (
+              <>
+                <p className="text-xs font-medium text-gray-500">No shadow runs{filter !== 'all' ? ` (${filter})` : ''}</p>
+                <p className="mt-1 text-xs text-gray-400">Shadow runs appear here when a mirror source replays live traffic as a dry run.</p>
+              </>
+            ) : filter === 'all' ? (
               <>
                 <p className="text-xs font-medium text-gray-500">No executions yet</p>
                 <p className="mt-1 text-xs text-gray-400">Trigger the workflow via webhook or use the Test button to run it.</p>

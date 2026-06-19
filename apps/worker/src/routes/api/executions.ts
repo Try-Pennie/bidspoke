@@ -16,7 +16,7 @@ const executions = new Hono<{ Bindings: Env; Variables: Variables }>()
 executions.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { workflow_id, status, outcome, source, from, to, before, before_id } = c.req.query()
+  const { workflow_id, status, outcome, source, from, to, before, before_id, shadow } = c.req.query()
 
   // Resolve the set of workflow IDs this org owns (optionally scoped to one)
   let workflowIds: string[]
@@ -39,13 +39,19 @@ executions.get('/', async (c) => {
     if (workflowIds.length === 0) return c.json([])
   }
 
+  // Shadow runs are written is_test=true with a `__shadow` source suffix (see
+  // routes/shadow.ts). `?shadow=1` flips the scope to surface them in their own
+  // view; the default list shows only real (non-test) runs. Manual test runs are
+  // is_test=true too, so the source LIKE keeps them out of the shadow view.
+  const shadowView = shadow === '1' || shadow === 'true'
   let query = supabase
     .from('workflow_executions')
     .select('id, workflow_id, status, outcome, final_node_namespace, source, started_at, duration_ms, error_message, parent_execution_id')
-    .eq('is_test', false)
+    .eq('is_test', shadowView)
     .order('started_at', { ascending: false })
     .order('id', { ascending: false })
     .limit(100)
+  if (shadowView) query = query.like('source', '%__shadow')
   // `.in('workflow_id', [oneId])` generates `workflow_id=in.(X)` which the
   // planner sees as `col = ANY(ARRAY[X])` — partition pruning skips on the
   // ANY form and the query scans every partition (~7s on engine-bidding
