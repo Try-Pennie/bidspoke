@@ -25,14 +25,19 @@ function makeResponse(data: unknown, status = 200) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('pushWorkflowToGitHub', () => {
-  it('returns null when token is not configured', async () => {
-    const result = await pushWorkflowToGitHub(undefined, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
-    expect(result).toBeNull()
+  it('throws when a backup repo is configured but the token is missing, so the skip is not silent (#240)', async () => {
+    // A configured repo + missing token is a misconfiguration, not an intentional
+    // disable. Throwing routes it through the caller's log + failure-alert path
+    // instead of silently no-op'ing (the gap that hid the outage for ~2 months).
+    await expect(
+      pushWorkflowToGitHub(undefined, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
+    ).rejects.toThrow(/GITHUB_TOKEN/)
   })
 
-  it('returns null when repo is not configured', async () => {
-    const result = await pushWorkflowToGitHub(TOKEN, undefined, WF_ID, WF_NAME, DEFINITION, VERSION)
-    expect(result).toBeNull()
+  it('returns null (intentional, silent) when no backup repo is configured', async () => {
+    expect(await pushWorkflowToGitHub(TOKEN, undefined, WF_ID, WF_NAME, DEFINITION, VERSION)).toBeNull()
+    // No repo at all = backup disabled, regardless of token — stays quiet.
+    expect(await pushWorkflowToGitHub(undefined, undefined, WF_ID, WF_NAME, DEFINITION, VERSION)).toBeNull()
   })
 
   it('creates a new file when none exists (no existing SHA)', async () => {

@@ -58,7 +58,12 @@ export async function pushWorkflowToGitHub(
   versionNumber: number,
   message?: string
 ): Promise<string | null> {
-  if (!token || !repo) return null  // not configured — silently skip
+  // No repo configured = backup intentionally disabled; stay silent.
+  if (!repo) return null
+  // Repo IS configured but token is missing = misconfiguration, not a disable.
+  // Throw so the caller's log + failure-alert path runs instead of silently
+  // skipping — a silent skip here hid the backup outage for ~2 months (#240).
+  if (!token) throw new Error('GitHub backup misconfigured: GITHUB_TOKEN is not set (GITHUB_REPO is configured)')
 
   const filePath = `${WORKFLOWS_DIR}/${workflowId}.json`
   const content = JSON.stringify({ id: workflowId, name: workflowName, definition }, null, 2)
