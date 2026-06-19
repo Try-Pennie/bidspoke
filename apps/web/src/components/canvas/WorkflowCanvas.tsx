@@ -931,6 +931,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const [testInitialPayload, setTestInitialPayload] = useState<string | undefined>(undefined)
   const [savedPayloads, setSavedPayloads] = useState(workflow.test_payloads ?? [])
   const [showVersions, setShowVersions] = useState(false)
+  // Bumped on every successful save so an open Version History panel refetches (#241).
+  const [versionsRefreshToken, setVersionsRefreshToken] = useState(0)
   const [liveSteps, setLiveSteps] = useState<Record<string, ExecutionStep>>({})
   const [testRunning, setTestRunning] = useState(false)
   const [lastTestExecId, setLastTestExecId] = useState<string | null>(null)
@@ -2709,6 +2711,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       })
       setCommitMessage('')
       aiDraftKeyRef.current = null
+      // A new version was just created — refresh an open Version History panel (#241).
+      setVersionsRefreshToken((t) => t + 1)
       // Apply any queued partner-formula rewrites from Step ID renames during
       // this edit session. Runs AFTER the workflow save so the canvas
       // definition + partner formulas stay consistent (e.g. if save had
@@ -3619,6 +3623,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             onRestore={handleVersionRestore}
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
+            refreshToken={versionsRefreshToken}
           />
         )}
       </div>

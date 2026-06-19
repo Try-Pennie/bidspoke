@@ -14,9 +14,12 @@ interface Props {
   onRestore: (versionId: string) => Promise<void>
   width?: number
   onResize?: (width: number) => void
+  // Bumped by the canvas on every successful save so the open panel refetches
+  // and shows the just-created version instead of a stale list (#241).
+  refreshToken?: number
 }
 
-export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize }: Props) {
+export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize, refreshToken }: Props) {
   const effectiveWidth = width ?? 320
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -25,13 +28,21 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
   const [confirmingRestore, setConfirmingRestore] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Refetch on mount, when the workflow changes, and whenever refreshToken bumps
+  // (a save just landed). Don't toggle `loading` on a refresh — the initial
+  // `loading=true` covers the first fetch, and a refresh shouldn't flash the
+  // skeletons over an already-populated list.
   useEffect(() => {
+    let cancelled = false
     api.versions.list(workflowId)
-      .then(setVersions)
-      .catch((e) => setError(e instanceof Error ? e.message : 'Failed to load versions'))
-      .finally(() => setLoading(false))
-    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [workflowId])
+      .then((v) => { if (!cancelled) { setVersions(v); setError(null) } })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load versions') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workflowId, refreshToken])
+
+  // Clear the restore-confirm countdown on unmount.
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   function requestRestore(versionId: string) {
     if (timerRef.current) clearTimeout(timerRef.current)
