@@ -4,7 +4,43 @@ import {
   isDirtyAgainst,
   resolvePostSaveStateBySignature,
   deriveDirty,
+  deriveDraggingState,
 } from '../save-dirty-guard'
+
+// #213: the derive effect serializes the whole workflow (flowToDef + JSON) on
+// every committed node change. React Flow commits a position change per frame
+// while dragging, so a drag re-serializes the entire workflow each frame. We skip
+// the recompute while a drag is in progress and only recompute on drag end; this
+// helper reads the drag state out of a React Flow change batch.
+describe('deriveDraggingState (#213)', () => {
+  it('reports dragging while a position change is mid-drag', () => {
+    expect(deriveDraggingState([{ type: 'position', dragging: true }], false)).toBe(true)
+  })
+
+  it('reports not-dragging on the drag-end commit', () => {
+    expect(deriveDraggingState([{ type: 'position', dragging: false }], true)).toBe(false)
+  })
+
+  it('keeps the previous state for non-drag changes (add, select, dimension)', () => {
+    expect(deriveDraggingState([{ type: 'select' }], true)).toBe(true)
+    expect(deriveDraggingState([{ type: 'dimensions' }], false)).toBe(false)
+    expect(deriveDraggingState([], true)).toBe(true)
+  })
+
+  it('keeps the previous state for a position change with no dragging flag', () => {
+    // Programmatic position writes (layout) carry no dragging field — not a drag.
+    expect(deriveDraggingState([{ type: 'position' }], false)).toBe(false)
+  })
+
+  it('uses the drag flag from a multi-node (group) move batch', () => {
+    expect(
+      deriveDraggingState(
+        [{ type: 'position', dragging: true }, { type: 'position', dragging: true }],
+        false,
+      ),
+    ).toBe(true)
+  })
+})
 
 // #212: the single decision the derive effect makes each time the content
 // signature changes. A null baseline means "not yet baselined" — initial load and

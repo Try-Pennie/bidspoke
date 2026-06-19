@@ -12,6 +12,23 @@ export interface PostSaveState {
   switchToView: boolean
 }
 
+// Issue #213: the derive effect serializes the whole workflow on every committed
+// node change, and React Flow commits a position change per frame while dragging.
+// Reading the drag flag out of a change batch lets the effect skip the recompute
+// mid-drag and settle once on drag end. Returns the latest position change's
+// `dragging` flag, or the previous state when the batch has no drag signal
+// (selection, dimension measurement, add, or a programmatic position write).
+export function deriveDraggingState(
+  changes: { type: string; dragging?: boolean | null }[],
+  prev: boolean,
+): boolean {
+  let next = prev
+  for (const c of changes) {
+    if (c.type === 'position' && typeof c.dragging === 'boolean') next = c.dragging
+  }
+  return next
+}
+
 // Issue #160: the edit counter that powers the #92 mid-save check used to bump on
 // any React Flow node/edge array change, including selection and dimension
 // measurement — non-content churn. Clicking Save can deselect a node, bumping

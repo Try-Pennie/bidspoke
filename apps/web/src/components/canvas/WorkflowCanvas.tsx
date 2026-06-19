@@ -70,7 +70,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
-import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty } from '@/lib/save-dirty-guard'
+import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState } from '@/lib/save-dirty-guard'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
@@ -921,6 +921,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   //     stale state from its closure (#92).
   const lastSavedSignatureRef = useRef<string | null>(null)
   const currentSignatureRef = useRef<string>('')
+  // True while a node drag is in progress (#213). The derive effect skips the
+  // full re-serialize each frame and recomputes once on drag end.
+  const isDraggingRef = useRef(false)
   // Bumped after a save/restore re-baselines lastSavedSignatureRef, so the derive
   // effect re-runs and recomputes isDirty even though nodes/edges didn't change.
   const [savedSignatureToken, setSavedSignatureToken] = useState(0)
@@ -1159,6 +1162,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // what flowToDef serializes; savedSignatureToken re-runs this after a
   // save/restore re-baselines.
   useEffect(() => {
+    // #213: while dragging, React Flow commits a position change per frame. Skip
+    // the full re-serialize each frame; the drag-end commit (dragging:false) clears
+    // the flag and this effect re-runs to settle isDirty with the final position.
+    if (isDraggingRef.current) return
     const sig = computeEditSignature(flowToDef(nodes, edges, triggerRef.current), name, slackChannel)
     currentSignatureRef.current = sig
     // First signature seen (initial load / post-restore) becomes the clean baseline;
@@ -3139,6 +3146,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nodes={renderedNodes}
             edges={renderedEdges}
             onNodesChange={(changes) => {
+              // #213: track drag state before applying, so the derive effect can
+              // skip the per-frame re-serialize and settle once on drag end.
+              isDraggingRef.current = deriveDraggingState(changes, isDraggingRef.current)
               onNodesChange(changes)
 
               // Skip slot-in logic when multiple nodes just finished dragging
