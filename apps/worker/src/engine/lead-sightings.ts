@@ -5,6 +5,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
+import { withDbRetry, isDuplicateError } from '../lib/db-retry'
 
 // ============================================================
 // Types
@@ -339,17 +340,25 @@ export async function upsertPerson(
     last_seen_at: new Date().toISOString(),
   }
 
-  const { data, error } = await supabase
-    .from('persons')
-    .upsert(row, { onConflict: 'organization_id,ssn_hash' })
-    .select('id')
-    .single()
+  // Retry transient failures (schema-cache reload during the nightly purge) so
+  // the person row isn't silently dropped (#237). persons is slated for
+  // deprecation, but retrying is cheap and keeps the writes uniform.
+  let personId: string | null = null
+  const { error } = await withDbRetry(async () => {
+    const res = await supabase
+      .from('persons')
+      .upsert(row, { onConflict: 'organization_id,ssn_hash' })
+      .select('id')
+      .single()
+    personId = (res.data as { id?: string } | null)?.id ?? null
+    return { error: res.error }
+  })
 
   if (error) {
     console.error('[lead-sightings] upsertPerson failed:', error.message)
     return null
   }
-  return data?.id ?? null
+  return personId
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -388,8 +397,15 @@ export async function insertSighting(
     ...payload_fields,
   }
 
-  const { error } = await supabase.from('lead_sightings').insert(row)
+  // Retry transient failures (schema-cache reload during the nightly purge) so
+  // analytics rows aren't silently dropped in that window (#237). A duplicate
+  // means a prior attempt landed (the id is caller-generated), which is success.
+  const { error } = await withDbRetry(async () => {
+    const res = await supabase.from('lead_sightings').insert(row)
+    return { error: res.error }
+  })
   if (error) {
+    if (isDuplicateError(error)) return id
     console.error('[lead-sightings] insertSighting failed:', error.message)
     return null
   }
@@ -428,7 +444,12 @@ export async function recordBidAttempt(
     is_test: input.is_test,
   }
 
-  const { error } = await supabase.from('lead_sighting_bids').insert(row)
+  // Retry transient failures (schema-cache reload during the nightly purge) so
+  // bid attempts aren't silently dropped in that window (#237).
+  const { error } = await withDbRetry(async () => {
+    const res = await supabase.from('lead_sighting_bids').insert(row)
+    return { error: res.error }
+  })
   if (error) {
     console.error('[lead-sightings] recordBidAttempt failed:', error.message)
   }
@@ -466,11 +487,16 @@ export async function finalizeSighting(
     updated_at: new Date().toISOString(),
   }
 
-  const { error } = await supabase
-    .from('lead_sightings')
-    .update(update)
-    .eq('id', sighting_id)
-    .eq('execution_started_at_utc', execution_started_at_utc.toISOString())
+  // Retry transient failures (schema-cache reload during the nightly purge) so
+  // the finalize doesn't strand the sighting in 'in_flight' (#237).
+  const { error } = await withDbRetry(async () => {
+    const res = await supabase
+      .from('lead_sightings')
+      .update(update)
+      .eq('id', sighting_id)
+      .eq('execution_started_at_utc', execution_started_at_utc.toISOString())
+    return { error: res.error }
+  })
 
   if (error) {
     console.error('[lead-sightings] finalizeSighting failed:', error.message)
@@ -484,11 +510,14 @@ export async function finalizeSighting(
     // Snowflake. Nulling exported_at re-queues it for the next export, which
     // re-MERGEs the corrected flag (the MERGE is idempotent on id). In the common
     // case the bid hasn't exported yet, so exported_at is already null — a no-op.
-    const { error: bidError } = await supabase
-      .from('lead_sighting_bids')
-      .update({ is_winner: true, exported_at: null })
-      .eq('execution_id', execution_id)
-      .eq('partner_slug', fields.winning_partner_slug)
+    const { error: bidError } = await withDbRetry(async () => {
+      const res = await supabase
+        .from('lead_sighting_bids')
+        .update({ is_winner: true, exported_at: null })
+        .eq('execution_id', execution_id)
+        .eq('partner_slug', fields.winning_partner_slug)
+      return { error: res.error }
+    })
 
     if (bidError) {
       console.error('[lead-sightings] finalize: mark winner failed:', bidError.message)

@@ -10,6 +10,12 @@ import {
   STEP_JSONB_COLS,
 } from '../lib/pg-writer'
 import { recordHyperdriveFallback } from '../lib/hyperdrive-fallback'
+import { isPermanentDbError, isDuplicateError, toDbError, sleep, type DbError } from '../lib/db-retry'
+
+// Re-export so existing importers of these from step-logger keep working; the
+// definitions now live in lib/db-retry (single source of truth, shared with the
+// lead-sightings writes — see #237).
+export { isPermanentDbError, type DbError }
 
 export interface StepLogEntry {
   execution_id: string
@@ -42,45 +48,6 @@ export interface StepLogEntry {
 //      no schema cache, so DDL can never 503 it. See lib/pg-writer.ts.
 //   2. A retry ladder long enough to outlast the lock/reload window, with a
 //      PostgREST fallback so a transient Hyperdrive problem never drops a write.
-
-export interface DbError {
-  code?: string
-  message: string
-}
-
-// SQLSTATE / PostgREST codes where retrying or failing over cannot help — the
-// row is malformed or the schema drifted. Everything else is treated as
-// transient (lock contention, schema-cache reload, connection blips) and is
-// retried. 23505 (unique_violation) is handled separately: for our append-only
-// audit inserts a duplicate means the row already exists, which is success.
-const PERMANENT_DB_CODES = new Set([
-  '23502', // not_null_violation
-  '23503', // foreign_key_violation
-  '23514', // check_violation
-  '22P02', // invalid_text_representation (bad uuid / enum)
-  '22007', // invalid_datetime_format
-  '22008', // datetime_field_overflow
-  '42703', // undefined_column (migration drift)
-  '42P01', // undefined_table
-  '42804', // datatype_mismatch
-  'PGRST204', // PostgREST: column not in schema cache (drift, not transient)
-])
-
-export function isPermanentDbError(err: DbError | null): boolean {
-  return !!err?.code && PERMANENT_DB_CODES.has(err.code)
-}
-
-const isDuplicateError = (err: DbError | null): boolean => err?.code === '23505'
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-
-function toDbError(e: unknown): DbError {
-  const err = e as { code?: unknown; message?: unknown }
-  return {
-    code: typeof err?.code === 'string' ? err.code : undefined,
-    message: typeof err?.message === 'string' ? err.message : String(e),
-  }
-}
 
 // One insert attempt. Uses the direct-Postgres (Hyperdrive) path when the
 // binding is present, and falls over to PostgREST if that path fails for any
