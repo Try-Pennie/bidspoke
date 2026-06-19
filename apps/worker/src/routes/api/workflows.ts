@@ -10,6 +10,7 @@ import { writeAuditLog } from '../../lib/audit'
 import { executeWorkflow } from '../../engine/index'
 import { executeNode } from '../../engine/nodes/index'
 import { buildContext } from '../../engine/context'
+import { formatCodeErrorMessage } from '../../engine/error-classifier'
 import { loadEnvVars } from '../../lib/env-loader'
 import { deployCodeNodes, deployTestCodeBundle, deleteTestBundles } from '../../lib/code-node-deployer'
 import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefinition } from '../../lib/changelog-drafter'
@@ -848,13 +849,7 @@ workflows.post('/:id/test-node', async (c) => {
     const respStatus = result.earlyResponse?.status
     const sentinelFailed = respStatus !== undefined && respStatus >= 400 && !result.expected
     if (sentinelFailed) {
-      const bodyPreview = result.earlyResponse?.body
-        ? ` — ${(typeof result.earlyResponse.body === 'string'
-            ? result.earlyResponse.body
-            : JSON.stringify(result.earlyResponse.body)
-          ).slice(0, 300)}`
-        : ''
-      return c.json({ output: result.output, status: 'failed', error_message: `Code returned error response: HTTP ${respStatus}${bodyPreview}`, duration_ms: Date.now() - started, deploy: deployResult })
+      return c.json({ output: result.output, status: 'failed', error_message: formatCodeErrorMessage(respStatus!, result.earlyResponse?.body), duration_ms: Date.now() - started, deploy: deployResult })
     }
     return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started, deploy: deployResult })
   } catch (e) {

@@ -6,6 +6,8 @@ import {
   evaluateResponseClassification,
   shouldSuppressAlert,
   isSaturationError,
+  formatCodeErrorMessage,
+  CODE_ERROR_BODY_MAX,
 } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
@@ -28,6 +30,36 @@ describe('classifyStepError', () => {
   it('classifies a thrown Response by its HTTP status', () => {
     expect(classifyStepError(new Response(null, { status: 400 }))).toBe('permanent')
     expect(classifyStepError(new Response(null, { status: 503 }))).toBe('transient')
+  })
+
+  it('keeps the full code-node error body up to the Slack section limit, not 300 chars', () => {
+    // An Equifax 500 body whose useful tail (additionalErrorDetails) sits well
+    // past 300 chars was being chopped before it reached the failure alert.
+    const body = {
+      status: 'error',
+      reason: 'equifax_api_error',
+      description: 'Please refer to additionalErrorDetails',
+      additionalErrorDetails: { status: 'completed', detail: 'x'.repeat(1000) },
+    }
+    const msg = formatCodeErrorMessage(500, body)
+    expect(msg.startsWith('Code returned error response: HTTP 500 — ')).toBe(true)
+    // The whole body fits under the 2000-char cap, so nothing is truncated.
+    expect(msg).toContain('additionalErrorDetails')
+    expect(msg).toContain('completed')
+    expect(msg).not.toContain('…')
+  })
+
+  it('truncates only bodies longer than CODE_ERROR_BODY_MAX, with an ellipsis', () => {
+    const body = 'y'.repeat(CODE_ERROR_BODY_MAX + 500)
+    const msg = formatCodeErrorMessage(500, body)
+    expect(msg).toContain('…')
+    // The body portion is capped at CODE_ERROR_BODY_MAX (plus the ellipsis).
+    expect(msg.length).toBeLessThanOrEqual('Code returned error response: HTTP 500 — '.length + CODE_ERROR_BODY_MAX + 1)
+  })
+
+  it('omits the body suffix when there is no response body', () => {
+    expect(formatCodeErrorMessage(500, undefined)).toBe('Code returned error response: HTTP 500')
+    expect(formatCodeErrorMessage(500, '')).toBe('Code returned error response: HTTP 500')
   })
 
   it('falls back to the transport heuristic for a generic error', () => {

@@ -14,7 +14,7 @@ import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { buildCodeStepInput } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
-import { classifyHttpError, classifyTransportError, classifyStepError } from './error-classifier'
+import { classifyHttpError, classifyTransportError, classifyStepError, formatCodeErrorMessage } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
@@ -1198,14 +1198,7 @@ export async function walkGraph(
         const sentinelFailed = respStatus !== undefined && respStatus >= 400 && !result.expected
         const earlyStepStatus: StepStatus = sentinelFailed ? 'failed' : 'completed'
         const earlyErrorMessage = sentinelFailed
-          ? `Code returned error response: HTTP ${respStatus}${
-              result.earlyResponse?.body
-                ? ` — ${(typeof result.earlyResponse.body === 'string'
-                    ? result.earlyResponse.body
-                    : JSON.stringify(result.earlyResponse.body)
-                  ).slice(0, 300)}`
-                : ''
-            }`
+          ? formatCodeErrorMessage(respStatus!, result.earlyResponse?.body)
           : undefined
         const earlyErrorType: ErrorType = sentinelFailed ? classifyHttpError(respStatus!) : null
 

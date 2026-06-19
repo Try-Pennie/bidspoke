@@ -13,6 +13,23 @@ export function classifyStepError(err: unknown): ErrorType {
   return classifyTransportError(err)
 }
 
+// A code node that returns an HTTP error response (sentinel failure) carries the
+// upstream API's error JSON in its body — the single most useful thing in the
+// failure alert. The body was previously sliced to 300 chars, which chopped the
+// useful tail: an Equifax 500 whose `additionalErrorDetails` sat past the cut
+// showed "Please refer to additionalErrorDetails" with the details themselves
+// gone. Allow up to the Slack section limit (2000) so the whole body reaches
+// both the failure alert and the execution detail view.
+export const CODE_ERROR_BODY_MAX = 2000
+
+export function formatCodeErrorMessage(status: number, body: unknown): string {
+  const base = `Code returned error response: HTTP ${status}`
+  if (!body) return base
+  const text = typeof body === 'string' ? body : JSON.stringify(body)
+  const shown = text.length > CODE_ERROR_BODY_MAX ? `${text.slice(0, CODE_ERROR_BODY_MAX)}…` : text
+  return `${base} — ${shown}`
+}
+
 // PRD Section 11.1 — default classification by HTTP status
 export function classifyHttpError(status: number): ErrorType {
   // Transient: likely to succeed on retry
