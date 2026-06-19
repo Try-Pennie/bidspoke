@@ -31,7 +31,14 @@ async function getCurrentFileSha(
     },
   })
   if (res.status === 404) return null
-  if (!res.ok) throw new Error(`GitHub GET failed (${res.status})`)
+  if (!res.ok) {
+    // Surface GitHub's explanation (mirrors the PUT path). A 403 can mean an
+    // expired/invalid token, a fine-grained token missing Contents permission,
+    // org SAML-SSO authorization, or rate limiting — the body says which, so the
+    // backup-failure alert (#206) is actionable instead of a bare status code.
+    const errBody = await res.text().catch(() => '')
+    throw new Error(`GitHub GET failed (${res.status})${errBody ? `: ${errBody}` : ''}`)
+  }
   const data = await res.json() as GitHubFileResponse
   return data.sha ?? null
 }

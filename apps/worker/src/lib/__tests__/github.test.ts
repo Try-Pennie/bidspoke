@@ -144,6 +144,16 @@ describe('pushWorkflowToGitHub', () => {
     expect(mockFetch).toHaveBeenCalledTimes(4)  // no third PUT attempt
   })
 
+  it('includes the GitHub response body when the GET fails, so the alert shows the cause (#206)', async () => {
+    const reason = 'Resource protected by organization SAML enforcement. You must grant your token access to this organization.'
+    const mockFetch = vi.fn().mockResolvedValueOnce(makeResponse({ message: reason }, 403))
+    vi.stubGlobal('fetch', mockFetch)
+
+    await expect(
+      pushWorkflowToGitHub(TOKEN, REPO, WF_ID, WF_NAME, DEFINITION, VERSION)
+    ).rejects.toThrow(/GitHub GET failed \(403\)[\s\S]*SAML enforcement/)
+  })
+
   it('throws when the PUT request fails', async () => {
     const mockFetch = vi.fn()
       .mockResolvedValueOnce(makeResponse({}, 404))
