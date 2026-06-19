@@ -118,13 +118,17 @@ export async function sendFailureAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        // Slack section text caps at 3000 chars; 2000 is well under that and
-        // still fits typical upstream error bodies (Equifax 500 etc.) whole.
-        // Anything longer gets a trailing "…" so the Slack POST doesn't get
-        // rejected outright.
+        // Slack hard-rejects any section block whose text exceeds 3000 chars,
+        // which would fail the whole alert. The full error is stored uncapped
+        // and visible in the execution detail view; here we send as much as the
+        // block allows (2900, leaving headroom for the *Error:* prefix and code
+        // fence) and let Slack's native "Show more" collapse it. Anything past
+        // the cap gets a trailing note pointing at the execution.
         text: (() => {
           const full = payload.error_message
-          const shown = full.length > 2000 ? `${full.slice(0, 2000)}\n…` : full
+          const shown = full.length > 2900
+            ? `${full.slice(0, 2900)}\n… (truncated — full error in execution detail)`
+            : full
           return `*Error:*\n\`\`\`${shown}\`\`\``
         })(),
       },

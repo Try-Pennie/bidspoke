@@ -10,6 +10,7 @@ import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, Re
 import { formatDatetime, formatLogTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
+import { ExpandableError } from '@/components/ExpandableError'
 import { isNotFoundError } from '@/lib/execution-retention'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
@@ -753,7 +754,7 @@ export default function ExecutionDetailPage() {
             {execution.error_message && (
               <div className="rounded-xl border border-red-200 bg-red-50 p-4">
                 <p className="mb-1 text-xs font-medium text-red-600">Error</p>
-                <p className="font-mono text-sm text-red-800">{execution.error_message}</p>
+                <ExpandableError text={execution.error_message} className="font-mono text-sm text-red-800" />
               </div>
             )}
 
@@ -857,7 +858,7 @@ export default function ExecutionDetailPage() {
 
                       {step.error_message && (
                         <div className="mb-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2">
-                          <p className="font-mono text-xs text-red-700">{step.error_message}</p>
+                          <ExpandableError text={step.error_message} className="font-mono text-xs text-red-700" />
                           {step.error_type && (
                             <p className="mt-0.5 text-xs text-red-400">{step.error_type} error{step.retries_used > 0 ? ` · ${step.retries_used} retr${step.retries_used === 1 ? 'y' : 'ies'}` : ''}</p>
                           )}

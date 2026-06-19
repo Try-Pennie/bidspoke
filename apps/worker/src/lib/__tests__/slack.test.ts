@@ -114,6 +114,27 @@ describe('sendFailureAlert', () => {
     expect(allText).toContain('```')
   })
 
+  it('sends a long error message whole when it fits under the Slack block limit', async () => {
+    const longBody = 'Code returned error response: HTTP 500 — ' + 'x'.repeat(2000)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, error_message: longBody }, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const errBlock = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').find((t: string) => t.includes('Code returned error response'))
+    expect(errBlock).toContain('x'.repeat(2000))
+    expect(errBlock).not.toContain('truncated')
+  })
+
+  it('caps an error message that would exceed the Slack 3000-char block limit, pointing to the execution detail', async () => {
+    const hugeBody = 'Code returned error response: HTTP 500 — ' + 'x'.repeat(5000)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, error_message: hugeBody }, 'https://app.example.com')
+    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const errBlock = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').find((t: string) => t.includes('Code returned error response'))
+    // Stays under Slack's hard per-block cap so the POST isn't rejected.
+    expect(errBlock.length).toBeLessThanOrEqual(3000)
+    expect(errBlock).toContain('full error in execution detail')
+  })
+
   it('includes a markdown "View execution →" link (not an interactive button)', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
