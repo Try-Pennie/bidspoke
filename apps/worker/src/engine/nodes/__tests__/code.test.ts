@@ -1,8 +1,57 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeCodeNode } from '../code'
+import { executeCodeNode, unionReferencedSteps, scopeSteps } from '../code'
 import { codeWorkerName, codeBundleName, buildBundledWorkerScript } from '../../../lib/code-node-deployer'
-import type { ExecutionContext, NodeDefinition } from '../../../types'
+import type { ExecutionContext, NodeDefinition, StepOutput } from '../../../types'
 import type { Env } from '../../../index'
+
+// #190: the chain code-node path used to send the full step context to every
+// chained node. These two pure helpers let it scope to the union of what the
+// chain's scripts reference — mirroring the single-node path.
+describe('unionReferencedSteps (#190)', () => {
+  it('unions the referenced namespaces across all chain scripts', () => {
+    const refs = unionReferencedSteps([
+      'return steps.alpha.output.v',
+      'return steps.beta.output.v + steps.alpha.output.v',
+    ])
+    expect(refs).not.toBeNull()
+    expect([...refs!].sort()).toEqual(['alpha', 'beta'])
+  })
+
+  it('returns null (send-all) when ANY script uses a dynamic access pattern', () => {
+    expect(unionReferencedSteps(['return steps.alpha.v', 'return Object.keys(steps)'])).toBeNull()
+    expect(unionReferencedSteps(['const k = "a"; return steps[k]'])).toBeNull()
+  })
+
+  it('returns an empty set when no script references any step', () => {
+    const refs = unionReferencedSteps(['return payload.id', 'return 1 + 1'])
+    expect(refs).not.toBeNull()
+    expect(refs!.size).toBe(0)
+  })
+})
+
+describe('scopeSteps (#190)', () => {
+  const steps: Record<string, StepOutput> = {
+    a: { output: { v: 1 }, status: 'completed' },
+    b: { output: { v: 2 }, status: 'completed' },
+  }
+
+  it('sends every step plus trigger when referenced is null (dynamic access)', () => {
+    const out = scopeSteps(steps, { id: 'L1' }, null)
+    expect(Object.keys(out).sort()).toEqual(['a', 'b', 'trigger'])
+    expect(out.trigger).toEqual({ payload: { id: 'L1' } })
+  })
+
+  it('sends only the referenced steps plus trigger', () => {
+    const out = scopeSteps(steps, { id: 'L1' }, new Set(['a']))
+    expect(Object.keys(out).sort()).toEqual(['a', 'trigger'])
+    expect(out.b).toBeUndefined()
+  })
+
+  it('ignores a referenced namespace that does not exist and never duplicates trigger', () => {
+    const out = scopeSteps(steps, { id: 'L1' }, new Set(['trigger', 'missing']))
+    expect(Object.keys(out).sort()).toEqual(['trigger'])
+  })
+})
 
 function ctx(): ExecutionContext {
   return {

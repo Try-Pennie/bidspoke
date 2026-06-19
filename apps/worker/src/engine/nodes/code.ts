@@ -72,6 +72,47 @@ function extractReferencedSteps(script: string): Set<string> | null {
   return refs
 }
 
+/**
+ * Union of the step namespaces referenced across a chain's scripts (#190). The
+ * chain path runs several code nodes in one bundle dispatch and used to hand them
+ * the full step context. Here we collect what they collectively reference so only
+ * those steps are sent. If ANY script uses a dynamic access pattern
+ * (extractReferencedSteps → null), we can't statically scope the chain, so the
+ * whole union is null = send everything (the safe fallback).
+ */
+export function unionReferencedSteps(scripts: string[]): Set<string> | null {
+  const union = new Set<string>()
+  for (const script of scripts) {
+    const refs = extractReferencedSteps(script ?? '')
+    if (refs === null) return null
+    for (const r of refs) union.add(r)
+  }
+  return union
+}
+
+/**
+ * Build the `steps` object to hand a code sandbox, scoped to `referenced` (#190).
+ * null → send every step (dynamic access fallback); otherwise only the referenced
+ * namespaces. `trigger` is always included (as { payload }) and never duplicated
+ * from the referenced set. Shared by the single-node and chain paths.
+ */
+export function scopeSteps(
+  ctxSteps: Record<string, StepOutput>,
+  triggerPayload: unknown,
+  referenced: Set<string> | null,
+): Record<string, StepOutput | { payload: unknown }> {
+  const trigger = { payload: triggerPayload }
+  if (referenced === null) return { ...ctxSteps, trigger }
+  const filtered: Record<string, StepOutput | { payload: unknown }> = {}
+  for (const ns of referenced) {
+    if (ns === 'trigger') continue
+    const entry = ctxSteps[ns]
+    if (entry) filtered[ns] = entry
+  }
+  filtered.trigger = trigger
+  return filtered
+}
+
 export async function executeCodeNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
@@ -92,19 +133,7 @@ export async function executeCodeNode(
   // each, skipping unused steps cuts subrequest payload size by 60-80% and
   // shaves measurable time off JSON stringify + network + parse on the worker.
   const referenced = extractReferencedSteps(script)
-  let stepsToSend: Record<string, StepOutput | { payload: unknown }>
-  if (referenced === null) {
-    // Unsafe access pattern detected — send everything.
-    stepsToSend = { ...ctx.steps, trigger: { payload: ctx.trigger.payload } }
-  } else {
-    const filtered: Record<string, StepOutput> = {}
-    for (const ns of referenced) {
-      if (ns === 'trigger') continue
-      const entry = ctx.steps[ns]
-      if (entry) filtered[ns] = entry
-    }
-    stepsToSend = { ...filtered, trigger: { payload: ctx.trigger.payload } }
-  }
+  const stepsToSend = scopeSteps(ctx.steps, ctx.trigger.payload, referenced)
 
   // Resolve per-node props (Pipedream-style declared inputs). The script
   // receives them as a `props` global. Sources are templated against the

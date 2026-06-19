@@ -12,7 +12,7 @@ import type { ParallelChildResult } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
-import { buildCodeStepInput } from './nodes/code'
+import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyTransportError, classifyStepError, formatCodeErrorMessage } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
@@ -1671,12 +1671,16 @@ export async function executeCodeChain(
     return { namespace: n.namespace, props }
   })
 
+  // Scope the steps to the union of what the chain's scripts reference, so a
+  // chained code node can't read step PII (SSNs, partner bids) it never touches
+  // (#190). Any node using a dynamic access pattern → union is null → send all
+  // (the safe fallback, matching the single-node path). The `payload` global is
+  // still sent in full — payload field-scoping is tracked separately.
+  const chainReferenced = unionReferencedSteps(chain.map((n) => (n.config?.script as string | undefined) ?? ''))
   const body = JSON.stringify({
     chain: chainPayload,
     payload: ctx.trigger.payload,
-    // Can't easily filter steps across a chain (each step may reference
-    // different steps). Send the full context; OK for MVP.
-    steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
+    steps: scopeSteps(ctx.steps, ctx.trigger.payload, chainReferenced),
     env: mergedEnv,
     execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
   })
@@ -1727,7 +1731,8 @@ export async function executeCodeChain(
       try {
         const singleBody = JSON.stringify({
           payload: ctx.trigger.payload,
-          steps: { ...ctx.steps, trigger: { payload: ctx.trigger.payload } },
+          // Scope to this node's referenced steps (#190), same as the bundled path.
+          steps: scopeSteps(ctx.steps, ctx.trigger.payload, unionReferencedSteps([(node.config?.script as string | undefined) ?? ''])),
           env: mergedEnv,
           execution: ctx.execution ?? { trace_id: ctx.trigger.trace_id },
         })

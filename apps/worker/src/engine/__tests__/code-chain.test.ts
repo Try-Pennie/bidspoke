@@ -69,6 +69,55 @@ describe('collectCodeChain (#62)', () => {
   })
 })
 
+describe('executeCodeChain steps scoping (#190)', () => {
+  function envCapturing(captured: { body?: string }) {
+    const bundleFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      captured.body = init.body as string
+      return Promise.resolve(
+        new Response(JSON.stringify({ results: [{ namespace: 'a', status: 'completed', output: {} }] }), { status: 200 }),
+      )
+    })
+    return { DYNAMIC_WORKER_LOADER: { get: () => ({ fetch: bundleFetch }) } } as unknown as Env
+  }
+
+  const ctxWith = () => ({
+    trigger: { payload: { lead_id: 'L1' }, source: 't', workflow_id: 'wf', org_id: '', trace_id: 'tr' },
+    steps: {
+      alpha:  { output: { score: 720 }, status: 'completed' },
+      secret: { output: { ssn: '000-00-0000' }, status: 'completed' },
+    },
+    env: {},
+  }) as unknown as ExecutionContext
+
+  it('sends only the steps the chain references, withholding unreferenced PII', async () => {
+    const captured: { body?: string } = {}
+    const env = envCapturing(captured)
+    const chain = [code('a'), code('b')]
+    chain[0].config = { script: 'return steps.alpha.output.score' }
+    chain[1].config = { script: 'return steps.alpha.output.score + 1' }
+
+    await executeCodeChain(chain, ctxWith(), env)
+
+    const sent = JSON.parse(captured.body!) as { steps: Record<string, unknown> }
+    expect(Object.keys(sent.steps).sort()).toEqual(['alpha', 'trigger'])
+    expect(sent.steps.secret).toBeUndefined()
+  })
+
+  it('falls back to sending all steps when any chain node uses dynamic access', async () => {
+    const captured: { body?: string } = {}
+    const env = envCapturing(captured)
+    const chain = [code('a'), code('b')]
+    chain[0].config = { script: 'return steps.alpha.output.score' }
+    chain[1].config = { script: 'return Object.keys(steps).length' }
+
+    await executeCodeChain(chain, ctxWith(), env)
+
+    const sent = JSON.parse(captured.body!) as { steps: Record<string, unknown> }
+    expect(sent.steps.secret).toBeDefined()
+    expect(sent.steps.alpha).toBeDefined()
+  })
+})
+
 describe('executeCodeChain dispatch timeout (#62)', () => {
   it('fails the chain (does not hang or fall back) when the dispatch exceeds its budget', async () => {
     // Binding fetch that hangs until aborted — simulates a hung code node.
