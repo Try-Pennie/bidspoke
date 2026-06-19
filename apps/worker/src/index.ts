@@ -206,7 +206,7 @@ export default {
       )
       ctx.waitUntil(
         runHyperdriveFallbackCheck(supabase, env.IDEMPOTENCY)
-          .then((r) => { if (r.count > 0) console.log(`[hyperdrive-fallback] count=${r.count} alerted=${r.alerted}`) })
+          .then((r) => { if (r.count > 0) console.log(`[hyperdrive-fallback] count=${r.count} alerted=${r.alerted}${r.suppressed ? ` suppressed=${r.suppressed}` : ''}`) })
           .catch((e) => console.error('[hyperdrive-fallback] check failed:', e))
       )
     }

@@ -691,14 +691,14 @@ export async function sendHyperdriveFallbackAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `Execution-log writes fell back from Hyperdrive (direct Postgres) to PostgREST *${count}+ times* in the last 5 minutes. The direct path is likely degraded — a Supabase pooler outage, an expired/rotated DB password, or origin connection-limit exhaustion. While it is down, those writes are back on PostgREST and re-exposed to the 03:30 UTC schema-cache 503s Hyperdrive was provisioned to eliminate.`,
+        text: `Execution-log writes fell back from Hyperdrive (direct Postgres) to PostgREST *${count}+ times* in the last 5 minutes, outside the nightly partition-purge window. The direct path is likely degraded — a Supabase pooler outage, an expired/rotated DB password, or origin connection-limit exhaustion. While it is down, those writes are back on PostgREST and re-exposed to the schema-cache 503s Hyperdrive was provisioned to eliminate.`,
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: 'Check the Hyperdrive config and the Supabase pooler / DB credentials. Worker log line: `[step-logger] Hyperdrive insert failed, falling back to PostgREST`.',
+        text: 'Check the Hyperdrive config and the Supabase pooler / DB credentials. Worker log line: `[step-logger] Hyperdrive insert failed, falling back to PostgREST`. (The nightly 03:30 UTC partition purge causes the same fallback by design — that cluster is auto-suppressed, so this alert means the cause is something else.)',
       },
     },
   ]

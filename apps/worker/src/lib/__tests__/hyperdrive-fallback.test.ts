@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { shouldAlertFallback, runHyperdriveFallbackCheck, recordHyperdriveFallback, FALLBACK_ALERT_THRESHOLD } from '../hyperdrive-fallback'
+import {
+  shouldAlertFallback,
+  runHyperdriveFallbackCheck,
+  recordHyperdriveFallback,
+  isInPurgeWindow,
+  shouldAttributeToPurge,
+  FALLBACK_ALERT_THRESHOLD,
+} from '../hyperdrive-fallback'
+
+const PURGE_TS = Date.parse('2026-06-19T03:30:45Z') // inside the 03:30 UTC purge window
+const DAYTIME_TS = Date.parse('2026-06-19T14:00:00Z') // a genuine mid-day degradation
 
 describe('recordHyperdriveFallback', () => {
   it('writes a short-lived marker keyed under the hdfb:m: prefix', () => {
@@ -27,12 +37,17 @@ describe('shouldAlertFallback', () => {
 })
 
 // KV mock: list returns `markerCount` marker keys; get/put track the cooldown.
-function makeKv(markerCount: number, cooldownSet = false) {
+// `timestamps` (optional) attaches a `{ t }` metadata to each marker so the
+// purge-window attribution can be exercised; markers beyond its length get none.
+function makeKv(markerCount: number, cooldownSet = false, timestamps: number[] = []) {
   const store = new Map<string, string>()
   if (cooldownSet) store.set('hdfb:cooldown', '1')
   return {
     list: vi.fn().mockResolvedValue({
-      keys: Array.from({ length: markerCount }, (_, i) => ({ name: `hdfb:m:${i}` })),
+      keys: Array.from({ length: markerCount }, (_, i) => ({
+        name: `hdfb:m:${i}`,
+        ...(i < timestamps.length ? { metadata: { t: timestamps[i] } } : {}),
+      })),
     }),
     get: vi.fn(async (k: string) => store.get(k) ?? null),
     put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
@@ -85,5 +100,49 @@ describe('runHyperdriveFallbackCheck', () => {
     const res = await runHyperdriveFallbackCheck(makeSupabase() as never, kv)
     expect(res.alerted).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('suppresses the alert when the fallback cluster falls inside the nightly purge window', async () => {
+    const n = FALLBACK_ALERT_THRESHOLD + 2
+    const kv = makeKv(n, false, Array.from({ length: n }, () => PURGE_TS))
+    const res = await runHyperdriveFallbackCheck(makeSupabase() as never, kv)
+    expect(res.alerted).toBe(false)
+    expect(res.suppressed).toBe('purge_window')
+    expect(fetchMock).not.toHaveBeenCalled()
+    // No cooldown set, so a genuine degradation after the window can still page.
+    expect((kv as unknown as { put: ReturnType<typeof vi.fn> }).put).not.toHaveBeenCalledWith(
+      'hdfb:cooldown', '1', expect.anything(),
+    )
+  })
+
+  it('still alerts when the cluster is outside the purge window (genuine degradation)', async () => {
+    const n = FALLBACK_ALERT_THRESHOLD + 2
+    const kv = makeKv(n, false, Array.from({ length: n }, () => DAYTIME_TS))
+    const res = await runHyperdriveFallbackCheck(makeSupabase() as never, kv)
+    expect(res.alerted).toBe(true)
+    expect(res.suppressed).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalled()
+  })
+})
+
+describe('isInPurgeWindow', () => {
+  it('is true within 03:30–03:32 UTC and false just outside', () => {
+    expect(isInPurgeWindow(Date.parse('2026-06-19T03:30:00Z'))).toBe(true)
+    expect(isInPurgeWindow(Date.parse('2026-06-19T03:31:07Z'))).toBe(true)
+    expect(isInPurgeWindow(Date.parse('2026-06-19T03:32:59Z'))).toBe(true)
+    expect(isInPurgeWindow(Date.parse('2026-06-19T03:29:59Z'))).toBe(false)
+    expect(isInPurgeWindow(Date.parse('2026-06-19T03:33:00Z'))).toBe(false)
+    expect(isInPurgeWindow(Date.parse('2026-06-19T14:00:00Z'))).toBe(false)
+  })
+})
+
+describe('shouldAttributeToPurge', () => {
+  it('attributes to the purge only when the strong majority of markers are in-window', () => {
+    expect(shouldAttributeToPurge([PURGE_TS, PURGE_TS, PURGE_TS, PURGE_TS, PURGE_TS], 5)).toBe(true)
+    // 4 of 6 in-window (0.67) is not enough — a real outage overlapping the window still pages.
+    expect(shouldAttributeToPurge([PURGE_TS, PURGE_TS, PURGE_TS, PURGE_TS, DAYTIME_TS, DAYTIME_TS], 6)).toBe(false)
+    // Markers without a timestamp (pre-deploy) count against suppression.
+    expect(shouldAttributeToPurge([PURGE_TS, PURGE_TS, undefined, undefined, undefined], 5)).toBe(false)
+    expect(shouldAttributeToPurge([], 0)).toBe(false)
   })
 })
