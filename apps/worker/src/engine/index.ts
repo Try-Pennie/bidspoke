@@ -85,8 +85,10 @@ export interface ExecuteOptions {
   /** When true, verify the source is unrestricted or explicitly assigned to this workflow. */
   enforceSourceAssignment?: boolean
   /** When 'dry_run', outbound node executors return stubs instead of firing —
-   *  the shadow-mirror volume test. See engine/shadow.ts. */
-  shadowMode?: 'off' | 'dry_run'
+   *  the shadow-mirror volume test. 'stand_in' additionally resolves a
+   *  deterministic Partner Bid (no outbound submission) so routing can be
+   *  rehearsed (#232). See engine/shadow.ts. */
+  shadowMode?: 'off' | 'dry_run' | 'stand_in'
 }
 
 export interface ExecuteResult {

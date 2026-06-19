@@ -1,9 +1,16 @@
 import type { ExecutionContext, StepExecutionResult } from '../types'
 
-/** True when the current run is a dry-run shadow: run the workflow logic but
- *  skip every external side effect. See docs/engine-cutover-scope.md section 3.3. */
+/** True for any shadow run (dry_run or stand_in): no outbound submission fires.
+ *  Use this for the HTTP/KV/DB/Salesforce side-effect short-circuits. */
 export function isShadowDryRun(ctx: ExecutionContext): boolean {
-  return ctx.shadow_mode === 'dry_run'
+  return ctx.shadow_mode === 'dry_run' || ctx.shadow_mode === 'stand_in'
+}
+
+/** True only for the stand-in sub-mode: Partner Bid still resolves a deterministic
+ *  bid (formula/matrix locally; api from min_bid) without the outbound submission,
+ *  so downstream winner selection and routing can be rehearsed. See #232. */
+export function isShadowStandIn(ctx: ExecutionContext): boolean {
+  return ctx.shadow_mode === 'stand_in'
 }
 
 // Stub outputs mirror each outbound node's success shape, tagged `_shadow` so a

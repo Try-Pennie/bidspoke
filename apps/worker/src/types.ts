@@ -139,10 +139,12 @@ export interface ExecutionContext {
   /**
    * Shadow execution mode. 'dry_run' runs the workflow logic but every outbound
    * node returns a stub instead of firing (no Salesforce/Equifax/partner/HTTP/KV
-   * side effects). Unset / 'off' = normal execution. See engine/shadow.ts and
-   * docs/engine-cutover-scope.md section 3.3.
+   * side effects). 'stand_in' is the same, except Partner Bid resolves a
+   * deterministic bid without the outbound submission so winner selection and
+   * routing can be rehearsed too (#232). Unset / 'off' = normal execution. See
+   * engine/shadow.ts and docs/engine-cutover-scope.md section 3.3.
    */
-  shadow_mode?: 'off' | 'dry_run'
+  shadow_mode?: 'off' | 'dry_run' | 'stand_in'
 }
 
 export interface StepOutput {

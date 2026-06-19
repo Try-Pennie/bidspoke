@@ -168,7 +168,7 @@ export async function resolveBid(
  * If bid_resolver_type isn't set (pre-migration row) use the same precedence the old
  * code path used: api_endpoint wins over bid_formula.
  */
-function effectiveResolverType(partner: PartnerForResolver): BidResolverType {
+export function effectiveResolverType(partner: PartnerForResolver): BidResolverType {
   if (partner.bid_resolver_type) return partner.bid_resolver_type
   if (partner.api_endpoint) return 'api'
   if (partner.bid_formula) return 'formula'

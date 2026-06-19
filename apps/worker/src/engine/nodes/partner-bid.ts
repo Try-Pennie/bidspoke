@@ -25,11 +25,11 @@ import { log } from '../../lib/logger'
 import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
-import { resolveBid } from '../bid-resolver'
+import { resolveBid, effectiveResolverType } from '../bid-resolver'
 import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
 import { recordBidAttempt } from '../lead-sightings'
-import { isShadowDryRun } from '../shadow'
+import { isShadowDryRun, isShadowStandIn } from '../shadow'
 
 // Re-exports — keep external imports stable.
 export { PartnerApiError } from '../partner-bid-error'
@@ -214,6 +214,14 @@ export async function executePartnerBidNode(
     template: baseTemplate,
     resolved: { partner_slug: p.slug, payload: ctx.trigger.payload, ...resolved },
   })
+
+  // Shadow stand-in (#232): resolve a deterministic bid WITHOUT the outbound
+  // submission, cap increment, dedup call, circuit-breaker writes, or bid-attempt
+  // write — so downstream Bid Group / bid-evaluation / routing can be rehearsed.
+  // Checked before the plain dry-run skip (stand_in also satisfies isShadowDryRun).
+  if (isShadowStandIn(ctx)) {
+    return standInBid(p, ctx, env, supabase, signal, buildInput)
+  }
 
   // Shadow dry-run: skip the partner submission, dedup call, and bid-attempt
   // write. The partner config load above is a harmless DB read, so we still have
@@ -499,6 +507,59 @@ function skip(slug: string, reason: SkipReason): StepExecutionResult {
     skip_reason: reason,
   }
   return { output }
+}
+
+// Shadow stand-in resolution (#232). Produces a deterministic bid for routing
+// rehearsal with NO partner submission: formula is pure and matrix is a DB read
+// (so resolveBid is safe), while an api partner — whose only bid comes from the
+// outbound call we must not make — gets a stand-in from its floor (min_bid, or 0
+// when unset), tagged bid_reason='shadow_standin'. Cap/dedup/circuit-breaker and
+// bid-attempt writes are all bypassed by returning here.
+async function standInBid(
+  p: PartnerConfig,
+  ctx: ExecutionContext,
+  env: Env,
+  supabase: SupabaseClient,
+  signal: AbortSignal | undefined,
+  buildInput: (resolved: Record<string, unknown>) => ResolvedStepInput,
+): Promise<StepExecutionResult> {
+  // An inactive partner wouldn't bid live, so it shouldn't win a rehearsal either.
+  if (!p.is_active) {
+    return { ...skip(p.slug, 'partner_inactive'), resolvedInput: buildInput({ skip_reason: 'partner_inactive' }) }
+  }
+
+  const type = effectiveResolverType(p)
+  let bid: number | null = null
+  let matrixInfo: PartnerBidOutput['matrix'] = null
+  let resolverInput: Record<string, unknown> = {}
+
+  if (type === 'api') {
+    bid = p.min_bid ?? 0
+    resolverInput = { shadow_standin: true }
+  } else {
+    const result = await resolveBid(p, ctx, env, supabase, signal)
+    bid = result.bid
+    matrixInfo = result.matrix ?? null
+    resolverInput = result.resolved_input ?? {}
+  }
+
+  const belowFloor = bid !== null && !meetsBidFloor(bid, p.min_bid)
+  const accepted = bid !== null && !belowFloor
+  const output: PartnerBidOutput = {
+    partner: p.slug,
+    bid: accepted ? bid : null,
+    accepted,
+    skipped: !accepted,
+    ...(belowFloor
+      ? { skip_reason: 'bid_below_min' as const }
+      : bid === null
+        ? { skip_reason: 'rejected' as const }
+        : {}),
+    resolver_type: p.bid_resolver_type ?? null,
+    matrix: matrixInfo,
+    ...(type === 'api' ? { bid_reason: 'shadow_standin' } : {}),
+  }
+  return { output, resolvedInput: buildInput({ ...resolverInput, shadow: 'stand_in', bid }) }
 }
 
 const DEDUP_TIMEOUT_MS = 5000
