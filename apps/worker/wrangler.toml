@@ -58,23 +58,28 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
 
-# Hyperdrive — direct Postgres for the execution-log hot path. When this binding
-# exists, workflow_executions + execution_steps writes go straight to Postgres
-# (lib/pg-writer.ts) instead of PostgREST, so the nightly partition-purge DDL
-# can't 503 them via a schema-cache reload (incident 2026-06-12 03:30 UTC). The
-# engine falls back to PostgREST automatically when the binding is absent, so
-# adding/removing it is non-breaking.
+# Hyperdrive — RETIRED 2026-06-20. The direct-Postgres execution-log hot path
+# (lib/pg-writer.ts) was provisioned 2026-06-12 to dodge the nightly
+# partition-purge schema-cache 503s. Two things made it not worth keeping:
+#   1. Its direct-pg credential went stale (the DB password rotated), so it
+#      failed auth on ~every write all day 2026-06-20 — falling back to PostgREST
+#      each time (runs stayed healthy, but the "Execution-log DB path degraded"
+#      alert fired continuously).
+#   2. Its original reason is mostly gone: the nightly purge is now TRUNCATE-based
+#      (migration 20260619000001) and no longer reloads the PostgREST schema cache;
+#      only the weekly Sun 04:00 UTC reaper still does a DROP.
+# The engine falls back to PostgREST automatically when the binding is absent
+# (hyperdriveEnabled() in lib/pg-writer.ts), so removing it is non-breaking — and
+# with no binding the pg path never runs, so the fallback alert can't fire.
 #
-# Provisioned 2026-06-12 against the Supabase IPv4 shared pooler (Supavisor,
-# transaction mode, aws-1-us-west-2.pooler.supabase.com:6543). The connection
-# string (with the DB password) lives only in the Hyperdrive config, never in
-# git. To rotate: wrangler hyperdrive update d20e883f2ffb4809b9b80d1ff30933c0
-# --connection-string="...". (compatibility_date is at 2024-09-23, the floor
-# node-postgres needs.) After deploy: verify a fresh execution's row appears,
-# then confirm at the next 03:30 UTC purge that no "schema cache" alerts fire.
-[[hyperdrive]]
-binding = "HYPERDRIVE"
-id = "d20e883f2ffb4809b9b80d1ff30933c0"
+# The pg-writer.ts + step-logger fallback code stays dormant and re-enableable:
+# to bring it back, recreate/repoint the CF Hyperdrive config with a CURRENT
+# Supabase pooler connection string and restore the `[[hyperdrive]]` block below.
+# The orphaned CF config d20e883f2ffb4809b9b80d1ff30933c0 can be deleted separately.
+#
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "d20e883f2ffb4809b9b80d1ff30933c0"
 
 # Custom endpoint routing — partner subdomains (e.g. tripoint.trypennie.dev)
 # The worker reads the Host header to route *.trypennie.dev requests.
