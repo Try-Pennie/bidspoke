@@ -4,6 +4,7 @@
 // thread reply on the original Slack message.
 
 import type { StepStatus, ErrorType } from '../types'
+import { parseJson } from './json'
 
 export interface AlertSummaryStep {
   step_namespace: string
@@ -65,7 +66,7 @@ export async function draftAlertSummary(
     throw new Error(`Anthropic ${res.status}: ${txt}`)
   }
 
-  const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> }
+  const data = await parseJson<{ content?: Array<{ type: string; text?: string }> }>(res)
   const text = data.content?.find((c) => c.type === 'text')?.text ?? ''
   return text.trim() || null
 }

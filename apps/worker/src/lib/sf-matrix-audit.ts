@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { sendMatrixChangeAlert } from './slack'
+import { parseJson } from './json'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
 import { fetchAllPaged } from './paginate'
 
@@ -245,7 +246,7 @@ async function querySalesforceMatrixRows(env: Env): Promise<SalesforceBidRow[]> 
       const text = await res.text()
       throw new Error(`SF query failed (${res.status}): ${text.slice(0, 500)}`)
     }
-    const body = await res.json() as { records: SalesforceBidRow[]; done: boolean; nextRecordsUrl?: string }
+    const body = await parseJson<{ records: SalesforceBidRow[]; done: boolean; nextRecordsUrl?: string }>(res)
     all.push(...body.records)
     next = body.done ? undefined : body.nextRecordsUrl ? `${instanceUrl}${body.nextRecordsUrl}` : undefined
   }

@@ -2,6 +2,8 @@
 // Requires GITHUB_TOKEN (secret) and GITHUB_REPO (var, e.g. "Try-Pennie/bidspoke-workflows")
 // Silently no-ops if either is not configured — backup is best-effort.
 
+import { parseJson } from './json'
+
 const BRANCH = 'main'
 const WORKFLOWS_DIR = 'workflows'
 // GitHub's REST API requires a User-Agent on every request (#240).
@@ -45,7 +47,7 @@ async function getCurrentFileSha(
     const errBody = await res.text().catch(() => '')
     throw new Error(`GitHub GET failed (${res.status})${errBody ? `: ${errBody}` : ''}`)
   }
-  const data = await res.json() as GitHubFileResponse
+  const data = await parseJson<GitHubFileResponse>(res)
   return data.sha ?? null
 }
 
@@ -107,6 +109,6 @@ export async function pushWorkflowToGitHub(
     throw new Error(`GitHub push failed (${res.status}): ${errBody}`)
   }
 
-  const data = await res.json() as GitHubPutResponse
+  const data = await parseJson<GitHubPutResponse>(res)
   return data.commit.sha
 }

@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import type { WorkflowDefinition, EdgeDefinition } from '../types'
 import { decryptSecret } from './secret-crypto'
+import { parseJson } from './json'
 
 interface ConfigDiff {
   before: unknown
@@ -244,7 +245,7 @@ export async function draftChangelog(
     throw new Error(`Anthropic ${res.status}: ${txt}`)
   }
 
-  const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> }
+  const data = await parseJson<{ content?: Array<{ type: string; text?: string }> }>(res)
   const text = data.content?.find((c) => c.type === 'text')?.text ?? ''
   return text.trim() || null
 }

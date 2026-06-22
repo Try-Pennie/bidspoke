@@ -3,6 +3,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
+import { parseJson } from './json'
 import type { ErrorType } from '../types'
 
 export interface SlackConnection {
@@ -348,7 +349,7 @@ export async function sendThreadReply(handle: SlackAlertHandle, text: string): P
       return
     }
     // Slack signals delivery failures with HTTP 200 + { ok: false }.
-    const data = (await res.json()) as { ok: boolean; error?: string }
+    const data = await parseJson<{ ok: boolean; error?: string }>(res)
     if (!data.ok) console.error(`[slack] thread reply API error: ${data.error}`)
   } catch (e) {
     console.error('[slack] thread reply failed:', e)
@@ -892,7 +893,7 @@ export async function postMessage(
     return null
   }
 
-  const data = (await res.json()) as { ok: boolean; error?: string; ts?: string }
+  const data = await parseJson<{ ok: boolean; error?: string; ts?: string }>(res)
   if (!data.ok) {
     console.error(`[slack] API error: ${data.error}`)
     return null

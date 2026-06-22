@@ -19,6 +19,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
+import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 
@@ -79,7 +80,7 @@ export async function getSalesforceToken(env: Env, orgId: string, instanceUrl: s
     throw new Error(`Salesforce token fetch failed (${res.status}): ${text}`)
   }
 
-  const data = await res.json() as { access_token: string }
+  const data = await parseJson<{ access_token: string }>(res)
   await env.WORKFLOW_CACHE.put(cacheKey, data.access_token, { expirationTtl: TOKEN_TTL_S })
   return data.access_token
 }

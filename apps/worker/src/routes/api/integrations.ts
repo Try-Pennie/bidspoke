@@ -6,6 +6,7 @@
 
 import { Hono } from 'hono'
 import { dbError } from '../../lib/api-error'
+import { fetchJson } from '../../lib/json'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -21,24 +22,25 @@ integrations.post('/slack/resolve', async (c) => {
 
   const token = body.bot_token.trim()
 
-  const authRes = await fetch('https://slack.com/api/auth.test', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-  })
-  const authData = await authRes.json() as { ok: boolean; team?: string; error?: string }
+  const authData = await fetchJson<{ ok: boolean; team?: string; error?: string }>(
+    'https://slack.com/api/auth.test',
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    }
+  )
   if (!authData.ok) {
     return c.json({ error: `Invalid token: ${authData.error ?? 'auth.test failed'}` }, 400)
   }
 
-  const chanRes = await fetch(
-    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
-    { headers: { Authorization: `Bearer ${token}` } }
-  )
-  const chanData = await chanRes.json() as {
+  const chanData = await fetchJson<{
     ok: boolean
     channels?: Array<{ id: string; name: string }>
     error?: string
-  }
+  }>(
+    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
+    { headers: { Authorization: `Bearer ${token}` } }
+  )
 
   const channels = chanData.ok
     ? (chanData.channels ?? []).map((ch) => ({ id: ch.id, name: ch.name })).sort((a, b) => a.name.localeCompare(b.name))
@@ -159,13 +161,12 @@ integrations.get('/slack/channels', async (c) => {
     url.searchParams.set('limit', '1000')
     if (cursor) url.searchParams.set('cursor', cursor)
 
-    const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
-    const chanData = await res.json() as {
+    const chanData = await fetchJson<{
       ok: boolean
       channels?: Array<{ id: string; name: string }>
       response_metadata?: { next_cursor?: string }
       error?: string
-    }
+    }>(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
 
     if (!chanData.ok) return c.json({ error: `Slack API error: ${chanData.error ?? 'unknown'}` }, 502)
 

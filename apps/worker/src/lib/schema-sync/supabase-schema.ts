@@ -1,4 +1,5 @@
 import type { SchemaCache, SchemaObject, SchemaField } from './types'
+import { parseJson } from '../json'
 
 interface SupabaseCredentials {
   url: string
@@ -22,7 +23,7 @@ export async function fetchSupabaseSchema(credsJson: string): Promise<SchemaCach
   })
   if (!res.ok) throw new Error(`Supabase schema fetch failed (${res.status})`)
 
-  const spec = await res.json() as { definitions?: Record<string, OpenAPIDefinition> }
+  const spec = await parseJson<{ definitions?: Record<string, OpenAPIDefinition> }>(res)
 
   const objects: SchemaObject[] = Object.entries(spec.definitions ?? {}).map(([name, def]) => {
     const required = new Set(def.required ?? [])

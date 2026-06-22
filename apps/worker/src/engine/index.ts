@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from '../lib/coerce'
+import { parseJson } from '../lib/json'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult, clearIdempotency } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
@@ -1781,7 +1782,7 @@ export async function executeCodeChain(
     }
   }
 
-  const parsed = await bundleRes.json() as { __bsv?: number; results: ChainStepResult[] }
+  const parsed = await parseJson<{ __bsv?: number; results: ChainStepResult[] }>(bundleRes)
   // Update ctx.steps for each successful result so downstream (non-chain) nodes
   // see them. The envelope flag (__bsv) is informational here — the chain
   // response shape is otherwise identical with or without log capture.

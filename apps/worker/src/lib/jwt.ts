@@ -1,6 +1,8 @@
 // JWT verification using Supabase JWKS (EC P-256) — PRD Section 2.7
 // We cache the JWKS in module memory; Workers isolates reuse this across requests
 
+import { parseJson } from './json'
+
 interface JwkKey {
   kid: string
   kty: string
@@ -41,7 +43,7 @@ async function getJwks(jwksUrl: string, forceRefresh = false): Promise<Map<strin
 
   const res = await fetch(jwksUrl)
   if (!res.ok) throw new Error('Failed to fetch JWKS')
-  const { keys } = (await res.json()) as JwksResponse
+  const { keys } = await parseJson<JwksResponse>(res)
 
   const keyMap = new Map<string, CryptoKey>()
   for (const jwk of keys) {

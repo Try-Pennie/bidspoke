@@ -1,6 +1,8 @@
 // Cloudflare Workers Secrets API — used to sync env var secrets (PRD Section 12.3)
 // Requires CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets on the Worker
 
+import { parseJson } from './json'
+
 const WORKER_NAME = 'bidspoke-worker'
 
 // List the names of the worker's Cloudflare secrets (names only — the API never
@@ -23,7 +25,7 @@ export async function listCfSecretNames(
     const body = await res.text()
     throw new Error(`Failed to list Cloudflare secrets (${res.status}): ${body}`)
   }
-  const data = await res.json() as { result?: { name: string }[] | null }
+  const data = await parseJson<{ result?: { name: string }[] | null }>(res)
   return new Set((data.result ?? []).map((s) => s.name))
 }
 

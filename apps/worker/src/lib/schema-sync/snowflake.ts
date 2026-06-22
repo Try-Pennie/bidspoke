@@ -1,4 +1,5 @@
 import type { SchemaCache, SchemaObject, SchemaField } from './types'
+import { parseJson } from '../json'
 
 interface SnowflakeCredentials {
   account: string    // e.g. "xy12345.us-east-1"
@@ -67,7 +68,7 @@ export async function fetchSnowflakeSchema(
     throw new Error(`Snowflake schema fetch failed (${res.status})`)
   }
 
-  let result = await res.json() as SnowflakeStatementResponse
+  let result = await parseJson<SnowflakeStatementResponse>(res)
 
   // Async path: the query ran past the inline 30s timeout, so Snowflake returned
   // 202 + a statementHandle instead of rows. Poll the handle until it completes
@@ -137,7 +138,7 @@ async function collectAllPartitions(
   for (let p = 1; p < partitionInfo.length; p++) {
     const res = await fetch(`${base}?partition=${p}`, { method: 'GET', headers })
     if (!res.ok) throw new Error(`Snowflake partition ${p} fetch failed (${res.status})`)
-    const body = await res.json() as SnowflakeStatementResponse
+    const body = await parseJson<SnowflakeStatementResponse>(res)
     if (body.data) rows.push(...body.data)
   }
   return rows
@@ -163,7 +164,7 @@ async function pollSnowflakeStatement(
     const res = await fetch(url, { method: 'GET', headers })
     if (res.status === 202) continue  // still running — poll again
     if (!res.ok) throw new Error(`Snowflake schema poll failed (${res.status})`)
-    return await res.json() as SnowflakeStatementResponse
+    return await parseJson<SnowflakeStatementResponse>(res)
   }
 
   throw new Error('Snowflake query still running after polling — try Sync again in a moment')

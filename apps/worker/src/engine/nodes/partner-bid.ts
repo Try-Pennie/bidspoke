@@ -20,6 +20,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
+import { parseJson } from '../../lib/json'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
 import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
@@ -590,7 +591,7 @@ async function checkDedup(
       log({ event: 'dedup_check_failed', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: slug, reason: 'non_2xx', http_status: res.status })
       return false
     }
-    const data = await res.json() as Record<string, unknown>
+    const data = await parseJson<Record<string, unknown>>(res)
     return !!(data.duplicate || data.is_duplicate)
   } catch (err) {
     const aborted = err instanceof Error && err.name === 'AbortError'

@@ -1,4 +1,5 @@
 import type { SchemaCache, SchemaObject, SchemaField } from './types'
+import { parseJson } from '../json'
 
 interface SalesforceCredentials {
   access_token: string
@@ -16,7 +17,7 @@ export async function fetchSalesforceSchema(credsJson: string): Promise<SchemaCa
   // List available SObjects
   const listRes = await fetch(`${base}/sobjects/`, { headers })
   if (!listRes.ok) throw new Error(`Salesforce SObject list failed (${listRes.status})`)
-  const list = await listRes.json() as { sobjects: Array<{ name: string; label: string; queryable: boolean }> }
+  const list = await parseJson<{ sobjects: Array<{ name: string; label: string; queryable: boolean }> }>(listRes)
 
   const targets = list.sobjects.filter((o) => o.queryable && CORE_OBJECTS.includes(o.name))
 
@@ -24,9 +25,9 @@ export async function fetchSalesforceSchema(credsJson: string): Promise<SchemaCa
     targets.map(async (obj) => {
       const descRes = await fetch(`${base}/sobjects/${obj.name}/describe/`, { headers })
       if (!descRes.ok) return { name: obj.name, label: obj.label, fields: [] }
-      const desc = await descRes.json() as {
+      const desc = await parseJson<{
         fields: Array<{ name: string; label: string; type: string; nillable: boolean }>
-      }
+      }>(descRes)
       const fields: SchemaField[] = desc.fields.map((f) => ({
         name: f.name,
         label: f.label,
