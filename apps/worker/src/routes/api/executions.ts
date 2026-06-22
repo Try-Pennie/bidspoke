@@ -22,19 +22,23 @@ executions.get('/', async (c) => {
   let workflowIds: string[]
   if (workflow_id) {
     // Verify this workflow belongs to the org
-    const { data: wf } = await supabase
+    const { data: wf, error: wfError } = await supabase
       .from('workflows')
       .select('id')
       .eq('id', workflow_id)
       .eq('organization_id', orgId)
       .single()
+    if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
     if (!wf) return c.json({ error: 'Workflow not found' }, 404)
     workflowIds = [wf.id]
   } else {
-    const { data: wfs } = await supabase
+    const { data: wfs, error: wfsError } = await supabase
       .from('workflows')
       .select('id')
       .eq('organization_id', orgId)
+    // A dropped error here would silently return an empty execution list (looks
+    // like "no executions") instead of surfacing the failure.
+    if (wfsError) return dbError(c, wfsError)
     workflowIds = (wfs ?? []).map((w) => w.id)
     if (workflowIds.length === 0) return c.json([])
   }
@@ -128,12 +132,13 @@ executions.get('/step-duration-stats', async (c) => {
   // Verify org owns the workflow BEFORE the cache read — otherwise a cross-org
   // caller who knows a workflow_id + namespace could read another org's cached
   // duration percentiles for the ~30 min a legitimate request keeps them warm.
-  const { data: wf } = await supabase
+  const { data: wf, error: wfError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', workflowId)
     .eq('organization_id', orgId)
     .single()
+  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   // v9 prefix: bump when the suggestion math changes so stale entries expire

@@ -48,12 +48,13 @@ workflows.post('/', async (c) => {
   if (!body.name) return c.json({ error: 'name is required' }, 400)
 
   if (body.folder_id) {
-    const { data: folder } = await supabase
+    const { data: folder, error: folderError } = await supabase
       .from('folders')
       .select('id')
       .eq('id', body.folder_id)
       .eq('organization_id', orgId)
       .single()
+    if (folderError && folderError.code !== 'PGRST116') return dbError(c, folderError)
     if (!folder) return c.json({ error: 'folder not found' }, 404)
   }
 
@@ -216,13 +217,14 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: wf } = await supabase
+  const { data: wf, error: wfError } = await supabase
     .from('workflows')
     .select('id, updated_at, definition')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
+  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   // v3: added p50 + per-node window_days (panel and badge share this payload)
@@ -415,13 +417,14 @@ workflows.post('/:id/draft-changelog', async (c) => {
     return c.json({ draft: null, reason: 'unavailable' as const })
   }
 
-  const { data: wf } = await supabase
+  const { data: wf, error: wfError } = await supabase
     .from('workflows')
     .select('id, name')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
+  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data: lastVersion } = await supabase
@@ -488,12 +491,13 @@ workflows.patch('/:id', async (c) => {
     if (body.folder_id === null) {
       updates.folder_id = null
     } else if (typeof body.folder_id === 'string') {
-      const { data: folder } = await supabase
+      const { data: folder, error: folderError } = await supabase
         .from('folders')
         .select('id')
         .eq('id', body.folder_id)
         .eq('organization_id', orgId)
         .single()
+      if (folderError && folderError.code !== 'PGRST116') return dbError(c, folderError)
       if (!folder) return c.json({ error: 'folder not found' }, 404)
       updates.folder_id = body.folder_id
     }
@@ -788,12 +792,13 @@ workflows.post('/:id/test-node', async (c) => {
     // Scope to the workflow being tested (already org-verified above). The
     // execution must belong to this workflow; workflow_executions has no
     // organization_id column (it's org-scoped through workflow_id).
-    const { data: exec } = await supabase
+    const { data: exec, error: execError } = await supabase
       .from('workflow_executions')
       .select('trigger_payload, trace_id, source')
       .eq('id', body.execution_id)
       .eq('workflow_id', id)
       .single()
+    if (execError && execError.code !== 'PGRST116') return dbError(c, execError)
     if (!exec) return c.json({ error: 'Execution not found' }, 404)
     triggerPayload = body.trigger_payload ?? exec.trigger_payload
     source = (exec.source) ?? source
