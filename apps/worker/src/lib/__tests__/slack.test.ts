@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -402,5 +402,44 @@ describe('sendBackupFailureAlert (#206)', () => {
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('…')
     expect(text).not.toContain('e'.repeat(400))
+  })
+})
+
+describe('sendFailureSpikeAlert (#248)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const spikePayload = {
+    workflow_id: 'wf-1',
+    workflow_name: 'Engine Bidding',
+    signal: 'ACRO_GATEWAY',
+    failure_count: 12,
+    window_minutes: 5,
+    timestamp: '2024-01-15T18:00:00.000Z',
+  }
+
+  it('no-ops when Slack is not connected', async () => {
+    const ts = await sendFailureSpikeAlert(makeSupabase(null) as never, 'org-1', null, spikePayload, 'https://app.example.com')
+    expect(ts).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('posts the signal and count, returns the ts', async () => {
+    const ts = await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', null, spikePayload, 'https://app.example.com')
+    expect(ts).toBe('1.23')
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('ACRO_GATEWAY')
+    expect(text).toContain('12 failures')
+    expect(body.channel).toBe('#alerts')
+  })
+
+  it('honors a channel override', async () => {
+    await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', '#outages', spikePayload, 'https://app.example.com')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).channel).toBe('#outages')
   })
 })

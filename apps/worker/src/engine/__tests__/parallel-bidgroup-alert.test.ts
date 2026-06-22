@@ -52,6 +52,17 @@ const parallelDefinition = {
   edges: [{ id: 'e0', source: 'p', target: 'c', source_handle: 'child-0' }],
 } as unknown as WorkflowDefinition
 
+// trigger → single node, with a muted failure signal configured (#248)
+const mutedSignalDefinition = {
+  trigger: {
+    id: 'trigger',
+    type: 'trigger',
+    config: { muted_failure_signals: [{ match: 'ACRO_GATEWAY', count: 10, window_minutes: 5 }] },
+  },
+  nodes: [{ id: 'n', namespace: 'equifax', type: 'salesforce', config: { retries: 0 } }],
+  edges: [],
+} as unknown as WorkflowDefinition
+
 // trigger → bid_group(bid_race)
 const bidGroupDefinition = {
   trigger: { id: 'trigger', type: 'trigger', config: {} },
@@ -154,6 +165,38 @@ describe('parallel-node failure fires the failure alert (#64)', () => {
     expect(alert.alertType).toBe('failure')
     expect(alert.failedStep).toBe('bid_parallel')
     expect(alert.errorType).not.toBeNull()
+  })
+})
+
+describe('muted failure signal suppresses the per-run alert (#248)', () => {
+  it('records the run failed but does NOT page when the error matches a muted signal', async () => {
+    loadDef(mutedSignalDefinition)
+    vi.mocked(executeNode).mockImplementation(async () => {
+      throw new Error('Service Exception... contact Equifax (ACRO_GATEWAY HTTP 500)')
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    // Status is unchanged — the run still records as failed (no credit pull).
+    expect(lastUpdate().status).toBe('failed')
+    // But the per-execution page is muted for the matched signal.
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
+  })
+
+  it('still pages when the failure does not match any muted signal', async () => {
+    loadDef(mutedSignalDefinition)
+    vi.mocked(executeNode).mockImplementation(async () => {
+      throw new Error('Salesforce REQUEST_LIMIT_EXCEEDED')
+    })
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    expect(lastUpdate().status).toBe('failed')
+    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
   })
 })
 

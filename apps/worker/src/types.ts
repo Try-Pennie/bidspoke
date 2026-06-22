@@ -29,6 +29,19 @@ export interface WorkflowDefinition {
   edges: EdgeDefinition[]
 }
 
+// A known failure signal whose per-execution Slack page is muted; instead one
+// aggregated page fires when matching failures cross a rate threshold (#248).
+export interface MutedFailureSignal {
+  /** Case-insensitive substring matched against the failure's error_message. */
+  match: string
+  /** Aggregated alert fires when matching failures reach this many in the window. */
+  count: number
+  /** Trailing window, in minutes, the count is measured over. */
+  window_minutes: number
+  /** Per-signal cooldown between aggregated alerts. Defaults to 30 min. */
+  cooldown_minutes?: number
+}
+
 export interface TriggerConfig {
   type: 'http_webhook'
   config: {
@@ -41,6 +54,8 @@ export interface TriggerConfig {
     }
     duration_alert_ms?: number
     success_node_namespaces?: string[]
+    /** Failure signals whose per-run page is muted in favor of a rate alert (#248). */
+    muted_failure_signals?: MutedFailureSignal[]
   }
 }
 

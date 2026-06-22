@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff, Search } from 'lucide-react'
-import type { TriggerDef } from '@/types/workflow'
+import type { TriggerDef, MutedFailureSignal } from '@/types/workflow'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
 import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
@@ -45,6 +45,18 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
 
   function updateIdempotency(patch: Partial<typeof idempotency>) {
     update({ idempotency: { ...idempotency, ...patch } })
+  }
+
+  // #248 — muted failure signals
+  const mutedSignals = cfg.muted_failure_signals ?? []
+  function addSignal() {
+    update({ muted_failure_signals: [...mutedSignals, { match: '', count: 10, window_minutes: 5 }] })
+  }
+  function updateSignal(i: number, patch: Partial<MutedFailureSignal>) {
+    update({ muted_failure_signals: mutedSignals.map((s, idx) => (idx === i ? { ...s, ...patch } : s)) })
+  }
+  function removeSignal(i: number) {
+    update({ muted_failure_signals: mutedSignals.filter((_, idx) => idx !== i) })
   }
 
   const [newField, setNewField] = useState('')
@@ -464,6 +476,66 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
           </div>
           <p className="mt-1 text-xs text-gray-400">Send a Slack alert if any execution takes longer than this. Leave blank to disable. Matches the unit on node-level timeouts.</p>
+        </div>
+
+        {/* Muted failure alerts (#248) */}
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-gray-500">Muted failure alerts</label>
+          <p className="mb-2 text-xs text-gray-400">
+            Silence the per-run Slack alert for a known error (matched case-insensitively against the error message), but still get one aggregated alert if it spikes — fires once when that many matching failures occur within the window.
+          </p>
+          <div className="space-y-2">
+            {mutedSignals.map((s, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  value={s.match}
+                  onChange={(e) => updateSignal(i, { match: e.target.value })}
+                  disabled={readOnly}
+                  placeholder="error contains…"
+                  className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
+                />
+                <input
+                  type="number"
+                  min={1}
+                  value={s.count}
+                  onChange={(e) => updateSignal(i, { count: e.target.value ? Math.round(Number(e.target.value)) : 0 })}
+                  disabled={readOnly}
+                  title="Alert after this many matching failures"
+                  className="w-14 rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
+                />
+                <span className="text-xs text-gray-400">in</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={s.window_minutes}
+                  onChange={(e) => updateSignal(i, { window_minutes: e.target.value ? Math.round(Number(e.target.value)) : 0 })}
+                  disabled={readOnly}
+                  title="…within this many minutes"
+                  className="w-14 rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
+                />
+                <span className="text-xs text-gray-400">min</span>
+                <button
+                  type="button"
+                  onClick={() => removeSignal(i)}
+                  disabled={readOnly}
+                  aria-label="Remove muted signal"
+                  className="rounded p-1 text-gray-400 hover:text-red-500 disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+          {!readOnly && (
+            <button
+              type="button"
+              onClick={addSignal}
+              className="mt-2 flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
+            >
+              <Plus className="h-3 w-3" />
+              Add muted signal
+            </button>
+          )}
         </div>
 
         {/* Slack channel override */}

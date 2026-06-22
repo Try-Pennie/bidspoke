@@ -12,6 +12,7 @@ import { runBigTableGuard } from './lib/big-table-guard'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
+import { runFailureRateCheck } from './lib/failure-rate'
 import { runSightingsExport } from './lib/sightings-export'
 import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
@@ -203,6 +204,10 @@ export default {
       ctx.waitUntil(
         runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[slow-spike] check failed:', e))
+      )
+      ctx.waitUntil(
+        runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[failure-spike] check failed:', e))
       )
       ctx.waitUntil(
         runHyperdriveFallbackCheck(supabase, env.IDEMPOTENCY)

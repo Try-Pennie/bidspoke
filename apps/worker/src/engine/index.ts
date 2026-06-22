@@ -33,6 +33,7 @@ import {
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
+import { matchesMutedSignal } from '../lib/failure-rate'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
@@ -277,6 +278,11 @@ export async function executeWorkflow(
   let failedErrorType: ErrorType = null
   let failedSuppressAlert = false
 
+  // #248: failures whose message matches one of these get their per-run page
+  // muted (the aggregated rate alert in lib/failure-rate.ts pages once if they
+  // spike). Muting only silences the page — the run still records as failed.
+  const mutedFailureSignals = definition.trigger.config.muted_failure_signals ?? []
+
   // Step logs are accumulated here and flushed in a single Supabase insert after
   // the walk completes. Avoids serializing graph execution on N per-step writes.
   const stepLogQueue: StepLogEntry[] = []
@@ -490,7 +496,8 @@ export async function executeWorkflow(
           executionStatus === 'completed' &&
           !options.isTest &&
           failedErrorType !== null &&
-          !failedSuppressAlert
+          !failedSuppressAlert &&
+          !matchesMutedSignal(finalErrorMessage, mutedFailureSignals)
         ) {
           executionCtx.waitUntil(
             fireExecutionAlert({
@@ -626,7 +633,7 @@ export async function executeWorkflow(
   // minute cron (lib/slow-execution-rate.ts) fires only when slow runs SPIKE
   // across a 5-minute window. See runSlowExecutionCheck.
 
-  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert) {
+  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert && !matchesMutedSignal(errorMessage, mutedFailureSignals)) {
     executionCtx.waitUntil(
       fireExecutionAlert({
         alertType: 'failure',

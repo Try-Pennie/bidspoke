@@ -271,6 +271,62 @@ export async function sendSlowSpikeAlert(
   )
 }
 
+export interface FailureSpikeAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** The muted signal's match string, e.g. "ACRO_GATEWAY". */
+  signal: string
+  /** Matching failed runs in the window. */
+  failure_count: number
+  window_minutes: number
+  timestamp: string
+}
+
+// Aggregated failure-rate alert (#248): the per-run page for a muted signal is
+// suppressed; this fires ONCE when matching failures cross the rate threshold —
+// the signal that a transient blip has become a real, large outage.
+export async function sendFailureSpikeAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: FailureSpikeAlertPayload,
+  appUrl: string
+): Promise<string | null> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return null
+
+  const channel = channelOverride || connection.default_channel
+  const workflowUrl = `${appUrl}/workflows/${payload.workflow_id}`
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Failure Spike', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}* had *${payload.failure_count} failures* matching \`${payload.signal}\` in the last ${payload.window_minutes} minutes. Per-run alerts for this signal are muted; this is the aggregated rate alert.`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Time:* ${new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${workflowUrl}|Open workflow →>` },
+    },
+  ]
+
+  return postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `Failure spike: ${payload.workflow_name} — ${payload.failure_count} failures matching ${payload.signal} in ${payload.window_minutes}m`
+  )
+}
+
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
   try {
     const res = await fetch('https://slack.com/api/chat.postMessage', {

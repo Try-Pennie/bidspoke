@@ -65,6 +65,16 @@ export interface EdgeDef {
   hidden?: boolean
 }
 
+// A known failure signal whose per-run Slack page is muted; one aggregated page
+// fires instead when matching failures cross a rate threshold (#248). Mirrors the
+// worker's MutedFailureSignal.
+export interface MutedFailureSignal {
+  match: string
+  count: number
+  window_minutes: number
+  cooldown_minutes?: number
+}
+
 export interface TriggerDef {
   type: 'http_webhook'
   config: {
@@ -82,6 +92,8 @@ export interface TriggerDef {
      * non-failed goes to Completed.
      */
     success_node_namespaces?: string[]
+    /** Failure signals whose per-run page is muted in favor of a rate alert (#248). */
+    muted_failure_signals?: MutedFailureSignal[]
   }
 }
 
