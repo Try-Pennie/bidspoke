@@ -17,7 +17,7 @@ const shadow = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
   const workflowId = c.req.param('workflow_id') as string
-  const source = c.get('source') as string
+  const source = c.get('source')
   // Default dry_run (all outbound stubbed). `?mode=stand_in` additionally lets
   // Partner Bid resolve a deterministic bid (no outbound submission) so winner
   // selection and routing are rehearsed too. See engine/shadow.ts and #232.

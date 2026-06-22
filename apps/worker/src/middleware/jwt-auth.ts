@@ -45,7 +45,7 @@ export async function jwtAuth(
   // Prefer the most current name from the JWT (refreshed on every login from Google)
   // Fall back to the stored display_name, but skip it if it looks like an email prefix
   const jwtName = payload.user_metadata?.full_name ?? payload.user_metadata?.name ?? null
-  const storedName = user.display_name as string | null
+  const storedName = user.display_name
   const isEmailPrefix = storedName === user.email.split('@')[0]
   const name = jwtName ?? (isEmailPrefix ? null : storedName) ?? null
 

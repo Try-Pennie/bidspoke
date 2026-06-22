@@ -82,7 +82,7 @@ partners.get('/', async (c) => {
 
 partners.get('/:id', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data, error } = await supabase
@@ -170,7 +170,7 @@ partners.post('/', async (c) => {
 
 partners.put('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<PartnerBody>()
 
@@ -233,7 +233,7 @@ partners.put('/:id', async (c) => {
 
 partners.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   // Fetch slug for audit log before deleting
@@ -268,7 +268,7 @@ partners.delete('/:id', async (c) => {
 
 partners.get('/:id/cap-count', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data, error } = await supabase

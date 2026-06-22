@@ -60,7 +60,7 @@ export function sandboxEnvBindings(env: Env): Record<string, string> {
   const out: Record<string, string> = {}
   for (const key of Object.keys(raw)) {
     if (SANDBOX_BLOCKED_ENV_KEYS.has(key)) continue
-    if (typeof raw[key] === 'string') out[key] = raw[key] as string
+    if (typeof raw[key] === 'string') out[key] = raw[key]
   }
   return out
 }

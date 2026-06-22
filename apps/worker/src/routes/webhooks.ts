@@ -9,7 +9,7 @@ const webhooks = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 webhooks.post('/:workflow_id', apiKeyAuth, async (c) => {
   const workflowId = c.req.param('workflow_id') as string
-  const source = c.get('source') as string
+  const source = c.get('source')
   const idempotencyKey = c.req.header('X-Idempotency-Key') ?? undefined
 
   let payload: unknown

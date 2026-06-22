@@ -100,7 +100,7 @@ export async function executeIntegrationNode(
   const rawEnv = env as unknown as Record<string, unknown>
   const cfSecrets: Record<string, string> = {}
   for (const key of Object.keys(rawEnv)) {
-    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key] as string
+    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key]
   }
   // CF bindings take precedence over same-named Supabase env vars
   const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...cfSecrets } }

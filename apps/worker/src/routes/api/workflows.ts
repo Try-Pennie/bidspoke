@@ -90,7 +90,7 @@ workflows.post('/', async (c) => {
 // doesn't exist yet — see the staging-vs-prod issue — so there's nothing more to carry.)
 workflows.post('/:id/duplicate', async (c) => {
   const { orgId, userId, email, name } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   // Load source (org-scoped)
@@ -188,7 +188,7 @@ workflows.get('/:id', async (c) => {
   const { data, error } = await supabase
     .from('workflows')
     .select('*')
-    .eq('id', c.req.param('id') as string)
+    .eq('id', c.req.param('id'))
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
@@ -213,7 +213,7 @@ workflows.get('/:id', async (c) => {
 // per-node retries, and with them the suggestion math) busts it immediately.
 workflows.get('/:id/timeout-suggestions', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data: wf } = await supabase
@@ -268,7 +268,7 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
 // PUT /api/workflows/:id — save definition, create version snapshot, invalidate KV cache
 workflows.put('/:id', async (c) => {
   const { orgId, userId, email, name } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null }>()
 
@@ -396,7 +396,7 @@ workflows.put('/:id', async (c) => {
 // POST /api/workflows/:id/draft-changelog — AI-drafted summary of pending changes for the save popover
 workflows.post('/:id/draft-changelog', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   let body: { definition?: WorkflowDefinition }
@@ -444,7 +444,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
   }
 
   try {
-    const draft = await draftChangelog(apiKey, diff, wf.name as string)
+    const draft = await draftChangelog(apiKey, diff, wf.name)
     if (draft) {
       c.executionCtx.waitUntil(
         c.env.WORKFLOW_CACHE.put(cacheKey, draft, { expirationTtl: 3600 })
@@ -460,7 +460,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
 // PATCH /api/workflows/:id — lightweight field updates (is_active) without creating a version snapshot
 workflows.patch('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{
     is_active?: boolean
@@ -522,7 +522,7 @@ workflows.patch('/:id', async (c) => {
 // only checks is_active (cache prewarm, definition loader) skips it too.
 workflows.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { error } = await supabase
@@ -542,7 +542,7 @@ workflows.delete('/:id', async (c) => {
 // PATCH /api/workflows/:id/test-payloads — replace the saved test payload array
 workflows.patch('/:id/test-payloads', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ test_payloads: Array<{ name: string; payload: unknown }> }>()
 
@@ -566,7 +566,7 @@ workflows.patch('/:id/test-payloads', async (c) => {
 // GET /api/workflows/:id/versions
 workflows.get('/:id/versions', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   // Verify ownership first
@@ -593,8 +593,8 @@ workflows.get('/:id/versions', async (c) => {
 // GET /api/workflows/:id/versions/:version_id
 workflows.get('/:id/versions/:version_id', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
-  const versionId = c.req.param('version_id') as string
+  const id = c.req.param('id')
+  const versionId = c.req.param('version_id')
   const supabase = createSupabaseClient(c.env)
 
   const { error: ownerError } = await supabase
@@ -621,8 +621,8 @@ workflows.get('/:id/versions/:version_id', async (c) => {
 // POST /api/workflows/:id/versions/:version_id/restore
 workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id') as string
-  const versionId = c.req.param('version_id') as string
+  const id = c.req.param('id')
+  const versionId = c.req.param('version_id')
   const supabase = createSupabaseClient(c.env)
 
   // Verify ownership — the service-role key bypasses RLS, so without this an
@@ -684,7 +684,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
 // POST /api/workflows/:id/test
 workflows.post('/:id/test', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ payload: unknown; execution_id?: string; definition?: unknown }>()
 
@@ -737,7 +737,7 @@ workflows.post('/:id/test', async (c) => {
 // POST /api/workflows/:id/test-node — re-run a single node using context from a prior execution
 workflows.post('/:id/test-node', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   // Verify ownership before deploying code or executing anything. Code bundles
@@ -788,8 +788,8 @@ workflows.post('/:id/test-node', async (c) => {
       .single()
     if (!exec) return c.json({ error: 'Execution not found' }, 404)
     triggerPayload = body.trigger_payload ?? exec.trigger_payload
-    source = (exec.source as string | null) ?? source
-    traceId = (exec.trace_id as string | null) ?? traceId
+    source = (exec.source) ?? source
+    traceId = (exec.trace_id) ?? traceId
 
     // paginate-ok: one execution's steps, used to rebuild the test-node context
     const { data: stepRows } = await supabase
@@ -797,7 +797,7 @@ workflows.post('/:id/test-node', async (c) => {
       .select('step_namespace, status, output, error_message, error_type')
       .eq('execution_id', body.execution_id)
     for (const row of stepRows ?? []) {
-      ctxSteps[row.step_namespace as string] = {
+      ctxSteps[row.step_namespace] = {
         output: row.output,
         status: row.status as StepOutput['status'],
         error: row.error_message as string | undefined,
@@ -853,7 +853,7 @@ workflows.post('/:id/test-node', async (c) => {
     const respStatus = result.earlyResponse?.status
     const sentinelFailed = respStatus !== undefined && respStatus >= 400 && !result.expected
     if (sentinelFailed) {
-      return c.json({ output: result.output, status: 'failed', error_message: formatCodeErrorMessage(respStatus!, result.earlyResponse?.body), duration_ms: Date.now() - started, deploy: deployResult })
+      return c.json({ output: result.output, status: 'failed', error_message: formatCodeErrorMessage(respStatus, result.earlyResponse?.body), duration_ms: Date.now() - started, deploy: deployResult })
     }
     return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started, deploy: deployResult })
   } catch (e) {
@@ -907,7 +907,7 @@ function isValidNamespace(s: unknown): s is string {
 // GET /api/workflows/:id/rename-impact?old=foo&new=bar
 workflows.get('/:id/rename-impact', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const oldNs = c.req.query('old')
   const newNs = c.req.query('new')
   const supabase = createSupabaseClient(c.env)
@@ -937,8 +937,8 @@ workflows.get('/:id/rename-impact', async (c) => {
   const affected: PartnerForRename[] = []
   for (const p of (partners ?? []) as PartnerForRename[]) {
     const resolverFormula =
-      p.bid_resolver_config && typeof (p.bid_resolver_config as Record<string, unknown>).formula === 'string'
-        ? ((p.bid_resolver_config as Record<string, unknown>).formula as string)
+      p.bid_resolver_config && typeof (p.bid_resolver_config).formula === 'string'
+        ? ((p.bid_resolver_config).formula)
         : null
     const refs = countStepsRefs(p.bid_formula, oldNs) + countStepsRefs(resolverFormula, oldNs)
     if (refs > 0) affected.push(p)
@@ -980,8 +980,8 @@ workflows.get('/:id/rename-impact', async (c) => {
 
   const partner_formulas = affected.map((p) => {
     const resolverFormula =
-      p.bid_resolver_config && typeof (p.bid_resolver_config as Record<string, unknown>).formula === 'string'
-        ? ((p.bid_resolver_config as Record<string, unknown>).formula as string)
+      p.bid_resolver_config && typeof (p.bid_resolver_config).formula === 'string'
+        ? ((p.bid_resolver_config).formula)
         : null
     const formulaPreview = resolverFormula ?? p.bid_formula ?? ''
     const shared = workflowsUsingPartner(p.id)
@@ -1006,15 +1006,15 @@ workflows.get('/:id/rename-impact', async (c) => {
 // cross-workflow-shared partners using the rename-impact response.
 workflows.post('/:id/rename-apply', async (c) => {
   const { orgId, userId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ old?: unknown; new?: unknown; partner_ids?: unknown }>()
 
   if (!isValidNamespace(body.old) || !isValidNamespace(body.new)) {
     return c.json({ error: 'old and new must be valid namespaces' }, 400)
   }
-  const oldNs = body.old as string
-  const newNs = body.new as string
+  const oldNs = body.old
+  const newNs = body.new
   if (oldNs === newNs) return c.json({ updated: 0 })
 
   if (!Array.isArray(body.partner_ids) || body.partner_ids.some((x) => typeof x !== 'string')) {
@@ -1042,7 +1042,7 @@ workflows.post('/:id/rename-apply', async (c) => {
   let updated = 0
   for (const p of (partners ?? []) as PartnerForRename[]) {
     const nextLegacy = rewriteStepsRefs(p.bid_formula, oldNs, newNs)
-    const cfg = (p.bid_resolver_config ?? {}) as Record<string, unknown>
+    const cfg = (p.bid_resolver_config ?? {})
     const cfgFormula = typeof cfg.formula === 'string' ? cfg.formula : null
     const nextCfgFormula = rewriteStepsRefs(cfgFormula, oldNs, newNs)
     const cfgChanged = cfgFormula !== null && nextCfgFormula !== cfgFormula

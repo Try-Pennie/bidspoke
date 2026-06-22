@@ -68,13 +68,13 @@ export async function executeNode(
     case 'achieve_offers':
       return executeAchieveOffersNode(node, ctx, signal)
     default:
-      throw new Error(`Unknown node type: ${(node as NodeDefinition).type}`)
+      throw new Error(`Unknown node type: ${(node).type}`)
   }
 }
 
 function executeExitNode(node: NodeDefinition): StepExecutionResult {
   return {
-    output: (node.config.response as unknown) ?? null,
+    output: (node.config.response) ?? null,
   }
 }
 

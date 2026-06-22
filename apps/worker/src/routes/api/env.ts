@@ -97,7 +97,7 @@ env.post('/', async (c) => {
 // PUT /api/env/:id
 env.put('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ key?: string; value?: string; folder_id?: string | null }>()
 
@@ -207,7 +207,7 @@ env.put('/:id', async (c) => {
 // GET /api/env/:id/reveal — decrypt and return secret value; audit logged
 env.get('/:id/reveal', async (c) => {
   const { orgId, userId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data, error } = await supabase
@@ -248,13 +248,13 @@ env.post('/resync-secrets', async (c) => {
     .eq('is_secret', true)
   if (error) return dbError(c, error)
 
-  const missing = (data ?? []).filter((s) => !cfNames.has(s.key as string))
+  const missing = (data ?? []).filter((s) => !cfNames.has(s.key))
   const resynced: string[] = []
   const skipped: { key: string; reason: string }[] = []
 
   for (const s of missing) {
-    const key = s.key as string
-    const enc = s.value as string | null
+    const key = s.key
+    const enc = s.value
     if (!enc) {
       skipped.push({ key, reason: 'no saved value (rotate the secret to re-enable sync)' })
       continue
@@ -280,7 +280,7 @@ env.post('/resync-secrets', async (c) => {
 // DELETE /api/env/:id
 env.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data: existing, error: fetchError } = await supabase

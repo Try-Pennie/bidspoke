@@ -290,7 +290,7 @@ function subtypeRequired(nodeType: string): boolean {
 // every click before this — see TODO 4.x notes.
 executions.get('/:id', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const summary = c.req.query('summary') === '1'
   const supabase = createSupabaseClient(c.env)
 
@@ -384,7 +384,7 @@ executions.get('/:id', async (c) => {
 // steps (whose row lives on the parent execution) without a separate route.
 executions.get('/:id/steps/:stepId', async (c) => {
   const { orgId } = c.get('user')
-  const stepId = c.req.param('stepId') as string
+  const stepId = c.req.param('stepId')
   const supabase = createSupabaseClient(c.env)
 
   const { data: step, error: stepError } = await supabase
@@ -417,7 +417,7 @@ executions.get('/:id/steps/:stepId', async (c) => {
 // POST /api/executions/:id/resume
 executions.post('/:id/resume', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data: execution, error } = await supabase
@@ -458,7 +458,7 @@ executions.post('/:id/resume', async (c) => {
 // POST /api/executions/:id/replay
 executions.post('/:id/replay', async (c) => {
   const { orgId } = c.get('user')
-  const id = c.req.param('id') as string
+  const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data: execution, error } = await supabase

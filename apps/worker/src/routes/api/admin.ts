@@ -46,7 +46,7 @@ admin.post('/migrate-code-workers', async (c) => {
       if (!definition) return { id: w.id, name: w.name, status: 'skipped', reason: 'no definition' }
       try {
         const deployResults = await deployCodeNodes(
-          w.id as string,
+          w.id,
           definition,
           c.env.CLOUDFLARE_ACCOUNT_ID,
           c.env.CLOUDFLARE_API_TOKEN
@@ -128,17 +128,17 @@ admin.post('/backfill-sightings', async (c) => {
     if (!executions || executions.length === 0) break
 
     // Skip executions that already have a sighting backfilled
-    const execIds = executions.map((e) => e.id as string)
+    const execIds = executions.map((e) => e.id)
     // paginate-ok: bounded to one backfill page of execution ids (one sighting each)
     const { data: existingSightings } = await supabase
       .from('lead_sightings')
       .select('execution_id')
       .in('execution_id', execIds)
-    const alreadyHave = new Set((existingSightings ?? []).map((r) => r.execution_id as string))
+    const alreadyHave = new Set((existingSightings ?? []).map((r) => r.execution_id))
 
     for (const exec of executions) {
       scanned++
-      if (alreadyHave.has(exec.id as string)) {
+      if (alreadyHave.has(exec.id)) {
         skipped++
         continue
       }
@@ -166,16 +166,16 @@ admin.post('/backfill-sightings', async (c) => {
       const { data: steps } = await supabase
         .from('execution_steps')
         .select('step_namespace, step_type, status, output, started_at, step_order')
-        .eq('execution_id', exec.id as string)
-        .eq('execution_started_at', exec.started_at as string)
+        .eq('execution_id', exec.id)
+        .eq('execution_started_at', exec.started_at)
         .order('step_order', { ascending: true })
 
       // Build a synthetic ctx.steps map for the extract helpers
       const stepsMap: Record<string, { output: unknown; status: string }> = {}
       for (const s of steps ?? []) {
-        stepsMap[s.step_namespace as string] = {
+        stepsMap[s.step_namespace] = {
           output: s.output,
-          status: s.status as string,
+          status: s.status,
         }
       }
 
@@ -201,7 +201,7 @@ admin.post('/backfill-sightings', async (c) => {
       // response_status column written at finalize. Rows from before that
       // column existed stay null and deriveRejectReason treats them as
       // unclassifiable, same as today.
-      const responseStatusCode = (exec.response_status as number | null) ?? null
+      const responseStatusCode = (exec.response_status) ?? null
 
       const rejectReason = deriveRejectReason({
         winning_partner_slug: bidSummary.winner_slug,
@@ -212,24 +212,24 @@ admin.post('/backfill-sightings', async (c) => {
         terminal_step_output: lastStep?.output,
       })
 
-      const startedAt = new Date(exec.started_at as string)
-      const completedAt = exec.completed_at ? new Date(exec.completed_at as string) : startedAt
+      const startedAt = new Date(exec.started_at)
+      const completedAt = exec.completed_at ? new Date(exec.completed_at) : startedAt
 
       const sightingRow = {
         id: crypto.randomUUID(),
         ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
         person_id: personId,
-        trace_id: (exec.trace_id as string | null) ?? exec.id as string,
-        execution_id: exec.id as string,
+        trace_id: (exec.trace_id) ?? exec.id,
+        execution_id: exec.id,
         workflow_id: body.workflow_id,
-        workflow_version_id: exec.workflow_version_id as string | null,
+        workflow_version_id: exec.workflow_version_id,
         workflow_version_sha: null,
         execution_started_at_et: startedAt.toISOString(),
         execution_finished_at_et: completedAt.toISOString(),
         execution_started_at_utc: startedAt.toISOString(),
         execution_ended_at_utc: completedAt.toISOString(),
-        duration_ms: (exec.duration_ms as number | null) ?? null,
-        source_name: (exec.source as string | null) ?? null,
+        duration_ms: (exec.duration_ms) ?? null,
+        source_name: (exec.source) ?? null,
         terminal_node_id: terminalNode?.id ?? null,
         terminal_node_label: terminalNode?.namespace ?? terminalNs,
         response_status_code: responseStatusCode,
@@ -264,7 +264,7 @@ admin.post('/backfill-sightings', async (c) => {
           skip_reason?: string
         } | null
         if (!out?.partner) continue
-        const attemptedAt = new Date(bidStep.started_at as string)
+        const attemptedAt = new Date(bidStep.started_at)
         await supabase.from('lead_sighting_bids').insert({
           id: crypto.randomUUID(),
           sighting_id: sightingRow.id,
@@ -291,7 +291,7 @@ admin.post('/backfill-sightings', async (c) => {
 
     // Advance cursor — next page starts strictly after the last started_at we saw.
     // Bump by 1ms so the >= filter doesn't re-fetch the boundary row.
-    const lastStarted = new Date(executions[executions.length - 1].started_at as string)
+    const lastStarted = new Date(executions[executions.length - 1].started_at)
     cursor = new Date(lastStarted.getTime() + 1).toISOString()
 
     if (executions.length < pageLimit) break
