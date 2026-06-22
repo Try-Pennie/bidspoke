@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeSalesforceNode } from '../salesforce'
+import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 
@@ -79,11 +80,10 @@ function mockTokenResponse() {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('executeSalesforceNode', () => {
-  let fetchMock: ReturnType<typeof vi.fn>
+  let fetchMock: FetchMock
 
   beforeEach(() => {
-    fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
+    fetchMock = stubFetch()
   })
 
   afterEach(() => {
@@ -110,8 +110,6 @@ describe('executeSalesforceNode', () => {
   // aborted via linkAbort. Reverting that wiring fails this.
   it('cancels the write fetch when the step-level signal aborts (#66)', async () => {
     const signals: (AbortSignal | undefined)[] = []
-    // Mock impl returns Promise<Response>; untyped vi.fn() makes the rule see a void context.
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
       signals.push(init?.signal ?? undefined)
       return Promise.resolve(signals.length === 1 ? mockTokenResponse() : mockResponse(201, '{"id":"X"}'))

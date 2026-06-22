@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeIntegrationNode } from '../integration'
+import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 
@@ -51,11 +52,10 @@ function mockResponse(status: number, body: string, headers: Record<string, stri
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('executeIntegrationNode', () => {
-  let fetchMock: ReturnType<typeof vi.fn>
+  let fetchMock: FetchMock
 
   beforeEach(() => {
-    fetchMock = vi.fn()
-    vi.stubGlobal('fetch', fetchMock)
+    fetchMock = stubFetch()
   })
 
   afterEach(() => {
@@ -81,8 +81,6 @@ describe('executeIntegrationNode', () => {
   // executor's fetch signal aborted via linkAbort). Reverting that wiring fails this.
   it('cancels the outbound fetch when the step-level signal aborts (#66)', async () => {
     let captured: AbortSignal | undefined
-    // Mock impl returns Promise<Response>; untyped vi.fn() makes the rule see a void context.
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     fetchMock.mockImplementation((_url: string, init: RequestInit) => {
       captured = init.signal as AbortSignal
       return Promise.resolve(mockResponse(200, '{}'))
