@@ -215,6 +215,8 @@ export async function executeIntegrationNode(
     if (warnLogs.length > 0) {
       (responseErr as Response & { logs?: import('../../types').StepLogEntry[] }).logs = warnLogs
     }
+    // Intentional: the engine catches this Response to classify the HTTP error.
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
     throw responseErr
   }
 

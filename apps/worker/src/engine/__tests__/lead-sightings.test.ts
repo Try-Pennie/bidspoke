@@ -21,7 +21,7 @@ function makeSupabase() {
       tablesTouched.push(table)
       const chain: Record<string, unknown> = {
         update(payload: unknown) {
-          ;(updates[table] ??= []).push(payload)
+          (updates[table] ??= []).push(payload)
           return chain
         },
         eq() { return chain },

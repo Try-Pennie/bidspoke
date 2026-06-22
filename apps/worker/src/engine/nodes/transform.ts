@@ -175,7 +175,8 @@ function evaluateTransformExpression(expr: string, ctx: ExecutionContext): unkno
   try {
     const paramNames = ['Math', ...seen.values()]
     const paramValues: unknown[] = [Math, ...values]
-    // eslint-disable-next-line no-new-func
+    // Sandboxed transform-expression evaluator: only Math + resolved values in scope.
+    // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
     const fn = new Function(...paramNames, `return (${substituted})`)
     return fn(...paramValues)
   } catch {

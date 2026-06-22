@@ -149,7 +149,7 @@ app.route('/api', api)
 // Scheduled handler — dispatches on cron string (see wrangler.toml [triggers])
 export default {
   fetch: app.fetch.bind(app),
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): void {
     const supabase = createSupabaseClient(env)
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(

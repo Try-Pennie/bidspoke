@@ -110,6 +110,8 @@ describe('executeSalesforceNode', () => {
   // aborted via linkAbort. Reverting that wiring fails this.
   it('cancels the write fetch when the step-level signal aborts (#66)', async () => {
     const signals: (AbortSignal | undefined)[] = []
+    // Mock impl returns Promise<Response>; untyped vi.fn() makes the rule see a void context.
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
       signals.push(init?.signal ?? undefined)
       return Promise.resolve(signals.length === 1 ? mockTokenResponse() : mockResponse(201, '{"id":"X"}'))
