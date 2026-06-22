@@ -38,6 +38,7 @@ type TableConfig = {
   single?: Record<string, unknown> | null
   list?: Record<string, unknown>[]
   insertResult?: Record<string, unknown> | null
+  singleError?: { code: string; message: string }
 }
 
 function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
@@ -66,7 +67,9 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
             }
           }
           if (prop === 'single') {
-            return () => cfg.single !== undefined
+            return () => cfg.singleError
+              ? Promise.resolve({ data: null, error: cfg.singleError })
+              : cfg.single !== undefined
               ? cfg.single
                 ? Promise.resolve({ data: cfg.single, error: null })
                 : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
@@ -82,8 +85,17 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
               const ic: unknown = new Proxy({}, {
                 get(__, p) {
                   if (typeof p === 'symbol') return undefined
-                  // Don't intercept 'then' — let bare `await insert(...)` resolve immediately
-                  if (p === 'then') return undefined
+                  // Bare `await insert(...)` resolves to a { data, error } result so
+                  // callers that destructure `error` see null on success (or an
+                  // 'insert failed' error when no insertResult was configured).
+                  if (p === 'then') {
+                    return (resolve: (v: unknown) => unknown) =>
+                      Promise.resolve(
+                        res !== undefined && res !== null
+                          ? { data: res, error: null }
+                          : { data: null, error: { message: 'insert failed' } }
+                      ).then(resolve)
+                  }
                   if (p === 'select') return () => ic
                   if (p === 'single') return () =>
                     res !== undefined && res !== null
@@ -188,6 +200,34 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as { version_id: string }
     expect(body.version_id).toBe('ver-1')
+  })
+
+  it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
+    // A dropped error here defaulted nextVersion to 1, risking a clobber of the
+    // existing version chain. A real (non-PGRST116) error must abort.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        workflow_versions: { singleError: { code: '57P01', message: 'db connection lost' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(500)
+  })
+
+  it('saves as version 1 when there are no prior versions (PGRST116 is not an error)', async () => {
+    const newVersion = { id: 'ver-1', version_number: 1, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        // no `single` config → mock returns PGRST116 (no rows), then the insert
+        workflow_versions: [{}, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'First' } })
+    expect(res.status).toBe(200)
   })
 
   it('calls invalidateWorkflowCache with the workflow id', async () => {
@@ -492,6 +532,24 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     const body = await res.json() as { ok: boolean; version_number: number }
     expect(body.ok).toBe(true)
     expect(typeof body.version_number).toBe('number')
+  })
+
+  it('aborts the restore when the version-number lookup hits a real DB error (#303)', async () => {
+    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        workflow_versions: [
+          { single: oldVersion },                                  // fetch target version
+          { singleError: { code: '57P01', message: 'db down' } },  // lastVersion lookup errors
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(500)
+    // No clobbering write happened.
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
   })
 
   it('invalidates the workflow cache after restore', async () => {

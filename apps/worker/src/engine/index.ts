@@ -901,10 +901,14 @@ export async function walkGraph(
       const allIds = Array.from(new Set([...partnerIds, ...tieredPartnerIds, ...(fallbackId ? [fallbackId] : [])]))
       const slugByPartnerId = new Map<string, string>()
       if (allIds.length > 0) {
-        const { data: rows } = await supabase
+        const { data: rows, error: slugErr } = await supabase
           .from('partner_configs')
           .select('id, slug')
           .in('id', allIds)
+        // On error the map stays empty and namespaces fall back to `partner-N`.
+        // That's a cosmetic mislabel (don't fail a bid over it), but log it so the
+        // mislabeled analytics rows aren't a silent mystery.
+        if (slugErr) console.error('[bid-group] partner slug preload failed; using partner-N fallback:', slugErr)
         for (const r of (rows ?? []) as { id: string; slug: string }[]) {
           slugByPartnerId.set(r.id, r.slug)
         }

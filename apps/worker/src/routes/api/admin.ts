@@ -130,10 +130,14 @@ admin.post('/backfill-sightings', async (c) => {
     // Skip executions that already have a sighting backfilled
     const execIds = executions.map((e) => e.id)
     // paginate-ok: bounded to one backfill page of execution ids (one sighting each)
-    const { data: existingSightings } = await supabase
+    const { data: existingSightings, error: existingErr } = await supabase
       .from('lead_sightings')
       .select('execution_id')
       .in('execution_id', execIds)
+    // A dropped error here would empty the dedup set and re-insert sightings that
+    // were already backfilled. Abort the page (cursor hasn't advanced — a re-run
+    // resumes here) rather than duplicate.
+    if (existingErr) return dbError(c, existingErr)
     const alreadyHave = new Set((existingSightings ?? []).map((r) => r.execution_id))
 
     for (const exec of executions) {
@@ -163,12 +167,16 @@ admin.post('/backfill-sightings', async (c) => {
       // Order by step_order (monotonic, unique per execution); started_at is too coarse
       // when many steps share the same second, producing non-deterministic "last step".
       // paginate-ok: one execution's steps (tens of rows, well under the cap)
-      const { data: steps } = await supabase
+      const { data: steps, error: stepsErr } = await supabase
         .from('execution_steps')
         .select('step_namespace, step_type, status, output, started_at, step_order')
         .eq('execution_id', exec.id)
         .eq('execution_started_at', exec.started_at)
         .order('step_order', { ascending: true })
+      // A dropped error would write a sighting with empty steps (no terminal node,
+      // enrichment, or bids). Throw so the per-exec catch skips this one instead of
+      // persisting a context-less row; a later run retries it.
+      if (stepsErr) throw new Error(`steps fetch failed for ${exec.id}: ${stepsErr.message}`)
 
       // Build a synthetic ctx.steps map for the extract helpers
       const stepsMap: Record<string, { output: unknown; status: string }> = {}

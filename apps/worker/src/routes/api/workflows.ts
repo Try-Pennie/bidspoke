@@ -283,14 +283,17 @@ workflows.put('/:id', async (c) => {
 
   if (fetchError || !existing) return c.json({ error: 'Workflow not found' }, 404)
 
-  // Get next version number
-  const { data: lastVersion } = await supabase
+  // Get next version number. `.single()` reports "no prior versions" (first save)
+  // as PGRST116 — fine, start at 1. Any other error is a real DB failure: bailing
+  // beats defaulting to 1, which would collide with / clobber an existing chain.
+  const { data: lastVersion, error: lastVersionError } = await supabase
     .from('workflow_versions')
     .select('version_number')
     .eq('workflow_id', id)
     .order('version_number', { ascending: false })
     .limit(1)
     .single()
+  if (lastVersionError && lastVersionError.code !== 'PGRST116') return dbError(c, lastVersionError)
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
@@ -648,24 +651,29 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
 
   if (versionError || !version) return c.json({ error: 'Version not found' }, 404)
 
-  // Restore = create a new version with the old definition
-  const { data: lastVersion } = await supabase
+  // Restore = create a new version with the old definition. PGRST116 = no prior
+  // versions → start at 1; any other error is a real failure (defaulting to 1
+  // would clobber the chain), so bail.
+  const { data: lastVersion, error: lastVersionError } = await supabase
     .from('workflow_versions')
     .select('version_number')
     .eq('workflow_id', id)
     .order('version_number', { ascending: false })
     .limit(1)
     .single()
+  if (lastVersionError && lastVersionError.code !== 'PGRST116') return dbError(c, lastVersionError)
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
-  await supabase.from('workflow_versions').insert({
+  // Surface a failed snapshot write instead of silently "restoring" nothing.
+  const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
     workflow_id: id,
     version_number: nextVersion,
     definition: version.definition,
     created_by: userId,
     message: `Restored from v${version.version_number}`,
   })
+  if (restoreInsertError) return dbError(c, restoreInsertError)
 
   await supabase
     .from('workflows')
