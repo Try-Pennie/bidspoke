@@ -314,7 +314,7 @@ function BidGroupSummary({ groupStep, attemptSteps }: { groupStep: Step; attempt
         </div>
         <div className="text-xs text-gray-600">
           {noWinner
-            ? <span className="font-medium text-red-700">No winner — {reason.replace(/_/g, ' ')}</span>
+            ? <span className="font-medium text-red-700">No winner: {reason.replace(/_/g, ' ')}</span>
             : <span className="font-medium text-green-700">Winner: {winnerSlug} (${output.winner?.bid ?? 0})</span>}
         </div>
       </div>

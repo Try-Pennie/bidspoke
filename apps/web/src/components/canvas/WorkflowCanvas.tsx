@@ -3099,7 +3099,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               {executionChildren && executionChildren.length > 0 && (
                 <span className="flex items-center gap-1.5">
                   <RotateCcw className="h-3 w-3 text-gray-400" />
-                  <span>Replayed {executionChildren.length === 1 ? 'as' : `${executionChildren.length} times — latest`}</span>
+                  <span>Replayed {executionChildren.length === 1 ? 'as' : `${executionChildren.length} times, latest`}</span>
                   <button
                     onClick={() => {
                       const latest = executionChildren[executionChildren.length - 1]

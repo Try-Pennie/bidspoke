@@ -131,7 +131,7 @@ export async function sendFailureAlert(
         text: (() => {
           const full = payload.error_message
           const shown = full.length > 2900
-            ? `${full.slice(0, 2900)}\n… (truncated — full error in execution detail)`
+            ? `${full.slice(0, 2900)}\n… (truncated, full error in execution detail)`
             : full
           return `*Error:*\n\`\`\`${shown}\`\`\``
         })(),
@@ -267,7 +267,7 @@ export async function sendSlowSpikeAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Slow execution spike: ${payload.workflow_name} — ${payload.slow_count}/${payload.total_count} runs over ${thresholdSeconds}s`
+    `Slow execution spike: ${payload.workflow_name}, ${payload.slow_count}/${payload.total_count} runs over ${thresholdSeconds}s`
   )
 }
 
@@ -323,7 +323,7 @@ export async function sendFailureSpikeAlert(
     connection.bot_token,
     channel,
     blocks,
-    `Failure spike: ${payload.workflow_name} — ${payload.failure_count} failures matching ${payload.signal} in ${payload.window_minutes}m`
+    `Failure spike: ${payload.workflow_name}, ${payload.failure_count} failures matching ${payload.signal} in ${payload.window_minutes}m`
   )
 }
 
@@ -449,7 +449,7 @@ export async function sendMatrixChangeAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: showHeader ? `*${change.partner_slug}* — _${change.config_name}_\n${body}` : body,
+        text: showHeader ? `*${change.partner_slug}*: _${change.config_name}_\n${body}` : body,
       },
     })
   }
@@ -534,7 +534,7 @@ export async function sendMatrixValidationAlert(
     const body = lines.join('\n') + (cfg.problems.length > 20 ? `\n_…and ${cfg.problems.length - 20} more_` : '')
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*${cfg.partner_slug}* — _${cfg.config_name}_\n${body}` },
+      text: { type: 'mrkdwn', text: `*${cfg.partner_slug}*: _${cfg.config_name}_\n${body}` },
     })
   }
 
@@ -755,14 +755,14 @@ export async function sendHyperdriveFallbackAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `Execution-log writes fell back from Hyperdrive (direct Postgres) to PostgREST *${count}+ times* in the last 5 minutes, outside the nightly partition-purge window. The direct path is likely degraded — a Supabase pooler outage, an expired/rotated DB password, or origin connection-limit exhaustion. While it is down, those writes are back on PostgREST and re-exposed to the schema-cache 503s Hyperdrive was provisioned to eliminate.`,
+        text: `Execution-log writes fell back from Hyperdrive (direct Postgres) to PostgREST *${count}+ times* in the last 5 minutes, outside the nightly partition-purge window. The direct path is likely degraded: a Supabase pooler outage, an expired/rotated DB password, or origin connection-limit exhaustion. While it is down, those writes are back on PostgREST and re-exposed to the schema-cache 503s Hyperdrive was provisioned to eliminate.`,
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: 'Check the Hyperdrive config and the Supabase pooler / DB credentials. Worker log line: `[step-logger] Hyperdrive insert failed, falling back to PostgREST`. (The nightly 03:30 UTC partition purge causes the same fallback by design — that cluster is auto-suppressed, so this alert means the cause is something else.)',
+        text: 'Check the Hyperdrive config and the Supabase pooler / DB credentials. Worker log line: `[step-logger] Hyperdrive insert failed, falling back to PostgREST`. (The nightly 03:30 UTC partition purge causes the same fallback by design. That cluster is auto-suppressed, so this alert means the cause is something else.)',
       },
     },
   ]

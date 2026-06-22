@@ -86,7 +86,7 @@ export default function RenameConfirmDialog({
                   <li key={p.partner_id}>
                     <span className="font-medium">{p.partner_name}</span>{' '}
                     <span className="text-amber-700">
-                      — also used by {p.shared_with_workflows.map((w) => w.name).join(', ')}
+                      also used by {p.shared_with_workflows.map((w) => w.name).join(', ')}
                     </span>
                   </li>
                 ))}

@@ -914,7 +914,7 @@ export default function EnvPage() {
                     <p>Re-synced {resyncResult.resynced.length} secret{resyncResult.resynced.length === 1 ? '' : 's'} to Cloudflare: {resyncResult.resynced.join(', ')}.</p>
                   )}
                   {resyncResult.skipped.length > 0 && (
-                    <p className="mt-1 text-amber-700">Could not re-sync {resyncResult.skipped.map((s) => s.key).join(', ')} — rotate {resyncResult.skipped.length === 1 ? 'it' : 'them'} to re-enable sync.</p>
+                    <p className="mt-1 text-amber-700">Could not re-sync {resyncResult.skipped.map((s) => s.key).join(', ')}. Rotate {resyncResult.skipped.length === 1 ? 'it' : 'them'} to re-enable sync.</p>
                   )}
                 </>
               )}

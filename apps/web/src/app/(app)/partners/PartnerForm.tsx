@@ -970,7 +970,7 @@ export default function PartnerForm({
           )}
           {!isNew && !undoSnapshot && !dirty && (
             <p className="text-xs text-gray-400">
-              {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? '—'}`}
+              {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'unknown'}`}
             </p>
           )}
         </div>

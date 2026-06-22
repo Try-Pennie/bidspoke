@@ -339,7 +339,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           />
           {nodeNamespaces.some((ns) => ns !== data.namespace && ns === nsDraft) && (
             <p className="mt-1 text-xs text-red-500">
-              Already used by another node. Step IDs must be unique — references like <code className="rounded bg-red-50 px-1">steps.{nsDraft}</code> would resolve ambiguously.
+              Already used by another node. Step IDs must be unique. References like <code className="rounded bg-red-50 px-1">steps.{nsDraft}</code> would resolve ambiguously.
             </p>
           )}
         </Field>
@@ -1048,7 +1048,7 @@ function CodeConfig({
                     type="button"
                     onClick={() => removeUnreferenced(row.name)}
                     className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
-                    title="No longer referenced — remove"
+                    title="No longer referenced. Remove"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -2400,7 +2400,7 @@ function TieredEditor({
       <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Tiers</p>
       {tiers.length === 0 && (
         <p className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
-          No tiers yet. Tiers run in order — each tier&apos;s mode determines how its partners are queried.
+          No tiers yet. Tiers run in order. Each tier&apos;s mode determines how its partners are queried.
         </p>
       )}
       {tiers.map((tier, i) => {
@@ -2899,7 +2899,7 @@ function SalesforceConfig({
         </div>
         {transientErrors.length === 0 ? (
           <p className="text-xs text-gray-400">
-            Treat matching Salesforce errors as transient — the engine&apos;s retry + backoff kicks in instead of failing immediately. Defaults to <code className="rounded bg-gray-100 px-1">REQUEST_LIMIT_EXCEEDED</code> + <code className="rounded bg-gray-100 px-1">Concurrent</code> (org concurrency limit, clears in seconds).
+            Treat matching Salesforce errors as transient. The engine&apos;s retry + backoff kicks in instead of failing immediately. Defaults to <code className="rounded bg-gray-100 px-1">REQUEST_LIMIT_EXCEEDED</code> + <code className="rounded bg-gray-100 px-1">Concurrent</code> (org concurrency limit, clears in seconds).
           </p>
         ) : (
           <div className="space-y-2">
@@ -3029,7 +3029,7 @@ function ParallelConfig({
         </button>
       </div>
 
-      <Field label="Wait for" hint="'All' waits for every slot. 'First' continues as soon as one succeeds. 'Specific slot' continues as soon as the named slot finishes — siblings keep running but their results are ignored unless they happened to settle in time.">
+      <Field label="Wait for" hint="'All' waits for every slot. 'First' continues as soon as one succeeds. 'Specific slot' continues as soon as the named slot finishes. Siblings keep running but their results are ignored unless they happened to settle in time.">
         <div className="relative">
           <select
             value={waitFor}
@@ -3451,15 +3451,15 @@ function TimeoutField({
     if (effective < redThreshold) {
       tone = 'red'
       actionLeading = hasRetries
-        ? 'Most runs would time out at this value — try'
-        : 'Your timeout would have cut that off — try'
+        ? 'Most runs would time out at this value. Try'
+        : 'Your timeout would have cut that off. Try'
       actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'for safety.'
     } else if (effective < stats.suggested_ms) {
       tone = 'amber'
       actionLeading = hasRetries
-        ? 'Some runs will time out and burn retries — try'
-        : 'Slower runs will get cut off — try'
+        ? 'Some runs will time out and burn retries. Try'
+        : 'Slower runs will get cut off. Try'
       actionLink = { text: `${stats.suggested_ms.toLocaleString()}ms`, ms: stats.suggested_ms }
       actionTrailing = 'for more headroom.'
     } else if (blueThreshold) {

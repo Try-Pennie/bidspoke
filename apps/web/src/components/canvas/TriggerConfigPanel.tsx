@@ -397,7 +397,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             ) : (
               !addingSource && !assigningExisting && (
                 <p className="text-xs text-gray-400">
-                  No keys assigned. Any valid key works until you assign one here — then only assigned keys can trigger this workflow.
+                  No keys assigned. Any valid key works until you assign one here. Then only assigned keys can trigger this workflow.
                 </p>
               )
             )}
@@ -482,7 +482,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Muted failure alerts</label>
           <p className="mb-2 text-xs text-gray-400">
-            Silence the per-run Slack alert for a known error (matched case-insensitively against the error message), but still get one aggregated alert if it spikes — fires once when that many matching failures occur within the window.
+            Silence the per-run Slack alert for a known error (matched case-insensitively against the error message), but still get one aggregated alert if it spikes. It fires once when that many matching failures occur within the window.
           </p>
           <div className="space-y-2">
             {mutedSignals.map((s, i) => (
