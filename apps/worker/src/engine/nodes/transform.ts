@@ -175,7 +175,14 @@ function evaluateTransformExpression(expr: string, ctx: ExecutionContext): unkno
   try {
     const paramNames = ['Math', ...seen.values()]
     const paramValues: unknown[] = [Math, ...values]
-    // Sandboxed transform-expression evaluator: only Math + resolved values in scope.
+    // SECURITY (reviewed #299): `expr` is author-only — it comes solely from the
+    // transform node's config in the workflow definition, written through the
+    // jwt-authed, org-scoped workflow-save endpoints. Context values are bound as
+    // params, not concatenated into the code string, so untrusted payload/partner
+    // data cannot inject code. Residual risk is author-only (an unresolved
+    // identifier left in the string would execute). If exposed more broadly, add a
+    // grammar allowlist rejecting tokens outside {Math, bound vars, numbers,
+    // arithmetic} — see #299.
     // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
     const fn = new Function(...paramNames, `return (${substituted})`) as (...args: unknown[]) => unknown
     return fn(...paramValues)

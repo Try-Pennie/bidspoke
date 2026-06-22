@@ -548,7 +548,15 @@ export function evaluateFormula(formula: string, ctx: ExecutionContext): number 
   try {
     const paramNames = ['Math', ...Object.keys(pathVars), ...Object.keys(payloadVars)]
     const paramValues = [Math, ...Object.values(pathVars), ...Object.values(payloadVars)]
-    // Sandboxed bid-formula evaluator: only Math + numeric vars are in scope.
+    // SECURITY (reviewed #299): `formula` is author-only — it comes solely from
+    // partner_configs.bid_formula / bid_resolver_config, written through the
+    // jwt-authed, org-scoped /api/partners endpoints. Request payloads and partner
+    // responses supply only VALUES, bound here as numeric params (not concatenated
+    // into the code string), so untrusted input cannot inject code. Residual risk
+    // is author-only: an unresolved identifier (e.g. `fetch`) is left in `stage2`
+    // and would execute. Before enabling formula bidding in production, add a
+    // grammar allowlist that rejects any token outside {Math, the bound vars,
+    // numbers, arithmetic/comparison/ternary} — see #299.
     // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
     const fn = new Function(...paramNames, `return (${stage2})`) as (...args: unknown[]) => unknown
     const result = fn(...paramValues)
