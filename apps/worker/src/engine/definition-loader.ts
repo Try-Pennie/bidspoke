@@ -65,7 +65,15 @@ export async function loadWorkflowDefinition(
 
   const { data, error } = await query.single()
 
-  if (error || !data) {
+  // A transient DB error must NOT masquerade as a missing workflow: callers map
+  // WorkflowNotFoundError to 404, which a lead source treats as "endpoint gone"
+  // and stops retrying — dropping the lead (#303). PGRST116 is the genuine
+  // no-rows / inactive case (→ WorkflowNotFoundError); any other error is a real
+  // failure that should surface as a retryable 5xx.
+  if (error && error.code !== 'PGRST116') {
+    throw new Error(`Failed to load workflow ${workflowId}: ${error.message}`)
+  }
+  if (!data) {
     throw new WorkflowNotFoundError(workflowId, !allowInactive)
   }
 

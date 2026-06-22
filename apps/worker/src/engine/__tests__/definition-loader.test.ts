@@ -28,10 +28,8 @@ const workflowRow = {
   workflow_versions: [{ id: 'ver-1', version_number: 1 }],
 }
 
-function makeSupabase(row: typeof workflowRow | null = workflowRow) {
-  const single = vi.fn().mockResolvedValue(
-    row ? { data: row, error: null } : { data: null, error: { message: 'not found' } }
-  )
+function makeSupabaseRaw(result: { data: unknown; error: unknown }) {
+  const single = vi.fn().mockResolvedValue(result)
   const chain: unknown = new Proxy({}, {
     get(_, prop) {
       if (typeof prop === 'symbol') return undefined
@@ -40,6 +38,13 @@ function makeSupabase(row: typeof workflowRow | null = workflowRow) {
     },
   })
   return { from: vi.fn().mockReturnValue(chain), _single: single }
+}
+
+function makeSupabase(row: typeof workflowRow | null = workflowRow) {
+  // Real `.single()` reports no-rows as PGRST116 (not a generic error).
+  return makeSupabaseRaw(
+    row ? { data: row, error: null } : { data: null, error: { message: 'not found', code: 'PGRST116' } }
+  )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -97,6 +102,17 @@ describe('loadWorkflowDefinition', () => {
     const sb = makeSupabase(null)
 
     await expect(loadWorkflowDefinition(WF_ID, kv, sb as never)).rejects.toBeInstanceOf(WorkflowNotFoundError)
+  })
+
+  it('throws a generic (retryable) error, NOT WorkflowNotFoundError, on a real DB error (#303)', async () => {
+    // A real DB error mapped to WorkflowNotFoundError would 404 the lead source
+    // (treated as "gone" → stops retrying). Only PGRST116 is a genuine not-found.
+    const kv = makeKv(null)
+    const sb = makeSupabaseRaw({ data: null, error: { message: 'db connection lost', code: '57P01' } })
+
+    const promise = loadWorkflowDefinition(WF_ID, kv, sb as never)
+    await expect(promise).rejects.toThrow(/Failed to load workflow/)
+    await expect(promise).rejects.not.toBeInstanceOf(WorkflowNotFoundError)
   })
 
   it('throws when workflow has no versions', async () => {
