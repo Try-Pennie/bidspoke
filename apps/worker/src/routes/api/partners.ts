@@ -237,13 +237,16 @@ partners.delete('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
 
   // Fetch slug for audit log before deleting
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('partner_configs')
     .select('slug, name')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
 
+  // PGRST116 = no partner for this org (→ 404); a real error must not look like
+  // a 404, which would block a legitimate delete (#303).
+  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Partner not found' }, 404)
 
   const { error } = await supabase

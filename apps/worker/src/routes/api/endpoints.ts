@@ -114,13 +114,16 @@ endpoints.post('/', async (c) => {
   // Verify the workflow belongs to this org — the service-role key bypasses RLS,
   // so without this an org-A caller could publish a public endpoint that
   // executes an org-B workflow (with org B's env vars/secrets at runtime).
-  const { data: ownWf } = await supabase
+  const { data: ownWf, error: ownWfError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', body.workflow_id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
+  // PGRST116 = not found / not this org (→ 404). A real error must not be
+  // reported as 404, which would block a legitimate publish (#303).
+  if (ownWfError && ownWfError.code !== 'PGRST116') return dbError(c, ownWfError)
   if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data, error } = await supabase
@@ -161,13 +164,14 @@ endpoints.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
 
   // Fetch existing to get current subdomain+path for cache invalidation
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('webhook_endpoints')
     .select('subdomain, path')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
 
+  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -186,13 +190,14 @@ endpoints.put('/:id', async (c) => {
   }
   if (body.workflow_id !== undefined) {
     // Re-pointing the endpoint at a different workflow must stay within the org.
-    const { data: ownWf } = await supabase
+    const { data: ownWf, error: ownWfError } = await supabase
       .from('workflows')
       .select('id')
       .eq('id', body.workflow_id)
       .eq('organization_id', orgId)
       .is('deleted_at', null)
       .single()
+    if (ownWfError && ownWfError.code !== 'PGRST116') return dbError(c, ownWfError)
     if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
     updates.workflow_id = body.workflow_id
   }
@@ -239,13 +244,14 @@ endpoints.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('webhook_endpoints')
     .select('subdomain, path')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
 
+  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
   const { error } = await supabase

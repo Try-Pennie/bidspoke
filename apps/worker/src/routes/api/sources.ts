@@ -165,21 +165,25 @@ sources.post('/:name/workflows', async (c) => {
   const supabase = createSupabaseClient(c.env)
 
   // Verify the source exists in this org
-  const { data: src } = await supabase
+  const { data: src, error: srcError } = await supabase
     .from('api_sources')
     .select('id, name')
     .eq('organization_id', orgId)
     .eq('name', name)
     .single()
+  // PGRST116 = not found / not this org (→ 404); a real error must not look like
+  // a 404, which would block a legitimate assignment (#303).
+  if (srcError && srcError.code !== 'PGRST116') return dbError(c, srcError)
   if (!src) return c.json({ error: 'Source not found' }, 404)
 
   // Verify the workflow belongs to this org
-  const { data: wf } = await supabase
+  const { data: wf, error: wfError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', body.workflow_id)
     .eq('organization_id', orgId)
     .single()
+  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { error: insertError } = await supabase

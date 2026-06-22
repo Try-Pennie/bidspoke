@@ -103,13 +103,16 @@ connections.delete('/:service_type', async (c) => {
   const serviceType = c.req.param('service_type')
 
   const supabase = createSupabaseClient(c.env)
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('service_connections')
     .select('id, cf_secret_key')
     .eq('organization_id', orgId)
     .eq('service_type', serviceType)
     .single()
 
+  // PGRST116 = no connection for this org (→ 404); a real error must not look
+  // like a 404, which would block a legitimate delete (#303).
+  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Connection not found' }, 404)
 
   await deleteCfSecret(
@@ -133,13 +136,14 @@ connections.post('/:service_type/sync-schema', async (c) => {
   const serviceType = c.req.param('service_type') as ServiceType
 
   const supabase = createSupabaseClient(c.env)
-  const { data: conn } = await supabase
+  const { data: conn, error: connError } = await supabase
     .from('service_connections')
     .select('id, cf_secret_key, service_type')
     .eq('organization_id', orgId)
     .eq('service_type', serviceType)
     .single()
 
+  if (connError && connError.code !== 'PGRST116') return dbError(c, connError)
   if (!conn) return c.json({ error: 'Connection not found' }, 404)
 
   const credsJson = (c.env as unknown as Record<string, string>)[conn.cf_secret_key]

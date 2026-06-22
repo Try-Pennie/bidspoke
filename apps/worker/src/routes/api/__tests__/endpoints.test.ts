@@ -20,6 +20,7 @@ import { writeAuditLog } from '../../../lib/audit'
 type TableConfig = {
   single?: Record<string, unknown> | null
   insertResult?: Record<string, unknown> | null
+  singleError?: { code: string; message: string }
 }
 
 function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
@@ -36,7 +37,9 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
         get(_, prop) {
           if (typeof prop === 'symbol') return undefined
           if (prop === 'single') {
-            return () => cfg.single
+            return () => cfg.singleError
+              ? Promise.resolve({ data: null, error: cfg.singleError })
+              : cfg.single
               ? Promise.resolve({ data: cfg.single, error: null })
               : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
           }
@@ -110,6 +113,19 @@ describe('POST /endpoints — workflow org check', () => {
     )
     const res = await request(app, 'POST', '/endpoints', body)
     expect(res.status).toBe(404)
+  })
+
+  it('returns 500 (not a false 404) when the ownership check hits a real DB error (#303)', async () => {
+    // A real DB error reported as 404 would block a legitimate publish. PGRST116
+    // (no row) is the only "not found"; any other error must surface.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { singleError: { code: '57P01', message: 'db down' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/endpoints', body)
+    expect(res.status).toBe(500)
   })
 
   it('creates the endpoint when the workflow belongs to the caller', async () => {
