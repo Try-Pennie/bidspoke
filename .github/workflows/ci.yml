@@ -54,3 +54,35 @@ jobs:
 
       - name: Test web
         run: pnpm --filter web test
+
+  db-types-fresh:
+    name: DB types regenerated with schema migrations
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Fast PR-time reminder: if a migration changes table/column/type DDL but
+      # the generated Supabase types weren't regenerated, the typed client drifts
+      # from reality. Index/RLS/function/grant-only migrations don't affect the
+      # types, so they're allowed through. The nightly db-types-drift workflow is
+      # the authoritative correctness check against the live schema.
+      - name: Require a types regen when migrations change schema DDL
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          MIGS=$(echo "$CHANGED" | grep -E '^supabase/migrations/.*\.sql$' || true)
+          if [ -z "$MIGS" ]; then
+            echo "No migration changes — nothing to check."
+            exit 0
+          fi
+          if echo "$MIGS" | xargs grep -ilE 'create table|drop table|add column|drop column|alter column|rename column|create type|alter type|create view|drop view|create materialized view' >/dev/null 2>&1; then
+            if ! echo "$CHANGED" | grep -qx 'apps/worker/src/types/database.ts'; then
+              echo "::error::A migration changes table/column/type DDL but apps/worker/src/types/database.ts was not regenerated. Run 'pnpm --filter worker db:types' and commit the result."
+              exit 1
+            fi
+          fi
+          echo "DB types freshness check passed."

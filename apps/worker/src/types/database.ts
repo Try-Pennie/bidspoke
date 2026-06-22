@@ -1,8 +1,6 @@
-// GENERATED FILE — do not edit by hand.
-// Supabase database types for the typed client (lib/supabase.ts).
-// Regenerate after a schema change:
-//   supabase gen types typescript --project-id xvrmivmpfykwwtriqwpg > src/types/database.ts
-// (or via the Supabase MCP generate_typescript_types tool). Excluded from ESLint.
+// GENERATED — do not edit by hand. Regenerate: pnpm --filter worker db:types
+// Supabase types for the typed client (lib/supabase.ts). ESLint-excluded.
+// Drift from the live schema is checked nightly (.github/workflows/db-types-drift.yml).
 
 export type Json =
   | string
