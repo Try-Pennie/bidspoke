@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, type NodeDurationStats } from '../timeout-audit'
-import { suggestedTimeoutMs, timeoutSeverity } from '../timeout-suggestion'
+import { findSubFloorNodes, scanWorkflowDefinitions, warningsSignature, findOverProvisionedNodes, findUnderProvisionedNodes, collectWorkflowDurationStats, runTimeoutAuditCheck, isAlertWorthyUnderProvision, alertWorthyUnderProvisioned, type NodeDurationStats, type UnderProvisionedNode } from '../timeout-audit'
+import { suggestedTimeoutMs, timeoutSeverity, SAMPLE_CONFIDENT } from '../timeout-suggestion'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -188,8 +188,17 @@ describe('findUnderProvisionedNodes', () => {
       p99_ms: 5000,
       max_ms: 11000,
       sample_size: 1996,
+      window_days: null,
       severity: 'amber',
     }])
+  })
+
+  it('carries the sample window so the alert can gauge confidence', () => {
+    const out = findUnderProvisionedNodes(
+      def([node({ id: 'equifax', type: 'code', config: { timeout_ms: 6000 } })]),
+      new Map([['equifax', stats({ window_days: 7 })]])
+    )
+    expect(out[0]).toMatchObject({ window_days: 7 })
   })
 
   it('marks red when typical runs would time out (below p99 with retries)', () => {
@@ -241,7 +250,7 @@ describe('warningsSignature with under-provisioned entries', () => {
     nodes: [{
       node_id: 'n1', namespace: 'n1', label: null, type: 'code',
       configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
-      sample_size: 1996, severity: 'red' as const,
+      sample_size: 1996, window_days: 1, severity: 'red' as const,
     }],
   }]
 
@@ -295,6 +304,7 @@ describe('collectWorkflowDurationStats', () => {
   })
 
   it('degrades on RPC error, keeping the narrower windows results', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { client, rpc } = fakeClient([
       { data: [{ step_namespace: 'a', p99: 100, max_ms: 200, sample_size: 22 }], error: null },
       { data: null, error: { message: 'statement timeout' } },
@@ -303,6 +313,87 @@ describe('collectWorkflowDurationStats', () => {
     expect(rpc).toHaveBeenCalledTimes(2)
     expect(windowDays).toBeLessThan(1)
     expect(stats.get('a')).toMatchObject({ p99: 100, max_ms: 200, sample_size: 22 })
+    warn.mockRestore()
+  })
+
+  // 1.1: the grouped query over a high-volume workflow's full namespace list is
+  // what times out at the 8s gateway limit (Main Flow: 7d ~ 11s across 80
+  // namespaces). The expensive scans are the busy namespaces — which lock at the
+  // first window — so widening must drop them and re-query only the thin ones.
+  it('queries only the still-unlocked namespaces when widening to a larger window', async () => {
+    const { client, rpc } = fakeClient([
+      { data: [
+        { step_namespace: 'busy', p99: 400, max_ms: 450, sample_size: 1000 },
+        { step_namespace: 'quiet', p99: 50, max_ms: 60, sample_size: 22 },
+      ], error: null },
+      { data: [
+        { step_namespace: 'quiet', p99: 739, max_ms: 1250, sample_size: 5000 },
+      ], error: null },
+    ])
+    await collectWorkflowDurationStats(client, 'wf-1', ['busy', 'quiet'])
+    expect(rpc).toHaveBeenNthCalledWith(1, 'step_duration_percentiles_by_workflow', expect.objectContaining({ p_namespaces: ['busy', 'quiet'] }))
+    expect(rpc).toHaveBeenNthCalledWith(2, 'step_duration_percentiles_by_workflow', expect.objectContaining({ p_namespaces: ['quiet'] }))
+  })
+
+  // 1.3: a silently-swallowed widening timeout is exactly what hid this bug for
+  // weeks. The fallback must leave a trace.
+  it('logs a warning when a widening query fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client } = fakeClient([
+      { data: [{ step_namespace: 'a', p99: 100, max_ms: 200, sample_size: 22 }], error: null },
+      { data: null, error: { message: 'canceling statement due to statement timeout' } },
+    ])
+    await collectWorkflowDurationStats(client, 'wf-1', ['a'])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toContain('wf-1')
+    expect(String(warn.mock.calls[0][0])).toContain('statement timeout')
+    warn.mockRestore()
+  })
+})
+
+describe('isAlertWorthyUnderProvision', () => {
+  const mk = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
+    node_id: 'n', namespace: 'n', label: null, type: 'code',
+    configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
+    sample_size: 100, window_days: null, severity: 'red', ...s,
+  })
+
+  it('is worthy when the sample is confident, even on a narrow window', () => {
+    expect(isAlertWorthyUnderProvision(mk({ sample_size: SAMPLE_CONFIDENT, window_days: 2 / 24 }))).toBe(true)
+  })
+
+  it('is worthy when a thin sample has fully widened to the 7-day window (best effort)', () => {
+    expect(isAlertWorthyUnderProvision(mk({ sample_size: 50, window_days: 7 }))).toBe(true)
+  })
+
+  it('is NOT worthy when a thin sample came from a window we never finished widening', () => {
+    // This is the false-alarm case: the grouped query timed out at 24h/7d, so we
+    // are left judging a low-volume node off a noisy 2-hour sample.
+    expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: 2 / 24 }))).toBe(false)
+    expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: null }))).toBe(false)
+  })
+})
+
+describe('alertWorthyUnderProvisioned', () => {
+  const mkNode = (s: Partial<UnderProvisionedNode>): UnderProvisionedNode => ({
+    node_id: 'n', namespace: 'n', label: null, type: 'code',
+    configured_ms: 4000, suggested_ms: 7500, p99_ms: 5000, max_ms: 11000,
+    sample_size: 100, window_days: null, severity: 'red', ...s,
+  })
+
+  it('drops nodes off a thin un-widened sample and prunes emptied workflows', () => {
+    const out = alertWorthyUnderProvisioned([
+      { workflow_id: 'wf1', workflow_name: 'Main Flow', nodes: [
+        mkNode({ node_id: 'noisy', sample_size: 100, window_days: 2 / 24 }),
+        mkNode({ node_id: 'solid', sample_size: 5000, window_days: 1 }),
+      ] },
+      { workflow_id: 'wf2', workflow_name: 'All Noise', nodes: [
+        mkNode({ node_id: 'noisy2', sample_size: 80, window_days: 2 / 24 }),
+      ] },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].workflow_id).toBe('wf1')
+    expect(out[0].nodes.map((n) => n.node_id)).toEqual(['solid'])
   })
 })
 

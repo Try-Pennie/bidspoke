@@ -73,6 +73,8 @@ export interface UnderProvisionedNode {
   p99_ms: number
   max_ms: number
   sample_size: number
+  /** The window (in days) this node's p99 locked at; gauges sample confidence. */
+  window_days: number | null
   severity: 'red' | 'amber'
 }
 
@@ -271,10 +273,35 @@ export function findUnderProvisionedNodes(
       p99_ms: stats.p99,
       max_ms: stats.max_ms,
       sample_size: stats.sample_size,
+      window_days: stats.window_days ?? null,
       severity: timeoutSeverity(timeout, stats.p99, stats.max_ms, retries),
     })
   }
   return out
+}
+
+/**
+ * An under-provisioned warning is trustworthy enough to fire an unprompted Slack
+ * alert only when its p99 came from a sample we can trust: either the namespace
+ * locked at SAMPLE_CONFIDENT runs, or we fully widened to the 7-day window and
+ * that is simply all the history that exists. A thin sample from a window we
+ * never finished widening means the grouped query timed out and we fell back to
+ * a noisy 2-hour sample — whose p99 swings by seconds run-to-run and produces
+ * exactly the false "below the suggested value" alerts this guards against. The
+ * dashboard panel still shows these (with their sample size visible); only the
+ * push alert is held to the higher bar.
+ */
+export function isAlertWorthyUnderProvision(node: UnderProvisionedNode): boolean {
+  return node.sample_size >= SAMPLE_CONFIDENT || (node.window_days ?? 0) >= 7
+}
+
+/** Keep only the alert-worthy under-provisioned nodes, dropping emptied workflows. */
+export function alertWorthyUnderProvisioned(
+  warnings: WorkflowUnderProvisioned[]
+): WorkflowUnderProvisioned[] {
+  return warnings
+    .map((w) => ({ ...w, nodes: w.nodes.filter(isAlertWorthyUnderProvision) }))
+    .filter((w) => w.nodes.length > 0)
 }
 
 export interface OrgHistoryWarnings {
@@ -310,16 +337,34 @@ export async function collectWorkflowDurationStats(
   const locked = (ns: string) => (stats.get(ns)?.sample_size ?? 0) >= SAMPLE_CONFIDENT
   let windowDays = 0
   for (const w of windows) {
-    if (namespaces.length > 0 && namespaces.every(locked)) break
+    // Re-query only the namespaces that haven't locked yet. The expensive scans
+    // in this grouped query are the high-volume namespaces (they sort up to 3000
+    // steps each), and those lock at the first window — so a high-volume
+    // workflow's wide-window query (Main Flow: 80 namespaces, 7d ~ 11s) blew the
+    // 8s gateway timeout by re-scanning them every time. Narrowing to the thin
+    // namespaces keeps each widening step cheap so the confident sample is
+    // actually reachable instead of silently degrading to the noisy 2h sample.
+    const pending = namespaces.length > 0 ? namespaces.filter((ns) => !locked(ns)) : namespaces
+    if (namespaces.length > 0 && pending.length === 0) break
     const { data, error } = await supabase.rpc('step_duration_percentiles_by_workflow', {
       p_workflow_id: workflowId,
       p_since: w.since,
       // The RPC samples per (workflow, namespace) — the most recent 3000 steps
       // of each namespace — so sparse nodes get the full window instead of the
       // rolling ~22h an execution-driven bound gave them on busy workflows.
-      p_namespaces: namespaces,
+      p_namespaces: pending,
     })
-    if (error) break
+    if (error) {
+      // A silently-swallowed widening timeout is what hid the noisy-sample bug:
+      // both the daily Slack alert and the config panel were judging low-volume
+      // nodes off a 2h sample because this query timed out and we degraded
+      // without a trace. Leave one. (Detail goes in the message string, not a
+      // second-arg object — CF observability doesn't index those.)
+      console.warn(
+        `[timeout-audit] widening query failed for workflow ${workflowId} at ${w.days}d window (${pending.length} pending namespaces, kept ${stats.size} from narrower windows): ${String((error as { message?: string })?.message ?? error)}`
+      )
+      break
+    }
     for (const r of (data ?? []) as Array<{ step_namespace: string; p50?: number | null; p99: number | null; max_ms: number | null; sample_size: number }>) {
       if (locked(r.step_namespace)) continue
       stats.set(r.step_namespace, {
@@ -404,7 +449,10 @@ export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike,
       getOrgTimeoutWarnings(supabase, orgId),
       getOrgHistoryWarnings(supabase, orgId),
     ])
-    const underProvisioned = history.under_provisioned
+    // Only alert on under-provisioned nodes whose p99 came from a confident
+    // sample — a thin sample from a timed-out widening query is the false-alarm
+    // source, not a real signal. The dashboard panel keeps the full set.
+    const underProvisioned = alertWorthyUnderProvisioned(history.under_provisioned)
     const signature = warningsSignature(warnings, underProvisioned)
     const key = `timeout-audit:sig:${orgId}`
     const previous = await kv.get(key)
