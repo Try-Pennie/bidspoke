@@ -12,8 +12,37 @@ vi.mock('../../engine/index', () => ({ executeWorkflow: vi.fn() }))
 vi.mock('../../lib/supabase')
 
 import { executeWorkflow } from '../../engine/index'
+import { createSupabaseClient } from '../../lib/supabase'
 import { WorkflowNotFoundError } from '../../engine/definition-loader'
 import { handleCustomEndpoint } from '../custom-endpoint'
+
+// Empty KV so the handler falls through to the DB lookup.
+function makeUncachedEnv(): Env {
+  return {
+    WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} },
+    API_KEY_MAP: '{}',
+  } as unknown as Env
+}
+
+// A Supabase client whose endpoint `.single()` resolves to the given result.
+function makeSupabaseReturning(result: { data: unknown; error: unknown }) {
+  const chain: Record<string, unknown> = {
+    select: () => chain,
+    eq: () => chain,
+    single: () => Promise.resolve(result),
+  }
+  return { from: () => chain } as unknown as ReturnType<typeof createSupabaseClient>
+}
+
+function postUncached() {
+  const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+  return makeApp().request(
+    'http://hook.trypennie.dev/tripoint/bidding',
+    { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } },
+    makeUncachedEnv(),
+    executionCtx as unknown as ExecutionContext
+  )
+}
 
 // Endpoint seeded into KV so the handler skips the DB lookup; auth_method 'none'
 // skips the API-key check.
@@ -68,5 +97,25 @@ describe('custom endpoint error mapping (#107)', () => {
     const body = await res.json() as { error: string }
     expect(body.error).toBe('Internal error')
     expect(body.error).not.toContain('10.0.0.5')
+  })
+})
+
+describe('custom endpoint lookup failure handling (#303)', () => {
+  it('returns 503 (retryable), not 404, on a real DB error during endpoint lookup', async () => {
+    // A 404 tells the lead source the endpoint is gone, so it stops retrying and
+    // the lead is dropped. A transient DB error must be retryable.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: '57P01', message: 'db connection lost' } })
+    )
+    const res = await postUncached()
+    expect(res.status).toBe(503)
+  })
+
+  it('returns 404 when the endpoint genuinely does not exist (PGRST116 no-rows)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    )
+    const res = await postUncached()
+    expect(res.status).toBe(404)
   })
 })

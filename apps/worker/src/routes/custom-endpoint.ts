@@ -90,7 +90,15 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
         workflows: { definition: { trigger?: { config?: { auth_method?: string } } } }
       }>()
 
-    if (error || !data) {
+    // `.single()` returns PGRST116 when zero rows match — a genuine "not found".
+    // Any OTHER error is a real DB failure: returning 404 here tells the lead
+    // source the endpoint is gone, so it stops retrying and the lead is dropped.
+    // Return 503 (retryable) instead. Real error logged, not leaked (#107, #303).
+    if (error && error.code !== 'PGRST116') {
+      console.error('[custom-endpoint] endpoint lookup failed:', error)
+      return c.json({ error: 'Temporarily unavailable' }, 503)
+    }
+    if (!data) {
       return c.json({ error: 'Endpoint not found' }, 404)
     }
 
