@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { fetchJson, parseJson } from '../json'
+import { fetchJson, parseJson, parseJsonSafe } from '../json'
 import { stubFetch } from '../../__tests__/helpers/fetch-mock'
 
 afterEach(() => vi.restoreAllMocks())
@@ -17,6 +17,20 @@ describe('parseJson', () => {
     const res = new Response(JSON.stringify({ error: 'nope' }), { status: 400 })
     const data = await parseJson<{ error: string }>(res)
     expect(data.error).toBe('nope')
+  })
+})
+
+describe('parseJsonSafe', () => {
+  it('returns the parsed body typed as T on success', async () => {
+    const res = new Response(JSON.stringify({ response: 'accepted' }))
+    const data = await parseJsonSafe<{ response?: string }>(res)
+    expect(data?.response).toBe('accepted')
+  })
+
+  it('returns null instead of throwing when the body is not valid JSON', async () => {
+    const res = new Response('not json at all', { status: 502 })
+    const data = await parseJsonSafe<{ response?: string }>(res)
+    expect(data).toBeNull()
   })
 })
 

@@ -35,6 +35,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../.
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowAchieveStub } from '../shadow'
+import { parseJsonSafe } from '../../lib/json'
 
 export interface AchieveOffersConfig {
   targeted_products?: string[]
@@ -144,9 +145,11 @@ export async function executeAchieveOffersNode(
       signal: controller.signal,
     })
 
-    const responseBody = (await res.json().catch(() => null)) as
-      | { response?: string; response_reason?: string; message?: string }
-      | null
+    const responseBody = await parseJsonSafe<{
+      response?: string
+      response_reason?: string
+      message?: string
+    }>(res)
 
     if (!res.ok) {
       const reason =

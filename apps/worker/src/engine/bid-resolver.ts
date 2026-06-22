@@ -20,6 +20,7 @@ import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { applyOutboundMapping } from '../lib/field-mapper'
+import { parseJsonSafe } from '../lib/json'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -225,7 +226,7 @@ async function callBidApi(
     clearTimeout(timeout)
   }
 
-  const raw = await res.json().catch(() => null)
+  const raw = await parseJsonSafe(res)
 
   const resHeaders: Record<string, string> = {}
   res.headers.forEach((v, k) => { resHeaders[k] = v })

@@ -28,6 +28,19 @@ export function parseJson<T>(res: Response): Promise<T> {
 }
 
 /**
+ * Parse a `Response` body as typed JSON, returning `null` instead of throwing
+ * when the body is missing or not valid JSON (issue #300).
+ *
+ * For best-effort reads where a malformed/empty body is tolerated — e.g. a
+ * partner API that may return non-JSON on an error status, where the caller
+ * branches on `res.ok`/`res.status` and a parsed body is a bonus. Replaces
+ * `(await res.json().catch(() => null)) as T | null`.
+ */
+export async function parseJsonSafe<T = unknown>(res: Response): Promise<T | null> {
+  return res.json<T>().catch(() => null)
+}
+
+/**
  * Fetch a URL and parse its JSON body as `T` (issue #300).
  *
  * The production analogue of the test-side `stubFetch` helper. Use this when you
