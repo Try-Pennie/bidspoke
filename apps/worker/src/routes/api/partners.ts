@@ -9,6 +9,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
+import { asJson } from '../../lib/json'
 
 type Variables = AuthVariables
 
@@ -120,15 +121,15 @@ partners.post('/', async (c) => {
       min_bid: body.min_bid ?? null,
       bid_formula: body.bid_formula ?? null,
       bid_resolver_type: body.bid_resolver_type ?? deriveResolverType(body),
-      bid_resolver_config: body.bid_resolver_config ?? deriveResolverConfig(body),
-      outbound_field_mapping: body.outbound_field_mapping ?? null,
+      bid_resolver_config: asJson(body.bid_resolver_config ?? deriveResolverConfig(body)),
+      outbound_field_mapping: asJson(body.outbound_field_mapping ?? null),
       bid_mode: body.bid_mode ?? 'commit',
       bid_comparison_source: body.bid_comparison_source ?? 'auto',
-      extra_extraction: body.extra_extraction ?? null,
-      last_probe_response: body.last_probe_response ?? null,
+      extra_extraction: asJson(body.extra_extraction ?? null),
+      last_probe_response: asJson(body.last_probe_response ?? null),
       dedup_endpoint: body.dedup_endpoint ?? null,
-      response_classification: body.response_classification ?? null,
-      alert_config: body.alert_config ?? null,
+      response_classification: asJson(body.response_classification ?? null),
+      alert_config: asJson(body.alert_config ?? null),
       circuit_error_threshold: body.circuit_error_threshold ?? 5,
       circuit_window_seconds: body.circuit_window_seconds ?? 60,
       circuit_cooldown_seconds: body.circuit_cooldown_seconds ?? 300,

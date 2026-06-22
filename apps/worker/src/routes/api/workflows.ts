@@ -17,6 +17,7 @@ import { computeDiff, diffIsEmpty, draftChangelog, getAnthropicKey, hashDefiniti
 import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
+import { asJson } from '../../lib/json'
 
 type Variables = AuthVariables
 
@@ -62,7 +63,7 @@ workflows.post('/', async (c) => {
       organization_id: orgId,
       name: body.name,
       description: body.description ?? null,
-      definition: body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } },
+      definition: asJson(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } }),
       is_active: true,
       folder_id: body.folder_id ?? null,
       created_by: userId,
@@ -166,7 +167,7 @@ workflows.post('/:id/duplicate', async (c) => {
   const deployErrors: { namespace: string; error: string }[] = []
   const results = await deployCodeNodes(
     clone.id,
-    source.definition as WorkflowDefinition,
+    source.definition as unknown as WorkflowDefinition,
     c.env.CLOUDFLARE_ACCOUNT_ID,
     c.env.CLOUDFLARE_API_TOKEN,
     c.env.WORKFLOW_CACHE
@@ -299,7 +300,7 @@ workflows.put('/:id', async (c) => {
     .insert({
       workflow_id: id,
       version_number: nextVersion,
-      definition: body.definition ?? existing.definition,
+      definition: asJson(body.definition ?? existing.definition),
       created_by: userId,
       message: body.message ?? null,
     })
@@ -437,7 +438,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
   const cached = await c.env.WORKFLOW_CACHE.get(cacheKey)
   if (cached) return c.json({ draft: cached, cached: true })
 
-  const diff = computeDiff(lastVersion.definition as WorkflowDefinition, body.definition)
+  const diff = computeDiff(lastVersion.definition as unknown as WorkflowDefinition, body.definition)
   if (diffIsEmpty(diff)) {
     return c.json({ draft: null, reason: 'no_changes' as const })
   }
@@ -551,7 +552,7 @@ workflows.patch('/:id/test-payloads', async (c) => {
 
   const { data, error } = await supabase
     .from('workflows')
-    .update({ test_payloads: body.test_payloads })
+    .update({ test_payloads: asJson(body.test_payloads) })
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -776,11 +777,14 @@ workflows.post('/:id/test-node', async (c) => {
   const ctxSteps: Record<string, StepOutput> = {}
 
   if (body.execution_id) {
+    // Scope to the workflow being tested (already org-verified above). The
+    // execution must belong to this workflow; workflow_executions has no
+    // organization_id column (it's org-scoped through workflow_id).
     const { data: exec } = await supabase
       .from('workflow_executions')
       .select('trigger_payload, trace_id, source')
       .eq('id', body.execution_id)
-      .eq('organization_id', orgId)
+      .eq('workflow_id', id)
       .single()
     if (!exec) return c.json({ error: 'Execution not found' }, 404)
     triggerPayload = body.trigger_payload ?? exec.trigger_payload

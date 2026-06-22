@@ -14,6 +14,7 @@ import { writeAuditLog } from '../../lib/audit'
 import { fetchSalesforceSchema } from '../../lib/schema-sync/salesforce'
 import { fetchSupabaseSchema } from '../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../lib/schema-sync/snowflake'
+import { asJson } from '../../lib/json'
 
 type Variables = AuthVariables
 type ServiceType = 'salesforce' | 'supabase' | 'snowflake'
@@ -158,7 +159,7 @@ connections.post('/:service_type/sync-schema', async (c) => {
 
   const { error } = await supabase
     .from('service_connections')
-    .update({ schema_cache: schema, schema_synced_at: new Date().toISOString() })
+    .update({ schema_cache: asJson(schema), schema_synced_at: new Date().toISOString() })
     .eq('id', conn.id)
 
   if (error) return dbError(c, error)

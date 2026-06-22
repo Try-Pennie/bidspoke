@@ -92,7 +92,7 @@ envFolders.patch('/:id', async (c) => {
       const { data: parent } = await supabase
         .from('env_var_folders')
         .select('id')
-        .eq('id', body.parent_id)
+        .eq('id', body.parent_id as string)
         .eq('organization_id', orgId)
         .single()
       if (!parent) return c.json({ error: 'parent folder not found' }, 404)

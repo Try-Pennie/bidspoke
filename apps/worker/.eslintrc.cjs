@@ -17,7 +17,7 @@ module.exports = {
     project: './tsconfig.json',
     tsconfigRootDir: __dirname,
   },
-  ignorePatterns: ['dist', 'node_modules', '*.cjs'],
+  ignorePatterns: ['dist', 'node_modules', '*.cjs', 'src/types/database.ts'],
   rules: {
     // --- Async correctness: ERROR (the reason this config exists) ---
     '@typescript-eslint/no-floating-promises': 'error',

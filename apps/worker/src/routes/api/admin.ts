@@ -99,7 +99,7 @@ admin.post('/backfill-sightings', async (c) => {
   if (wfErr || !wfRow) {
     return c.json({ error: 'Workflow not found in this organization' }, 404)
   }
-  const definition = wfRow.definition as WorkflowDefinition
+  const definition = wfRow.definition as unknown as WorkflowDefinition
 
   // Bounded per-call processing — single Worker invocation has limited CPU
   // wall time. 1000 executions × ~250ms each = ~4 minutes. Re-run to continue.

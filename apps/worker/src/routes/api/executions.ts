@@ -203,7 +203,7 @@ executions.get('/step-duration-stats', async (c) => {
     const { data: typedData, error: typedError } = await supabase.rpc('step_duration_percentiles_typed', {
       p_org_id: orgId,
       p_step_type: nodeType,
-      p_step_subtype: subtypeArg,
+      p_step_subtype: subtypeArg as string,
       p_since: sevenDaysAgo,
     })
     if (!typedError) {

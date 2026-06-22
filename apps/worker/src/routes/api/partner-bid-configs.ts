@@ -12,6 +12,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { syncBidConfig } from '../../lib/bid-matrix-sync'
 import { fetchAllPaged } from '../../lib/paginate'
+import { asJson } from '../../lib/json'
 
 type Variables = AuthVariables
 
@@ -110,8 +111,8 @@ route.post('/', async (c) => {
       is_active: body.is_active ?? true,
       sync_source: body.sync_source ?? 'salesforce',
       sf_object: body.sf_object ?? null,
-      sf_filters: body.sf_filters ?? null,
-      dimensions: body.dimensions ?? [],
+      sf_filters: asJson(body.sf_filters ?? null),
+      dimensions: asJson(body.dimensions ?? []),
       updated_by: userId,
       updated_by_email: email,
       updated_by_name: c.get('user').name,

@@ -14,12 +14,16 @@ vi.mock('../../../lib/audit')
 vi.mock('../../../engine/index')
 vi.mock('../../../lib/github')
 vi.mock('../../../lib/github-backup-alert')
+vi.mock('../../../engine/nodes/index')
+vi.mock('../../../lib/env-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
+import { executeNode } from '../../../engine/nodes/index'
+import { loadEnvVars } from '../../../lib/env-loader'
 import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 
@@ -38,8 +42,13 @@ type TableConfig = {
 
 function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
   const callCounts: Record<string, number> = {}
+  // Records the columns each table was filtered by, so tests can assert query
+  // scoping (e.g. that workflow_executions is scoped by workflow_id, not by a
+  // non-existent organization_id column). Keyed by table name.
+  const eqCalls: Record<string, Array<[string, unknown]>> = {}
 
   return {
+    eqCalls,
     from: (table: string) => {
       const raw = tables[table]
       const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
@@ -50,6 +59,12 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
       const chain: unknown = new Proxy({}, {
         get(_, prop) {
           if (typeof prop === 'symbol') return undefined
+          if (prop === 'eq') {
+            return (col: string, val: unknown) => {
+              (eqCalls[table] ??= []).push([col, val])
+              return chain
+            }
+          }
           if (prop === 'single') {
             return () => cfg.single !== undefined
               ? cfg.single
@@ -560,6 +575,48 @@ describe('POST /workflows/:id/test', () => {
 
     const res = await request(app, 'POST', '/workflows/wf-1/test', { body: { payload: {} } })
     expect(res.headers.get('X-Trace-Id')).toBe('trace-xyz')
+  })
+})
+
+describe('POST /workflows/:id/test-node', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(loadEnvVars).mockResolvedValue({})
+    vi.mocked(executeNode).mockResolvedValue({ output: { ok: true } } as unknown as Awaited<ReturnType<typeof executeNode>>)
+    app = await makeApp()
+  })
+
+  // Regression: the resume-from-execution branch must scope the execution lookup
+  // to the (already org-verified) workflow via workflow_id. It previously filtered
+  // by organization_id — a column that doesn't exist on workflow_executions — so
+  // with the service-role client the query errored at runtime and this path always
+  // 404'd. Typing the Supabase client now blocks the bad column at compile time;
+  // this locks in the correct scoping at runtime.
+  it('scopes the resume-from-execution lookup by workflow_id, not organization_id', async () => {
+    const supa = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: existingWorkflow },
+      workflow_executions: { single: { trigger_payload: { lead: 'L1' }, trace_id: 'tr-old', source: 'webhook' } },
+      execution_steps: { list: [] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(supa as unknown as ReturnType<typeof createSupabaseClient>)
+
+    const definition = {
+      nodes: [{ id: 'n1', namespace: 'n1', type: 'exit', config: {} }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows/wf-1/test-node', {
+      body: { namespace: 'n1', definition, execution_id: 'exec-99' },
+    })
+
+    expect(res.status).toBe(200)
+    const execFilters = supa.eqCalls['workflow_executions'] ?? []
+    expect(execFilters).toContainEqual(['workflow_id', 'wf-1'])
+    expect(execFilters.some(([col]) => col === 'organization_id')).toBe(false)
   })
 })
 
