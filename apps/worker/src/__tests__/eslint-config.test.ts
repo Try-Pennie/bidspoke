@@ -87,3 +87,26 @@ describe('worker test-file override', () => {
     expect(testOverride!.rules['@typescript-eslint/no-misused-promises']).toBeUndefined()
   })
 })
+
+// #295 Phase A ratchet: the execution path is held at error-level for the
+// no-unsafe-* family so a new untyped boundary in the money/PII engine fails CI.
+describe('worker engine ratchet', () => {
+  const ENGINE_ERROR_RULES = [
+    '@typescript-eslint/no-unsafe-assignment',
+    '@typescript-eslint/no-unsafe-member-access',
+    '@typescript-eslint/no-unsafe-argument',
+    '@typescript-eslint/no-unsafe-call',
+    '@typescript-eslint/no-unsafe-return',
+    '@typescript-eslint/no-unsafe-function-type',
+  ]
+
+  it('escalates the no-unsafe-* family to error for src/engine/ non-test code', () => {
+    const engineOverride = configs.worker.overrides?.find((o) =>
+      o.files.some((f) => f.includes('engine'))
+    )
+    expect(engineOverride).toBeDefined()
+    for (const rule of ENGINE_ERROR_RULES) {
+      expect(engineOverride!.rules[rule]).toBe('error')
+    }
+  })
+})

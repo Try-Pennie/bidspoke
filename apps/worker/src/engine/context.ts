@@ -48,7 +48,7 @@ function resolveTemplate(template: string, ctx: ExecutionContext): unknown {
     return resolveExpression(match[1].trim(), ctx)
   }
   // Inline interpolation: "Hello {{trigger.payload.name}}"
-  return template.replace(/\{\{(.+?)\}\}/g, (_, expr) => {
+  return template.replace(/\{\{(.+?)\}\}/g, (_match, expr: string) => {
     const val = resolveExpression(expr.trim(), ctx)
     return val !== undefined ? String(val) : ''
   })

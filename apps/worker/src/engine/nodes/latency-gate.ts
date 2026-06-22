@@ -176,7 +176,7 @@ async function resolveThreshold(
 
 function parseMarkedAt(raw: string): number | null {
   try {
-    const parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
     if (typeof parsed === 'number') return parsed
     if (parsed && typeof (parsed as { marked_at?: unknown }).marked_at === 'number') {
       return (parsed as { marked_at: number }).marked_at

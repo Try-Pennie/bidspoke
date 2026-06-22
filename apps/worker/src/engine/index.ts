@@ -315,7 +315,7 @@ export async function executeWorkflow(
 
   // Swallow walk errors here — they're re-caught below after awaiting. Raw
   // walkPromise is referenced by both the race and the background continuation.
-  const walkPromiseCaught = walkPromise.catch((err) => ({ __error: err }))
+  const walkPromiseCaught = walkPromise.catch((err: unknown) => ({ __error: err }))
 
   // Race: whichever resolves first becomes the response to the caller.
   const raceResult = await Promise.race([

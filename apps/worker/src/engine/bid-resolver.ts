@@ -550,7 +550,7 @@ export function evaluateFormula(formula: string, ctx: ExecutionContext): number 
     const paramValues = [Math, ...Object.values(pathVars), ...Object.values(payloadVars)]
     // Sandboxed bid-formula evaluator: only Math + numeric vars are in scope.
     // eslint-disable-next-line no-new-func, @typescript-eslint/no-implied-eval
-    const fn = new Function(...paramNames, `return (${stage2})`)
+    const fn = new Function(...paramNames, `return (${stage2})`) as (...args: unknown[]) => unknown
     const result = fn(...paramValues)
     if (typeof result !== 'number' || !isFinite(result)) return null
     return result

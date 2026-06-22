@@ -50,6 +50,23 @@ module.exports = {
   },
   overrides: [
     {
+      // Ratchet for the execution path (the money/PII hot path): the no-unsafe-*
+      // family is a warning elsewhere (tracked debt, #295) but an ERROR here, so
+      // a new untyped `any` boundary in the engine fails CI instead of adding an
+      // ignorable warning. Engine test files fall through to the relaxed override
+      // below. Cleared in #295 Phase A. Keep src/engine/ at zero unsafe-* warnings.
+      files: ['src/engine/**/*.ts'],
+      excludedFiles: ['**/__tests__/**', '**/*.test.ts'],
+      rules: {
+        '@typescript-eslint/no-unsafe-assignment': 'error',
+        '@typescript-eslint/no-unsafe-member-access': 'error',
+        '@typescript-eslint/no-unsafe-argument': 'error',
+        '@typescript-eslint/no-unsafe-call': 'error',
+        '@typescript-eslint/no-unsafe-return': 'error',
+        '@typescript-eslint/no-unsafe-function-type': 'error',
+      },
+    },
+    {
       // Test fixtures legitimately use `any` and no-await async stubs; the
       // async-correctness errors (floating/misused promises) still apply.
       files: ['**/__tests__/**', '**/*.test.ts'],
