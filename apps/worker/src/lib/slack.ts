@@ -2,6 +2,7 @@
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { coerceString } from './coerce'
 import type { ErrorType } from '../types'
 
 export interface SlackConnection {
@@ -820,7 +821,7 @@ function formatValue(v: unknown, field: string): string {
   if (v === null || v === undefined) return '∅'
   if (typeof v === 'boolean') return v ? 'true' : 'false'
   if (typeof v === 'number') return field === 'bid_amount' ? `$${v}` : String(v)
-  return String(v)
+  return coerceString(v)
 }
 
 export async function sendCircuitAlert(

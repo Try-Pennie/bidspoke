@@ -19,6 +19,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
+import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
 
@@ -108,7 +109,7 @@ export async function executeIntegrationNode(
   const timeoutMs = config.timeout_ms ?? 15000
 
   // Resolve URL
-  const resolvedUrl = String(resolveValue(config.url, enrichedCtx) ?? '')
+  const resolvedUrl = coerceString(resolveValue(config.url, enrichedCtx))
   if (!resolvedUrl) throw new Error('Webhook node: url resolved to empty string')
 
   // Build headers — start with Content-Type + trace ID, merge config headers
@@ -119,7 +120,7 @@ export async function executeIntegrationNode(
   if (config.headers) {
     const resolved = resolveValue(config.headers, enrichedCtx) as Record<string, unknown>
     for (const [k, v] of Object.entries(resolved)) {
-      if (v !== undefined && v !== null) headers[k] = String(v)
+      if (v !== undefined && v !== null) headers[k] = coerceString(v)
     }
   }
 
@@ -127,16 +128,16 @@ export async function executeIntegrationNode(
   const auth = config.auth
   if (auth && auth.type !== 'none') {
     if (auth.type === 'bearer' && auth.token) {
-      const token = String(resolveValue(auth.token, enrichedCtx) ?? '')
+      const token = coerceString(resolveValue(auth.token, enrichedCtx))
       if (token) headers['Authorization'] = `Bearer ${token}`
     } else if (auth.type === 'basic') {
-      const username = String(resolveValue(auth.username ?? '', enrichedCtx) ?? '')
-      const password = String(resolveValue(auth.password ?? '', enrichedCtx) ?? '')
+      const username = coerceString(resolveValue(auth.username ?? '', enrichedCtx))
+      const password = coerceString(resolveValue(auth.password ?? '', enrichedCtx))
       // btoa is available globally in CF Workers runtime
       headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`
     } else if (auth.type === 'api_key' && auth.key) {
       const headerName = auth.header ?? 'X-API-Key'
-      const keyValue = String(resolveValue(auth.key, enrichedCtx) ?? '')
+      const keyValue = coerceString(resolveValue(auth.key, enrichedCtx))
       if (keyValue) headers[headerName] = keyValue
     }
   }

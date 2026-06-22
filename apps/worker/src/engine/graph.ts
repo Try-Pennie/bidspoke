@@ -1,4 +1,5 @@
 import type { NodeDefinition, EdgeDefinition, ExecutionContext, ConditionGroup } from '../types'
+import { coerceString } from '../lib/coerce'
 
 // Find the entry node: follow the trigger edge if present, otherwise find the node with no incoming edges from other nodes
 export function findEntryNode(nodes: NodeDefinition[], edges: EdgeDefinition[]): NodeDefinition {
@@ -91,7 +92,7 @@ function valuesEqual(actual: unknown, expected: unknown): boolean {
     return String(actual) === expected
   }
   if (actual === null || actual === undefined) return false
-  return String(actual) === String(expected)
+  return coerceString(actual) === coerceString(expected)
 }
 
 // Numeric comparison for gt/gte/lt/lte. Both sides are coerced to Number first:

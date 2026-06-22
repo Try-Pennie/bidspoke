@@ -12,6 +12,7 @@
 // continueExecution sentinel).
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
+import { coerceString } from '../../lib/coerce'
 import { resolveValue } from '../context'
 
 interface ResponseConfig {
@@ -67,7 +68,7 @@ function resolveHeaders(
   for (const [key, value] of Object.entries(raw)) {
     const resolved = typeof value === 'string' ? resolveValue(value, ctx) : value
     if (resolved === undefined || resolved === null) continue
-    out[key] = typeof resolved === 'object' ? JSON.stringify(resolved) : String(resolved)
+    out[key] = coerceString(resolved)
   }
   return out
 }

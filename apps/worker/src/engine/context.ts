@@ -1,4 +1,5 @@
 import type { ExecutionContext, StepOutput, StepLogEntry } from '../types'
+import { coerceString } from '../lib/coerce'
 
 export function buildContext(
   triggerPayload: unknown,
@@ -50,7 +51,9 @@ function resolveTemplate(template: string, ctx: ExecutionContext): unknown {
   // Inline interpolation: "Hello {{trigger.payload.name}}"
   return template.replace(/\{\{(.+?)\}\}/g, (_match, expr: string) => {
     const val = resolveExpression(expr.trim(), ctx)
-    return val !== undefined ? String(val) : ''
+    if (val === undefined) return ''
+    if (val === null) return 'null' // preserve historical String(null) coercion
+    return coerceString(val)
   })
 }
 

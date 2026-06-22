@@ -17,6 +17,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
+import { coerceString } from '../../lib/coerce'
 import { isShadowDryRun } from '../shadow'
 
 type DataStoreName = 'submissions'
@@ -45,7 +46,7 @@ export async function executeDataStoreNode(
   if (!rawKey) throw new Error('Data Store node missing required config: key')
 
   const kv = pickNamespace(env, store)
-  const key = String(resolveValue(rawKey, ctx) ?? '')
+  const key = coerceString(resolveValue(rawKey, ctx))
   if (!key) throw new Error('Data Store node resolved an empty key')
 
   const templateBase = { store: config.store, operation, key: rawKey, ttl_seconds: config.ttl_seconds, value: config.value }

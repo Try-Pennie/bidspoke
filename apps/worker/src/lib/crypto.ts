@@ -1,10 +1,11 @@
+import { coerceString } from './coerce'
 // Derive an idempotency key by hashing selected fields from the payload
 export async function deriveIdempotencyKey(
   payload: unknown,
   fields: string[]
 ): Promise<string> {
   const values = fields.map((path) => getNestedValue(payload, path) ?? '')
-  const input = values.join('|')
+  const input = values.map(coerceString).join('|')
   const encoded = new TextEncoder().encode(input)
   const digest = await crypto.subtle.digest('SHA-256', encoded)
   return Array.from(new Uint8Array(digest))

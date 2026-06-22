@@ -34,6 +34,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue } from '../context'
+import { coerceString } from '../../lib/coerce'
 import { isShadowDryRun } from '../shadow'
 
 interface LatencyGateConfig {
@@ -136,9 +137,9 @@ export async function executeLatencyGateNode(
 }
 
 function buildKey(config: LatencyGateConfig, ctx: ExecutionContext): string {
-  const id = String(resolveValue(config.correlation_key, ctx) ?? '')
+  const id = coerceString(resolveValue(config.correlation_key, ctx))
   if (!id) throw new Error('Latency Gate node resolved an empty correlation_key')
-  const scope = config.scope ? String(resolveValue(config.scope, ctx) ?? '') : ''
+  const scope = config.scope ? coerceString(resolveValue(config.scope, ctx)) : ''
   return scope ? `latency:${scope}:${id}` : `latency:${id}`
 }
 

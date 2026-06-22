@@ -4,6 +4,7 @@
 // is a write buffer that gets purged 24h after successful export.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { coerceString } from './coerce'
 import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
 
@@ -287,15 +288,15 @@ export function formatValue(v: unknown, type: ColType): string {
   if (v === null || v === undefined || v === '') return 'NULL'
   switch (type) {
     case 'varchar':
-      return `'${String(v).replace(/'/g, "''")}'`
+      return `'${coerceString(v).replace(/'/g, "''")}'`
     case 'number':
       return Number.isFinite(Number(v)) ? String(Number(v)) : 'NULL'
     case 'boolean':
       return v === true || v === 'true' || v === 1 || v === '1' ? 'TRUE' : 'FALSE'
     case 'timestamp_tz':
-      return `'${String(v).replace(/'/g, "''")}'::TIMESTAMP_TZ`
+      return `'${coerceString(v).replace(/'/g, "''")}'::TIMESTAMP_TZ`
     case 'timestamp_ntz':
-      return `'${String(v).replace(/'/g, "''")}'::TIMESTAMP_NTZ`
+      return `'${coerceString(v).replace(/'/g, "''")}'::TIMESTAMP_NTZ`
     case 'variant':
       return `'${JSON.stringify(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
   }

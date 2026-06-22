@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { coerceString } from '../lib/coerce'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult, clearIdempotency } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
@@ -448,7 +449,7 @@ export async function executeWorkflow(
           } else {
             failedErrorType = failedErrorType ?? 'permanent'
           }
-          finalErrorMessage = continuationError instanceof Error ? continuationError.message : String(continuationError)
+          finalErrorMessage = continuationError instanceof Error ? continuationError.message : coerceString(continuationError)
         } else if (finalStatus === 'completed' && flushError) {
           finalStatus = 'failed'
           failedErrorType = failedErrorType ?? 'permanent'

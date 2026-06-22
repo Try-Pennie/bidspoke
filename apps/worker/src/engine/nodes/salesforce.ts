@@ -18,6 +18,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
 import type { Env } from '../../index'
 import { resolveValue, warnDroppedBodyFields } from '../context'
+import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 
@@ -142,7 +143,7 @@ export async function executeSalesforceNode(
     resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'update') {
-    resolvedRecordId = String(resolveValue(config.record_id ?? '', enrichedCtx) ?? '')
+    resolvedRecordId = coerceString(resolveValue(config.record_id ?? '', enrichedCtx))
     if (!resolvedRecordId) throw new Error('Salesforce update requires record_id')
     url = `${baseUrl}/${resolvedRecordId}`
     method = 'PATCH'
@@ -151,7 +152,7 @@ export async function executeSalesforceNode(
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'upsert') {
     const extField = config.external_id_field ?? ''
-    resolvedExternalIdValue = String(resolveValue(config.external_id_value ?? '', enrichedCtx) ?? '')
+    resolvedExternalIdValue = coerceString(resolveValue(config.external_id_value ?? '', enrichedCtx))
     if (!extField || !resolvedExternalIdValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
     url = `${baseUrl}/${extField}/${resolvedExternalIdValue}`
     method = 'PATCH'
@@ -159,7 +160,7 @@ export async function executeSalesforceNode(
     resolvedBodyForInput = applyInjectedFields(resolvedBody, config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'query') {
-    resolvedSoql = String(resolveValue(config.soql ?? '', enrichedCtx) ?? '')
+    resolvedSoql = coerceString(resolveValue(config.soql ?? '', enrichedCtx))
     if (!resolvedSoql) throw new Error('Salesforce query requires soql')
     url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(resolvedSoql)}`
     method = 'GET'
