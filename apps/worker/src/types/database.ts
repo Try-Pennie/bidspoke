@@ -11,8 +11,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
   __InternalSupabase: {
     PostgrestVersion: "14.5"
   }
@@ -3651,6 +3649,78 @@ export type Database = {
         Relationships: []
       }
       execution_steps_2026_07_22: {
+        Row: {
+          completed_at: string | null
+          duration_ms: number | null
+          error_message: string | null
+          error_type: string | null
+          execution_id: string
+          execution_started_at: string
+          id: string
+          input: Json | null
+          is_test: boolean | null
+          logs: Json | null
+          output: Json | null
+          parallel_group_id: string | null
+          retries_used: number
+          started_at: string
+          status: string
+          step_namespace: string
+          step_node_id: string | null
+          step_order: number | null
+          step_subtype: string | null
+          step_type: string
+          workflow_id: string | null
+        }
+        Insert: {
+          completed_at?: string | null
+          duration_ms?: number | null
+          error_message?: string | null
+          error_type?: string | null
+          execution_id: string
+          execution_started_at: string
+          id?: string
+          input?: Json | null
+          is_test?: boolean | null
+          logs?: Json | null
+          output?: Json | null
+          parallel_group_id?: string | null
+          retries_used?: number
+          started_at?: string
+          status?: string
+          step_namespace: string
+          step_node_id?: string | null
+          step_order?: number | null
+          step_subtype?: string | null
+          step_type: string
+          workflow_id?: string | null
+        }
+        Update: {
+          completed_at?: string | null
+          duration_ms?: number | null
+          error_message?: string | null
+          error_type?: string | null
+          execution_id?: string
+          execution_started_at?: string
+          id?: string
+          input?: Json | null
+          is_test?: boolean | null
+          logs?: Json | null
+          output?: Json | null
+          parallel_group_id?: string | null
+          retries_used?: number
+          started_at?: string
+          status?: string
+          step_namespace?: string
+          step_node_id?: string | null
+          step_order?: number | null
+          step_subtype?: string | null
+          step_type?: string
+          workflow_id?: string | null
+        }
+        Relationships: []
+      }
+      execution_steps_2026_07_23: {
         Row: {
           completed_at: string | null
           duration_ms: number | null
@@ -9431,6 +9501,90 @@ export type Database = {
         Relationships: []
       }
       workflow_executions_2026_07_22: {
+        Row: {
+          completed_at: string | null
+          cost_usd: number | null
+          cpu_ms: number | null
+          duration_ms: number | null
+          error_message: string | null
+          final_node_id: string | null
+          final_node_namespace: string | null
+          id: string
+          is_test: boolean
+          outcome: string | null
+          parent_execution_id: string | null
+          response_body: Json | null
+          response_status: number | null
+          resumed_from_execution_id: string | null
+          slack_alert_fired_at: string | null
+          slack_alert_reason: Json | null
+          slack_alert_type: string | null
+          source: string | null
+          started_at: string
+          status: string
+          trace_id: string | null
+          trigger_payload: Json | null
+          trigger_type: string
+          workflow_id: string
+          workflow_version_id: string | null
+        }
+        Insert: {
+          completed_at?: string | null
+          cost_usd?: number | null
+          cpu_ms?: number | null
+          duration_ms?: number | null
+          error_message?: string | null
+          final_node_id?: string | null
+          final_node_namespace?: string | null
+          id?: string
+          is_test?: boolean
+          outcome?: string | null
+          parent_execution_id?: string | null
+          response_body?: Json | null
+          response_status?: number | null
+          resumed_from_execution_id?: string | null
+          slack_alert_fired_at?: string | null
+          slack_alert_reason?: Json | null
+          slack_alert_type?: string | null
+          source?: string | null
+          started_at?: string
+          status?: string
+          trace_id?: string | null
+          trigger_payload?: Json | null
+          trigger_type?: string
+          workflow_id: string
+          workflow_version_id?: string | null
+        }
+        Update: {
+          completed_at?: string | null
+          cost_usd?: number | null
+          cpu_ms?: number | null
+          duration_ms?: number | null
+          error_message?: string | null
+          final_node_id?: string | null
+          final_node_namespace?: string | null
+          id?: string
+          is_test?: boolean
+          outcome?: string | null
+          parent_execution_id?: string | null
+          response_body?: Json | null
+          response_status?: number | null
+          resumed_from_execution_id?: string | null
+          slack_alert_fired_at?: string | null
+          slack_alert_reason?: Json | null
+          slack_alert_type?: string | null
+          source?: string | null
+          started_at?: string
+          status?: string
+          trace_id?: string | null
+          trigger_payload?: Json | null
+          trigger_type?: string
+          workflow_id?: string
+          workflow_version_id?: string | null
+        }
+        Relationships: []
+      }
+      workflow_executions_2026_07_23: {
         Row: {
           completed_at: string | null
           cost_usd: number | null
