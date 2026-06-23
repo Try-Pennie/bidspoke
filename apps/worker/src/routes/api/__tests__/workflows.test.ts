@@ -216,6 +216,17 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(500)
   })
 
+  it('returns 5xx (not a false 404) when the ownership fetch hits a real DB error (#320)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(500)
+  })
+
   it('saves as version 1 when there are no prior versions (PGRST116 is not an error)', async () => {
     const newVersion = { id: 'ver-1', version_number: 1, workflow_id: 'wf-1' }
     vi.mocked(createSupabaseClient).mockReturnValue(
@@ -550,6 +561,18 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     expect(res.status).toBe(500)
     // No clobbering write happened.
     expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+  })
+
+  it('returns 5xx (not a false 404) when the target-version lookup hits a real DB error (#320)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        workflow_versions: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(500)
   })
 
   it('invalidates the workflow cache after restore', async () => {

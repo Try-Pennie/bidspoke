@@ -22,6 +22,7 @@ import { executeWorkflow } from '../../../engine/index'
 
 type TableConfig = {
   single?: Record<string, unknown> | null
+  singleError?: { code: string; message: string }
   list?: Record<string, unknown>[]
 }
 
@@ -40,11 +41,12 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
         get(_, prop) {
           if (typeof prop === 'symbol') return undefined
           if (prop === 'single') {
-            return () => cfg.single !== undefined
-              ? cfg.single
+            return () => {
+              if (cfg.singleError) return Promise.resolve({ data: null, error: cfg.singleError })
+              return cfg.single
                 ? Promise.resolve({ data: cfg.single, error: null })
                 : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
+            }
           }
           if (prop === 'then') {
             return (resolve: (v: unknown) => unknown) =>
@@ -318,6 +320,62 @@ describe('GET /executions/:id', () => {
     const body = await res.json() as { id: string; steps: unknown[] }
     expect(body.id).toBe('exec-1')
     expect(body.steps).toHaveLength(1)
+  })
+})
+
+describe('DB error => retryable 5xx, not a false 404 (#320)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const DB_ERROR = { code: '57014', message: 'canceling statement due to statement timeout' }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(executeWorkflow).mockResolvedValue({ executionId: 'new', response: { status: 200 } } as never)
+    app = await makeApp()
+  })
+
+  it('GET /:id returns 5xx when the execution lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/executions/exec-1')
+    expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/steps/:stepId returns 5xx when the step lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        execution_steps: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/executions/exec-1/steps/step-1')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/resume returns 5xx when the execution lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/executions/exec-1/resume')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/replay returns 5xx when the execution lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/executions/exec-1/replay')
+    expect(res.status).toBe(500)
   })
 })
 

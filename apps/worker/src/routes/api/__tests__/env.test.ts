@@ -23,6 +23,7 @@ import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../../lib/cf-
 type TableConfig = {
   list?: Record<string, unknown>[]
   single?: Record<string, unknown> | null
+  singleError?: { code: string; message: string }
   insertResult?: Record<string, unknown>
   insertError?: { message: string }
   updateResult?: Record<string, unknown>
@@ -50,7 +51,9 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
 
           if (prop === 'single') {
             return () =>
-              cfg.single !== undefined
+              cfg.singleError
+                ? Promise.resolve({ data: null, error: cfg.singleError })
+                : cfg.single !== undefined
                 ? cfg.single
                   ? Promise.resolve({ data: cfg.single, error: null })
                   : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
@@ -266,6 +269,17 @@ describe('PUT /env/:id', () => {
     expect(res.status).toBe(404)
   })
 
+  it('returns 5xx (not a false 404) when the fetch lookup hits a real DB error (#320)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v1', { body: { value: 'new' } })
+    expect(res.status).toBe(500)
+  })
+
   it('returns 200 after updating a non-secret variable', async () => {
     const existing = { id: 'v1', key: 'API_URL', value: 'https://old.example.com', is_secret: false }
     const updated = { id: 'v1', key: 'API_URL', value: 'https://new.example.com', is_secret: false }
@@ -381,6 +395,17 @@ describe('DELETE /env/:id', () => {
     expect(res.status).toBe(404)
   })
 
+  it('returns 5xx (not a false 404) when the fetch lookup hits a real DB error (#320)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/env/v1')
+    expect(res.status).toBe(500)
+  })
+
   it('returns 200 when deleting a non-secret variable', async () => {
     const existing = { id: 'v1', key: 'API_URL', is_secret: false }
     vi.mocked(createSupabaseClient).mockReturnValue(
@@ -408,6 +433,35 @@ describe('DELETE /env/:id', () => {
     )
     await request(app, 'DELETE', '/env/v1')
     expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
+})
+
+describe('GET /env/:id/reveal — DB error => 5xx, not 404 (#320)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  it('returns 404 for a genuinely missing variable', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, environment_variables: { single: null } }) as never
+    )
+    const res = await request(app, 'GET', '/env/nonexistent/reveal')
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 5xx (not a false 404) when the fetch lookup hits a real DB error', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      }) as never
+    )
+    const res = await request(app, 'GET', '/env/v1/reveal')
+    expect(res.status).toBe(500)
   })
 })
 
