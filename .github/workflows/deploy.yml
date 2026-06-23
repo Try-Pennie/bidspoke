@@ -178,3 +178,27 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 3e7f907a9c19e51417873e2cce4fbc5c
+
+  # A failed/cancelled job here ships nothing (a deploy is a money-path change),
+  # but today it only surfaces via GitHub's default Actions email — easy to miss.
+  # Route any failure to Slack (#328). Runs only when an upstream job actually
+  # FAILED (skipped conditional deploys do not trigger failure()). No-ops when
+  # SLACK_WEBHOOK_URL is unset.
+  notify-failure:
+    name: Alert on failure
+    runs-on: ubuntu-latest
+    needs: [verify, changes, deploy-worker-tail, deploy-worker, deploy-pages]
+    if: failure()
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Post to Slack
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          # Build the message with printf (real newlines) then let jq emit valid
+          # JSON — hand-escaping newlines into the JSON string is error-prone.
+          TEXT=$(printf ':rotating_light: *Deploy failed* (`main` @ %s)\n\nA push to main did not deploy cleanly: one of Verify (typecheck/lint/test/migrations), Deploy Worker, Deploy Worker Tail, or Deploy Pages failed. Until it is green, the pushed change is NOT live.\n\n*How to fix:* open the run, find the red job, and address it. If Verify failed on unapplied migrations, run `supabase db push` then re-run failed jobs; a transient deploy step can just be re-run.\n\n<%s/%s/actions/runs/%s|Open the failed run>' \
+            "${GITHUB_SHA:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
