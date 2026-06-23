@@ -8,7 +8,7 @@ import { getNodeClasses, getExecutionStyle } from './execution-status'
 const SERVICE_LABELS: Record<string, string> = {
   equifax: 'Equifax',
   salesforce: 'Salesforce',
-  custom: 'Webhook',
+  custom: 'HTTP Request',
 }
 
 export function IntegrationNode({ data, selected }: NodeProps) {

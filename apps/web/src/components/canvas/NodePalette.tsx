@@ -57,7 +57,7 @@ const NODES: PaletteNode[] = [
   },
   {
     type: 'webhook',
-    label: 'Webhook',
+    label: 'HTTP Request',
     description: 'Outgoing HTTP request',
     icon: Plug,
     color: 'text-teal-500',
