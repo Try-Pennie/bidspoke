@@ -5,7 +5,7 @@
 // DELETE /api/env-folders/:id    — delete if empty; 409 with child counts otherwise
 
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -36,12 +36,14 @@ envFolders.post('/', async (c) => {
   const supabase = createSupabaseClient(c.env)
 
   if (body.parent_id) {
-    const { data: parent } = await supabase
+    const { data: parent, error: parentErr } = await supabase
       .from('env_var_folders')
       .select('id')
       .eq('id', body.parent_id)
       .eq('organization_id', orgId)
       .single()
+    const parentBlocked = dbErrorUnlessNotFound(c, parentErr)
+    if (parentBlocked) return parentBlocked
     if (!parent) return c.json({ error: 'parent folder not found' }, 404)
   }
 
@@ -71,12 +73,14 @@ envFolders.patch('/:id', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
-  const { data: existing } = await supabase
+  const { data: existing, error: existingErr } = await supabase
     .from('env_var_folders')
     .select('id, name, parent_id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
+  const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
+  if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'folder not found' }, 404)
 
   const patch: Record<string, unknown> = {}
@@ -89,12 +93,14 @@ envFolders.patch('/:id', async (c) => {
     if (body.parent_id === null) {
       patch.parent_id = null
     } else {
-      const { data: parent } = await supabase
+      const { data: parent, error: parentErr } = await supabase
         .from('env_var_folders')
         .select('id')
         .eq('id', body.parent_id as string)
         .eq('organization_id', orgId)
         .single()
+      const parentBlocked = dbErrorUnlessNotFound(c, parentErr)
+      if (parentBlocked) return parentBlocked
       if (!parent) return c.json({ error: 'parent folder not found' }, 404)
       patch.parent_id = body.parent_id
     }
@@ -128,12 +134,14 @@ envFolders.delete('/:id', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
-  const { data: existing } = await supabase
+  const { data: existing, error: existingErr } = await supabase
     .from('env_var_folders')
     .select('id, name')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
+  const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
+  if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'folder not found' }, 404)
 
   const [{ count: childFolders }, { count: childVars }] = await Promise.all([

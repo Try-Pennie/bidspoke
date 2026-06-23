@@ -5,7 +5,7 @@
 // DELETE /api/integrations/slack        — disconnect
 
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { fetchJson } from '../../lib/json'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -193,13 +193,15 @@ integrations.patch('/slack/settings', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
 
-  const { data: existing } = await supabase
+  const { data: existing, error: existingErr } = await supabase
     .from('service_connections')
     .select('id, config')
     .eq('organization_id', orgId)
     .eq('service_type', 'slack')
     .maybeSingle()
 
+  const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
+  if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'Slack is not connected' }, 404)
 
   const nextConfig = {

@@ -126,6 +126,60 @@ function findPgrstLiteral(rawSrc: string, file: string): Finding[] {
   return findings
 }
 
+// (g3) Flag the related case #319: a `.single()`/`.maybeSingle()` destructure
+// that drops `error` entirely (`const { data } = await …`) whose result is later
+// gated with a 404. With no `error` binding, a transient DB failure surfaces as
+// `data == null` and 404s the same way — the same lead-loss class. The fix is to
+// destructure `error` and split via dbErrorUnlessNotFound() before the !data 404.
+interface Decl { line: number; dataVar: string; hasError: boolean; isSingle: boolean }
+
+function findDroppedError(rawSrc: string, file: string): Finding[] {
+  const src = sanitize(rawSrc, true)
+  const rawLines = rawSrc.split('\n')
+  const lines = src.split('\n')
+
+  // Collect every `const|let { … } = await …` destructure, with whether it binds
+  // `error`, the data var it binds, and whether its chain ends in single()/
+  // maybeSingle(). Keyed by line so a `!var` gate can resolve the NEAREST
+  // preceding declaration of that var — two handlers reusing the name `existing`
+  // must not cross-contaminate (one may handle error, the other drop it).
+  const decls: Decl[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/\b(?:const|let)\s*\{([^}]*)\}\s*=\s*await\b/)
+    if (!m) continue
+    const pattern = m[1]
+    const dataMatch = pattern.match(/\bdata\b\s*(?::\s*(\w+))?/)
+    if (!dataMatch) continue
+    // Window = this line through the end of its await chain (stop at a blank line
+    // or the next `= await`), so a later query's .single() can't bleed in.
+    let end = i + 1
+    while (end < lines.length && end < i + 12 && lines[end].trim() !== '' && !/=\s*await\b/.test(lines[end])) end++
+    const windowText = lines.slice(i, end).join('\n')
+    decls.push({
+      line: i,
+      dataVar: dataMatch[1] ?? 'data',
+      hasError: /\berror\b/.test(pattern),
+      isSingle: /\.(single|maybeSingle)\s*\(\s*\)/.test(windowText),
+    })
+  }
+  if (decls.length === 0) return []
+
+  // A `if (!<var>) … 404` whose nearest preceding declaration of <var> was a
+  // single()/maybeSingle() lookup that dropped `error` is the bug.
+  const findings: Finding[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/\bif\s*\(\s*!\s*(\w+)\s*\)/)
+    if (!m) continue
+    const body = lines.slice(i, i + 3).join('\n') // body may wrap a couple of lines
+    if (!/\b404\b/.test(body)) continue
+    const decl = decls.filter((d) => d.dataVar === m[1] && d.line <= i).pop()
+    if (!decl || decl.hasError || !decl.isSingle) continue
+    if (/db-guard-ok/.test(rawLines[i]) || /db-guard-ok/.test(rawLines[decl.line])) continue
+    findings.push({ file: path.relative(WORKER_SRC, file), line: i + 1 })
+  }
+  return findings
+}
+
 describe('findConflation (detector)', () => {
   it('flags `if (error || !data) return …404` (the real bug)', () => {
     expect(findConflation(`if (error || !config) return c.json({ error: 'Config not found' }, 404)`, 'f.ts')).toHaveLength(1)
@@ -159,6 +213,51 @@ describe('findPgrstLiteral (detector)', () => {
   })
 })
 
+describe('findDroppedError (detector)', () => {
+  it('flags a single() destructure that omits error then 404s on !data', () => {
+    const bad = `const { data } = await supabase.from('x').select('*').single()\n  if (!data) return c.json({ error: 'Not found' }, 404)`
+    expect(findDroppedError(bad, 'f.ts')).toHaveLength(1)
+  })
+  it('flags an aliased maybeSingle() destructure (const { data: config }) gated with 404', () => {
+    const bad = `const { data: config } = await supabase.from('x').select('*').maybeSingle()\n  if (!config) return c.json({ error: 'Config not found' }, 404)`
+    expect(findDroppedError(bad, 'f.ts')).toHaveLength(1)
+  })
+  it('does NOT flag when error IS destructured', () => {
+    const ok = `const { data, error } = await supabase.from('x').select('*').single()\n  if (!data) return c.json({ error: 'Not found' }, 404)`
+    expect(findDroppedError(ok, 'f.ts')).toHaveLength(0)
+  })
+  it('does NOT flag a list query (no single/maybeSingle) gated with 404', () => {
+    const ok = `const { data } = await supabase.from('x').select('*')\n  if (!data) return c.json({ error: 'Not found' }, 404)`
+    expect(findDroppedError(ok, 'f.ts')).toHaveLength(0)
+  })
+  it('does NOT flag a single() destructure when there is no 404 gate', () => {
+    const ok = `const { data } = await supabase.from('x').select('*').single()\n  if (!data) return null`
+    expect(findDroppedError(ok, 'f.ts')).toHaveLength(0)
+  })
+  it('honors the db-guard-ok opt-out on the gate', () => {
+    const ok = `const { data } = await supabase.from('x').select('*').single()\n  if (!data) return c.json({}, 404) // db-guard-ok: list endpoint, error handled above`
+    expect(findDroppedError(ok, 'f.ts')).toHaveLength(0)
+  })
+  it('does NOT flag a pattern that lives inside a comment or string', () => {
+    expect(findDroppedError(`// const { data } = await x.single()\n// if (!data) return 404`, 'f.ts')).toHaveLength(0)
+  })
+  it('resolves to the NEAREST preceding decl: a handled `existing` is not tainted by a dropped one elsewhere', () => {
+    // Two handlers reuse the name `existing`. The first drops error (bug); the
+    // second handles it (ok). Only the first gate should flag.
+    const src =
+      `const { data: existing } = await supabase.from('a').select('*').single()\n` +
+      `  if (!existing) return c.json({}, 404)\n` +
+      `function other() {\n` +
+      `  const { data: existing, error: existingError } = await supabase.from('b').select('*').single()\n` +
+      `  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)\n` +
+      `  if (!existing) return c.json({}, 404)\n` +
+      `}`
+    const found = findDroppedError(src, 'f.ts')
+    expect(found).toHaveLength(1)
+    expect(found[0].line).toBe(2) // the dropped-error gate, not the handled one
+  })
+})
+
 describe('worker source has no swallowed-error / false-404 patterns (#315)', () => {
   it('never conflates a DB error with a 404', () => {
     const findings = SCAN_DIRS.flatMap((d) => listTsFiles(d)).flatMap((f) => findConflation(readFileSync(f, 'utf8'), f))
@@ -166,6 +265,16 @@ describe('worker source has no swallowed-error / false-404 patterns (#315)', () 
       findings,
       `Split the gate: dbErrorUnlessNotFound(c, error) for a real error, then ` +
         `if (!data) return 404 only for genuine zero-rows:\n` +
+        findings.map((f) => `  ${f.file}:${f.line}`).join('\n')
+    ).toEqual([])
+  })
+
+  it('never drops the DB error on a single() lookup that 404s (#319)', () => {
+    const findings = SCAN_DIRS.flatMap((d) => listTsFiles(d)).flatMap((f) => findDroppedError(readFileSync(f, 'utf8'), f))
+    expect(
+      findings,
+      `Destructure { data, error } and split the gate: dbErrorUnlessNotFound(c, error) ` +
+        `for a real error, then if (!data) return 404 only for genuine zero-rows:\n` +
         findings.map((f) => `  ${f.file}:${f.line}`).join('\n')
     ).toEqual([])
   })

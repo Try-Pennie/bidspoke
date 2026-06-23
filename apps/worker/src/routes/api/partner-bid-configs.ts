@@ -181,12 +181,14 @@ route.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: existing } = await supabase
+  const { data: existing, error: existingErr } = await supabase
     .from('partner_bid_configs')
     .select('slug, name')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
+  const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
+  if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'Config not found' }, 404)
 
   const { error } = await supabase

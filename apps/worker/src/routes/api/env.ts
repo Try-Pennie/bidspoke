@@ -51,12 +51,14 @@ env.post('/', async (c) => {
   if (body.is_secret && !body.value) return c.json({ error: 'value is required for secrets' }, 400)
 
   if (body.folder_id) {
-    const { data: folder } = await supabase
+    const { data: folder, error: folderErr } = await supabase
       .from('env_var_folders')
       .select('id')
       .eq('id', body.folder_id)
       .eq('organization_id', orgId)
       .single()
+    const folderBlocked = dbErrorUnlessNotFound(c, folderErr)
+    if (folderBlocked) return folderBlocked
     if (!folder) return c.json({ error: 'folder not found' }, 404)
   }
 
@@ -175,12 +177,14 @@ env.put('/:id', async (c) => {
     if (body.folder_id === null) {
       updates.folder_id = null
     } else if (typeof body.folder_id === 'string') {
-      const { data: folder } = await supabase
+      const { data: folder, error: folderErr } = await supabase
         .from('env_var_folders')
         .select('id')
         .eq('id', body.folder_id)
         .eq('organization_id', orgId)
         .single()
+      const folderBlocked = dbErrorUnlessNotFound(c, folderErr)
+      if (folderBlocked) return folderBlocked
       if (!folder) return c.json({ error: 'folder not found' }, 404)
       updates.folder_id = body.folder_id
     }
