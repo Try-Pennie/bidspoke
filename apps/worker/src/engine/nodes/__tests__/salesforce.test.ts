@@ -363,6 +363,30 @@ describe('executeSalesforceNode', () => {
     expect((err as Error).message).toContain('Service Unavailable')
   })
 
+  it('logs cf-ray + server headers on a 5xx so a 520 is diagnosable (#331)', async () => {
+    // A 520 is a Cloudflare-edge timeout; cf-ray/server tell us whether the
+    // failure is CF-edge or Salesforce-origin, and give a traceable ray id.
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 520,
+      text: () => Promise.resolve('error code: 520'),
+      json: () => Promise.resolve(null),
+      headers: new Headers({ 'cf-ray': '8abc123-EWR', server: 'cloudflare' }),
+    })
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env
+    ).catch(() => {})
+    const logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n')
+    logSpy.mockRestore()
+    expect(logged).toContain('cf-ray=8abc123-EWR')
+    expect(logged).toContain('server=cloudflare')
+  })
+
   // ── Retry classification: permanent vs transient ───────────────────────────
 
   it.each([400, 401, 403, 404, 422])('marks %i as permanent so the engine skips retry', async (status) => {

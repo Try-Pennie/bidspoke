@@ -235,6 +235,17 @@ export async function executeSalesforceNode(
   const responseText = await res.text()
   const targetLabel = object || (config.apex_path ?? '')
   console.log(`[salesforce] ${operation} ${targetLabel} — token ${tokenMs}ms, fetch ${fetchMs}ms, status ${res.status}, trace=${ctx.trigger.trace_id}`)
+  if (res.status >= 500) {
+    // 5xx (esp. a 520 Cloudflare-edge timeout) — capture the cf-ray and server
+    // headers + a body snippet so a recurrence is diagnosable: cf-ray identifies
+    // the Cloudflare colo/request (and confirms a CF-edge response), server tells
+    // us whether Cloudflare or Salesforce served it (#331). String detail (not a
+    // 2nd console arg) so CF observability indexes it.
+    const cfRay = res.headers.get('cf-ray') ?? 'none'
+    const server = res.headers.get('server') ?? 'none'
+    const bodySnippet = responseText.slice(0, 200).replace(/\s+/g, ' ').trim()
+    console.log(`[salesforce] ${operation} ${targetLabel} 5xx detail — cf-ray=${cfRay}, server=${server}, body=${bodySnippet}, trace=${ctx.trigger.trace_id}`)
+  }
   let parsedBody: unknown = null
   if (responseText) {
     try {
