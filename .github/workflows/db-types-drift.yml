@@ -15,12 +15,19 @@ jobs:
   drift:
     name: Generated DB types match live schema
     runs-on: ubuntu-latest
+    env:
+      # Set this repo secret to an incoming-webhook URL to route failures to Slack
+      # (#324). Absent -> the alert step no-ops; the job still fails as usual.
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - uses: actions/checkout@v6
 
+      # Pinned (#323): `latest` installs whatever CLI shipped that night, a
+      # non-reproducible source of spurious drift failures if the generator's
+      # formatting changes. Bump deliberately and keep gen-db-types.sh in sync.
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.107.0
 
       - name: Regenerate types from the live schema
         working-directory: apps/worker
@@ -37,3 +44,14 @@ jobs:
             exit 1
           fi
           echo "DB types are in sync with the live schema."
+
+      # Route a real drift/failure to Slack (#324) so schema changes that outran a
+      # types regen are noticed fast, not just buried in Actions email. No-ops when
+      # SLACK_WEBHOOK_URL is unset.
+      - name: Alert Slack on failure
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"text":":rotating_light: DB Types Drift check failed on `%s` — production schema changed without a types regen, or the generator errored. <%s/%s/actions/runs/%s|View run>"}' \
+                  "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
