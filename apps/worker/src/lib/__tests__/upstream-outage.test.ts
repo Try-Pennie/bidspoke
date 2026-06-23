@@ -109,7 +109,9 @@ function makeSupabase(tables: Record<string, unknown[]>) {
   }
 }
 
-const recent = () => new Date(Date.now() - 60_000).toISOString()
+// 10s ago — safely inside the trailing 1-minute window without sitting on the
+// boundary (60s ago would be excluded once the few-ms run delay is added).
+const recent = () => new Date(Date.now() - 10_000).toISOString()
 const failRow = (workflow_id: string, msg: string | null) => ({ workflow_id, error_message: msg, completed_at: recent() })
 
 describe('runUpstreamOutageCheck (#331)', () => {

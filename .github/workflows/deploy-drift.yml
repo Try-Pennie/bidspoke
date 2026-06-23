@@ -48,7 +48,7 @@ jobs:
 
           echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT but the live worker is $LIVE_SHA."
           if [ -n "$SLACK_WEBHOOK_URL" ]; then
-            TEXT=$(printf ':warning: *Worker code is committed but not deployed*\n\nThe latest commit touching `apps/worker` (`%s`) is not in the live worker (running `%s`). This happens when a deploy failed at Verify or a later web-only push left the worker behind.\n\n*How to fix:* re-run the most recent failed Deploy run (apply any pending migration first with `supabase db push`), or push a no-op worker change to trigger a fresh Deploy Worker.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe latest commit touching `apps/worker` (`%s`) is not in the live worker (running `%s`). This happens when a deploy failed at Verify or a later web-only push left the worker behind.\n\n*How to fix:* re-run the most recent failed Deploy run (apply any pending migration first with `supabase db push`), or push a no-op worker change to trigger a fresh Deploy Worker.\n\n<%s/%s/actions/runs/%s|Open this check>' \
               "${LAST_WORKER_COMMIT:0:7}" "${LIVE_SHA:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
             curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
