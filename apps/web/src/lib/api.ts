@@ -299,6 +299,22 @@ function redirectToLogin() {
   if (typeof window !== 'undefined') window.location.href = '/login'
 }
 
+// Handle an auth-level rejection from the Worker API. 401 = not authenticated
+// -> /login; 403 = authenticated but not allowlisted (e.g. removed mid-session)
+// -> /access-denied, matching the browser middleware gate. Returns true if it
+// handled the status, false otherwise.
+function redirectOnAuthRejection(status: number): boolean {
+  if (status === 401) {
+    redirectToLogin()
+    return true
+  }
+  if (status === 403) {
+    if (typeof window !== 'undefined') window.location.href = '/access-denied'
+    return true
+  }
+  return false
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let headers: HeadersInit
   try {
@@ -312,9 +328,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { ...(init?.headers ?? {}), ...headers },
   })
   if (!res.ok) {
-    if (res.status === 401) {
-      redirectToLogin()
-      throw new Error('Not authenticated')
+    if (redirectOnAuthRejection(res.status)) {
+      throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
     }
     const body = await res.text().catch(() => '')
     throw new Error(`API ${res.status}: ${body}`)
@@ -553,9 +568,8 @@ export const api = {
       }
       const res = await fetch(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', headers })
       if (!res.ok) {
-        if (res.status === 401) {
-          redirectToLogin()
-          throw new Error('Not authenticated')
+        if (redirectOnAuthRejection(res.status)) {
+          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)
@@ -574,9 +588,8 @@ export const api = {
       }
       const res = await fetch(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', headers })
       if (!res.ok) {
-        if (res.status === 401) {
-          redirectToLogin()
-          throw new Error('Not authenticated')
+        if (redirectOnAuthRejection(res.status)) {
+          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)
