@@ -14,65 +14,9 @@ vi.mock('../../../lib/audit')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
+import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock (per-table, call-count-indexed) ─────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  insertResult?: Record<string, unknown> | null
-  singleError?: { code: string; message: string }
-}
-
-function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
-  const callCounts: Record<string, number> = {}
-  return {
-    from: (table: string) => {
-      const raw = tables[table]
-      const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
-      const idx = callCounts[table] ?? 0
-      callCounts[table] = idx + 1
-      const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)]
-
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'maybeSingle') {
-            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
-            if (table === 'user_allowlist') {
-              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
-            }
-            return () => Promise.resolve({ data: cfg.single ?? null, error: null })
-          }
-          if (prop === 'single') {
-            return () => cfg.singleError
-              ? Promise.resolve({ data: null, error: cfg.singleError })
-              : cfg.single
-              ? Promise.resolve({ data: cfg.single, error: null })
-              : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-          }
-          if (prop === 'insert') {
-            return () => {
-              const res = cfg.insertResult
-              const ic: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'then') return undefined
-                  if (p === 'single') return () =>
-                    res ? Promise.resolve({ data: res, error: null })
-                        : Promise.resolve({ data: null, error: { message: 'insert failed' } })
-                  return () => ic
-                },
-              })
-              return ic
-            }
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

@@ -17,48 +17,9 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
+import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  singleError?: { code: string; message: string }
-  list?: Record<string, unknown>[]
-}
-
-function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
-  const callCounts: Record<string, number> = {}
-
-  return {
-    from: (table: string) => {
-      const raw = tables[table]
-      const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
-      const idx = callCounts[table] ?? 0
-      callCounts[table] = idx + 1
-      const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)]
-
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () => {
-              if (cfg.singleError) return Promise.resolve({ data: null, error: cfg.singleError })
-              return cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-            }
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

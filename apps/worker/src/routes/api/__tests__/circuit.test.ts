@@ -12,35 +12,7 @@ vi.mock('../../../lib/audit')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
-
-type TableConfig = { single?: Record<string, unknown> | null; maybeSingle?: Record<string, unknown> | null }
-
-function makeSupabase(tables: Record<string, TableConfig> = {}) {
-  return {
-    from: (table: string) => {
-      const cfg = tables[table] ?? {}
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () => cfg.single
-              ? Promise.resolve({ data: cfg.single, error: null })
-              : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-          }
-          if (prop === 'maybeSingle') {
-            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
-            if (table === 'user_allowlist' && cfg.maybeSingle === undefined) {
-              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
-            }
-            return () => Promise.resolve({ data: cfg.maybeSingle ?? null, error: null })
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
+import { makeSupabase } from './_supabase-mock'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }

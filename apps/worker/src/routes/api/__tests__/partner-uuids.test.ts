@@ -14,54 +14,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  list?: Record<string, unknown>[]
-  insertResult?: Record<string, unknown> | null
-  insertError?: { message: string; code?: string }
-}
-
-function makeSupabase(tables: Record<string, TableConfig> = {}) {
-  return {
-    from: (table: string) => {
-      const cfg = tables[table] ?? {}
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () => cfg.single !== undefined
-              ? cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              : Promise.resolve({ data: null, error: null })
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          if (prop === 'insert') {
-            return () => {
-              const ic: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'single') return () =>
-                    Promise.resolve({ data: cfg.insertResult ?? null, error: cfg.insertError ?? null })
-                  if (p === 'then') return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: cfg.insertResult ?? null, error: cfg.insertError ?? null }).then(resolve)
-                  return () => ic
-                },
-              })
-              return ic
-            }
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
+import { makeSupabase } from './_supabase-mock'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }

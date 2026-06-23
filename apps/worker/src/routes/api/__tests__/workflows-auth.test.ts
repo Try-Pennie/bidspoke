@@ -17,62 +17,9 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
+import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase chain mock ───────────────────────────────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  list?: Record<string, unknown>[]
-  insertResult?: Record<string, unknown>
-  mutateError?: { message: string }
-}
-
-function makeSupabase(tables: Record<string, TableConfig> = {}) {
-  return {
-    from: (table: string) => {
-      const cfg = tables[table] ?? {}
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () => {
-              if (cfg.single !== undefined) {
-                return cfg.single
-                  ? Promise.resolve({ data: cfg.single, error: null })
-                  : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              }
-              return Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-            }
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          if (prop === 'insert') {
-            return () => {
-              const inserted = cfg.insertResult ?? null
-              const insertChain: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'select') return () => insertChain
-                  if (p === 'single') return () =>
-                    inserted
-                      ? Promise.resolve({ data: inserted, error: null })
-                      : Promise.resolve({ data: null, error: { message: 'insert failed' } })
-                  return () => insertChain
-                }
-              })
-              return insertChain
-            }
-          }
-          // All other chainable methods (select, update, delete, eq, order, limit, is, gte, lte, in)
-          return () => chain
-        }
-      })
-      return chain
-    }
-  }
-}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -151,14 +98,14 @@ describe('REST API — auth rejection', () => {
 
     it('Bearer with invalid JWT → 401', async () => {
       vi.mocked(verifyJwt).mockRejectedValue(new Error('Invalid JWT signature'))
-      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase() as ReturnType<typeof createSupabaseClient>)
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>)
       const res = await request(app, 'GET', '/workflows', { auth: 'Bearer bad.jwt.token' })
       expect(res.status).toBe(401)
     })
 
     it('Bearer with expired JWT → 401', async () => {
       vi.mocked(verifyJwt).mockRejectedValue(new Error('JWT expired'))
-      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase() as ReturnType<typeof createSupabaseClient>)
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>)
       const res = await request(app, 'GET', '/workflows', { auth: 'Bearer expired.jwt.token' })
       expect(res.status).toBe(401)
       const body = await res.json() as { error: string }
@@ -170,7 +117,7 @@ describe('REST API — auth rejection', () => {
     it('returns 401 when user record is missing', async () => {
       vi.mocked(verifyJwt).mockResolvedValue(validPayload)
       vi.mocked(createSupabaseClient).mockReturnValue(
-        makeSupabase({ users: { single: null } }) as ReturnType<typeof createSupabaseClient>
+        makeSupabase({ users: { single: null } }) as unknown as ReturnType<typeof createSupabaseClient>
       )
       const res = await request(app, 'GET', '/workflows', { auth: 'Bearer valid.jwt.token' })
       expect(res.status).toBe(401)
@@ -198,7 +145,7 @@ describe('REST API — org scoping', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { single: null },  // .eq('organization_id', orgId) finds nothing
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'GET', '/workflows/wf-other', { auth: 'Bearer tok' })
     expect(res.status).toBe(404)
@@ -209,7 +156,7 @@ describe('REST API — org scoping', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { single: null },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-other', {
       auth: 'Bearer tok',
@@ -223,7 +170,7 @@ describe('REST API — org scoping', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { single: null },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-other', { auth: 'Bearer tok' })
     expect(res.status).toBe(200)
@@ -234,7 +181,7 @@ describe('REST API — org scoping', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { single: null },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'GET', '/workflows/wf-other/versions', { auth: 'Bearer tok' })
     expect(res.status).toBe(404)
@@ -259,7 +206,7 @@ describe('REST API — happy path', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { list: [testWorkflow] },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'GET', '/workflows', { auth: 'Bearer tok' })
     expect(res.status).toBe(200)
@@ -272,7 +219,7 @@ describe('REST API — happy path', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { single: testWorkflow },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'GET', '/workflows/wf-1', { auth: 'Bearer tok' })
     expect(res.status).toBe(200)
@@ -282,7 +229,7 @@ describe('REST API — happy path', () => {
 
   it('POST /workflows — returns 400 when name is missing', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows', {
       auth: 'Bearer tok',
@@ -299,7 +246,7 @@ describe('REST API — happy path', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { insertResult: created },
-      }) as ReturnType<typeof createSupabaseClient>
+      }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows', {
       auth: 'Bearer tok',

@@ -22,92 +22,9 @@ import { setCfSecret, deleteCfSecret } from '../../../lib/cf-secrets'
 import { fetchSalesforceSchema } from '../../../lib/schema-sync/salesforce'
 import { fetchSupabaseSchema } from '../../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../../lib/schema-sync/snowflake'
+import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  list?: Record<string, unknown>[]
-  upsertResult?: Record<string, unknown> | null
-  upsertError?: { message: string }
-  updateError?: { message: string }
-  deleteError?: { message: string }
-}
-
-function makeSupabase(tables: Record<string, TableConfig> = {}) {
-  return {
-    from: (table: string) => {
-      const cfg: TableConfig = tables[table] ?? {}
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-
-          if (prop === 'single') {
-            return () => cfg.single !== undefined
-              ? cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              : Promise.resolve({ data: null, error: null })
-          }
-
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-
-          if (prop === 'upsert') {
-            return () => {
-              const uc: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'single') return () =>
-                    Promise.resolve(
-                      cfg.upsertError
-                        ? { data: null, error: cfg.upsertError }
-                        : { data: cfg.upsertResult ?? null, error: null }
-                    )
-                  return () => uc
-                },
-              })
-              return uc
-            }
-          }
-
-          if (prop === 'update') {
-            return () => {
-              const uc: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'then') return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: cfg.updateError ?? null }).then(resolve)
-                  return () => uc
-                },
-              })
-              return uc
-            }
-          }
-
-          if (prop === 'delete') {
-            return () => {
-              const dc: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'then') return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: cfg.deleteError ?? null }).then(resolve)
-                  return () => dc
-                },
-              })
-              return dc
-            }
-          }
-
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

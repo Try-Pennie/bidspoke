@@ -11,85 +11,9 @@ vi.mock('../../../lib/audit')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
+import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  maybeSingle?: Record<string, unknown> | null
-  upsertResult?: Record<string, unknown>
-  upsertError?: { message: string }
-  deleteError?: { message: string }
-}
-
-function makeSupabase(tables: Record<string, TableConfig> = {}) {
-  return {
-    from: (table: string) => {
-      const cfg: TableConfig = tables[table] ?? {}
-
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-
-          if (prop === 'maybeSingle') {
-            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
-            if (table === 'user_allowlist' && cfg.maybeSingle === undefined) {
-              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
-            }
-            return () => Promise.resolve({
-              data: cfg.maybeSingle ?? null,
-              error: null,
-            })
-          }
-
-          if (prop === 'single') {
-            return () =>
-              cfg.single !== undefined
-                ? cfg.single
-                  ? Promise.resolve({ data: cfg.single, error: null })
-                  : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-                : Promise.resolve({ data: null, error: null })
-          }
-
-          if (prop === 'upsert') {
-            return () => {
-              const uc: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'single') return () =>
-                    Promise.resolve(
-                      cfg.upsertError
-                        ? { data: null, error: cfg.upsertError }
-                        : { data: cfg.upsertResult ?? null, error: null }
-                    )
-                  return () => uc
-                },
-              })
-              return uc
-            }
-          }
-
-          if (prop === 'delete') {
-            return () => {
-              const dc: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  if (p === 'then') return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: cfg.deleteError ?? null }).then(resolve)
-                  return () => dc
-                },
-              })
-              return dc
-            }
-          }
-
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
 
 // ── Fetch mock helpers ─────────────────────────────────────────────────────────
 

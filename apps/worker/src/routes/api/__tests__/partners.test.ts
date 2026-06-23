@@ -13,48 +13,7 @@ vi.mock('../../../lib/partner-constants-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  singleError?: { code: string; message: string }
-  list?: Record<string, unknown>[]
-}
-
-function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
-  const callCounts: Record<string, number> = {}
-  return {
-    from: (table: string) => {
-      const raw = tables[table]
-      const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
-      const idx = callCounts[table] ?? 0
-      callCounts[table] = idx + 1
-      const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)]
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () =>
-              cfg.singleError
-                ? Promise.resolve({ data: null, error: cfg.singleError })
-                : cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-          }
-          if (prop === 'maybeSingle') {
-            if (table === 'user_allowlist') return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
-            return () => Promise.resolve({ data: cfg.single ?? null, error: null })
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
+import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
