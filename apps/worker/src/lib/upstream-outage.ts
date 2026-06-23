@@ -101,8 +101,10 @@ export function detectOutageSpike(count: number, threshold: number): boolean {
   return count >= threshold
 }
 
-export const DEFAULT_OUTAGE_THRESHOLD = 5
-export const DEFAULT_OUTAGE_WINDOW_MINUTES = 5
+// A spike is ~10 failures sharing a cause within a single minute (Dan, 2026-06-23).
+// The check runs on the minute cron, so the window is the trailing 60 seconds.
+export const DEFAULT_OUTAGE_THRESHOLD = 10
+export const DEFAULT_OUTAGE_WINDOW_MINUTES = 1
 export const DEFAULT_COOLDOWN_MINUTES = 30
 // Cap the started_at floor so the scan stays partition-pruned.
 export const LOOKBACK_MINUTES = 60
