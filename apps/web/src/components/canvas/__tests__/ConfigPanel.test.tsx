@@ -74,6 +74,30 @@ describe('ConfigPanel — every node type mounts its form', () => {
   })
 })
 
+describe('ConfigPanel — response 4xx warning (#325)', () => {
+  const warning = /treat any 4xx as a permanent rejection/
+
+  it('warns when a Response node hard-codes a 4xx status', () => {
+    renderPanel(nodeOf('response', { status_code: 404 }))
+    expect(screen.getByText(warning)).toBeInTheDocument()
+  })
+
+  it('does not warn for a 2xx status', () => {
+    renderPanel(nodeOf('response', { status_code: 200 }))
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+  })
+
+  it('does not warn for a 5xx status', () => {
+    renderPanel(nodeOf('response', { status_code: 503 }))
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+  })
+
+  it('does not warn for a templated status (resolved at run time)', () => {
+    renderPanel(nodeOf('response', { status_code: '{{steps.x.output.status}}' }))
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+  })
+})
+
 describe('ConfigPanel — editing a field saves through onUpdate', () => {
   it('filter: changing the operation calls onUpdate with the new config', () => {
     const { onUpdate } = renderPanel(nodeOf('filter', { operation: 'continue_if' }))

@@ -17,6 +17,7 @@ import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
+import { isHardCoded4xx } from '@/lib/response-status'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -1117,6 +1118,11 @@ function ResponseConfig({
             onChange({ status_code: Number.isFinite(n) ? n : v })
           }}
         />
+        {isHardCoded4xx(config.status_code) && (
+          <p role="alert" className="mt-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+            This responds with a {String(config.status_code)} client error. Some lead sources treat any 4xx as a permanent rejection and stop retrying, which can drop a lead that should have been retried. If this is an intentional permanent rejection, no change is needed. For a soft or temporary rejection the source should retry, use a 2xx with a rejection body, or a 503.
+          </p>
+        )}
       </Field>
       <Field label="Body (JSON or template)">
         <TemplateTextarea
