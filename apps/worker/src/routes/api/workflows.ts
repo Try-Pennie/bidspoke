@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -54,7 +54,7 @@ workflows.post('/', async (c) => {
       .eq('id', body.folder_id)
       .eq('organization_id', orgId)
       .single()
-    if (folderError && folderError.code !== 'PGRST116') return dbError(c, folderError)
+    if (folderError && !isNotFoundError(folderError)) return dbError(c, folderError)
     if (!folder) return c.json({ error: 'folder not found' }, 404)
   }
 
@@ -224,7 +224,7 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
-  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
+  if (wfError && !isNotFoundError(wfError)) return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   // v3: added p50 + per-node window_days (panel and badge share this payload)
@@ -283,7 +283,9 @@ workflows.put('/:id', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (fetchError || !existing) return c.json({ error: 'Workflow not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, fetchError)
+  if (blocked) return blocked
+  if (!existing) return c.json({ error: 'Workflow not found' }, 404)
 
   // Get next version number. `.single()` reports "no prior versions" (first save)
   // as PGRST116 — fine, start at 1. Any other error is a real DB failure: bailing
@@ -295,7 +297,7 @@ workflows.put('/:id', async (c) => {
     .order('version_number', { ascending: false })
     .limit(1)
     .single()
-  if (lastVersionError && lastVersionError.code !== 'PGRST116') return dbError(c, lastVersionError)
+  if (lastVersionError && !isNotFoundError(lastVersionError)) return dbError(c, lastVersionError)
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
@@ -424,7 +426,7 @@ workflows.post('/:id/draft-changelog', async (c) => {
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
-  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
+  if (wfError && !isNotFoundError(wfError)) return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data: lastVersion } = await supabase
@@ -497,7 +499,7 @@ workflows.patch('/:id', async (c) => {
         .eq('id', body.folder_id)
         .eq('organization_id', orgId)
         .single()
-      if (folderError && folderError.code !== 'PGRST116') return dbError(c, folderError)
+      if (folderError && !isNotFoundError(folderError)) return dbError(c, folderError)
       if (!folder) return c.json({ error: 'folder not found' }, 404)
       updates.folder_id = body.folder_id
     }
@@ -653,7 +655,9 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     .eq('workflow_id', id)
     .single()
 
-  if (versionError || !version) return c.json({ error: 'Version not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, versionError)
+  if (blocked) return blocked
+  if (!version) return c.json({ error: 'Version not found' }, 404)
 
   // Restore = create a new version with the old definition. PGRST116 = no prior
   // versions → start at 1; any other error is a real failure (defaulting to 1
@@ -665,7 +669,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     .order('version_number', { ascending: false })
     .limit(1)
     .single()
-  if (lastVersionError && lastVersionError.code !== 'PGRST116') return dbError(c, lastVersionError)
+  if (lastVersionError && !isNotFoundError(lastVersionError)) return dbError(c, lastVersionError)
 
   const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
 
@@ -798,7 +802,7 @@ workflows.post('/:id/test-node', async (c) => {
       .eq('id', body.execution_id)
       .eq('workflow_id', id)
       .single()
-    if (execError && execError.code !== 'PGRST116') return dbError(c, execError)
+    if (execError && !isNotFoundError(execError)) return dbError(c, execError)
     if (!exec) return c.json({ error: 'Execution not found' }, 404)
     triggerPayload = body.trigger_payload ?? exec.trigger_payload
     source = (exec.source) ?? source

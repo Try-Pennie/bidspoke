@@ -5,7 +5,7 @@
 // POST   /api/connections/:service_type/sync-schema — trigger schema refresh
 
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -112,7 +112,7 @@ connections.delete('/:service_type', async (c) => {
 
   // PGRST116 = no connection for this org (→ 404); a real error must not look
   // like a 404, which would block a legitimate delete (#303).
-  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
+  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Connection not found' }, 404)
 
   await deleteCfSecret(
@@ -143,7 +143,7 @@ connections.post('/:service_type/sync-schema', async (c) => {
     .eq('service_type', serviceType)
     .single()
 
-  if (connError && connError.code !== 'PGRST116') return dbError(c, connError)
+  if (connError && !isNotFoundError(connError)) return dbError(c, connError)
   if (!conn) return c.json({ error: 'Connection not found' }, 404)
 
   const credsJson = (c.env as unknown as Record<string, string>)[conn.cf_secret_key]

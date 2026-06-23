@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -77,7 +77,8 @@ servicePresets.put('/:id', async (c) => {
     .select('id, name, slug, auth_type, base_url, created_at')
     .single()
 
-  if (error) return dbError(c, error)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
   if (!data) return c.json({ error: 'not found' }, 404)
   await writeAuditLog(supabase, orgId, 'service_preset', id, 'updated', userId, patch)
   return c.json(data)

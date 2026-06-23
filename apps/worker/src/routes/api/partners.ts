@@ -3,7 +3,7 @@
  * CRUD for partner_configs. Daily cap count comes from the DailyCapDO.
  */
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -92,7 +92,9 @@ partners.get('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (error || !data) return c.json({ error: 'Partner not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Partner not found' }, 404)
   return c.json(data)
 })
 
@@ -246,7 +248,7 @@ partners.delete('/:id', async (c) => {
 
   // PGRST116 = no partner for this org (→ 404); a real error must not look like
   // a 404, which would block a legitimate delete (#303).
-  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
+  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Partner not found' }, 404)
 
   const { error } = await supabase
@@ -281,7 +283,9 @@ partners.get('/:id/cap-count', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (error || !data) return c.json({ error: 'Partner not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Partner not found' }, 404)
 
   const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD UTC
   const doId = c.env.DAILY_CAP.idFromName(`cap-${data.slug}-${today}`)

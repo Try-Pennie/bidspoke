@@ -5,7 +5,7 @@
  * exactly one is_default. Rows live in bid_matrix_rows.
  */
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -65,7 +65,9 @@ route.get('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (error || !config) return c.json({ error: 'Config not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!config) return c.json({ error: 'Config not found' }, 404)
 
   // Page the full matrix — a fine-grained matrix (score bands × debt bands ×
   // sell-off) can exceed the 1,000-row PostgREST cap, which would silently

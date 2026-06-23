@@ -17,6 +17,7 @@ import type { Env } from '../index'
 import { executeWorkflow } from '../engine/index'
 import { WorkflowNotFoundError } from '../engine/definition-loader'
 import { createSupabaseClient } from '../lib/supabase'
+import { isNotFoundError } from '../lib/api-error'
 
 const HOOK_HOST = 'hook.trypennie.dev'
 const CACHE_TTL = 60 // seconds
@@ -94,7 +95,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     // Any OTHER error is a real DB failure: returning 404 here tells the lead
     // source the endpoint is gone, so it stops retrying and the lead is dropped.
     // Return 503 (retryable) instead. Real error logged, not leaked (#107, #303).
-    if (error && error.code !== 'PGRST116') {
+    if (error && !isNotFoundError(error)) {
       console.error('[custom-endpoint] endpoint lookup failed:', error)
       return c.json({ error: 'Temporarily unavailable' }, 503)
     }

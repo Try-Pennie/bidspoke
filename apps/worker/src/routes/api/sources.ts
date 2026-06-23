@@ -7,7 +7,7 @@
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { setCfSecret } from '../../lib/cf-secrets'
@@ -173,7 +173,7 @@ sources.post('/:name/workflows', async (c) => {
     .single()
   // PGRST116 = not found / not this org (→ 404); a real error must not look like
   // a 404, which would block a legitimate assignment (#303).
-  if (srcError && srcError.code !== 'PGRST116') return dbError(c, srcError)
+  if (srcError && !isNotFoundError(srcError)) return dbError(c, srcError)
   if (!src) return c.json({ error: 'Source not found' }, 404)
 
   // Verify the workflow belongs to this org
@@ -183,7 +183,7 @@ sources.post('/:name/workflows', async (c) => {
     .eq('id', body.workflow_id)
     .eq('organization_id', orgId)
     .single()
-  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
+  if (wfError && !isNotFoundError(wfError)) return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { error: insertError } = await supabase

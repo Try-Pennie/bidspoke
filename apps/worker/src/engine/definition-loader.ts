@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { LoadedWorkflow, WorkflowDefinition } from '../types'
+import { isNotFoundError } from '../lib/api-error'
 
 // Thrown when the requested workflow doesn't exist, is deleted, or is inactive.
 // A typed error so routes can map it to 404 by instanceof rather than matching
@@ -70,7 +71,7 @@ export async function loadWorkflowDefinition(
   // and stops retrying — dropping the lead (#303). PGRST116 is the genuine
   // no-rows / inactive case (→ WorkflowNotFoundError); any other error is a real
   // failure that should surface as a retryable 5xx.
-  if (error && error.code !== 'PGRST116') {
+  if (error && !isNotFoundError(error)) {
     throw new Error(`Failed to load workflow ${workflowId}: ${error.message}`)
   }
   if (!data) {

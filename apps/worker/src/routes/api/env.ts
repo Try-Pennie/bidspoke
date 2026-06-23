@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -113,7 +113,9 @@ env.put('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (fetchError || !existing) return c.json({ error: 'Variable not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, fetchError)
+  if (blocked) return blocked
+  if (!existing) return c.json({ error: 'Variable not found' }, 404)
 
   const newKey = body.key ?? existing.key
   const keyChanged = newKey !== existing.key
@@ -217,7 +219,9 @@ env.get('/:id/reveal', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (error || !data) return c.json({ error: 'Not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Not found' }, 404)
   if (!data.is_secret) return c.json({ error: 'Not a secret' }, 400)
   if (!data.value) return c.json({ error: 'Value not available — rotate to enable reveal' }, 422)
 
@@ -290,7 +294,9 @@ env.delete('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (fetchError || !existing) return c.json({ error: 'Variable not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, fetchError)
+  if (blocked) return blocked
+  if (!existing) return c.json({ error: 'Variable not found' }, 404)
 
   if (existing.is_secret) {
     await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)

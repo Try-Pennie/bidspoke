@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -28,7 +28,7 @@ executions.get('/', async (c) => {
       .eq('id', workflow_id)
       .eq('organization_id', orgId)
       .single()
-    if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
+    if (wfError && !isNotFoundError(wfError)) return dbError(c, wfError)
     if (!wf) return c.json({ error: 'Workflow not found' }, 404)
     workflowIds = [wf.id]
   } else {
@@ -138,7 +138,7 @@ executions.get('/step-duration-stats', async (c) => {
     .eq('id', workflowId)
     .eq('organization_id', orgId)
     .single()
-  if (wfError && wfError.code !== 'PGRST116') return dbError(c, wfError)
+  if (wfError && !isNotFoundError(wfError)) return dbError(c, wfError)
   if (!wf) return c.json({ error: 'Workflow not found' }, 404)
 
   // v9 prefix: bump when the suggestion math changes so stale entries expire
@@ -311,7 +311,9 @@ executions.get('/:id', async (c) => {
     .single()
   const t1 = Date.now()
 
-  if (error || !execution) return c.json({ error: 'Execution not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!execution) return c.json({ error: 'Execution not found' }, 404)
 
   const stepColumns = summary
     ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order'
@@ -397,14 +399,18 @@ executions.get('/:id/steps/:stepId', async (c) => {
     .select('id, step_namespace, input, output, logs, execution_id')
     .eq('id', stepId)
     .single()
-  if (stepError || !step) return c.json({ error: 'Step not found' }, 404)
+  const stepBlocked = dbErrorUnlessNotFound(c, stepError)
+  if (stepBlocked) return stepBlocked
+  if (!step) return c.json({ error: 'Step not found' }, 404)
 
   const { data: execution, error: execError } = await supabase
     .from('workflow_executions')
     .select('workflow_id')
     .eq('id', step.execution_id)
     .single()
-  if (execError || !execution) return c.json({ error: 'Step not found' }, 404)
+  const execBlocked = dbErrorUnlessNotFound(c, execError)
+  if (execBlocked) return execBlocked
+  if (!execution) return c.json({ error: 'Step not found' }, 404)
 
   const { error: ownerError } = await supabase
     .from('workflows')
@@ -431,7 +437,9 @@ executions.post('/:id/resume', async (c) => {
     .eq('id', id)
     .single()
 
-  if (error || !execution) return c.json({ error: 'Execution not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!execution) return c.json({ error: 'Execution not found' }, 404)
 
   const { error: ownerError } = await supabase
     .from('workflows')
@@ -472,7 +480,9 @@ executions.post('/:id/replay', async (c) => {
     .eq('id', id)
     .single()
 
-  if (error || !execution) return c.json({ error: 'Execution not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!execution) return c.json({ error: 'Execution not found' }, 404)
 
   const { error: ownerError } = await supabase
     .from('workflows')

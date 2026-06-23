@@ -8,7 +8,7 @@
  */
 
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, isNotFoundError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -123,7 +123,7 @@ endpoints.post('/', async (c) => {
     .single()
   // PGRST116 = not found / not this org (→ 404). A real error must not be
   // reported as 404, which would block a legitimate publish (#303).
-  if (ownWfError && ownWfError.code !== 'PGRST116') return dbError(c, ownWfError)
+  if (ownWfError && !isNotFoundError(ownWfError)) return dbError(c, ownWfError)
   if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data, error } = await supabase
@@ -171,7 +171,7 @@ endpoints.put('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
+  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
@@ -197,7 +197,7 @@ endpoints.put('/:id', async (c) => {
       .eq('organization_id', orgId)
       .is('deleted_at', null)
       .single()
-    if (ownWfError && ownWfError.code !== 'PGRST116') return dbError(c, ownWfError)
+    if (ownWfError && !isNotFoundError(ownWfError)) return dbError(c, ownWfError)
     if (!ownWf) return c.json({ error: 'Workflow not found' }, 404)
     updates.workflow_id = body.workflow_id
   }
@@ -251,7 +251,7 @@ endpoints.delete('/:id', async (c) => {
     .eq('organization_id', orgId)
     .single()
 
-  if (existingError && existingError.code !== 'PGRST116') return dbError(c, existingError)
+  if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
   const { error } = await supabase
