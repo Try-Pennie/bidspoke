@@ -51,7 +51,10 @@ jobs:
       - name: Alert Slack on failure
         if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
         run: |
+          # Build the message with printf (real newlines) then let jq emit valid
+          # JSON — hand-escaping newlines into the JSON string is error-prone.
+          TEXT=$(printf ':rotating_light: *DB Types Drift check failed* (`%s`)\n\nThe committed Supabase types no longer match the live database schema. Usually a database migration changed the schema but the generated types were not refreshed, so the typed client is out of date.\n\n*How to fix:* run `pnpm --filter worker db:types`, commit the updated `apps/worker/src/types/database.ts`, then push. If the schema did not actually change, the type generator may have had a transient error, so just re-run this check.\n\n<%s/%s/actions/runs/%s|Open the failed run>' \
+            "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
-            -d "$(printf '{"text":":rotating_light: DB Types Drift check failed on `%s` — production schema changed without a types regen, or the generator errored. <%s/%s/actions/runs/%s|View run>"}' \
-                  "$GITHUB_REF_NAME" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+            --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
