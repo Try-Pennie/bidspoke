@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -441,5 +441,47 @@ describe('sendFailureSpikeAlert (#248)', () => {
   it('honors a channel override', async () => {
     await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', '#outages', spikePayload, 'https://app.example.com')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).channel).toBe('#outages')
+  })
+})
+
+describe('sendUpstreamOutageAlert (#331)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '9.99' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const outagePayload = {
+    cause_key: 'salesforce',
+    cause_label: 'Salesforce',
+    failure_count: 23,
+    window_minutes: 5,
+    workflow_names: ['Engine Bidding', 'Main Flow'],
+    timestamp: '2024-01-15T18:00:00.000Z',
+  }
+
+  it('no-ops when Slack is not connected', async () => {
+    const ts = await sendUpstreamOutageAlert(makeSupabase(null) as never, 'org-1', outagePayload, 'https://app.example.com')
+    expect(ts).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('@here-mentions the channel, names the cause + count, and uses no emoji', async () => {
+    const ts = await sendUpstreamOutageAlert(makeSupabase(slackConnection) as never, 'org-1', outagePayload, 'https://app.example.com')
+    expect(ts).toBe('9.99')
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('<!here>')
+    expect(text).toContain('Salesforce appears degraded')
+    expect(text).toContain('23 leads')
+    expect(text).toContain('Engine Bidding')
+    // Every header block must opt out of emoji rendering.
+    for (const block of body.blocks) {
+      if (block.type === 'header') expect(block.text.emoji).toBe(false)
+    }
+    // No literal emoji characters in the payload.
+    expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
+    expect(body.channel).toBe('#alerts')
   })
 })

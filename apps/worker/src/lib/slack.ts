@@ -329,6 +329,72 @@ export async function sendFailureSpikeAlert(
   )
 }
 
+export interface UpstreamOutageAlertPayload {
+  /** Stable cause id, e.g. "salesforce". */
+  cause_key: string
+  /** Human label, e.g. "Salesforce". */
+  cause_label: string
+  /** Matching failed runs across the org in the window. */
+  failure_count: number
+  window_minutes: number
+  /** Distinct workflows hit by this cause. */
+  workflow_names: string[]
+  timestamp: string
+}
+
+// Aggregated shared-upstream outage alert (#331): when a dependency shared by
+// many leads degrades, the per-run pages are suppressed at the engine gate and
+// this fires ONCE per (org, cause) — an @here page because a degraded upstream
+// is serious and time-sensitive.
+export async function sendUpstreamOutageAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  payload: UpstreamOutageAlertPayload,
+  appUrl: string
+): Promise<string | null> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return null
+
+  const channel = connection.default_channel
+  const dashboardUrl = `${appUrl}/dashboard`
+  const affected = payload.workflow_names.length
+  const workflowsLine = affected > 0
+    ? `Affected ${affected === 1 ? 'workflow' : 'workflows'}: ${payload.workflow_names.join(', ')}.`
+    : ''
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Upstream Service Degraded', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `<!here> *${payload.cause_label} appears degraded.* *${payload.failure_count} leads* failed sharing this cause in the last ${payload.window_minutes} minutes. Per-lead pages for this cause are suppressed; this is the aggregated alert.`,
+      },
+    },
+    ...(workflowsLine ? [{ type: 'section', text: { type: 'mrkdwn', text: workflowsLine } }] : []),
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*How to check:* confirm ${payload.cause_label} health (status page / direct call), then review the affected runs.` },
+    },
+    {
+      type: 'section',
+      fields: [{ type: 'mrkdwn', text: `*Time:* ${when}` }],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `<${dashboardUrl}|Open dashboard →>` },
+    },
+  ]
+
+  return postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `Upstream degraded: ${payload.cause_label}, ${payload.failure_count} leads affected in ${payload.window_minutes}m`
+  )
+}
+
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
   try {
     const res = await fetch('https://slack.com/api/chat.postMessage', {

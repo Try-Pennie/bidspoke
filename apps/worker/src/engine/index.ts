@@ -36,6 +36,7 @@ import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
 import { matchesMutedSignal } from '../lib/failure-rate'
+import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
 import type { Env } from '../index'
@@ -499,7 +500,10 @@ export async function executeWorkflow(
           !options.isTest &&
           failedErrorType !== null &&
           !failedSuppressAlert &&
-          !matchesMutedSignal(finalErrorMessage, mutedFailureSignals)
+          !matchesMutedSignal(finalErrorMessage, mutedFailureSignals) &&
+          // Shared-upstream outages page once via the aggregated cron (#331),
+          // not per lead.
+          !classifyOutageCause(finalErrorMessage)
         ) {
           executionCtx.waitUntil(
             fireExecutionAlert({
@@ -635,7 +639,7 @@ export async function executeWorkflow(
   // minute cron (lib/slow-execution-rate.ts) fires only when slow runs SPIKE
   // across a 5-minute window. See runSlowExecutionCheck.
 
-  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert && !matchesMutedSignal(errorMessage, mutedFailureSignals)) {
+  if (executionStatus === 'failed' && !options.isTest && failedErrorType !== null && !failedSuppressAlert && !matchesMutedSignal(errorMessage, mutedFailureSignals) && !classifyOutageCause(errorMessage)) {
     executionCtx.waitUntil(
       fireExecutionAlert({
         alertType: 'failure',

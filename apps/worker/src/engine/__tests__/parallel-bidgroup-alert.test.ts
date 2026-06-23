@@ -185,10 +185,12 @@ describe('muted failure signal suppresses the per-run alert (#248)', () => {
     expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
   })
 
-  it('still pages when the failure does not match any muted signal', async () => {
+  it('still pages when the failure is neither a muted signal nor a shared-upstream outage', async () => {
     loadDef(mutedSignalDefinition)
+    // A genuine per-lead error — not a muted signal and not a recognized
+    // shared-upstream outage (#331), so the per-run page must still fire.
     vi.mocked(executeNode).mockImplementation(async () => {
-      throw new Error('Salesforce REQUEST_LIMIT_EXCEEDED')
+      throw new Error('Unexpected null in lead payload mapping')
     })
 
     const { harness, result } = run()
