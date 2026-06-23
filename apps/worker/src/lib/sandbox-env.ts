@@ -44,6 +44,7 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   APP_URL: 'expose',
   SELF_CHECK_URL: 'expose',
   GITHUB_REPO: 'expose',
+  DEPLOYED_SHA: 'expose', // non-secret: the live worker's git commit (#327)
 }
 
 export const SANDBOX_BLOCKED_ENV_KEYS: ReadonlySet<string> = new Set(

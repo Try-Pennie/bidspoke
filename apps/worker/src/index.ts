@@ -48,6 +48,11 @@ export interface Env {
   // Frontend URL — used for deep links in Slack alerts
   APP_URL: string
 
+  // Git commit the live worker was deployed from — stamped via `wrangler deploy
+  // --var DEPLOYED_SHA:<sha>` in the deploy workflow, surfaced at GET / so a
+  // scheduled check can detect a "committed but never deployed" worker (#327).
+  DEPLOYED_SHA?: string
+
   // External hostname the volume-cliff monitor hits to confirm the worker is
   // reachable from outside Cloudflare. Must be a stable bidspoke-owned URL that
   // routes to this worker. Optional — falls back to a built-in default.
@@ -126,7 +131,7 @@ export function genericOnError(err: Error, c: Context) {
 }
 app.onError(genericOnError)
 
-app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker' }))
+app.get('/', (c) => c.json({ status: 'ok', service: 'bidspoke-worker', version: c.env.DEPLOYED_SHA ?? 'unknown' }))
 
 // Custom endpoint routing — handles *.trypennie.dev partner subdomains
 // Must be registered before /webhooks and /api so it intercepts early

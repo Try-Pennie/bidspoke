@@ -1,0 +1,57 @@
+name: Deploy Drift
+
+# Catches a "committed but never deployed" worker (#327): the deploy pipeline
+# path-gates Deploy Worker to commits that touch apps/worker, and a failed
+# Verify skips it entirely — so worker code can sit on main, unshipped, with
+# nothing flagging it (hit live 2026-06-23). The live worker reports the commit
+# it was deployed from at GET / (DEPLOYED_SHA); this compares that to the latest
+# commit that touched apps/worker on main and alerts if the worker is behind.
+
+on:
+  schedule:
+    - cron: '17 * * * *' # hourly, offset off the top of the hour
+  workflow_dispatch:
+
+jobs:
+  drift:
+    name: Live worker matches the latest worker commit
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # full history so merge-base can compare commits
+
+      - name: Compare live worker commit to the latest worker-touching commit
+        run: |
+          set -euo pipefail
+          LIVE_SHA=$(curl -fsS "$WORKER_URL/" | jq -r '.version // "unknown"')
+          LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker)
+          echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
+
+          if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ]; then
+            echo "::warning::Live worker has no DEPLOYED_SHA stamp yet (pre-#327 deploy); skipping."
+            exit 0
+          fi
+          if ! git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
+            echo "::warning::Live worker commit $LIVE_SHA is not in this repo's history; skipping."
+            exit 0
+          fi
+          # OK when the latest worker-touching commit is already part of what's
+          # live (ancestor-or-equal of the deployed commit).
+          if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then
+            echo "Worker is up to date."
+            exit 0
+          fi
+
+          echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT but the live worker is $LIVE_SHA."
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            TEXT=$(printf ':warning: *Worker code is committed but not deployed*\n\nThe latest commit touching `apps/worker` (`%s`) is not in the live worker (running `%s`). This happens when a deploy failed at Verify or a later web-only push left the worker behind.\n\n*How to fix:* re-run the most recent failed Deploy run (apply any pending migration first with `supabase db push`), or push a no-op worker change to trigger a fresh Deploy Worker.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LAST_WORKER_COMMIT:0:7}" "${LIVE_SHA:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
+          fi
+          exit 1

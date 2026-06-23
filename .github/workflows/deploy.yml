@@ -142,7 +142,9 @@ jobs:
         run: pnpm install
 
       - name: Deploy Worker
-        run: pnpm --filter=worker run deploy
+        # Stamp the deployed commit so GET / can report it and the Deploy Drift
+        # check (#327) can detect a committed-but-never-deployed worker.
+        run: pnpm --filter=worker run deploy -- --var DEPLOYED_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
