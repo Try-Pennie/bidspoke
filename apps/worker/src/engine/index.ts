@@ -71,6 +71,15 @@ class StepFailureError extends Error {
 
 export { SourceNotAuthorizedError, SourceAuthUnavailableError }
 
+// Hard ceiling on main-loop node visits in a single walk (#260). The walk
+// follows edge targets with no cycle detection, so a cyclic definition would
+// loop forever, repeating paid outbound calls and DB writes until the Worker
+// CPU limit kills it. A real workflow visits only the distinct nodes on the
+// taken path (branches pick one edge; parallel/group children are handled
+// inline, not as main-loop iterations) — tens of nodes even for the largest
+// flow. 500 is far above any legitimate walk yet a firm backstop for a runaway.
+export const MAX_WALK_STEPS = 500
+
 export interface ExecuteOptions {
   workflowId: string
   payload: unknown
@@ -721,9 +730,21 @@ export async function walkGraph(
   let stepOrder = 0
   let lastOutput: unknown = null
   let pendingResponse: WalkGraphResult | null = null
+  // Bound the walk so a cyclic definition can't loop forever (#260). stepOrder is
+  // reset/offset by parallel and bid_group handling, so count main-loop visits
+  // separately.
+  let walkSteps = 0
 
   while (current) {
     const node = current
+
+    if (++walkSteps > MAX_WALK_STEPS) {
+      throw new StepFailureError(
+        `Workflow exceeded the maximum step count (${MAX_WALK_STEPS}); aborting to prevent a runaway loop. Check the graph for a cycle (an edge path that returns to an earlier node).`,
+        node.namespace,
+        'permanent',
+      )
+    }
 
     // ── Parallel node — fan out to children concurrently ───────────────────────
     if (node.type === 'parallel') {
