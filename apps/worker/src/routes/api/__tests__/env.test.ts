@@ -58,8 +58,12 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
           }
 
           // .maybeSingle() returns the row or null without a not-found error —
-          // used by the key-collision check on rename.
+          // used by the key-collision check on rename and the jwtAuth allowlist check.
           if (prop === 'maybeSingle') {
+            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
+            if (table === 'user_allowlist' && cfg.single === undefined) {
+              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
+            }
             return () => Promise.resolve({ data: cfg.single ?? null, error: null })
           }
 

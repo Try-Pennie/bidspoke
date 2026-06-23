@@ -32,6 +32,10 @@ function makeSupabase(tables: Record<string, TableConfig> = {}) {
           if (typeof prop === 'symbol') return undefined
 
           if (prop === 'maybeSingle') {
+            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
+            if (table === 'user_allowlist' && cfg.maybeSingle === undefined) {
+              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
+            }
             return () => Promise.resolve({
               data: cfg.maybeSingle ?? null,
               error: null,

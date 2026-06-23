@@ -42,6 +42,25 @@ export async function jwtAuth(
     return c.json({ error: 'User not found' }, 401)
   }
 
+  // Enforce the access allowlist at the API boundary. A valid token plus an
+  // auto-provisioned users row is NOT enough — the email must be on
+  // user_allowlist. The browser middleware gate is not authoritative; a token
+  // can hit this API directly, so the check must live here too.
+  const { data: allowed, error: allowlistError } = await supabase
+    .from('user_allowlist')
+    .select('email')
+    .eq('email', user.email.toLowerCase())
+    .maybeSingle()
+
+  if (allowlistError) {
+    // Fail closed but distinguish a lookup failure from a genuine deny so it is
+    // diagnosable and not silently conflated with "not on the list".
+    return c.json({ error: 'Access check failed' }, 500)
+  }
+  if (!allowed) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
   // Prefer the most current name from the JWT (refreshed on every login from Google)
   // Fall back to the stored display_name, but skip it if it looks like an email prefix
   const jwtName = payload.user_metadata?.full_name ?? payload.user_metadata?.name ?? null

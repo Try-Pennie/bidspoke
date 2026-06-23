@@ -19,18 +19,31 @@ import { jwtAuth } from '../jwt-auth'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
-function makeSupabase(user: Record<string, unknown> | null) {
-  const chain: unknown = new Proxy({}, {
-    get(_, prop) {
-      if (typeof prop === 'symbol') return undefined
-      if (prop === 'single') return () =>
-        user
-          ? Promise.resolve({ data: user, error: null })
-          : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-      return () => chain
-    }
-  })
-  return { from: () => chain }
+function makeSupabase(
+  user: Record<string, unknown> | null,
+  opts: { allowlisted?: boolean; allowlistError?: boolean } = {}
+) {
+  const { allowlisted = true, allowlistError = false } = opts
+  function chainFor(table: string): unknown {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'single') return () =>
+          user
+            ? Promise.resolve({ data: user, error: null })
+            : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
+        if (prop === 'maybeSingle') return () => {
+          if (table !== 'user_allowlist') return Promise.resolve({ data: null, error: null })
+          if (allowlistError) return Promise.resolve({ data: null, error: { message: 'db down', code: '500' } })
+          const email = (user as { email?: string } | null)?.email ?? ''
+          return Promise.resolve({ data: allowlisted ? { email } : null, error: null })
+        }
+        return () => chain
+      }
+    })
+    return chain
+  }
+  return { from: (table: string) => chainFor(table) }
 }
 
 // ── Test app ──────────────────────────────────────────────────────────────────
@@ -97,6 +110,31 @@ describe('jwtAuth middleware', () => {
       expect(res.status).toBe(401)
       const body = await res.json() as { error: string }
       expect(body.error).toMatch(/user not found/i)
+    })
+  })
+
+  describe('allowlist enforcement', () => {
+    it('returns 403 when the authenticated user is not on the allowlist', async () => {
+      vi.mocked(verifyJwt).mockResolvedValue({ sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 0, aud: 'test' })
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase(testUser, { allowlisted: false }) as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request({ Authorization: 'Bearer valid.token' })
+      expect(res.status).toBe(403)
+      const body = await res.json() as { error: string }
+      expect(body.error).toMatch(/access denied|not authorized/i)
+    })
+
+    it('allows a user who is on the allowlist', async () => {
+      vi.mocked(verifyJwt).mockResolvedValue({ sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 0, aud: 'test' })
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase(testUser, { allowlisted: true }) as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request({ Authorization: 'Bearer valid.token' })
+      expect(res.status).toBe(200)
+    })
+
+    it('returns 500 (not a false deny) when the allowlist lookup itself errors', async () => {
+      vi.mocked(verifyJwt).mockResolvedValue({ sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 0, aud: 'test' })
+      vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase(testUser, { allowlistError: true }) as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request({ Authorization: 'Bearer valid.token' })
+      expect(res.status).toBe(500)
     })
   })
 

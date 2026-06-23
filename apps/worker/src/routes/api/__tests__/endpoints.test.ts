@@ -36,6 +36,13 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
       const chain: unknown = new Proxy({}, {
         get(_, prop) {
           if (typeof prop === 'symbol') return undefined
+          if (prop === 'maybeSingle') {
+            // jwtAuth checks the access allowlist; default the auth user to allowlisted.
+            if (table === 'user_allowlist') {
+              return () => Promise.resolve({ data: { email: 'dan@pennie.com' }, error: null })
+            }
+            return () => Promise.resolve({ data: cfg.single ?? null, error: null })
+          }
           if (prop === 'single') {
             return () => cfg.singleError
               ? Promise.resolve({ data: null, error: cfg.singleError })
