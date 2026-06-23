@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import type { Env } from '../../index'
 import { apiKeyAuth } from '../api-key-auth'
@@ -94,5 +94,21 @@ describe('apiKeyAuth middleware', () => {
       const body = await res.json() as { error: string }
       expect(body.error).toMatch(/configuration/i)
     })
+
+    it('logs the actual parse error so a corrupted secret is diagnosable (#316)', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { request } = makeApp('{broken')
+      await request({ 'X-API-Key': 'any' })
+      expect(spy).toHaveBeenCalledTimes(1)
+      // The log must carry the underlying SyntaxError detail, not just a generic
+      // string — operators can't fix a corrupt API_KEY_MAP they can't see. The
+      // generic message already says "...not valid JSON", so assert the actual
+      // parse error (its distinctive wording / the bad input) is included too.
+      const logged = spy.mock.calls[0].map(String).join(' ')
+      expect(logged).toMatch(/API_KEY_MAP/)
+      expect(logged).toMatch(/Unexpected|Expected|position|in JSON at/i)
+    })
   })
 })
+
+afterEach(() => vi.restoreAllMocks())

@@ -15,8 +15,10 @@ export async function apiKeyAuth(c: Context<{ Bindings: Env; Variables: Variable
   let keyMap: Record<string, string>
   try {
     keyMap = JSON.parse(c.env.API_KEY_MAP)
-  } catch {
-    console.error('API_KEY_MAP secret is not valid JSON')
+  } catch (e) {
+    // Log the underlying parse error (server-side only) so a corrupted secret is
+    // diagnosable; the caller still gets a generic message (never leak config).
+    console.error('API_KEY_MAP secret is not valid JSON:', e instanceof Error ? e.message : String(e))
     return c.json({ error: 'Internal configuration error' }, 500)
   }
 

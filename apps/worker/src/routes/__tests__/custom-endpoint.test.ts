@@ -119,3 +119,58 @@ describe('custom endpoint lookup failure handling (#303)', () => {
     expect(res.status).toBe(404)
   })
 })
+
+// Lock the remaining lead-facing gates on this custom-endpoint door (#316). A
+// corrupt cache or a disabled/unauthorized endpoint must resolve to the right
+// status — never silently drop or misroute a live lead.
+describe('custom endpoint cache + gate handling (#316)', () => {
+  // KV returns the given value for the endpoint cache key; DB lookup is mocked.
+  function envWithCache(cachedValue: string | null): Env {
+    return {
+      WORKFLOW_CACHE: { get: async () => cachedValue, put: async () => {}, delete: async () => {} },
+      API_KEY_MAP: '{}',
+    } as unknown as Env
+  }
+  function postTo(env: Env, headers: Record<string, string> = {}) {
+    const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+    return makeApp().request(
+      'http://hook.trypennie.dev/tripoint/bidding',
+      { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json', ...headers } },
+      env,
+      executionCtx as unknown as ExecutionContext
+    )
+  }
+  const activeEndpoint = {
+    data: {
+      id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true,
+      workflows: { definition: { trigger: { config: { auth_method: 'none' } } } },
+    },
+    error: null,
+  }
+
+  it('falls through to the DB when the cache entry is corrupt — never fails the lead', async () => {
+    // A stale/corrupt KV entry must not error the request; it falls through to
+    // the DB and executes normally. Otherwise a bad cache write drops live leads.
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(activeEndpoint))
+    vi.mocked(executeWorkflow).mockResolvedValue({
+      executionId: 'x', response: { ok: true }, status: 200, traceId: 't', idempotentReplay: false,
+    } as Awaited<ReturnType<typeof executeWorkflow>>)
+    const res = await postTo(envWithCache('{corrupt-not-json'))
+    expect(res.status).toBe(200)
+    expect(executeWorkflow).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns 404 for a disabled endpoint (permanent — intentionally off)', async () => {
+    const ep = JSON.stringify({ id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: false, auth_method: 'none' })
+    const res = await postTo(envWithCache(ep))
+    expect(res.status).toBe(404)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('returns 401 when an api_key endpoint is hit without an X-API-Key header', async () => {
+    const ep = JSON.stringify({ id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true, auth_method: 'api_key' })
+    const res = await postTo(envWithCache(ep))
+    expect(res.status).toBe(401)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+})
