@@ -4,6 +4,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidateWorkflowCache } from '../../engine/definition-loader'
+import { detectCycle } from '../../engine/graph'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -286,6 +287,21 @@ workflows.put('/:id', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, fetchError)
   if (blocked) return blocked
   if (!existing) return c.json({ error: 'Workflow not found' }, 404)
+
+  // Reject a cyclic definition at save time (#334). A cycle (an edge path that
+  // returns to an earlier node) would loop at run time until the #260 step
+  // ceiling aborts it; catching it here flags the misconfiguration in the editor
+  // before it can process a lead. Only checked when a new definition is sent.
+  if (body.definition) {
+    const def = body.definition as WorkflowDefinition
+    const cycle = detectCycle(def.nodes ?? [], def.edges ?? [])
+    if (cycle) {
+      return c.json(
+        { error: `Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.` },
+        400,
+      )
+    }
+  }
 
   // Get next version number. `.single()` reports "no prior versions" (first save)
   // as PGRST116 — fine, start at 1. Any other error is a real DB failure: bailing

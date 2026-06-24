@@ -202,6 +202,25 @@ describe('PUT /workflows/:id', () => {
     expect(body.version_id).toBe('ver-1')
   })
 
+  it('rejects a cyclic definition with 400 before saving (#334)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'validate', type: 'code', config: {} }, { id: 'b', namespace: 'enrich', type: 'code', config: {} }],
+      edges: [{ id: 'e1', source: 'a', target: 'b' }, { id: 'e2', source: 'b', target: 'a' }],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toMatch(/loop/i)
+    expect(body.error).toContain('validate')
+  })
+
   it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
     // A dropped error here defaulted nextVersion to 1, risking a clobber of the
     // existing version chain. A real (non-PGRST116) error must abort.

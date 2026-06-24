@@ -55,7 +55,7 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
-import { validateWorkflow, type ValidationError } from '@/lib/workflow-validation'
+import { validateWorkflow, findWorkflowCycle, type ValidationError } from '@/lib/workflow-validation'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
@@ -2684,6 +2684,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     // duplicate key (constants, headers, injected fields) — #96.
     if (configKeyError) {
       setSaveError('Resolve the blank or duplicate keys in the open node before saving.')
+      return
+    }
+    // Block saving a workflow whose graph has a loop — an edge path that returns
+    // to an earlier node would loop forever at run time (#334). Always block,
+    // live or not; the server rejects it too, this just gives a clean message.
+    const cycle = findWorkflowCycle(nodes, edges)
+    if (cycle) {
+      setSaveError(`Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.`)
       return
     }
     // Block saving a live workflow that has unconfigured nodes

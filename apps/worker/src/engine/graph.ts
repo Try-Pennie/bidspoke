@@ -21,6 +21,53 @@ export function outgoingEdges(nodeId: string, edges: EdgeDefinition[]): EdgeDefi
   return edges.filter((e) => e.source === nodeId)
 }
 
+// Detect a directed cycle in the workflow graph (#334). Returns the looping
+// node namespaces (the back-edge target repeated at both ends, e.g.
+// ['enrich','score','enrich']) or null when the graph is acyclic. Used to reject
+// a cyclic definition at save time — at run time the walk would loop until the
+// #260 step ceiling kills it. All edges are treated as directed source→target,
+// so branch arms / parallel children / bid-group fan-out are covered; the
+// `trigger` pseudo-source has no incoming edge and so can never sit on a cycle.
+export function detectCycle(nodes: NodeDefinition[], edges: EdgeDefinition[]): string[] | null {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]))
+  const label = (id: string) => nodeById.get(id)?.namespace ?? id
+
+  const adjacency = new Map<string, string[]>()
+  for (const e of edges) {
+    const list = adjacency.get(e.source)
+    if (list) list.push(e.target)
+    else adjacency.set(e.source, [e.target])
+  }
+
+  // White (unvisited) / gray (on the current DFS path) / black (fully explored).
+  const state = new Map<string, 'gray' | 'black'>()
+  const pathStack: string[] = []
+  let cycle: string[] | null = null
+
+  const visit = (u: string): boolean => {
+    state.set(u, 'gray')
+    pathStack.push(u)
+    for (const v of adjacency.get(u) ?? []) {
+      const vs = state.get(v)
+      if (vs === 'gray') {
+        // Back edge — the cycle is from v's first appearance on the path to here.
+        const start = pathStack.indexOf(v)
+        cycle = [...pathStack.slice(start).map(label), label(v)]
+        return true
+      }
+      if (vs === undefined && visit(v)) return true
+    }
+    pathStack.pop()
+    state.set(u, 'black')
+    return false
+  }
+
+  for (const n of nodes) {
+    if (state.get(n.id) === undefined && visit(n.id)) return cycle
+  }
+  return null
+}
+
 // Find a node by id
 export function findNode(id: string, nodes: NodeDefinition[]): NodeDefinition | undefined {
   return nodes.find((n) => n.id === id)
