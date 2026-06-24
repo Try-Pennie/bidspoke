@@ -3,12 +3,14 @@
  *
  * When a Response node has continue_after_response:true, the response is sent
  * to the caller early and the walk keeps running post-response steps in the
- * background (the "Offer Response then patch Salesforce" pattern). If one of
- * those steps throws, the walk error used to be destructured away in the
- * finalize closure, leaving the execution recorded as completed/successful
- * with no failure alert. These tests guard that:
- *   - the caller still gets the early (successful) response, and
- *   - the execution record is promoted to failed and the alert fires.
+ * background (the "Offer Response then patch Salesforce" pattern). The lead was
+ * served correctly, so a failure in one of those post-response steps must NOT
+ * hard-fail/per-run-page the execution (#310 / the 2026-06-15 false-page class).
+ * These tests guard that:
+ *   - the caller still gets the early (successful) response,
+ *   - the execution is recorded 'degraded' (visible, served-but-side-effect-failed),
+ *     NOT 'failed', and the per-run failure alert does NOT fire (a writeback
+ *     failure dead-letters via a rate-aggregated alert instead).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -110,7 +112,7 @@ beforeEach(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('post-response step failure', () => {
-  it('promotes the execution to failed and fires the alert, while the caller still gets the early response', async () => {
+  it('records degraded (not failed) without per-run paging, while the caller still gets the early response', async () => {
     vi.mocked(executeNode).mockImplementation(async (node: NodeDefinition) => {
       if (node.type === 'response') {
         return { output: EARLY_RESPONSE, earlyResponse: EARLY_RESPONSE, continueAfterResponse: true }
@@ -127,20 +129,17 @@ describe('post-response step failure', () => {
 
     await harness.flush()
 
-    // Execution record promoted to failed, blaming the post-response step.
+    // Served correctly, so the run is DEGRADED, not failed — the writeback detail
+    // is recorded and the served status (200) is preserved.
     const updateCalls = vi.mocked(updateExecutionRecord).mock.calls
     const lastUpdate = updateCalls[updateCalls.length - 1][3] as Record<string, unknown>
-    expect(lastUpdate.status).toBe('failed')
-    expect(lastUpdate.outcome).toBe('failed')
+    expect(lastUpdate.status).toBe('degraded')
+    expect(lastUpdate.outcome).not.toBe('failed')
     expect(String(lastUpdate.error_message)).toContain('Salesforce patch failed')
-    // The status the caller actually received is still recorded as 200.
     expect(lastUpdate.response_status).toBe(200)
 
-    // Failure alert fired for the post-response step.
-    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
-    const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
-    expect(alert.alertType).toBe('failure')
-    expect(alert.failedStep).toBe('patch_sf')
+    // No per-run failure alert — the writeback failure dead-letters separately.
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
   })
 
   it('a successful continuation stays completed with no alert', async () => {
@@ -161,7 +160,7 @@ describe('post-response step failure', () => {
     expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
   })
 
-  it('a suppressed / business-rejection continuation records failed but does not alert', async () => {
+  it('a suppressed / business-rejection continuation records degraded but does not alert', async () => {
     vi.mocked(executeNode).mockImplementation(async (node: NodeDefinition) => {
       if (node.type === 'response') {
         return { output: EARLY_RESPONSE, earlyResponse: EARLY_RESPONSE, continueAfterResponse: true }
@@ -176,7 +175,7 @@ describe('post-response step failure', () => {
 
     const updateCalls = vi.mocked(updateExecutionRecord).mock.calls
     const lastUpdate = updateCalls[updateCalls.length - 1][3] as Record<string, unknown>
-    expect(lastUpdate.status).toBe('failed')
+    expect(lastUpdate.status).toBe('degraded')
     expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
   })
 })

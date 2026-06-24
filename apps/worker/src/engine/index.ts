@@ -34,7 +34,8 @@ import {
   extractBidGroupSummary,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary } from './bid-log'
-import type { OutcomeAlertDeps } from './durability'
+import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
+import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
@@ -451,17 +452,22 @@ export async function executeWorkflow(
             ? (walkResult as { __error: unknown }).__error
             : null
 
-        // Backstop: a "completed" execution that actually failed downstream of
-        // the response, never advanced past the trigger (no node recorded a
-        // successful output), or whose step rows were rejected by Postgres
-        // (e.g. missing-column migration drift) is not a success. Promote to
-        // failed so the dashboard, Slack alert, and outcome reflect reality.
-        // The HTTP response already sent to the caller is unaffected;
-        // response_status below still records what they actually received.
-        let finalStatus = executionStatus
+        // Status means "was the lead served correctly", not "did every
+        // post-response side-effect succeed". A served-correctly run whose
+        // post-response continuation (the Salesforce writeback after the Offer
+        // Response) later threw is 'degraded' — visible, but NOT a hard 'failed'
+        // that per-run pages; the failure dead-letters instead (#310). The
+        // genuine backstops — step-log persistence failure (data loss) and
+        // never-advanced — mean the lead was NOT served correctly and stay
+        // 'failed'. The HTTP response already sent is unaffected; response_status
+        // below still records what the caller received.
+        const finalStatus = resolveContinuationStatus(executionStatus, {
+          hasContinuationError: continuationError != null,
+          hasFlushError: flushError != null,
+          neverAdvanced: finalNodeNamespace == null,
+        })
         let finalErrorMessage = errorMessage
-        if (finalStatus === 'completed' && continuationError) {
-          finalStatus = 'failed'
+        if (finalStatus === 'degraded' && continuationError) {
           if (continuationError instanceof StepFailureError) {
             failedStep = continuationError.stepNamespace
             failedErrorType = continuationError.errorType
@@ -470,12 +476,28 @@ export async function executeWorkflow(
             failedErrorType = failedErrorType ?? 'permanent'
           }
           finalErrorMessage = continuationError instanceof Error ? continuationError.message : coerceString(continuationError)
-        } else if (finalStatus === 'completed' && flushError) {
-          finalStatus = 'failed'
+          // Tier-3 (external SF writeback) dead-letter: the node's own withRetry
+          // already provided at-least-once, so this only surfaces exhaustion via
+          // the rate-aggregated alert — no per-run page. Gated like the failure
+          // alert: skip business rejections (errorType null), suppressed,
+          // muted, and shared-upstream-outage signals.
+          if (
+            failedErrorType !== null &&
+            !failedSuppressAlert &&
+            !options.isTest &&
+            !matchesMutedSignal(finalErrorMessage, mutedFailureSignals) &&
+            !classifyOutageCause(finalErrorMessage)
+          ) {
+            executionCtx.waitUntil(
+              recordOutcomeDeadLetter('sf_writeback', continuationError, { ...outcomeDeps, supabase }).catch((e) =>
+                console.error('[durability] sf_writeback dead-letter failed:', e),
+              ),
+            )
+          }
+        } else if (finalStatus === 'failed' && executionStatus === 'completed' && flushError) {
           failedErrorType = failedErrorType ?? 'permanent'
           finalErrorMessage = `Step logs failed to persist: ${flushError}`
-        } else if (finalStatus === 'completed' && finalNodeNamespace == null) {
-          finalStatus = 'failed'
+        } else if (finalStatus === 'failed' && executionStatus === 'completed' && finalNodeNamespace == null) {
           failedErrorType = failedErrorType ?? 'permanent'
           finalErrorMessage = 'Execution did not advance past the trigger — no step completed.'
         }

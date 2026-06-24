@@ -1,0 +1,27 @@
+// Final execution-status resolution for the post-walk finalize handler (#310).
+//
+// Execution `status` means "was the lead served correctly", NOT "did every
+// post-response side-effect succeed". A run that delivered a correct response but
+// whose post-response continuation (the Salesforce writeback after the Offer
+// Response) later failed is 'degraded' — served, but a side-effect didn't land.
+// It is visible (not silently 'completed') yet does not hard-page as 'failed';
+// the failure is surfaced via a rate-aggregated dead-letter alert instead.
+//
+// The genuine backstops stay 'failed' — they mean the lead was NOT served right:
+//   - flush error: the step-log rows were rejected by Postgres (data loss).
+//   - never advanced: no node recorded a successful output past the trigger.
+// A flush/never-advanced condition outranks a continuation error.
+
+export interface ContinuationFlags {
+  hasContinuationError: boolean
+  hasFlushError: boolean
+  neverAdvanced: boolean
+}
+
+export function resolveContinuationStatus(executionStatus: string, flags: ContinuationFlags): string {
+  if (executionStatus !== 'completed') return executionStatus
+  if (flags.hasFlushError) return 'failed'
+  if (flags.neverAdvanced) return 'failed'
+  if (flags.hasContinuationError) return 'degraded'
+  return 'completed'
+}

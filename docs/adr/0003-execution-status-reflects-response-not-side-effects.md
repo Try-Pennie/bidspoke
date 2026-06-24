@@ -4,11 +4,13 @@ Execution `status` should mean "was the lead served correctly." A lead that rece
 
 ## Status
 
-accepted (supersedes the current behaviour; not yet implemented)
+accepted; **implemented 2026-06-24** (#309 Phase 5 / #310). The post-response writeback failure is NOT moved onto a durable queue: it stays a tier-3 external HTTP call retried by the Salesforce node's own `withRetry`, and on exhaustion it dead-letters via the rate-aggregated `recordOutcomeDeadLetter('sf_writeback', …)` alert — not promoted to `failed`, not per-run paged.
+
+**Refinement on the team's decision:** a served lead whose post-response writeback fails is recorded as **`degraded`** (a distinct, visible status), not silently `completed`. This was an explicit override of the original "never gates status" framing: the lead-served signal is preserved (no hard `failed`, no page), but the degradation is surfaced in `status` rather than hidden.
 
 ## Context
 
-Today `apps/worker/src/engine/index.ts` (~L443-452) deliberately promotes a `completed` run to `failed` and pages when a `continue_after_response` step throws, to avoid silently recording a writeback loss as success. This wedges the team between two bad outcomes: page on a bookkeeping failure for a lead that got a correct `200` (noisy, erodes alert trust — the 2026-06-15 incident), or stop paging and silently lose the writeback (the Outcome-record loss ADR 0002 forbids). The root cause is that `status` overloads "was the lead served" with "did every post-response side-effect succeed."
+Previously `apps/worker/src/engine/index.ts` (the post-walk finalize handler, ~L452-481) deliberately promoted a `completed` run to `failed` and paged when a `continue_after_response` step threw, to avoid silently recording a writeback loss as success. This wedges the team between two bad outcomes: page on a bookkeeping failure for a lead that got a correct `200` (noisy, erodes alert trust — the 2026-06-15 incident), or stop paging and silently lose the writeback (the Outcome-record loss ADR 0002 forbids). The root cause is that `status` overloads "was the lead served" with "did every post-response side-effect succeed."
 
 ## Considered options
 
@@ -18,7 +20,7 @@ Today `apps/worker/src/engine/index.ts` (~L443-452) deliberately promotes a `com
 
 ## Consequences
 
-- The L443-452 promotion of post-response continuation failures to `failed` is removed once writebacks move to the queue; `status` then derives from response delivery (and the genuine pre-response/never-advanced/flush-error backstops remain).
-- A new, separate alert path fires when a queued writeback is dead-lettered after its retries are exhausted.
+- The L452-481 promotion of post-response continuation failures to `failed` is replaced (commit on 2026-06-24) by a `degraded` status via `resolveContinuationStatus` (engine/finalize-status.ts); `status` now derives from response delivery. The genuine pre-response / never-advanced / flush-error backstops still resolve to `failed`.
+- A genuine writeback failure dead-letters via `recordOutcomeDeadLetter('sf_writeback', …)` (engine/durability.ts, #309 Phase 2) — rate-aggregated, gated like the failure alert (skips business rejections / suppressed / muted / shared-outage signals). The writeback is idempotent: `executeSalesforceNode` PATCHes by Salesforce record id, so a retry is not a create.
 - Pre-response Salesforce reads (eligibility lookups) are a different class: they must stay inline because routing depends on them, and are fixed by being made cheap/bounded (precomputed `Is_Eligible__c` flag), not by decoupling.
-- Tracked alongside #309. Not yet implemented as of 2026-06-22.
+- Follow-up: dashboard/list rendering of the new `degraded` status (so it reads as served-with-a-degraded-writeback, distinct from `failed`). The status value is recorded now; UI polish is separate.

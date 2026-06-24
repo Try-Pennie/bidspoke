@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer, defaultRangeExtractor } from '@tanstack/react-virtual'
 import { api } from '@/lib/api'
 import * as execCache from '@/lib/execution-cache'
-import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw } from 'lucide-react'
+import { CheckCircle, CheckCircle2, XCircle, Loader2, RotateCcw, AlertTriangle } from 'lucide-react'
 
 const PAGE_SIZE = 100
 
@@ -82,9 +82,16 @@ const OUTCOME_ICON: Record<string, { icon: React.ElementType; color: string }> =
   failed:     { icon: XCircle,      color: 'text-red-500'   },
 }
 const RUNNING_ICON = { icon: Loader2, color: 'text-amber-400' }
+// The lead was served, but a post-response side-effect (e.g. the Salesforce
+// writeback) failed (#310). Distinct from completed so it's visibly surfaced
+// rather than hidden behind the served outcome.
+const DEGRADED_ICON = { icon: AlertTriangle, color: 'text-amber-500' }
 
-function iconFor(exec: { status: string; outcome: string | null }) {
+export function iconFor(exec: { status: string; outcome: string | null }) {
   if (exec.status === 'running') return RUNNING_ICON
+  // A degraded run has a non-failed outcome (the lead was served), so check
+  // status BEFORE the outcome fallback or it would render as a normal completed.
+  if (exec.status === 'degraded') return DEGRADED_ICON
   return OUTCOME_ICON[exec.outcome ?? exec.status] ?? OUTCOME_ICON.failed
 }
 
