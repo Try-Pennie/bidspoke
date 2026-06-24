@@ -428,12 +428,19 @@ const CLASSIFIERS: Record<string, Classifier> = {
   tripoint_result: tripointResult,
 }
 
-function tripointResult(body: unknown): 'Success' | 'Duplicate' | 'Fail' {
-  const code = readPath(body, 'data.createLead.resultCode')
-  if (typeof code !== 'number') return 'Fail'
+// Tripoint result-code classification (single source of truth, shared with the
+// code-node bid-log derivation in bid-log.ts). Approved 1000-1001 and 1013-1017;
+// 1002-1005 and 1020 are Duplicate; everything else is a rejection.
+export function classifyTripointResultCode(code: number): 'Success' | 'Duplicate' | 'Fail' {
   if ((code >= 1002 && code <= 1005) || code === 1020) return 'Duplicate'
   if (code === 1000 || code === 1001 || (code >= 1013 && code <= 1017)) return 'Success'
   return 'Fail'
+}
+
+function tripointResult(body: unknown): 'Success' | 'Duplicate' | 'Fail' {
+  const code = readPath(body, 'data.createLead.resultCode')
+  if (typeof code !== 'number') return 'Fail'
+  return classifyTripointResultCode(code)
 }
 
 function extractExtras(

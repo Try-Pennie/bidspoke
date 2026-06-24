@@ -28,10 +28,12 @@ import {
   extractSightingFields,
   extractPersonFields,
   finalizeSighting,
+  recordBidAttempt,
   extractEnrichment,
   deriveRejectReason,
   extractBidGroupSummary,
 } from './lead-sightings'
+import { deriveCodeNodeBidAttempts } from './bid-log'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
@@ -588,6 +590,21 @@ export async function executeWorkflow(
             executionStatus === 'failed'
               ? 'failed'
               : passedThroughSuccessNs ? 'successful' : 'completed'
+
+          // Code-node bidding flows (e.g. the Engine Bidding Workflow's
+          // tripoint_ping) never reach recordBidAttempt through partner_bid/
+          // bid_group, so derive the bid attempt from the existing node output
+          // and register it here (#349). Gated by sightingId above (capture on).
+          for (const bid of deriveCodeNodeBidAttempts(ctx.steps, {
+            sighting_id: sightingId,
+            trace_id: traceId,
+            execution_id: executionId,
+            attempted_at_utc: startedAtDate,
+            is_test: false,
+          })) {
+            ctx.pendingBidWrites ??= []
+            ctx.pendingBidWrites.push(recordBidAttempt(supabase, bid))
+          }
 
           // Wait for every bid-attempt insert to commit before finalize's
           // winner UPDATE runs (#88). The UPDATE matches lead_sighting_bids on
