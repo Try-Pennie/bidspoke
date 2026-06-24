@@ -43,7 +43,9 @@ function makeSupabase(onInsert: (row: Record<string, unknown>) => void): Supabas
   return {
     from(table: string) {
       if (table === 'lead_sighting_bids') {
-        return { insert: (row: Record<string, unknown>) => { onInsert(row); return Promise.resolve({ error: null }) } }
+        // recordBidAttempt writes via upsert (ON CONFLICT DO NOTHING) for replay
+        // idempotency (#340).
+        return { upsert: (row: Record<string, unknown>) => { onInsert(row); return Promise.resolve({ error: null }) } }
       }
       // partner_configs: .select().eq().single()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

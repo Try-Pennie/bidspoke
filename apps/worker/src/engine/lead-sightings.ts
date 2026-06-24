@@ -445,12 +445,22 @@ export async function recordBidAttempt(
   }
 
   // Retry transient failures (schema-cache reload during the nightly purge) so
-  // bid attempts aren't silently dropped in that window (#237).
+  // bid attempts aren't silently dropped in that window (#237). The insert is
+  // ON CONFLICT DO NOTHING on (execution_id, partner_slug, attempted_at_utc): a
+  // retry whose first write landed but whose response was lost must not insert a
+  // second bid row and inflate Snowflake bid counts (#340). A legitimate double
+  // ping of the same partner in one run carries a distinct attempted_at_utc, so
+  // the third key column keeps both rows. A duplicate means the row already
+  // landed — success, mirroring insertSighting's convention.
   const { error } = await withDbRetry(async () => {
-    const res = await supabase.from('lead_sighting_bids').insert(row)
+    // upsert with ignoreDuplicates => INSERT ... ON CONFLICT DO NOTHING (the
+    // onConflict/ignoreDuplicates options live on upsert, not insert).
+    const res = await supabase
+      .from('lead_sighting_bids')
+      .upsert(row, { onConflict: 'execution_id,partner_slug,attempted_at_utc', ignoreDuplicates: true })
     return { error: res.error }
   })
-  if (error) {
+  if (error && !isDuplicateError(error)) {
     console.error('[lead-sightings] recordBidAttempt failed:', error.message)
   }
 }
