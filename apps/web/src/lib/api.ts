@@ -331,8 +331,22 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     if (redirectOnAuthRejection(res.status)) {
       throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
     }
+    // Surface the server's `error` field when the body is JSON, so users see
+    // the actual rejection (e.g. "Workflow has a loop: ...") instead of an
+    // `API NNN: {json}` wrapper that reads like a developer error. Fall back to
+    // raw text, then a status-only message. Status is kept on the Error for
+    // callers that branch on it.
     const body = await res.text().catch(() => '')
-    throw new Error(`API ${res.status}: ${body}`)
+    let message = body
+    try {
+      const parsed = JSON.parse(body)
+      if (parsed && typeof parsed.error === 'string') message = parsed.error
+    } catch {
+      // body is not JSON; keep the raw text
+    }
+    const err = new Error(message || `API ${res.status}`) as Error & { status?: number }
+    err.status = res.status
+    throw err
   }
   return res.json() as Promise<T>
 }
