@@ -10,7 +10,7 @@ accepted; **implemented 2026-06-24** (#309 Phase 5 / #310). The post-response wr
 
 ## Context
 
-Previously `apps/worker/src/engine/index.ts` (the post-walk finalize handler, ~L452-481) deliberately promoted a `completed` run to `failed` and paged when a `continue_after_response` step threw, to avoid silently recording a writeback loss as success. This wedges the team between two bad outcomes: page on a bookkeeping failure for a lead that got a correct `200` (noisy, erodes alert trust — the 2026-06-15 incident), or stop paging and silently lose the writeback (the Outcome-record loss ADR 0002 forbids). The root cause is that `status` overloads "was the lead served" with "did every post-response side-effect succeed."
+Previously `apps/worker/src/engine/index.ts` (the post-walk finalize handler, L443-481, `resolveContinuationStatus` at L464) deliberately promoted a `completed` run to `failed` and paged when a `continue_after_response` step threw, to avoid silently recording a writeback loss as success. This wedges the team between two bad outcomes: page on a bookkeeping failure for a lead that got a correct `200` (noisy, erodes alert trust — the 2026-06-15 incident), or stop paging and silently lose the writeback (the Outcome-record loss ADR 0002 forbids). The root cause is that `status` overloads "was the lead served" with "did every post-response side-effect succeed."
 
 ## Considered options
 
@@ -20,7 +20,7 @@ Previously `apps/worker/src/engine/index.ts` (the post-walk finalize handler, ~L
 
 ## Consequences
 
-- The L452-481 promotion of post-response continuation failures to `failed` is replaced (commit on 2026-06-24) by a `degraded` status via `resolveContinuationStatus` (engine/finalize-status.ts); `status` now derives from response delivery. The genuine pre-response / never-advanced / flush-error backstops still resolve to `failed`.
+- The L443-481 promotion of post-response continuation failures to `failed` is replaced (commit on 2026-06-24) by a `degraded` status via `resolveContinuationStatus` (engine/finalize-status.ts); `status` now derives from response delivery. The genuine pre-response / never-advanced / flush-error backstops still resolve to `failed`.
 - A genuine writeback failure dead-letters via `recordOutcomeDeadLetter('sf_writeback', …)` (engine/durability.ts, #309 Phase 2) — rate-aggregated, gated like the failure alert (skips business rejections / suppressed / muted / shared-outage signals). The writeback is idempotent: `executeSalesforceNode` PATCHes by Salesforce record id, so a retry is not a create.
 - Pre-response Salesforce reads (eligibility lookups) are a different class: they must stay inline because routing depends on them, and are fixed by being made cheap/bounded (precomputed `Is_Eligible__c` flag), not by decoupling.
 - Follow-up: dashboard/list rendering of the new `degraded` status (so it reads as served-with-a-degraded-writeback, distinct from `failed`). The status value is recorded now; UI polish is separate.
