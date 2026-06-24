@@ -29,11 +29,9 @@ import {
   extractPersonFields,
   finalizeSighting,
   recordBidAttempt,
-  extractEnrichment,
-  deriveRejectReason,
-  extractBidGroupSummary,
+  computeSightingFinalize,
 } from './lead-sightings'
-import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary } from './bid-log'
+import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
 import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
@@ -579,52 +577,15 @@ export async function executeWorkflow(
       walkPromiseCaught
         .then(async () => {
           const completedAtDate = new Date(completedAt)
-          const finalNs = ctx.lastCompletedNamespace ?? null
-          const terminalNode = finalNs ? definition.nodes.find((n) => n.namespace === finalNs) ?? null : null
-          const terminalStep = finalNs ? ctx.steps[finalNs] : undefined
-          // Prefer the bid_group summary; fall back to the code-node (Tripoint)
-          // summary when the flow bid via code nodes, so the finalize winner flip
-          // and bid counts work for those flows too (#349).
-          const bidSummary = pickBidSummary(
-            extractBidGroupSummary(ctx.steps),
-            deriveCodeNodeBidSummary(ctx.steps),
-          )
-          const enrichment = extractEnrichment(ctx.steps)
-          const responseStatusCode = walkStatus
-          const filterPassed =
-            terminalNode?.type === 'filter' && terminalStep
-              ? Boolean((terminalStep.output as { passed?: unknown } | null)?.passed)
-              : null
-          const bidRoute =
-            terminalNode?.type === 'bid_group' && terminalStep
-              ? ((terminalStep.output as { _route?: string } | null)?._route ?? null)
-              : null
-          const terminalHandle =
-            terminalNode?.type === 'filter' && filterPassed === false ? 'exit'
-            : terminalNode?.type === 'filter' && filterPassed === true ? 'pass'
-            : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
-            : null
-
-          const rejectReason = deriveRejectReason({
-            winning_partner_slug: bidSummary.winner_slug,
-            response_status_code: responseStatusCode,
-            terminal_node_type: terminalNode?.type ?? null,
-            terminal_node_label: terminalNode?.namespace ?? finalNs,
-            terminal_node_handle: terminalHandle,
-            terminal_step_output: terminalStep?.output,
+          // Rich finalize fields (winner/bid/enrichment/reject_reason/outcome),
+          // computed by the shared pure fn so this live finalize and the durable
+          // projection onto workflow_executions (block 1, #353) stay identical.
+          const sf = computeSightingFinalize(ctx.steps, definition.nodes, {
+            lastCompletedNamespace: ctx.lastCompletedNamespace ?? null,
+            walkStatus,
+            executionStatus,
+            successNamespaces,
           })
-
-          // Mirror the outcome attribution used for workflow_executions.outcome.
-          // Any completed step in success_node_namespaces marks the run successful,
-          // even if the workflow continues past it (e.g. branch_end / parallel_end
-          // becomes the actual terminal node).
-          const passedThroughSuccessNs = successNamespaces.some(
-            (ns) => ctx.steps[ns]?.status === 'completed'
-          )
-          const sightingOutcome: 'successful' | 'completed' | 'failed' =
-            executionStatus === 'failed'
-              ? 'failed'
-              : passedThroughSuccessNs ? 'successful' : 'completed'
 
           // Code-node bidding flows (e.g. the Engine Bidding Workflow's
           // tripoint_ping) never reach recordBidAttempt through partner_bid/
@@ -656,19 +617,7 @@ export async function executeWorkflow(
             execution_finished_at_et: completedAtDate,
             execution_ended_at_utc: completedAtDate,
             duration_ms: durationMs,
-            terminal_node_id: terminalNode?.id ?? null,
-            terminal_node_label: terminalNode?.namespace ?? finalNs,
-            response_status_code: responseStatusCode,
-            prospect_id: enrichment.prospect_id,
-            equifax_status: enrichment.equifax_status,
-            equifax_error_type: enrichment.equifax_error_type,
-            equifax_score: enrichment.equifax_score,
-            winning_partner_slug: bidSummary.winner_slug,
-            winning_bid_cents: bidSummary.winner_bid_cents,
-            partners_attempted: bidSummary.attempted,
-            partners_responded: bidSummary.responded,
-            reject_reason: rejectReason,
-            outcome: sightingOutcome,
+            ...sf,
           }, outcomeDeps)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))

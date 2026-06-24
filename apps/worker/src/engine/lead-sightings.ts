@@ -7,6 +7,7 @@ import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
 import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
+import { pickBidSummary, deriveCodeNodeBidSummary } from './bid-log'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -654,4 +655,99 @@ export function extractBidGroupSummary(steps: Record<string, StepOutput>): {
     }
   }
   return { winner_slug: null, winner_bid_cents: null, attempted: null, responded: null }
+}
+
+// ============================================================
+// computeSightingFinalize (#353)
+// ============================================================
+// The rich sighting-finalize fields (terminal node, response, winner/bid summary,
+// enrichment, reject_reason, outcome) derived purely from step outputs + the node
+// list. Extracted so BOTH the live finalize (engine block 2) and the durable
+// projection onto workflow_executions (engine block 1, #353 Phase 1) compute them
+// identically. Does NOT do any DB write, bid-attempt registration, or winner-flip.
+export interface SightingFinalizeFields {
+  terminal_node_id: string | null
+  terminal_node_label: string | null
+  response_status_code: number | null
+  prospect_id: string | null
+  equifax_status: string | null
+  equifax_error_type: string | null
+  equifax_score: number | null
+  winning_partner_slug: string | null
+  winning_bid_cents: number | null
+  partners_attempted: number | null
+  partners_responded: number | null
+  reject_reason: string | null
+  outcome: 'successful' | 'completed' | 'failed'
+}
+
+export function computeSightingFinalize(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+  opts: {
+    lastCompletedNamespace: string | null
+    walkStatus: number
+    executionStatus: string   // 'completed' | 'failed'
+    successNamespaces: string[]
+  },
+): SightingFinalizeFields {
+  const finalNs = opts.lastCompletedNamespace
+  const terminalNode = finalNs ? nodes.find((n) => n.namespace === finalNs) ?? null : null
+  const terminalStep = finalNs ? steps[finalNs] : undefined
+
+  // Prefer the bid_group summary; fall back to the code-node (Tripoint) summary
+  // so the winner/bid counts work for code-node bidding flows too (#349).
+  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), deriveCodeNodeBidSummary(steps))
+  const enrichment = extractEnrichment(steps)
+  const responseStatusCode = opts.walkStatus
+
+  const filterPassed =
+    terminalNode?.type === 'filter' && terminalStep
+      ? Boolean((terminalStep.output as { passed?: unknown } | null)?.passed)
+      : null
+  const bidRoute =
+    terminalNode?.type === 'bid_group' && terminalStep
+      ? ((terminalStep.output as { _route?: string } | null)?._route ?? null)
+      : null
+  const terminalHandle =
+    terminalNode?.type === 'filter' && filterPassed === false ? 'exit'
+    : terminalNode?.type === 'filter' && filterPassed === true ? 'pass'
+    : terminalNode?.type === 'bid_group' && bidRoute ? bidRoute
+    : null
+
+  const reject_reason = deriveRejectReason({
+    winning_partner_slug: bidSummary.winner_slug,
+    response_status_code: responseStatusCode,
+    terminal_node_type: terminalNode?.type ?? null,
+    terminal_node_label: terminalNode?.namespace ?? finalNs,
+    terminal_node_handle: terminalHandle,
+    terminal_step_output: terminalStep?.output,
+  })
+
+  // Mirror the outcome attribution used for workflow_executions.outcome: any
+  // completed step in successNamespaces marks the run successful, even if the
+  // flow continues past it (branch_end / parallel_end becomes the terminal node).
+  const passedThroughSuccessNs = opts.successNamespaces.some(
+    (ns) => steps[ns]?.status === 'completed',
+  )
+  const outcome: 'successful' | 'completed' | 'failed' =
+    opts.executionStatus === 'failed'
+      ? 'failed'
+      : passedThroughSuccessNs ? 'successful' : 'completed'
+
+  return {
+    terminal_node_id: terminalNode?.id ?? null,
+    terminal_node_label: terminalNode?.namespace ?? finalNs,
+    response_status_code: responseStatusCode,
+    prospect_id: enrichment.prospect_id,
+    equifax_status: enrichment.equifax_status,
+    equifax_error_type: enrichment.equifax_error_type,
+    equifax_score: enrichment.equifax_score,
+    winning_partner_slug: bidSummary.winner_slug,
+    winning_bid_cents: bidSummary.winner_bid_cents,
+    partners_attempted: bidSummary.attempted,
+    partners_responded: bidSummary.responded,
+    reject_reason,
+    outcome,
+  }
 }
