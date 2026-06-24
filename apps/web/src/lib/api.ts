@@ -132,11 +132,15 @@ export interface StatsResponse {
     completed: number
     failed: number
     exited: number
+    successful: number
+    // Served, but a post-response writeback failed (#310). Counts as served in
+    // success_rate; surfaced as its own number so a writeback problem is visible.
+    degraded: number
     avg_duration_ms: number | null
     p95_duration_ms: number | null
     success_rate: number
   }
-  by_day: Array<{ date: string; completed: number; failed: number; exited: number; total: number }>
+  by_day: Array<{ date: string; completed: number; failed: number; exited: number; degraded: number; total: number }>
   by_workflow: Array<{
     workflow_id: string
     name: string
@@ -145,6 +149,7 @@ export interface StatsResponse {
     failed: number
     exited: number
     successful: number
+    degraded: number
     success_rate: number | null
     avg_duration_ms: number | null
     avg_duration_completed_ms: number | null
@@ -495,9 +500,10 @@ export const api = {
         final_node_namespace: string | null
         started_at: string
       }>>('/api/executions'),
-    list: (workflowId: string, opts?: { outcome?: 'successful' | 'completed' | 'failed'; before?: string; beforeId?: string; shadow?: boolean }) => {
+    list: (workflowId: string, opts?: { outcome?: 'successful' | 'completed' | 'failed'; status?: 'degraded'; before?: string; beforeId?: string; shadow?: boolean }) => {
       const params = new URLSearchParams({ workflow_id: workflowId })
       if (opts?.outcome) params.set('outcome', opts.outcome)
+      if (opts?.status) params.set('status', opts.status)
       if (opts?.before) params.set('before', opts.before)
       if (opts?.beforeId) params.set('before_id', opts.beforeId)
       if (opts?.shadow) params.set('shadow', '1')

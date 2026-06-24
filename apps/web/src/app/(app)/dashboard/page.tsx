@@ -69,7 +69,7 @@ function fmtCost(usd: number | null | undefined) {
 }
 
 type ChartTooltip = {
-  date: string; completed: number; exited: number; failed: number; total: number; x: number
+  date: string; completed: number; exited: number; failed: number; degraded: number; total: number; x: number
 }
 
 function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
@@ -105,6 +105,14 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                   </span>
                   <span className="tabular-nums font-medium text-gray-700">{tooltip.completed}</span>
                 </div>
+                {tooltip.degraded > 0 && (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-1.5 text-gray-500">
+                      <span className="h-2 w-2 flex-shrink-0 rounded-sm bg-amber-400" />Degraded
+                    </span>
+                    <span className="tabular-nums font-medium text-amber-600">{tooltip.degraded}</span>
+                  </div>
+                )}
                 {tooltip.exited > 0 && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="flex items-center gap-1.5 text-gray-500">
@@ -143,9 +151,10 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
         <div className="absolute inset-0 flex items-end">
           {data.map((d) => {
             const completedH = (d.completed / maxTotal) * CHART_H
+            const degradedH = (d.degraded / maxTotal) * CHART_H
             const exitedH = (d.exited / maxTotal) * CHART_H
             const failedH = (d.failed / maxTotal) * CHART_H
-            const totalH = completedH + exitedH + failedH
+            const totalH = completedH + degradedH + exitedH + failedH
 
             return (
               <div
@@ -157,7 +166,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                   const col = e.currentTarget.getBoundingClientRect()
                   setTooltip({
                     date: d.date, completed: d.completed, exited: d.exited,
-                    failed: d.failed, total: d.total,
+                    failed: d.failed, degraded: d.degraded, total: d.total,
                     x: col.left + col.width / 2 - rect.left,
                   })
                 }}
@@ -169,11 +178,14 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                     style={{ width: 'clamp(3px, 42%, 14px)', height: Math.max(totalH, 2) }}
                   >
                     <div className="absolute bottom-0 left-0 right-0 bg-p-blue-dark" style={{ height: completedH }} />
+                    {degradedH > 0 && (
+                      <div className="absolute left-0 right-0 bg-amber-400" style={{ height: degradedH, bottom: completedH }} />
+                    )}
                     {exitedH > 0 && (
-                      <div className="absolute left-0 right-0 bg-slate-400" style={{ height: exitedH, bottom: completedH }} />
+                      <div className="absolute left-0 right-0 bg-slate-400" style={{ height: exitedH, bottom: completedH + degradedH }} />
                     )}
                     {failedH > 0 && (
-                      <div className="absolute left-0 right-0 bg-red-400" style={{ height: failedH, bottom: completedH + exitedH }} />
+                      <div className="absolute left-0 right-0 bg-red-400" style={{ height: failedH, bottom: completedH + degradedH + exitedH }} />
                     )}
                   </div>
                 ) : (
@@ -325,16 +337,19 @@ export default function DashboardPage() {
                 </p>
                 {s && s.total > 0 && (
                   <p className="mt-3 text-sm text-gray-500">
-                    {s.failed > 0 || s.exited > 0 ? (
-                      <>
-                        {s.total} runs:{' '}
-                        {s.failed > 0 && <span className="font-medium text-red-600">{s.failed} failed</span>}
-                        {s.failed > 0 && s.exited > 0 && <span>, </span>}
-                        {s.exited > 0 && <span>{s.exited} exited early</span>}
-                      </>
-                    ) : (
-                      <span className="text-green-700">All {s.total} runs completed</span>
-                    )}
+                    {(() => {
+                      const parts: React.ReactNode[] = []
+                      if (s.failed > 0) parts.push(<span className="font-medium text-red-600">{s.failed} failed</span>)
+                      if (s.degraded > 0) parts.push(<span className="font-medium text-amber-600">{s.degraded} degraded</span>)
+                      if (s.exited > 0) parts.push(<span>{s.exited} exited early</span>)
+                      if (parts.length === 0) return <span className="text-green-700">All {s.total} runs completed</span>
+                      return (
+                        <>
+                          {s.total} runs:{' '}
+                          {parts.map((p, i) => <span key={i}>{i > 0 ? ', ' : ''}{p}</span>)}
+                        </>
+                      )
+                    })()}
                   </p>
                 )}
               </div>
@@ -364,6 +379,7 @@ export default function DashboardPage() {
             <p className="text-base font-semibold text-graphite">Execution volume</p>
             <div className="flex items-center gap-4 text-xs text-gray-500">
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-p-blue-dark" />Completed</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-400" />Degraded</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-400" />Exited</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-400" />Failed</span>
             </div>
@@ -411,6 +427,7 @@ export default function DashboardPage() {
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Completed</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Successful</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Degraded</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Failed</th>
                     <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Est. cost</th>
                   </tr>
@@ -453,6 +470,9 @@ export default function DashboardPage() {
                           {wf.successful > 0 && (
                             <div className="text-xs text-gray-400">{fmt(wf.avg_duration_successful_ms)}</div>
                           )}
+                        </td>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.degraded ? 'text-amber-600' : 'text-gray-400'}`}>
+                          <div>{wf.degraded || '—'}</div>
                         </td>
                         <td className={`px-3 py-2.5 text-right tabular-nums ${wf.failed ? 'text-red-500' : 'text-gray-400'}`}>
                           <div>{wf.failed || '—'}</div>

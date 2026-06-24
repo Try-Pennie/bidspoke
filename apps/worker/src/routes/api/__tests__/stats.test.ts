@@ -139,6 +139,22 @@ const execFailed = {
   is_test: false,
 }
 
+// A degraded run (#310/#352): the lead was served, but a post-response writeback
+// failed. status='degraded' with a non-failed outcome. It must count as served
+// (not failed, not dropped) in the stats.
+const execDegraded = {
+  id: 'exec-3',
+  workflow_id: 'wf-1',
+  status: 'degraded',
+  outcome: 'completed',
+  duration_ms: 300,
+  started_at: `${today}T12:00:00Z`,
+  error_message: null,
+  source: 'api',
+  trace_id: 'trace-3',
+  is_test: false,
+}
+
 async function makeApp() {
   const { default: api } = await import('../index')
   return api
@@ -222,6 +238,39 @@ describe('GET /stats', () => {
     expect(body.summary.failed).toBe(1)
     expect(body.summary.avg_duration_ms).toBe(167)  // (200+200+100)/3 rounded
     expect(body.by_workflow[0].total).toBe(3)
+  })
+
+  it('buckets degraded runs as served (not failed, not dropped) across summary, by_day, by_workflow', async () => {
+    const rollup = execsToRollup([execCompleted, execFailed, execDegraded], [testWorkflow])
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { list: [] },
+        execution_steps: { list: [] },
+        partner_configs: { list: [] },
+      }, { workflow_stats_rollup: rollup }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, '/stats?window=7')
+    const body = await res.json() as {
+      summary: Record<string, number>
+      by_day: Array<{ date: string; degraded: number; total: number }>
+      by_workflow: Array<Record<string, number>>
+    }
+    // Summary: degraded is its own count, counts as served (completed+degraded),
+    // and is NOT in failed.
+    expect(body.summary.total).toBe(3)
+    expect(body.summary.completed).toBe(1)
+    expect(body.summary.failed).toBe(1)
+    expect(body.summary.degraded).toBe(1)
+    // success_rate = served / total = (completed + degraded) / total = 2/3 = 67%
+    expect(body.summary.success_rate).toBe(67)
+    // by_day: degraded bucketed and counted in the day total (not dropped).
+    const todayEntry = body.by_day.find((d) => d.date === today)
+    expect(todayEntry?.degraded).toBe(1)
+    expect(todayEntry?.total).toBe(3)
+    // by_workflow: degraded surfaced per workflow.
+    expect(body.by_workflow[0].degraded).toBe(1)
+    expect(body.by_workflow[0].success_rate).toBe(67)
   })
 
   it('includes recent_failures with workflow name', async () => {

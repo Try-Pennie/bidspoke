@@ -64,6 +64,9 @@ const LOG_LEVEL_CLASS: Record<string, string> = {
 
 const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: string; text: string }> = {
   completed:            { icon: <CheckCircle className="h-4 w-4" />, label: 'Completed',   bg: 'bg-green-50',  text: 'text-green-700' },
+  // Served, but a post-response writeback failed (#310). Amber, not red — the
+  // lead got a correct response; only a side-effect didn't land.
+  degraded:             { icon: <AlertTriangle className="h-4 w-4" />, label: 'Degraded',  bg: 'bg-amber-50',  text: 'text-amber-700' },
   failed:               { icon: <XCircle className="h-4 w-4" />,    label: 'Failed',       bg: 'bg-red-50',    text: 'text-red-700'   },
   skipped:              { icon: <SkipForward className="h-4 w-4" />, label: 'Skipped',      bg: 'bg-gray-50',   text: 'text-gray-500'  },
   running:              { icon: <Clock className="h-4 w-4" />,       label: 'Running',      bg: 'bg-p-blue-light', text: 'text-p-blue-dark' },
@@ -685,6 +688,23 @@ export default function ExecutionDetailPage() {
               </div>
               <StatusBadge status={execution.status} />
             </div>
+
+            {/* Degraded explainer — the lead was served, but a post-response writeback failed (#310) */}
+            {execution.status === 'degraded' && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-700" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Degraded</p>
+                    <p className="mt-1 text-sm text-amber-900">
+                      The lead was served a correct response, but a post-response writeback (e.g. the Salesforce
+                      patch) failed and was dead-lettered for retry. This run is not a failure. Check the steps below
+                      for the writeback error.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Alert TLDR — only shown when this execution triggered a Slack alert */}
             {execution.slack_alert_type && execution.slack_alert_reason && (

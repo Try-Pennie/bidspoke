@@ -102,14 +102,26 @@ interface Props {
   refreshSignal?: number
 }
 
-type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed'
+type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed' | 'degraded'
 
 const FILTER_TABS: { key: OutcomeFilter; label: string }[] = [
   { key: 'all',        label: 'All'        },
   { key: 'successful', label: 'Successful' },
   { key: 'completed',  label: 'Completed'  },
+  { key: 'degraded',   label: 'Degraded'   },
   { key: 'failed',     label: 'Failed'     },
 ]
+
+// Map a filter tab to the api.executions.list query params. 'degraded' is a
+// status (the lead was served but a post-response writeback failed), not an
+// outcome, so it filters by status; the rest filter by outcome. #352
+export function listParamsForFilter(
+  filter: OutcomeFilter,
+): { outcome?: 'successful' | 'completed' | 'failed'; status?: 'degraded' } {
+  if (filter === 'all') return {}
+  if (filter === 'degraded') return { status: 'degraded' }
+  return { outcome: filter }
+}
 
 export default function ExecutionListPanel({ workflowId, selectedId, onSelect, refreshSignal }: Props) {
   const [executions, setExecutions] = useState<ExecRow[]>([])
@@ -159,8 +171,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   // merges so older pages already loaded via loadMore aren't dropped.
   const loadFirstPage = useCallback((silent = false) => {
     if (!silent) setLoading(true)
-    const opts: Parameters<typeof api.executions.list>[1] = {}
-    if (filter !== 'all') opts.outcome = filter
+    const opts: Parameters<typeof api.executions.list>[1] = { ...listParamsForFilter(filter) }
     if (shadow) opts.shadow = true
     const gen = genRef.current
     api.executions
@@ -191,8 +202,8 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
     const opts: Parameters<typeof api.executions.list>[1] = {
       before: oldest.started_at,
       beforeId: oldest.id,
+      ...listParamsForFilter(filter),
     }
-    if (filter !== 'all') opts.outcome = filter
     if (shadow) opts.shadow = true
     const gen = genRef.current
     api.executions

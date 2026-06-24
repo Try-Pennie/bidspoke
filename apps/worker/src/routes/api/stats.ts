@@ -57,7 +57,11 @@ stats.get('/', async (c) => {
   if (rollup.length === 0) return c.json(empty)
 
   // 2. Summary (production runs only — is_test=false)
-  let total = 0, completed = 0, failed = 0, exited = 0, successful = 0
+  // 'degraded' = the lead was served but a post-response writeback failed (#310).
+  // It counts as SERVED (in the success_rate numerator alongside completed), not
+  // as a failure, and is surfaced as its own count so a writeback problem is
+  // visible rather than hidden inside completed.
+  let total = 0, completed = 0, failed = 0, exited = 0, successful = 0, degraded = 0
   let durationSum = 0, durationCount = 0
   for (const r of rollup) {
     if (r.is_test) continue
@@ -65,19 +69,20 @@ stats.get('/', async (c) => {
     if (r.status === 'completed') completed += r.run_count
     else if (r.status === 'failed') failed += r.run_count
     else if (r.status === 'exited') exited += r.run_count
+    else if (r.status === 'degraded') degraded += r.run_count
     if (r.outcome === 'successful') successful += r.run_count
     durationSum += r.duration_ms_sum
     durationCount += r.duration_ms_count
   }
   const avg_duration_ms = durationCount > 0 ? Math.round(durationSum / durationCount) : null
   const p95_duration_ms = null // not computed at rollup level; dashboard doesn't render it
-  const success_rate = total > 0 ? Math.round((completed / total) * 100) : 0
+  const success_rate = total > 0 ? Math.round(((completed + degraded) / total) * 100) : 0
 
   // 3. By day — production runs only
-  const dayMap: Record<string, { completed: number; failed: number; exited: number }> = {}
+  const dayMap: Record<string, { completed: number; failed: number; exited: number; degraded: number }> = {}
   for (let i = windowDays - 1; i >= 0; i--) {
     const key = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10)
-    dayMap[key] = { completed: 0, failed: 0, exited: 0 }
+    dayMap[key] = { completed: 0, failed: 0, exited: 0, degraded: 0 }
   }
   for (const r of rollup) {
     if (r.is_test) continue
@@ -86,17 +91,18 @@ stats.get('/', async (c) => {
     if (r.status === 'completed') day.completed += r.run_count
     else if (r.status === 'failed') day.failed += r.run_count
     else if (r.status === 'exited') day.exited += r.run_count
+    else if (r.status === 'degraded') day.degraded += r.run_count
   }
   const by_day = Object.entries(dayMap).map(([date, d]) => ({
     date,
     ...d,
-    total: d.completed + d.failed + d.exited,
+    total: d.completed + d.failed + d.exited + d.degraded,
   }))
 
   // 4. By workflow — production for counts/durations; cost includes test runs
   type WfStat = {
     name: string
-    total: number; completed: number; failed: number; exited: number; successful: number
+    total: number; completed: number; failed: number; exited: number; successful: number; degraded: number
     duration_sum: number; duration_count: number
     completed_duration_sum: number; completed_duration_count: number
     successful_duration_sum: number; successful_duration_count: number
@@ -110,7 +116,7 @@ stats.get('/', async (c) => {
     if (!wfStats[r.workflow_id]) {
       wfStats[r.workflow_id] = {
         name: r.workflow_name,
-        total: 0, completed: 0, failed: 0, exited: 0, successful: 0,
+        total: 0, completed: 0, failed: 0, exited: 0, successful: 0, degraded: 0,
         duration_sum: 0, duration_count: 0,
         completed_duration_sum: 0, completed_duration_count: 0,
         successful_duration_sum: 0, successful_duration_count: 0,
@@ -125,6 +131,7 @@ stats.get('/', async (c) => {
     if (r.status === 'completed') s.completed += r.run_count
     else if (r.status === 'failed') s.failed += r.run_count
     else if (r.status === 'exited') s.exited += r.run_count
+    else if (r.status === 'degraded') s.degraded += r.run_count
     if (r.outcome === 'successful') s.successful += r.run_count
     s.duration_sum += r.duration_ms_sum
     s.duration_count += r.duration_ms_count
@@ -154,7 +161,8 @@ stats.get('/', async (c) => {
       failed: s.failed,
       exited: s.exited,
       successful: s.successful,
-      success_rate: s.total > 0 ? Math.round((s.completed / s.total) * 100) : null,
+      degraded: s.degraded,
+      success_rate: s.total > 0 ? Math.round(((s.completed + s.degraded) / s.total) * 100) : null,
       avg_duration_ms: s.duration_count > 0 ? Math.round(s.duration_sum / s.duration_count) : null,
       avg_duration_completed_ms: s.completed_duration_count > 0 ? Math.round(s.completed_duration_sum / s.completed_duration_count) : null,
       avg_duration_successful_ms: s.successful_duration_count > 0 ? Math.round(s.successful_duration_sum / s.successful_duration_count) : null,
@@ -189,7 +197,7 @@ stats.get('/', async (c) => {
 
   return c.json({
     window_days: windowDays,
-    summary: { total, completed, failed, exited, successful, avg_duration_ms, p95_duration_ms, success_rate },
+    summary: { total, completed, failed, exited, successful, degraded, avg_duration_ms, p95_duration_ms, success_rate },
     by_day,
     by_workflow,
     recent_failures,
