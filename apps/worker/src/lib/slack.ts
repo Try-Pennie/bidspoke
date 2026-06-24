@@ -891,6 +891,43 @@ export async function sendHyperdriveFallbackAlert(
 }
 
 /**
+ * Alert that the daily lead-sighting strand drain has stalled: in_flight
+ * sightings older than the drain's cutoff are piling up, which means they will
+ * be exported to Snowflake mislabeled (the #343 regression). #350
+ */
+export async function sendDrainStallAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  strandedCount: number,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Lead-sighting strand drain has stalled', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${strandedCount.toLocaleString()}* lead_sightings rows are stuck at \`outcome_state='in_flight'\` and older than 30 hours. The daily drains (08:00 + 08:30 UTC) should have finalized these. While they stay stuck, the 09:00 UTC Snowflake export records them with a null winner/bid/enrichment instead of their real outcome. This is the data-loss mode #343 fixed, so the drain has likely stopped running.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* In the Supabase SQL editor, check the jobs ran: `SELECT j.jobname, d.status, d.return_message, d.start_time FROM cron.job_run_details d JOIN cron.job j USING (jobid) WHERE j.jobname IN (\'reduce-finalize-stranded\',\'finalize-unrecoverable-stranded\') ORDER BY d.start_time DESC LIMIT 6;`. If they errored or did not run, re-run by hand: `SELECT public.reduce_finalize_stranded(8); SELECT public.finalize_unrecoverable_stranded(26);`. Common causes: lock contention with the 03:30 UTC partition purge, a permission change on the SECURITY DEFINER functions, or schema drift on lead_sightings.',
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Strand drain stalled: ${strandedCount.toLocaleString()} in_flight lead_sightings over 30h old`,
+  )) !== null
+}
+
+/**
  * Alert that one or more non-partitioned tables have grown large enough that
  * unbounded PostgREST list reads will truncate at the 1,000-row cap, and they
  * aren't yet in the pagination guard's known list (#222).

@@ -9,6 +9,7 @@ import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runHyperdriveFallbackCheck } from './lib/hyperdrive-fallback'
 import { runBigTableGuard } from './lib/big-table-guard'
+import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -186,6 +187,11 @@ export default {
         runBigTableGuard(supabase, env.IDEMPOTENCY)
           .then((r) => { if (r.offenders.length) console.log(`[big-table-guard] offenders=${r.offenders.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[big-table-guard] check failed:', e))
+      )
+      ctx.waitUntil(
+        runDrainStallCheck(supabase, env.IDEMPOTENCY)
+          .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[drain-stall] check failed:', e))
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(
