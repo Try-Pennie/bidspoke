@@ -765,6 +765,54 @@ export interface BackupFailureAlert {
   error_message: string
 }
 
+export interface OutcomeDeadLetterAlert {
+  /** The tier-2 op that was lost, e.g. 'lead_sightings.finalize'. */
+  label: string
+  consecutive_failures: number
+  error_message: string
+}
+
+/**
+ * Alert that a must-not-lose outcome write was dead-lettered after its retries
+ * were exhausted (or a tier-3 Salesforce writeback was given up on). The record
+ * feeds billing / win-tracking / repeat-lead analytics and is NOT auto-recovered.
+ * Caller has already fetched the connection and checked config_alerts_enabled.
+ * Returns true when delivered. See #309.
+ */
+export async function sendOutcomeDeadLetterAlert(
+  connection: SlackConnection,
+  payload: OutcomeDeadLetterAlert,
+  appUrl: string
+): Promise<boolean> {
+  const errText = payload.error_message.length > 300 ? `${payload.error_message.slice(0, 300)}…` : payload.error_message
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Outcome Record Lost', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `A must-not-lose outcome write (*${payload.label}*) failed after all retries (*${payload.consecutive_failures}* in a row). The record that feeds billing, win-tracking, and repeat-lead analytics was not saved and is not auto-recovered.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* check Supabase health and the nightly partition-purge window (writes 503 briefly during the purge). If the database is healthy, inspect the error above. The lost write must be re-derived manually from the execution log.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
+  ]
+
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Outcome record lost: ${payload.label}`
+  )) !== null
+}
+
 /**
  * Alert that the off-Supabase GitHub backup for a workflow has failed repeatedly.
  * Posted from the workflow save path once the per-org failure streak crosses the

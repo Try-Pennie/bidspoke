@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -402,6 +402,34 @@ describe('sendBackupFailureAlert (#206)', () => {
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('…')
     expect(text).not.toContain('e'.repeat(400))
+  })
+})
+
+describe('sendOutcomeDeadLetterAlert (#309)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
+
+  it('names the lost op, the failure count, the error, and how to fix it', async () => {
+    const sent = await sendOutcomeDeadLetterAlert(
+      conn,
+      { label: 'lead_sightings.finalize', consecutive_failures: 1, error_message: 'PGRST002 schema cache' },
+      'https://app.test',
+    )
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.channel).toBe('#alerts')
+    expect(body.unfurl_links).toBe(false)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('Outcome Record Lost')
+    expect(text).toContain('lead_sightings.finalize')
+    expect(text).toContain('PGRST002 schema cache')
+    expect(text).toContain('How to fix:')
   })
 })
 
