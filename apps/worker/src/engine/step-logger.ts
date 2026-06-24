@@ -277,6 +277,9 @@ export async function updateExecutionRecord(
     response_status?: number
     error_message?: string
     cost_usd?: number
+    // #353: durable projection of the rich sighting-finalize fields, recovered by
+    // the strand drain when the live finalize is lost to isolate eviction.
+    sighting_finalize?: unknown
   },
   env?: Env
 ): Promise<void> {

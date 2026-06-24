@@ -511,6 +511,19 @@ export async function executeWorkflow(
         const finalNodeId = finalNodeNamespace
           ? definition.nodes.find((n) => n.namespace === finalNodeNamespace)?.id ?? null
           : null
+        // #353 Phase 1: project the rich sighting-finalize fields (winner/bid/
+        // enrichment/reject_reason/outcome) onto the execution record — the write
+        // that empirically survives isolate eviction for strands — so the strand
+        // drain can later recover them with full fidelity instead of a reduced
+        // finalize. Same gate as the live finalize below (capture on, non-test).
+        const sightingFinalize = sightingId && !options.isTest
+          ? computeSightingFinalize(ctx.steps, definition.nodes, {
+              lastCompletedNamespace: finalNodeNamespace,
+              walkStatus,
+              executionStatus,
+              successNamespaces,
+            })
+          : undefined
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,
           outcome,
@@ -525,6 +538,7 @@ export async function executeWorkflow(
           response_status: executionStatus === 'completed' ? walkStatus : 500,
           error_message: finalErrorMessage,
           cost_usd: cost,
+          ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
         }, env)
 
         // Mirror the immediate alert gate: skip business rejections

@@ -30,7 +30,7 @@ export function hyperdriveEnabled(env: Env | undefined): env is Env & { HYPERDRI
 // with JSON.stringify and the placeholder is cast `::jsonb`. (node-postgres
 // would stringify plain objects on its own, but explicit casts are unambiguous
 // for both objects and JSON arrays.)
-export const EXECUTION_JSONB_COLS = new Set(['trigger_payload', 'response_body'])
+export const EXECUTION_JSONB_COLS = new Set(['trigger_payload', 'response_body', 'sighting_finalize'])
 export const STEP_JSONB_COLS = new Set(['input', 'output', 'logs'])
 
 type Row = Record<string, unknown>
