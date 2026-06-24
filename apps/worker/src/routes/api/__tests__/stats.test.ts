@@ -262,15 +262,17 @@ describe('GET /stats', () => {
     expect(body.summary.completed).toBe(1)
     expect(body.summary.failed).toBe(1)
     expect(body.summary.degraded).toBe(1)
-    // success_rate = served / total = (completed + degraded) / total = 2/3 = 67%
-    expect(body.summary.success_rate).toBe(67)
+    // success_rate excludes degraded from the numerator (neutral, like exited) but
+    // keeps it in the denominator, so it dips when writebacks fail: completed/total
+    // = 1/3 = 33%. Degraded is surfaced as its own count, not as success.
+    expect(body.summary.success_rate).toBe(33)
     // by_day: degraded bucketed and counted in the day total (not dropped).
     const todayEntry = body.by_day.find((d) => d.date === today)
     expect(todayEntry?.degraded).toBe(1)
     expect(todayEntry?.total).toBe(3)
-    // by_workflow: degraded surfaced per workflow.
+    // by_workflow: degraded surfaced per workflow; not in the success_rate numerator.
     expect(body.by_workflow[0].degraded).toBe(1)
-    expect(body.by_workflow[0].success_rate).toBe(67)
+    expect(body.by_workflow[0].success_rate).toBe(33)
   })
 
   it('includes recent_failures with workflow name', async () => {

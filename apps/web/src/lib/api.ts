@@ -133,8 +133,9 @@ export interface StatsResponse {
     failed: number
     exited: number
     successful: number
-    // Served, but a post-response writeback failed (#310). Counts as served in
-    // success_rate; surfaced as its own number so a writeback problem is visible.
+    // Served, but a post-response writeback failed (#310). Neutral in success_rate
+    // (excluded from the numerator like exited, kept in the denominator); surfaced
+    // as its own number so a writeback problem is visible.
     degraded: number
     avg_duration_ms: number | null
     p95_duration_ms: number | null
