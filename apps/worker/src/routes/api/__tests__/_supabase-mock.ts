@@ -11,9 +11,11 @@
  * PGRST116 not-found on `.single()` and `[]` on a bare await; writes default to
  * a generic error unless a result/error is configured.
  *
- * jwtAuth's allowlist check (`user_allowlist.maybeSingle()`) defaults to an
- * allowlisted user so route handlers run; override per-test by configuring the
- * `user_allowlist` table.
+ * jwtAuth folds the user lookup and the allowlist check into a single
+ * `auth_user_with_allowlist` RPC (#329). The mock's `rpc` derives its result
+ * from the `users` table config (the user row, or its `singleError` for a real
+ * lookup failure) and defaults to allowlisted; override per-test by configuring
+ * the `user_allowlist` table (`{ maybeSingle: null }` to simulate a denied user).
  *
  * NOT used by workflows.test.ts / stats.test.ts — those wire `rpc` with their
  * own bespoke conventions and keep local mocks (#330).
@@ -87,8 +89,33 @@ export function makeSupabase(
   const eqCalls: Record<string, Array<[string, unknown]>> = {}
   const allowlistEmail = opts.allowlistEmail ?? 'dan@pennie.com'
 
+  const firstCfg = (table: string): TableConfig => {
+    const raw = tables[table]
+    return Array.isArray(raw) ? raw[0] ?? {} : raw ?? {}
+  }
+
   return {
     eqCalls,
+    // jwtAuth's one-round-trip auth lookup (#329). Mirrors the old two-query
+    // behavior: users.singleError -> a real lookup error (500); no user row ->
+    // empty rows (401); otherwise one row carrying `allowed`, which defaults to
+    // true unless the `user_allowlist` table is configured to deny.
+    rpc: (name: string, _args: unknown) => {
+      if (name !== 'auth_user_with_allowlist') return Promise.resolve({ data: null, error: null })
+      const usersCfg = firstCfg('users')
+      if (usersCfg.singleError) return Promise.resolve({ data: null, error: usersCfg.singleError })
+      const userRow = usersCfg.single ?? null
+      if (!userRow) return Promise.resolve({ data: [], error: null })
+      let allowed = true
+      const allowCfg = tables['user_allowlist']
+      if (allowCfg) {
+        const c = Array.isArray(allowCfg) ? allowCfg[0] ?? {} : allowCfg
+        if (c.maybeSingle !== undefined || c.single !== undefined) {
+          allowed = !!(c.maybeSingle ?? c.single)
+        }
+      }
+      return Promise.resolve({ data: [{ ...userRow, allowed }], error: null })
+    },
     from: (table: string) => {
       const raw = tables[table]
       const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]

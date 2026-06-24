@@ -48,7 +48,15 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}, 
       })
       return chain
     },
-    rpc: (name: string) => Promise.resolve({ data: rpcs[name] ?? [], error: null }),
+    rpc: (name: string) => {
+      // jwtAuth's one-round-trip auth lookup (#329): return the configured
+      // users row joined to an `allowed` flag (defaults to allowlisted).
+      if (name === 'auth_user_with_allowlist') {
+        const userRow = (Array.isArray(tables['users']) ? tables['users'][0] : tables['users'])?.single ?? null
+        return Promise.resolve({ data: userRow ? [{ ...userRow, allowed: true }] : [], error: null })
+      }
+      return Promise.resolve({ data: rpcs[name] ?? [], error: null })
+    },
   }
 }
 

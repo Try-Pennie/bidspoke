@@ -41,7 +41,10 @@ type TableConfig = {
   singleError?: { code: string; message: string }
 }
 
-function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) {
+function makeSupabase(
+  tables: Record<string, TableConfig | TableConfig[]> = {},
+  opts: { rpc?: (name: string, args: unknown) => Promise<{ data: unknown; error: unknown }> } = {},
+) {
   const callCounts: Record<string, number> = {}
   // Records the columns each table was filtered by, so tests can assert query
   // scoping (e.g. that workflow_executions is scoped by workflow_id, not by a
@@ -50,6 +53,21 @@ function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}) 
 
   return {
     eqCalls,
+    // jwtAuth's one-round-trip auth lookup (#329): return the configured users
+    // row joined to an `allowed` flag (defaults to allowlisted); a `singleError`
+    // on the users config surfaces as a real lookup error (500).
+    rpc: (name: string, args: unknown) => {
+      if (name !== 'auth_user_with_allowlist') {
+        // Non-auth RPCs (e.g. the timeout-suggestions grouped query) delegate to
+        // a test-supplied handler so jwtAuth's auth lookup stays internal.
+        return opts.rpc ? opts.rpc(name, args) : Promise.resolve({ data: null, error: null })
+      }
+      const usersCfg = (Array.isArray(tables['users']) ? tables['users'][0] : tables['users']) ?? {}
+      if (usersCfg.singleError) return Promise.resolve({ data: null, error: usersCfg.singleError })
+      const userRow = usersCfg.single ?? null
+      if (!userRow) return Promise.resolve({ data: [], error: null })
+      return Promise.resolve({ data: [{ ...userRow, allowed: true }], error: null })
+    },
     from: (table: string) => {
       const raw = tables[table]
       const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
@@ -779,10 +797,10 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
         ],
         error: null,
       })
-    const sb = Object.assign(makeSupabase({
+    const sb = makeSupabase({
       users: { single: testUser },
       workflows: { single: wfRow },
-    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
     vi.mocked(createSupabaseClient).mockReturnValue(sb)
 
     const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(undefined) }
@@ -818,10 +836,10 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
 
   it('serves the KV-cached payload without hitting the RPC', async () => {
     const rpc = vi.fn()
-    const sb = Object.assign(makeSupabase({
+    const sb = makeSupabase({
       users: { single: testUser },
       workflows: { single: wfRow },
-    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
     vi.mocked(createSupabaseClient).mockReturnValue(sb)
 
     const cached = { window_days: 1, nodes: [] }
@@ -834,10 +852,10 @@ describe('GET /workflows/:id/timeout-suggestions', () => {
 
   it('degrades to an empty node list when the RPC errors (statement timeout)', async () => {
     const rpc = vi.fn().mockResolvedValue({ data: null, error: { message: 'statement timeout' } })
-    const sb = Object.assign(makeSupabase({
+    const sb = makeSupabase({
       users: { single: testUser },
       workflows: { single: wfRow },
-    }), { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
+    }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
     vi.mocked(createSupabaseClient).mockReturnValue(sb)
 
     const kv = { get: vi.fn().mockResolvedValue(null), put: vi.fn().mockResolvedValue(undefined) }

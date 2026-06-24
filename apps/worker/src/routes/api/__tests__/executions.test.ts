@@ -158,6 +158,14 @@ describe('GET /executions?shadow=1', () => {
     calls: Record<string, [string, unknown[]][]>,
   ) {
     return {
+      // jwtAuth's one-round-trip auth lookup (#329): return the configured
+      // users row joined to an `allowed` flag (defaults to allowlisted).
+      rpc: (name: string, _args: unknown) => {
+        if (name !== 'auth_user_with_allowlist') return Promise.resolve({ data: null, error: null })
+        const userRow = tables['users']?.single ?? null
+        if (!userRow) return Promise.resolve({ data: [], error: null })
+        return Promise.resolve({ data: [{ ...userRow, allowed: true }], error: null })
+      },
       from: (table: string) => {
         const cfg = tables[table] ?? {}
         const rec = (calls[table] ??= [])

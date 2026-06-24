@@ -1752,6 +1752,16 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      auth_user_with_allowlist: {
+        Args: { p_user_id: string }
+        Returns: {
+          id: string
+          organization_id: string
+          email: string
+          display_name: string | null
+          allowed: boolean
+        }[]
+      }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
       create_upcoming_daily_partitions: {

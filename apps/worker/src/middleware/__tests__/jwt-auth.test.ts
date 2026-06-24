@@ -24,6 +24,7 @@ function makeSupabase(
   opts: { allowlisted?: boolean; allowlistError?: boolean } = {}
 ) {
   const { allowlisted = true, allowlistError = false } = opts
+  const calls = { from: 0, rpc: 0 }
   function chainFor(table: string): unknown {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
@@ -43,7 +44,23 @@ function makeSupabase(
     })
     return chain
   }
-  return { from: (table: string) => chainFor(table) }
+  // The auth lookup folds the user fetch and the allowlist check into one RPC
+  // (auth_user_with_allowlist): a real DB error -> { error } (500); a missing
+  // user -> empty rows (401); a found user -> one row with an `allowed` flag.
+  return {
+    __calls: calls,
+    from: (table: string) => {
+      calls.from++
+      return chainFor(table)
+    },
+    rpc: (name: string, _args: unknown) => {
+      calls.rpc++
+      if (name !== 'auth_user_with_allowlist') return Promise.resolve({ data: null, error: null })
+      if (allowlistError) return Promise.resolve({ data: null, error: { message: 'db down', code: '500' } })
+      if (!user) return Promise.resolve({ data: [], error: null })
+      return Promise.resolve({ data: [{ ...user, allowed: allowlisted }], error: null })
+    },
+  }
 }
 
 // ── Test app ──────────────────────────────────────────────────────────────────
@@ -170,6 +187,18 @@ describe('jwtAuth middleware', () => {
       expect(res.status).toBe(200)
       const body = await res.json() as { user: { name: string | null } }
       expect(body.user.name).toBeNull()
+    })
+  })
+
+  describe('single DB round-trip (#329)', () => {
+    it('makes one combined RPC call and no per-table selects', async () => {
+      vi.mocked(verifyJwt).mockResolvedValue({ sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 0, aud: 'test' })
+      const supabase = makeSupabase(testUser, { allowlisted: true })
+      vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request({ Authorization: 'Bearer valid.token' })
+      expect(res.status).toBe(200)
+      expect(supabase.__calls.rpc).toBe(1)
+      expect(supabase.__calls.from).toBe(0)
     })
   })
 
