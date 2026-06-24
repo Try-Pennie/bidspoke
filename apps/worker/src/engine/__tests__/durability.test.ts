@@ -63,6 +63,16 @@ describe('writeOutcome (tier 2)', () => {
     expect(res.error).toBe(PERMANENT)
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
+
+  it('treats a duplicate (23505) as success — no dead-letter, streak cleared', async () => {
+    const kv = fakeKv()
+    kv.store.set('outcome-deadletter:org-1:lead_sightings.insert', '2')
+    const dup = { code: '23505', message: 'duplicate key' }
+    const res = await writeOutcome('lead_sightings.insert', async () => ({ error: dup }), deps(kv))
+    expect(res.error).toBe(dup)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('outcome-deadletter:org-1:lead_sightings.insert')).toBe(false)
+  })
 })
 
 describe('recordOutcomeDeadLetter', () => {

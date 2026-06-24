@@ -34,6 +34,7 @@ import {
   extractBidGroupSummary,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary } from './bid-log'
+import type { OutcomeAlertDeps } from './durability'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
@@ -237,6 +238,11 @@ export async function executeWorkflow(
   // run in waitUntil; failures don't block the workflow.
   // Skipped for test runs and for workflows with capture_sightings=false.
   const sightingId = (options.isTest || !capture_sightings) ? undefined : crypto.randomUUID()
+  // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
+  // lead_sighting_bids / persons writes through writeOutcome so a loss after
+  // retries dead-letters instead of vanishing into a log line.
+  const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL }
+
   if (sightingId) {
     const sightingPayloadFields = extractSightingFields(payload)
     const personFields = extractPersonFields(payload)
@@ -249,6 +255,7 @@ export async function executeWorkflow(
           { organization_id: org_id, ...personFields },
           env.SECRET_ENCRYPTION_KEY,
           env.SSN_HASH_PEPPER,
+          outcomeDeps,
         )
       }
       await insertSighting(supabase, {
@@ -264,7 +271,7 @@ export async function executeWorkflow(
         payload_fields: sightingPayloadFields,
         ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
         person_id: personId,
-      })
+      }, outcomeDeps)
     })().catch((e) => console.error('[lead-sightings] trigger boundary write failed:', e))
     executionCtx.waitUntil(sightingWritePromise)
   }
@@ -609,7 +616,7 @@ export async function executeWorkflow(
             is_test: false,
           })) {
             ctx.pendingBidWrites ??= []
-            ctx.pendingBidWrites.push(recordBidAttempt(supabase, bid))
+            ctx.pendingBidWrites.push(recordBidAttempt(supabase, bid, outcomeDeps))
           }
 
           // Wait for every bid-attempt insert to commit before finalize's
@@ -640,7 +647,7 @@ export async function executeWorkflow(
             partners_responded: bidSummary.responded,
             reject_reason: rejectReason,
             outcome: sightingOutcome,
-          })
+          }, outcomeDeps)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))
     )

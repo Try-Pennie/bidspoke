@@ -5,7 +5,21 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
-import { withDbRetry, isDuplicateError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
+import { writeOutcome, type OutcomeAlertDeps } from './durability'
+
+// Route a tier-2 outcome write through the durability seam when the caller
+// supplied alert deps (engine hot path → retry + dead-letter), else fall back to
+// a bare withDbRetry (tests, one-off backfills). Re-exported convenience so each
+// write site stays a one-liner (#309).
+function runOutcome(
+  label: string,
+  supabase: SupabaseClient,
+  deps: OutcomeAlertDeps | undefined,
+  op: () => Promise<{ error: DbError | null }>,
+): Promise<{ error: DbError | null }> {
+  return deps ? writeOutcome(label, op, { ...deps, supabase }) : withDbRetry(op)
+}
 
 // ============================================================
 // Types
@@ -299,6 +313,7 @@ export async function upsertPerson(
   input: PersonsUpsertInput,
   encryptionKey: string,
   pepper: string,
+  deps?: OutcomeAlertDeps,
 ): Promise<string | null> {
   if (!input.ssn) return null
 
@@ -344,7 +359,7 @@ export async function upsertPerson(
   // the person row isn't silently dropped (#237). persons is slated for
   // deprecation, but retrying is cheap and keeps the writes uniform.
   let personId: string | null = null
-  const { error } = await withDbRetry(async () => {
+  const { error } = await runOutcome('persons.upsert', supabase, deps, async () => {
     const res = await supabase
       .from('persons')
       .upsert(row, { onConflict: 'organization_id,ssn_hash' })
@@ -375,6 +390,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 export async function insertSighting(
   supabase: SupabaseClient,
   input: SightingInsert,
+  deps?: OutcomeAlertDeps,
 ): Promise<string | null> {
   const { id, payload_fields, execution_started_at_et, execution_started_at_utc, ...rest } = input
   const row = {
@@ -400,7 +416,7 @@ export async function insertSighting(
   // Retry transient failures (schema-cache reload during the nightly purge) so
   // analytics rows aren't silently dropped in that window (#237). A duplicate
   // means a prior attempt landed (the id is caller-generated), which is success.
-  const { error } = await withDbRetry(async () => {
+  const { error } = await runOutcome('lead_sightings.insert', supabase, deps, async () => {
     const res = await supabase.from('lead_sightings').insert(row)
     return { error: res.error }
   })
@@ -420,6 +436,7 @@ export async function insertSighting(
 export async function recordBidAttempt(
   supabase: SupabaseClient,
   input: BidAttemptInsert,
+  deps?: OutcomeAlertDeps,
 ): Promise<void> {
   const row = {
     sighting_id: input.sighting_id,
@@ -452,7 +469,7 @@ export async function recordBidAttempt(
   // ping of the same partner in one run carries a distinct attempted_at_utc, so
   // the third key column keeps both rows. A duplicate means the row already
   // landed — success, mirroring insertSighting's convention.
-  const { error } = await withDbRetry(async () => {
+  const { error } = await runOutcome('lead_sighting_bids.insert', supabase, deps, async () => {
     // upsert with ignoreDuplicates => INSERT ... ON CONFLICT DO NOTHING (the
     // onConflict/ignoreDuplicates options live on upsert, not insert).
     const res = await supabase
@@ -473,6 +490,7 @@ export async function recordBidAttempt(
 export async function finalizeSighting(
   supabase: SupabaseClient,
   input: FinalizeSightingInput,
+  deps?: OutcomeAlertDeps,
 ): Promise<void> {
   const { sighting_id, execution_id, execution_started_at_utc, ...fields } = input
 
@@ -499,7 +517,7 @@ export async function finalizeSighting(
 
   // Retry transient failures (schema-cache reload during the nightly purge) so
   // the finalize doesn't strand the sighting in 'in_flight' (#237).
-  const { error } = await withDbRetry(async () => {
+  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, async () => {
     const res = await supabase
       .from('lead_sightings')
       .update(update)
@@ -520,7 +538,7 @@ export async function finalizeSighting(
     // Snowflake. Nulling exported_at re-queues it for the next export, which
     // re-MERGEs the corrected flag (the MERGE is idempotent on id). In the common
     // case the bid hasn't exported yet, so exported_at is already null — a no-op.
-    const { error: bidError } = await withDbRetry(async () => {
+    const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, async () => {
       const res = await supabase
         .from('lead_sighting_bids')
         .update({ is_winner: true, exported_at: null })

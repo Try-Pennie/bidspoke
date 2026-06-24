@@ -15,7 +15,7 @@
 //    withDbRetry — an HTTP PATCH is not a PostgREST op).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { withDbRetry, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../lib/slack'
 
 interface KvLike {
@@ -30,6 +30,12 @@ export interface OutcomeDeps {
   orgId: string
   appUrl: string
 }
+
+// The deps an outcome-write function carries when its caller already holds the
+// SupabaseClient as a separate argument. Optional on those functions: when
+// present the write routes through writeOutcome (retry + dead-letter); when
+// omitted (tests, one-off backfills) it falls back to a bare withDbRetry.
+export type OutcomeAlertDeps = Omit<OutcomeDeps, 'supabase'>
 
 // Each writeOutcome failure already survived the full retry ladder, so a single
 // exhausted loss is a real must-not-lose miss — alert on the first one. A cooldown
@@ -59,7 +65,24 @@ export async function writeOutcome(
   op: () => Promise<{ error: DbError | null }>,
   deps: OutcomeDeps,
 ): Promise<{ error: DbError | null }> {
-  const result = await withDbRetry(op)
+  // A duplicate-key error means the row already landed — that is success, not a
+  // loss. Surface it as a non-error to withDbRetry so it stops immediately (no
+  // wasteful retry ladder, no dead-letter), but remember it so the caller's own
+  // isDuplicateError check still sees it.
+  let duplicate: DbError | null = null
+  const result = await withDbRetry(async () => {
+    const r = await op()
+    if (r.error && isDuplicateError(r.error)) {
+      duplicate = r.error
+      return { error: null }
+    }
+    return r
+  })
+
+  if (duplicate) {
+    await deps.kv.delete(streakKey(deps.orgId, label)).catch(() => {})
+    return { error: duplicate }
+  }
   if (result.error) {
     await recordOutcomeDeadLetter(label, result.error, deps).catch((e) =>
       console.error('[durability] dead-letter alert failed:', e),
