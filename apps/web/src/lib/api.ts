@@ -337,12 +337,16 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     // raw text, then a status-only message. Status is kept on the Error for
     // callers that branch on it.
     const body = await res.text().catch(() => '')
-    let message = body
+    let message = ''
     try {
       const parsed = JSON.parse(body)
       if (parsed && typeof parsed.error === 'string') message = parsed.error
     } catch {
-      // body is not JSON; keep the raw text
+      // Body is not JSON (e.g. a short plain-text server message). Use it as-is,
+      // but collapse infrastructure error pages (HTML, or anything very long)
+      // to a status-only message rather than dumping a raw blob on the user.
+      const trimmed = body.trim()
+      if (trimmed && trimmed.length <= 200 && !trimmed.startsWith('<')) message = trimmed
     }
     const err = new Error(message || `API ${res.status}`) as Error & { status?: number }
     err.status = res.status

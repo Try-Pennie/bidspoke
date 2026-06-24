@@ -53,4 +53,14 @@ describe('req() surfaces the server error message (#337)', () => {
     vi.stubGlobal('fetch', mockResponse(502, ''))
     await expect(api.workflows.list()).rejects.toThrow('API 502')
   })
+
+  it('collapses an HTML gateway error page to a status-only message', async () => {
+    vi.stubGlobal('fetch', mockResponse(502, '<!DOCTYPE html><html><body>Bad gateway</body></html>'))
+    await expect(api.workflows.list()).rejects.toThrow(/^API 502$/)
+  })
+
+  it('collapses an overly long non-JSON body to a status-only message', async () => {
+    vi.stubGlobal('fetch', mockResponse(500, 'x'.repeat(300)))
+    await expect(api.workflows.list()).rejects.toThrow(/^API 500$/)
+  })
 })
