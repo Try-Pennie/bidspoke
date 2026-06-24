@@ -33,7 +33,7 @@ import {
   deriveRejectReason,
   extractBidGroupSummary,
 } from './lead-sightings'
-import { deriveCodeNodeBidAttempts } from './bid-log'
+import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary } from './bid-log'
 import { formatSsn } from './persons-crypto'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from './achieve-log'
 import { fireExecutionAlert } from '../lib/execution-alerts'
@@ -553,7 +553,13 @@ export async function executeWorkflow(
           const finalNs = ctx.lastCompletedNamespace ?? null
           const terminalNode = finalNs ? definition.nodes.find((n) => n.namespace === finalNs) ?? null : null
           const terminalStep = finalNs ? ctx.steps[finalNs] : undefined
-          const bidSummary = extractBidGroupSummary(ctx.steps)
+          // Prefer the bid_group summary; fall back to the code-node (Tripoint)
+          // summary when the flow bid via code nodes, so the finalize winner flip
+          // and bid counts work for those flows too (#349).
+          const bidSummary = pickBidSummary(
+            extractBidGroupSummary(ctx.steps),
+            deriveCodeNodeBidSummary(ctx.steps),
+          )
           const enrichment = extractEnrichment(ctx.steps)
           const responseStatusCode = walkStatus
           const filterPassed =

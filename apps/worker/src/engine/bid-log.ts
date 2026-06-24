@@ -84,3 +84,44 @@ export function deriveCodeNodeBidAttempts(
   }
   return rows
 }
+
+export interface BidSummary {
+  winner_slug: string | null
+  winner_bid_cents: number | null
+  attempted: number | null
+  responded: number | null
+}
+
+// Choose the bid_group summary when it carries any signal (a winner or counted
+// attempts); otherwise fall back to the code-node (Tripoint) summary so the
+// finalize winner flip + bid counts work for code-node bidding flows too (#349).
+export function pickBidSummary(bidGroup: BidSummary, codeNode: BidSummary): BidSummary {
+  return bidGroup.winner_slug || bidGroup.attempted != null ? bidGroup : codeNode
+}
+
+// Code-node equivalent of extractBidGroupSummary, so the finalize winner UPDATE
+// (which flips lead_sighting_bids.is_winner on the winning partner_slug) fires
+// for Tripoint bids that came through a code node. An approved (Success) Tripoint
+// ping makes tripoint the winner; the bid amount is not in Tripoint's response so
+// winner_bid_cents stays null. Same shape as extractBidGroupSummary so the engine
+// can fall back to it when no bid_group winner is present (#349).
+export function deriveCodeNodeBidSummary(steps: Record<string, StepOutput>): BidSummary {
+  let attempted = 0
+  let responded = 0
+  let winner: string | null = null
+  for (const step of Object.values(steps)) {
+    const output = step?.output
+    if (!isTripointBidOutput(output)) continue
+    if (output.skipped === true) continue
+    attempted++
+    responded++
+    const code = Number(output.resultCode)
+    if (Number.isFinite(code) && classifyTripointResultCode(code) === 'Success') winner = 'tripoint'
+  }
+  return {
+    winner_slug: winner,
+    winner_bid_cents: null,
+    attempted: attempted || null,
+    responded: responded || null,
+  }
+}

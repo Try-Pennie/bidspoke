@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { StepOutput } from '../../types'
-import { deriveCodeNodeBidAttempts } from '../bid-log'
+import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, type BidSummary } from '../bid-log'
 
 const meta = {
   sighting_id: 'sight-1',
@@ -81,5 +81,46 @@ describe('deriveCodeNodeBidAttempts — Tripoint (#349)', () => {
       { ...meta, is_test: true },
     )
     expect(rows[0]).toMatchObject({ trace_id: 'trace-1', attempted_at_utc: meta.attempted_at_utc, is_test: true })
+  })
+})
+
+describe('deriveCodeNodeBidSummary — winner from Tripoint (#349)', () => {
+  it('names tripoint the winner on an approved ping (resultCode 1001)', () => {
+    const s = deriveCodeNodeBidSummary(steps({ tripoint_ping: { skipped: false, qualified: true, resultCode: 1001 } }))
+    expect(s).toEqual({ winner_slug: 'tripoint', winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+
+  it('has no winner for a duplicate (1004) but still counts the attempt', () => {
+    const s = deriveCodeNodeBidSummary(steps({ tripoint_ping: { skipped: false, qualified: false, resultCode: 1004 } }))
+    expect(s).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+
+  it('has no winner and no attempt for a skipped ping', () => {
+    const s = deriveCodeNodeBidSummary(steps({ tripoint_ping: { skipped: true, qualified: null, resultCode: null } }))
+    expect(s).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: null, responded: null })
+  })
+
+  it('returns all-null when there is no Tripoint bid (e.g. a bid_group flow)', () => {
+    const s = deriveCodeNodeBidSummary(steps({ equifax: { score: 700 }, some_bid_group: { winner: { partner: 'm1' }, all_bids: [] } }))
+    expect(s).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: null, responded: null })
+  })
+})
+
+describe('pickBidSummary — bid_group preferred, code-node fallback (#349)', () => {
+  const codeNode: BidSummary = { winner_slug: 'tripoint', winner_bid_cents: null, attempted: 1, responded: 1 }
+  const empty: BidSummary = { winner_slug: null, winner_bid_cents: null, attempted: null, responded: null }
+
+  it('uses the bid_group summary when it has a winner', () => {
+    const bg: BidSummary = { winner_slug: 'm1', winner_bid_cents: 5000, attempted: 2, responded: 2 }
+    expect(pickBidSummary(bg, codeNode)).toBe(bg)
+  })
+
+  it('uses the bid_group summary when it counted attempts but had no winner', () => {
+    const bg: BidSummary = { winner_slug: null, winner_bid_cents: null, attempted: 3, responded: 1 }
+    expect(pickBidSummary(bg, codeNode)).toBe(bg)
+  })
+
+  it('falls back to the code-node summary when bid_group found nothing', () => {
+    expect(pickBidSummary(empty, codeNode)).toBe(codeNode)
   })
 })
