@@ -63,6 +63,9 @@ pnpm lint          # lint all packages
 ## Database migrations
 Migrations must be **backward-compatible (expand/contract)** so schema and code can deploy in either order without a window where prod code and schema disagree. In short: additive-only in a single migration (add nullable/defaulted columns, tables, indexes); never rename or drop in the same release that starts using the change — split renames/drops across two releases (expand + dual-write, then contract later). The deploy pipeline only CHECKS migrations are applied; you apply them by hand with `supabase db push`. Full rules + deployment runbook: [docs/adr/0007-expand-contract-migrations.md](./docs/adr/0007-expand-contract-migrations.md).
 
+## Disaster recovery
+Recovery runbook for catastrophic loss (Supabase, Cloudflare, secrets, destructive migration), plus the warm-Pipedream rollback target: [docs/disaster-recovery.md](./docs/disaster-recovery.md). Note: worker secrets are not escrowed yet — see the runbook's Secret inventory.
+
 ## Worker secrets (production)
 These must be set via `wrangler secret put <NAME> --name bidspoke-worker`. Never committed to git.
 
