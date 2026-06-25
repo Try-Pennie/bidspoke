@@ -78,6 +78,25 @@ export function collectDocErrors(pages, llmsTxt, assetExists = () => false) {
   return errors
 }
 
+/**
+ * Coverage check (#382): the reverse of the llms.txt link rule — every PUBLISHED
+ * page must be listed in llms.txt so a new doc cannot ship undiscoverable. Run by
+ * docs:check (and thus the pre-push hook), so a missing index entry fails locally
+ * instead of only in the separate CI docs-coverage test.
+ * @param pages Map of published rel path -> markdown content
+ * @param llmsTxt content of the repo-root llms.txt
+ * @returns string[] of human-readable errors (empty = pass)
+ */
+export function collectCoverageErrors(pages, llmsTxt) {
+  const errors = []
+  for (const rel of [...pages.keys()].sort()) {
+    if (!llmsTxt.includes(`/docs/${rel}`)) {
+      errors.push(`docs/${rel} is published but not listed in llms.txt. Add a link so AI crawlers find it.`)
+    }
+  }
+  return errors
+}
+
 async function walk(dir, base = '') {
   const out = []
   const entries = await fs.readdir(dir, { withFileTypes: true })
@@ -100,14 +119,17 @@ async function main() {
   }
   const llms = await fs.readFile(LLMS_TXT, 'utf8')
 
-  const errors = collectDocErrors(pages, llms, (rel) => existsSync(path.join(DOCS_SRC, rel)))
+  const errors = [
+    ...collectDocErrors(pages, llms, (rel) => existsSync(path.join(DOCS_SRC, rel))),
+    ...collectCoverageErrors(pages, llms),
+  ]
 
   if (errors.length > 0) {
     console.error(`Docs integrity check FAILED (${errors.length} problem${errors.length === 1 ? '' : 's'}):`)
     for (const e of errors) console.error(`  - ${e}`)
     process.exit(1)
   }
-  console.log(`Docs integrity check passed: ${pages.size} published pages, all relative links + llms.txt entries resolve.`)
+  console.log(`Docs integrity check passed: ${pages.size} published pages, all relative links resolve + every page is in llms.txt.`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

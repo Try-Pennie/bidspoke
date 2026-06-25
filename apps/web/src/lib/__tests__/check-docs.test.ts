@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 // The CI docs-integrity gate. The pure check is exported so the link rules are
 // pinned by tests — a regression here means broken links ship silently again.
-import { collectDocErrors, isRelativeDocLink } from '../../../scripts/check-docs.mjs'
+import { collectDocErrors, collectCoverageErrors, isRelativeDocLink } from '../../../scripts/check-docs.mjs'
 
 function pages(entries: Record<string, string>): Map<string, string> {
   return new Map(Object.entries(entries))
@@ -85,5 +85,29 @@ describe('collectDocErrors', () => {
     )
     expect(errs).toHaveLength(1)
     expect(errs[0]).toContain('guides/deleted-guide.md')
+  })
+})
+
+// #382: the reverse of the llms.txt link check above — every PUBLISHED page must
+// appear in llms.txt, so a new doc can't ship undiscoverable. Folded into the
+// docs:check command (and thus the pre-push hook) so this fails locally, not only
+// in the separate CI docs-coverage test.
+describe('collectCoverageErrors', () => {
+  it('passes when every published page is listed in llms.txt', () => {
+    const errs = collectCoverageErrors(
+      pages({ 'README.md': '', 'concepts/overview.md': '' }),
+      'https://bidspoke.trypennie.dev/docs/README.md and /docs/concepts/overview.md'
+    )
+    expect(errs).toEqual([])
+  })
+
+  it('flags a published page missing from llms.txt', () => {
+    const errs = collectCoverageErrors(
+      pages({ 'concepts/overview.md': '', 'concepts/new-page.md': '' }),
+      'https://bidspoke.trypennie.dev/docs/concepts/overview.md'
+    )
+    expect(errs).toHaveLength(1)
+    expect(errs[0]).toContain('concepts/new-page.md')
+    expect(errs[0]).toContain('llms.txt')
   })
 })

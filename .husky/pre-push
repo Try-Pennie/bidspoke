@@ -1,1 +1,8 @@
 node scripts/typecheck-tracked.mjs
+
+# Docs integrity (#382): catch a broken doc link or a page missing from llms.txt
+# locally, instead of as a red CI Test / Deploy Verify after pushing. Fast
+# (<1s), no side effects. Skip with SKIP_DOCS_CHECK=1 if ever needed.
+if [ -z "$SKIP_DOCS_CHECK" ]; then
+  pnpm --filter=web docs:check
+fi
