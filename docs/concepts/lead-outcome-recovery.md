@@ -1,6 +1,6 @@
 # Lead outcome recovery (the strand pipeline)
 
-How a lead's final outcome (who won, what bid, why it was rejected, the enrichment) gets durably recorded, and how the system recovers the ~5% of leads per day whose outcome write is lost to a Worker eviction. This is the end-to-end map; the *why* of the durability tiering lives in [ADR 0002](../adr/0002-observability-vs-outcome-write-tiers.md), and the term definitions are in the [glossary](./glossary.md).
+How a lead's final outcome (who won, what bid, why it was rejected, the enrichment) gets durably recorded, and how the system recovers the ~5% of leads per day whose outcome write is lost to a Worker eviction. This is the end-to-end map; the *why* of the durability tiering lives in ADR 0002 (`docs/adr/0002-observability-vs-outcome-write-tiers.md`, an internal decision record), and the term definitions are in the [glossary](./glossary.md).
 
 ## The problem: strands
 
@@ -92,4 +92,4 @@ The live finalize is TypeScript (`computeSightingFinalize`, `bidAttemptsForProje
 | Projection column | `supabase/migrations/20260624000007_workflow_executions_sighting_finalize.sql` |
 | Drift guard | `apps/web/src/lib/__tests__/worker-strand-drain-contract.test.ts` |
 | Snowflake export (09:00 UTC) | `apps/worker/src/lib/sightings-export.ts`, scheduled in `apps/worker/src/index.ts` |
-| Durability tiering decision | [ADR 0002](../adr/0002-observability-vs-outcome-write-tiers.md) |
+| Durability tiering decision | ADR 0002 (`docs/adr/0002-observability-vs-outcome-write-tiers.md`) |
