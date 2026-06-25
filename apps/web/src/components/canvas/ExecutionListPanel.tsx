@@ -153,7 +153,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
   const genRef = useRef(0)
   useEffect(() => { genRef.current += 1 }, [workflowId, filter])
 
-  function toggleError(id: string, e: React.MouseEvent) {
+  function toggleError(id: string, e: React.MouseEvent | React.KeyboardEvent) {
     e.preventDefault()
     e.stopPropagation()
     setExpandedErrors((prev) => {
@@ -489,15 +489,20 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
                     )}
                   </div>
                   {exec.status === 'failed' && exec.error_message && (
-                    <p
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={(e) => toggleError(exec.id, e)}
-                      className={`mt-0.5 text-xs text-red-500 hover:text-red-700 cursor-pointer ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') toggleError(exec.id, e)
+                      }}
+                      className={`mt-0.5 text-xs text-red-500 hover:text-red-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark ${
                         expandedErrors.has(exec.id) ? 'whitespace-pre-wrap break-words' : 'truncate'
                       }`}
                       title={expandedErrors.has(exec.id) ? 'Click to collapse' : 'Click to expand'}
                     >
                       {exec.error_message}
-                    </p>
+                    </div>
                   )}
                 </a>
               )

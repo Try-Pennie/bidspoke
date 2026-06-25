@@ -254,12 +254,20 @@ export default function SourcesPage() {
                 {sources.map((source) => (
                   <div
                     key={source.name}
-                    className={`cursor-pointer rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
+                    role="button"
+                    tabIndex={0}
+                    className={`cursor-pointer rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark ${
                       selectedSourceName === source.name
                         ? 'border-p-blue-light ring-2 ring-p-blue-dark/20'
                         : 'border-gray-200 hover:border-gray-300'
                     } ${removingName === source.name ? 'opacity-0' : ''}`}
                     onClick={() => setSelectedSourceName(source.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        setSelectedSourceName(source.name)
+                      }
+                    }}
                   >
                     <div className="mb-3 flex items-center justify-between">
                       <p className="font-mono text-sm font-semibold text-graphite">{source.name}</p>
@@ -314,6 +322,7 @@ export default function SourcesPage() {
                       const assignedIds = new Set(assigned.map((a) => a.workflow_id))
                       const unassigned = workflows.filter((w) => !assignedIds.has(w.id))
                       return (
+                        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- propagation guard only (stops the parent card's click); not itself interactive
                         <div className="mt-3 border-t border-gray-100 pt-3" onClick={(e) => e.stopPropagation()}>
                           <div className="mb-1.5 flex items-center justify-between">
                             <span className="text-xs font-medium text-gray-500">

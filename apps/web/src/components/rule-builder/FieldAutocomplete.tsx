@@ -76,10 +76,12 @@ export default function FieldAutocomplete({ value, onChange, suggestions, placeh
         autoComplete="off"
       />
       {shouldShow && (
-        <ul className="absolute z-50 mt-0.5 max-h-40 w-full overflow-auto rounded-md border border-gray-200 bg-white text-xs shadow-lg">
+        <ul role="listbox" className="absolute z-50 mt-0.5 max-h-40 w-full overflow-auto rounded-md border border-gray-200 bg-white text-xs shadow-lg">
           {filtered.map((s, i) => (
             <li
               key={s}
+              role="option"
+              aria-selected={i === activeIdx}
               onMouseDown={(e) => { e.preventDefault(); select(s) }}
               className={`cursor-pointer px-2 py-1 font-mono ${
                 i === activeIdx ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-700 hover:bg-beige'

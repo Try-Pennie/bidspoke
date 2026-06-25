@@ -34,6 +34,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@cloudflare/next-on-pages": "^1.12.0",
     "@playwright/test": "^1.59.1",
     "@tailwindcss/typography": "^0.5.20",

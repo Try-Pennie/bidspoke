@@ -2946,6 +2946,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               </button>
               {showCommitMenu && (
                 <>
+                  {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- presentational click-outside catcher to dismiss the menu; not a tab stop */}
                   <div
                     className="fixed inset-0 z-40"
                     onClick={() => setShowCommitMenu(false)}
@@ -3666,7 +3667,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         const leave = () => { executeNodesDelete(outerIds, edgeIds); setPendingContainerDelete(null) }
         const includeInner = () => { executeNodesDelete([...outerIds, ...innerIds], edgeIds); setPendingContainerDelete(null) }
         return (
+          // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- presentational click-outside backdrop; keyboard close is handled by the dialog's focus trap (Escape)
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events -- propagation guard so a click inside the dialog doesn't dismiss it via the backdrop */}
             <div
               ref={containerDeleteRef}
               role="dialog"

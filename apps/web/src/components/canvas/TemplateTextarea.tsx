@@ -109,10 +109,12 @@ export default function TemplateTextarea({ value, onChange, id, placeholder, cla
         }}
       />
       {suggestions.length > 0 && (
-        <ul className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border border-gray-200 bg-white text-xs shadow-lg">
+        <ul role="listbox" className="absolute z-50 mt-1 max-h-48 w-full overflow-auto rounded-md border border-gray-200 bg-white text-xs shadow-lg">
           {suggestions.map((s, i) => (
             <li
               key={s}
+              role="option"
+              aria-selected={i === activeIdx}
               onMouseDown={(e) => { e.preventDefault(); insertRef(s) }}
               className={`cursor-pointer px-3 py-1.5 font-mono ${
                 i === activeIdx ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-700 hover:bg-beige'
