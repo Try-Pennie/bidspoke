@@ -20,6 +20,7 @@ Understand the platform.
 - [Data references](concepts/data-references.md) - the expression and template syntax (`steps.*`, `trigger.*`, `env.*`).
 - [Workflow definition schema](concepts/workflow-definition-schema.md) - the canonical JSON shape of a workflow. The page an AI uses to build one.
 - [Bidding model](concepts/bidding-model.md) - hub-and-spoke and ping-post bidding, caps, circuit breakers, dedup.
+- [Lead outcome recovery](concepts/lead-outcome-recovery.md) - how lead outcomes are durably recorded and how stranded leads (lost to Worker eviction) are recovered.
 - [Glossary](concepts/glossary.md) - definitions of every term used across the docs.
 
 ## Nodes

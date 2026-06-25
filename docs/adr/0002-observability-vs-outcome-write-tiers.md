@@ -56,3 +56,4 @@ Conclusion: after #353, the only must-not-lose post-response write without recov
 - A Phase 3 CI guard (`apps/web/src/lib/__tests__/durability-seam-guard.test.ts`) scans `apps/worker/src/engine/` and fails if any file other than the seam-routed `lead-sightings.ts` writes an outcome table directly. Batch/admin writers (`lib/sightings-export.ts`, `routes/api/admin.ts`) are intentionally out of scope and documented in the guard.
 - Any future log-sink/queue work must keep the tiers separable, not merge them.
 - See ADR 0003 for how tier-3 writeback failure maps to the `degraded` execution status.
+- For the end-to-end recovery pipeline (live finalize, the projection, the 30-min rich drain, the unrecoverable relabel, the export, and the drift guard), see [Lead outcome recovery](../concepts/lead-outcome-recovery.md).
