@@ -7,6 +7,21 @@ import ConfigPanel from '../ConfigPanel'
 // regression that blanks or crashes a form is caught — a throwing form fails the
 // render. The five api methods the panel and its children call on mount are
 // stubbed to resolve empty.
+// Monaco loads via next/dynamic (ssr:false), which never resolves in jsdom. Mock
+// next/dynamic so the editor renders synchronously as a stub that surfaces the
+// `options` it received — lets us assert the read-only wiring (#view-mode-scroll).
+vi.mock('next/dynamic', () => ({
+  default: () =>
+    function MockMonaco(props: { options?: { readOnly?: boolean } }) {
+      return (
+        <div
+          data-testid="monaco-editor"
+          data-readonly={String(Boolean(props.options?.readOnly))}
+        />
+      )
+    },
+}))
+
 vi.mock('@/lib/api', () => ({
   api: {
     connections: { list: vi.fn().mockResolvedValue([]), syncSchema: vi.fn().mockResolvedValue({}) },
@@ -95,6 +110,28 @@ describe('ConfigPanel — response 4xx warning (#325)', () => {
   it('does not warn for a templated status (resolved at run time)', () => {
     renderPanel(nodeOf('response', { status_code: '{{steps.x.output.status}}' }))
     expect(screen.queryByText(warning)).not.toBeInTheDocument()
+  })
+})
+
+describe('ConfigPanel — code editor stays scrollable in view mode', () => {
+  // In view mode the panel applies `pointer-events-none`, which used to block
+  // mouse-wheel scrolling inside the Monaco editor so reviewers couldn't see code
+  // past the visible region without entering edit mode. The fix makes the editor
+  // genuinely read-only (Monaco `readOnly`) and re-enables pointer events on the
+  // editor itself so it scrolls. Assert the read-only option reaches Monaco.
+  it('passes readOnly to the code editor when the panel is read-only', () => {
+    renderPanel(nodeOf('code'), { readOnly: true })
+    expect(screen.getByTestId('monaco-editor')).toHaveAttribute('data-readonly', 'true')
+  })
+
+  it('keeps the code editor editable when the panel is not read-only', () => {
+    renderPanel(nodeOf('code'))
+    expect(screen.getByTestId('monaco-editor')).toHaveAttribute('data-readonly', 'false')
+  })
+
+  it('passes readOnly to the Salesforce JSON body editor when read-only', () => {
+    renderPanel(nodeOf('salesforce'), { readOnly: true })
+    expect(screen.getByTestId('monaco-editor')).toHaveAttribute('data-readonly', 'true')
   })
 })
 

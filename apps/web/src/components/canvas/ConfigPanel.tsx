@@ -267,7 +267,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           </div>
           {/* Editor — fills remaining height */}
           <div className="flex flex-1 flex-col overflow-hidden">
-            <CodeConfig config={data.config} onChange={updateConfig} />
+            <CodeConfig config={data.config} onChange={updateConfig} readOnly={readOnly} />
           </div>
           {/* Advanced */}
           <div className="border-t border-gray-100 px-4 py-3">
@@ -377,7 +377,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} reportValidity={onKeyEditorValidityChange} />}
-        {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} />}
+        {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} readOnly={readOnly} />}
         {type === 'data_store' && <DataStoreConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'latency_gate' && <LatencyGateConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'achieve_offers' && <AchieveOffersConfig key={node.id} config={data.config} onChange={updateConfig} />}
@@ -960,9 +960,11 @@ function extractPropRefs(script: string): Set<string> {
 function CodeConfig({
   config,
   onChange,
+  readOnly = false,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
+  readOnly?: boolean
 }) {
   const script = (config.script as string | undefined) ?? DEFAULT_SCRIPT
   const propsConfig = (config.props as CodeProp[] | undefined) ?? []
@@ -991,7 +993,10 @@ function CodeConfig({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex-1 overflow-hidden">
+      {/* In view mode the panel sets `pointer-events-none`; re-enable it here so the
+          editor still scrolls (and text is selectable for copy). Monaco's own
+          `readOnly` blocks edits, so re-enabling pointer events is safe. */}
+      <div className={`flex-1 overflow-hidden ${readOnly ? 'pointer-events-auto' : ''}`}>
         <MonacoEditor
           height="100%"
           language="javascript"
@@ -1011,6 +1016,7 @@ function CodeConfig({
             )
           }}
           options={{
+            readOnly,
             minimap: { enabled: false },
             fontSize: 11,
             lineHeight: 18,
@@ -2540,11 +2546,13 @@ function SalesforceConfig({
   onChange,
   refs,
   reportValidity,
+  readOnly = false,
 }: {
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   refs: string[]
   reportValidity?: (valid: boolean) => void
+  readOnly?: boolean
 }) {
   const operation = (config.operation as string | undefined) ?? 'create'
   const object    = (config.object as string | undefined) ?? ''
@@ -2773,7 +2781,12 @@ function SalesforceConfig({
       {showBody && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Body (JSON)</label>
-          <div className="overflow-hidden rounded border border-gray-200" style={{ height: 240 }}>
+          {/* `pointer-events-auto` lets the editor scroll in view mode (the panel
+              sets `pointer-events-none`); Monaco's `readOnly` blocks edits. */}
+          <div
+            className={`overflow-hidden rounded border border-gray-200 ${readOnly ? 'pointer-events-auto' : ''}`}
+            style={{ height: 240 }}
+          >
             <MonacoEditor
               height={240}
               language="json"
@@ -2783,6 +2796,7 @@ function SalesforceConfig({
                 monaco.languages.json.jsonDefaults.setDiagnosticsOptions({ validate: false })
               }}
               options={{
+                readOnly,
                 minimap: { enabled: false },
                 fontSize: 11,
                 lineHeight: 18,
