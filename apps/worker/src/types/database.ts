@@ -668,6 +668,7 @@ export type Database = {
           partners_responded: number | null
           person_id: string | null
           prospect_id: string | null
+          recovered_by: string | null
           reject_reason: string | null
           rent_or_own: string | null
           response_status_code: number | null
@@ -723,6 +724,7 @@ export type Database = {
           partners_responded?: number | null
           person_id?: string | null
           prospect_id?: string | null
+          recovered_by?: string | null
           reject_reason?: string | null
           rent_or_own?: string | null
           response_status_code?: number | null
@@ -778,6 +780,7 @@ export type Database = {
           partners_responded?: number | null
           person_id?: string | null
           prospect_id?: string | null
+          recovered_by?: string | null
           reject_reason?: string | null
           rent_or_own?: string | null
           response_status_code?: number | null
