@@ -16,6 +16,11 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+// #383: the publish rule and the llms.txt-coverage check are shared with the
+// docs:check gate (pre-push + Deploy Verify), so this CI test asserts the same
+// logic instead of re-implementing it.
+import { isPublished } from '../../../scripts/sync-docs.mjs'
+import { collectCoverageErrors } from '../../../scripts/check-docs.mjs'
 
 const dir = fileURLToPath(new URL('.', import.meta.url))
 const workerSrc = path.resolve(dir, '../../../../worker/src')
@@ -25,18 +30,8 @@ const docsRoot = path.join(repoRoot, 'docs')
 const read = (p: string) => readFileSync(p, 'utf8')
 const nodeTypeToSlug = (type: string) => type.replace(/_/g, '-')
 
-// Positive publish rule, kept in sync with scripts/sync-docs.mjs: a page is
-// published only if it is the top-level README.md or lives under one of the
-// content directories. Internal build notes at the docs/ root are excluded.
-const CONTENT_DIRS = new Set(['concepts', 'nodes', 'guides', 'reference', 'examples'])
-const EXCLUDE = new Set(['reference/README.md'])
-
-function isPublished(rel: string): boolean {
-  if (!rel.endsWith('.md') || EXCLUDE.has(rel)) return false
-  if (rel === 'README.md') return true
-  return CONTENT_DIRS.has(rel.split('/')[0])
-}
-
+// Publish rule (isPublished) is imported from scripts/sync-docs.mjs — single
+// source of truth shared with the sync + docs:check tooling.
 function walkMarkdown(rel = ''): string[] {
   const out: string[] = []
   for (const entry of readdirSync(path.join(docsRoot, rel), { withFileTypes: true })) {
@@ -115,7 +110,9 @@ describe('docs coverage: API resources', () => {
 
 describe('docs coverage: llms.txt index', () => {
   // Every published doc page must be referenced in the AI crawl index so an
-  // assistant pointed at llms.txt can discover all of them.
+  // assistant pointed at llms.txt can discover all of them. The check reuses
+  // collectCoverageErrors (the same logic docs:check runs in pre-push + Deploy
+  // Verify), so the rule lives in one place (#383).
   const llms = read(path.join(repoRoot, 'llms.txt'))
   const pages = walkMarkdown()
 
@@ -123,12 +120,8 @@ describe('docs coverage: llms.txt index', () => {
     expect(pages.length).toBeGreaterThan(20)
   })
 
-  for (const rel of pages) {
-    it(`llms.txt references docs/${rel}`, () => {
-      expect(
-        llms.includes(`/docs/${rel}`),
-        `docs/${rel} is published but not listed in llms.txt. Add a link so AI crawlers find it.`,
-      ).toBe(true)
-    })
-  }
+  it('references every published doc page', () => {
+    const pageMap = new Map(pages.map((rel) => [rel, '']))
+    expect(collectCoverageErrors(pageMap, llms)).toEqual([])
+  })
 })
