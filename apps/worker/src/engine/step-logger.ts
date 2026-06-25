@@ -1,16 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
-import type { Env } from '../index'
 import { redactPii, parsePiiFields } from './pii-redactor'
-import {
-  hyperdriveEnabled,
-  pgInsert,
-  pgUpdate,
-  EXECUTION_JSONB_COLS,
-  STEP_JSONB_COLS,
-} from '../lib/pg-writer'
-import { recordHyperdriveFallback } from '../lib/hyperdrive-fallback'
-import { isPermanentDbError, isDuplicateError, toDbError, sleep, type DbError } from '../lib/db-retry'
+import { isPermanentDbError, isDuplicateError, sleep, type DbError } from '../lib/db-retry'
 
 // Re-export so existing importers of these from step-logger keep working; the
 // definitions now live in lib/db-retry (single source of truth, shared with the
@@ -40,70 +31,33 @@ export interface StepLogEntry {
 
 // --- Shared insert/update plumbing for the execution-log hot path ----------
 //
-// These two tables (workflow_executions, execution_steps) normally persist via
-// PostgREST. The nightly partition-purge cron runs DDL on them, which forces a
-// PostgREST schema-cache reload that 503s inserts for a few seconds ("Could not
-// query the database for the schema cache."). Two defenses:
-//   1. A direct-Postgres (Hyperdrive) path, used when the binding is present —
-//      no schema cache, so DDL can never 503 it. See lib/pg-writer.ts.
-//   2. A retry ladder long enough to outlast the lock/reload window, with a
-//      PostgREST fallback so a transient Hyperdrive problem never drops a write.
+// These two tables (workflow_executions, execution_steps) persist via PostgREST.
+// The nightly partition-purge cron runs DDL on them, which forces a PostgREST
+// schema-cache reload that 503s inserts for a few seconds ("Could not query the
+// database for the schema cache."). The defense is a retry ladder long enough to
+// outlast the lock/reload window (see the *_RETRY_DELAYS_MS below). A direct-
+// Postgres (Hyperdrive) fast path used to front this; it was retired once the
+// purge moved to TRUNCATE (no schema reload) — see ADR notes / #363.
 
-// One insert attempt. Uses the direct-Postgres (Hyperdrive) path when the
-// binding is present, and falls over to PostgREST if that path fails for any
-// reason other than a permanent data error (which would fail identically on
-// PostgREST). Returns a normalized DbError so both call sites share retry logic.
+// One insert attempt. Returns a normalized DbError so both call sites share
+// retry logic.
 async function insertRowsOnce(
-  env: Env | undefined,
   supabase: SupabaseClient,
   table: string,
-  rows: Record<string, unknown>[],
-  jsonbCols: Set<string>
+  rows: Record<string, unknown>[]
 ): Promise<{ error: DbError | null }> {
-  if (hyperdriveEnabled(env)) {
-    try {
-      await pgInsert(env, table, rows, jsonbCols)
-      return { error: null }
-    } catch (e) {
-      const err = toDbError(e)
-      if (isPermanentDbError(err)) return { error: err }
-      console.warn('[step-logger] Hyperdrive insert failed, falling back to PostgREST', {
-        table,
-        error: err.message,
-      })
-      recordHyperdriveFallback(env)
-    }
-  }
   const { error } = await supabase.from(table).insert(rows)
   return { error: error ? { code: error.code, message: error.message } : null }
 }
 
 // One update attempt for workflow_executions, keyed by (id, started_at) with an
-// id-only fallback for the partition-pruning case. Mirrors insertRowsOnce:
-// Hyperdrive when present, PostgREST otherwise / on transient Hyperdrive error.
+// id-only fallback for the partition-pruning case.
 async function updateExecutionOnce(
-  env: Env | undefined,
   supabase: SupabaseClient,
   id: string,
   started_at: string,
   update: Record<string, unknown>
 ): Promise<{ error: DbError | null }> {
-  if (hyperdriveEnabled(env)) {
-    try {
-      const matched = await pgUpdate(env, 'workflow_executions', update, { id, started_at }, EXECUTION_JSONB_COLS)
-      if (matched === 0) {
-        await pgUpdate(env, 'workflow_executions', update, { id }, EXECUTION_JSONB_COLS)
-      }
-      return { error: null }
-    } catch (e) {
-      const err = toDbError(e)
-      if (isPermanentDbError(err)) return { error: err }
-      console.warn('[step-logger] Hyperdrive update failed, falling back to PostgREST', {
-        error: err.message,
-      })
-      recordHyperdriveFallback(env)
-    }
-  }
   // Use started_at for partition pruning; fall back to id-only if no rows matched.
   const { data, error } = await supabase
     .from('workflow_executions')
@@ -161,8 +115,7 @@ export async function flushStepLogs(
   supabase: SupabaseClient,
   queue: StepLogEntry[],
   piiFieldsRaw: string,
-  meta?: { workflowId: string; isTest: boolean },
-  env?: Env
+  meta?: { workflowId: string; isTest: boolean }
 ): Promise<string | null> {
   if (queue.length === 0) return null
   const piiFields = parsePiiFields(piiFieldsRaw)
@@ -179,7 +132,7 @@ export async function flushStepLogs(
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= FLUSH_RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(FLUSH_RETRY_DELAYS_MS[attempt - 1])
-    const { error } = await insertRowsOnce(env, supabase, 'execution_steps', rows, STEP_JSONB_COLS)
+    const { error } = await insertRowsOnce(supabase, 'execution_steps', rows)
     if (!error) return null
     lastError = error
     // A permanent error means one malformed row poisons the whole atomic batch
@@ -200,7 +153,7 @@ export async function flushStepLogs(
   let failed = 0
   let firstRowError: string | null = null
   for (const row of rows) {
-    const { error: rowErr } = await insertRowsOnce(env, supabase, 'execution_steps', [row], STEP_JSONB_COLS)
+    const { error: rowErr } = await insertRowsOnce(supabase, 'execution_steps', [row])
     if (rowErr) {
       failed++
       if (!firstRowError) firstRowError = rowErr.message
@@ -229,8 +182,7 @@ export async function createExecutionRecord(
     started_at: string
     is_test: boolean
   },
-  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS,
-  env?: Env
+  retryDelaysMs: number[] = CREATE_RETRY_DELAYS_MS
 ): Promise<void> {
   // Throw on (final) insert failure. The caller chains this into flushStepLogs
   // via `.then().catch()`, so a thrown error surfaces as a clear "Step logs
@@ -247,7 +199,7 @@ export async function createExecutionRecord(
       })
       await sleep(retryDelaysMs[attempt - 1])
     }
-    const { error } = await insertRowsOnce(env, supabase, 'workflow_executions', [row], EXECUTION_JSONB_COLS)
+    const { error } = await insertRowsOnce(supabase, 'workflow_executions', [row])
     if (!error) return
     // A duplicate means the row already exists — whether a prior attempt landed
     // and only its response was lost, or the id genuinely collides. Either way
@@ -280,17 +232,16 @@ export async function updateExecutionRecord(
     // #353: durable projection of the rich sighting-finalize fields, recovered by
     // the strand drain when the live finalize is lost to isolate eviction.
     sighting_finalize?: unknown
-  },
-  env?: Env
+  }
 ): Promise<void> {
   // The finalize update lands in the same partition-purge window as the insert,
-  // so it gets the same Hyperdrive routing + transient retry. Failure is logged,
-  // not thrown: the HTTP response already went out, and a stuck 'running' row is
-  // less harmful than aborting the finalize chain.
+  // so it gets the same transient-retry ladder. Failure is logged, not thrown:
+  // the HTTP response already went out, and a stuck 'running' row is less harmful
+  // than aborting the finalize chain.
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
-    const { error } = await updateExecutionOnce(env, supabase, id, started_at, update)
+    const { error } = await updateExecutionOnce(supabase, id, started_at, update)
     if (!error) return
     if (isPermanentDbError(error)) {
       console.error('[step-logger] workflow_executions update failed (permanent)', { id, error: error.message })

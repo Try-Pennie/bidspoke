@@ -7,7 +7,6 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
-import { runHyperdriveFallbackCheck } from './lib/hyperdrive-fallback'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
@@ -102,13 +101,6 @@ export interface Env {
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
   ANTHROPIC_API_KEY?: string
 
-  // Hyperdrive — direct Postgres connection for the execution-log hot path
-  // (workflow_executions + execution_steps inserts/updates), bypassing
-  // PostgREST so a schema-cache reload (triggered by the nightly partition
-  // purge DDL) can't 503 the audit-trail writes. Optional: when the binding is
-  // absent the engine stays on PostgREST. See wrangler.toml for the provisioning
-  // runbook and lib/pg-writer.ts for the writer.
-  HYPERDRIVE?: Hyperdrive
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -231,11 +223,6 @@ export default {
       ctx.waitUntil(
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
-      )
-      ctx.waitUntil(
-        runHyperdriveFallbackCheck(supabase, env.IDEMPOTENCY)
-          .then((r) => { if (r.count > 0) console.log(`[hyperdrive-fallback] count=${r.count} alerted=${r.alerted}${r.suppressed ? ` suppressed=${r.suppressed}` : ''}`) })
-          .catch((e) => console.error('[hyperdrive-fallback] check failed:', e))
       )
     }
   },

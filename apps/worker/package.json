@@ -12,8 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
-    "hono": "^4.3.11",
-    "pg": "^8.13.0"
+    "hono": "^4.3.11"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240524.0",

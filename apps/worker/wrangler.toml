@@ -1,11 +1,9 @@
 name = "bidspoke-worker"
 main = "src/index.ts"
-# Bumped 2024-05-24 -> 2024-09-23 on 2026-06-12 so node-postgres (pg) bundles:
-# its transitive deps require() bare node builtins (fs, stream), which only
-# resolve under the nodejs_compat v2 runtime that becomes default on this date.
-# pg backs the Hyperdrive execution-log writer (lib/pg-writer.ts). This is the
-# one runtime-affecting change in that work; the pg path itself stays dormant
-# until the HYPERDRIVE binding below is provisioned.
+# Bumped 2024-05-24 -> 2024-09-23 on 2026-06-12 for the nodejs_compat v2 runtime.
+# Originally to bundle node-postgres (pg) for the Hyperdrive execution-log writer,
+# which was retired (#363); the date stays put because reverting the runtime
+# compatibility for the whole Worker is riskier than the dead dependency was.
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 account_id = "3e7f907a9c19e51417873e2cce4fbc5c"
@@ -66,28 +64,12 @@ new_classes = ["BulkheadObject"]
 binding = "DYNAMIC_WORKER_LOADER"
 namespace = "bidspoke-code-nodes"
 
-# Hyperdrive — RETIRED 2026-06-20. The direct-Postgres execution-log hot path
-# (lib/pg-writer.ts) was provisioned 2026-06-12 to dodge the nightly
-# partition-purge schema-cache 503s. Two things made it not worth keeping:
-#   1. Its direct-pg credential went stale (the DB password rotated), so it
-#      failed auth on ~every write all day 2026-06-20 — falling back to PostgREST
-#      each time (runs stayed healthy, but the "Execution-log DB path degraded"
-#      alert fired continuously).
-#   2. Its original reason is mostly gone: the nightly purge is now TRUNCATE-based
-#      (migration 20260619000001) and no longer reloads the PostgREST schema cache;
-#      only the weekly Sun 04:00 UTC reaper still does a DROP.
-# The engine falls back to PostgREST automatically when the binding is absent
-# (hyperdriveEnabled() in lib/pg-writer.ts), so removing it is non-breaking — and
-# with no binding the pg path never runs, so the fallback alert can't fire.
-#
-# The pg-writer.ts + step-logger fallback code stays dormant and re-enableable:
-# to bring it back, recreate/repoint the CF Hyperdrive config with a CURRENT
-# Supabase pooler connection string and restore the `[[hyperdrive]]` block below.
-# The orphaned CF config d20e883f2ffb4809b9b80d1ff30933c0 can be deleted separately.
-#
-# [[hyperdrive]]
-# binding = "HYPERDRIVE"
-# id = "d20e883f2ffb4809b9b80d1ff30933c0"
+# Hyperdrive — RETIRED 2026-06-20, code removed #363. The direct-Postgres
+# execution-log hot path was provisioned 2026-06-12 to dodge the nightly
+# partition-purge schema-cache 503s; the purge is now TRUNCATE-based (migration
+# 20260619000001) so it no longer reloads the PostgREST schema cache, removing
+# the reason for it. The orphaned CF Hyperdrive config
+# d20e883f2ffb4809b9b80d1ff30933c0 can be deleted from the dashboard separately.
 
 # Custom endpoint routing — partner subdomains (e.g. tripoint.trypennie.dev)
 # The worker reads the Host header to route *.trypennie.dev requests.
