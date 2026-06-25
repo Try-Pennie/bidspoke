@@ -9,6 +9,7 @@ import { api } from '@/lib/api'
 import type { StatsResponse, ConfigWarningsResponse } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { DegradedBanner } from '@/components/dashboard/DegradedBanner'
 import { formatDatetime } from '@/lib/dates'
 import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle, TrendingDown } from 'lucide-react'
 
@@ -298,6 +299,10 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        {/* #356: degraded-writeback warning — surfaces a writeback outage that a
+            near-green success rate would otherwise mask. */}
+        {s && <DegradedBanner degraded={s.degraded} total={s.total} />}
 
         {/* KPI section */}
         <div className="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
