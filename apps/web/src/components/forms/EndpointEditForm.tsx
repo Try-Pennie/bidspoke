@@ -75,9 +75,9 @@ export default function EndpointEditForm({ endpoint, workflows, onSaved, onCance
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Partner slug</label>
           <div className="flex items-center rounded-lg border border-gray-200 bg-white focus-within:border-p-blue-dark focus-within:ring-2 focus-within:ring-p-blue-dark/20">
-            <span className="flex-shrink-0 rounded-l-lg border-r border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-400">hook.trypennie.dev/</span>
+            <span className="flex-shrink-0 rounded-l-lg border-r border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-500">hook.trypennie.dev/</span>
             <input
-              className="min-w-0 flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-400"
+              className="min-w-0 flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-500"
               placeholder="partner-name"
               value={form.subdomain}
               onChange={(e) => setForm((f) => ({ ...f, subdomain: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') }))}
@@ -87,7 +87,7 @@ export default function EndpointEditForm({ endpoint, workflows, onSaved, onCance
         </div>
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">
-            Path <span className="font-normal text-gray-400">(optional)</span>
+            Path <span className="font-normal text-gray-500">(optional)</span>
           </label>
           <input
             className="input w-full font-mono"
@@ -125,7 +125,7 @@ export default function EndpointEditForm({ endpoint, workflows, onSaved, onCance
           value={form.source_name}
           onChange={(e) => setForm((f) => ({ ...f, source_name: e.target.value.toLowerCase().replace(/\s+/g, '_') }))}
         />
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           Available as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflow steps.
         </p>
       </div>
@@ -134,7 +134,7 @@ export default function EndpointEditForm({ endpoint, workflows, onSaved, onCance
         <button
           type="submit"
           disabled={saving || !form.subdomain || !form.workflow_id}
-          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save changes'}
         </button>

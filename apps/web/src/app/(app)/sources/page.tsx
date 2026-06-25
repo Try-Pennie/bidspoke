@@ -185,7 +185,7 @@ export default function SourcesPage() {
           <button
             onClick={() => setAdding(true)}
             disabled={adding}
-            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-0 disabled:pointer-events-none"
+            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-0 disabled:pointer-events-none"
           >
             <Plus className="h-4 w-4" />
             New source
@@ -201,7 +201,7 @@ export default function SourcesPage() {
         <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${adding ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             <div className="mb-6 max-w-md rounded-xl border border-gray-200 bg-white p-5" inert={!adding || undefined}>
-              <p className="mb-4 text-sm font-medium text-gray-400">New source</p>
+              <p className="mb-4 text-sm font-medium text-gray-500">New source</p>
               <SourceCreateForm
                 autoFocus={adding}
                 onCreated={(src) => {
@@ -239,12 +239,12 @@ export default function SourcesPage() {
               <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
                 <p className="text-base font-semibold text-graphite">No API sources yet</p>
-                <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+                <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-500">
                   Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow. It shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
                 </p>
                 <button
                   onClick={() => setAdding(true)}
-                  className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+                  className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
                 >
                   Add your first source
                 </button>
@@ -271,7 +271,7 @@ export default function SourcesPage() {
                           >
                             Revoke
                           </button>
-                          <button onClick={(e) => { e.stopPropagation(); cancelRevoke() }} className="text-xs text-gray-400 hover:text-gray-600">
+                          <button onClick={(e) => { e.stopPropagation(); cancelRevoke() }} className="text-xs text-gray-500 hover:text-gray-600">
                             Cancel
                           </button>
                         </div>
@@ -368,7 +368,7 @@ export default function SourcesPage() {
             <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
               <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
                 <div className="flex items-center gap-2">
-                  <Terminal className="h-4 w-4 text-gray-400" />
+                  <Terminal className="h-4 w-4 text-gray-500" />
                   <span className="text-sm font-medium text-gray-700">How to trigger a workflow</span>
                 </div>
                 {sources.length > 1 ? (
@@ -401,7 +401,7 @@ export default function SourcesPage() {
                     if (line.includes('workflow_id')) {
                       return <span key={i}>{line.replace('{workflow_id}', '')}<span className="text-sky-400">{'{'+'workflow_id}'}</span>{'\n'}</span>
                     }
-                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-400' : ''}>{line}{'\n'}</span>
+                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-500' : ''}>{line}{'\n'}</span>
                   })}
                 </pre>
                 <button
@@ -417,7 +417,7 @@ export default function SourcesPage() {
               <div className="space-y-2.5 px-4 py-3 text-xs text-gray-500">
                 <p>
                   Find <code className="rounded bg-gray-100 px-1 font-mono">workflow_id</code> in the URL when you open a workflow:{' '}
-                  <span className="font-mono text-gray-400">/workflows/&#123;id&#125;</span>
+                  <span className="font-mono text-gray-500">/workflows/&#123;id&#125;</span>
                 </p>
                 <p>
                   <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> is optional but recommended. Generate a unique ID (any UUID) for each trigger attempt. If your caller retries with the same key within 5 minutes, the workflow won&apos;t run twice. <code className="rounded bg-gray-100 px-1 font-mono">$(uuidgen)</code> generates one on Mac/Linux.

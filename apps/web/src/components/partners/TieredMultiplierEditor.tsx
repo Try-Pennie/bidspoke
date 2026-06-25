@@ -50,7 +50,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
     <div className="space-y-3">
       <div>
         <label className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
-        <p className="mb-1.5 text-xs text-gray-400">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
+        <p className="mb-1.5 text-xs text-gray-500">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
         <input
           value={c.source_field}
           onChange={(e) => patch({ source_field: e.target.value })}
@@ -61,7 +61,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
 
       <div className="rounded-lg border border-gray-200 bg-white p-3">
         <p className="mb-2 text-xs font-medium text-gray-600">Tiers</p>
-        <p className="mb-3 text-xs text-gray-400">Each tier picks a multiplier when the field is above the threshold. First matching tier wins (highest threshold first). If nothing matches, the default multiplier below is used.</p>
+        <p className="mb-3 text-xs text-gray-500">Each tier picks a multiplier when the field is above the threshold. First matching tier wins (highest threshold first). If nothing matches, the default multiplier below is used.</p>
         {c.tiers.length > 0 && (
           <div className="mb-2 space-y-1.5">
             {c.tiers.map((tier, i) => (
@@ -105,7 +105,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
 
       <div>
         <label className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
-        <p className="mb-1.5 text-xs text-gray-400">Used when no tier matches.</p>
+        <p className="mb-1.5 text-xs text-gray-500">Used when no tier matches.</p>
         <input
           type="number"
           step="0.01"

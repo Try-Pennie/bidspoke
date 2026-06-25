@@ -36,7 +36,7 @@ export function PartnerProbePanel({ value, onChange }: Props) {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-gray-400">
+      <p className="text-xs text-gray-500">
         Paste a representative response body. The fields here populate the autocomplete dropdown when configuring extraction paths below. Valid JSON saves automatically.
       </p>
       <textarea

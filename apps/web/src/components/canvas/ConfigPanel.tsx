@@ -159,25 +159,25 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">{type}</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{type}</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">{data.label || data.namespace}</p>
-          {data.label && <p className="font-mono text-xs text-gray-400">{data.namespace}</p>}
+          {data.label && <p className="font-mono text-xs text-gray-500">{data.namespace}</p>}
         </div>
         <div className="flex items-center gap-1">
           {readOnly ? (
-            <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">View only</span>
+            <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">View only</span>
           ) : (
             <>
               <button
                 onClick={() => onDuplicate(node.id)}
-                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                className="rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                 title="Duplicate node (⌘D)"
               >
                 <Copy className="h-4 w-4" />
               </button>
               <button
                 onClick={() => onDelete(node.id)}
-                className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                className="rounded p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-500"
                 title="Delete node"
               >
                 <Trash2 className="h-4 w-4" />
@@ -186,7 +186,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           )}
           <button
             onClick={onClose}
-            className="rounded p-1.5 text-gray-400 hover:bg-gray-100"
+            className="rounded p-1.5 text-gray-500 hover:bg-gray-100"
           >
             <X className="h-4 w-4" />
           </button>
@@ -209,7 +209,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <div className="border-b border-gray-100">
             <button
               onClick={() => setShowMeta((s) => !s)}
-              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-600"
+              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-600"
             >
               <span className="uppercase tracking-wide">Step settings</span>
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showMeta ? '' : '-rotate-90'}`} />
@@ -249,7 +249,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             <button
               type="button"
               onClick={() => setShowNotes((s) => !s)}
-              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-600"
+              className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-gray-500 hover:text-gray-600"
             >
               <span className="uppercase tracking-wide">Notes</span>
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showNotes ? '' : '-rotate-90'}`} />
@@ -273,7 +273,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <div className="border-t border-gray-100 px-4 py-3">
             <button
               onClick={() => setShowAdvanced((s: boolean) => !s)}
-              className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+              className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600"
             >
               <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
               Advanced
@@ -350,7 +350,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <button
             type="button"
             onClick={() => setShowNotes((s) => !s)}
-            className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+            className="flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600"
           >
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showNotes ? '' : '-rotate-90'}`} />
             Notes
@@ -390,7 +390,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type !== 'parallel_end' && type !== 'branch_end' && <div>
           <button
             onClick={() => setShowAdvanced((s: boolean) => !s)}
-            className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+            className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600"
           >
             <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
             Advanced
@@ -492,7 +492,7 @@ function NodeTestSection({
         className="flex w-full items-center justify-between text-xs font-semibold text-gray-700"
       >
         <span>Test this node</span>
-        {open ? <ChevronUp className="h-3.5 w-3.5 text-gray-400" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-400" />}
+        {open ? <ChevronUp className="h-3.5 w-3.5 text-gray-500" /> : <ChevronDown className="h-3.5 w-3.5 text-gray-500" />}
       </button>
       {open && (
         <div className="mt-2 space-y-2">
@@ -526,7 +526,7 @@ function NodeTestSection({
             </button>
           </div>
           {!canBuildFromRun && (
-            <p className="text-xs text-gray-400">Run the full workflow once to enable &ldquo;Build from run&rdquo; (uses upstream step outputs).</p>
+            <p className="text-xs text-gray-500">Run the full workflow once to enable &ldquo;Build from run&rdquo; (uses upstream step outputs).</p>
           )}
         </div>
       )}
@@ -539,7 +539,7 @@ const LOG_LEVEL_CLASS: Record<string, string> = {
   warn: 'text-yellow-300',
   info: 'text-blue-300',
   log: 'text-gray-100',
-  debug: 'text-gray-400',
+  debug: 'text-gray-500',
 }
 
 // ── Step results section (shown below config after a test run) ─────────────────
@@ -588,7 +588,7 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
       <div className="flex items-center justify-between px-4 py-2.5">
         <button
           onClick={() => setOpen((s) => !s)}
-          className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-gray-600"
+          className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600"
         >
           <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? '' : '-rotate-90'}`} />
           Results
@@ -644,7 +644,7 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
             <div>
               <button
                 onClick={() => setShowInput((s) => !s)}
-                className="mb-1.5 flex items-center gap-1 text-xs font-medium text-gray-400 hover:text-gray-600"
+                className="mb-1.5 flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-600"
               >
                 <ChevronDown className={`h-3 w-3 transition-transform ${showInput ? '' : '-rotate-90'}`} />
                 Input
@@ -656,7 +656,7 @@ function StepResults({ exec, namespace, canRerun, onRerun, onRetryFromFailure }:
           )}
           {exec.logs && exec.logs.length > 0 && (
             <div>
-              <p className="mb-1.5 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-400">(ET)</span></p>
+              <p className="mb-1.5 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-500">(ET)</span></p>
               <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-2 text-xs text-gray-100">
                 {exec.logs.map((entry, j) => (
                   <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
@@ -692,11 +692,11 @@ function StepInputView({ input, namespace }: { input: unknown; namespace: string
   return (
     <div className="space-y-3">
       <div>
-        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">Template</p>
+        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">Template</p>
         <JsonTreeView data={input.template} basePath={`steps.${namespace}.input.template`} />
       </div>
       <div>
-        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-400">Resolved</p>
+        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-gray-500">Resolved</p>
         <JsonTreeView data={input.resolved} basePath={`steps.${namespace}.input.resolved`} />
       </div>
     </div>
@@ -747,7 +747,7 @@ function FilterConfig({
     <div className="space-y-5">
       {/* Operation */}
       <section>
-        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Operation</p>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">Operation</p>
         <div className="relative">
           <select
             value={operation}
@@ -757,9 +757,9 @@ function FilterConfig({
             <option value="continue_if">Continue if condition is met</option>
             <option value="end_if">End if condition is met</option>
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           {operation === 'continue_if'
             ? 'Workflow continues on the pass path when the condition is true.'
             : 'Workflow exits on the exit path when the condition is true.'}
@@ -768,7 +768,7 @@ function FilterConfig({
 
       {/* Condition */}
       <section>
-        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Condition</p>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">Condition</p>
         <div className="space-y-2">
           {/* Field */}
           <FieldAutocomplete
@@ -789,7 +789,7 @@ function FilterConfig({
                 <option key={op.value} value={op.value}>{op.label}</option>
               ))}
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
           {/* Value */}
           {!VALUE_LESS.has(operator) && (
@@ -863,7 +863,7 @@ function BranchConfig({
 
   return (
     <section className="space-y-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Branches</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Branches</p>
       {branches.map((branch, i) => (
         <div key={i} className="rounded-lg border border-gray-200 p-3 space-y-3">
           <div className="flex items-center gap-2">
@@ -926,7 +926,7 @@ function BranchConfig({
               value={elseLabel}
               onChange={(e) => onChange({ else_label: e.target.value })}
             />
-            <p className="mt-1 text-xs text-gray-400">Display label for the else path. Defaults to &ldquo;else&rdquo;.</p>
+            <p className="mt-1 text-xs text-gray-500">Display label for the else path. Defaults to &ldquo;else&rdquo;.</p>
           </div>
         )}
       </div>
@@ -1029,7 +1029,7 @@ function CodeConfig({
       {rows.length > 0 && (
         <div className="border-t border-gray-200 bg-gray-50 px-4 py-3">
           <p className="mb-2 text-xs font-medium text-gray-600">Props</p>
-          <p className="mb-2 text-xs text-gray-400">
+          <p className="mb-2 text-xs text-gray-500">
             Wire each <code className="rounded bg-white px-1 font-mono">props.X</code> reference in the script. Sources can be templates like <code className="rounded bg-white px-1 font-mono">{'{{steps.x.output.y}}'}</code> or <code className="rounded bg-white px-1 font-mono">{'{{payload.field}}'}</code>.
           </p>
           <div className="space-y-1.5">
@@ -1048,7 +1048,7 @@ function CodeConfig({
                   <button
                     type="button"
                     onClick={() => removeUnreferenced(row.name)}
-                    className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    className="flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                     title="No longer referenced. Remove"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -1059,7 +1059,7 @@ function CodeConfig({
           </div>
         </div>
       )}
-      <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-400">
+      <p className="border-t border-gray-100 px-4 py-2 text-xs text-gray-500">
         Async function body. <code className="rounded bg-gray-100 px-1">payload</code>, <code className="rounded bg-gray-100 px-1">steps</code>, <code className="rounded bg-gray-100 px-1">env</code>, <code className="rounded bg-gray-100 px-1">props</code> available. Must <code className="rounded bg-gray-100 px-1">return</code> a value.
       </p>
     </div>
@@ -1151,7 +1151,7 @@ function ResponseConfig({
           </button>
         </div>
         {headerRows.length === 0 ? (
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             No headers will be sent. Click <span className="font-medium text-blue-600">+ Add</span> to set <code className="rounded bg-gray-100 px-1">Content-Type</code>, <code className="rounded bg-gray-100 px-1">Cache-Control</code>, <code className="rounded bg-gray-100 px-1">Location</code>, CORS, etc.
           </p>
         ) : (
@@ -1177,7 +1177,7 @@ function ResponseConfig({
                 <button
                   type="button"
                   onClick={() => removeHeader(row.id)}
-                  className="text-xs text-gray-400 hover:text-red-600"
+                  className="text-xs text-gray-500 hover:text-red-600"
                   aria-label="Remove"
                 >
                   ×
@@ -1196,7 +1196,7 @@ function ResponseConfig({
         />
         <span>
           <span className="font-medium">Continue after response</span>
-          <span className="mt-0.5 block text-gray-400">
+          <span className="mt-0.5 block text-gray-500">
             Send the HTTP response immediately and keep walking the graph (for post-response work like Salesforce patches).
           </span>
         </span>
@@ -1284,7 +1284,7 @@ function DataStoreConfig({
           >
             <option value="submissions">submissions</option>
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
 
@@ -1450,7 +1450,7 @@ function LatencyGateConfig({
                   </option>
                 ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
             </div>
           </Field>
           <Field label="Threshold override (ms)" hint="Optional. When set, this wins over the partner's confirmation window.">
@@ -1585,8 +1585,8 @@ function TransformConfig({
 
   return (
     <section className="space-y-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Field mappings</p>
-      <p className="text-xs text-gray-400">
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Field mappings</p>
+      <p className="text-xs text-gray-500">
         Map values from earlier steps into a new shape. Only the fields you define here appear in this step&apos;s output.
         Source can be a step reference (<code className="rounded bg-gray-100 px-1 font-mono">steps.validate.amount</code>),
         a literal string (<code className="rounded bg-gray-100 px-1 font-mono">&quot;pending&quot;</code>),
@@ -1751,7 +1751,7 @@ function IntegrationConfig({
               <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
 
@@ -1759,7 +1759,7 @@ function IntegrationConfig({
       {SCHEMA_SERVICES.has(service) && (
         <section className="rounded-md border border-gray-200 bg-beige p-3 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Schema</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-gray-500">Schema</span>
             {activeConnection ? (
               <button
                 onClick={handleSyncSchema}
@@ -1791,7 +1791,7 @@ function IntegrationConfig({
                     <option key={o.name} value={o.name}>{o.label}</option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-2 h-3.5 w-3.5 text-gray-400" />
+                <ChevronDown className="pointer-events-none absolute right-2 top-2 h-3.5 w-3.5 text-gray-500" />
               </div>
 
               {/* Field list */}
@@ -1805,14 +1805,14 @@ function IntegrationConfig({
                       className="flex w-full items-center justify-between px-2.5 py-1 text-left text-xs hover:bg-p-blue-light"
                     >
                       <span className="font-mono text-gray-800">{f.name}</span>
-                      <span className="text-gray-400">{f.type}</span>
+                      <span className="text-gray-500">{f.type}</span>
                     </button>
                   ))}
                 </div>
               )}
 
               {activeConnection?.schema_synced_at && (
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-gray-500">
                   Last synced {new Date(activeConnection.schema_synced_at).toLocaleDateString()}
                 </p>
               )}
@@ -1820,7 +1820,7 @@ function IntegrationConfig({
           )}
 
           {activeConnection && schemaObjects.length === 0 && !syncingSchema && (
-            <p className="text-xs text-gray-400">Click &quot;Sync schema&quot; to load available fields.</p>
+            <p className="text-xs text-gray-500">Click &quot;Sync schema&quot; to load available fields.</p>
           )}
         </section>
       )}
@@ -1851,7 +1851,7 @@ function IntegrationConfig({
                   <option key={m} value={m}>{m}</option>
                 ))}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-2 top-2.5 h-4 w-4 text-gray-400" />
+              <ChevronDown className="pointer-events-none absolute right-2 top-2.5 h-4 w-4 text-gray-500" />
             </div>
           </Field>
         </div>
@@ -1870,7 +1870,7 @@ function IntegrationConfig({
 
       {/* Auth */}
       <section>
-        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">Auth</p>
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">Auth</p>
         <div className="space-y-2">
           <div className="relative">
             <select
@@ -1883,7 +1883,7 @@ function IntegrationConfig({
               <option value="basic">Basic (username + password)</option>
               <option value="api_key">API key header</option>
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
           {authType === 'bearer' && (
             <Field label="Token (use {{env.SECRET_NAME}})">
@@ -1963,7 +1963,7 @@ function IntegrationConfig({
 
       {/* Headers */}
       <section>
-        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-400">
+        <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-gray-500">
           Custom headers
         </p>
         <div className="space-y-1.5">
@@ -2044,7 +2044,7 @@ function PartnerBidConfig({
               </option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
     </section>
@@ -2126,7 +2126,7 @@ function BidGroupConfig({
             </button>
           ))}
         </div>
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           {mode === 'cascade' && 'Try partners in order. Stop at the first one that accepts.'}
           {mode === 'highest_bid' && 'Run all partners in parallel. Pick the highest accepted bid.'}
           {mode === 'tiered' && 'Cascade between tiers. Each tier runs its own partners in cascade or highest-bid mode. Tiers can be gated by a rule.'}
@@ -2136,7 +2136,7 @@ function BidGroupConfig({
       {mode !== 'tiered' && <Field label={mode === 'cascade' ? 'Partners (in cascade order)' : 'Partners'} hint={mode === 'cascade' ? 'Drag the arrows to reorder. Earlier partners are tried first.' : 'Pick which partners to query in parallel.'}>
         <div className="space-y-1.5">
           {partnerIds.length === 0 && (
-            <p className="rounded-md border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
+            <p className="rounded-md border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500">
               No partners selected.
             </p>
           )}
@@ -2146,17 +2146,17 @@ function BidGroupConfig({
               <div key={id} className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 py-1.5">
                 {mode === 'cascade' && (
                   <div className="flex flex-col">
-                    <button type="button" onClick={() => movePartner(idx, -1)} disabled={idx === 0} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move up">
+                    <button type="button" onClick={() => movePartner(idx, -1)} disabled={idx === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up">
                       <ChevronUp className="h-3 w-3" />
                     </button>
-                    <button type="button" onClick={() => movePartner(idx, 1)} disabled={idx === partnerIds.length - 1} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move down">
+                    <button type="button" onClick={() => movePartner(idx, 1)} disabled={idx === partnerIds.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down">
                       <ChevronDown className="h-3 w-3" />
                     </button>
                   </div>
                 )}
                 <span className="flex-1 truncate text-sm text-graphite">
                   {p ? p.name : <span className="text-red-500">Unknown partner ({id.slice(0, 8)})</span>}
-                  {p && !p.is_active && <span className="ml-2 text-xs text-gray-400">(inactive)</span>}
+                  {p && !p.is_active && <span className="ml-2 text-xs text-gray-500">(inactive)</span>}
                 </span>
                 <button type="button" onClick={() => togglePartner(id)} className="text-gray-300 hover:text-red-400" title="Remove">
                   <X className="h-3.5 w-3.5" />
@@ -2169,12 +2169,12 @@ function BidGroupConfig({
           <summary className="cursor-pointer text-xs text-p-blue-dark hover:text-navy">Add partners…</summary>
           <div className="mt-1.5 max-h-48 space-y-1 overflow-y-auto rounded-md border border-gray-200 bg-white p-1.5">
             {buyerPartners.filter((p) => !partnerIds.includes(p.id)).length === 0 && (
-              <p className="px-1 py-0.5 text-xs text-gray-400">All buyer partners selected.</p>
+              <p className="px-1 py-0.5 text-xs text-gray-500">All buyer partners selected.</p>
             )}
             {buyerPartners.filter((p) => !partnerIds.includes(p.id)).map((p) => (
               <button key={p.id} type="button" onClick={() => togglePartner(p.id)} className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-sm hover:bg-gray-50">
-                <span>{p.name}{!p.is_active && <span className="ml-2 text-xs text-gray-400">(inactive)</span>}</span>
-                <Plus className="h-3.5 w-3.5 text-gray-400" />
+                <span>{p.name}{!p.is_active && <span className="ml-2 text-xs text-gray-500">(inactive)</span>}</span>
+                <Plus className="h-3.5 w-3.5 text-gray-500" />
               </button>
             ))}
           </div>
@@ -2212,7 +2212,7 @@ function BidGroupConfig({
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
 
@@ -2316,7 +2316,7 @@ function BidGroupContextEditor({
   return (
     <div className="border-t border-gray-100 pt-4">
       <h4 className="mb-1 text-xs font-medium text-gray-600">Context</h4>
-      <p className="mb-2 text-xs text-gray-400">
+      <p className="mb-2 text-xs text-gray-500">
         Name → template pairs resolved once per BidGroup run, exposed to partner
         formulas as <code className="rounded bg-gray-100 px-1 font-mono">context.&lt;name&gt;</code>.
         Use these to keep partner configs workflow-agnostic: bind step outputs here,
@@ -2362,7 +2362,7 @@ function BidGroupContextEditor({
         Add context value
       </button>
       {refs.length > 0 && entries.length === 0 && (
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           {/* refs prop already supports the template autocomplete used elsewhere; */}
           {/* documenting unused-but-available for now */}
         </p>
@@ -2403,9 +2403,9 @@ function TieredEditor({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Tiers</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Tiers</p>
       {tiers.length === 0 && (
-        <p className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-400">
+        <p className="rounded-md border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-500">
           No tiers yet. Tiers run in order. Each tier&apos;s mode determines how its partners are queried.
         </p>
       )}
@@ -2437,10 +2437,10 @@ function TieredEditor({
                 ))}
               </div>
               <div className="flex flex-col">
-                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move up">
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up">
                   <ChevronUp className="h-3 w-3" />
                 </button>
-                <button type="button" onClick={() => move(i, 1)} disabled={i === tiers.length - 1} className="text-gray-400 hover:text-graphite disabled:opacity-30" title="Move down">
+                <button type="button" onClick={() => move(i, 1)} disabled={i === tiers.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down">
                   <ChevronDown className="h-3 w-3" />
                 </button>
               </div>
@@ -2453,7 +2453,7 @@ function TieredEditor({
               <p className="mb-1 text-xs font-medium text-gray-600">Partners</p>
               <div className="space-y-1">
                 {tier.partner_ids.length === 0 && (
-                  <p className="rounded-md border border-dashed border-gray-200 px-2 py-1.5 text-xs text-gray-400">No partners selected.</p>
+                  <p className="rounded-md border border-dashed border-gray-200 px-2 py-1.5 text-xs text-gray-500">No partners selected.</p>
                 )}
                 {tier.partner_ids.map((id) => {
                   const p = partnerById.get(id)
@@ -2472,8 +2472,8 @@ function TieredEditor({
                 <div className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-md border border-gray-200 p-1.5">
                   {buyerPartners.filter((p) => !tier.partner_ids.includes(p.id)).map((p) => (
                     <button key={p.id} type="button" onClick={() => update(i, { partner_ids: [...tier.partner_ids, p.id] })} className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs hover:bg-gray-50">
-                      <span>{p.name}{!p.is_active && <span className="ml-2 text-gray-400">(inactive)</span>}</span>
-                      <Plus className="h-3 w-3 text-gray-400" />
+                      <span>{p.name}{!p.is_active && <span className="ml-2 text-gray-500">(inactive)</span>}</span>
+                      <Plus className="h-3 w-3 text-gray-500" />
                     </button>
                   ))}
                 </div>
@@ -2484,7 +2484,7 @@ function TieredEditor({
               <div className="mb-1 flex items-center justify-between">
                 <p className="text-xs font-medium text-gray-600">Advance condition</p>
                 {hasGate ? (
-                  <button type="button" onClick={() => update(i, { advance_condition: undefined })} className="text-xs text-gray-400 hover:text-red-400">Remove gate</button>
+                  <button type="button" onClick={() => update(i, { advance_condition: undefined })} className="text-xs text-gray-500 hover:text-red-400">Remove gate</button>
                 ) : (
                   <button
                     type="button"
@@ -2503,7 +2503,7 @@ function TieredEditor({
                   fieldSuggestions={refs}
                 />
               ) : (
-                <p className="text-xs text-gray-400">Always run this tier when no winner yet.</p>
+                <p className="text-xs text-gray-500">Always run this tier when no winner yet.</p>
               )}
             </div>
           </div>
@@ -2734,7 +2734,7 @@ function SalesforceConfig({
             </button>
           </div>
           {injectedRows.length === 0 ? (
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               Always-merge fields. Override the body on key collision. Use <code className="rounded bg-gray-100 px-1">{'{{execution.bidspoke_link}}'}</code> for the run deeplink.
             </p>
           ) : (
@@ -2758,7 +2758,7 @@ function SalesforceConfig({
                   <button
                     type="button"
                     onClick={() => removeInjectedField(row.id)}
-                    className="text-xs text-gray-400 hover:text-red-600"
+                    className="text-xs text-gray-500 hover:text-red-600"
                     aria-label="Remove"
                   >
                     ×
@@ -2801,7 +2801,7 @@ function SalesforceConfig({
               theme="vs"
             />
           </div>
-          <p className="mt-1 text-xs text-gray-400">Use <code className="rounded bg-gray-100 px-1">{`{{steps.x.output.field}}`}</code> to reference prior step output.</p>
+          <p className="mt-1 text-xs text-gray-500">Use <code className="rounded bg-gray-100 px-1">{`{{steps.x.output.field}}`}</code> to reference prior step output.</p>
         </div>
       )}
 
@@ -2817,7 +2817,7 @@ function SalesforceConfig({
           </button>
         </div>
         {expectedErrors.length === 0 ? (
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Treat matching Salesforce errors as business rejections. Step completes and the workflow exits here instead of failing.
           </p>
         ) : (
@@ -2826,7 +2826,7 @@ function SalesforceConfig({
               <div key={i} className="rounded border border-gray-200 p-2">
                 <div className="mb-2 flex items-start gap-2">
                   <div className="flex-1">
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">errorCode</label>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
                     <input
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                       value={err.code}
@@ -2837,14 +2837,14 @@ function SalesforceConfig({
                   <button
                     type="button"
                     onClick={() => removeExpectedError(i)}
-                    className="mt-4 text-xs text-gray-400 hover:text-red-600"
+                    className="mt-4 text-xs text-gray-500 hover:text-red-600"
                     aria-label="Remove"
                   >
                     ×
                   </button>
                 </div>
                 <div>
-                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Message contains (optional)</label>
+                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
                   <input
                     className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
                     value={err.message_contains ?? ''}
@@ -2854,7 +2854,7 @@ function SalesforceConfig({
                 </div>
                 <div className="mt-2 grid grid-cols-[80px_1fr] gap-2">
                   <div>
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Response status</label>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response status</label>
                     <input
                       type="number"
                       min={100}
@@ -2866,7 +2866,7 @@ function SalesforceConfig({
                     />
                   </div>
                   <div>
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Response body (JSON, optional)</label>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response body (JSON, optional)</label>
                     <TemplateTextarea
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none min-h-[60px] resize-y"
                       value={err.response_body !== undefined ? (typeof err.response_body === 'string' ? err.response_body : JSON.stringify(err.response_body)) : ''}
@@ -2885,7 +2885,7 @@ function SalesforceConfig({
                 </div>
               </div>
             ))}
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               Both errorCode and message substring must match. Leave message blank to match any message with that errorCode. If a response body is set, it&apos;s returned to the caller instead of the raw SF error structure.
             </p>
           </div>
@@ -2904,7 +2904,7 @@ function SalesforceConfig({
           </button>
         </div>
         {transientErrors.length === 0 ? (
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Treat matching Salesforce errors as transient. The engine&apos;s retry + backoff kicks in instead of failing immediately. Defaults to <code className="rounded bg-gray-100 px-1">REQUEST_LIMIT_EXCEEDED</code> + <code className="rounded bg-gray-100 px-1">Concurrent</code> (org concurrency limit, clears in seconds).
           </p>
         ) : (
@@ -2913,7 +2913,7 @@ function SalesforceConfig({
               <div key={i} className="rounded border border-gray-200 p-2">
                 <div className="mb-2 flex items-start gap-2">
                   <div className="flex-1">
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">errorCode</label>
+                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
                     <input
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                       value={err.code}
@@ -2924,14 +2924,14 @@ function SalesforceConfig({
                   <button
                     type="button"
                     onClick={() => removeTransientError(i)}
-                    className="mt-4 text-xs text-gray-400 hover:text-red-600"
+                    className="mt-4 text-xs text-gray-500 hover:text-red-600"
                     aria-label="Remove"
                   >
                     ×
                   </button>
                 </div>
                 <div>
-                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-400">Message contains (optional)</label>
+                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
                   <input
                     className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
                     value={err.message_contains ?? ''}
@@ -2941,7 +2941,7 @@ function SalesforceConfig({
                 </div>
               </div>
             ))}
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               Both errorCode and message substring must match (case-sensitive). Leave message blank to match any message with that errorCode. Retry count + backoff are set in Advanced settings below.
             </p>
           </div>
@@ -3005,8 +3005,8 @@ function ParallelConfig({
   return (
     <section className="space-y-4">
       <div>
-        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Slots</p>
-        <p className="mt-1 mb-2 text-xs text-gray-400">Each slot fans out to one parallel branch. Drop a node under a slot to wire it up.</p>
+        <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Slots</p>
+        <p className="mt-1 mb-2 text-xs text-gray-500">Each slot fans out to one parallel branch. Drop a node under a slot to wire it up.</p>
         {slots.map((slot, i) => (
           <div key={slot.id} className="mb-2 flex items-center gap-2">
             <input
@@ -3046,7 +3046,7 @@ function ParallelConfig({
             <option value="first">First to succeed</option>
             <option value="specific">Specific slot</option>
           </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
 
@@ -3063,7 +3063,7 @@ function ParallelConfig({
                 <option key={s.id} value={s.id}>{s.label || s.id}</option>
               ))}
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
         </Field>
       )}
@@ -3090,7 +3090,7 @@ function ParallelConfig({
               <option value="partial">Continue with partial results</option>
               <option value="fail">Fail the execution</option>
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
         </Field>
       )}
@@ -3106,7 +3106,7 @@ function ParallelConfig({
               <option value="fail">Fail the execution</option>
               <option value="continue">Continue with results (include rejections)</option>
             </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-400" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
         </Field>
       )}
@@ -3214,7 +3214,7 @@ function ConstantsConfig({
           </button>
         </div>
         {rows.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-400">
+          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-500">
             No constants defined. Click &ldquo;Add key&rdquo; to start.
           </p>
         ) : (
@@ -3273,7 +3273,7 @@ function ConstantsConfig({
                   <button
                     type="button"
                     onClick={() => removeRow(row.id)}
-                    className="flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    className="flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -3282,7 +3282,7 @@ function ConstantsConfig({
             })}
           </div>
         )}
-        <p className="mt-2 text-xs text-gray-400">
+        <p className="mt-2 text-xs text-gray-500">
           For array values, enter comma-separated items.
         </p>
       </div>
@@ -3515,7 +3515,7 @@ function TimeoutField({
           value={current ?? ''}
           onChange={(e) => updateConfig({ timeout_ms: e.target.value ? parseInt(e.target.value) : undefined })}
         />
-        <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
+        <span className="text-xs text-gray-500 whitespace-nowrap">ms</span>
       </div>
 
       {/* Plain-language description sits right under the input */}
@@ -3526,7 +3526,7 @@ function TimeoutField({
       {/* Single callout: stats + optional action sentence */}
       {workflowId && namespace && (
         <div className="mt-3">
-          {loading && <p className="text-xs text-gray-400">Checking past runs…</p>}
+          {loading && <p className="text-xs text-gray-500">Checking past runs…</p>}
 
           {showFloorWarning && (
             <div className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs leading-relaxed text-red-800">
@@ -3551,7 +3551,7 @@ function TimeoutField({
           )}
 
           {showThin && (
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               Not enough runs yet to suggest a value ({stats!.sample_size} in {windowLabel}).
             </p>
           )}
@@ -3612,7 +3612,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
     <div>
       <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-xs text-gray-400">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
     </div>
   )
 }

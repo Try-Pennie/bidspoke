@@ -45,17 +45,17 @@ export default function TriggerExecutionPanel({
       {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Trigger</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Trigger</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">Webhook event</p>
         </div>
-        <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
+        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
         {payload === undefined ? (
-          <p className="text-sm text-gray-400">Loading event…</p>
+          <p className="text-sm text-gray-500">Loading event…</p>
         ) : (
           <JsonTreeView data={triggerData} basePath="steps.trigger" maxHeightClassName="max-h-[calc(100vh-140px)]" />
         )}

@@ -129,7 +129,7 @@ export default function PartnersPage() {
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
             <button
               onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }}
-              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#3A8FD0]"
+              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#155E99]"
             >
               <Plus className="h-3.5 w-3.5" />
               New
@@ -149,7 +149,7 @@ export default function PartnersPage() {
             ) : partners.length === 0 ? (
               <div className="p-6 text-center">
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
-                <p className="mt-1 text-xs text-gray-400">Partners are the lenders or buyers your workflows route leads to.</p>
+                <p className="mt-1 text-xs text-gray-500">Partners are the lenders or buyers your workflows route leads to.</p>
                 <button
                   onClick={() => { clearSelection(); setCreating(true) }}
                   className="mt-3 text-xs font-medium text-p-blue-dark hover:text-p-blue-dark"
@@ -179,9 +179,9 @@ export default function PartnersPage() {
                           </span>
                         )}
                       </div>
-                      <p className="mt-0.5 truncate font-mono text-xs text-gray-400">{partner.slug}</p>
+                      <p className="mt-0.5 truncate font-mono text-xs text-gray-500">{partner.slug}</p>
                     </div>
-                    <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-gray-300 group-hover:text-gray-400" />
+                    <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-gray-300 group-hover:text-gray-500" />
                   </button>
                 ))}
               </div>
@@ -234,7 +234,7 @@ export default function PartnersPage() {
                   <CircleOff className="h-5 w-5 text-gray-300" />
                 </div>
                 <p className="text-sm font-medium text-gray-700">Select a partner to configure</p>
-                <p className="mt-1 text-xs text-gray-400">Or create a new one with the button above.</p>
+                <p className="mt-1 text-xs text-gray-500">Or create a new one with the button above.</p>
               </div>
             </div>
           )}

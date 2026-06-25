@@ -167,7 +167,7 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
       <button
         type="button"
         onClick={onRemove}
-        className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+        className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
       >
         <X className="h-3.5 w-3.5" />
       </button>
@@ -202,7 +202,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
           <div className="mb-2 flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-gray-700">{label}</p>
-              <p className="text-xs text-gray-400">{desc}</p>
+              <p className="text-xs text-gray-500">{desc}</p>
             </div>
             <button
               type="button"
@@ -214,7 +214,7 @@ function SignalRuleBuilder({ value, onChange }: { value: SignalRules; onChange: 
             </button>
           </div>
           {value[cat].length === 0 ? (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-400">
+            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500">
               No rules. Uses default HTTP status classification.
             </p>
           ) : (
@@ -256,7 +256,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
     <div>
       <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-xs text-gray-400">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
     </div>
   )
 }
@@ -524,11 +524,11 @@ export default function PartnerForm({
       <div className="mb-6 flex items-center justify-between">
         <div>
           {isNew
-            ? <h2 className="text-lg font-medium text-gray-400">New partner</h2>
+            ? <h2 className="text-lg font-medium text-gray-500">New partner</h2>
             : <h2 className="text-2xl font-bold text-graphite">{name || <span className="text-gray-300">Unnamed</span>}</h2>
           }
           {!isNew && (
-            <p className="mt-0.5 font-mono text-sm text-gray-400">{partner.slug}</p>
+            <p className="mt-0.5 font-mono text-sm text-gray-500">{partner.slug}</p>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -546,7 +546,7 @@ export default function PartnerForm({
                 <button
                   type="button"
                   onClick={onCancelDelete}
-                  className="text-sm text-gray-400 hover:text-gray-600"
+                  className="text-sm text-gray-500 hover:text-gray-600"
                 >
                   Cancel
                 </button>
@@ -661,7 +661,7 @@ export default function PartnerForm({
             </div>
           )}
           {resolverType === 'matrix' && !partner && (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-400">
+            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
               Save the partner first to attach a bid matrix.
             </p>
           )}
@@ -731,7 +731,7 @@ export default function PartnerForm({
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Per-sub-account min bids">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
             this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
           </p>
@@ -755,7 +755,7 @@ export default function PartnerForm({
                 <button
                   type="button"
                   onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))}
-                  className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  className="rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                   aria-label="Remove row"
                 >
                   <X size={14} />
@@ -777,7 +777,7 @@ export default function PartnerForm({
             <Toggle checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
             <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
             <span className="text-gray-300">·</span>
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               Pauses bids to this partner after repeated failures, then retries automatically.
             </p>
           </div>
@@ -799,7 +799,7 @@ export default function PartnerForm({
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Response classification">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
             Leave all sections empty to use default HTTP status–based classification.
           </p>
@@ -807,7 +807,7 @@ export default function PartnerForm({
         </Section>}
 
         <Section title="Bid confirmation latency">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
             Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
             blank to require a node-level override instead.
@@ -818,7 +818,7 @@ export default function PartnerForm({
         </Section>
 
         {partnerType === 'source' && <Section title="Sell-off offer copy">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
           </p>
           <Field label="Sell-off offer title">
@@ -836,7 +836,7 @@ export default function PartnerForm({
         </Section>}
 
         {partnerType === 'source' && <Section title="Sub-account UUIDs">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
           </p>
           <div className="space-y-1.5">
@@ -847,7 +847,7 @@ export default function PartnerForm({
                   <button
                     type="button"
                     onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))}
-                    className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                    className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -871,7 +871,7 @@ export default function PartnerForm({
                         setRemovingUuidId(null)
                       }
                     }}
-                    className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 disabled:opacity-50"
+                    className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600 disabled:opacity-50"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -909,7 +909,7 @@ export default function PartnerForm({
                   setAddingUuid(false)
                 }
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
             >
               {addingUuid ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               Add
@@ -919,7 +919,7 @@ export default function PartnerForm({
         </Section>}
 
         {partnerType === 'buyer' && <Section title="Alert configuration">
-          <p className="text-xs text-gray-400">
+          <p className="text-xs text-gray-500">
             Default: alert on all errors. Turn off alert types that produce noise for this partner.
             Business rejections never alert regardless.
           </p>
@@ -927,14 +927,14 @@ export default function PartnerForm({
             <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
               <div>
                 <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
-                <p className="text-xs text-gray-400">Network failures, timeouts, 429, 502–504</p>
+                <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502–504</p>
               </div>
               <Toggle checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
             </div>
             <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
               <div>
                 <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
-                <p className="text-xs text-gray-400">4xx errors, auth failures, bad responses</p>
+                <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
               </div>
               <Toggle checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
             </div>
@@ -946,7 +946,7 @@ export default function PartnerForm({
             type="submit"
             disabled={saveState === 'saving' || !name}
             className={`flex min-w-[130px] items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors duration-150 disabled:opacity-50 ${
-              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-p-blue-dark hover:bg-[#3A8FD0]'
+              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-p-blue-dark hover:bg-[#155E99]'
             }`}
           >
             {saveState === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>}
@@ -957,7 +957,7 @@ export default function PartnerForm({
             <button
               type="button"
               onClick={handleUndo}
-              className="text-xs text-gray-400 transition-colors hover:text-gray-700"
+              className="text-xs text-gray-500 transition-colors hover:text-gray-700"
             >
               Undo · {undoSecondsLeft}s
             </button>
@@ -969,7 +969,7 @@ export default function PartnerForm({
             </span>
           )}
           {!isNew && !undoSnapshot && !dirty && (
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-gray-500">
               {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'unknown'}`}
             </p>
           )}

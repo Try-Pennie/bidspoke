@@ -35,7 +35,7 @@ function JsonNode({ label, value, path, depth }: {
 
   const displayValue = isObj ? null
     : value === null || value === undefined
-    ? <span className="text-gray-400 italic">null</span>
+    ? <span className="text-gray-500 italic">null</span>
     : typeof value === 'boolean'
     ? <span className="text-amber-600">{String(value)}</span>
     : typeof value === 'number'
@@ -51,7 +51,7 @@ function JsonNode({ label, value, path, depth }: {
         {isObj ? (
           <button
             onClick={() => setExpanded((e) => !e)}
-            className="mt-[2px] flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+            className="mt-[2px] flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-500 hover:text-gray-600"
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
           </button>
@@ -60,10 +60,10 @@ function JsonNode({ label, value, path, depth }: {
         )}
 
         <span className="shrink-0 font-mono text-xs text-gray-700 leading-[18px]">{label}</span>
-        <span className="shrink-0 font-mono text-xs text-gray-400 leading-[18px]">:</span>
+        <span className="shrink-0 font-mono text-xs text-gray-500 leading-[18px]">:</span>
 
         {isObj && (
-          <span className="font-mono text-xs text-gray-400 ml-0.5 leading-[18px]">
+          <span className="font-mono text-xs text-gray-500 ml-0.5 leading-[18px]">
             {Array.isArray(value) ? `[${childEntries.length}]` : `{${childEntries.length}}`}
           </span>
         )}
@@ -75,7 +75,7 @@ function JsonNode({ label, value, path, depth }: {
           ) : (
             <button
               onClick={(e) => { e.stopPropagation(); copyTo(path, 'path') }}
-              className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+              className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
               title={`Copy path: ${path}`}
             >
               <Link2 className="h-3 w-3" />
@@ -86,7 +86,7 @@ function JsonNode({ label, value, path, depth }: {
           ) : (
             <button
               onClick={(e) => { e.stopPropagation(); copyTo(copyableValue, 'value') }}
-              className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+              className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
               title="Copy value"
             >
               <Copy className="h-3 w-3" />

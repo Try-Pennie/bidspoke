@@ -51,10 +51,10 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
                 className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
                   active
                     ? 'bg-white/10 text-white'
-                    : 'text-white/60 hover:bg-white/5 hover:text-white/80'
+                    : 'text-white/70 hover:bg-white/5 hover:text-white'
                 }`}
               >
-                <Icon className={`h-4 w-4 ${active ? 'text-p-blue' : 'text-white/40'}`} />
+                <Icon className={`h-4 w-4 ${active ? 'text-p-blue' : 'text-white/60'}`} />
                 {label}
               </Link>
             )
@@ -65,9 +65,9 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
             href="/docs"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/50 transition-colors hover:bg-white/5 hover:text-white/80"
+            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/70 transition-colors hover:bg-white/5 hover:text-white"
           >
-            <BookOpen className="h-4 w-4 text-white/40" />
+            <BookOpen className="h-4 w-4 text-white/60" />
             Docs
           </a>
           <Link
@@ -75,17 +75,17 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
             className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
               pathname === '/settings' || pathname.startsWith('/settings/')
                 ? 'bg-white/10 text-white'
-                : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+                : 'text-white/70 hover:bg-white/5 hover:text-white'
             }`}
           >
-            <Settings className={`h-4 w-4 ${pathname === '/settings' || pathname.startsWith('/settings/') ? 'text-p-blue' : 'text-white/40'}`} />
+            <Settings className={`h-4 w-4 ${pathname === '/settings' || pathname.startsWith('/settings/') ? 'text-p-blue' : 'text-white/60'}`} />
             Settings
           </Link>
           <button
             onClick={handleSignOut}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/50 transition-colors hover:bg-white/5 hover:text-white/80"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-white/70 transition-colors hover:bg-white/5 hover:text-white"
           >
-            <LogOut className="h-4 w-4 text-white/40" />
+            <LogOut className="h-4 w-4 text-white/60" />
             Sign out
           </button>
         </div>

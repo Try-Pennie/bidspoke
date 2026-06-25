@@ -121,7 +121,7 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
         </ul>
       )}
       {!singleLine && refs.length > 0 && suggestions.length === 0 && (
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           Type <code className="rounded bg-gray-100 px-0.5">{'{{'}</code> to insert a reference
         </p>
       )}

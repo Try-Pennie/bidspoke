@@ -119,7 +119,7 @@ export default function VersionHistoryPage() {
                             <RotateCcw className="h-3 w-3" />
                             {restoring === v.id ? 'Restoring…' : 'Restore'}
                           </button>
-                          <button onClick={cancelRestore} className="text-xs text-gray-400 hover:text-gray-600">
+                          <button onClick={cancelRestore} className="text-xs text-gray-500 hover:text-gray-600">
                             Cancel
                           </button>
                         </div>

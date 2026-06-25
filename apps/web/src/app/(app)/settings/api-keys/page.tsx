@@ -110,7 +110,7 @@ export default function ApiKeysPage() {
         </div>
 
         {!loading && configured && updatedAt && (
-          <p className="mb-4 text-xs text-gray-400">
+          <p className="mb-4 text-xs text-gray-500">
             Last updated {new Date(updatedAt).toLocaleString()}
             {updatedBy ? ` by ${updatedBy}` : ''}
           </p>
@@ -130,7 +130,7 @@ export default function ApiKeysPage() {
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
             />
-            <p className="mt-1 text-xs text-gray-400">
+            <p className="mt-1 text-xs text-gray-500">
               Get a key from console.anthropic.com. Keys start with <span className="font-mono">sk-ant-</span>.
             </p>
           </div>
@@ -140,7 +140,7 @@ export default function ApiKeysPage() {
               type="submit"
               disabled={saving || !keyInput.trim()}
               className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-40 ${
-                savedOk ? 'bg-green-600' : 'bg-p-blue-dark hover:bg-[#3A8FD0]'
+                savedOk ? 'bg-green-600' : 'bg-p-blue-dark hover:bg-[#155E99]'
               }`}
             >
               {savedOk ? <Check className="h-3.5 w-3.5" /> : null}

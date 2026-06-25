@@ -121,8 +121,8 @@ export default function NodePalette({ onDragStart }: Props) {
   return (
     <aside className="flex w-48 flex-col border-r border-gray-200 bg-white">
       <div className="border-b border-gray-100 px-3 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Nodes</p>
-        <p className="mt-0.5 text-xs text-gray-400">Drag onto canvas</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Nodes</p>
+        <p className="mt-0.5 text-xs text-gray-500">Drag onto canvas</p>
       </div>
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {NODES.map(({ type, label, description, icon: Icon, color }) => (
@@ -135,7 +135,7 @@ export default function NodePalette({ onDragStart }: Props) {
             <Icon className={`mt-0.5 h-3.5 w-3.5 flex-shrink-0 ${color}`} />
             <div>
               <p className="text-xs font-medium text-gray-800">{label}</p>
-              <p className="text-xs text-gray-400">{description}</p>
+              <p className="text-xs text-gray-500">{description}</p>
             </div>
           </div>
         ))}

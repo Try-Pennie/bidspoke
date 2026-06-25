@@ -132,7 +132,7 @@ export function BidMatrixViewer(p: Props) {
               type="button"
               onClick={handleCreate}
               disabled={creating}
-              className="inline-flex items-center gap-1 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-graphite"
+              className="inline-flex items-center gap-1 rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-graphite"
               title="Add another matrix"
             >
               <Plus className="h-4 w-4" />
@@ -155,7 +155,7 @@ export function BidMatrixViewer(p: Props) {
             <button
               type="button"
               onClick={handleDelete}
-              className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+              className="rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
               title="Delete this matrix"
             >
               <Trash2 className="h-4 w-4" />
@@ -214,7 +214,7 @@ function ConfigBadge({ config }: { config: PartnerBidConfig }) {
       {synced ? (
         <span className="text-gray-500">Last synced {synced}</span>
       ) : (
-        <span className="text-gray-400">Never synced</span>
+        <span className="text-gray-500">Never synced</span>
       )}
       {config.last_sync_error && (
         <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-red-600">
@@ -228,10 +228,10 @@ function ConfigBadge({ config }: { config: PartnerBidConfig }) {
 
 function MatrixTable({ rows, dimensions, loading }: { rows: BidMatrixRow[]; dimensions: BidConfigDimension[]; loading: boolean }) {
   if (loading) {
-    return <div className="rounded-lg border border-gray-200 px-3 py-6 text-center text-sm text-gray-400">Loading matrix…</div>
+    return <div className="rounded-lg border border-gray-200 px-3 py-6 text-center text-sm text-gray-500">Loading matrix…</div>
   }
   if (rows.length === 0) {
-    return <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-400">No rows yet. Click <span className="font-medium">Sync now</span> to pull from Salesforce.</div>
+    return <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500">No rows yet. Click <span className="font-medium">Sync now</span> to pull from Salesforce.</div>
   }
 
   const rowDim = dimensions.find((d) => d.column === 'row')

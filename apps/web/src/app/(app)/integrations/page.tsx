@@ -356,14 +356,14 @@ export default function IntegrationsPage() {
                       <button
                         onClick={saveEditingChannel}
                         disabled={!pendingChannel || savingChannel}
-                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
                       >
                         {savingChannel ? 'Saving…' : 'Save'}
                       </button>
                       <button
                         onClick={exitChannelEditor}
                         disabled={savingChannel}
-                        className="text-xs text-gray-400 hover:text-gray-600"
+                        className="text-xs text-gray-500 hover:text-gray-600"
                       >
                         Cancel
                       </button>
@@ -371,9 +371,9 @@ export default function IntegrationsPage() {
                     {channelQuery.trim().length >= 3 && (
                       <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white">
                         {searchingChannels ? (
-                          <p className="px-3 py-2 text-xs text-gray-400">Searching…</p>
+                          <p className="px-3 py-2 text-xs text-gray-500">Searching…</p>
                         ) : channelResults.length === 0 ? (
-                          <p className="px-3 py-2 text-xs text-gray-400">No channels match.</p>
+                          <p className="px-3 py-2 text-xs text-gray-500">No channels match.</p>
                         ) : (
                           <ul className="divide-y divide-gray-100">
                             {channelResults.map((ch) => {
@@ -408,7 +408,7 @@ export default function IntegrationsPage() {
                   </p>
                 )}
                 {slack.updated_by_email && (
-                  <p className="mt-1 text-xs text-gray-400">Connected by {slack.updated_by_email}</p>
+                  <p className="mt-1 text-xs text-gray-500">Connected by {slack.updated_by_email}</p>
                 )}
               </div>
               <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3">
@@ -513,14 +513,14 @@ export default function IntegrationsPage() {
                       <button
                         onClick={saveEditingChannel}
                         disabled={!pendingChannel || savingChannel}
-                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                        className="rounded-lg bg-p-blue-dark px-3 py-1 text-xs font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
                       >
                         {savingChannel ? 'Saving…' : 'Save'}
                       </button>
                       <button
                         onClick={exitChannelEditor}
                         disabled={savingChannel}
-                        className="text-xs text-gray-400 hover:text-gray-600"
+                        className="text-xs text-gray-500 hover:text-gray-600"
                       >
                         Cancel
                       </button>
@@ -528,9 +528,9 @@ export default function IntegrationsPage() {
                     {channelQuery.trim().length >= 3 && (
                       <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-white">
                         {searchingChannels ? (
-                          <p className="px-3 py-2 text-xs text-gray-400">Searching…</p>
+                          <p className="px-3 py-2 text-xs text-gray-500">Searching…</p>
                         ) : channelResults.length === 0 ? (
-                          <p className="px-3 py-2 text-xs text-gray-400">No channels match.</p>
+                          <p className="px-3 py-2 text-xs text-gray-500">No channels match.</p>
                         ) : (
                           <ul className="divide-y divide-gray-100">
                             {channelResults.map((ch) => {
@@ -578,7 +578,7 @@ export default function IntegrationsPage() {
                             setError(e instanceof Error ? e.message : 'Failed to clear channel')
                           }
                         }}
-                        className="text-xs text-gray-400 hover:text-gray-600"
+                        className="text-xs text-gray-500 hover:text-gray-600"
                       >
                         Clear
                       </button>
@@ -600,7 +600,7 @@ export default function IntegrationsPage() {
                     <Unlink className="h-4 w-4" />
                     {disconnecting ? 'Disconnecting…' : 'Disconnect'}
                   </button>
-                  <button onClick={cancelDisconnect} className="text-sm text-gray-400 hover:text-gray-600">
+                  <button onClick={cancelDisconnect} className="text-sm text-gray-500 hover:text-gray-600">
                     Cancel
                   </button>
                 </div>
@@ -630,10 +630,10 @@ export default function IntegrationsPage() {
                     required
                   />
                   {resolving && (
-                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-400" />
+                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-500" />
                   )}
                 </div>
-                <p className="mt-1 text-xs text-gray-400">
+                <p className="mt-1 text-xs text-gray-500">
                   Slack App → OAuth & Permissions → Bot User OAuth Token.
                   Requires <code className="rounded bg-gray-100 px-1">chat:write</code>, <code className="rounded bg-gray-100 px-1">channels:read</code>, and <code className="rounded bg-gray-100 px-1">groups:read</code> scopes.
                 </p>
@@ -672,7 +672,7 @@ export default function IntegrationsPage() {
               <button
                 type="submit"
                 disabled={saving || !resolved || !selectedChannel}
-                className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
               >
                 {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Connecting…</> : 'Connect Slack'}
               </button>
@@ -694,7 +694,7 @@ export default function IntegrationsPage() {
             <button
               onClick={() => setAddingPreset(true)}
               disabled={addingPreset}
-              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-0 disabled:pointer-events-none"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-0 disabled:pointer-events-none"
             >
               <Plus className="h-4 w-4" />
               Add service
@@ -714,7 +714,7 @@ export default function IntegrationsPage() {
               className="mb-6 rounded-xl border border-gray-200 bg-white p-5"
               inert={!addingPreset || undefined}
             >
-              <p className="mb-4 text-sm font-medium text-gray-400">New service</p>
+              <p className="mb-4 text-sm font-medium text-gray-500">New service</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-600">Display name</label>
@@ -758,7 +758,7 @@ export default function IntegrationsPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Base URL <span className="font-normal text-gray-400">(optional)</span></label>
+                  <label className="mb-1 block text-xs font-medium text-gray-600">Base URL <span className="font-normal text-gray-500">(optional)</span></label>
                   <input
                     className="input w-full font-mono"
                     placeholder="https://api.mycrm.com"
@@ -771,7 +771,7 @@ export default function IntegrationsPage() {
                 <button
                   type="submit"
                   disabled={savingPreset}
-                  className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+                  className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
                 >
                   {savingPreset ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save service'}
                 </button>
@@ -800,12 +800,12 @@ export default function IntegrationsPage() {
           ) : presets.length === 0 && !addingPreset ? (
             <div className="rounded-xl border-2 border-dashed border-gray-200 py-10 text-center">
               <p className="text-sm font-semibold text-graphite">No services yet</p>
-              <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-400">
+              <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-500">
                 Add a service to make it available in the Webhook node dropdown with pre-filled auth settings.
               </p>
               <button
                 onClick={() => setAddingPreset(true)}
-                className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+                className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
               >
                 Add your first service
               </button>
@@ -828,7 +828,7 @@ export default function IntegrationsPage() {
                       <td className="px-4 py-3 font-medium text-graphite">{p.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.slug}</td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{p.auth_type.replace('_', ' ')}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-400">{p.base_url ?? '—'}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.base_url ?? '—'}</td>
                       <td className="px-4 py-3">
                         {confirmingDeletePreset === p.id ? (
                           <div className="flex items-center gap-1.5">
@@ -838,14 +838,14 @@ export default function IntegrationsPage() {
                             >
                               Delete
                             </button>
-                            <button onClick={cancelDeletePreset} className="text-xs text-gray-400 hover:text-gray-600">
+                            <button onClick={cancelDeletePreset} className="text-xs text-gray-500 hover:text-gray-600">
                               Cancel
                             </button>
                           </div>
                         ) : (
                           <button
                             onClick={() => requestDeletePreset(p.id)}
-                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                            className="rounded p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-500"
                             title="Delete service"
                           >
                             <Trash2 className="h-3.5 w-3.5" />

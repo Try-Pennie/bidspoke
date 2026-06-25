@@ -116,7 +116,7 @@ export default function EndpointsPage() {
           <button
             onClick={() => setAdding(true)}
             disabled={adding}
-            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-0 disabled:pointer-events-none"
+            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-0 disabled:pointer-events-none"
           >
             <Plus className="h-4 w-4" />
             New endpoint
@@ -133,7 +133,7 @@ export default function EndpointsPage() {
         <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${adding ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
           <div className="min-h-0 overflow-hidden">
             <div className="mb-6 max-w-lg rounded-xl border border-gray-200 bg-white p-5" inert={!adding || undefined}>
-              <p className="mb-4 text-sm font-medium text-gray-400">New endpoint</p>
+              <p className="mb-4 text-sm font-medium text-gray-500">New endpoint</p>
               <EndpointCreateForm
                 workflows={workflows}
                 autoFocus={adding}
@@ -164,12 +164,12 @@ export default function EndpointsPage() {
           <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
             <Globe className="mx-auto mb-3 h-6 w-6 text-gray-300" />
             <p className="text-base font-semibold text-graphite">No custom endpoints yet</p>
-            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-500">
               Give partners a URL like <span className="font-mono text-gray-600">hook.trypennie.dev/partner-name</span> (or <span className="font-mono text-gray-600">/partner-name/bidding</span>) instead of a generic webhook ID and API key.
             </p>
             <button
               onClick={() => setAdding(true)}
-              className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+              className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
             >
               Create your first endpoint
             </button>
@@ -185,7 +185,7 @@ export default function EndpointsPage() {
               >
                 {editingId === ep.id ? (
                   <div className="p-1">
-                    <p className="mb-4 text-sm font-medium text-gray-400">Edit endpoint</p>
+                    <p className="mb-4 text-sm font-medium text-gray-500">Edit endpoint</p>
                     <EndpointEditForm
                       endpoint={ep}
                       workflows={workflows}
@@ -201,7 +201,7 @@ export default function EndpointsPage() {
                   <div className="min-w-0 flex-1">
                     {/* URL */}
                     <div className="mb-2.5 flex items-center gap-2">
-                      <code className={`font-mono text-sm font-semibold break-all ${ep.is_active ? 'text-graphite' : 'text-gray-400'}`}>
+                      <code className={`font-mono text-sm font-semibold break-all ${ep.is_active ? 'text-graphite' : 'text-gray-500'}`}>
                         {endpointUrl(ep.subdomain, ep.path)}
                       </code>
                       {!ep.is_active && (
@@ -269,14 +269,14 @@ export default function EndpointsPage() {
                         >
                           Delete
                         </button>
-                        <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                        <button onClick={cancelDelete} className="text-xs text-gray-500 hover:text-gray-600">
                           Cancel
                         </button>
                       </div>
                     ) : (
                       <button
                         onClick={() => requestDelete(ep.id)}
-                        className="rounded-lg border border-gray-200 p-1.5 text-gray-400 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
+                        className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
                         title="Delete endpoint"
                       >
                         <Trash2 className="h-4 w-4" />

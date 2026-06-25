@@ -85,7 +85,7 @@ export function InlineFolderCreate({
       {leadingTd && <td className="w-8 px-2 py-2" />}
       <td colSpan={colSpan} className="px-4 py-2" style={{ paddingLeft: `${paddingLeft}px` }}>
         <form onSubmit={(e) => { e.preventDefault(); submit() }} className="flex items-center gap-2">
-          <FolderIcon className="h-4 w-4 text-gray-400" />
+          <FolderIcon className="h-4 w-4 text-gray-500" />
           <input
             autoFocus
             value={name}
@@ -173,7 +173,7 @@ export const SearchInput = forwardRef<SearchInputHandle, {
 
   return (
     <div className="relative">
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500" />
       <input
         ref={inputRef}
         type="text"
@@ -189,7 +189,7 @@ export const SearchInput = forwardRef<SearchInputHandle, {
       {value && (
         <button
           onClick={() => { setValue(''); inputRef.current?.focus() }}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-600"
         >
           <X className="h-3.5 w-3.5" />
         </button>

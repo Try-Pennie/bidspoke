@@ -612,7 +612,7 @@ export default function WorkflowsPage() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent"
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
-            <FolderIcon className="h-3.5 w-3.5 text-gray-400" />
+            <FolderIcon className="h-3.5 w-3.5 text-gray-500" />
             <span className="truncate">{f.name}</span>
           </button>
         )
@@ -626,7 +626,7 @@ export default function WorkflowsPage() {
           onClick={() => onPick(null)}
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
         >
-          <span className="text-gray-400">↥</span>
+          <span className="text-gray-500">↥</span>
           <span>{rootLabel}</span>
         </button>
         <div className="my-1 border-t border-gray-100" />
@@ -712,7 +712,7 @@ export default function WorkflowsPage() {
             )}
           </div>
           {wf.description && (
-            <p className="mt-0.5 truncate text-xs text-gray-400">{wf.description}</p>
+            <p className="mt-0.5 truncate text-xs text-gray-500">{wf.description}</p>
           )}
         </td>
 
@@ -727,7 +727,7 @@ export default function WorkflowsPage() {
             {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
             <button
               onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
-              className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
+              className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
               title="More options"
             >
               <MoreHorizontal className="h-4 w-4" />
@@ -741,7 +741,7 @@ export default function WorkflowsPage() {
                 >
                   Delete
                 </button>
-                <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                <button onClick={cancelDelete} className="text-xs text-gray-500 hover:text-gray-600">
                   Cancel
                 </button>
               </div>
@@ -753,21 +753,21 @@ export default function WorkflowsPage() {
                   onClick={() => handleToggleActive(wf)}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
-                  <Power className="h-4 w-4 text-gray-400" />
+                  <Power className="h-4 w-4 text-gray-500" />
                   {wf.is_active ? 'Disable' : 'Enable'}
                 </button>
                 <button
                   onClick={() => startRename(wf)}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
-                  <Pencil className="h-4 w-4 text-gray-400" />
+                  <Pencil className="h-4 w-4 text-gray-500" />
                   Rename
                 </button>
                 <button
                   onClick={() => handleDuplicate(wf.id)}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
-                  <Copy className="h-4 w-4 text-gray-400" />
+                  <Copy className="h-4 w-4 text-gray-500" />
                   Duplicate
                 </button>
                 <button
@@ -775,9 +775,9 @@ export default function WorkflowsPage() {
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
                   {(wf.capture_sightings ?? true) ? (
-                    <EyeOff className="h-4 w-4 text-gray-400" />
+                    <EyeOff className="h-4 w-4 text-gray-500" />
                   ) : (
-                    <Eye className="h-4 w-4 text-gray-400" />
+                    <Eye className="h-4 w-4 text-gray-500" />
                   )}
                   {(wf.capture_sightings ?? true) ? 'Stop capturing' : 'Capture sightings'}
                 </button>
@@ -785,7 +785,7 @@ export default function WorkflowsPage() {
                   onClick={() => { setOpenMenuId(null); setMovingWorkflowId(wf.id) }}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
-                  <FolderInput className="h-4 w-4 text-gray-400" />
+                  <FolderInput className="h-4 w-4 text-gray-500" />
                   Move to folder…
                 </button>
                 <div className="my-1 border-t border-gray-100" />
@@ -835,12 +835,12 @@ export default function WorkflowsPage() {
             <button
               onClick={() => toggleCollapse(folder.id)}
               disabled={isSearchActive}
-              className="rounded p-0.5 text-gray-400 hover:bg-gray-200/60 hover:text-gray-600 disabled:opacity-50"
+              className="rounded p-0.5 text-gray-500 hover:bg-gray-200/60 hover:text-gray-600 disabled:opacity-50"
               aria-label={isCollapsed ? 'Expand folder' : 'Collapse folder'}
             >
               {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             </button>
-            <FolderIcon className={`h-4 w-4 ${nameMatchedHere ? 'text-p-blue-dark' : 'text-gray-400'}`} />
+            <FolderIcon className={`h-4 w-4 ${nameMatchedHere ? 'text-p-blue-dark' : 'text-gray-500'}`} />
             {renamingFolderId === folder.id ? (
               <div className="flex-1">
                 <InlineRenameInput
@@ -862,7 +862,7 @@ export default function WorkflowsPage() {
             <div ref={folderMenuOpen === folder.id || movingFolderId === folder.id ? folderMenuRef : undefined} className="relative">
               <button
                 onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
-                className={`rounded p-1.5 text-gray-400 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
+                className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                 title="Folder options"
               >
                 <MoreHorizontal className="h-4 w-4" />
@@ -873,7 +873,7 @@ export default function WorkflowsPage() {
                     onClick={() => startRenameFolder(folder)}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
-                    <Pencil className="h-4 w-4 text-gray-400" />
+                    <Pencil className="h-4 w-4 text-gray-500" />
                     Rename
                   </button>
                   <button
@@ -883,21 +883,21 @@ export default function WorkflowsPage() {
                     }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
-                    <FolderPlus className="h-4 w-4 text-gray-400" />
+                    <FolderPlus className="h-4 w-4 text-gray-500" />
                     New subfolder
                   </button>
                   <button
                     onClick={() => { setFolderMenuOpen(null); handleCreate(folder.id) }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
-                    <Plus className="h-4 w-4 text-gray-400" />
+                    <Plus className="h-4 w-4 text-gray-500" />
                     New workflow here
                   </button>
                   <button
                     onClick={() => { setFolderMenuOpen(null); setMovingFolderId(folder.id) }}
                     className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                   >
-                    <FolderInput className="h-4 w-4 text-gray-400" />
+                    <FolderInput className="h-4 w-4 text-gray-500" />
                     Move to folder…
                   </button>
                   <div className="my-1 border-t border-gray-100" />
@@ -965,7 +965,7 @@ export default function WorkflowsPage() {
     const { setNodeRef, isOver } = useDroppableFolder('drop:root', { kind: 'root' })
     return (
       <tr ref={setNodeRef} className={isOver ? 'bg-p-blue-light/60 ring-2 ring-inset ring-p-blue-dark' : 'bg-gray-50/40'}>
-        <td colSpan={5} className="px-4 py-1.5 text-center text-xs text-gray-400">
+        <td colSpan={5} className="px-4 py-1.5 text-center text-xs text-gray-500">
           Drop here to move out of any folder
         </td>
       </tr>
@@ -1013,7 +1013,7 @@ export default function WorkflowsPage() {
             <button
               onClick={() => handleCreate()}
               disabled={creating}
-              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
               {creating ? 'Creating…' : 'New Workflow'}
@@ -1067,13 +1067,13 @@ export default function WorkflowsPage() {
             </svg>
 
             <h2 className="text-xl font-bold text-graphite">Build your first workflow</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-gray-400">
+            <p className="mx-auto mt-2 max-w-sm text-sm text-gray-500">
               Connect a trigger to filters, decisions, and API calls. Automate what happens when a lead comes in.
             </p>
             <button
               onClick={() => handleCreate()}
               disabled={creating}
-              className="mt-6 rounded-lg bg-p-blue-dark px-5 py-2.5 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+              className="mt-6 rounded-lg bg-p-blue-dark px-5 py-2.5 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
             >
               {creating ? 'Creating…' : 'New workflow'}
             </button>
@@ -1109,7 +1109,7 @@ export default function WorkflowsPage() {
                           title={folderSort === 'mru' ? 'Folders sorted by most recently used. Click to sort by name.' : 'Folders sorted by name. Click to sort by most recently used.'}
                           className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
                             folderSort === 'name'
-                              ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                              ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-600'
                               : 'bg-p-blue-light text-p-blue-dark'
                           }`}
                         >
@@ -1125,7 +1125,7 @@ export default function WorkflowsPage() {
                       title={sortMode === 'health' ? 'Sorted by health. Click to sort by last modified.' : 'Sorted by last modified. Click to sort by health (failing first).'}
                       className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold transition-colors ${
                         sortMode === 'health'
-                          ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                          ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-600'
                           : 'bg-p-blue-light text-p-blue-dark'
                       }`}
                     >
@@ -1142,7 +1142,7 @@ export default function WorkflowsPage() {
               </tbody>
             </table>
             {isSearchActive && !firstMatchId && (
-              <div className="px-4 py-8 text-center text-sm text-gray-400">
+              <div className="px-4 py-8 text-center text-sm text-gray-500">
                 No workflows match <span className="font-medium text-gray-600">&quot;{searchQuery}&quot;</span>
               </div>
             )}

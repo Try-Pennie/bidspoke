@@ -20,7 +20,9 @@ const config: Config = {
         'p-blue': {
           light: '#ECF8FF',
           DEFAULT: '#82D0FF',
-          dark: '#439FE1',
+          // Darkened from #439FE1 so white text clears WCAG AA (5.04:1). Used as
+          // the primary action color (buttons, active pills/tabs). See contrast.test.ts.
+          dark: '#1B72BA',
         },
         'p-green': {
           light: '#F0F9F1',

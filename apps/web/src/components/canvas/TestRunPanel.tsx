@@ -247,9 +247,9 @@ export default function TestRunPanel({
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-sm font-semibold text-graphite">Test run</p>
-          <p className="text-xs text-gray-400">Runs in test mode. No Slack alerts.</p>
+          <p className="text-xs text-gray-500">Runs in test mode. No Slack alerts.</p>
         </div>
-        <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
+        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -319,7 +319,7 @@ export default function TestRunPanel({
               </button>
               <button
                 onClick={() => { setShowSaveInput(false); setSaveName(''); setSaveError(null) }}
-                className="rounded p-1 text-gray-400 hover:text-gray-600"
+                className="rounded p-1 text-gray-500 hover:text-gray-600"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -329,7 +329,7 @@ export default function TestRunPanel({
         ) : (
           <button
             onClick={() => setShowSaveInput(true)}
-            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600"
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-600"
           >
             <Save className="h-3.5 w-3.5" />
             Save payload for reuse
@@ -363,7 +363,7 @@ export default function TestRunPanel({
               </span>
               <button
                 onClick={() => copy('result', typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2))}
-                className="ml-auto rounded p-1 text-gray-400 hover:bg-black/5 hover:text-gray-600"
+                className="ml-auto rounded p-1 text-gray-500 hover:bg-black/5 hover:text-gray-600"
                 title="Copy"
               >
                 {copiedKey === 'result'
@@ -391,7 +391,7 @@ export default function TestRunPanel({
                 <div className="mb-1.5 flex items-baseline justify-between">
                   <p className="text-xs font-medium text-gray-500">Steps</p>
                   <p className="text-xs tabular-nums text-gray-500">
-                    <span className="text-gray-400">total </span>{totalMs}ms
+                    <span className="text-gray-500">total </span>{totalMs}ms
                   </p>
                 </div>
               )
@@ -410,7 +410,7 @@ export default function TestRunPanel({
                       <StepIcon status={step.status} />
                       <span className="min-w-0 flex-1 truncate font-medium text-gray-700">{label}</span>
                       <span
-                        className={`shrink-0 tabular-nums ${step.duration_ms > 0 ? 'text-gray-400' : 'text-gray-300'}`}
+                        className={`shrink-0 tabular-nums ${step.duration_ms > 0 ? 'text-gray-500' : 'text-gray-300'}`}
                         title={step.duration_ms > 0 ? undefined : 'Completed in under a millisecond'}
                       >
                         {step.duration_ms > 0 ? `${step.duration_ms}ms` : '<1ms'}
@@ -451,7 +451,7 @@ export default function TestRunPanel({
                               <p className="text-xs font-medium text-gray-500">Output</p>
                               <button
                                 onClick={() => copy(`${step.step_namespace}-out`, JSON.stringify(step.output, null, 2))}
-                                className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
                                 title="Copy"
                               >
                                 {copiedKey === `${step.step_namespace}-out`
@@ -468,7 +468,7 @@ export default function TestRunPanel({
                               <p className="text-xs font-medium text-gray-500">Input</p>
                               <button
                                 onClick={() => copy(`${step.step_namespace}-in`, JSON.stringify(step.input, null, 2))}
-                                className="rounded p-0.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600"
+                                className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
                                 title="Copy"
                               >
                                 {copiedKey === `${step.step_namespace}-in`
@@ -521,7 +521,7 @@ export default function TestRunPanel({
         <button
           onClick={run}
           disabled={running}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-p-blue-dark py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-p-blue-dark py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
           {running ? 'Running…' : 'Run test'}

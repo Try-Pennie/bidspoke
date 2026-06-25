@@ -112,13 +112,13 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
         <div key={gi} className="rounded-lg border border-gray-200 p-3 text-xs">
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <span className="text-gray-400">Match:</span>
+              <span className="text-gray-500">Match:</span>
               {(['AND', 'OR'] as const).map((l) => (
                 <button
                   key={l}
                   onClick={() => updateGroup(gi, { ...group, logic: l })}
                   className={`rounded px-1.5 py-0.5 font-medium ${
-                    group.logic === l ? 'bg-gray-100 text-gray-800' : 'text-gray-400 hover:text-gray-600'
+                    group.logic === l ? 'bg-gray-100 text-gray-800' : 'text-gray-500 hover:text-gray-600'
                   }`}
                 >
                   {l}
@@ -197,7 +197,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
 
       <button
         onClick={addGroup}
-        className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600"
+        className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-600"
       >
         <Plus className="h-3 w-3" />
         Add group

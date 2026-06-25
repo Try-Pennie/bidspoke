@@ -61,7 +61,7 @@ export default function RenameConfirmDialog({
                 {safeFormulas.map((p) => (
                   <li key={p.partner_id}>
                     <span className="font-medium text-graphite">{p.partner_name}</span>{' '}
-                    <span className="text-gray-400">({p.references} ref{p.references === 1 ? '' : 's'})</span>
+                    <span className="text-gray-500">({p.references} ref{p.references === 1 ? '' : 's'})</span>
                     {p.formula_preview && (
                       <div className="mt-0.5 truncate font-mono text-gray-500">{p.formula_preview}</div>
                     )}

@@ -509,7 +509,7 @@ export default function EnvPage() {
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige disabled:cursor-not-allowed disabled:text-gray-300 disabled:hover:bg-transparent"
             style={{ paddingLeft: `${12 + depth * 14}px` }}
           >
-            <FolderIcon className="h-3.5 w-3.5 text-gray-400" />
+            <FolderIcon className="h-3.5 w-3.5 text-gray-500" />
             <span className="truncate">{f.name}</span>
           </button>
         )
@@ -523,7 +523,7 @@ export default function EnvPage() {
           onClick={() => onPick(null)}
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
         >
-          <span className="text-gray-400">↥</span>
+          <span className="text-gray-500">↥</span>
           <span>{rootLabel}</span>
         </button>
         <div className="my-1 border-t border-gray-100" />
@@ -576,7 +576,7 @@ export default function EnvPage() {
           {v.is_secret ? (
             <div className="flex items-center gap-1.5">
               {revealUnavailable.has(v.id)
-                ? <span className="font-sans text-gray-400 italic">Rotate to enable reveal</span>
+                ? <span className="font-sans text-gray-500 italic">Rotate to enable reveal</span>
                 : <span>{revealedValues[v.id] ?? '••••••••'}</span>
               }
               {revealedValues[v.id] ? (
@@ -634,7 +634,7 @@ export default function EnvPage() {
           <div ref={rowMenuOpen === v.id || movingVarId === v.id ? rowMenuRef : undefined} className="relative">
             <button
               onClick={() => setRowMenuOpen(rowMenuOpen === v.id ? null : v.id)}
-              className={`rounded p-1.5 text-gray-400 hover:bg-gray-100 ${confirmingDelete === v.id ? 'invisible pointer-events-none' : ''} ${rowMenuOpen === v.id ? 'bg-gray-100 text-gray-600' : ''}`}
+              className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${confirmingDelete === v.id ? 'invisible pointer-events-none' : ''} ${rowMenuOpen === v.id ? 'bg-gray-100 text-gray-600' : ''}`}
               title="More options"
             >
               <MoreHorizontal className="h-4 w-4" />
@@ -647,7 +647,7 @@ export default function EnvPage() {
                 >
                   Delete
                 </button>
-                <button onClick={cancelDelete} className="text-xs text-gray-400 hover:text-gray-600">
+                <button onClick={cancelDelete} className="text-xs text-gray-500 hover:text-gray-600">
                   Cancel
                 </button>
               </div>
@@ -658,7 +658,7 @@ export default function EnvPage() {
                   onClick={() => { setRowMenuOpen(null); setMovingVarId(v.id) }}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                 >
-                  <FolderInput className="h-4 w-4 text-gray-400" />
+                  <FolderInput className="h-4 w-4 text-gray-500" />
                   Move to folder…
                 </button>
                 <div className="my-1 border-t border-gray-100" />
@@ -712,12 +712,12 @@ export default function EnvPage() {
               <button
                 onClick={() => toggleCollapse(folder.id)}
                 disabled={isSearchActive}
-                className="rounded p-0.5 text-gray-400 hover:bg-gray-200/60 hover:text-gray-600 disabled:opacity-50"
+                className="rounded p-0.5 text-gray-500 hover:bg-gray-200/60 hover:text-gray-600 disabled:opacity-50"
                 aria-label={isCollapsed ? 'Expand folder' : 'Collapse folder'}
               >
                 {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
               </button>
-              <FolderIcon className={`h-4 w-4 ${nameMatched ? 'text-p-blue-dark' : 'text-gray-400'}`} />
+              <FolderIcon className={`h-4 w-4 ${nameMatched ? 'text-p-blue-dark' : 'text-gray-500'}`} />
               {renamingFolderId === folder.id ? (
                 <div className="flex-1">
                   <InlineRenameInput
@@ -739,7 +739,7 @@ export default function EnvPage() {
               <div ref={folderMenuOpen === folder.id || movingFolderId === folder.id ? folderMenuRef : undefined} className="relative">
                 <button
                   onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
-                  className={`rounded p-1.5 text-gray-400 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
+                  className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                   title="Folder options"
                 >
                   <MoreHorizontal className="h-4 w-4" />
@@ -750,28 +750,28 @@ export default function EnvPage() {
                       onClick={() => startRenameFolder(folder)}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                     >
-                      <Pencil className="h-4 w-4 text-gray-400" />
+                      <Pencil className="h-4 w-4 text-gray-500" />
                       Rename
                     </button>
                     <button
                       onClick={() => { setFolderMenuOpen(null); setCreatingFolderParent(folder.id) }}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                     >
-                      <FolderPlus className="h-4 w-4 text-gray-400" />
+                      <FolderPlus className="h-4 w-4 text-gray-500" />
                       New subfolder
                     </button>
                     <button
                       onClick={() => openNewVariableInFolder(folder.id)}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                     >
-                      <Plus className="h-4 w-4 text-gray-400" />
+                      <Plus className="h-4 w-4 text-gray-500" />
                       New variable here
                     </button>
                     <button
                       onClick={() => { setFolderMenuOpen(null); setMovingFolderId(folder.id) }}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
                     >
-                      <FolderInput className="h-4 w-4 text-gray-400" />
+                      <FolderInput className="h-4 w-4 text-gray-500" />
                       Move to folder…
                     </button>
                     <div className="my-1 border-t border-gray-100" />
@@ -838,7 +838,7 @@ export default function EnvPage() {
     const { setNodeRef, isOver } = useDroppableFolder('drop:root', { kind: 'root' })
     return (
       <tr ref={setNodeRef} className={isOver ? 'bg-p-blue-light/60 ring-2 ring-inset ring-p-blue-dark' : 'bg-gray-50/40'}>
-        <td colSpan={6} className="px-4 py-1.5 text-center text-xs text-gray-400">
+        <td colSpan={6} className="px-4 py-1.5 text-center text-xs text-gray-500">
           Drop here to move out of any folder
         </td>
       </tr>
@@ -896,7 +896,7 @@ export default function EnvPage() {
             </button>
             <button
               onClick={() => { setFormFolderId(null); setShowForm(true) }}
-              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+              className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
             >
               <Plus className="h-4 w-4" />
               Add variable
@@ -960,12 +960,12 @@ export default function EnvPage() {
         ) : vars.length === 0 && folders.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center">
             <p className="text-base font-semibold text-graphite">No variables yet</p>
-            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-400">
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-500">
               Environment variables let workflows reference API keys and config values without hardcoding them. Reference them in any step as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>.
             </p>
             <button
               onClick={() => { setFormFolderId(null); setShowForm(true) }}
-              className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+              className="mt-4 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
             >
               Add your first variable
             </button>
@@ -990,7 +990,7 @@ export default function EnvPage() {
                             title={folderSort === 'mru' ? 'Folders sorted by most recently used. Click to sort by name.' : 'Folders sorted by name. Click to sort by most recently used.'}
                             className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
                               folderSort === 'name'
-                                ? 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                                ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-600'
                                 : 'bg-p-blue-light text-p-blue-dark'
                             }`}
                           >
@@ -1054,7 +1054,7 @@ function NewVariableForm({
       onSubmit={(e) => { e.preventDefault(); submit(false) }}
       className="mb-6 rounded-xl border border-gray-200 bg-white p-4"
     >
-      <h2 className="mb-4 text-sm font-medium text-gray-400">
+      <h2 className="mb-4 text-sm font-medium text-gray-500">
         {folderName ? <>New variable <span className="text-gray-500">in {folderName}</span></> : 'New variable'}
       </h2>
       <div className="grid grid-cols-2 gap-4">
@@ -1097,7 +1097,7 @@ function NewVariableForm({
         <button
           type="submit"
           disabled={creating}
-          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {creating ? <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</> : 'Save'}
         </button>

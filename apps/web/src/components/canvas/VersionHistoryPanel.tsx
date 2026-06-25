@@ -76,7 +76,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
       {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-semibold text-graphite">Version history</p>
-        <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
+        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -106,7 +106,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
         ) : versions.length === 0 ? (
           <div className="px-4 py-6 text-center">
             <p className="text-xs font-medium text-gray-500">No versions yet</p>
-            <p className="mt-1 text-xs text-gray-400">Save the workflow to create a snapshot. Versions let you roll back to any previous definition.</p>
+            <p className="mt-1 text-xs text-gray-500">Save the workflow to create a snapshot. Versions let you roll back to any previous definition.</p>
           </div>
         ) : (
           <ul className="divide-y divide-gray-50">
@@ -115,7 +115,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-graphite">v{v.version_number}</p>
-                    <p className="mt-0.5 truncate text-xs text-gray-400">
+                    <p className="mt-0.5 truncate text-xs text-gray-500">
                       {v.message ?? 'No message'}
                     </p>
                     <p className="mt-0.5 text-xs text-gray-300">
@@ -138,7 +138,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
                       </button>
                       <button
                         onClick={cancelRestore}
-                        className="text-xs text-gray-400 hover:text-gray-600"
+                        className="text-xs text-gray-500 hover:text-gray-600"
                       >
                         Cancel
                       </button>

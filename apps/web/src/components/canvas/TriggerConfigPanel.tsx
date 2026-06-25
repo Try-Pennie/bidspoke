@@ -173,12 +173,12 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
       {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-gray-400">Trigger</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Trigger</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">Webhook</p>
         </div>
         <div className="flex items-center gap-1">
-          {readOnly && <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">View only</span>}
-          <button onClick={onClose} className="rounded p-1 text-gray-400 hover:bg-gray-100">
+          {readOnly && <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">View only</span>}
+          <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -196,7 +196,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               <button
                 type="button"
                 onClick={copyUrl}
-                className="pointer-events-auto mt-0.5 flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+                className="pointer-events-auto mt-0.5 flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600 transition-colors"
                 title="Copy URL"
               >
                 {copied
@@ -249,7 +249,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             </div>
           )}
           {customEndpoints.length === 0 && !addingEndpoint && (
-            <p className="text-xs text-gray-400">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner</span> (or <span className="font-mono">/partner/bidding</span>).</p>
+            <p className="text-xs text-gray-500">Give partners a branded URL like <span className="font-mono">hook.trypennie.dev/partner</span> (or <span className="font-mono">/partner/bidding</span>).</p>
           )}
           <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${addingEndpoint ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
             <div className="min-h-0 overflow-hidden">
@@ -359,7 +359,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                           <button
                             type="button"
                             onClick={() => handleUnassign(s.name)}
-                            className="rounded px-1 py-0.5 text-xs text-gray-400 hover:bg-red-50 hover:text-red-500"
+                            className="rounded px-1 py-0.5 text-xs text-gray-500 hover:bg-red-50 hover:text-red-500"
                             title="Unassign from this workflow"
                           >
                             Remove
@@ -373,7 +373,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         <button
                           type="button"
                           onClick={() => toggleReveal(s.api_key)}
-                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                           title={revealed ? 'Hide' : 'Reveal'}
                         >
                           {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
@@ -381,7 +381,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         <button
                           type="button"
                           onClick={() => copyKey(s.api_key)}
-                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          className="pointer-events-auto flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                           title="Copy key"
                         >
                           {copiedKey === s.api_key
@@ -396,7 +396,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               </div>
             ) : (
               !addingSource && !assigningExisting && (
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-gray-500">
                   No keys assigned. Any valid key works until you assign one here. Then only assigned keys can trigger this workflow.
                 </p>
               )
@@ -473,15 +473,15 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               disabled={readOnly}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             />
-            <span className="text-xs text-gray-400 whitespace-nowrap">ms</span>
+            <span className="text-xs text-gray-500 whitespace-nowrap">ms</span>
           </div>
-          <p className="mt-1 text-xs text-gray-400">Send a Slack alert if any execution takes longer than this. Leave blank to disable. Matches the unit on node-level timeouts.</p>
+          <p className="mt-1 text-xs text-gray-500">Send a Slack alert if any execution takes longer than this. Leave blank to disable. Matches the unit on node-level timeouts.</p>
         </div>
 
         {/* Muted failure alerts (#248) */}
         <div>
           <label className="mb-1.5 block text-xs font-medium text-gray-500">Muted failure alerts</label>
-          <p className="mb-2 text-xs text-gray-400">
+          <p className="mb-2 text-xs text-gray-500">
             Silence the per-run Slack alert for a known error (matched case-insensitively against the error message), but still get one aggregated alert if it spikes. It fires once when that many matching failures occur within the window.
           </p>
           <div className="space-y-2">
@@ -503,7 +503,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   title="Alert after this many matching failures"
                   className="w-14 rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
                 />
-                <span className="text-xs text-gray-400">in</span>
+                <span className="text-xs text-gray-500">in</span>
                 <input
                   type="number"
                   min={1}
@@ -513,13 +513,13 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   title="…within this many minutes"
                   className="w-14 rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
                 />
-                <span className="text-xs text-gray-400">min</span>
+                <span className="text-xs text-gray-500">min</span>
                 <button
                   type="button"
                   onClick={() => removeSignal(i)}
                   disabled={readOnly}
                   aria-label="Remove muted signal"
-                  className="rounded p-1 text-gray-400 hover:text-red-500 disabled:opacity-50"
+                  className="rounded p-1 text-gray-500 hover:text-red-500 disabled:opacity-50"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -550,7 +550,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               disabled={readOnly}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             />
-            <p className="mt-1 text-xs text-gray-400">Routes this workflow&#39;s alerts to a specific channel. Leave blank to use the org default.</p>
+            <p className="mt-1 text-xs text-gray-500">Routes this workflow&#39;s alerts to a specific channel. Leave blank to use the org default.</p>
           </div>
         )}
 
@@ -586,7 +586,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                 <label className="mb-1 block text-xs font-medium text-gray-500">
                   Match on these fields
                 </label>
-                <p className="mb-1.5 text-xs text-gray-400">Requests with the same values for these fields count as the same lead. Leave empty to match on the entire payload.</p>
+                <p className="mb-1.5 text-xs text-gray-500">Requests with the same values for these fields count as the same lead. Leave empty to match on the entire payload.</p>
                 <div className="space-y-1">
                   {(idempotency.derive_from_fields ?? []).map((field, i) => (
                     <div key={i} className="flex items-center gap-1">
@@ -599,7 +599,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                           fields.splice(i, 1)
                           updateIdempotency({ derive_from_fields: fields })
                         }}
-                        className="rounded p-1 text-gray-400 hover:text-red-500"
+                        className="rounded p-1 text-gray-500 hover:text-red-500"
                       >
                         <Trash2 className="h-3 w-3" />
                       </button>
@@ -628,7 +628,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         })
                         setNewField('')
                       }}
-                      className="rounded p-1 text-gray-400 hover:text-p-blue-dark"
+                      className="rounded p-1 text-gray-500 hover:text-p-blue-dark"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>
@@ -645,7 +645,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                   min={60}
                   onChange={(e) => updateIdempotency({ ttl_seconds: e.target.value === '' ? undefined : Number(e.target.value) })}
                 />
-                <p className="mt-1 text-xs text-gray-400">How long to cache the response. Default 86400 = 24 hours.</p>
+                <p className="mt-1 text-xs text-gray-500">How long to cache the response. Default 86400 = 24 hours.</p>
               </div>
             </>
           )}
@@ -680,7 +680,7 @@ function SuccessNodePicker({ picked, available, readOnly, onChange }: {
   }, [open])
 
   if (readOnly) {
-    if (picked.length === 0) return <p className="text-xs text-gray-400">No success nodes chosen.</p>
+    if (picked.length === 0) return <p className="text-xs text-gray-500">No success nodes chosen.</p>
     // Render in graph order when available, falling back to picked order for
     // any namespaces that no longer exist in the definition.
     const ordered = [
@@ -699,7 +699,7 @@ function SuccessNodePicker({ picked, available, readOnly, onChange }: {
   }
 
   if (available.length === 0) {
-    return <p className="text-xs text-gray-400">Add nodes to the workflow to choose success endpoints.</p>
+    return <p className="text-xs text-gray-500">Add nodes to the workflow to choose success endpoints.</p>
   }
 
   // Pills shown to the user are graph-ordered too.
@@ -747,7 +747,7 @@ function SuccessNodePicker({ picked, available, readOnly, onChange }: {
       {open && (
         <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
           {suggestions.length === 0 ? (
-            <p className="px-2.5 py-2 text-xs text-gray-400">
+            <p className="px-2.5 py-2 text-xs text-gray-500">
               {q ? 'No matching nodes.' : 'All nodes selected.'}
             </p>
           ) : (

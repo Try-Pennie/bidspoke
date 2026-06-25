@@ -14,10 +14,10 @@ export function ExecutionNotFoundNotice({ executionId, action }: { executionId: 
   return (
     <div className="rounded-xl border border-gray-200 bg-white p-6">
       <div className="flex items-start gap-3">
-        <SearchX className="mt-0.5 h-5 w-5 flex-shrink-0 text-gray-400" />
+        <SearchX className="mt-0.5 h-5 w-5 flex-shrink-0 text-gray-500" />
         <div className="min-w-0">
           <p className="text-sm font-semibold text-graphite">No record of this execution</p>
-          <p className="mt-1 break-all font-mono text-xs text-gray-400">{executionId}</p>
+          <p className="mt-1 break-all font-mono text-xs text-gray-500">{executionId}</p>
           <p className="mt-2 text-sm text-gray-600">
             Two things can cause this: the run is older than the {EXECUTION_RETENTION_DAYS}-day retention
             window and its logs were removed by the nightly cleanup, or its logs failed to persist when it

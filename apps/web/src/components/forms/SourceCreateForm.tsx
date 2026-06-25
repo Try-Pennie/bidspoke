@@ -61,7 +61,7 @@ export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, 
           onChange={(e) => setName(sanitizeSourceName(e.target.value))}
           required
         />
-        <p className="mt-1 text-xs text-gray-400">
+        <p className="mt-1 text-xs text-gray-500">
           Lowercase letters, numbers, underscores. Used as <code className="rounded bg-gray-100 px-1 font-mono">trigger.source</code> in workflows.
         </p>
       </div>
@@ -70,7 +70,7 @@ export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, 
         <button
           type="submit"
           disabled={saving || !name.trim()}
-          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+          className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Generating…</> : 'Generate key'}
         </button>

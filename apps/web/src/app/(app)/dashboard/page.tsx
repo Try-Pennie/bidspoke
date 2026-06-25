@@ -130,7 +130,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-3 border-t border-gray-100 pt-1.5 mt-1">
-                  <span className="text-gray-400">Total</span>
+                  <span className="text-gray-500">Total</span>
                   <span className="tabular-nums font-semibold text-gray-700">{tooltip.total}</span>
                 </div>
               </div>
@@ -205,7 +205,7 @@ function VolumeChart({ data }: { data: StatsResponse['by_day'] }) {
           return (
             <div key={d.date} className="flex-1 flex justify-center">
               {showLabelAt(i) && (
-                <span className="text-[10px] leading-none text-gray-400">{label}</span>
+                <span className="text-[10px] leading-none text-gray-500">{label}</span>
               )}
             </div>
           )
@@ -271,7 +271,7 @@ export default function DashboardPage() {
             </div>
           <div className="flex items-center gap-3">
             {lastUpdated && (
-              <span className="text-xs text-gray-400">
+              <span className="text-xs text-gray-500">
                 Updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
               </span>
             )}
@@ -326,7 +326,7 @@ export default function DashboardPage() {
                 s.success_rate >= 80 ? 'border-amber-100 bg-amber-50' :
                 'border-red-100 bg-red-50'
               }`}>
-                <p className="mb-3 text-xs text-gray-400">Success rate</p>
+                <p className="mb-3 text-xs text-gray-500">Success rate</p>
                 <p className={`text-5xl font-bold tabular-nums leading-none lg:text-6xl ${
                   !s || s.total === 0 ? 'text-gray-300' :
                   s.success_rate >= 95 ? 'text-green-600' :
@@ -357,15 +357,15 @@ export default function DashboardPage() {
               {/* Secondary stats */}
               <div className="grid grid-cols-3 gap-4 lg:flex lg:flex-col">
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
-                  <p className="text-xs text-gray-400">Total runs</p>
+                  <p className="text-xs text-gray-500">Total runs</p>
                   <p className="mt-1.5 text-3xl font-bold tabular-nums text-graphite">{animatedTotal ?? s?.total ?? 0}</p>
                 </div>
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
-                  <p className="text-xs text-gray-400">Avg duration</p>
+                  <p className="text-xs text-gray-500">Avg duration</p>
                   <p className="mt-1.5 text-3xl font-bold text-graphite">{fmt(s?.avg_duration_ms ?? null)}</p>
                 </div>
                 <div className="rounded-xl border border-gray-200 bg-white p-5">
-                  <p className="text-xs text-gray-400">Est. cost</p>
+                  <p className="text-xs text-gray-500">Est. cost</p>
                   <p className="mt-1.5 text-3xl font-bold tabular-nums text-graphite">{fmtCost(totalCost)}</p>
                 </div>
               </div>
@@ -389,7 +389,7 @@ export default function DashboardPage() {
           ) : data && data.by_day.length > 0 ? (
             <VolumeChart data={data.by_day} />
           ) : (
-            <div className="flex h-36 items-center justify-center text-sm text-gray-400">No executions in this window</div>
+            <div className="flex h-36 items-center justify-center text-sm text-gray-500">No executions in this window</div>
           )}
         </div>
 
@@ -417,7 +417,7 @@ export default function DashboardPage() {
               <div className="flex flex-col items-center py-8 text-center">
                 <CheckCircle2 className="mb-2 h-6 w-6 text-gray-300" />
                 <p className="text-sm font-medium text-gray-700">No executions</p>
-                <p className="mt-0.5 text-xs text-gray-400">Try a longer window to see historical data.</p>
+                <p className="mt-0.5 text-xs text-gray-500">Try a longer window to see historical data.</p>
               </div>
             ) : (
               <table className="w-full text-sm">
@@ -456,28 +456,28 @@ export default function DashboardPage() {
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
                           <div>{wf.total || '—'}</div>
                           {wf.total > 0 && (
-                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_ms)}</div>
+                            <div className="text-xs text-gray-500">{fmt(wf.avg_duration_ms)}</div>
                           )}
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-500">
                           <div>{outcomeCompleted || '—'}</div>
                           {outcomeCompleted > 0 && (
-                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_completed_ms)}</div>
+                            <div className="text-xs text-gray-500">{fmt(wf.avg_duration_completed_ms)}</div>
                           )}
                         </td>
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.successful ? 'text-green-600' : 'text-gray-400'}`}>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.successful ? 'text-green-600' : 'text-gray-500'}`}>
                           <div>{wf.successful || '—'}</div>
                           {wf.successful > 0 && (
-                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_successful_ms)}</div>
+                            <div className="text-xs text-gray-500">{fmt(wf.avg_duration_successful_ms)}</div>
                           )}
                         </td>
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.degraded ? 'text-amber-600' : 'text-gray-400'}`}>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.degraded ? 'text-amber-600' : 'text-gray-500'}`}>
                           <div>{wf.degraded || '—'}</div>
                         </td>
-                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.failed ? 'text-red-500' : 'text-gray-400'}`}>
+                        <td className={`px-3 py-2.5 text-right tabular-nums ${wf.failed ? 'text-red-500' : 'text-gray-500'}`}>
                           <div>{wf.failed || '—'}</div>
                           {wf.failed > 0 && (
-                            <div className="text-xs text-gray-400">{fmt(wf.avg_duration_failed_ms)}</div>
+                            <div className="text-xs text-gray-500">{fmt(wf.avg_duration_failed_ms)}</div>
                           )}
                         </td>
                         <td className="px-5 py-2.5 text-right tabular-nums text-gray-500">{fmtCost(wf.cost_usd)}</td>
@@ -507,7 +507,7 @@ export default function DashboardPage() {
               <div className="flex flex-col items-center py-8 text-center">
                 <CheckCircle2 className="mb-2 h-6 w-6 text-green-400" />
                 <p className="text-sm font-medium text-gray-700">No failures</p>
-                <p className="mt-0.5 text-xs text-gray-400">All executions completed successfully in this window.</p>
+                <p className="mt-0.5 text-xs text-gray-500">All executions completed successfully in this window.</p>
               </div>
             ) : (
               <div className="divide-y divide-gray-100">
@@ -543,7 +543,7 @@ export default function DashboardPage() {
                         )}
                       </div>
                       <div className="flex flex-shrink-0 flex-col items-end gap-1">
-                        <span className="text-xs text-gray-400">{formatDatetime(f.started_at)}</span>
+                        <span className="text-xs text-gray-500">{formatDatetime(f.started_at)}</span>
                         <Link
                           href={`/workflows/${f.workflow_id}/executions/${f.id}`}
                           onClick={(e) => e.stopPropagation()}

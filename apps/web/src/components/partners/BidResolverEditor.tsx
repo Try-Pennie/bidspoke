@@ -32,7 +32,7 @@ export function BidResolverEditor(p: Props) {
     <div className="space-y-4">
       <div>
         <label className="mb-1 block text-xs font-medium text-gray-600">Resolver</label>
-        <p className="mb-2 text-xs text-gray-400">How Bidspoke determines the bid amount for this partner.</p>
+        <p className="mb-2 text-xs text-gray-500">How Bidspoke determines the bid amount for this partner.</p>
         <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5">
           {(['api', 'matrix', 'formula'] as const).map((t) => (
             <button
@@ -55,7 +55,7 @@ export function BidResolverEditor(p: Props) {
         <div className="space-y-3">
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600">API endpoint</label>
-            <p className="mb-1.5 text-xs text-gray-400">POSTed with the trigger payload on every bid.</p>
+            <p className="mb-1.5 text-xs text-gray-500">POSTed with the trigger payload on every bid.</p>
             <input
               value={p.apiEndpoint}
               onChange={(e) => p.onApiEndpointChange(e.target.value)}
@@ -65,7 +65,7 @@ export function BidResolverEditor(p: Props) {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-gray-600">Auth secret name</label>
-            <p className="mb-1.5 text-xs text-gray-400">Cloudflare worker secret containing the bearer token. Optional.</p>
+            <p className="mb-1.5 text-xs text-gray-500">Cloudflare worker secret containing the bearer token. Optional.</p>
             <input
               value={p.cfSecretKey}
               onChange={(e) => p.onCfSecretKeyChange(e.target.value)}
@@ -116,7 +116,7 @@ export function BidResolverEditor(p: Props) {
       {p.resolverType === 'formula' && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Formula</label>
-          <p className="mb-1.5 text-xs text-gray-400">Arithmetic expression. Use any numeric trigger.payload field by name. Supports +, -, *, /, ** and Math.floor / min / max / round / abs / sqrt.</p>
+          <p className="mb-1.5 text-xs text-gray-500">Arithmetic expression. Use any numeric trigger.payload field by name. Supports +, -, *, /, ** and Math.floor / min / max / round / abs / sqrt.</p>
           <textarea
             value={p.bidFormula}
             onChange={(e) => p.onFormulaChange(e.target.value)}
@@ -178,7 +178,7 @@ function BidValueSourceRadio({
       {mode === 'response' && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
-          <p className="mb-1.5 text-xs text-gray-400">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
+          <p className="mb-1.5 text-xs text-gray-500">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
           <input
             value={typeof resolverConfig.bid_path === 'string' ? resolverConfig.bid_path : ''}
             onChange={(e) => {
@@ -200,7 +200,7 @@ function BidValueSourceRadio({
       {mode === 'formula' && (
         <div>
           <label className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
-          <p className="mb-1.5 text-xs text-gray-400">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
+          <p className="mb-1.5 text-xs text-gray-500">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
           <textarea
             value={typeof resolverConfig.formula === 'string' ? resolverConfig.formula : ''}
             onChange={(e) => {
@@ -262,9 +262,9 @@ function MatrixResolverConfig({
     <div className="space-y-3">
       <div>
         <label className="mb-1 block text-xs font-medium text-gray-600">Bid matrix</label>
-        <p className="mb-1.5 text-xs text-gray-400">Pick a matrix to look up bids from. Matrices are managed below.</p>
+        <p className="mb-1.5 text-xs text-gray-500">Pick a matrix to look up bids from. Matrices are managed below.</p>
         {options.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-400">
+          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
             No matrices configured for this partner yet.
           </p>
         ) : (

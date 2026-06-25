@@ -98,7 +98,7 @@ export default function AccessSettingsPage() {
         {!adding && (
           <button
             onClick={() => setAdding(true)}
-            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0]"
+            className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99]"
           >
             <UserPlus className="h-4 w-4" />
             Add user
@@ -132,7 +132,7 @@ export default function AccessSettingsPage() {
           <button
             type="submit"
             disabled={saving}
-            className="rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#3A8FD0] disabled:opacity-50"
+            className="rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
           >
             {saving ? 'Adding…' : 'Add'}
           </button>
@@ -167,12 +167,12 @@ export default function AccessSettingsPage() {
               <li key={u.email} className="flex items-center justify-between gap-3 px-4 py-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-graphite">{u.email}</p>
-                  <p className="text-xs text-gray-400">
+                  <p className="text-xs text-gray-500">
                     Added {new Date(u.added_at).toLocaleDateString()} by {u.added_by}
                   </p>
                 </div>
                 {u.email === currentEmail ? (
-                  <span className="shrink-0 rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-400">you</span>
+                  <span className="shrink-0 rounded-md bg-gray-100 px-2 py-1 text-xs text-gray-500">you</span>
                 ) : confirmingRemove === u.email ? (
                   <div className="flex shrink-0 items-center gap-1.5">
                     <button
@@ -184,7 +184,7 @@ export default function AccessSettingsPage() {
                     </button>
                     <button
                       onClick={() => { clearTimeout(removeTimerRef.current!); setConfirmingRemove(null) }}
-                      className="text-xs text-gray-400 hover:text-gray-600"
+                      className="text-xs text-gray-500 hover:text-gray-600"
                     >
                       Cancel
                     </button>
@@ -192,7 +192,7 @@ export default function AccessSettingsPage() {
                 ) : (
                   <button
                     onClick={() => requestRemove(u.email)}
-                    className="shrink-0 rounded-lg border border-gray-200 p-1.5 text-gray-400 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
+                    className="shrink-0 rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
                     title="Remove"
                   >
                     <Trash2 className="h-3.5 w-3.5" />

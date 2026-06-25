@@ -2837,7 +2837,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <button
               onClick={() => switchMode('edit')}
               className={`flex items-center gap-1 px-2.5 py-1.5 font-medium ${
-                mode === 'edit' ? 'bg-p-blue-dark text-white' : 'bg-white text-gray-400 hover:bg-beige'
+                mode === 'edit' ? 'bg-p-blue-dark text-white' : 'bg-white text-gray-500 hover:bg-beige'
               }`}
             >
               <Pencil className="h-3 w-3" />
@@ -2846,7 +2846,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <button
               onClick={() => switchMode('view')}
               className={`flex items-center gap-1 border-l border-gray-200 px-2.5 py-1.5 font-medium ${
-                mode === 'view' ? 'bg-gray-100 text-gray-800' : 'bg-white text-gray-400 hover:bg-beige'
+                mode === 'view' ? 'bg-gray-100 text-gray-800' : 'bg-white text-gray-500 hover:bg-beige'
               }`}
             >
               <Eye className="h-3 w-3" />
@@ -2862,7 +2862,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               <button
                 onClick={undo}
                 disabled={hist.past.length === 0}
-                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
+                className="rounded p-1.5 text-gray-500 hover:bg-gray-100 disabled:opacity-30"
                 title="Undo (⌘Z)"
               >
                 <Undo2 className="h-4 w-4" />
@@ -2870,7 +2870,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               <button
                 onClick={redo}
                 disabled={hist.future.length === 0}
-                className="rounded p-1.5 text-gray-400 hover:bg-gray-100 disabled:opacity-30"
+                className="rounded p-1.5 text-gray-500 hover:bg-gray-100 disabled:opacity-30"
                 title="Redo (⌘⇧Z)"
               >
                 <Redo2 className="h-4 w-4" />
@@ -2898,7 +2898,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           {/* Version history — always visible */}
           <button
             onClick={() => setShowVersions((s) => !s)}
-            className={`rounded p-1.5 hover:bg-gray-100 ${showVersions ? 'bg-gray-100 text-gray-700' : 'text-gray-400'}`}
+            className={`rounded p-1.5 hover:bg-gray-100 ${showVersions ? 'bg-gray-100 text-gray-700' : 'text-gray-500'}`}
             title="Version history"
           >
             <Clock className="h-4 w-4" />
@@ -2941,7 +2941,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     onClick={() => setShowCommitMenu(false)}
                   />
                   <div className="absolute right-0 top-full z-50 mt-1.5 w-80 rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
-                    <p className="mb-2 text-xs font-medium text-gray-700">What changed? <span className="font-normal text-gray-400">(optional)</span></p>
+                    <p className="mb-2 text-xs font-medium text-gray-700">What changed? <span className="font-normal text-gray-500">(optional)</span></p>
                     {draftLoading ? (
                       <div className="flex h-[68px] flex-col justify-center rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5">
                         <div className="flex items-center gap-2 text-xs text-gray-500">
@@ -2976,7 +2976,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                       />
                     )}
                     <div className="mt-2.5 flex items-center justify-between">
-                      <span className="text-[11px] text-gray-400">⌘↵ to save</span>
+                      <span className="text-[11px] text-gray-500">⌘↵ to save</span>
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => setShowCommitMenu(false)}
@@ -3094,7 +3094,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-gray-100 bg-beige px-4 py-1.5 text-xs text-gray-600">
               {executionParentId && (
                 <span className="flex items-center gap-1.5">
-                  <RotateCcw className="h-3 w-3 text-gray-400" />
+                  <RotateCcw className="h-3 w-3 text-gray-500" />
                   <span>Replay of</span>
                   <button
                     onClick={() => executionParentId && selectExecution(executionParentId)}
@@ -3106,7 +3106,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               )}
               {executionChildren && executionChildren.length > 0 && (
                 <span className="flex items-center gap-1.5">
-                  <RotateCcw className="h-3 w-3 text-gray-400" />
+                  <RotateCcw className="h-3 w-3 text-gray-500" />
                   <span>Replayed {executionChildren.length === 1 ? 'as' : `${executionChildren.length} times, latest`}</span>
                   <button
                     onClick={() => {
@@ -3372,7 +3372,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               <Panel position="bottom-center" className="mb-8 pointer-events-none">
                 <div className="flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-gray-200 bg-white/90 px-8 py-5 text-center shadow-sm backdrop-blur-[2px]">
                   <p className="text-sm font-medium text-gray-500">Drag a step from the left to start building</p>
-                  <p className="text-xs text-gray-400">Filter · Branch · Webhook · Code · Transform</p>
+                  <p className="text-xs text-gray-500">Filter · Branch · Webhook · Code · Transform</p>
                 </div>
               </Panel>
             )}
@@ -3429,7 +3429,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   onClick={() => { duplicateNodes(duplicateIds); setContextMenu(null) }}
                   title={isMultiTarget ? 'Clone the selected nodes and the edges between them' : 'Clone this node'}
                 >
-                  <CopyPlus className="h-3.5 w-3.5 text-gray-400" />
+                  <CopyPlus className="h-3.5 w-3.5 text-gray-500" />
                   {duplicateLabel}
                 </button>
                 {!isMultiTarget && hasInEdges && (
@@ -3438,7 +3438,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     onClick={() => { disconnectNode(contextMenu.nodeId); setContextMenu(null) }}
                     title="Detach this node and its downstream subgraph from the main flow"
                   >
-                    <X className="h-3.5 w-3.5 text-gray-400" />
+                    <X className="h-3.5 w-3.5 text-gray-500" />
                     Disconnect
                   </button>
                 )}
@@ -3448,7 +3448,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                     onClick={() => { removeFromChain(contextMenu.nodeId); setContextMenu(null) }}
                     title="Splice this single node out; the chain reconnects around it"
                   >
-                    <X className="h-3.5 w-3.5 text-gray-400" />
+                    <X className="h-3.5 w-3.5 text-gray-500" />
                     Remove from chain
                   </button>
                 )}
@@ -3474,7 +3474,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-beige"
                 onClick={() => deleteEdge(edgeContextMenu.edgeId)}
               >
-                <X className="h-3.5 w-3.5 text-gray-400" />
+                <X className="h-3.5 w-3.5 text-gray-500" />
                 Disconnect
               </button>
             </div>

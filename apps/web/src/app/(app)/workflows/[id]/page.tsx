@@ -225,7 +225,7 @@ function WorkflowEditorInner() {
 
   if (!workflow) {
     return (
-      <div className="flex h-screen items-center justify-center text-sm text-gray-400">
+      <div className="flex h-screen items-center justify-center text-sm text-gray-500">
         Loading…
       </div>
     )
@@ -274,7 +274,7 @@ function WorkflowEditorInner() {
 export default function WorkflowEditorPage() {
   return (
     <Suspense fallback={
-      <div className="flex h-screen items-center justify-center text-sm text-gray-400">
+      <div className="flex h-screen items-center justify-center text-sm text-gray-500">
         Loading…
       </div>
     }>

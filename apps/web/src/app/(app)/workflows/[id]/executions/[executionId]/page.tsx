@@ -59,7 +59,7 @@ const LOG_LEVEL_CLASS: Record<string, string> = {
   warn: 'text-yellow-300',
   info: 'text-blue-300',
   log: 'text-gray-100',
-  debug: 'text-gray-400',
+  debug: 'text-gray-500',
 }
 
 const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: string; text: string }> = {
@@ -398,7 +398,7 @@ function BidAttemptRow({
         className={`cursor-pointer hover:bg-gray-50 ${isWinner ? 'bg-green-50/40 hover:bg-green-50/60' : ''}`}
         onClick={onToggle}
       >
-        <td className="w-6 px-2 py-2 text-gray-400">
+        <td className="w-6 px-2 py-2 text-gray-500">
           <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
         </td>
         <td className="px-3 py-2 font-mono text-graphite">{attempt.partner}</td>
@@ -462,13 +462,13 @@ function BidAttemptRow({
                 <div>
                   <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Request body sent</p>
                   {outboundBody === null
-                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-400 ring-1 ring-gray-200">Not recorded</p>
+                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-500 ring-1 ring-gray-200">Not recorded</p>
                     : <JsonBlock value={outboundBody} />}
                 </div>
                 <div>
                   <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-gray-500">Raw response</p>
                   {rawResponse === null
-                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-400 ring-1 ring-gray-200">Not recorded</p>
+                    ? <p className="rounded bg-white p-2 text-[11px] italic text-gray-500 ring-1 ring-gray-200">Not recorded</p>
                     : <JsonBlock value={rawResponse} />}
                 </div>
               </div>
@@ -494,7 +494,7 @@ function findBidGroupSummaries(steps: Step[]): Array<{ groupStep: Step; attemptS
 }
 
 function JsonBlock({ value }: { value: unknown }) {
-  if (value === null || value === undefined) return <span className="text-gray-400 italic">null</span>
+  if (value === null || value === undefined) return <span className="text-gray-500 italic">null</span>
   // No height cap — let the block grow with the JSON so reads don't require an
   // inner scroll. Huge payloads still get a soft cap via max-h-[80vh] so they
   // don't blow out the page; horizontal overflow stays scrollable.
@@ -518,11 +518,11 @@ function StepInputBlock({ value }: { value: unknown }) {
     return (
       <div className="space-y-2">
         <div>
-          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Template</p>
+          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">Template</p>
           <JsonBlock value={v.template} />
         </div>
         <div>
-          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-400">Resolved</p>
+          <p className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500">Resolved</p>
           <JsonBlock value={v.resolved} />
         </div>
       </div>
@@ -684,7 +684,7 @@ export default function ExecutionDetailPage() {
             <div className="flex items-start justify-between">
               <div>
                 <h1 className="text-3xl font-bold text-graphite">Execution detail</h1>
-                <p className="mt-1 font-mono text-xs text-gray-400">{execution.id}</p>
+                <p className="mt-1 font-mono text-xs text-gray-500">{execution.id}</p>
               </div>
               <StatusBadge status={execution.status} />
             </div>
@@ -720,7 +720,7 @@ export default function ExecutionDetailPage() {
               <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-gray-200 bg-beige px-4 py-3 text-xs text-gray-600">
                 {execution.parent_execution_id && (
                   <span className="flex items-center gap-1.5">
-                    <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
+                    <RefreshCw className="h-3.5 w-3.5 text-gray-500" />
                     <span>Replay of</span>
                     <button
                       onClick={() => router.push(`/workflows/${workflowId}/executions/${execution.parent_execution_id}`)}
@@ -732,7 +732,7 @@ export default function ExecutionDetailPage() {
                 )}
                 {(execution.child_executions?.length ?? 0) > 0 && (
                   <span className="flex items-center gap-1.5">
-                    <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
+                    <RefreshCw className="h-3.5 w-3.5 text-gray-500" />
                     <span>{execution.child_executions.length === 1 ? 'Replayed once:' : `Replayed ${execution.child_executions.length} times:`}</span>
                     <span className="flex flex-wrap items-center gap-1.5">
                       {execution.child_executions.map((c) => (
@@ -806,7 +806,7 @@ export default function ExecutionDetailPage() {
             <div>
               <h2 className="mb-3 text-sm font-semibold text-gray-700">Steps</h2>
               {execution.steps.length === 0 ? (
-                <p className="text-sm text-gray-400">No steps recorded.</p>
+                <p className="text-sm text-gray-500">No steps recorded.</p>
               ) : (() => {
                 const visibleSteps = execution.steps.filter(
                   (step) => step.step_type !== 'branch_end' && step.step_type !== 'parallel_end'
@@ -847,7 +847,7 @@ export default function ExecutionDetailPage() {
                           </span>
                           <div>
                             <p className="font-mono text-sm font-semibold text-graphite">{step.step_namespace}</p>
-                            <p className="text-xs text-gray-400">
+                            <p className="text-xs text-gray-500">
                               {step.step_type} · {formatDuration(step.duration_ms)}
                               {elapsedMs !== null && (
                                 <>
@@ -900,7 +900,7 @@ export default function ExecutionDetailPage() {
 
                       {step.logs && step.logs.length > 0 && (
                         <div className="mt-3">
-                          <p className="mb-1 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-400">(ET)</span></p>
+                          <p className="mb-1 text-xs font-medium text-gray-500">Logs <span className="font-normal text-gray-500">(ET)</span></p>
                           <pre className="max-h-64 overflow-auto rounded bg-gray-900 p-3 text-xs text-gray-100">
                             {step.logs.map((entry, j) => (
                               <div key={j} className={LOG_LEVEL_CLASS[entry.level] ?? 'text-gray-100'}>
