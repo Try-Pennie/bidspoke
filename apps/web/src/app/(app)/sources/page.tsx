@@ -377,7 +377,7 @@ export default function SourcesPage() {
                   <select
                     value={selectedSourceName ?? ''}
                     onChange={(e) => setSelectedSourceName(e.target.value)}
-                    className="rounded border border-gray-200 bg-white px-2 py-1 font-mono text-xs text-gray-600 focus:outline-none"
+                    className="rounded border border-gray-200 bg-white px-2 py-1 font-mono text-xs text-gray-600 focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                   >
                     {sources.map((s) => (
                       <option key={s.name} value={s.name}>{s.name}</option>

@@ -2821,7 +2821,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 <input
                   ref={nameRef}
                   style={{ viewTransitionName: 'workflow-name' }}
-                  className="rounded border-0 bg-transparent text-base font-bold tracking-tight text-graphite outline-none ring-0 px-2 py-1 hover:bg-gray-100/70 focus:bg-gray-100/70 focus:ring-1 focus:ring-p-blue-light"
+                  className="rounded border-0 bg-transparent text-base font-bold tracking-tight text-graphite outline-none ring-0 px-2 py-1 hover:bg-gray-100/70 focus:bg-gray-100/70 focus:ring-2 focus:ring-p-blue-dark"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                 />

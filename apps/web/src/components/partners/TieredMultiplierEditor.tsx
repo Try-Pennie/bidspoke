@@ -59,7 +59,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
           value={c.source_field}
           onChange={(e) => patch({ source_field: e.target.value })}
           placeholder={PLACEHOLDER_FIELD}
-          className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+          className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
         />
       </div>
 
@@ -121,7 +121,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
             patch({ default_multiplier: v === '' ? null : parseFloat(v) })
           }}
           placeholder="0.10"
-          className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+          className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
         />
       </div>
     </div>

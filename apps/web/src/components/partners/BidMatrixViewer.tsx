@@ -120,7 +120,7 @@ export function BidMatrixViewer(p: Props) {
             <select
               value={activeId ?? ''}
               onChange={(e) => { setActiveId(e.target.value); p.onSelectConfig?.(e.target.value) }}
-              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-graphite focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-graphite focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             >
               {p.configs.map((c) => (
                 <option key={c.id} value={c.id}>

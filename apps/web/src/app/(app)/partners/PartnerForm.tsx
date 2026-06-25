@@ -78,7 +78,7 @@ const SIGNAL_SECTIONS: { cat: SignalCategory; label: string; desc: string }[] = 
   { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure. No retry, triggers alerts.' },
 ]
 
-const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-graphite placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light'
+const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-graphite placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-p-blue-dark'
 
 function RuleRow({ rule, onChange, onRemove, removing }: {
   rule: Rule
@@ -275,7 +275,7 @@ function Input({ value, onChange, placeholder, type = 'text', mono }: {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light ${mono ? 'font-mono' : ''}`}
+      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark ${mono ? 'font-mono' : ''}`}
     />
   )
 }
@@ -743,7 +743,7 @@ export default function PartnerForm({
                   value={f.uuid}
                   onChange={(e) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: e.target.value } : row))}
                   placeholder="sub-account UUID"
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                 />
                 <input
                   value={f.bid}
@@ -751,7 +751,7 @@ export default function PartnerForm({
                   type="number"
                   step="0.01"
                   placeholder="0.00"
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                 />
                 <button
                   type="button"
@@ -831,7 +831,7 @@ export default function PartnerForm({
               onChange={(e) => setSellOffOfferDetails(e.target.value)}
               placeholder="Personal loans from $5,000–$100,000 with competitive rates."
               rows={3}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             />
           </Field>
         </Section>}
@@ -887,7 +887,7 @@ export default function PartnerForm({
               value={newUuid}
               onChange={(e) => { setNewUuid(e.target.value); setUuidError(null) }}
               placeholder="Enter UUID"
-              className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             />
             <button
               type="button"

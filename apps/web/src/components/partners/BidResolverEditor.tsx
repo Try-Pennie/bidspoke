@@ -65,7 +65,7 @@ export function BidResolverEditor(p: Props) {
               value={p.apiEndpoint}
               onChange={(e) => p.onApiEndpointChange(e.target.value)}
               placeholder="https://partner.example/bid"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             />
           </div>
           <div>
@@ -76,7 +76,7 @@ export function BidResolverEditor(p: Props) {
               value={p.cfSecretKey}
               onChange={(e) => p.onCfSecretKeyChange(e.target.value)}
               placeholder="PARTNER_TOKEN"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+              className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             />
           </div>
 
@@ -129,7 +129,7 @@ export function BidResolverEditor(p: Props) {
             onChange={(e) => p.onFormulaChange(e.target.value)}
             placeholder="debt_amount * 0.65"
             rows={2}
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
           />
         </div>
       )}
@@ -198,7 +198,7 @@ function BidValueSourceRadio({
               onConfigChange(next)
             }}
             placeholder="data.bid"
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
           />
         </div>
       )}
@@ -222,7 +222,7 @@ function BidValueSourceRadio({
             }}
             placeholder="steps.eligibility.output.final * 0.12"
             rows={3}
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
           />
         </div>
       )}
@@ -284,7 +284,7 @@ function MatrixResolverConfig({
             id={bidMatrixId}
             value={selectedId}
             onChange={(e) => onChange({ ...config, bid_config_id: e.target.value || null })}
-            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite focus:border-gray-300 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
           >
             <option value="">Select a matrix…</option>
             {options.map((o) => (
@@ -298,7 +298,7 @@ function MatrixResolverConfig({
           type="checkbox"
           checked={useSellOff}
           onChange={(e) => onChange({ ...config, use_sell_off: e.target.checked })}
-          className="h-4 w-4 rounded border-gray-300 text-graphite focus:ring-p-blue-light"
+          className="h-4 w-4 rounded border-gray-300 text-graphite focus:ring-2 focus:ring-p-blue-dark"
         />
         Use sell-off rows
       </label>

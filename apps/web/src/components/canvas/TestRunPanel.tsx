@@ -288,7 +288,7 @@ export default function TestRunPanel({
         <div>
           <p className="mb-1.5 text-xs font-medium text-gray-500">Trigger payload (JSON)</p>
           <textarea
-            className="h-44 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+            className="h-44 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 p-3 font-mono text-xs focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             value={payload}
             onChange={(e) => { setPayload(e.target.value); setParseError(null) }}
             spellCheck={false}

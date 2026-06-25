@@ -523,7 +523,7 @@ export default function DashboardPage() {
                         router.push(`/workflows/${f.workflow_id}?execution=${f.id}`)
                       }
                     }}
-                    className="cursor-pointer px-5 py-3 transition-colors hover:bg-beige focus:bg-beige focus:outline-none"
+                    className="cursor-pointer px-5 py-3 transition-colors hover:bg-beige focus:bg-beige focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-p-blue-dark"
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">

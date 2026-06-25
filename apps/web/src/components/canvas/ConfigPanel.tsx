@@ -1050,7 +1050,7 @@ function CodeConfig({
                   {row.name}
                 </span>
                 <input
-                  className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                  className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                   value={row.source}
                   onChange={(e) => updateSource(row.name, e.target.value)}
                   placeholder="{{steps.example.output.field}}"
@@ -3279,7 +3279,7 @@ function ConstantsConfig({
               const invalid = invalidIds.has(row.id)
               const keyClass = invalid
                 ? 'w-32 flex-shrink-0 rounded border border-red-400 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-red-300'
-                : 'w-32 flex-shrink-0 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light'
+                : 'w-32 flex-shrink-0 rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-p-blue-dark'
               return (
                 <div key={row.id} className="flex items-center gap-1.5">
                   <input
@@ -3290,7 +3290,7 @@ function ConstantsConfig({
                     title={invalid ? 'Key must be unique and non-empty' : undefined}
                   />
                   <select
-                    className="flex-shrink-0 rounded border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                    className="flex-shrink-0 rounded border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                     value={type}
                     onChange={(e) => changeType(row.id, row.value, e.target.value as ConstantType)}
                     title="Value type"
@@ -3302,7 +3302,7 @@ function ConstantsConfig({
                   </select>
                   {type === 'boolean' ? (
                     <select
-                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                       value={row.value === true ? 'true' : 'false'}
                       onChange={(e) => setValue(row.id, coerceForType(e.target.value, 'boolean'))}
                     >
@@ -3311,7 +3311,7 @@ function ConstantsConfig({
                     </select>
                   ) : (
                     <input
-                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-1 focus:ring-p-blue-light"
+                      className="min-w-0 flex-1 rounded border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                       value={displayValue}
                       onChange={(e) => setValue(row.id, coerceForType(e.target.value, type))}
                       placeholder={
