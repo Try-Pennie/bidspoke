@@ -128,6 +128,71 @@ describe('deriveCodeNodeBidSummary — winner from Tripoint (#349)', () => {
   })
 })
 
+// #381: RML (LendSwift/GigFi) bid via the ping_<slug> code node, whose output
+// nests the bid under data.data. Unlike Tripoint the amount IS present
+// (data.data.bid_amount); data.data.min_bid_value is a floor, not the paid amount.
+// Partner identity comes from the namespace (the output doesn't self-identify).
+// NOTE: treating status='ACCEPTED' as the winner assumes ACCEPTED == we won/were
+// paid (pending confirmation with RML/Brian).
+const rml = (slug: 'lendswift' | 'gigfi', data: Record<string, unknown>) =>
+  steps({ [`ping_${slug}`]: { data: { data, status: 'success' }, statusCode: 200 } })
+
+describe('deriveCodeNodeBidAttempts — RML (#381)', () => {
+  it('records an accepted LendSwift bid with the dollar amount (data.data.bid_amount)', () => {
+    const rows = deriveCodeNodeBidAttempts(rml('lendswift', { status: 'ACCEPTED', bid_amount: 4.99, min_bid_value: 6.15, rejection_reason: '' }), meta)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      partner_slug: 'lendswift',
+      classification: 'accept',
+      skip_reason: null,
+      decline_reason: null,
+      bid_cents: 499,
+      resolver_type: 'api',
+    })
+  })
+
+  it('derives the partner_slug from the ping_<slug> namespace (gigfi)', () => {
+    const rows = deriveCodeNodeBidAttempts(rml('gigfi', { status: 'ACCEPTED', bid_amount: 2, min_bid_value: 2 }), meta)
+    expect(rows[0]).toMatchObject({ partner_slug: 'gigfi', classification: 'accept', bid_cents: 200 })
+  })
+
+  it('records a rejected bid as a decline with the rejection_reason and amount when present', () => {
+    const rows = deriveCodeNodeBidAttempts(rml('lendswift', { status: 'REJECTED', bid_amount: 1.5, min_bid_value: 6.15, rejection_reason: 'below_floor' }), meta)
+    expect(rows[0]).toMatchObject({ partner_slug: 'lendswift', classification: 'decline', skip_reason: 'rejected', decline_reason: 'below_floor', bid_cents: 150 })
+  })
+
+  it('leaves bid_cents null and decline_reason null for a rejected bid with no amount or reason', () => {
+    const rows = deriveCodeNodeBidAttempts(rml('gigfi', { status: 'REJECTED', min_bid_value: 6.15, rejection_reason: '' }), meta)
+    expect(rows[0]).toMatchObject({ partner_slug: 'gigfi', classification: 'decline', skip_reason: 'rejected', decline_reason: null, bid_cents: null })
+  })
+
+  it('rounds fractional dollar amounts to cents', () => {
+    const rows = deriveCodeNodeBidAttempts(rml('lendswift', { status: 'ACCEPTED', bid_amount: 6.155, min_bid_value: 6.15 }), meta)
+    expect(rows[0].bid_cents).toBe(616)
+  })
+})
+
+describe('deriveCodeNodeBidSummary — winner from RML (#381)', () => {
+  it('names the RML partner the winner on an accepted bid, with the amount', () => {
+    const s = deriveCodeNodeBidSummary(rml('lendswift', { status: 'ACCEPTED', bid_amount: 4.99, min_bid_value: 6.15 }))
+    expect(s).toEqual({ winner_slug: 'lendswift', winner_bid_cents: 499, attempted: 1, responded: 1 })
+  })
+
+  it('has no winner for a rejected RML bid but still counts the attempt', () => {
+    const s = deriveCodeNodeBidSummary(rml('gigfi', { status: 'REJECTED', min_bid_value: 6.15, rejection_reason: 'x' }))
+    expect(s).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+})
+
+describe('bidAttemptsForProjection — RML carries bid_cents (#381)', () => {
+  it('projects the RML amount onto the strand projection', () => {
+    const out = bidAttemptsForProjection(rml('lendswift', { status: 'ACCEPTED', bid_amount: 4.99, min_bid_value: 6.15 }))
+    expect(out).toEqual([
+      { partner_slug: 'lendswift', classification: 'accept', decline_reason: null, skip_reason: null, resolver_type: 'api', bid_cents: 499, http_status: null },
+    ])
+  })
+})
+
 describe('pickBidSummary — bid_group preferred, code-node fallback (#349)', () => {
   const codeNode: BidSummary = { winner_slug: 'tripoint', winner_bid_cents: null, attempted: 1, responded: 1 }
   const empty: BidSummary = { winner_slug: null, winner_bid_cents: null, attempted: null, responded: null }

@@ -39,6 +39,39 @@ function isTripointBidOutput(output: unknown): output is TripointBidOutput {
   return 'resultCode' in o && ('qualified' in o || 'skipped' in o || 'createLead' in o)
 }
 
+// RML (LendSwift/GigFi) ping output (#381). The bid is nested two levels deep:
+// { data: { data: { status, bid_amount, min_bid_value, rejection_reason, ... } } }.
+// `bid_amount` is the actual per-bid dollar figure (present on every ACCEPTED
+// bid); `min_bid_value` is a floor, NOT the paid amount, so it is never recorded.
+interface RmlBidData {
+  status?: unknown
+  bid_amount?: unknown
+  min_bid_value?: unknown
+  rejection_reason?: unknown
+}
+function isRmlBidOutput(output: unknown): output is { data: { data: RmlBidData } } {
+  if (typeof output !== 'object' || output === null) return false
+  const data = (output as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null) return false
+  const inner = (data as { data?: unknown }).data
+  if (typeof inner !== 'object' || inner === null) return false
+  const d = inner as Record<string, unknown>
+  // Distinctive: an inner string status plus an RML-specific amount/floor field.
+  return typeof d.status === 'string' && ('min_bid_value' in d || 'bid_amount' in d)
+}
+
+// The RML output never names its partner, so identity comes from the node
+// namespace, which is `ping_<slug>` by convention (ping_lendswift -> lendswift).
+function rmlSlugFromNamespace(namespace: string): string {
+  return namespace.replace(/^ping_/, '')
+}
+
+function rmlBidCents(d: RmlBidData): number | null {
+  return typeof d.bid_amount === 'number' && Number.isFinite(d.bid_amount)
+    ? Math.round(d.bid_amount * 100)
+    : null
+}
+
 // Slim, serializable per-attempt shape projected onto workflow_executions
 // .sighting_finalize so the strand drain can re-INSERT the bid rows a stranded
 // lead lost (#366 Phase 2b). Excludes ids/timestamps/is_test — the drain refills
@@ -76,42 +109,58 @@ export function deriveCodeNodeBidAttempts(
   meta: DerivedBidMeta,
 ): BidAttemptInsert[] {
   const rows: BidAttemptInsert[] = []
-  for (const step of Object.values(steps)) {
+  for (const [namespace, step] of Object.entries(steps)) {
     const output = step?.output
-    if (!isTripointBidOutput(output)) continue
 
-    const base = {
+    const baseRow = (partner_slug: string, bid_cents: number | null) => ({
       sighting_id: meta.sighting_id,
       trace_id: meta.trace_id,
       execution_id: meta.execution_id,
-      partner_slug: 'tripoint',
+      partner_slug,
       attempted_at_utc: meta.attempted_at_utc,
       attempted_at_et: meta.attempted_at_utc,
       responded_at_utc: null,
       responded_at_et: null,
       http_status: null,
-      // Tripoint's response carries no bid amount; left null until a source for
-      // it is decided (see #349).
-      bid_cents: null,
+      bid_cents,
       resolver_type: 'api',
       is_test: meta.is_test,
-    }
+    })
 
-    if (output.skipped === true) {
-      rows.push({ ...base, classification: null, decline_reason: null, skip_reason: 'skipped' })
+    if (isTripointBidOutput(output)) {
+      // Tripoint's response carries no bid amount (see #349/#354), so bid_cents
+      // stays null.
+      const base = baseRow('tripoint', null)
+      if (output.skipped === true) {
+        rows.push({ ...base, classification: null, decline_reason: null, skip_reason: 'skipped' })
+        continue
+      }
+      const code = Number(output.resultCode)
+      const result = Number.isFinite(code) ? classifyTripointResultCode(code) : 'Fail'
+      const declineReason = Number.isFinite(code) ? `result_code_${code}` : null
+      if (result === 'Success') {
+        rows.push({ ...base, classification: 'accept', decline_reason: null, skip_reason: null })
+      } else if (result === 'Duplicate') {
+        rows.push({ ...base, classification: 'decline', decline_reason: declineReason, skip_reason: 'duplicate' })
+      } else {
+        rows.push({ ...base, classification: 'decline', decline_reason: declineReason, skip_reason: 'rejected' })
+      }
       continue
     }
 
-    const code = Number(output.resultCode)
-    const result = Number.isFinite(code) ? classifyTripointResultCode(code) : 'Fail'
-    const declineReason = Number.isFinite(code) ? `result_code_${code}` : null
-
-    if (result === 'Success') {
-      rows.push({ ...base, classification: 'accept', decline_reason: null, skip_reason: null })
-    } else if (result === 'Duplicate') {
-      rows.push({ ...base, classification: 'decline', decline_reason: declineReason, skip_reason: 'duplicate' })
-    } else {
-      rows.push({ ...base, classification: 'decline', decline_reason: declineReason, skip_reason: 'rejected' })
+    if (isRmlBidOutput(output)) {
+      // RML (#381): bid_amount IS recorded. ACCEPTED -> accept; anything else
+      // (REJECTED) -> decline, carrying the partner's rejection_reason.
+      const d = output.data.data
+      const base = baseRow(rmlSlugFromNamespace(namespace), rmlBidCents(d))
+      if (String(d.status).toUpperCase() === 'ACCEPTED') {
+        rows.push({ ...base, classification: 'accept', decline_reason: null, skip_reason: null })
+      } else {
+        const reason =
+          typeof d.rejection_reason === 'string' && d.rejection_reason.trim() ? d.rejection_reason : null
+        rows.push({ ...base, classification: 'decline', decline_reason: reason, skip_reason: 'rejected' })
+      }
+      continue
     }
   }
   return rows
@@ -141,18 +190,33 @@ export function deriveCodeNodeBidSummary(steps: Record<string, StepOutput>): Bid
   let attempted = 0
   let responded = 0
   let winner: string | null = null
-  for (const step of Object.values(steps)) {
+  let winnerBidCents: number | null = null
+  for (const [namespace, step] of Object.entries(steps)) {
     const output = step?.output
-    if (!isTripointBidOutput(output)) continue
-    if (output.skipped === true) continue
-    attempted++
-    responded++
-    const code = Number(output.resultCode)
-    if (Number.isFinite(code) && classifyTripointResultCode(code) === 'Success') winner = 'tripoint'
+    if (isTripointBidOutput(output)) {
+      if (output.skipped === true) continue
+      attempted++
+      responded++
+      const code = Number(output.resultCode)
+      if (Number.isFinite(code) && classifyTripointResultCode(code) === 'Success') winner = 'tripoint'
+      continue
+    }
+    if (isRmlBidOutput(output)) {
+      const d = output.data.data
+      attempted++
+      responded++
+      // ACCEPTED == the RML partner won the lead (pending confirmation, see #381),
+      // carrying the real bid amount.
+      if (String(d.status).toUpperCase() === 'ACCEPTED') {
+        winner = rmlSlugFromNamespace(namespace)
+        winnerBidCents = rmlBidCents(d)
+      }
+      continue
+    }
   }
   return {
     winner_slug: winner,
-    winner_bid_cents: null,
+    winner_bid_cents: winnerBidCents,
     attempted: attempted || null,
     responded: responded || null,
   }
