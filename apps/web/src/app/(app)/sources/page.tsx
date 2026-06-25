@@ -295,6 +295,7 @@ export default function SourcesPage() {
                         onClick={(e) => { e.stopPropagation(); setRevealedKeys((prev) => { const next = new Set(prev); next.has(source.api_key) ? next.delete(source.api_key) : next.add(source.api_key); return next }) }}
                         className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
                         title={revealedKeys.has(source.api_key) ? 'Hide' : 'Reveal'}
+                        aria-label={revealedKeys.has(source.api_key) ? 'Hide API key' : 'Reveal API key'}
                       >
                         {revealedKeys.has(source.api_key) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
@@ -346,6 +347,7 @@ export default function SourcesPage() {
                                       onClick={() => handleUnassign(source.name, a.workflow_id)}
                                       className="ml-0.5 rounded-full p-0.5 hover:bg-white/60"
                                       title="Unassign"
+                                      aria-label="Unassign workflow"
                                     >
                                       <X className="h-3 w-3" />
                                     </button>

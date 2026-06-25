@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from 'react'
 interface Props {
   value: string
   onChange: (val: string) => void
+  /** Forwarded to the underlying textarea so a `<label htmlFor>` can associate with it. */
+  id?: string
   placeholder?: string
   className?: string
   refs: string[]   // available data refs: "steps.credit", "trigger.payload", "env.KEY"
@@ -14,7 +16,7 @@ interface Props {
   containerClassName?: string
 }
 
-export default function TemplateTextarea({ value, onChange, placeholder, className, refs, singleLine, containerClassName }: Props) {
+export default function TemplateTextarea({ value, onChange, id, placeholder, className, refs, singleLine, containerClassName }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [suggestions, setSuggestions] = useState<string[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
@@ -94,6 +96,7 @@ export default function TemplateTextarea({ value, onChange, placeholder, classNa
     <div ref={containerRef} className={containerClassName ? `relative ${containerClassName}` : 'relative'}>
       <textarea
         ref={textareaRef}
+        id={id}
         rows={singleLine ? 1 : undefined}
         className={className}
         placeholder={placeholder}

@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import type { ServicePreset } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
@@ -58,6 +58,13 @@ export default function IntegrationsPage() {
   const [pendingChannel, setPendingChannel] = useState('')  // selected #name to save
   const [savingChannel, setSavingChannel] = useState(false)
   const channelInputRef = useRef<HTMLInputElement | null>(null)
+
+  const botTokenId = useId()
+  const alertChannelId = useId()
+  const presetNameId = useId()
+  const presetSlugId = useId()
+  const presetAuthTypeId = useId()
+  const presetBaseUrlId = useId()
 
   useEffect(() => {
     if (!editingChannel) return
@@ -618,9 +625,10 @@ export default function IntegrationsPage() {
           ) : (
             <form onSubmit={handleSave} className="space-y-4">
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-600">Bot token</label>
+                <label htmlFor={botTokenId} className="mb-1 block text-xs font-medium text-gray-600">Bot token</label>
                 <div className="relative">
                   <input
+                    id={botTokenId}
                     type="password"
                     className="input w-full pr-10 font-mono"
                     placeholder="xoxb-..."
@@ -646,9 +654,10 @@ export default function IntegrationsPage() {
                   </div>
 
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-gray-600">Default alert channel</label>
+                    <label htmlFor={alertChannelId} className="mb-1 block text-xs font-medium text-gray-600">Default alert channel</label>
                     {resolved.channels.length > 0 ? (
                       <select
+                        id={alertChannelId}
                         className="input w-full"
                         value={selectedChannel}
                         onChange={(e) => setSelectedChannel(e.target.value)}
@@ -717,8 +726,9 @@ export default function IntegrationsPage() {
               <p className="mb-4 text-sm font-medium text-gray-500">New service</p>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Display name</label>
+                  <label htmlFor={presetNameId} className="mb-1 block text-xs font-medium text-gray-600">Display name</label>
                   <input
+                    id={presetNameId}
                     ref={presetNameInputRef}
                     className="input w-full"
                     placeholder="My CRM"
@@ -735,8 +745,9 @@ export default function IntegrationsPage() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Slug (used in workflows)</label>
+                  <label htmlFor={presetSlugId} className="mb-1 block text-xs font-medium text-gray-600">Slug (used in workflows)</label>
                   <input
+                    id={presetSlugId}
                     className="input w-full font-mono"
                     placeholder="my_crm"
                     value={newPreset.slug}
@@ -745,8 +756,9 @@ export default function IntegrationsPage() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Default auth type</label>
+                  <label htmlFor={presetAuthTypeId} className="mb-1 block text-xs font-medium text-gray-600">Default auth type</label>
                   <select
+                    id={presetAuthTypeId}
                     className="input w-full"
                     value={newPreset.auth_type}
                     onChange={(e) => setNewPreset((p) => ({ ...p, auth_type: e.target.value }))}
@@ -758,8 +770,9 @@ export default function IntegrationsPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-600">Base URL <span className="font-normal text-gray-500">(optional)</span></label>
+                  <label htmlFor={presetBaseUrlId} className="mb-1 block text-xs font-medium text-gray-600">Base URL <span className="font-normal text-gray-500">(optional)</span></label>
                   <input
+                    id={presetBaseUrlId}
                     className="input w-full font-mono"
                     placeholder="https://api.mycrm.com"
                     value={newPreset.base_url}
@@ -846,6 +859,7 @@ export default function IntegrationsPage() {
                           <button
                             onClick={() => requestDeletePreset(p.id)}
                             className="rounded p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-500"
+                            aria-label="Delete service"
                             title="Delete service"
                           >
                             <Trash2 className="h-3.5 w-3.5" />

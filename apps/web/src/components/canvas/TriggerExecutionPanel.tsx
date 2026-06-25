@@ -48,7 +48,7 @@ export default function TriggerExecutionPanel({
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Trigger</p>
           <p className="mt-0.5 text-sm font-semibold text-graphite">Webhook event</p>
         </div>
-        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
+        <button onClick={onClose} aria-label="Close" className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>

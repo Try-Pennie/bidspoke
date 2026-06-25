@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar, EnvVarFolder } from '@/types/workflow'
@@ -584,6 +584,7 @@ export default function EnvPage() {
                   type="button"
                   onClick={() => setRevealedValues((prev) => { const next = { ...prev }; delete next[v.id]; return next })}
                   className="text-gray-300 hover:text-gray-500"
+                  aria-label="Hide value"
                 >
                   <EyeOff className="h-3.5 w-3.5" />
                 </button>
@@ -609,6 +610,7 @@ export default function EnvPage() {
                     }
                   }}
                   className="text-gray-300 hover:text-gray-500"
+                  aria-label="Show value"
                 >
                   <Eye className="h-3.5 w-3.5" />
                 </button>
@@ -636,6 +638,7 @@ export default function EnvPage() {
               onClick={() => setRowMenuOpen(rowMenuOpen === v.id ? null : v.id)}
               className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${confirmingDelete === v.id ? 'invisible pointer-events-none' : ''} ${rowMenuOpen === v.id ? 'bg-gray-100 text-gray-600' : ''}`}
               title="More options"
+              aria-label="More options"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
@@ -741,6 +744,7 @@ export default function EnvPage() {
                   onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
                   className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                   title="Folder options"
+                  aria-label="Folder options"
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </button>
@@ -1034,6 +1038,8 @@ function NewVariableForm({
 }) {
   const [values, setValues] = useState<NewVar>({ key: '', value: '', is_secret: false })
   const keyInputRef = useRef<HTMLInputElement | null>(null)
+  const keyId = useId()
+  const valueId = useId()
 
   useEffect(() => {
     const f = requestAnimationFrame(() => keyInputRef.current?.focus())
@@ -1059,8 +1065,9 @@ function NewVariableForm({
       </h2>
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Key</label>
+          <label htmlFor={keyId} className="mb-1 block text-xs font-medium text-gray-600">Key</label>
           <input
+            id={keyId}
             ref={keyInputRef}
             className="input w-full font-mono"
             placeholder="MY_API_KEY"
@@ -1071,8 +1078,9 @@ function NewVariableForm({
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Value</label>
+          <label htmlFor={valueId} className="mb-1 block text-xs font-medium text-gray-600">Value</label>
           <input
+            id={valueId}
             type={values.is_secret ? 'password' : 'text'}
             className="input w-full"
             placeholder="value"

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { sanitizeSourceName } from '@/lib/source-name'
@@ -19,6 +19,7 @@ export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  const nameId = useId()
 
   useEffect(() => {
     if (autoFocus) {
@@ -52,8 +53,9 @@ export default function SourceCreateForm({ autoFocus = false, assignWorkflowId, 
       )}
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
+        <label htmlFor={nameId} className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
         <input
+          id={nameId}
           ref={nameInputRef}
           className="input w-full font-mono"
           placeholder="wallet_owl"

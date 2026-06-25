@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, useId } from 'react'
 import dynamic from 'next/dynamic'
 
 const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
@@ -172,6 +172,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 onClick={() => onDuplicate(node.id)}
                 className="rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                 title="Duplicate node (⌘D)"
+                aria-label="Duplicate node"
               >
                 <Copy className="h-4 w-4" />
               </button>
@@ -179,6 +180,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
                 onClick={() => onDelete(node.id)}
                 className="rounded p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-500"
                 title="Delete node"
+                aria-label="Delete node"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
@@ -187,6 +189,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           <button
             onClick={onClose}
             className="rounded p-1.5 text-gray-500 hover:bg-gray-100"
+            aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
@@ -471,6 +474,7 @@ function NodeTestSection({
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
   const [parseError, setParseError] = useState<string | null>(null)
   const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
+  const payloadFieldId = useId()
 
   async function run(useLastRun: boolean) {
     let parsed: unknown
@@ -496,8 +500,9 @@ function NodeTestSection({
       </button>
       {open && (
         <div className="mt-2 space-y-2">
-          <label className="block text-xs font-medium text-gray-500">Trigger payload (JSON)</label>
+          <label htmlFor={payloadFieldId} className="block text-xs font-medium text-gray-500">Trigger payload (JSON)</label>
           <textarea
+            id={payloadFieldId}
             value={payloadText}
             onChange={(e) => { setPayloadText(e.target.value); setParseError(null) }}
             spellCheck={false}
@@ -873,7 +878,7 @@ function BranchConfig({
               value={branch.label}
               onChange={(e) => updateBranch(i, { label: e.target.value })}
             />
-            <button onClick={() => removeBranch(i)} className="text-gray-300 hover:text-red-400">
+            <button onClick={() => removeBranch(i)} className="text-gray-300 hover:text-red-400" aria-label="Remove branch">
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
@@ -1056,6 +1061,7 @@ function CodeConfig({
                     onClick={() => removeUnreferenced(row.name)}
                     className="flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
                     title="No longer referenced. Remove"
+                    aria-label="Remove prop"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -1145,9 +1151,9 @@ function ResponseConfig({
           refs={refs}
         />
       </Field>
-      <div>
+      <div role="group" aria-label="Headers">
         <div className="mb-1 flex items-center justify-between">
-          <label className="block text-xs font-medium text-gray-600">Headers</label>
+          <span className="block text-xs font-medium text-gray-600">Headers</span>
           <button
             type="button"
             onClick={addHeader}
@@ -1620,6 +1626,7 @@ function TransformConfig({
               onClick={() => removeRow(i)}
               className="flex-shrink-0 text-gray-300 hover:text-red-400"
               title="Remove"
+              aria-label="Remove field"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -1994,6 +2001,7 @@ function IntegrationConfig({
                 onClick={() => removeHeader(row.id)}
                 className="flex-shrink-0 text-gray-300 hover:text-red-400"
                 title="Remove"
+                aria-label="Remove header"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -2152,10 +2160,10 @@ function BidGroupConfig({
               <div key={id} className="flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-2 py-1.5">
                 {mode === 'cascade' && (
                   <div className="flex flex-col">
-                    <button type="button" onClick={() => movePartner(idx, -1)} disabled={idx === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up">
+                    <button type="button" onClick={() => movePartner(idx, -1)} disabled={idx === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up" aria-label="Move up">
                       <ChevronUp className="h-3 w-3" />
                     </button>
-                    <button type="button" onClick={() => movePartner(idx, 1)} disabled={idx === partnerIds.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down">
+                    <button type="button" onClick={() => movePartner(idx, 1)} disabled={idx === partnerIds.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down" aria-label="Move down">
                       <ChevronDown className="h-3 w-3" />
                     </button>
                   </div>
@@ -2164,7 +2172,7 @@ function BidGroupConfig({
                   {p ? p.name : <span className="text-red-500">Unknown partner ({id.slice(0, 8)})</span>}
                   {p && !p.is_active && <span className="ml-2 text-xs text-gray-500">(inactive)</span>}
                 </span>
-                <button type="button" onClick={() => togglePartner(id)} className="text-gray-300 hover:text-red-400" title="Remove">
+                <button type="button" onClick={() => togglePartner(id)} className="text-gray-300 hover:text-red-400" title="Remove" aria-label="Remove partner">
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -2350,6 +2358,7 @@ function BidGroupContextEditor({
               <button
                 type="button"
                 onClick={() => removeRow(i)}
+                aria-label="Remove field"
                 className="flex-shrink-0 text-gray-300 hover:text-red-400"
                 title="Remove"
               >
@@ -2443,14 +2452,14 @@ function TieredEditor({
                 ))}
               </div>
               <div className="flex flex-col">
-                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up">
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move up" aria-label="Move up">
                   <ChevronUp className="h-3 w-3" />
                 </button>
-                <button type="button" onClick={() => move(i, 1)} disabled={i === tiers.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down">
+                <button type="button" onClick={() => move(i, 1)} disabled={i === tiers.length - 1} className="text-gray-500 hover:text-graphite disabled:opacity-30" title="Move down" aria-label="Move down">
                   <ChevronDown className="h-3 w-3" />
                 </button>
               </div>
-              <button type="button" onClick={() => remove(i)} className="text-gray-300 hover:text-red-400">
+              <button type="button" onClick={() => remove(i)} className="text-gray-300 hover:text-red-400" aria-label="Remove tier">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
@@ -2466,7 +2475,7 @@ function TieredEditor({
                   return (
                     <div key={id} className="flex items-center gap-1.5 rounded-md border border-gray-200 px-2 py-1">
                       <span className="flex-1 truncate text-xs text-graphite">{p?.name ?? id.slice(0, 8)}</span>
-                      <button type="button" onClick={() => update(i, { partner_ids: tier.partner_ids.filter((x) => x !== id) })} className="text-gray-300 hover:text-red-400">
+                      <button type="button" onClick={() => update(i, { partner_ids: tier.partner_ids.filter((x) => x !== id) })} className="text-gray-300 hover:text-red-400" aria-label="Remove partner">
                         <X className="h-3 w-3" />
                       </button>
                     </div>
@@ -2641,11 +2650,26 @@ function SalesforceConfig({
   const showSoql   = operation === 'query'
   const showApex   = operation === 'apex'
 
+  const operationId = useId()
+  const objectFieldId = useId()
+  const apexPathId = useId()
+  const recordIdFieldId = useId()
+  const extFieldId = useId()
+  const extValueId = useId()
+  const soqlId = useId()
+  const expErrorCodeId = useId()
+  const expMessageId = useId()
+  const expStatusId = useId()
+  const expBodyId = useId()
+  const transErrorCodeId = useId()
+  const transMessageId = useId()
+
   return (
     <section className="space-y-4">
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600">Operation</label>
+        <label htmlFor={operationId} className="mb-1 block text-xs font-medium text-gray-600">Operation</label>
         <select
+          id={operationId}
           className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
           value={operation}
           onChange={(e) => onChange({ operation: e.target.value })}
@@ -2658,8 +2682,9 @@ function SalesforceConfig({
 
       {!showSoql && !showApex && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Object (SObject API name)</label>
+          <label htmlFor={objectFieldId} className="mb-1 block text-xs font-medium text-gray-600">Object (SObject API name)</label>
           <input
+            id={objectFieldId}
             className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
             value={object}
             onChange={(e) => onChange({ object: e.target.value })}
@@ -2670,8 +2695,9 @@ function SalesforceConfig({
 
       {showApex && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Apex path</label>
+          <label htmlFor={apexPathId} className="mb-1 block text-xs font-medium text-gray-600">Apex path</label>
           <input
+            id={apexPathId}
             className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none"
             value={apexPath}
             onChange={(e) => onChange({ apex_path: e.target.value })}
@@ -2682,8 +2708,9 @@ function SalesforceConfig({
 
       {showId && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Record ID</label>
+          <label htmlFor={recordIdFieldId} className="mb-1 block text-xs font-medium text-gray-600">Record ID</label>
           <TemplateTextarea
+            id={recordIdFieldId}
             value={recordId}
             onChange={(v) => onChange({ record_id: v })}
             refs={refs}
@@ -2696,8 +2723,9 @@ function SalesforceConfig({
       {showUpsert && (
         <>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">External ID field</label>
+            <label htmlFor={extFieldId} className="mb-1 block text-xs font-medium text-gray-600">External ID field</label>
             <input
+              id={extFieldId}
               className="w-full rounded border border-gray-200 px-2 py-1.5 text-xs focus:border-blue-400 focus:outline-none"
               value={extField}
               onChange={(e) => onChange({ external_id_field: e.target.value })}
@@ -2705,8 +2733,9 @@ function SalesforceConfig({
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-gray-600">External ID value</label>
+            <label htmlFor={extValueId} className="mb-1 block text-xs font-medium text-gray-600">External ID value</label>
             <TemplateTextarea
+              id={extValueId}
               value={extValue}
               onChange={(v) => onChange({ external_id_value: v })}
               refs={refs}
@@ -2719,8 +2748,9 @@ function SalesforceConfig({
 
       {showSoql && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">SOQL query</label>
+          <label htmlFor={soqlId} className="mb-1 block text-xs font-medium text-gray-600">SOQL query</label>
           <TemplateTextarea
+            id={soqlId}
             value={soql}
             onChange={(v) => onChange({ soql: v })}
             refs={refs}
@@ -2730,9 +2760,9 @@ function SalesforceConfig({
       )}
 
       {(operation === 'create' || operation === 'update' || operation === 'upsert') && (
-        <div>
+        <div role="group" aria-label="Injected fields">
           <div className="mb-1 flex items-center justify-between">
-            <label className="block text-xs font-medium text-gray-600">Injected fields</label>
+            <span className="block text-xs font-medium text-gray-600">Injected fields</span>
             <button
               type="button"
               onClick={addInjectedField}
@@ -2780,10 +2810,12 @@ function SalesforceConfig({
 
       {showBody && (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Body (JSON)</label>
+          <span className="mb-1 block text-xs font-medium text-gray-600">Body (JSON)</span>
           {/* `pointer-events-auto` lets the editor scroll in view mode (the panel
               sets `pointer-events-none`); Monaco's `readOnly` blocks edits. */}
           <div
+            role="group"
+            aria-label="Body (JSON)"
             className={`overflow-hidden rounded border border-gray-200 ${readOnly ? 'pointer-events-auto' : ''}`}
             style={{ height: 240 }}
           >
@@ -2819,9 +2851,9 @@ function SalesforceConfig({
         </div>
       )}
 
-      <div>
+      <div role="group" aria-label="Expected errors">
         <div className="mb-1 flex items-center justify-between">
-          <label className="block text-xs font-medium text-gray-600">Expected errors</label>
+          <span className="block text-xs font-medium text-gray-600">Expected errors</span>
           <button
             type="button"
             onClick={addExpectedError}
@@ -2840,8 +2872,9 @@ function SalesforceConfig({
               <div key={i} className="rounded border border-gray-200 p-2">
                 <div className="mb-2 flex items-start gap-2">
                   <div className="flex-1">
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
+                    <label htmlFor={`${expErrorCodeId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
                     <input
+                      id={`${expErrorCodeId}-${i}`}
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                       value={err.code}
                       onChange={(e) => updateExpectedError(i, { code: e.target.value })}
@@ -2858,8 +2891,9 @@ function SalesforceConfig({
                   </button>
                 </div>
                 <div>
-                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
+                  <label htmlFor={`${expMessageId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
                   <input
+                    id={`${expMessageId}-${i}`}
                     className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
                     value={err.message_contains ?? ''}
                     onChange={(e) => updateExpectedError(i, { message_contains: e.target.value })}
@@ -2868,8 +2902,9 @@ function SalesforceConfig({
                 </div>
                 <div className="mt-2 grid grid-cols-[80px_1fr] gap-2">
                   <div>
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response status</label>
+                    <label htmlFor={`${expStatusId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response status</label>
                     <input
+                      id={`${expStatusId}-${i}`}
                       type="number"
                       min={100}
                       max={599}
@@ -2880,8 +2915,9 @@ function SalesforceConfig({
                     />
                   </div>
                   <div>
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response body (JSON, optional)</label>
+                    <label htmlFor={`${expBodyId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Response body (JSON, optional)</label>
                     <TemplateTextarea
+                      id={`${expBodyId}-${i}`}
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none min-h-[60px] resize-y"
                       value={err.response_body !== undefined ? (typeof err.response_body === 'string' ? err.response_body : JSON.stringify(err.response_body)) : ''}
                       onChange={(v) => {
@@ -2906,9 +2942,9 @@ function SalesforceConfig({
         )}
       </div>
 
-      <div>
+      <div role="group" aria-label="Retryable errors">
         <div className="mb-1 flex items-center justify-between">
-          <label className="block text-xs font-medium text-gray-600">Retryable errors</label>
+          <span className="block text-xs font-medium text-gray-600">Retryable errors</span>
           <button
             type="button"
             onClick={addTransientError}
@@ -2927,8 +2963,9 @@ function SalesforceConfig({
               <div key={i} className="rounded border border-gray-200 p-2">
                 <div className="mb-2 flex items-start gap-2">
                   <div className="flex-1">
-                    <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
+                    <label htmlFor={`${transErrorCodeId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">errorCode</label>
                     <input
+                      id={`${transErrorCodeId}-${i}`}
                       className="w-full rounded border border-gray-200 px-2 py-1 font-mono text-xs focus:border-blue-400 focus:outline-none"
                       value={err.code}
                       onChange={(e) => updateTransientError(i, { code: e.target.value })}
@@ -2945,8 +2982,9 @@ function SalesforceConfig({
                   </button>
                 </div>
                 <div>
-                  <label className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
+                  <label htmlFor={`${transMessageId}-${i}`} className="mb-0.5 block text-[10px] font-medium uppercase text-gray-500">Message contains (optional)</label>
                   <input
+                    id={`${transMessageId}-${i}`}
                     className="w-full rounded border border-gray-200 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
                     value={err.message_contains ?? ''}
                     onChange={(e) => updateTransientError(i, { message_contains: e.target.value })}
@@ -3288,6 +3326,7 @@ function ConstantsConfig({
                     type="button"
                     onClick={() => removeRow(row.id)}
                     className="flex-shrink-0 rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
+                    aria-label="Remove key"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -3624,7 +3663,7 @@ function formatMs(ms: number): string {
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
+      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
       {children}
       {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
     </div>

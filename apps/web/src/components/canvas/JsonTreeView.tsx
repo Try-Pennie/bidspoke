@@ -51,6 +51,7 @@ function JsonNode({ label, value, path, depth }: {
         {isObj ? (
           <button
             onClick={() => setExpanded((e) => !e)}
+            aria-label={expanded ? 'Collapse' : 'Expand'}
             className="mt-[2px] flex h-3.5 w-3.5 shrink-0 items-center justify-center text-gray-500 hover:text-gray-600"
           >
             <ChevronRight className={`h-3 w-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
@@ -76,6 +77,7 @@ function JsonNode({ label, value, path, depth }: {
             <button
               onClick={(e) => { e.stopPropagation(); copyTo(path, 'path') }}
               className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+              aria-label={`Copy path: ${path}`}
               title={`Copy path: ${path}`}
             >
               <Link2 className="h-3 w-3" />
@@ -87,6 +89,7 @@ function JsonNode({ label, value, path, depth }: {
             <button
               onClick={(e) => { e.stopPropagation(); copyTo(copyableValue, 'value') }}
               className="rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-700"
+              aria-label="Copy value"
               title="Copy value"
             >
               <Copy className="h-3 w-3" />

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { X, Plus, Trash2, HelpCircle, Copy, Check, Eye, EyeOff, Search } from 'lucide-react'
 import type { TriggerDef, MutedFailureSignal } from '@/types/workflow'
 import { api } from '@/lib/api'
@@ -70,6 +70,11 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   const [assignments, setAssignments] = useState<{ source_name: string; workflow_id: string }[]>([])
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
+  const methodId = useId()
+  const authMethodId = useId()
+  const durationAlertId = useId()
+  const slackChannelId = useId()
+  const ttlSecondsId = useId()
   const webhookUrl = `${WORKER_URL}/webhooks/${workflowId}`
 
   useEffect(() => {
@@ -178,7 +183,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         </div>
         <div className="flex items-center gap-1">
           {readOnly && <span className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">View only</span>}
-          <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
+          <button onClick={onClose} aria-label="Close" className="rounded p-1 text-gray-500 hover:bg-gray-100">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -190,7 +195,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         {/* Generic webhook URL — hidden when a custom endpoint is mapped */}
         {customEndpoints.length === 0 && (
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</label>
+            <span className="mb-1.5 block text-xs font-medium text-gray-500">Endpoint</span>
             <div className="flex items-start gap-1.5 rounded border border-gray-200 bg-beige pl-2.5 pr-1.5 py-1.5">
               <span className="flex-1 break-all font-mono text-xs text-gray-700">{webhookUrl}</span>
               <button
@@ -211,7 +216,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         {/* Custom endpoints mapped to this workflow */}
         <div>
           <div className="mb-1.5 flex items-center justify-between">
-            <label className="block text-xs font-medium text-gray-500">Custom endpoints</label>
+            <span className="block text-xs font-medium text-gray-500">Custom endpoints</span>
             {!readOnly && !addingEndpoint && (
               <button
                 type="button"
@@ -274,8 +279,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
 
         {/* Method */}
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-gray-500">HTTP method</label>
+          <label htmlFor={methodId} className="mb-1.5 block text-xs font-medium text-gray-500">HTTP method</label>
           <select
+            id={methodId}
             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             value={cfg.method}
             onChange={(e) => update({ method: e.target.value })}
@@ -288,9 +294,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         </div>
 
         {/* Success nodes */}
-        <div>
+        <div role="group" aria-label="Success nodes">
           <div className="mb-1.5 flex items-center gap-1.5">
-            <label className="block text-xs font-medium text-gray-500">Success nodes</label>
+            <span className="block text-xs font-medium text-gray-500">Success nodes</span>
             <div className="group pointer-events-auto relative">
               <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
               <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
@@ -308,8 +314,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
 
         {/* Auth method */}
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-gray-500">Authentication</label>
+          <label htmlFor={authMethodId} className="mb-1.5 block text-xs font-medium text-gray-500">Authentication</label>
           <select
+            id={authMethodId}
             className="w-full rounded border border-gray-200 bg-white px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
             value={cfg.auth_method}
             onChange={(e) => update({ auth_method: e.target.value as 'api_key' | 'none' })}
@@ -323,7 +330,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         {cfg.auth_method === 'api_key' && (
           <div>
             <div className="mb-1.5 flex items-center justify-between">
-              <label className="block text-xs font-medium text-gray-500">API keys</label>
+              <span className="block text-xs font-medium text-gray-500">API keys</span>
               {!readOnly && !addingSource && !assigningExisting && (
                 <div className="flex items-center gap-1">
                   {unassignedSources.length > 0 && (
@@ -461,9 +468,10 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
 
         {/* Duration alert */}
         <div>
-          <label className="mb-1.5 block text-xs font-medium text-gray-500">Slow execution alert</label>
+          <label htmlFor={durationAlertId} className="mb-1.5 block text-xs font-medium text-gray-500">Slow execution alert</label>
           <div className="flex items-center gap-2">
             <input
+              id={durationAlertId}
               type="number"
               min={0}
               step={100}
@@ -479,8 +487,8 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         </div>
 
         {/* Muted failure alerts (#248) */}
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-gray-500">Muted failure alerts</label>
+        <div role="group" aria-label="Muted failure alerts">
+          <span className="mb-1.5 block text-xs font-medium text-gray-500">Muted failure alerts</span>
           <p className="mb-2 text-xs text-gray-500">
             Silence the per-run Slack alert for a known error (matched case-insensitively against the error message), but still get one aggregated alert if it spikes. It fires once when that many matching failures occur within the window.
           </p>
@@ -541,8 +549,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
         {/* Slack channel override */}
         {onSlackChannelChange && (
           <div>
-            <label className="mb-1.5 block text-xs font-medium text-gray-500">Slack channel override</label>
+            <label htmlFor={slackChannelId} className="mb-1.5 block text-xs font-medium text-gray-500">Slack channel override</label>
             <input
+              id={slackChannelId}
               type="text"
               placeholder="#alerts"
               value={slackChannel ?? ''}
@@ -582,10 +591,10 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
 
           {idempotency.enabled && (
             <>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500">
+              <div role="group" aria-label="Match on these fields">
+                <span className="mb-1 block text-xs font-medium text-gray-500">
                   Match on these fields
-                </label>
+                </span>
                 <p className="mb-1.5 text-xs text-gray-500">Requests with the same values for these fields count as the same lead. Leave empty to match on the entire payload.</p>
                 <div className="space-y-1">
                   {(idempotency.derive_from_fields ?? []).map((field, i) => (
@@ -599,6 +608,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                           fields.splice(i, 1)
                           updateIdempotency({ derive_from_fields: fields })
                         }}
+                        aria-label="Remove field"
                         className="rounded p-1 text-gray-500 hover:text-red-500"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -628,6 +638,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
                         })
                         setNewField('')
                       }}
+                      aria-label="Add field"
                       className="rounded p-1 text-gray-500 hover:text-p-blue-dark"
                     >
                       <Plus className="h-3.5 w-3.5" />
@@ -637,8 +648,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-medium text-gray-500">Remember for (seconds)</label>
+                <label htmlFor={ttlSecondsId} className="mb-1 block text-xs font-medium text-gray-500">Remember for (seconds)</label>
                 <input
+                  id={ttlSecondsId}
                   type="number"
                   className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:border-p-blue-dark focus:outline-none"
                   value={idempotency.ttl_seconds ?? 86400}

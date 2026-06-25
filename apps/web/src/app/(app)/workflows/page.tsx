@@ -685,7 +685,7 @@ export default function WorkflowsPage() {
                 onCancel={() => setRenamingId(null)}
                 className="rounded border border-gray-300 px-2 py-0.5 text-sm font-medium text-graphite focus:outline-none focus:ring-1 focus:ring-gray-400"
                 trailing={
-                  <button type="submit" className="rounded p-0.5 text-green-600 hover:bg-green-50">
+                  <button type="submit" aria-label="Save name" className="rounded p-0.5 text-green-600 hover:bg-green-50">
                     <Check className="h-3.5 w-3.5" />
                   </button>
                 }
@@ -729,6 +729,7 @@ export default function WorkflowsPage() {
               onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
               className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
               title="More options"
+              aria-label="More options"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
@@ -864,6 +865,7 @@ export default function WorkflowsPage() {
                 onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
                 className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                 title="Folder options"
+                aria-label="Folder options"
               >
                 <MoreHorizontal className="h-4 w-4" />
               </button>

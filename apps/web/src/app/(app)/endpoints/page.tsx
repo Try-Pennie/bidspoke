@@ -242,6 +242,7 @@ export default function EndpointsPage() {
                     <button
                       onClick={() => { cancelDelete(); setEditingId(ep.id) }}
                       className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:bg-beige"
+                      aria-label="Edit endpoint"
                       title="Edit endpoint"
                     >
                       <Pencil className="h-4 w-4" />
@@ -277,6 +278,7 @@ export default function EndpointsPage() {
                       <button
                         onClick={() => requestDelete(ep.id)}
                         className="rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
+                        aria-label="Delete endpoint"
                         title="Delete endpoint"
                       >
                         <Trash2 className="h-4 w-4" />

@@ -118,6 +118,7 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
                 type="button"
                 onClick={() => removeRow(i)}
                 className="flex-shrink-0 text-gray-300 hover:text-red-400"
+                aria-label="Remove row"
                 title="Remove"
               >
                 <Trash2 className="h-3.5 w-3.5" />

@@ -133,6 +133,7 @@ export function BidMatrixViewer(p: Props) {
               onClick={handleCreate}
               disabled={creating}
               className="inline-flex items-center gap-1 rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-graphite"
+              aria-label="Add another matrix"
               title="Add another matrix"
             >
               <Plus className="h-4 w-4" />
@@ -156,6 +157,7 @@ export function BidMatrixViewer(p: Props) {
               type="button"
               onClick={handleDelete}
               className="rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
+              aria-label="Delete this matrix"
               title="Delete this matrix"
             >
               <Trash2 className="h-4 w-4" />

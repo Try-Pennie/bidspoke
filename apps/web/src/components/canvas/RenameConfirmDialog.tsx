@@ -34,9 +34,14 @@ export default function RenameConfirmDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="w-[480px] max-w-full rounded-lg bg-white shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="rename-dialog-title"
+        className="w-[480px] max-w-full rounded-lg bg-white shadow-xl"
+      >
         <div className="border-b border-gray-100 px-5 py-4">
-          <h2 className="text-base font-semibold text-graphite">
+          <h2 id="rename-dialog-title" className="text-base font-semibold text-graphite">
             Rename <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-sm">{oldNs}</code> →{' '}
             <code className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-sm">{newNs}</code>
           </h2>

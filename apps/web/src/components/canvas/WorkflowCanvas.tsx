@@ -2863,6 +2863,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 onClick={undo}
                 disabled={hist.past.length === 0}
                 className="rounded p-1.5 text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                aria-label="Undo"
                 title="Undo (⌘Z)"
               >
                 <Undo2 className="h-4 w-4" />
@@ -2871,6 +2872,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 onClick={redo}
                 disabled={hist.future.length === 0}
                 className="rounded p-1.5 text-gray-500 hover:bg-gray-100 disabled:opacity-30"
+                aria-label="Redo"
                 title="Redo (⌘⇧Z)"
               >
                 <Redo2 className="h-4 w-4" />
@@ -2899,6 +2901,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           <button
             onClick={() => setShowVersions((s) => !s)}
             className={`rounded p-1.5 hover:bg-gray-100 ${showVersions ? 'bg-gray-100 text-gray-700' : 'text-gray-500'}`}
+            aria-label="Version history"
             title="Version history"
           >
             <Clock className="h-4 w-4" />
@@ -3658,10 +3661,13 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
             <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="container-delete-title"
               className="w-[440px] rounded-xl bg-white p-5 shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
-              <p className="font-semibold text-graphite">
+              <p id="container-delete-title" className="font-semibold text-graphite">
                 Delete {containerLabel}?
               </p>
               <p className="mt-1 text-sm text-gray-600">
@@ -3750,6 +3756,7 @@ function EdgeRemoveButton({
       onClick={onClick}
       style={{ left, top, transform: 'translate(-50%, -50%)' }}
       className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
+      aria-label="Disconnect"
       title="Disconnect"
     >
       <X className="h-3 w-3" />

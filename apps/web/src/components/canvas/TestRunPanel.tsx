@@ -249,7 +249,7 @@ export default function TestRunPanel({
           <p className="text-sm font-semibold text-graphite">Test run</p>
           <p className="text-xs text-gray-500">Runs in test mode. No Slack alerts.</p>
         </div>
-        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
+        <button onClick={onClose} aria-label="Close" className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>
@@ -273,6 +273,7 @@ export default function TestRunPanel({
                   <button
                     onClick={() => deletePayload(sp.name)}
                     className="rounded p-1 text-gray-300 hover:text-red-400"
+                    aria-label="Delete payload"
                     title="Delete"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
@@ -319,6 +320,7 @@ export default function TestRunPanel({
               </button>
               <button
                 onClick={() => { setShowSaveInput(false); setSaveName(''); setSaveError(null) }}
+                aria-label="Cancel"
                 className="rounded p-1 text-gray-500 hover:text-gray-600"
               >
                 <X className="h-3.5 w-3.5" />

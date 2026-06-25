@@ -2,7 +2,7 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { createClient } from '@/lib/supabase/client'
 import { UserPlus, Trash2, Shield } from 'lucide-react'
@@ -27,6 +27,7 @@ export default function AccessSettingsPage() {
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
   const [removing, setRemoving] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const emailId = useId()
 
   useEffect(() => {
     createClient().auth.getUser().then(({ data }) => {
@@ -118,8 +119,9 @@ export default function AccessSettingsPage() {
           className="mb-6 flex items-end gap-3 rounded-xl border border-gray-200 bg-white p-4"
         >
           <div className="flex-1">
-            <label className="mb-1 block text-xs font-medium text-gray-600">Email address</label>
+            <label htmlFor={emailId} className="mb-1 block text-xs font-medium text-gray-600">Email address</label>
             <input
+              id={emailId}
               className="input w-full"
               placeholder="name@trypennie.com"
               type="email"
@@ -193,6 +195,7 @@ export default function AccessSettingsPage() {
                   <button
                     onClick={() => requestRemove(u.email)}
                     className="shrink-0 rounded-lg border border-gray-200 p-1.5 text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-500"
+                    aria-label="Remove user"
                     title="Remove"
                   >
                     <Trash2 className="h-3.5 w-3.5" />

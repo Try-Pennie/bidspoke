@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { WebhookEndpoint } from '@/lib/api'
@@ -51,6 +51,10 @@ export default function EndpointCreateForm({
   // Stop mirroring subdomain → source_name once the user edits source_name (#99).
   const [sourceNameEdited, setSourceNameEdited] = useState(false)
   const subdomainInputRef = useRef<HTMLInputElement | null>(null)
+  const subdomainId = useId()
+  const pathId = useId()
+  const workflowSelectId = useId()
+  const sourceNameId = useId()
 
   useEffect(() => {
     if (autoFocus) {
@@ -100,10 +104,11 @@ export default function EndpointCreateForm({
 
       <div className="grid grid-cols-2 items-end gap-2">
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Partner slug</label>
+          <label htmlFor={subdomainId} className="mb-1 block text-xs font-medium text-gray-600">Partner slug</label>
           <div className="flex items-center rounded-lg border border-gray-200 bg-white focus-within:border-p-blue-dark focus-within:ring-2 focus-within:ring-p-blue-dark/20">
             <span className="flex-shrink-0 rounded-l-lg border-r border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-500">hook.trypennie.dev/</span>
             <input
+              id={subdomainId}
               ref={subdomainInputRef}
               className="min-w-0 flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-500"
               placeholder="partner-name"
@@ -117,10 +122,11 @@ export default function EndpointCreateForm({
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">
+          <label htmlFor={pathId} className="mb-1 block text-xs font-medium text-gray-600">
             Path <span className="font-normal text-gray-500">(optional)</span>
           </label>
           <input
+            id={pathId}
             className="input w-full font-mono"
             placeholder="/bidding"
             value={form.path}
@@ -135,15 +141,16 @@ export default function EndpointCreateForm({
 
       {lockWorkflow ? (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Workflow</label>
+          <span className="mb-1 block text-xs font-medium text-gray-600">Workflow</span>
           <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm text-gray-600">
             {workflowName ?? 'This workflow'}
           </div>
         </div>
       ) : (
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-600">Workflow</label>
+          <label htmlFor={workflowSelectId} className="mb-1 block text-xs font-medium text-gray-600">Workflow</label>
           <select
+            id={workflowSelectId}
             className="input w-full"
             value={form.workflow_id}
             onChange={(e) => setForm((f) => ({ ...f, workflow_id: e.target.value }))}
@@ -158,8 +165,9 @@ export default function EndpointCreateForm({
       )}
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
+        <label htmlFor={sourceNameId} className="mb-1 block text-xs font-medium text-gray-600">Source name</label>
         <input
+          id={sourceNameId}
           className="input w-full font-mono"
           placeholder={form.subdomain || 'custom-name'}
           value={form.source_name}

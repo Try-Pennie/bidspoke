@@ -167,6 +167,7 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
       <button
         type="button"
         onClick={onRemove}
+        aria-label="Remove rule"
         className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
       >
         <X className="h-3.5 w-3.5" />
@@ -847,6 +848,7 @@ export default function PartnerForm({
                   <button
                     type="button"
                     onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))}
+                    aria-label="Remove UUID"
                     className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -859,6 +861,7 @@ export default function PartnerForm({
                   <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
                   <button
                     type="button"
+                    aria-label="Remove UUID"
                     disabled={removingUuidId === u.id}
                     onClick={async () => {
                       setRemovingUuidId(u.id)

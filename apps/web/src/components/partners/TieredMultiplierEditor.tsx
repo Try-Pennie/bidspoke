@@ -1,5 +1,6 @@
 'use client'
 
+import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 
 interface Tier {
@@ -22,6 +23,8 @@ const PLACEHOLDER_FIELD = 'steps.eligibility.output.final'
 
 export function TieredMultiplierEditor({ config, onChange }: Props) {
   const c = readConfig(config)
+  const sourceFieldId = useId()
+  const defaultMultiplierId = useId()
 
   function patch(next: Partial<Config>) {
     const merged: Config = { ...c, ...next }
@@ -49,9 +52,10 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
   return (
     <div className="space-y-3">
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
+        <label htmlFor={sourceFieldId} className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
         <p className="mb-1.5 text-xs text-gray-500">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
         <input
+          id={sourceFieldId}
           value={c.source_field}
           onChange={(e) => patch({ source_field: e.target.value })}
           placeholder={PLACEHOLDER_FIELD}
@@ -85,6 +89,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
                   type="button"
                   onClick={() => removeTier(i)}
                   className="ml-auto text-gray-300 hover:text-red-400"
+                  aria-label="Remove tier"
                   title="Remove tier"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -104,9 +109,10 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
+        <label htmlFor={defaultMultiplierId} className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
         <p className="mb-1.5 text-xs text-gray-500">Used when no tier matches.</p>
         <input
+          id={defaultMultiplierId}
           type="number"
           step="0.01"
           value={c.default_multiplier ?? ''}

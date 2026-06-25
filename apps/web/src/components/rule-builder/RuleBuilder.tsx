@@ -126,7 +126,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
               ))}
             </div>
             {groups.length > 1 && (
-              <button onClick={() => removeGroup(gi)} className="text-gray-300 hover:text-red-400">
+              <button onClick={() => removeGroup(gi)} aria-label="Remove group" className="text-gray-300 hover:text-red-400">
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             )}
@@ -177,6 +177,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                 )}
                 <button
                   onClick={() => removeCondition(gi, ci)}
+                  aria-label="Remove condition"
                   className="shrink-0 text-gray-300 hover:text-red-400"
                 >
                   <Trash2 className="h-3.5 w-3.5" />

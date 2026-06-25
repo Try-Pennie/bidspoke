@@ -76,7 +76,7 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
       {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-semibold text-graphite">Version history</p>
-        <button onClick={onClose} className="rounded p-1 text-gray-500 hover:bg-gray-100">
+        <button onClick={onClose} aria-label="Close" className="rounded p-1 text-gray-500 hover:bg-gray-100">
           <X className="h-4 w-4" />
         </button>
       </div>
