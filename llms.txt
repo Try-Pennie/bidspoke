@@ -17,6 +17,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Workflows and executions](https://bidspoke.trypennie.dev/docs/concepts/workflows-and-executions.md): the core domain model.
 - [Triggers and endpoints](https://bidspoke.trypennie.dev/docs/concepts/triggers-and-endpoints.md): how workflows are invoked over HTTP.
 - [Bidding model](https://bidspoke.trypennie.dev/docs/concepts/bidding-model.md): hub-and-spoke and ping-post bidding, caps, circuit breakers, dedup.
+- [Lead outcome recovery](https://bidspoke.trypennie.dev/docs/concepts/lead-outcome-recovery.md): how lead outcomes are durably recorded and how stranded leads (lost to Worker eviction) are recovered.
 - [Glossary](https://bidspoke.trypennie.dev/docs/concepts/glossary.md): definitions of every term.
 
 ## Nodes
