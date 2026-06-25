@@ -60,6 +60,9 @@ pnpm lint          # lint all packages
 - CI must pass before merging to main
 - Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes — CI uses frozen-lockfile and will break otherwise
 
+## Database migrations
+Migrations must be **backward-compatible (expand/contract)** so schema and code can deploy in either order without a window where prod code and schema disagree. In short: additive-only in a single migration (add nullable/defaulted columns, tables, indexes); never rename or drop in the same release that starts using the change — split renames/drops across two releases (expand + dual-write, then contract later). The deploy pipeline only CHECKS migrations are applied; you apply them by hand with `supabase db push`. Full rules + deployment runbook: [docs/adr/0007-expand-contract-migrations.md](./docs/adr/0007-expand-contract-migrations.md).
+
 ## Worker secrets (production)
 These must be set via `wrangler secret put <NAME> --name bidspoke-worker`. Never committed to git.
 

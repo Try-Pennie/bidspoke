@@ -69,7 +69,7 @@ jobs:
           # Unapplied rows look like: `   20260428000001 |             | 2026-04-28 ...`
           # (empty Remote between the two pipes).
           if echo "$OUTPUT" | grep -E '^[[:space:]]*[0-9]{14}[[:space:]]*\|[[:space:]]*\|' >/dev/null; then
-            echo "::error::Unapplied migrations detected. Run 'supabase db push' before deploying."
+            echo "::error::Unapplied migrations detected. Run 'supabase db push', then re-run this deploy. Migrations must be backward-compatible (expand/contract) so apply order is safe — see docs/adr/0007-expand-contract-migrations.md."
             exit 1
           fi
 
