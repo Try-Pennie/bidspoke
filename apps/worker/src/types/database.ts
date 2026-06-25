@@ -1491,6 +1491,7 @@ export type Database = {
           response_body: Json | null
           response_status: number | null
           resumed_from_execution_id: string | null
+          sighting_finalize: Json | null
           slack_alert_fired_at: string | null
           slack_alert_reason: Json | null
           slack_alert_type: string | null
@@ -1518,6 +1519,7 @@ export type Database = {
           response_body?: Json | null
           response_status?: number | null
           resumed_from_execution_id?: string | null
+          sighting_finalize?: Json | null
           slack_alert_fired_at?: string | null
           slack_alert_reason?: Json | null
           slack_alert_type?: string | null
@@ -1545,6 +1547,7 @@ export type Database = {
           response_body?: Json | null
           response_status?: number | null
           resumed_from_execution_id?: string | null
+          sighting_finalize?: Json | null
           slack_alert_fired_at?: string | null
           slack_alert_reason?: Json | null
           slack_alert_type?: string | null
@@ -1755,11 +1758,11 @@ export type Database = {
       auth_user_with_allowlist: {
         Args: { p_user_id: string }
         Returns: {
+          allowed: boolean
+          display_name: string
+          email: string
           id: string
           organization_id: string
-          email: string
-          display_name: string | null
-          allowed: boolean
         }[]
       }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
@@ -1779,6 +1782,14 @@ export type Database = {
           minute: string
           workflow_id: string
         }[]
+      }
+      finalize_unrecoverable_stranded: {
+        Args: { p_min_age_hours?: number }
+        Returns: number
+      }
+      reduce_finalize_stranded: {
+        Args: { p_lookback_days?: number }
+        Returns: number
       }
       refresh_workflow_stats_daily: {
         Args: { p_lookback_days?: number }
