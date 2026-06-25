@@ -31,7 +31,7 @@ import {
   recordBidAttempt,
   computeSightingFinalize,
 } from './lead-sightings'
-import { deriveCodeNodeBidAttempts } from './bid-log'
+import { deriveCodeNodeBidAttempts, bidAttemptsForProjection } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
 import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
@@ -517,12 +517,18 @@ export async function executeWorkflow(
         // drain can later recover them with full fidelity instead of a reduced
         // finalize. Same gate as the live finalize below (capture on, non-test).
         const sightingFinalize = sightingId && !options.isTest
-          ? computeSightingFinalize(ctx.steps, definition.nodes, {
-              lastCompletedNamespace: finalNodeNamespace,
-              walkStatus,
-              executionStatus,
-              successNamespaces,
-            })
+          ? {
+              ...computeSightingFinalize(ctx.steps, definition.nodes, {
+                lastCompletedNamespace: finalNodeNamespace,
+                walkStatus,
+                executionStatus,
+                successNamespaces,
+              }),
+              // Per-attempt bid rows the strand would otherwise lose (block 2's
+              // recordBidAttempt dies with the same eviction) — projected so the
+              // drain can re-INSERT them for stranded leads (#366 Phase 2b).
+              bid_attempts: bidAttemptsForProjection(ctx.steps),
+            }
           : undefined
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,

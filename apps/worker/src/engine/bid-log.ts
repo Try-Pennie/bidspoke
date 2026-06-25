@@ -39,6 +39,38 @@ function isTripointBidOutput(output: unknown): output is TripointBidOutput {
   return 'resultCode' in o && ('qualified' in o || 'skipped' in o || 'createLead' in o)
 }
 
+// Slim, serializable per-attempt shape projected onto workflow_executions
+// .sighting_finalize so the strand drain can re-INSERT the bid rows a stranded
+// lead lost (#366 Phase 2b). Excludes ids/timestamps/is_test — the drain refills
+// those from the sighting row (attempted_at_utc = sighting.execution_started_at_utc).
+export interface ProjectedBidAttempt {
+  partner_slug: string
+  classification: string | null
+  decline_reason: string | null
+  skip_reason: string | null
+  resolver_type: string | null
+  bid_cents: number | null
+  http_status: number | null
+}
+
+// The per-attempt rows the live path would have recorded, in projection shape.
+// Reuses deriveCodeNodeBidAttempts (capture-on flows bid via code nodes), so the
+// projected set matches what recordBidAttempt writes for non-stranded runs.
+const PROJECTION_EPOCH = new Date(0)
+export function bidAttemptsForProjection(steps: Record<string, StepOutput>): ProjectedBidAttempt[] {
+  return deriveCodeNodeBidAttempts(steps, {
+    sighting_id: '', trace_id: '', execution_id: '', attempted_at_utc: PROJECTION_EPOCH, is_test: false,
+  }).map((a) => ({
+    partner_slug: a.partner_slug,
+    classification: a.classification ?? null,
+    decline_reason: a.decline_reason ?? null,
+    skip_reason: a.skip_reason ?? null,
+    resolver_type: a.resolver_type ?? null,
+    bid_cents: a.bid_cents ?? null,
+    http_status: a.http_status ?? null,
+  }))
+}
+
 export function deriveCodeNodeBidAttempts(
   steps: Record<string, StepOutput>,
   meta: DerivedBidMeta,

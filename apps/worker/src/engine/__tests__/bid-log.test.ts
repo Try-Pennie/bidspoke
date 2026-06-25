@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { StepOutput } from '../../types'
-import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, type BidSummary } from '../bid-log'
+import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, type BidSummary } from '../bid-log'
 
 const meta = {
   sighting_id: 'sight-1',
@@ -25,6 +25,28 @@ function steps(outputs: Record<string, unknown>): Record<string, StepOutput> {
   }
   return out
 }
+
+describe('bidAttemptsForProjection (#366 Phase 2b)', () => {
+  it('produces slim per-attempt rows (no ids/timestamps) for the strand projection', () => {
+    const out = bidAttemptsForProjection(
+      steps({ tripoint_ping: { skipped: false, qualified: true, resultCode: 1001, createLead: { bidValue: null } } }),
+    )
+    expect(out).toEqual([
+      { partner_slug: 'tripoint', classification: 'accept', decline_reason: null, skip_reason: null, resolver_type: 'api', bid_cents: null, http_status: null },
+    ])
+  })
+
+  it('carries the decline classification + reason for a rejected ping', () => {
+    const out = bidAttemptsForProjection(steps({ tripoint_ping: { skipped: false, qualified: false, resultCode: 1009 } }))
+    expect(out).toEqual([
+      { partner_slug: 'tripoint', classification: 'decline', decline_reason: 'result_code_1009', skip_reason: 'rejected', resolver_type: 'api', bid_cents: null, http_status: null },
+    ])
+  })
+
+  it('returns [] when there are no code-node bid outputs', () => {
+    expect(bidAttemptsForProjection(steps({ validate: { ok: true } }))).toEqual([])
+  })
+})
 
 describe('deriveCodeNodeBidAttempts — Tripoint (#349)', () => {
   it('derives an accepted attempt from an approved ping (resultCode 1001)', () => {
