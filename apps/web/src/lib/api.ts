@@ -501,13 +501,12 @@ export const api = {
         final_node_namespace: string | null
         started_at: string
       }>>('/api/executions'),
-    list: (workflowId: string, opts?: { outcome?: 'successful' | 'completed' | 'failed'; status?: 'degraded'; before?: string; beforeId?: string; shadow?: boolean }) => {
+    list: (workflowId: string, opts?: { outcome?: 'successful' | 'completed' | 'failed'; status?: 'degraded'; before?: string; beforeId?: string }) => {
       const params = new URLSearchParams({ workflow_id: workflowId })
       if (opts?.outcome) params.set('outcome', opts.outcome)
       if (opts?.status) params.set('status', opts.status)
       if (opts?.before) params.set('before', opts.before)
       if (opts?.beforeId) params.set('before_id', opts.beforeId)
-      if (opts?.shadow) params.set('shadow', '1')
       return req<Array<{
         id: string
         status: string
