@@ -57,22 +57,35 @@ jobs:
 
   db-types-fresh:
     name: DB types regenerated with schema migrations
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # Fast PR-time reminder: if a migration changes table/column/type DDL but
-      # the generated Supabase types weren't regenerated, the typed client drifts
+      # Fast reminder: if a migration changes table/column/type DDL but the
+      # generated Supabase types weren't regenerated, the typed client drifts
       # from reality. Index/RLS/function/grant-only migrations don't affect the
       # types, so they're allowed through. The nightly db-types-drift workflow is
       # the authoritative correctness check against the live schema.
+      #
+      # Runs on push to main too, not just PRs (#364): the team pushes directly
+      # to main, so a PR-only gate never fires and drift was only caught hours
+      # later by the nightly cron. The diff base differs by event: a PR diffs
+      # against its base branch; a push diffs against the commit before it.
       - name: Require a types regen when migrations change schema DDL
         run: |
           set -euo pipefail
-          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # Fall back to the parent commit when the base is unusable: a new
+          # branch or force-push reports an all-zero / missing 'before' SHA.
+          if [ -z "$BASE" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            BASE=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
+          fi
           CHANGED=$(git diff --name-only "$BASE" HEAD)
           MIGS=$(echo "$CHANGED" | grep -E '^supabase/migrations/.*\.sql$' || true)
           if [ -z "$MIGS" ]; then
