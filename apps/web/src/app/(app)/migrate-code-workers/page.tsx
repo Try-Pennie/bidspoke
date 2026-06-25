@@ -55,7 +55,7 @@ export default function MigrateCodeWorkersPage() {
           <button
             onClick={run}
             disabled={running}
-            className="inline-flex items-center gap-2 rounded-md bg-p-blue px-4 py-2 text-sm font-medium text-white hover:bg-p-blue/90 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-md bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
           >
             {running ? (
               <>
