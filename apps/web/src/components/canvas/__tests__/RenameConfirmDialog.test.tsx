@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import RenameConfirmDialog from '../RenameConfirmDialog'
 
@@ -43,5 +43,26 @@ describe('RenameConfirmDialog', () => {
   it('shows the empty-state message when there are no downstream references', () => {
     render(<RenameConfirmDialog {...baseProps} />)
     expect(screen.getByText('No downstream references found.')).toBeInTheDocument()
+  })
+
+  // Focus trap + dialog semantics (#288).
+  it('is a labelled modal dialog', () => {
+    render(<RenameConfirmDialog {...baseProps} />)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toHaveAttribute('aria-labelledby', 'rename-dialog-title')
+  })
+
+  it('moves focus into the dialog on open', () => {
+    render(<RenameConfirmDialog {...baseProps} />)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.contains(document.activeElement)).toBe(true)
+  })
+
+  it('closes on Escape', () => {
+    const onCancel = vi.fn()
+    render(<RenameConfirmDialog {...baseProps} onCancel={onCancel} />)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledOnce()
   })
 })

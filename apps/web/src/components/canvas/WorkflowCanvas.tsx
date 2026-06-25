@@ -46,6 +46,7 @@ import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
 import { computeWarningNodeIds } from '@/lib/minimap-warnings'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
@@ -2319,6 +2320,12 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     containerLabel: string
     edgeIds: string[]
   } | null>(null)
+  // Focus trap for the container-delete confirm dialog below (#288). Activates
+  // when the dialog is open; Escape / focus-restore handled by the hook.
+  const containerDeleteRef = useFocusTrap<HTMLDivElement>(
+    !!pendingContainerDelete,
+    () => setPendingContainerDelete(null),
+  )
 
   const executeNodesDelete = useCallback(
     (ids: string[], alsoRemoveEdgeIds: string[] = []) => {
@@ -3661,6 +3668,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
             <div
+              ref={containerDeleteRef}
               role="dialog"
               aria-modal="true"
               aria-labelledby="container-delete-title"

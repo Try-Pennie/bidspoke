@@ -29,6 +29,14 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
+      {/* Skip link: first tab stop, visually hidden until focused, so keyboard
+          users can jump past the sidebar straight to the page content (#288). */}
+      <a
+        href="#main-content"
+        className="sr-only z-50 rounded-md bg-navy px-4 py-2 text-sm font-medium text-white focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:outline-none focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-2"
+      >
+        Skip to main content
+      </a>
       {/* Sidebar */}
       <nav className="flex w-52 flex-col bg-navy">
         <div className="flex items-center gap-2.5 px-4 py-5">
@@ -92,7 +100,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
       </nav>
 
       {/* Main content */}
-      <main className="flex flex-1 flex-col overflow-auto">{children}</main>
+      <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col overflow-auto focus:outline-none">{children}</main>
     </div>
   )
 }

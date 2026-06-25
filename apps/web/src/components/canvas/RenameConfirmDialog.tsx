@@ -1,6 +1,7 @@
 'use client'
 
 import { AlertTriangle } from 'lucide-react'
+import { useFocusTrap } from '@/hooks/useFocusTrap'
 
 export interface PartnerFormulaImpact {
   partner_id: string
@@ -31,10 +32,12 @@ export default function RenameConfirmDialog({
 }: Props) {
   const safeFormulas = partnerFormulas.filter((p) => p.can_rewrite)
   const skippedFormulas = partnerFormulas.filter((p) => !p.can_rewrite)
+  const dialogRef = useFocusTrap<HTMLDivElement>(true, onCancel)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="rename-dialog-title"
