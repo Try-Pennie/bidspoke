@@ -49,9 +49,17 @@ class_name = "DailyCapObject"
 name = "CIRCUIT_BREAKER"
 class_name = "CircuitBreakerObject"
 
+[[durable_objects.bindings]]
+name = "SALESFORCE_BULKHEAD"
+class_name = "BulkheadObject"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["DailyCapObject", "CircuitBreakerObject"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["BulkheadObject"]
 
 # Dynamic Workers — code node sandboxing via Workers for Platforms
 [[dispatch_namespaces]]

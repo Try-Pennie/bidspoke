@@ -24,6 +24,7 @@ import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endp
 
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
+export { BulkheadObject } from './durable-objects/bulkhead'
 
 export interface Env {
   // KV namespaces
@@ -34,6 +35,12 @@ export interface Env {
   // Durable Objects
   DAILY_CAP: DurableObjectNamespace
   CIRCUIT_BREAKER: DurableObjectNamespace
+  // Inflight-concurrency limiter for Salesforce (ADR 0005 / #312)
+  SALESFORCE_BULKHEAD: DurableObjectNamespace
+
+  // Max simultaneous in-flight Salesforce calls (string env var; default 20,
+  // kept below SF's ~25-slot concurrency governor). Optional.
+  SALESFORCE_BULKHEAD_LIMIT?: string
 
   // Supabase (secrets)
   SUPABASE_URL: string

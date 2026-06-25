@@ -22,6 +22,7 @@ import { coerceString } from '../../lib/coerce'
 import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
+import { BulkheadClient, salesforceBulkheadLimit, type AcquireResult } from '../../lib/bulkhead-client'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -213,6 +214,29 @@ export async function executeSalesforceNode(
     },
   }
 
+  // Salesforce bulkhead (ADR 0005 / #312): bound inflight SF calls below the org's
+  // ~25-slot concurrency governor. At capacity, fail fast with a permanent error
+  // (routes to the step's on_error/fallback, no SF retry) instead of piling more
+  // load onto a saturated Salesforce. Fail OPEN if the limiter itself errors — a
+  // bulkhead-DO outage must not block all SF traffic.
+  const bulkhead = env.SALESFORCE_BULKHEAD
+    ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env))
+    : null
+  const lease = bulkhead
+    ? await bulkhead.acquire().catch(() => ({ allowed: true } as AcquireResult))
+    : ({ allowed: true } as AcquireResult)
+  if (!lease.allowed) {
+    // Distinctive message so an unhandled shed flows through the existing failure
+    // + failure-rate Slack alerts without new alert infra.
+    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} trace=${ctx.trigger.trace_id}`)
+    const shedErr = new Error(
+      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight)`,
+    ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput }
+    shedErr.permanent = true
+    shedErr.resolvedInput = resolvedInput
+    throw shedErr
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
   linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
@@ -228,6 +252,8 @@ export async function executeSalesforceNode(
     })
   } finally {
     clearTimeout(timer)
+    // Release the slot whether the call succeeded, failed, or timed out.
+    if (bulkhead && lease.token) await bulkhead.release(lease.token).catch(() => {})
   }
   const fetchMs = Date.now() - fetchStart
 

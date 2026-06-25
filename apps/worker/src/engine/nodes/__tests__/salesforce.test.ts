@@ -123,6 +123,32 @@ describe('executeSalesforceNode', () => {
     expect(signals[1]?.aborted).toBe(true) // the write call carries the aborted signal
   })
 
+  // #312: when the Salesforce bulkhead is at capacity, the node sheds — throwing
+  // a permanent error (routes to on_error/fallback, no retry) WITHOUT calling the
+  // Salesforce operation. Only the token fetch happens; the write is shed.
+  it('sheds with a permanent error when the bulkhead is at capacity (#312)', async () => {
+    fetchMock.mockResolvedValueOnce(mockTokenResponse())
+    const acquire = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ allowed: false, inflight: 20, limit: 20 })),
+    )
+    const env = makeEnv()
+    ;(env as unknown as { SALESFORCE_BULKHEAD: unknown }).SALESFORCE_BULKHEAD = {
+      idFromName: vi.fn().mockReturnValue('id'),
+      get: vi.fn().mockReturnValue({ fetch: acquire }),
+    }
+    let caught: (Error & { permanent?: boolean }) | undefined
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env,
+    ).catch((e: Error & { permanent?: boolean }) => { caught = e })
+
+    expect(caught?.message).toMatch(/bulkhead: at capacity/)
+    expect(caught?.permanent).toBe(true)
+    expect(acquire).toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(1) // token fetch only — the write was shed
+  })
+
   // ── Token fetch + cache ─────────────────────────────────────────────────────
 
   it('fetches a new token on cache miss and stores it', async () => {
