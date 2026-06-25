@@ -13,27 +13,9 @@
  * are not. Add an aria-label describing the action to fix a flagged button.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WEB_SRC = path.join(REPO_ROOT, 'apps/web/src')
-
-function tsxFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      out.push(...tsxFiles(full))
-    } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
-      out.push(full)
-    }
-  }
-  return out
-}
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
 
 // Find the index just past the `>` that closes the JSX opening tag starting at
 // `start` (the index of '<button'). Tracks string literals and brace depth so a
@@ -84,7 +66,7 @@ export function findUnlabeledIconButtons(src: string): { line: number; excerpt: 
 describe('icon-only buttons have accessible names (#273)', () => {
   it('every icon-only <button> in the web UI has an aria-label', () => {
     const violations: string[] = []
-    for (const file of tsxFiles(WEB_SRC)) {
+    for (const file of listTsxFiles(WEB_SRC)) {
       for (const v of findUnlabeledIconButtons(readFileSync(file, 'utf8'))) {
         violations.push(`  ${path.relative(REPO_ROOT, file)}:${v.line}  ${v.excerpt}`)
       }

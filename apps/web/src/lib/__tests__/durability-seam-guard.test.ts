@@ -23,13 +23,11 @@
  * scans apps/worker/src from here the same way.)
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { WORKER_SRC, listTsFiles, consumeParens } from './_scan-utils'
 
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const ENGINE_DIR = path.join(REPO_ROOT, 'apps/worker/src/engine')
+const ENGINE_DIR = path.join(WORKER_SRC, 'engine')
 
 // Tier-2 must-not-lose tables. `opportunities` is listed now so the guard already
 // covers it when the 4.5a win-tracking table is built.
@@ -40,36 +38,6 @@ const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 // functions in lead-sightings.ts (they ARE the seam's tier-2 callers).
 const SEAM_ALLOWLIST = new Set(['lead-sightings.ts'])
 
-function listTsFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__') continue
-      out.push(...listTsFiles(full))
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
-// Consume a balanced (...) starting at src[open] === '('. Returns the index just
-// past the closing paren; skips string/template contents.
-function consumeParens(src: string, open: number): number {
-  let depth = 0
-  for (let k = open; k < src.length; k++) {
-    const c = src[k]
-    if (c === "'" || c === '"' || c === '`') {
-      k++
-      while (k < src.length && src[k] !== c) { if (src[k] === '\\') k++; k++ }
-      continue
-    }
-    if (c === '(') depth++
-    else if (c === ')') { depth--; if (depth === 0) return k + 1 }
-  }
-  return src.length
-}
 
 // Walk the .method(...) chain starting at `from` (index just past .from(...)).
 function walkChain(src: string, from: number): string[] {

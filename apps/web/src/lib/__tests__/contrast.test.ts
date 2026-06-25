@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { contrastRatio, relativeLuminance, blendOver, parseHex } from '../contrast'
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
 
 const WHITE = '#FFFFFF'
 
@@ -38,10 +38,6 @@ describe('contrast helpers (WCAG 2.1)', () => {
 })
 
 // ── Integration guard: the brand action color clears AA ──────────────────────
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WEB_SRC = path.join(REPO_ROOT, 'apps/web/src')
-
 function readTailwindToken(token: 'light' | 'DEFAULT' | 'dark'): string {
   const cfg = readFileSync(path.join(REPO_ROOT, 'apps/web/tailwind.config.ts'), 'utf8')
   // Grab the `'p-blue': { ... }` block, then the requested key inside it.
@@ -65,19 +61,6 @@ describe('primary action color meets WCAG AA', () => {
 })
 
 // ── Integration guard: no low-contrast text utilities in the UI ──────────────
-function tsxFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      out.push(...tsxFiles(full))
-    } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
-      out.push(full)
-    }
-  }
-  return out
-}
 
 // gray-400 on a light background is ~2.5:1 (fails AA). It is only acceptable on a
 // solid dark surface, so a line is exempt when it sets a solid dark background
@@ -98,7 +81,7 @@ function grayViolations(src: string): { line: number; excerpt: string }[] {
 describe('no low-contrast text in the UI', () => {
   it('text-gray-400 is not used for text on light backgrounds (use gray-500)', () => {
     const violations: string[] = []
-    for (const file of tsxFiles(WEB_SRC)) {
+    for (const file of listTsxFiles(WEB_SRC)) {
       for (const v of grayViolations(readFileSync(file, 'utf8'))) {
         violations.push(`  ${path.relative(REPO_ROOT, file)}:${v.line}  ${v.excerpt}`)
       }
@@ -112,7 +95,7 @@ describe('no low-contrast text in the UI', () => {
 
   it('primary buttons use the token hover, not the stale light hover hex', () => {
     const violations: string[] = []
-    for (const file of tsxFiles(WEB_SRC)) {
+    for (const file of listTsxFiles(WEB_SRC)) {
       readFileSync(file, 'utf8').split('\n').forEach((text, i) => {
         if (/#3A8FD0/i.test(text)) {
           violations.push(`  ${path.relative(REPO_ROOT, file)}:${i + 1}  ${text.trim().slice(0, 100)}`)

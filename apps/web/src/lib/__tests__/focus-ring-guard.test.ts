@@ -10,27 +10,9 @@
  * is a different concern from keyboard focus.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WEB_SRC = path.join(REPO_ROOT, 'apps/web/src')
-
-function tsxFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      out.push(...tsxFiles(full))
-    } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
-      out.push(full)
-    }
-  }
-  return out
-}
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
 
 // focus:ring-p-blue-light or focus-visible:ring-p-blue-light (the invisible ring).
 const INVISIBLE_FOCUS_RING = /focus(?:-visible)?:ring-p-blue-light/
@@ -38,7 +20,7 @@ const INVISIBLE_FOCUS_RING = /focus(?:-visible)?:ring-p-blue-light/
 describe('focus rings are visible (#288)', () => {
   it('no element uses the near-invisible p-blue-light as its focus ring', () => {
     const violations: string[] = []
-    const files = [...tsxFiles(WEB_SRC), path.join(REPO_ROOT, 'apps/web/src/app/globals.css')]
+    const files = [...listTsxFiles(WEB_SRC), path.join(REPO_ROOT, 'apps/web/src/app/globals.css')]
     for (const file of files) {
       readFileSync(file, 'utf8')
         .split('\n')

@@ -15,13 +15,10 @@
  * comment in the same statement.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { REPO_ROOT, WORKER_SRC, listTsFiles, consumeParens } from './_scan-utils'
 
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WORKER_SRC = path.join(REPO_ROOT, 'apps/worker/src')
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'supabase/migrations')
 // Scheduled/engine code plus the request-scoped API routes (#185). Routes are
 // mostly bounded by design (keyset cursors, .single(), .limit()), but a new
@@ -49,38 +46,6 @@ const BUILTIN_FROM_RECEIVERS = new Set([
   'Array', 'Uint8Array', 'Uint16Array', 'Uint32Array', 'Int8Array', 'Int16Array',
   'Int32Array', 'Float32Array', 'Float64Array', 'Buffer', 'Object', 'String', 'Number',
 ])
-
-function listTsFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__') continue
-      out.push(...listTsFiles(full))
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
-// Consume a balanced (...) starting at src[open] === '('. Returns index just
-// past the closing paren. Skips string/template contents so their parens don't
-// count.
-function consumeParens(src: string, open: number): number {
-  let depth = 0
-  for (let k = open; k < src.length; k++) {
-    const c = src[k]
-    if (c === "'" || c === '"' || c === '`') {
-      k++
-      while (k < src.length && src[k] !== c) { if (src[k] === '\\') k++; k++ }
-      continue
-    }
-    if (c === '(') depth++
-    else if (c === ')') { depth--; if (depth === 0) return k + 1 }
-  }
-  return src.length
-}
 
 // Walk the .method(...) chain starting at `from` (the index just past .from(...)).
 // Returns the method names and the index where the chain ends.

@@ -13,74 +13,13 @@
  * comment on the same statement.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from './_scan-utils'
 
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WORKER_SRC = path.join(REPO_ROOT, 'apps/worker/src')
 const SCAN_DIRS = ['lib', 'engine', 'routes', 'middleware'].map((d) => path.join(WORKER_SRC, d))
 // The helper module documents the banned pattern in a comment — never scan it.
 const HELPER_FILE = path.join(WORKER_SRC, 'lib/json.ts')
-
-function listTsFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__') continue
-      out.push(...listTsFiles(full))
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
-// Replace line/block comments and string/template contents with spaces so the
-// scanner never trips on a `.json() as X` written inside a comment or string,
-// while preserving offsets (so reported line numbers stay accurate).
-function blankCommentsAndStrings(src: string): string {
-  const out = src.split('')
-  let i = 0
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' '
-  }
-  while (i < src.length) {
-    const c = src[i]
-    if (c === '/' && src[i + 1] === '/') {
-      let j = i + 2
-      while (j < src.length && src[j] !== '\n') j++
-      blank(i, j)
-      i = j
-    } else if (c === '/' && src[i + 1] === '*') {
-      let j = i + 2
-      while (j < src.length && !(src[j] === '*' && src[j + 1] === '/')) j++
-      blank(i, j + 2)
-      i = j + 2
-    } else if (c === "'" || c === '"' || c === '`') {
-      let j = i + 1
-      while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; j++ }
-      blank(i + 1, j)
-      i = j + 1
-    } else {
-      i++
-    }
-  }
-  return out.join('')
-}
-
-// Consume a balanced (...) starting at src[open] === '('. Returns the index just
-// past the matching ')'.
-function consumeParens(src: string, open: number): number {
-  let depth = 0
-  for (let k = open; k < src.length; k++) {
-    if (src[k] === '(') depth++
-    else if (src[k] === ')') { depth--; if (depth === 0) return k + 1 }
-  }
-  return src.length
-}
 
 interface Finding { file: string; line: number }
 
@@ -89,7 +28,7 @@ interface Finding { file: string; line: number }
 // shapes #300 removed: `res.json() as T`, `(await res.json()) as T`,
 // `(await res.json().catch(() => null)) as T`.
 function findJsonCastViolations(rawSrc: string, file: string): Finding[] {
-  const src = blankCommentsAndStrings(rawSrc)
+  const src = sanitizeSource(rawSrc)
   const findings: Finding[] = []
   const needle = '.json()'
   let from = 0

@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { findEmoji } from '../emoji-scan'
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
 
 describe('findEmoji', () => {
   it('flags a unicode emoji glyph', () => {
@@ -58,23 +58,6 @@ describe('findEmoji', () => {
 })
 
 // ── Integration guard: no emoji in alert copy ───────────────────────────────
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-
-function tsxFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      out.push(...tsxFiles(full))
-    } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
 function ymlFiles(root: string): string[] {
   return readdirSync(root)
     .filter((e) => e.endsWith('.yml') || e.endsWith('.yaml'))
@@ -84,7 +67,7 @@ function ymlFiles(root: string): string[] {
 describe('no emoji in alert copy', () => {
   it('UI (.tsx) and Slack message copy use no unicode emoji', () => {
     const files = [
-      ...tsxFiles(path.join(REPO_ROOT, 'apps/web/src')),
+      ...listTsxFiles(WEB_SRC),
       path.join(REPO_ROOT, 'apps/worker/src/lib/slack.ts'),
     ]
     const violations: string[] = []

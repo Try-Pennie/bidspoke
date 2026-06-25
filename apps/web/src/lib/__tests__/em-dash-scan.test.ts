@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { findEmDashes } from '../em-dash-scan'
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
 
 describe('findEmDashes — ignores comments, flags everything else', () => {
   it('ignores an em dash in a line comment', () => {
@@ -56,29 +56,12 @@ describe('findEmDashes — ignores comments, flags everything else', () => {
 })
 
 // ── Integration guard: no em dashes in user-facing copy ─────────────────────
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-
 // User-facing surfaces: rendered web UI (.tsx, minus tests) + the Slack message
 // builders. Code comments are exempt (handled by findEmDashes); test files aren't
 // user-facing so they're skipped.
-function tsxFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__' || entry === 'node_modules') continue
-      out.push(...tsxFiles(full))
-    } else if (entry.endsWith('.tsx') && !entry.endsWith('.test.tsx')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
 function userFacingFiles(): string[] {
   return [
-    ...tsxFiles(path.join(REPO_ROOT, 'apps/web/src')),
+    ...listTsxFiles(WEB_SRC),
     path.join(REPO_ROOT, 'apps/worker/src/lib/slack.ts'),
   ]
 }

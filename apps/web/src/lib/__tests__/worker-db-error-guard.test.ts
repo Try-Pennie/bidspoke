@@ -18,75 +18,13 @@
  * on the same statement.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from './_scan-utils'
 
-const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
-const WORKER_SRC = path.join(REPO_ROOT, 'apps/worker/src')
 const SCAN_DIRS = ['lib', 'engine', 'routes', 'middleware'].map((d) => path.join(WORKER_SRC, d))
 // The one place the PGRST116 code is allowed to appear (it defines the helpers).
 const HELPER_FILE = path.join(WORKER_SRC, 'lib/api-error.ts')
-
-function listTsFiles(root: string): string[] {
-  const out: string[] = []
-  for (const entry of readdirSync(root)) {
-    const full = path.join(root, entry)
-    if (statSync(full).isDirectory()) {
-      if (entry === '__tests__') continue
-      out.push(...listTsFiles(full))
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
-// Replace comments — and optionally string/template contents — with spaces,
-// preserving offsets (so line numbers stay accurate). Strings are always
-// *skipped* so a `//` inside a URL string isn't mistaken for a comment; they're
-// only blanked when blankStrings is set.
-function sanitize(src: string, blankStrings: boolean): string {
-  const out = src.split('')
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== '\n') out[k] = ' '
-  }
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === '/' && src[i + 1] === '/') {
-      let j = i + 2
-      while (j < src.length && src[j] !== '\n') j++
-      blank(i, j)
-      i = j
-    } else if (c === '/' && src[i + 1] === '*') {
-      let j = i + 2
-      while (j < src.length && !(src[j] === '*' && src[j + 1] === '/')) j++
-      blank(i, j + 2)
-      i = j + 2
-    } else if (c === "'" || c === '"' || c === '`') {
-      let j = i + 1
-      while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; j++ }
-      if (blankStrings) blank(i + 1, j)
-      i = j + 1
-    } else {
-      i++
-    }
-  }
-  return out.join('')
-}
-
-// Consume a balanced (...) starting at src[open] === '('. Returns the index just
-// past the matching ')'.
-function consumeParens(src: string, open: number): number {
-  let depth = 0
-  for (let k = open; k < src.length; k++) {
-    if (src[k] === '(') depth++
-    else if (src[k] === ')') { depth--; if (depth === 0) return k + 1 }
-  }
-  return src.length
-}
 
 interface Finding { file: string; line: number }
 
@@ -94,7 +32,7 @@ interface Finding { file: string; line: number }
 // that returns a 404. The fix is to split: dbErrorUnlessNotFound(c, error) for a
 // real error (5xx), then `if (!data) return 404` only for genuine zero-rows.
 function findConflation(rawSrc: string, file: string): Finding[] {
-  const src = sanitize(rawSrc, true)
+  const src = sanitizeSource(rawSrc)
   const findings: Finding[] = []
   const re = /\bif\s*\(/g
   let m: RegExpExecArray | null
@@ -116,7 +54,7 @@ function findConflation(rawSrc: string, file: string): Finding[] {
 // (g2) Flag the PGRST116 code literal in application code (comments stripped,
 // strings preserved) anywhere outside the helper module.
 function findPgrstLiteral(rawSrc: string, file: string): Finding[] {
-  const src = sanitize(rawSrc, false)
+  const src = sanitizeSource(rawSrc, { blankStrings: false })
   const findings: Finding[] = []
   const re = /PGRST116/g
   let m: RegExpExecArray | null
@@ -134,7 +72,7 @@ function findPgrstLiteral(rawSrc: string, file: string): Finding[] {
 interface Decl { line: number; dataVar: string; hasError: boolean; isSingle: boolean }
 
 function findDroppedError(rawSrc: string, file: string): Finding[] {
-  const src = sanitize(rawSrc, true)
+  const src = sanitizeSource(rawSrc)
   const rawLines = rawSrc.split('\n')
   const lines = src.split('\n')
 
