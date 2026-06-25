@@ -36,6 +36,20 @@ The tier-2 in-process `withDbRetry` ladder does **not** survive Worker isolate e
 
 When dead-letter volume proves the loss is real, the durable upgrade goes behind the `writeOutcome` seam — one file. The preferred mechanism is **not a generic outbox**: it is to move `finalizeSighting` out of `waitUntil` into a per-execution Durable Object alarm or the existing 09:00 Snowflake export job (which already reads `lead_sightings`), finalizing from **already-persisted columns**. That sidesteps the `ctx.steps`-reconstruction problem and avoids standing up a new PII-at-rest store. The daily `reduce_finalize_stranded` cron is effectively a coarse, batch-grained prototype of this path.
 
+## Post-response `waitUntil` write audit (#362)
+
+The strand loss above is one instance of a general shape: the engine registers several independent `executionCtx.waitUntil(...)` writes after the early response, any of which the isolate can drop on eviction. #362 enumerated them and classified each so the must-not-lose ones are knowingly protected and the rest are knowingly accepted:
+
+| Write (engine/index.ts) | Tier | Loss on eviction | Protection |
+| --- | --- | --- | --- |
+| Execution record + step-log flush (`updateExecutionRecord`, ~L437) | 2 (drives the drain + observability) | Empirically survives — shortest block, runs first | Backbone of the #353 recovery; the `sighting_finalize` projection rides here |
+| Lead-sighting finalize + bid attempts (~L590) | 2 (money/outcome) | Was the ~5%/day strand | Durable projection (#353 Ph1) + `reduce_finalize_stranded` drain (#360/#366) |
+| Achieve evaluation log (`insertAchieveEvaluations`, ~L644) | **1 (analytical volume)** | A dropped row under-counts trend analysis | **Routed through `writeObservability` (#362).** Loss-tolerant by decision: analytical, nightly-exported-then-purged, not money. Upgradeable to `writeOutcome` behind the same seam if it ever needs at-least-once. |
+| Slack failure alert (~L560/L667) | 1 (alert) | One missed page | Acceptable — the aggregated crons (failure-rate #248, upstream-outage #331) page on spikes regardless |
+| Idempotency cache PUT/clear (~L699/L706) | 1 (cache) | A miss just re-runs the lead | Acceptable by design |
+
+Conclusion: after #353, the only must-not-lose post-response write without recovery was the Achieve log, and it was not yet live (zero `achieve_evaluations` rows in prod). It is classified tier-1 and named at the seam rather than given the full projection+drain, because losing ~5% of analytical volume rows is tolerable noise where losing a money outcome is not. The seam guard's `OUTCOME_TABLES` deliberately does not include `achieve_evaluations` — it is tier-1, so a direct-or-seam write is both allowed.
+
 ## Consequences
 
 - Every per-lead outcome write declares its tier and gets retry + dead-letter; the external-HTTP (SF) tier gets a dead-letter without faking a `withDbRetry` op; observability writes have a named home with unchanged behavior.

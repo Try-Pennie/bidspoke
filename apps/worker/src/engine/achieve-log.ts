@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StepLogEntry } from './step-logger'
+import { writeObservability } from './durability'
 
 export interface AchieveEvaluationInsert {
   trace_id: string
@@ -97,7 +98,15 @@ export async function insertAchieveEvaluations(
   rows: AchieveEvaluationInsert[],
 ): Promise<void> {
   if (rows.length === 0) return
-  const { error } = await supabase.from('achieve_evaluations').insert(rows)
+  // Tier 1 (#362): achieve_evaluations is analytical volume data — loss-tolerant
+  // (best-effort, no retry, no recovery), so the write declares that tier at the
+  // call site through the durability seam. An occasional row lost to isolate
+  // eviction is acceptable noise on trend analysis; if this ever needs
+  // at-least-once it upgrades to writeOutcome behind the same seam.
+  const { error } = await writeObservability('achieve_evaluation', async () => {
+    const res = await supabase.from('achieve_evaluations').insert(rows)
+    return { error: res.error }
+  })
   if (error) {
     console.error('[achieve-log] insert failed:', error.message)
   }

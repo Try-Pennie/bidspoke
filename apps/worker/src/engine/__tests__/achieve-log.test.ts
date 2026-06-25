@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { extractAchieveEvaluations, insertAchieveEvaluations } from '../achieve-log'
+import * as durability from '../durability'
 import type { StepLogEntry } from '../step-logger'
 
 const meta = {
@@ -150,5 +151,27 @@ describe('insertAchieveEvaluations', () => {
     await expect(insertAchieveEvaluations(supabase as never, rows)).resolves.toBeUndefined()
     expect(supabase.from).toHaveBeenCalledWith('achieve_evaluations')
     expect(insert).toHaveBeenCalledWith(rows)
+  })
+
+  // #362: achieve_evaluations is analytical volume data — classified tier-1
+  // (loss-tolerant), so the write declares that tier at the call site via the
+  // durability seam (greppable + CI-visible), even though behavior is unchanged.
+  it('routes the write through the tier-1 observability seam', async () => {
+    const spy = vi.spyOn(durability, 'writeObservability')
+    const insert = vi.fn().mockResolvedValue({ error: null })
+    const supabase = { from: vi.fn(() => ({ insert })) }
+    const rows = extractAchieveEvaluations([makeEntry({ output: achieveOutput })], meta)
+    await insertAchieveEvaluations(supabase as never, rows)
+    expect(spy).toHaveBeenCalledWith('achieve_evaluation', expect.any(Function))
+    expect(insert).toHaveBeenCalledWith(rows)
+    spy.mockRestore()
+  })
+
+  it('does not call the seam when there are no rows', async () => {
+    const spy = vi.spyOn(durability, 'writeObservability')
+    const supabase = { from: vi.fn() }
+    await insertAchieveEvaluations(supabase as never, [])
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })
