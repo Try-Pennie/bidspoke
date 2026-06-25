@@ -5,7 +5,7 @@
  * (block 1) use identical logic.
  */
 import { describe, it, expect } from 'vitest'
-import { computeSightingFinalize } from '../lead-sightings'
+import { computeSightingFinalize, buildSightingFinalizeProjection } from '../lead-sightings'
 import type { StepOutput, NodeDefinition } from '../../types'
 
 function node(id: string, namespace: string, type: string): NodeDefinition {
@@ -78,5 +78,60 @@ describe('computeSightingFinalize (#353)', () => {
       successNamespaces: [],
     })
     expect(out.outcome).toBe('failed')
+  })
+})
+
+/**
+ * #353 Phase 1/2b: the block-1 projection (what gets written onto
+ * workflow_executions.sighting_finalize so the strand drain can recover with
+ * full fidelity) is assembled by one gated helper. The gate must match the live
+ * finalize exactly — project only for capture-on (sightingId set), non-test runs
+ * — and the projection must carry the per-attempt bid rows the strand would
+ * otherwise lose (#366).
+ */
+describe('buildSightingFinalizeProjection (#353)', () => {
+  const steps: Record<string, StepOutput> = {
+    tripoint_ping: {
+      status: 'completed',
+      output: { result: 1000, approved: true, partner: 'tripoint', bid: 30 },
+    },
+    respond: { status: 'completed', output: { ok: true } },
+  }
+  const nodes = [
+    node('n-ping', 'tripoint_ping', 'code'),
+    node('n-resp', 'respond', 'response'),
+  ]
+  const opts = {
+    lastCompletedNamespace: 'respond',
+    walkStatus: 200,
+    executionStatus: 'completed',
+    successNamespaces: ['respond'],
+  }
+
+  it('returns the rich fields plus bid_attempts when capture is on and it is not a test run', () => {
+    const proj = buildSightingFinalizeProjection(steps, nodes, opts, {
+      sightingId: 'sighting-1',
+      isTest: false,
+    })
+    expect(proj).toBeDefined()
+    // Rich fields come straight from computeSightingFinalize (same logic both paths).
+    expect(proj).toMatchObject(computeSightingFinalize(steps, nodes, opts))
+    // Per-attempt bid rows must ride along so the drain can re-INSERT them (#366).
+    expect(Array.isArray(proj!.bid_attempts)).toBe(true)
+  })
+
+  it('returns undefined when there is no sighting (capture off) — never project for non-captured runs', () => {
+    expect(
+      buildSightingFinalizeProjection(steps, nodes, opts, { sightingId: null, isTest: false }),
+    ).toBeUndefined()
+    expect(
+      buildSightingFinalizeProjection(steps, nodes, opts, { sightingId: undefined, isTest: false }),
+    ).toBeUndefined()
+  })
+
+  it('returns undefined for test runs — sandbox runs must not pollute the projection', () => {
+    expect(
+      buildSightingFinalizeProjection(steps, nodes, opts, { sightingId: 'sighting-1', isTest: true }),
+    ).toBeUndefined()
   })
 })

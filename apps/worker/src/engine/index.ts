@@ -30,8 +30,9 @@ import {
   finalizeSighting,
   recordBidAttempt,
   computeSightingFinalize,
+  buildSightingFinalizeProjection,
 } from './lead-sightings'
-import { deriveCodeNodeBidAttempts, bidAttemptsForProjection } from './bid-log'
+import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
 import { resolveContinuationStatus } from './finalize-status'
 import { formatSsn } from './persons-crypto'
@@ -512,24 +513,17 @@ export async function executeWorkflow(
           ? definition.nodes.find((n) => n.namespace === finalNodeNamespace)?.id ?? null
           : null
         // #353 Phase 1: project the rich sighting-finalize fields (winner/bid/
-        // enrichment/reject_reason/outcome) onto the execution record — the write
-        // that empirically survives isolate eviction for strands — so the strand
-        // drain can later recover them with full fidelity instead of a reduced
-        // finalize. Same gate as the live finalize below (capture on, non-test).
-        const sightingFinalize = sightingId && !options.isTest
-          ? {
-              ...computeSightingFinalize(ctx.steps, definition.nodes, {
-                lastCompletedNamespace: finalNodeNamespace,
-                walkStatus,
-                executionStatus,
-                successNamespaces,
-              }),
-              // Per-attempt bid rows the strand would otherwise lose (block 2's
-              // recordBidAttempt dies with the same eviction) — projected so the
-              // drain can re-INSERT them for stranded leads (#366 Phase 2b).
-              bid_attempts: bidAttemptsForProjection(ctx.steps),
-            }
-          : undefined
+        // enrichment/reject_reason/outcome + per-attempt bid rows) onto the
+        // execution record — the write that empirically survives isolate eviction
+        // for strands — so the strand drain can later recover them with full
+        // fidelity instead of a reduced finalize. The gate (capture on, non-test)
+        // mirrors the live finalize below and lives in the shared helper.
+        const sightingFinalize = buildSightingFinalizeProjection(
+          ctx.steps,
+          definition.nodes,
+          { lastCompletedNamespace: finalNodeNamespace, walkStatus, executionStatus, successNamespaces },
+          { sightingId, isTest: options.isTest },
+        )
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,
           outcome,

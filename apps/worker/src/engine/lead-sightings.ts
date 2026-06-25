@@ -7,7 +7,7 @@ import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
 import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
-import { pickBidSummary, deriveCodeNodeBidSummary } from './bid-log'
+import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, type ProjectedBidAttempt } from './bid-log'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -749,5 +749,38 @@ export function computeSightingFinalize(
     partners_responded: bidSummary.responded,
     reject_reason,
     outcome,
+  }
+}
+
+// ============================================================
+// buildSightingFinalizeProjection (#353 Phase 1/2b)
+// ============================================================
+// Assembles the object written onto workflow_executions.sighting_finalize in
+// the engine's block-1 (execution-record) waitUntil — the write that survives
+// isolate eviction. The strand drain reconstructs a stranded lead's outcome
+// from this projection with full fidelity instead of a reduced finalize.
+//
+// The gate MUST mirror the live block-2 finalize: project only for capture-on
+// runs (sightingId set) that are not test runs, so sandbox runs never pollute
+// the projection. Returns undefined when the gate is closed.
+//
+// bid_attempts carries the per-attempt bid rows that block 2's recordBidAttempt
+// would otherwise lose with the same eviction, so the drain can re-INSERT them
+// for stranded leads (#366).
+export function buildSightingFinalizeProjection(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+  opts: {
+    lastCompletedNamespace: string | null
+    walkStatus: number
+    executionStatus: string
+    successNamespaces: string[]
+  },
+  gate: { sightingId: string | null | undefined; isTest: boolean | undefined },
+): (SightingFinalizeFields & { bid_attempts: ProjectedBidAttempt[] }) | undefined {
+  if (!gate.sightingId || gate.isTest) return undefined
+  return {
+    ...computeSightingFinalize(steps, nodes, opts),
+    bid_attempts: bidAttemptsForProjection(steps),
   }
 }
