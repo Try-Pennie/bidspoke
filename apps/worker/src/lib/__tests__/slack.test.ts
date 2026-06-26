@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -360,6 +360,37 @@ describe('sendSecretDriftAlert (#199)', () => {
 
   it('does nothing and reports not-sent when there are no missing secrets', async () => {
     expect(await sendSecretDriftAlert(conn, [], 'https://app.test')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendSecretDecryptAlert (#404)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
+
+  it('posts a Block Kit message naming the undecryptable secrets with a fix path', async () => {
+    const sent = await sendSecretDecryptAlert(conn, ['ELIGIBILITY_SCOUT_CLIENT_SECRET'], 'https://app.test')
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.channel).toBe('#alerts')
+    expect(body.unfurl_links).toBe(false)
+    const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
+      ...(b.fields ?? []).map((f) => f.text), b.text?.text ?? '',
+    ]).join('\n')
+    expect(text).toContain('Secret cannot be decrypted')
+    expect(text).toContain('ELIGIBILITY_SCOUT_CLIENT_SECRET')
+    expect(text).toContain('How to fix:')
+    expect(text).toContain('https://app.test/env')
+  })
+
+  it('does nothing and reports not-sent when there are no keys', async () => {
+    expect(await sendSecretDecryptAlert(conn, [], 'https://app.test')).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

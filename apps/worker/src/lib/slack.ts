@@ -1003,6 +1003,48 @@ export async function sendCronHeartbeatAlert(
   )) !== null
 }
 
+/**
+ * Alert that secret env vars cannot be decrypted (#404). The env-loader silently
+ * skips these, so a node loses the credential with no error until the call fails.
+ * The cause is almost always a stored value encrypted under a previous
+ * SECRET_ENCRYPTION_KEY (or predating encryption), so the fix is to re-enter the
+ * value in the UI to re-encrypt it under the current key. Returns true when delivered.
+ */
+export async function sendSecretDecryptAlert(
+  connection: SlackConnection,
+  keys: string[],
+  appUrl: string,
+): Promise<boolean> {
+  if (keys.length === 0) return false
+  const lines = keys.slice(0, 30).map((k) => `• \`${k}\``)
+  const more = keys.length > 30 ? `\n_and ${keys.length - 30} more_` : ''
+  const isOne = keys.length === 1
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Secret cannot be decrypted', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${keys.length} secret${isOne ? '' : 's'} cannot be decrypted* and ${isOne ? 'is' : 'are'} silently skipped at load, so any node that needs ${isOne ? 'it' : 'them'} runs without the credential (no error until the partner call fails):`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') + more } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*How to fix:* the stored value was encrypted under a previous SECRET_ENCRYPTION_KEY (or predates encryption). Re-enter each secret's value on the Environment Variables page to re-encrypt it under the current key.\n<${appUrl}/env|Open Environment Variables →>`,
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Secret cannot be decrypted: ${keys.join(', ')}`,
+  )) !== null
+}
+
 export async function sendRequiredSecretsAlert(
   supabase: SupabaseClient,
   orgId: string,
