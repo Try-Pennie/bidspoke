@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, getSlackConnection } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -424,6 +424,56 @@ describe('getSlackConnection — distinguishes a DB error from not-configured (#
     expect(conn).toBeNull()
     expect(errSpy).toHaveBeenCalled()
     expect(sb._calls()).toBe(1) // no retry attempts on a permanent error
+  })
+})
+
+describe('sendMatrixSyncFailureAlert (#408)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  function makeSupabase(connection: Record<string, unknown> | null) {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'maybeSingle') return () => Promise.resolve({ data: connection ? { config: connection } : null, error: null })
+        return () => chain
+      },
+    })
+    return { from: () => chain }
+  }
+  const conn = { bot_token: 'xoxb-t', default_channel: '#alerts', config_alerts_enabled: true }
+
+  it('lists failed syncs and preserved matrices with a fix path', async () => {
+    const sent = await sendMatrixSyncFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      failed: [{ config_slug: 'sofi', error: 'Salesforce query failed (503)' }],
+      preserved: [{ config_slug: 'nerdwallet' }],
+    })
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('sofi')
+    expect(text).toContain('503')
+    expect(text).toContain('nerdwallet')
+    expect(text).toContain('How to fix:')
+  })
+
+  it('does nothing when the org opted out of config alerts', async () => {
+    const sent = await sendMatrixSyncFailureAlert(makeSupabase({ ...conn, config_alerts_enabled: false }) as never, 'org-1', null, {
+      failed: [{ config_slug: 'sofi', error: 'x' }],
+      preserved: [],
+    })
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when there are no issues', async () => {
+    const sent = await sendMatrixSyncFailureAlert(makeSupabase(conn) as never, 'org-1', null, { failed: [], preserved: [] })
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

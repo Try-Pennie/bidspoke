@@ -14,6 +14,7 @@ vi.mock('../../engine/nodes/salesforce', () => ({
 vi.mock('../slack', () => ({
   sendMatrixChangeAlert: vi.fn().mockResolvedValue(true),
   sendMatrixValidationAlert: vi.fn().mockResolvedValue(true),
+  sendMatrixSyncFailureAlert: vi.fn().mockResolvedValue(true),
 }))
 
 import { syncBidConfig, syncAllSalesforceConfigs } from '../bid-matrix-sync'

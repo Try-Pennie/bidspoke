@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { computeDiff, validateSyncedRows, shouldSkipStaleDelete } from '../bid-matrix-sync'
+import { computeDiff, validateSyncedRows, shouldSkipStaleDelete, groupMatrixSyncIssues } from '../bid-matrix-sync'
+import type { SyncResult } from '../bid-matrix-sync'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
 
@@ -66,6 +67,39 @@ describe('shouldSkipStaleDelete (#407 — never wipe the matrix on an empty fetc
 
   it('does not skip a first-time populate (rows fetched, none existed)', () => {
     expect(shouldSkipStaleDelete(3, 0)).toBe(false)
+  })
+})
+
+describe('groupMatrixSyncIssues (#408 — alert on sync failures + preserved matrices)', () => {
+  const ok = (over: Partial<SyncResult>): SyncResult => ({
+    config_id: 'c', config_slug: 'sofi', config_name: 'SoFi', organization_id: 'org-1',
+    rows_fetched: 1, rows_upserted: 1, rows_deleted: 0, last_synced_at: 't', diff: null, problems: [],
+    ...over,
+  })
+
+  it('groups failed syncs by org with slug + error', () => {
+    const issues = groupMatrixSyncIssues(
+      [{ config_id: 'c1', organization_id: 'org-1', config_slug: 'sofi', error: 'SF 503' }],
+      [],
+    )
+    expect(issues).toEqual([{ organization_id: 'org-1', failed: [{ config_slug: 'sofi', error: 'SF 503' }], preserved: [] }])
+  })
+
+  it('includes successes that preserved the matrix (skipped_empty_delete)', () => {
+    const issues = groupMatrixSyncIssues([], [ok({ config_slug: 'nerdwallet', skipped_empty_delete: true })])
+    expect(issues).toEqual([{ organization_id: 'org-1', failed: [], preserved: [{ config_slug: 'nerdwallet' }] }])
+  })
+
+  it('returns nothing for a clean run (no failures, no preserved)', () => {
+    expect(groupMatrixSyncIssues([], [ok({}), ok({ skipped_empty_delete: false })])).toEqual([])
+  })
+
+  it('separates issues across orgs', () => {
+    const issues = groupMatrixSyncIssues(
+      [{ config_id: 'c1', organization_id: 'org-1', config_slug: 'sofi', error: 'x' }],
+      [ok({ organization_id: 'org-2', config_slug: 'tlg', skipped_empty_delete: true })],
+    )
+    expect(issues.map((i) => i.organization_id).sort()).toEqual(['org-1', 'org-2'])
   })
 })
 

@@ -16,7 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { parseJson } from './json'
-import { sendMatrixChangeAlert, sendMatrixValidationAlert } from './slack'
+import { sendMatrixChangeAlert, sendMatrixValidationAlert, sendMatrixSyncFailureAlert } from './slack'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary, MatrixConfigProblems } from './slack'
 import { fetchAllPaged } from './paginate'
 import { validateMatrix } from './bid-matrix-validate'
@@ -477,37 +477,96 @@ export async function notifyMatrixProblems(
   }
 }
 
+export interface MatrixSyncFailure {
+  config_id: string
+  organization_id: string
+  config_slug: string
+  error: string
+}
+
+export interface MatrixSyncIssue {
+  organization_id: string
+  failed: { config_slug: string; error: string }[]
+  preserved: { config_slug: string }[]
+}
+
+/**
+ * Group sync failures and preserved-matrix results by org for alerting (#408): a
+ * failed sync means the matrix is going stale; a preserved matrix (skipped_empty_delete)
+ * means Salesforce returned empty and the last-known matrix was kept (#407). Both
+ * are surfaced so a partner that quietly stops syncing doesn't go unnoticed.
+ */
+export function groupMatrixSyncIssues(
+  failures: MatrixSyncFailure[],
+  successes: SyncResult[],
+): MatrixSyncIssue[] {
+  const byOrg = new Map<string, MatrixSyncIssue>()
+  const get = (org: string): MatrixSyncIssue => {
+    let entry = byOrg.get(org)
+    if (!entry) {
+      entry = { organization_id: org, failed: [], preserved: [] }
+      byOrg.set(org, entry)
+    }
+    return entry
+  }
+  for (const f of failures) get(f.organization_id).failed.push({ config_slug: f.config_slug, error: f.error })
+  for (const r of successes) {
+    if (r.skipped_empty_delete) get(r.organization_id).preserved.push({ config_slug: r.config_slug })
+  }
+  return [...byOrg.values()]
+}
+
+async function notifyMatrixSyncFailures(
+  supabase: SupabaseClient,
+  failures: MatrixSyncFailure[],
+  successes: SyncResult[],
+): Promise<void> {
+  for (const issue of groupMatrixSyncIssues(failures, successes)) {
+    try {
+      await sendMatrixSyncFailureAlert(supabase, issue.organization_id, null, issue)
+    } catch (err) {
+      console.error(`[bid-matrix-sync] sync-failure alert failed for org ${issue.organization_id}:`, err)
+    }
+  }
+}
+
 /**
  * Cron entry point — sync every active partner_bid_config with sync_source='salesforce'.
  * Errors on one config don't stop the others; they're recorded on the config's
- * last_sync_error column.
+ * last_sync_error column and aggregated into a per-org Slack alert (#408).
  */
 export async function syncAllSalesforceConfigs(
   env: Env,
   supabase: SupabaseClient
-): Promise<{ successes: SyncResult[]; failures: { config_id: string; error: string }[] }> {
+): Promise<{ successes: SyncResult[]; failures: MatrixSyncFailure[] }> {
   const { data: configs, error } = await supabase
     .from('partner_bid_configs')
-    .select('id')
+    .select('id, organization_id, slug')
     .eq('sync_source', 'salesforce')
     .eq('is_active', true)
 
   if (error) throw new Error(`failed to list configs: ${error.message}`)
 
   const successes: SyncResult[] = []
-  const failures: { config_id: string; error: string }[] = []
+  const failures: MatrixSyncFailure[] = []
 
-  for (const c of (configs ?? []) as { id: string }[]) {
+  for (const c of (configs ?? []) as { id: string; organization_id: string; slug: string }[]) {
     try {
       const result = await syncBidConfig(c.id, env, supabase)
       successes.push(result)
     } catch (err) {
-      failures.push({ config_id: c.id, error: err instanceof Error ? err.message : String(err) })
+      failures.push({
+        config_id: c.id,
+        organization_id: c.organization_id,
+        config_slug: c.slug,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
   await notifyMatrixChanges(supabase, successes)
   await notifyMatrixProblems(supabase, successes)
+  await notifyMatrixSyncFailures(supabase, failures, successes)
 
   return { successes, failures }
 }

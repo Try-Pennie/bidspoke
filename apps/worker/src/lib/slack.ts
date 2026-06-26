@@ -75,13 +75,13 @@ export async function getSlackConnection(
     // Schema drift / bad query can't be retried — fail fast, but LOG so the
     // dropped alert isn't mistaken for a not-configured org.
     if (isPermanentDbError(dbErr)) {
-      console.error(`[slack] getSlackConnection permanent error for org ${orgId}: ${dbErr.message} — alert dropped`)
+      console.error(`[slack] getSlackConnection permanent error for org ${orgId}: ${dbErr.message}; alert dropped`)
       return null
     }
     if (attempt === delaysMs.length) {
       // Transient error survived every retry: the alert that needs this connection
       // will be dropped. Make it visible instead of returning a silent "no Slack".
-      console.error(`[slack] getSlackConnection failed for org ${orgId} after ${delaysMs.length} retries: ${dbErr.message} — alert dropped`)
+      console.error(`[slack] getSlackConnection failed for org ${orgId} after ${delaysMs.length} retries: ${dbErr.message}; alert dropped`)
       return null
     }
   }
@@ -1031,6 +1031,59 @@ export async function sendCronHeartbeatAlert(
     blocks,
     `Daily health-check batch is dark (${status})`,
   )) !== null
+}
+
+/**
+ * Alert that the hourly bid-matrix sync had problems (#408): one or more partner
+ * configs failed to sync (Salesforce down / token expired, so the matrix is going
+ * stale) and/or returned empty so the last-known matrix was preserved instead of
+ * applied (#407). Aggregated per org; uses the config-alerts toggle. Returns true
+ * when delivered. A manual "Sync now" intentionally does not call this.
+ */
+export async function sendMatrixSyncFailureAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  issue: { failed: { config_slug: string; error: string }[]; preserved: { config_slug: string }[] },
+): Promise<boolean> {
+  if (issue.failed.length === 0 && issue.preserved.length === 0) return false
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Bid matrix sync needs attention', emoji: false } },
+  ]
+  if (issue.failed.length > 0) {
+    const lines = issue.failed.slice(0, 20).map((f) => `• \`${f.config_slug}\`: ${f.error}`).join('\n')
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${issue.failed.length} partner matrix sync${issue.failed.length === 1 ? '' : 's'} failed.* The matrix is serving the last good data and will go stale until the next good sync:\n${lines}`,
+      },
+    })
+  }
+  if (issue.preserved.length > 0) {
+    const lines = issue.preserved.slice(0, 20).map((p) => `• \`${p.config_slug}\``).join('\n')
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${issue.preserved.length} matrix${issue.preserved.length === 1 ? '' : 'es'} preserved.* Salesforce returned no rows, so the last-known matrix was kept rather than wiped. Confirm whether the partner's ranges were intentionally cleared:\n${lines}`,
+      },
+    })
+  }
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: '*How to fix:* check Salesforce availability and that the partner flag filter (`Is{Partner}__c`) still matches rows. Bidding keeps running on the last good matrix meanwhile.',
+    },
+  })
+
+  const channel = channelOverride || connection.default_channel
+  const summary = `Bid matrix sync: ${issue.failed.length} failed, ${issue.preserved.length} preserved`
+  return (await postMessage(connection.bot_token, channel, blocks, summary)) !== null
 }
 
 /**
