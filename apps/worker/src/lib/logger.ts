@@ -20,6 +20,7 @@ export type LogEvent =
   | 'circuit_open'
   | 'cap_check'
   | 'dedup_check_failed'
+  | 'cap_check_failed'
   | 'circuit_breaker_record_failed'
   | 'idempotency_hit'
 

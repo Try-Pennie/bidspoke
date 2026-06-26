@@ -67,7 +67,7 @@ interface PartnerConfig {
   is_active: boolean
 }
 
-type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'duplicate' | 'bid_below_min' | 'rejected' | 'shadow'
+type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'cap_check_error' | 'duplicate' | 'bid_below_min' | 'rejected' | 'shadow'
 
 export interface PartnerBidOutput {
   partner: string         // slug
@@ -323,6 +323,16 @@ export async function executePartnerBidNode(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cap: p.daily_cap }),
     })
+    if (!capRes.ok) {
+      // The cap DO errored. A non-200 with a parseable body would make capResult.allowed
+      // undefined and silently bench the partner as 'cap_exceeded' — a real cap hit it
+      // never was (#413). Fail safe (skip, so we never over-spend a cap we couldn't read)
+      // but with a distinct reason + log so it doesn't masquerade as a normal cap.
+      log({ event: 'cap_check_failed', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, http_status: capRes.status })
+      if (cb && probeClaimed) await cb.releaseProbe().catch(() => {})
+      logBid({ partner_slug: p.slug, attempted_at_utc: attemptedAt, skip_reason: 'cap_check_error' })
+      return { ...skip(p.slug, 'cap_check_error'), resolvedInput: buildInput({ skip_reason: 'cap_check_error', http_status: capRes.status }) }
+    }
     const capResult = await capRes.json<CapCheckResult>()
     capCount = capResult.count
     log({ event: 'cap_check', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, partner_id: p.slug, allowed: capResult.allowed, count: capCount, cap: p.daily_cap })

@@ -284,6 +284,30 @@ describe('executePartnerBidNode', () => {
       expect(output.skip_reason).toBe('cap_exceeded')
     })
 
+    it('skips with cap_check_error (not cap_exceeded) when the cap DO returns a non-ok response (#413)', async () => {
+      const capDoStub = {
+        fetch: vi.fn().mockResolvedValue({ ok: false, status: 500, json: async () => ({ error: 'boom' }) }),
+      }
+      const env = makeEnv({
+        DAILY_CAP: {
+          idFromName: vi.fn().mockReturnValue('do-id'),
+          get: vi.fn().mockReturnValue(capDoStub),
+        },
+      })
+
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 1000 }),
+        env,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        makeSupabase(makePartner({ daily_cap: 100 })) as any
+      )
+      const output = result.output as PartnerBidOutput
+      expect(output.skipped).toBe(true)
+      // A DO error must NOT masquerade as a normal cap hit.
+      expect(output.skip_reason).toBe('cap_check_error')
+    })
+
     it('does not check cap when daily_cap is null (unlimited)', async () => {
       const env = makeEnv()
       const { DAILY_CAP } = env as unknown as { DAILY_CAP: { get: ReturnType<typeof vi.fn> } }
