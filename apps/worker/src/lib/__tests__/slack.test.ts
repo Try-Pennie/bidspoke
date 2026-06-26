@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -511,5 +511,51 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     // No literal emoji characters in the payload.
     expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
     expect(body.channel).toBe('#alerts')
+  })
+})
+
+describe('sendRequiredSecretsAlert', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('does nothing when Slack is not configured', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendRequiredSecretsAlert(makeSupabase(null) as any, 'org-1', ['SSN_HASH_PEPPER'])
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not alert when config alerts are disabled', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = { ...slackConnection, config_alerts_enabled: false } as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendRequiredSecretsAlert(makeSupabase(conn) as any, 'org-1', ['SSN_HASH_PEPPER'])
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('posts an actionable alert naming each missing secret and its fix command', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendRequiredSecretsAlert(makeSupabase(slackConnection) as any, 'org-1', ['SSN_HASH_PEPPER', 'SNOWFLAKE_USER'])
+    expect(sent).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('SSN_HASH_PEPPER')
+    expect(text).toContain('SNOWFLAKE_USER')
+    expect(text).toContain('How to fix:')
+    expect(text).toContain('wrangler secret put SSN_HASH_PEPPER --name bidspoke-worker')
+    // fallback text names the secrets so a collapsed notification is still useful
+    expect(body.text).toContain('SSN_HASH_PEPPER')
+    // no em dash / smart quotes / emoji in alert copy (project copy rules)
+    expect(text).not.toContain('—')
+    expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
   })
 })

@@ -965,6 +965,40 @@ export async function sendBigTableGrowthAlert(
   )) !== null
 }
 
+export async function sendRequiredSecretsAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  missingKeys: string[],
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const list = missingKeys.map((k) => `• \`${k}\``).join('\n')
+  const fixCmds = missingKeys.map((k) => `wrangler secret put ${k} --name bidspoke-worker`).join('\n')
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Required worker secret missing in production', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `These secrets the worker requires are unset or empty, so the code paths that use them will fail on live traffic:\n${list}`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*How to fix:* set each from its source in a real terminal (a non-interactive shell uploads a blank value), then redeploy:\n\`\`\`\n${fixCmds}\n\`\`\`\nSources for each secret are in docs/disaster-recovery.md (Secret inventory).`,
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Required worker secret missing: ${missingKeys.join(', ')}`,
+  )) !== null
+}
+
 function linkSuffix(url: string | undefined): string {
   return url ? ` · <${url}|view in SF>` : ''
 }

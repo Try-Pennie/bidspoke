@@ -10,6 +10,7 @@ import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
+import { runRequiredSecretsCheck } from './lib/required-secrets'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runFailureRateCheck } from './lib/failure-rate'
@@ -181,6 +182,11 @@ export default {
         runSecretDriftCheck(supabase, env)
           .then((r) => console.log(`[secret-drift] checked=${r.checked} missing=${r.missing} alerted=${r.alerted}`))
           .catch((e) => console.error('[secret-drift] check failed:', e))
+      )
+      ctx.waitUntil(
+        runRequiredSecretsCheck(supabase, env)
+          .then((r) => { if (r.missing.length) console.error(`[required-secrets] MISSING=${r.missing.join(',')} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[required-secrets] check failed:', e))
       )
       ctx.waitUntil(
         runBigTableGuard(supabase, env.IDEMPOTENCY)
