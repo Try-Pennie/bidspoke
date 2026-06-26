@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -557,5 +557,71 @@ describe('sendRequiredSecretsAlert', () => {
     // no em dash / smart quotes / emoji in alert copy (project copy rules)
     expect(text).not.toContain('—')
     expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
+  })
+})
+
+describe('sendRequiredEnvVarsAlert (#394)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('does nothing when Slack is not configured', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendRequiredEnvVarsAlert(makeSupabase(null) as any, 'org-1', ['SALESFORCE_CLIENT_ID'])
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not alert when config alerts are disabled', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const conn = { ...slackConnection, config_alerts_enabled: false } as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sent = await sendRequiredEnvVarsAlert(makeSupabase(conn) as any, 'org-1', ['SALESFORCE_CLIENT_ID'])
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('posts an actionable alert naming each missing key with a link to the env page', async () => {
+    const sent = await sendRequiredEnvVarsAlert(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      makeSupabase(slackConnection) as any,
+      'org-1',
+      ['SALESFORCE_INSTANCE_URL', 'EQUIFAX_USERNAME'],
+      'https://app.test',
+    )
+    expect(sent).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('SALESFORCE_INSTANCE_URL')
+    expect(text).toContain('EQUIFAX_USERNAME')
+    expect(text).toContain('How to fix:')
+    // link points at the Bidspoke Environment Variables page, not wrangler
+    expect(text).toContain('https://app.test/env')
+    expect(text).not.toContain('wrangler')
+    // fallback text names the keys so a collapsed notification is still useful
+    expect(body.text).toContain('SALESFORCE_INSTANCE_URL')
+    // no em dash / smart quotes / emoji in alert copy (project copy rules)
+    expect(text).not.toContain('—')
+    expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
+  })
+
+  it('omits the link cleanly when no app URL is supplied', async () => {
+    const sent = await sendRequiredEnvVarsAlert(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      makeSupabase(slackConnection) as any,
+      'org-1',
+      ['SALESFORCE_CLIENT_ID'],
+    )
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).not.toContain('/env')
   })
 })
