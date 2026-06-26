@@ -199,6 +199,24 @@ async function callBidApi(
     const secretValue = (env as unknown as Record<string, string | undefined>)[partner.cf_secret_key]
     if (secretValue) {
       headers['Authorization'] = `Bearer ${secretValue}`
+    } else {
+      // The partner is configured to require a credential but it resolved empty
+      // (the secret is unset or blank). Previously we silently dropped the auth
+      // header and sent an unauthenticated request, which just 401s and surfaces as
+      // a generic transient with no hint that the real cause is a missing credential
+      // (#411). Fail loudly instead: a distinct, permanent (retry can't help) error
+      // that names the missing key, and skip the doomed call.
+      const credErr = new PartnerApiError(
+        `Partner ${partner.slug} requires credential '${partner.cf_secret_key}' but it is missing or blank`,
+        'permanent',
+        false,
+      ) as PartnerApiError & { resolved_input?: Record<string, unknown> }
+      credErr.resolved_input = {
+        endpoint: partner.api_endpoint,
+        method: 'POST',
+        missing_credential: partner.cf_secret_key,
+      }
+      throw credErr
     }
   }
 

@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { resolveBid, evaluateFormula, BidResolverConfigError } from '../bid-resolver'
+import { PartnerApiError } from '../partner-bid-error'
 import type { PartnerForResolver } from '../bid-resolver'
 import type { ExecutionContext } from '../../types'
 import type { Env } from '../../index'
@@ -90,6 +91,36 @@ describe('resolveBid — dispatch by bid_resolver_type', () => {
     const [url, init] = fetchSpy.mock.calls[0]
     expect(url).toBe('https://partner.example/bid')
     expect((init as RequestInit).method).toBe('POST')
+  })
+
+  it('api resolver: throws a distinct permanent credential error and skips the call when cf_secret_key is set but blank (#411)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://partner.example/bid',
+      cf_secret_key: 'PARTNER_SECRET', // declared, but `env` has no such value
+    })
+    const err = await resolveBid(partner, makeCtx({ debt: 5000 }), env).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PartnerApiError)
+    expect((err as PartnerApiError).errorType).toBe('permanent')
+    expect((err as Error).message).toContain('PARTNER_SECRET')
+    // Never send an unauthenticated request that would just 401.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('api resolver: sends the Authorization header when cf_secret_key resolves to a value', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ bid: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    )
+    const partner = makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://partner.example/bid',
+      cf_secret_key: 'PARTNER_SECRET',
+    })
+    const envWithSecret = { PARTNER_SECRET: 'sk-live-123' } as unknown as Env
+    await resolveBid(partner, makeCtx({ debt: 5000 }), envWithSecret)
+    const [, init] = fetchSpy.mock.calls[0]
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer sk-live-123' })
   })
 
   it('matrix resolver: requires a Supabase client', async () => {
