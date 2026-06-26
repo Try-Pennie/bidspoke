@@ -98,6 +98,27 @@ To close this gap:
 3. Grant the restore operators / on-call access to that vault and note its location here.
 4. Re-confirm on each quarterly restore drill that the escrowed copy is current (new secrets get added over time).
 
+## Database CLI role hardening (#397)
+
+The ephemeral `cli_login_postgres` role (used by `supabase` CLI `db push` / `db dump`) ships with **no** `statement_timeout` or `idle_in_transaction_session_timeout`, unlike the app roles (`authenticator` / `authenticated` self-abort at 8s). A careless interactive query or a runaway migration step run as the CLI role can therefore hold a long connection and starve prod (a contributing factor on 2026-06-26). To cap that, set conservative role-level limits **in the Supabase dashboard SQL editor** (the read-only MCP and the dashboard `postgres` role may both lack permission to alter this role — if these error, raise a Supabase support request, as it needs `supabase_admin`):
+
+```sql
+alter role cli_login_postgres set statement_timeout = '5min';
+alter role cli_login_postgres set idle_in_transaction_session_timeout = '60s';
+```
+
+Verify (settings apply to the role's **next** login, not existing sessions):
+
+```sql
+select rolname, rolconfig from pg_roles where rolname = 'cli_login_postgres';
+```
+
+**Important caveat — this does NOT cap the dump that caused the 2026-06-26 outage.** `supabase db push` runs a `pg_dump` of prod first, and `pg_dump` issues `SET statement_timeout = 0` (plus `lock_timeout`, `idle_in_transaction_session_timeout`, `transaction_timeout` = 0) at the start of its own session, overriding any role default. So these limits guard *interactive* and *migration-apply* queries, but not the `pg_dump` COPY. The real mitigation for the dump path is the process rule (#392): don't `db push` from a laptop; apply small additive migrations via the dashboard SQL editor. These role limits are defense-in-depth, not a replacement.
+
+**Escape hatch for a deliberate long migration:** `statement_timeout` is a per-session setting any role can raise, so a genuinely long, intentional migration can run `set statement_timeout = 0;` (or a higher value) at the top of that session to opt out. Run such migrations deliberately and off-peak.
+
+**After a full Supabase project restore (Scenario A):** role-level GUCs on platform-managed roles are not guaranteed to survive a restore — re-apply the two `alter role` statements above and re-run the verify query.
+
 ## Escalation
 
 **[OWNER-TODO]** Fill in the on-call / escalation order with names and contact methods, plus the account owners for: Cloudflare (account admin/billing), Supabase (project owner/billing), Salesforce admin, and each partner integration contact (Equifax, Tripoint/Brian, M1, Snowflake, Achieve).
