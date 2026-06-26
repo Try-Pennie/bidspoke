@@ -228,6 +228,8 @@ export async function updateExecutionRecord(
     response_body?: unknown
     response_status?: number
     error_message?: string
+    /** Node type of the failed step, for upstream-outage attribution (#332). */
+    failed_step_type?: string | null
     cost_usd?: number
     // #353: durable projection of the rich sighting-finalize fields, recovered by
     // the strand drain when the live finalize is lost to isolate eviction.

@@ -537,6 +537,11 @@ export async function executeWorkflow(
           // which has no walk context to recompute it from.
           response_status: executionStatus === 'completed' ? walkStatus : 500,
           error_message: finalErrorMessage,
+          // Node type of the failed step, so the upstream-outage aggregation can
+          // attribute a generic timeout/abort to the right service (#332).
+          failed_step_type: failedStep
+            ? definition.nodes.find((n) => n.namespace === failedStep)?.type ?? null
+            : null,
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
         })

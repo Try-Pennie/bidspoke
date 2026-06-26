@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../slack', () => ({ sendUpstreamOutageAlert: vi.fn().mockResolvedValue('ts-1') }))
 import {
   classifyOutageCause,
+  attributeOutageCause,
   detectOutageSpike,
   groupOutages,
   runUpstreamOutageCheck,
@@ -57,10 +58,16 @@ describe('detectOutageSpike (#331)', () => {
 describe('groupOutages (#331)', () => {
   const t0 = Date.UTC(2026, 5, 23, 12, 0, 0)
   const names = new Map([['wf-1', 'Engine Bidding'], ['wf-2', 'Main Flow']])
-  const row = (workflow_id: string, error_message: string | null, minsAfterStart: number) => ({
+  const row = (
+    workflow_id: string,
+    error_message: string | null,
+    minsAfterStart: number,
+    failed_step_type: string | null = null,
+  ) => ({
     workflow_id,
     error_message,
     completed_at: new Date(t0 + minsAfterStart * 60_000).toISOString(),
+    failed_step_type,
   })
 
   it('aggregates matching failures across workflows by cause, inside the window', () => {
@@ -81,6 +88,36 @@ describe('groupOutages (#331)', () => {
 
   it('returns no groups when nothing matches', () => {
     expect(groupOutages([row('wf-1', 'unrelated business error', 1)], names, t0)).toEqual([])
+  })
+
+  it('attributes a generic timeout on a Salesforce step to the Salesforce cause (#332)', () => {
+    const rows = [
+      row('wf-1', 'Salesforce API error (520)', 1),              // named SF match
+      row('wf-2', 'The operation was aborted', 2, 'salesforce'), // timeout on an SF step -> SF
+      row('wf-1', 'Step timed out after 8000ms (canceled via abort signal)', 3, 'code'), // timeout on code step -> stays timeout
+    ]
+    const groups = groupOutages(rows, names, t0)
+    expect(groups.find((g) => g.cause.key === 'salesforce')?.count).toBe(2)
+    expect(groups.find((g) => g.cause.key === 'timeout')?.count).toBe(1)
+  })
+})
+
+describe('attributeOutageCause (#332)', () => {
+  it('re-attributes a generic timeout to the failed step’s upstream service', () => {
+    expect(attributeOutageCause('The operation was aborted', 'salesforce')?.key).toBe('salesforce')
+  })
+
+  it('leaves a named-upstream error-message match alone (the message wins)', () => {
+    expect(attributeOutageCause('Salesforce API error (520)', 'code')?.key).toBe('salesforce')
+  })
+
+  it('keeps the generic timeout bucket when the failed step maps to no named upstream', () => {
+    expect(attributeOutageCause('The operation was aborted', 'code')?.key).toBe('timeout')
+    expect(attributeOutageCause('The operation was aborted', null)?.key).toBe('timeout')
+  })
+
+  it('returns null for a non-outage error regardless of step type', () => {
+    expect(attributeOutageCause('expected rejection — exiting workflow', 'salesforce')).toBeNull()
   })
 })
 

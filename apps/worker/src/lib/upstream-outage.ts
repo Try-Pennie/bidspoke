@@ -81,6 +81,18 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
   },
 ]
 
+/**
+ * Failed-step node type -> named upstream cause key (#332). Used to re-attribute
+ * a generic timeout/abort failure to the service that was actually slow, so a
+ * Salesforce slowdown produces one "Salesforce" page instead of also a vaguer
+ * "Upstream timeout" page. Only first-class service node types map cleanly;
+ * code-node upstreams (Equifax, Tripoint-via-code) have node type 'code' and
+ * stay in the generic timeout bucket.
+ */
+export const NODE_TYPE_TO_CAUSE = new Map<string, string>([
+  ['salesforce', 'salesforce'],
+])
+
 /** The first cause whose any matcher appears (case-insensitively) in the error,
  *  or null when the error is not a recognized shared-upstream outage. */
 export function classifyOutageCause(
@@ -93,6 +105,24 @@ export function classifyOutageCause(
     if (cause.matchers.some((m) => lower.includes(m))) return cause
   }
   return null
+}
+
+/**
+ * Like classifyOutageCause, but re-attributes a GENERIC timeout/abort failure to
+ * the named upstream of the failed step when one is known (#332). A named
+ * error-message match (Salesforce governor, Tripoint 5xx) already identifies the
+ * upstream and is left untouched; only the generic 'timeout' bucket is redirected.
+ */
+export function attributeOutageCause(
+  errorMessage: string | null | undefined,
+  failedStepType: string | null | undefined,
+  causes: OutageCause[] = UPSTREAM_OUTAGE_CAUSES,
+): OutageCause | null {
+  const cause = classifyOutageCause(errorMessage, causes)
+  if (!cause || cause.key !== 'timeout' || !failedStepType) return cause
+  const mappedKey = NODE_TYPE_TO_CAUSE.get(failedStepType)
+  if (!mappedKey) return cause
+  return causes.find((c) => c.key === mappedKey) ?? cause
 }
 
 /** Whether a windowed count should fire the aggregated alert. */
@@ -113,6 +143,8 @@ interface FailedRow {
   workflow_id: string
   error_message: string | null
   completed_at: string | null
+  /** Node type of the step that failed, used to attribute generic timeouts (#332). */
+  failed_step_type?: string | null
 }
 
 interface KvLike {
@@ -140,7 +172,7 @@ export function groupOutages(
   const byCause = new Map<string, { cause: OutageCause; count: number; workflows: Set<string> }>()
   for (const r of rows) {
     if (!r.completed_at || new Date(r.completed_at).getTime() < windowStartMs) continue
-    const cause = classifyOutageCause(r.error_message, causes)
+    const cause = attributeOutageCause(r.error_message, r.failed_step_type, causes)
     if (!cause) continue
     let g = byCause.get(cause.key)
     if (!g) {
@@ -195,7 +227,7 @@ export async function runUpstreamOutageCheck(
   const failed = await fetchAllPaged<FailedRow>(
     (from, to) => supabase
       .from('workflow_executions')
-      .select('workflow_id, error_message, completed_at')
+      .select('workflow_id, error_message, completed_at, failed_step_type')
       .in('workflow_id', workflowIds)
       .gte('started_at', lookbackStart)
       .gte('completed_at', windowStart)

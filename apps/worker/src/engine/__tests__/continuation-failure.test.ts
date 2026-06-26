@@ -137,6 +137,8 @@ describe('post-response step failure', () => {
     expect(lastUpdate.outcome).not.toBe('failed')
     expect(String(lastUpdate.error_message)).toContain('Salesforce patch failed')
     expect(lastUpdate.response_status).toBe(200)
+    // The failed step's node type is recorded for upstream-outage attribution (#332).
+    expect(lastUpdate.failed_step_type).toBe('salesforce')
 
     // No per-run failure alert — the writeback failure dead-letters separately.
     expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
