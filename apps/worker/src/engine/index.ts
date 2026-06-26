@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from '../lib/coerce'
+import { resolveFailedStepType } from '../lib/upstream-outage'
 import { parseJson } from '../lib/json'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult, clearIdempotency } from './idempotency'
@@ -539,9 +540,7 @@ export async function executeWorkflow(
           error_message: finalErrorMessage,
           // Node type of the failed step, so the upstream-outage aggregation can
           // attribute a generic timeout/abort to the right service (#332).
-          failed_step_type: failedStep
-            ? definition.nodes.find((n) => n.namespace === failedStep)?.type ?? null
-            : null,
+          failed_step_type: resolveFailedStepType(definition.nodes, failedStep),
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
         })
