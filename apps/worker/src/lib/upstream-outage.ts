@@ -70,6 +70,17 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     matchers: ['tripoint proxy 5'],
   },
   {
+    // Missing credentials/config hits every lead at once (a forgotten secret, or
+    // the env-var loader returning blank during a DB blip — #391/#393), so it
+    // belongs with the shared-outage signatures: suppress the per-lead flood and
+    // fire one aggregated page. The 'env vars' token is unique to these node
+    // cred/config errors ("... requires ... env vars", "Missing ... env vars")
+    // and never appears in per-lead business/validation errors.
+    key: 'missing_config',
+    label: 'Missing credentials/config',
+    matchers: ['env vars'],
+  },
+  {
     key: 'timeout',
     label: 'Upstream timeout',
     matchers: [
@@ -123,6 +134,17 @@ export function attributeOutageCause(
   const mappedKey = NODE_TYPE_TO_CAUSE.get(failedStepType)
   if (!mappedKey) return cause
   return causes.find((c) => c.key === mappedKey) ?? cause
+}
+
+/** Resolve the failed step's node type from the workflow definition, for the
+ *  `failed_step_type` written at finalize (#332). Null when no step failed or the
+ *  namespace isn't in the definition. */
+export function resolveFailedStepType(
+  nodes: { namespace: string; type: string }[],
+  failedNamespace: string | null | undefined,
+): string | null {
+  if (!failedNamespace) return null
+  return nodes.find((n) => n.namespace === failedNamespace)?.type ?? null
 }
 
 /** Whether a windowed count should fire the aggregated alert. */

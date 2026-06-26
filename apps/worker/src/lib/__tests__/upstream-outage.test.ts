@@ -3,6 +3,7 @@ vi.mock('../slack', () => ({ sendUpstreamOutageAlert: vi.fn().mockResolvedValue(
 import {
   classifyOutageCause,
   attributeOutageCause,
+  resolveFailedStepType,
   detectOutageSpike,
   groupOutages,
   runUpstreamOutageCheck,
@@ -33,6 +34,11 @@ describe('classifyOutageCause (#331)', () => {
     expect(classifyOutageCause('Code returned error response: HTTP 500 — {"lead_id":"x","status":"error","reason":"eq"}')).toBeNull()
     expect(classifyOutageCause('Salesforce API error (400): VALIDATION/DUPLICATE_VALUE')).toBeNull()
     expect(classifyOutageCause('expected rejection — exiting workflow')).toBeNull()
+  })
+
+  it('classifies a missing credential/config failure as the missing_config cause (#393)', () => {
+    expect(classifyOutageCause('Salesforce node requires SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, and SALESFORCE_CLIENT_SECRET env vars')?.key).toBe('missing_config')
+    expect(classifyOutageCause('Missing ACHIEVE_USERNAME/ACHIEVE_PASSWORD env vars')?.key).toBe('missing_config')
   })
 
   it('is null for empty/missing messages', () => {
@@ -118,6 +124,23 @@ describe('attributeOutageCause (#332)', () => {
 
   it('returns null for a non-outage error regardless of step type', () => {
     expect(attributeOutageCause('expected rejection — exiting workflow', 'salesforce')).toBeNull()
+  })
+})
+
+describe('resolveFailedStepType (#332)', () => {
+  const nodes = [
+    { namespace: 'create_prospect', type: 'salesforce' },
+    { namespace: 'eq_pull', type: 'code' },
+  ]
+  it('returns the failed step’s node type from the definition', () => {
+    expect(resolveFailedStepType(nodes, 'create_prospect')).toBe('salesforce')
+  })
+  it('returns null when there is no failed step', () => {
+    expect(resolveFailedStepType(nodes, null)).toBeNull()
+    expect(resolveFailedStepType(nodes, undefined)).toBeNull()
+  })
+  it('returns null when the failed namespace is not in the definition', () => {
+    expect(resolveFailedStepType(nodes, 'ghost')).toBeNull()
   })
 })
 
