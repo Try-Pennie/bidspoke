@@ -11,6 +11,7 @@ import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runRequiredSecretsCheck } from './lib/required-secrets'
+import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runFailureRateCheck } from './lib/failure-rate'
@@ -170,6 +171,11 @@ export default {
           .catch((e) => console.error('[achieve-export] failed:', e))
       )
     } else if (event.cron === '0 13 * * *') {
+      // Dead-man's-switch heartbeat: stamp that this batch dispatched (#358).
+      ctx.waitUntil(
+        writeDailyHeartbeat(env.IDEMPOTENCY)
+          .catch((e) => console.error('[cron-heartbeat] write failed:', e))
+      )
       ctx.waitUntil(
         runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
@@ -229,6 +235,11 @@ export default {
       ctx.waitUntil(
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
+      )
+      ctx.waitUntil(
+        runDailyHeartbeatCheck(supabase, env.IDEMPOTENCY)
+          .then((r) => { if (r.status === 'stale' || r.status === 'never_ran') console.error(`[cron-heartbeat] daily batch ${r.status} ageMs=${r.ageMs} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[cron-heartbeat] check failed:', e))
       )
     }
   },

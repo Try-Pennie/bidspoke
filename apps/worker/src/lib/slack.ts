@@ -965,6 +965,44 @@ export async function sendBigTableGrowthAlert(
   )) !== null
 }
 
+export async function sendCronHeartbeatAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  status: 'stale' | 'never_ran',
+  ageMs: number | null,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const hours = ageMs === null ? null : Math.round(ageMs / 3_600_000)
+  const when =
+    status === 'never_ran'
+      ? `has not run since it was first observed${hours === null ? '' : ` ~${hours}h ago`}`
+      : `has not run in ~${hours}h`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Daily health-check batch is dark', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `The 13:00 UTC health-check batch ${when}. While it is down, these watchdogs are NOT running: volume-anomaly, timeout-audit, secret-drift, required-secrets, big-table-guard, drain-stall.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* confirm the worker deployed with its cron triggers (wrangler.toml `[triggers]` must include `0 13 * * *`) and that the scheduled handler is not throwing before dispatch. Check the Cloudflare dashboard: Workers and Pages > bidspoke-worker > Settings > Triggers, and the worker logs for the 13:00 UTC run.',
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Daily health-check batch is dark (${status})`,
+  )) !== null
+}
+
 export async function sendRequiredSecretsAlert(
   supabase: SupabaseClient,
   orgId: string,
