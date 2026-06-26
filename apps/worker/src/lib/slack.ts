@@ -1037,6 +1037,47 @@ export async function sendRequiredSecretsAlert(
   )) !== null
 }
 
+/**
+ * Alert that a required non-secret config value (environment_variables table)
+ * is missing or blank in production, so the workflows that use it will fail on
+ * live traffic (#394). Unlike a worker secret, these are fixed in the Bidspoke
+ * UI, so the alert points there. Returns true when delivered.
+ */
+export async function sendRequiredEnvVarsAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  missingKeys: string[],
+  appUrl?: string,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const list = missingKeys.map((k) => `• \`${k}\``).join('\n')
+  const link = appUrl ? `\n<${appUrl}/env|Open Environment Variables →>` : ''
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Required configuration value missing in production', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `These required configuration values are unset or blank, so the workflows that use them (Salesforce, Equifax) will fail on live traffic:\n${list}`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*How to fix:* open Environment Variables in Bidspoke and set each key to its correct value.${link}`,
+      },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Required configuration value missing: ${missingKeys.join(', ')}`,
+  )) !== null
+}
+
 function linkSuffix(url: string | undefined): string {
   return url ? ` · <${url}|view in SF>` : ''
 }

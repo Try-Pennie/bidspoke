@@ -11,6 +11,7 @@ import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
 import { runRequiredSecretsCheck } from './lib/required-secrets'
+import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
 import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -193,6 +194,11 @@ export default {
         runRequiredSecretsCheck(supabase, env)
           .then((r) => { if (r.missing.length) console.error(`[required-secrets] MISSING=${r.missing.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[required-secrets] check failed:', e))
+      )
+      ctx.waitUntil(
+        runRequiredEnvVarsCheck(supabase, env)
+          .then((r) => { if (r.missing.length) console.error(`[required-env-vars] MISSING=${r.missing.join(',')} alerted=${r.alerted}`) })
+          .catch((e) => console.error('[required-env-vars] check failed:', e))
       )
       ctx.waitUntil(
         runBigTableGuard(supabase, env.IDEMPOTENCY)
