@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { findMissingRequiredSecrets, REQUIRED_SECRETS } from '../required-secrets'
+import { findMissingRequiredSecrets, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from '../required-secrets'
 import type { Env } from '../../index'
 
-/** An env where every required secret is present and non-empty. */
+/** An env where every required secret (core + partner) is present and non-empty. */
 function fullSecretEnv(): Record<string, string> {
   const e: Record<string, string> = {}
-  for (const k of REQUIRED_SECRETS) e[k] = 'set-value'
+  for (const k of [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS]) e[k] = 'set-value'
   return e
 }
 
@@ -57,5 +57,28 @@ describe('findMissingRequiredSecrets', () => {
   it('includes the two non-recoverable secrets in the required set', () => {
     expect(REQUIRED_SECRETS).toContain('SSN_HASH_PEPPER')
     expect(REQUIRED_SECRETS).toContain('SECRET_ENCRYPTION_KEY')
+  })
+
+  it('flags a missing partner secret (Equifax EQ_USER)', () => {
+    const env = fullSecretEnv()
+    delete env.EQ_USER
+    expect(findMissingRequiredSecrets(env as unknown as Env)).toEqual(['EQ_USER'])
+  })
+
+  it('includes the live partner secrets (Salesforce, Equifax, Tripoint) in the required partner set', () => {
+    expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_CLIENT_ID')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_CLIENT_SECRET')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_INSTANCE_URL')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('EQ_USER')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('EQ_PASS')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('TRIPOINT_PROXY_SECRET')
+  })
+
+  it('does not require feature-gated partner secrets (Achieve, Scout)', () => {
+    const all = [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS] as string[]
+    expect(all).not.toContain('ACHIEVE_USERNAME')
+    expect(all).not.toContain('ACHIEVE_PASSWORD')
+    expect(all).not.toContain('ACHIEVE_API_URL')
+    expect(all).not.toContain('SCOUT_KEY')
   })
 })

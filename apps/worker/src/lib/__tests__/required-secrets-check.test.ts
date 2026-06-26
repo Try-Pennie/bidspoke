@@ -7,11 +7,11 @@ vi.mock('../slack', () => ({
 }))
 
 import { sendRequiredSecretsAlert } from '../slack'
-import { runRequiredSecretsCheck, REQUIRED_SECRETS } from '../required-secrets'
+import { runRequiredSecretsCheck, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from '../required-secrets'
 
 function fullSecretEnv(overrides: Record<string, string | undefined> = {}): Env {
   const e: Record<string, string | undefined> = { APP_URL: 'https://app.example' }
-  for (const k of REQUIRED_SECRETS) e[k] = 'set-value'
+  for (const k of [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS]) e[k] = 'set-value'
   return { ...e, ...overrides } as unknown as Env
 }
 

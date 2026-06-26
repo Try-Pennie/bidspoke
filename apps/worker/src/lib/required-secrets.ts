@@ -33,10 +33,28 @@ export const REQUIRED_SECRETS = [
   'SNOWFLAKE_ROLE',
 ] as const satisfies readonly (keyof Env)[]
 
-/** Required secrets that are absent, empty, or whitespace-only, in declared order. */
+/**
+ * Partner secrets that live workflows depend on but the typed `Env` doesn't cover:
+ * Salesforce/Achieve are read dynamically (cast off Env), and Equifax/Tripoint are
+ * consumed inside code-node scripts (the sandbox), invisible to a source grep. This
+ * list is curated to the partners that are live and mandatory (confirmed 2026-06-26):
+ * Salesforce, Equifax, Tripoint. Feature-gated partners (Achieve until its node is
+ * flipped to prod, Eligibility Scout) are deliberately excluded to avoid false alarms.
+ */
+export const REQUIRED_PARTNER_SECRETS = [
+  'SALESFORCE_INSTANCE_URL',
+  'SALESFORCE_CLIENT_ID',
+  'SALESFORCE_CLIENT_SECRET',
+  'EQ_USER',
+  'EQ_PASS',
+  'TRIPOINT_PROXY_SECRET',
+] as const
+
+/** Required secrets (core + partner) that are absent, empty, or whitespace-only, in declared order. */
 export function findMissingRequiredSecrets(env: Env): string[] {
-  return REQUIRED_SECRETS.filter((key) => {
-    const value = env[key]
+  const record = env as unknown as Record<string, unknown>
+  return [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS].filter((key) => {
+    const value = record[key]
     return typeof value !== 'string' || value.trim() === ''
   })
 }
