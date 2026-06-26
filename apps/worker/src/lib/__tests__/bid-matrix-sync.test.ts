@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { computeDiff, validateSyncedRows } from '../bid-matrix-sync'
+import { computeDiff, validateSyncedRows, shouldSkipStaleDelete } from '../bid-matrix-sync'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
 
@@ -50,6 +50,24 @@ function snap(overrides: Partial<{
     ...overrides,
   }
 }
+
+describe('shouldSkipStaleDelete (#407 — never wipe the matrix on an empty fetch)', () => {
+  it('skips the delete when the fetch came back empty but rows exist (the wipe case)', () => {
+    expect(shouldSkipStaleDelete(0, 5)).toBe(true)
+  })
+
+  it('does not skip when nothing exists yet (no matrix to protect)', () => {
+    expect(shouldSkipStaleDelete(0, 0)).toBe(false)
+  })
+
+  it('does not skip a partial removal — some rows fetched, fewer than existing is legitimate', () => {
+    expect(shouldSkipStaleDelete(3, 5)).toBe(false)
+  })
+
+  it('does not skip a first-time populate (rows fetched, none existed)', () => {
+    expect(shouldSkipStaleDelete(3, 0)).toBe(false)
+  })
+})
 
 describe('computeDiff', () => {
   it('returns null when nothing changed', () => {

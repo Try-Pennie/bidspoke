@@ -33,6 +33,10 @@ export interface SyncResult {
   diff: MatrixConfigChange | null
   problems: MatrixProblem[]
   organization_id: string
+  /** True when this sync skipped the stale-row delete because Salesforce returned
+   * an empty result while rows still existed — the matrix was preserved, not
+   * applied, and should be confirmed by a human (#407). */
+  skipped_empty_delete?: boolean
   error?: string
 }
 
@@ -107,7 +111,7 @@ export async function syncBidConfig(
 
   try {
     const rows = await querySalesforceMatrixRows(config, env)
-    const { upserted, deleted, diff } = await applyToDb(config, rows, startedAt, supabase)
+    const { upserted, deleted, diff, skippedEmptyDelete } = await applyToDb(config, rows, startedAt, supabase)
     const problems = validateSyncedRows(config, rows)
 
     await supabase
@@ -137,6 +141,7 @@ export async function syncBidConfig(
       last_synced_at: startedAt,
       diff,
       problems,
+      skipped_empty_delete: skippedEmptyDelete,
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -206,7 +211,7 @@ async function applyToDb(
   rows: SalesforceBidRow[],
   syncedAt: string,
   supabase: SupabaseClient
-): Promise<{ upserted: number; deleted: number; diff: MatrixConfigChange | null }> {
+): Promise<{ upserted: number; deleted: number; diff: MatrixConfigChange | null; skippedEmptyDelete: boolean }> {
   // Snapshot existing rows BEFORE the upsert so we can diff against the new state.
   const existing = await fetchAllPaged<MatrixRowSnapshot>(
     (from, to) => supabase
@@ -239,30 +244,58 @@ async function applyToDb(
     if (error) throw new Error(`bid_matrix_rows upsert failed: ${error.message}`)
   }
 
-  // Delete rows that weren't part of this sync (no longer present in SF).
-  const staleRows = await fetchAllPaged<{ id: string; source_id: string | null }>(
-    (from, to) => supabase
-      .from('bid_matrix_rows')
-      .select('id, source_id')
-      .eq('config_id', config.id)
-      .or(`source_synced_at.lt.${syncedAt},source_synced_at.is.null`)
-      .order('id', { ascending: true })
-      .range(from, to),
-    'stale-row query',
-  )
-  const deleteIds = staleRows.map((r) => r.id)
-  const removedSourceIds = new Set(staleRows.map((r) => r.source_id).filter((s): s is string => !!s))
+  // A successful-but-empty Salesforce fetch must NOT delete the whole matrix.
+  // With no rows upserted this run, EVERY existing row looks stale below, so an
+  // unguarded delete wipes the matrix and the partner stops bidding until the next
+  // good sync. A 200 with records:[] (SF glitch, a renamed Is{Partner}__c flag,
+  // filter/schema drift) is far likelier than every range being legitimately
+  // removed at once, so we skip the delete, keep the last-known matrix, and signal
+  // it for a human to confirm (#407). A genuine full-clear is done manually.
+  const skippedEmptyDelete = shouldSkipStaleDelete(rows.length, existing.length)
+  let deleteIds: string[] = []
+  let removedSourceIds = new Set<string>()
 
-  if (deleteIds.length > 0) {
-    const { error: delErr } = await supabase
-      .from('bid_matrix_rows')
-      .delete()
-      .in('id', deleteIds)
-    if (delErr) throw new Error(`bid_matrix_rows delete failed: ${delErr.message}`)
+  if (skippedEmptyDelete) {
+    console.error(
+      `[bid-matrix-sync] empty Salesforce fetch for config ${config.id} (${config.slug}) ` +
+        `but ${existing.length} rows exist — skipping delete to avoid wiping the matrix`,
+    )
+  } else {
+    // Delete rows that weren't part of this sync (no longer present in SF).
+    const staleRows = await fetchAllPaged<{ id: string; source_id: string | null }>(
+      (from, to) => supabase
+        .from('bid_matrix_rows')
+        .select('id, source_id')
+        .eq('config_id', config.id)
+        .or(`source_synced_at.lt.${syncedAt},source_synced_at.is.null`)
+        .order('id', { ascending: true })
+        .range(from, to),
+      'stale-row query',
+    )
+    deleteIds = staleRows.map((r) => r.id)
+    removedSourceIds = new Set(staleRows.map((r) => r.source_id).filter((s): s is string => !!s))
+
+    if (deleteIds.length > 0) {
+      const { error: delErr } = await supabase
+        .from('bid_matrix_rows')
+        .delete()
+        .in('id', deleteIds)
+      if (delErr) throw new Error(`bid_matrix_rows delete failed: ${delErr.message}`)
+    }
   }
 
   const diff = computeDiff(config, existing, rows, removedSourceIds)
-  return { upserted: rows.length, deleted: deleteIds.length, diff }
+  return { upserted: rows.length, deleted: deleteIds.length, diff, skippedEmptyDelete }
+}
+
+/**
+ * Guard against an empty Salesforce fetch wiping the entire matrix (#407): skip the
+ * stale-row delete only when the fetch returned nothing AND rows currently exist.
+ * A partial fetch (some rows, fewer than existing) is a legitimate removal and must
+ * still delete; a first-time populate (rows fetched, none existed) is not a wipe.
+ */
+export function shouldSkipStaleDelete(fetchedCount: number, existingCount: number): boolean {
+  return fetchedCount === 0 && existingCount > 0
 }
 
 export function computeDiff(
