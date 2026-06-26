@@ -36,7 +36,7 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const perOrg = orgIds.flatMap((orgId) => {
     const tasks: Promise<unknown>[] = [
-      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
+      loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY).catch(() => undefined),
       loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
     ]
     if (canWarmSalesforce) {

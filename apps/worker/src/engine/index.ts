@@ -183,7 +183,7 @@ export async function executeWorkflow(
     useIdempotency && !isRecoveryRun
       ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey)
       : Promise.resolve(null),
-    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase),
+    loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
     // paying the Supabase roundtrip cost mid-execution. Swallow errors — the constants
     // node retries on its own access and surfaces any real failure there.

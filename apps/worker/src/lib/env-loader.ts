@@ -9,6 +9,7 @@
 // copy to serve during a blip so creds don't go blank at all.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { decryptSecret } from './secret-crypto'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
@@ -17,21 +18,30 @@ const lastGoodKey = (orgId: string) => `env-vars-${orgId}-lastgood`
 export async function loadEnvVars(
   orgId: string,
   kv: KVNamespace,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  secretEncryptionKey: string
 ): Promise<Record<string, string>> {
   const cached = await kv.get<Record<string, string>>(cacheKey(orgId), 'json')
   if (cached) return cached
 
+  // Load ALL user env vars, including is_secret ones, so nodes (code-node `env`
+  // global and {{env.X}} template resolution) can read the credentials they
+  // exist to use (Dan 2026-06-26). is_secret is a UI-masking flag, not an access
+  // gate. Secret values are stored ENCRYPTED (secret-crypto) — they MUST be
+  // decrypted here. Injecting the raw ciphertext is what broke Equifax on
+  // 2026-06-26 (the node sent the encrypted blob as the password → 401), so a
+  // secret that fails to decrypt is SKIPPED, never passed through raw; for code
+  // nodes the Cloudflare worker-secret binding remains the fallback. Platform
+  // master secrets (worker bindings) are blocked separately in lib/sandbox-env.ts.
   const { data, error } = await supabase
     .from('environment_variables')
-    .select('key, value')
+    .select('key, value, is_secret')
     .eq('organization_id', orgId)
     .eq('scope', 'global')
-    .is('is_secret', false)
 
   if (error) {
     // Do NOT cache on error — that is the #391 outage. Fall back to the last-good
-    // copy (the non-secret config vars rarely change) so a transient blip degrades
+    // copy (the config vars rarely change) so a transient blip degrades
     // gracefully instead of blanking creds; empty only if we never had a good load.
     console.error(`[env-loader] load failed for org ${orgId}, not caching: ${error.message}`)
     const lastGood = await kv.get<Record<string, string>>(lastGoodKey(orgId), 'json')
@@ -40,7 +50,18 @@ export async function loadEnvVars(
 
   const vars: Record<string, string> = {}
   for (const row of data ?? []) {
-    if (row.value) vars[row.key] = row.value
+    if (!row.value) continue
+    if (row.is_secret) {
+      try {
+        vars[row.key] = await decryptSecret(row.value, secretEncryptionKey)
+      } catch {
+        // Created pre-encryption or key rotated: skip rather than poison the
+        // env with ciphertext (the 2026-06-26 Equifax outage).
+        console.error(`[env-loader] could not decrypt secret ${row.key} for org ${orgId}; skipping`)
+      }
+    } else {
+      vars[row.key] = row.value
+    }
   }
 
   const serialized = JSON.stringify(vars)
