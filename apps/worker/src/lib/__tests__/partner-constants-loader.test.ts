@@ -264,6 +264,62 @@ describe('loadPartnerConstants — memory cache + single-flight', () => {
   })
 })
 
+// A KV mock whose stored values differ per key (so the last-good copy can be
+// distinguished from the short cache).
+function makeKvByKey(store: Record<string, unknown>) {
+  return {
+    get: vi.fn().mockImplementation((key: string) => Promise.resolve(store[key] ?? null)),
+    put: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
+  } as unknown as KVNamespace
+}
+
+// Supabase whose queries resolve with a DB error (the #391 transient-blip shape).
+function makeSupabaseError() {
+  const chain: unknown = new Proxy({}, {
+    get(_, prop) {
+      if (typeof prop === 'symbol') return undefined
+      if (prop === 'eq') return () => Promise.resolve({ data: null, error: { message: 'pool timeout' } })
+      return () => chain
+    },
+  })
+  return { from: vi.fn().mockReturnValue(chain) }
+}
+
+const LASTGOOD_KEY = `partner-constants-v2-${ORG}-lastgood`
+
+describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () => {
+  it('does NOT cache an empty result on a DB error; serves the last-good copy instead', async () => {
+    const lastGood = { subAccountIdsMap: { 'uuid-1': 'sofi' }, sellOff: {}, clickUrls: {}, activeBidding: { sofi: true }, subAccountMinBids: {} }
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: lastGood }) // short cache absent, last-good present
+    const sb = makeSupabaseError()
+
+    const result = await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(result).toEqual(lastGood)
+    // Must never write the empty result under the 30-day cache key.
+    expect(kv.put).not.toHaveBeenCalledWith(CACHE_KEY, expect.anything(), expect.anything())
+  })
+
+  it('throws on a DB error when there is no last-good copy (never fabricates empty constants)', async () => {
+    const kv = makeKvByKey({}) // nothing cached at all
+    const sb = makeSupabaseError()
+
+    await expect(loadPartnerConstants(ORG, kv, sb as never)).rejects.toThrow()
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('writes a no-TTL last-good copy alongside the short cache on a successful load', async () => {
+    const kv = makeKvByKey({})
+    const sb = makeSupabase([{ uuid: 'uuid-1', partner_slug: 'sofi' }], [])
+
+    await loadPartnerConstants(ORG, kv, sb as never)
+
+    expect(kv.put).toHaveBeenCalledWith(CACHE_KEY, expect.any(String), { expirationTtl: 60 * 60 * 24 * 30 })
+    expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.any(String))
+  })
+})
+
 describe('invalidatePartnerConstantsCache', () => {
   it('deletes the correct KV key', async () => {
     const kv = makeKv()

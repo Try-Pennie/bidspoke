@@ -7,6 +7,9 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // sub_account_min_bids) stale forever.
 const TTL = 60 * 60 * 24 * 30 // 30 days (KV)
 const cacheKey = (orgId: string) => `partner-constants-v2-${orgId}`
+// No-TTL last-good copy, served during a transient DB blip so a cold load never
+// degrades to empty bidding constants (the #391 shape — see loadFromKvOrDb).
+const lastGoodKey = (orgId: string) => `partner-constants-v2-${orgId}-lastgood`
 
 // In front of KV sits a per-isolate memory cache + single-flight. A warm isolate
 // serves from memory without touching KV (sub-ms), and concurrent loads on a cold
@@ -62,7 +65,7 @@ async function loadFromKvOrDb(
   const cached = await kv.get<PartnerConstants>(cacheKey(orgId), 'json')
   if (cached) return cached
 
-  const [{ data: uuidRows }, { data: partnerRows }] = await Promise.all([
+  const [uuidRes, partnerRes] = await Promise.all([
     supabase
       .from('partner_uuid_map')
       .select('uuid, partner_slug')
@@ -72,6 +75,23 @@ async function loadFromKvOrDb(
       .select('slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
       .eq('organization_id', orgId),
   ])
+
+  // A transient DB error must NEVER be turned into empty bidding constants and
+  // cached for 30 days — that silently marks every partner inactive, drops bids,
+  // and breaks routing with no signal (the #391 outage shape, the same mistake
+  // env-loader.ts was fixed for). On error: do not cache; serve the no-TTL
+  // last-good copy if we have one, else throw so the Constants node surfaces a
+  // real failure instead of fabricating empty data.
+  if (uuidRes.error || partnerRes.error) {
+    const msg = (uuidRes.error ?? partnerRes.error)?.message
+    console.error(`[partner-constants] load failed for org ${orgId}, not caching: ${msg}`)
+    const lastGood = await kv.get<PartnerConstants>(lastGoodKey(orgId), 'json')
+    if (lastGood) return lastGood
+    throw new Error(`partner_constants load failed for org ${orgId}: ${msg}`)
+  }
+
+  const { data: uuidRows } = uuidRes
+  const { data: partnerRows } = partnerRes
 
   const subAccountIdsMap: Record<string, string> = {}
   for (const row of uuidRows ?? []) {
@@ -107,7 +127,11 @@ async function loadFromKvOrDb(
   }
 
   const result: PartnerConstants = { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids }
-  await kv.put(cacheKey(orgId), JSON.stringify(result), { expirationTtl: TTL })
+  const serialized = JSON.stringify(result)
+  // Short cache for the hot path; no-TTL last-good for blip resilience (overwritten
+  // by the next successful load, so it can't go stale while edits keep flowing).
+  await kv.put(cacheKey(orgId), serialized, { expirationTtl: TTL })
+  await kv.put(lastGoodKey(orgId), serialized)
   return result
 }
 

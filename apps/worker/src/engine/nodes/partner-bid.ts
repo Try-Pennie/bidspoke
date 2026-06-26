@@ -20,6 +20,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedSte
 import type { ErrorType } from '../../types'
 import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
+import { sendCircuitAlert } from '../../lib/slack'
 import { parseJson } from '../../lib/json'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
@@ -131,17 +132,16 @@ const PARTNER_SELECT =
 // The caller decides whether to await: record-error (and other terminal-path
 // records) are awaited so the count durably lands; the success record on the
 // live winning-bid path is fired without awaiting so a healthy bid never waits.
-export async function recordBreakerOutcome(
+export async function recordBreakerOutcome<T>(
   ctx: ExecutionContext,
   slug: string,
   kind: 'success' | 'error',
-  call: () => Promise<unknown>,
-): Promise<void> {
+  call: () => Promise<T>,
+): Promise<T | undefined> {
   const MAX_ATTEMPTS = 3
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      await call()
-      return
+      return await call()
     } catch (err) {
       if (attempt === MAX_ATTEMPTS) {
         log({
@@ -152,11 +152,33 @@ export async function recordBreakerOutcome(
           kind,
           error_message: err instanceof Error ? err.message : String(err),
         })
-        return
+        return undefined
       }
       await new Promise((resolve) => setTimeout(resolve, 25 * attempt))
     }
   }
+  return undefined
+}
+
+/**
+ * Fire a Slack page when a partner's circuit breaker just tripped open (audit
+ * finding 1.2). `recordError` returns `tripped: true` both on the threshold breach
+ * (closed -> open) and on a failed half-open probe re-opening, so this surfaces
+ * stuck-open breakers too. Best-effort: a failed alert delivery must never break
+ * the bid path, and a dropped breaker record (undefined outcome) is not a trip.
+ * Uses the org default channel (null override). Returns whether an alert was sent.
+ */
+export type BreakerRecordResult = Awaited<ReturnType<CircuitBreakerClient['recordError']>>
+
+export async function alertIfTripped(
+  supabase: SupabaseClient,
+  orgId: string,
+  slug: string,
+  outcome: BreakerRecordResult | undefined,
+): Promise<boolean> {
+  if (!outcome?.tripped) return false
+  await sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }).catch(() => {})
+  return true
 }
 
 // A bid must clear the partner's floor to count as a real, winnable bid. With an
@@ -441,11 +463,16 @@ export async function executePartnerBidNode(
     // record-error is the dangerous case: the breaker fails to OPEN on a real
     // outage. This is the terminal error path (the node rethrows below), so the
     // extra round-trip is off the live winning-bid path (#129).
-    if (cb) await recordBreakerOutcome(ctx, p.slug, 'error', () => cb.recordError({
-      error_threshold: p.circuit_error_threshold,
-      window_seconds: p.circuit_window_seconds,
-      cooldown_seconds: p.circuit_cooldown_seconds,
-    }))
+    if (cb) {
+      const outcome = await recordBreakerOutcome(ctx, p.slug, 'error', () => cb.recordError({
+        error_threshold: p.circuit_error_threshold,
+        window_seconds: p.circuit_window_seconds,
+        cooldown_seconds: p.circuit_cooldown_seconds,
+      }))
+      // Page ops if this error just tripped the breaker open — otherwise the
+      // partner silently drops out of bidding for hours with no signal (1.2).
+      await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome)
+    }
 
     // Pull resolver-side input off the thrown error (callBidApi attaches its
     // outbound body before throwing). Then re-wrap and attach to the rethrow
