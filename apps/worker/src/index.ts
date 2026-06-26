@@ -13,6 +13,7 @@ import { runSecretDriftCheck } from './lib/secret-drift'
 import { runRequiredSecretsCheck } from './lib/required-secrets'
 import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
 import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
+import { notifyExportFailure } from './lib/export-alerts'
 import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -164,13 +165,25 @@ export default {
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
         runSightingsExport(supabase, env)
-          .then((s) => console.log('[sightings-export]', JSON.stringify(s)))
-          .catch((e) => console.error('[sightings-export] failed:', e))
+          .then((s) => {
+            console.log('[sightings-export]', JSON.stringify(s))
+            return notifyExportFailure(supabase, 'Lead sightings export', s.errors)
+          })
+          .catch((e) => {
+            console.error('[sightings-export] failed:', e)
+            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)])
+          })
       )
       ctx.waitUntil(
         runAchieveExport(supabase, env)
-          .then((s) => console.log('[achieve-export]', JSON.stringify(s)))
-          .catch((e) => console.error('[achieve-export] failed:', e))
+          .then((s) => {
+            console.log('[achieve-export]', JSON.stringify(s))
+            return notifyExportFailure(supabase, 'Achieve export', s.errors)
+          })
+          .catch((e) => {
+            console.error('[achieve-export] failed:', e)
+            return notifyExportFailure(supabase, 'Achieve export', [e instanceof Error ? e.message : String(e)])
+          })
       )
     } else if (event.cron === '0 13 * * *') {
       // Dead-man's-switch heartbeat: stamp that this batch dispatched (#358).

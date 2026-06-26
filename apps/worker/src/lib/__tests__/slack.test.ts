@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, getSlackConnection } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -472,6 +472,51 @@ describe('sendMatrixSyncFailureAlert (#408)', () => {
 
   it('does nothing when there are no issues', async () => {
     const sent = await sendMatrixSyncFailureAlert(makeSupabase(conn) as never, 'org-1', null, { failed: [], preserved: [] })
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendExportFailureAlert (#412)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  function makeSupabase(connection: Record<string, unknown> | null) {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'maybeSingle') return () => Promise.resolve({ data: connection ? { config: connection } : null, error: null })
+        return () => chain
+      },
+    })
+    return { from: () => chain }
+  }
+  const conn = { bot_token: 'xoxb-t', default_channel: '#alerts', config_alerts_enabled: true }
+
+  it('names the job and lists the errors with a fix hint', async () => {
+    const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings export', errors: ['sightings export: Snowflake 503', 'bids export: timeout'],
+    })
+    expect(sent).toBe(true)
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('Lead sightings export')
+    expect(text).toContain('Snowflake 503')
+    expect(text).toContain('not purged')
+  })
+
+  it('does nothing when there are no errors', async () => {
+    const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [] })
+    expect(sent).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('respects the config-alerts opt-out', async () => {
+    const sent = await sendExportFailureAlert(makeSupabase({ ...conn, config_alerts_enabled: false }) as never, 'org-1', null, { jobName: 'x', errors: ['boom'] })
     expect(sent).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })

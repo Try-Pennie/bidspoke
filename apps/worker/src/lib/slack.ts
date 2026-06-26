@@ -1087,6 +1087,45 @@ export async function sendMatrixSyncFailureAlert(
 }
 
 /**
+ * Alert that a nightly Snowflake export reported errors (#412). The export jobs
+ * accumulate failures into a returned summary rather than throwing, so a Snowflake
+ * outage was previously only console-logged. Rows stay in Supabase (not purged)
+ * until a later run succeeds, so there's no data loss, only a stalled pipeline and
+ * disk pressure. Uses the config-alerts toggle. Returns true when delivered.
+ */
+export async function sendExportFailureAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: { jobName: string; errors: string[] },
+): Promise<boolean> {
+  if (payload.errors.length === 0) return false
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+
+  const lines = payload.errors.slice(0, 20).map((e) => `• ${e}`).join('\n')
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Nightly export failed', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.jobName}* reported ${payload.errors.length} error${payload.errors.length === 1 ? '' : 's'}. The affected rows were not purged from Supabase and will retry on the next run, but analytics in Snowflake are stale until it succeeds:\n${lines}`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* check Snowflake availability and the export credentials. If it stays down, watch Supabase disk: the un-purged rows accumulate until a run succeeds.',
+      },
+    },
+  ]
+  const channel = channelOverride || connection.default_channel
+  return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName} failed: ${payload.errors.length} error(s)`)) !== null
+}
+
+/**
  * Alert that secret env vars cannot be decrypted (#404). The env-loader silently
  * skips these, so a node loses the credential with no error until the call fails.
  * The cause is almost always a stored value encrypted under a previous
