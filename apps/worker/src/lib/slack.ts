@@ -4,6 +4,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
+import { isPermanentDbError, sleep, toDbError } from './db-retry'
 import type { ErrorType } from '../types'
 
 export interface SlackConnection {
@@ -45,16 +46,45 @@ export interface CircuitAlertPayload {
 
 // ── Connection lookup ─────────────────────────────────────────────────────────
 
+// Short retry ladder for the connection read. A transient DB blip must not look
+// like "org has no Slack" — that silently drops the alert exactly when an incident
+// is unfolding (#409). Kept short (a few hundred ms) because some callers fire this
+// during execution, not only in waitUntil; a sustained outage falls through to a
+// logged null so the dropped alert is at least visible, never silent.
+const SLACK_CONN_RETRY_DELAYS_MS = [150, 400]
+
 export async function getSlackConnection(
   supabase: SupabaseClient,
-  orgId: string
+  orgId: string,
+  delaysMs: number[] = SLACK_CONN_RETRY_DELAYS_MS,
 ): Promise<SlackConnection | null> {
-  const { data } = await supabase
-    .from('service_connections')
-    .select('config')
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
+  let data: { config?: unknown } | null = null
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    if (attempt > 0) await sleep(delaysMs[attempt - 1])
+    const res = await supabase
+      .from('service_connections')
+      .select('config')
+      .eq('organization_id', orgId)
+      .eq('service_type', 'slack')
+      .maybeSingle()
+    if (!res.error) {
+      data = res.data as { config?: unknown } | null
+      break
+    }
+    const dbErr = toDbError(res.error)
+    // Schema drift / bad query can't be retried — fail fast, but LOG so the
+    // dropped alert isn't mistaken for a not-configured org.
+    if (isPermanentDbError(dbErr)) {
+      console.error(`[slack] getSlackConnection permanent error for org ${orgId}: ${dbErr.message} — alert dropped`)
+      return null
+    }
+    if (attempt === delaysMs.length) {
+      // Transient error survived every retry: the alert that needs this connection
+      // will be dropped. Make it visible instead of returning a silent "no Slack".
+      console.error(`[slack] getSlackConnection failed for org ${orgId} after ${delaysMs.length} retries: ${dbErr.message} — alert dropped`)
+      return null
+    }
+  }
 
   if (!data?.config) return null
   const cfg = data.config as Record<string, unknown>

@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -361,6 +361,69 @@ describe('sendSecretDriftAlert (#199)', () => {
   it('does nothing and reports not-sent when there are no missing secrets', async () => {
     expect(await sendSecretDriftAlert(conn, [], 'https://app.test')).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('getSlackConnection — distinguishes a DB error from not-configured (#409)', () => {
+  // maybeSingle returns each queued result in order, repeating the last.
+  function makeSeqSupabase(results: Array<{ data?: unknown; error?: { code?: string; message: string } | null }>) {
+    let i = 0
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'maybeSingle') return () => {
+          const r = results[Math.min(i, results.length - 1)]
+          i++
+          return Promise.resolve({ data: r.data ?? null, error: r.error ?? null })
+        }
+        return () => chain
+      },
+    })
+    return { from: () => chain, _calls: () => i }
+  }
+
+  const cfg = { bot_token: 'xoxb-t', default_channel: '#a' }
+  let errSpy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => { errSpy = vi.spyOn(console, 'error').mockImplementation(() => {}) })
+  afterEach(() => errSpy.mockRestore())
+
+  it('returns the connection on a successful read', async () => {
+    const sb = makeSeqSupabase([{ data: { config: cfg } }])
+    const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
+    expect(conn?.bot_token).toBe('xoxb-t')
+    expect(errSpy).not.toHaveBeenCalled()
+  })
+
+  it('returns null silently when the org genuinely has no Slack connection', async () => {
+    const sb = makeSeqSupabase([{ data: null, error: null }])
+    const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
+    expect(conn).toBeNull()
+    expect(errSpy).not.toHaveBeenCalled() // not-configured is not an error
+  })
+
+  it('logs and returns null (does NOT look not-configured) when a transient DB error persists', async () => {
+    const sb = makeSeqSupabase([{ error: { message: 'pool timeout' } }])
+    const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
+    expect(conn).toBeNull()
+    expect(errSpy).toHaveBeenCalled()
+    expect(String(errSpy.mock.calls[0][0])).toContain('org-1')
+  })
+
+  it('retries a transient error and returns the connection when a later attempt succeeds', async () => {
+    const sb = makeSeqSupabase([
+      { error: { message: 'pool timeout' } },
+      { data: { config: cfg } },
+    ])
+    const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
+    expect(conn?.bot_token).toBe('xoxb-t')
+  })
+
+  it('fails fast on a permanent error (schema drift) without retrying', async () => {
+    const sb = makeSeqSupabase([{ error: { code: '42P01', message: 'undefined_table' } }])
+    const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
+    expect(conn).toBeNull()
+    expect(errSpy).toHaveBeenCalled()
+    expect(sb._calls()).toBe(1) // no retry attempts on a permanent error
   })
 })
 
