@@ -66,3 +66,14 @@ export function sandboxEnvBindings(env: Env): Record<string, string> {
   }
   return out
 }
+
+// Assemble the env handed to a code-node sandbox: worker bindings (minus master
+// secrets) overlaid with the org's loaded env vars. `ctxEnv` comes from
+// env-loader, which DECRYPTS secret values before they get here — so a credential
+// a node reads is the usable plaintext, never the encrypted blob. ctxEnv wins on
+// key collision. Centralized (was duplicated inline in code.ts + index.ts) so the
+// merge has one definition and a regression test: a wrong value assembled here is
+// what broke Equifax on 2026-06-26 (the node received an encrypted secret).
+export function buildSandboxEnv(env: Env, ctxEnv: Record<string, string>): Record<string, string> {
+  return { ...sandboxEnvBindings(env), ...ctxEnv }
+}

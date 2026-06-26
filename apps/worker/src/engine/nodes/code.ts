@@ -8,7 +8,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
-import { sandboxEnvBindings } from '../../lib/sandbox-env'
+import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
 /**
@@ -125,8 +125,8 @@ export async function executeCodeNode(
   }
 
   // Withhold platform master secrets from the sandbox; partner creds + DB env
-  // vars still flow (#108).
-  const mergedEnv = { ...sandboxEnvBindings(env), ...ctx.env }
+  // vars (decrypted by env-loader) still flow (#108).
+  const mergedEnv = buildSandboxEnv(env, ctx.env)
 
   // Filter the steps payload to only what this script actually references.
   // For workflows like engine bidding where Equifax/trade responses are 20-80KB

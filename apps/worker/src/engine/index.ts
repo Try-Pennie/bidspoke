@@ -6,7 +6,7 @@ import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
 import { checkIdempotency, setIdempotencyProcessing, setIdempotencyResult, clearIdempotency } from './idempotency'
 import { loadWorkflowDefinition } from './definition-loader'
 import { loadEnvVars } from '../lib/env-loader'
-import { sandboxEnvBindings } from '../lib/sandbox-env'
+import { buildSandboxEnv } from '../lib/sandbox-env'
 import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode } from './nodes/index'
@@ -1715,8 +1715,8 @@ export async function executeCodeChain(
   env: Env
 ): Promise<{ results: ChainStepResult[] }> {
   // Withhold platform master secrets from the sandbox; partner creds + DB env
-  // vars still flow (#108).
-  const mergedEnv = { ...sandboxEnvBindings(env), ...ctx.env }
+  // vars (decrypted by env-loader) still flow (#108).
+  const mergedEnv = buildSandboxEnv(env, ctx.env)
 
   const chainPayload = chain.map((n) => {
     const propsConfig = (n.config?.props ?? []) as Array<{ name: string; source: string }>
