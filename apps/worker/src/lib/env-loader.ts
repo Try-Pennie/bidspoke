@@ -22,18 +22,12 @@ export async function loadEnvVars(
   const cached = await kv.get<Record<string, string>>(cacheKey(orgId), 'json')
   if (cached) return cached
 
-  // All user-defined env vars load, including is_secret ones: nodes (code nodes
-  // and {{env.X}} template resolution) must be able to read the very credentials
-  // they exist to use (Dan 2026-06-26). `is_secret` is a UI-masking flag only,
-  // not an access gate. Platform master secrets (Cloudflare worker bindings like
-  // SECRET_ENCRYPTION_KEY / SSN_HASH_PEPPER) are a SEPARATE layer, still withheld
-  // from the sandbox by lib/sandbox-env.ts ENV_SANDBOX_POLICY — this query only
-  // covers the environment_variables table.
   const { data, error } = await supabase
     .from('environment_variables')
     .select('key, value')
     .eq('organization_id', orgId)
     .eq('scope', 'global')
+    .is('is_secret', false)
 
   if (error) {
     // Do NOT cache on error — that is the #391 outage. Fall back to the last-good

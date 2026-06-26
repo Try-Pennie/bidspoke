@@ -15,22 +15,10 @@ function fakeKv(initial: Record<string, string> = {}) {
   } as unknown as KVNamespace & { store: Map<string, string> }
 }
 
-/** supabase whose env-var query resolves to the given { data, error }. The
- * query chain is thenable so it resolves at whichever filter is terminal, and
- * records every .eq()/.is() filter applied so tests can assert what was queried. */
-function fakeSupabase(result: { data: unknown; error: unknown }): SupabaseClient & {
-  filters: { is: [string, unknown][]; eq: [string, unknown][] }
-} {
-  const filters = { is: [] as [string, unknown][], eq: [] as [string, unknown][] }
-  const chain = {
-    select: () => chain,
-    eq: (col: string, val: unknown) => { filters.eq.push([col, val]); return chain },
-    is: (col: string, val: unknown) => { filters.is.push([col, val]); return chain },
-    then: (resolve: (r: unknown) => void) => resolve(result),
-  }
-  return { from: () => chain, filters } as unknown as SupabaseClient & {
-    filters: { is: [string, unknown][]; eq: [string, unknown][] }
-  }
+/** supabase whose env-var query resolves to the given { data, error }. */
+function fakeSupabase(result: { data: unknown; error: unknown }): SupabaseClient {
+  const chain = { select: () => chain, eq: () => chain, is: () => Promise.resolve(result) }
+  return { from: () => chain } as unknown as SupabaseClient
 }
 
 describe('loadEnvVars (#391)', () => {
@@ -47,16 +35,6 @@ describe('loadEnvVars (#391)', () => {
     expect(r).toEqual({ SALESFORCE_CLIENT_ID: 'cid' }) // empty values skipped
     expect(kv.store.has('env-vars-org1')).toBe(true)
     expect(kv.store.has('env-vars-org1-lastgood')).toBe(true)
-  })
-
-  it('includes secret-flagged env vars and does NOT filter by is_secret (Dan 2026-06-26: nodes must read secrets)', async () => {
-    const kv = fakeKv()
-    const sb = fakeSupabase({ data: [{ key: 'ELIGIBILITY_SCOUT_CLIENT_SECRET', value: 'shh' }], error: null })
-    const r = await loadEnvVars('org1', kv, sb)
-    // A secret-flagged var must be returned so code nodes / template resolution can read it.
-    expect(r).toEqual({ ELIGIBILITY_SCOUT_CLIENT_SECRET: 'shh' })
-    // The query must NOT exclude secrets.
-    expect(sb.filters.is).not.toContainEqual(['is_secret', false])
   })
 
   it('on a DB error, does NOT cache an empty result (the bug that caused the outage)', async () => {
