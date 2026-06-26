@@ -6,8 +6,13 @@ This is a living runbook. Lines marked **[OWNER-TODO]** need information only th
 
 ## Targets
 
-- **RTO (how fast we must be back):** **[OWNER-TODO]** — propose a target per tier (e.g. engine bidding back within X minutes; full system within Y hours).
-- **RPO (how much data we can lose):** **[OWNER-TODO]** — bounded by the Supabase backup/PITR window (confirm in the backup/restore drill, #270).
+Confirmed in the 2026-06-26 restore drill (#270 — see [restore-drill.md](./dr-restore-drill.md)).
+
+- **RPO (how much data we can lose):** **up to ~24h** for the general database. Supabase is on the **Pro** plan with **daily** managed backups (7-day retention); PITR is **not** enabled (deliberate — the ~$100/mo add-on would cut this to ~2 min, revisit if 24h becomes unacceptable). Two highest-value data sets have a tighter effective RPO via independent backups: **workflow definitions** (~0, pushed to the `bidspoke-workflows` GitHub repo on every save) and **lead-sighting / bid outcomes** (<24h, nightly Snowflake export). PITR is also the only thing that recovers a *destructive migration* to the moment-before — without it, Scenario B loses up to a day.
+- **RTO (how fast we must be back):**
+  - **Resume bidding (config + schema restored): ~8 min proven** in the drill (laptop-driven logical restore), plus the Cloudflare Worker/Pages redeploy and worker-secret re-provisioning to actually serve traffic. A co-located runner or Supabase's native managed restore would be faster.
+  - **Full system (all execution-log history + raw-SSN tables): hours**, dominated by the 25 GB physical restore (Supabase-side). Not on the critical path for getting money moving again.
+  - Fastest mitigation while restoring: reroute the engine to the warm Pipedream flow (Scenario E).
 
 ## What must be recovered (system inventory)
 
@@ -35,7 +40,7 @@ This is a living runbook. Lines marked **[OWNER-TODO]** need information only th
 ### A. Supabase project loss or corruption
 
 1. Confirm scope: is the project deleted, the DB corrupted, or just an outage? Check the Supabase status page and dashboard.
-2. Restore from backup / point-in-time recovery (PITR) to just before the event. **[OWNER-TODO]** confirm PITR is enabled and the window (do this in the #270 restore drill, not during an incident).
+2. Restore from backup. Tier confirmed (2026-06-26): **Supabase Pro daily backups, 7-day retention, PITR not enabled** — so restore is to the most recent nightly backup (RPO up to ~24h), not to an arbitrary point in time. The restore path is proven end-to-end in [restore-drill.md](./dr-restore-drill.md); for the config/system-of-record subset, `scripts/dr-restore-drill.sh` dumps and restores it in ~5 min. The bulk (execution logs, `persons`, `lead_sightings`) comes from Supabase's managed restore of the daily backup.
 3. If the project itself is gone, create a new project, restore the dump, then update every consumer of the project ref/keys: the worker secret `SUPABASE_SECRET_KEY`, `SUPABASE_JWKS_URL`, the CI/Deploy `SUPABASE_PROJECT_ID` var + `SUPABASE_ACCESS_TOKEN` secret, and re-link `supabase link`.
 4. Re-run pending migrations against the restored DB (`supabase db push`) and verify pg_cron jobs are scheduled (`cron.job`).
 5. While restoring, reroute the engine to the warm Pipedream flow (Scenario E) so bidding keeps moving.
@@ -85,7 +90,13 @@ The authoritative live list is `wrangler secret list --name bidspoke-worker`. Wo
 - Data export: `SNOWFLAKE_*` (account/user/private key/role/db/schema/warehouse).
 - Other: `GITHUB_TOKEN` + `GITHUB_REPO` (workflow backup), `ANTHROPIC_API_KEY`, `APP_URL`.
 
-**[OWNER-TODO]** Escrow all of the above in a shared secret store (e.g. a 1Password vault) so recovery does not depend on re-deriving each from its source mid-incident. This closes the issue's "worker secrets not escrowed" gap.
+**Escrow status (2026-06-26): NOT YET ESCROWED — open blocker.** There is no shared team secret store today, so a restore operator would have to re-obtain each secret from its origin mid-incident. Two secrets cannot be re-derived and *must* be escrowed or they are lost forever: `SSN_HASH_PEPPER` (changing it breaks person-dedup continuity — treat as immutable) and, for old reveals, `SECRET_ENCRYPTION_KEY`.
+
+To close this gap:
+1. Stand up a shared secret store (a 1Password vault is the expected choice; any team-accessible manager works).
+2. Run `wrangler secret list --name bidspoke-worker` for the authoritative live list, then copy each value (from its source) into the vault, grouped as in the categories above.
+3. Grant the restore operators / on-call access to that vault and note its location here.
+4. Re-confirm on each quarterly restore drill that the escrowed copy is current (new secrets get added over time).
 
 ## Escalation
 
@@ -93,5 +104,6 @@ The authoritative live list is `wrangler secret list --name bidspoke-worker`. Wo
 
 ## Drills
 
-- Run the backup-verification + restore drill (#270) on a cadence (**[OWNER-TODO]** quarterly?) to confirm the Supabase RPO and that a restore actually works before an incident needs it.
+- **Restore drill: run quarterly.** Full procedure, the proven-RTO results log, and the reusable `scripts/dr-restore-drill.sh` live in [restore-drill.md](./dr-restore-drill.md). First drill ran 2026-06-26 (PASS). The cadence reminder is a recurring Google Calendar event linking that doc.
+- Re-run after any migration that adds or removes a system-of-record table (the drill's row-count verification flags a table missing from the script's allow-list).
 - Keep this runbook current as infrastructure changes (new secrets, new KV/DO bindings, new partners).
