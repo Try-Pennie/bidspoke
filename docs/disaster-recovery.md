@@ -98,26 +98,15 @@ To close this gap:
 3. Grant the restore operators / on-call access to that vault and note its location here.
 4. Re-confirm on each quarterly restore drill that the escrowed copy is current (new secrets get added over time).
 
-## Database CLI role hardening (#397)
+## Why a CLI-role query timeout will NOT prevent a `db push` outage (#397, closed)
 
-The ephemeral `cli_login_postgres` role (used by `supabase` CLI `db push` / `db dump`) ships with **no** `statement_timeout` or `idle_in_transaction_session_timeout`, unlike the app roles (`authenticator` / `authenticated` self-abort at 8s). A careless interactive query or a runaway migration step run as the CLI role can therefore hold a long connection and starve prod (a contributing factor on 2026-06-26). To cap that, set conservative role-level limits **in the Supabase dashboard SQL editor** (the read-only MCP and the dashboard `postgres` role may both lack permission to alter this role — if these error, raise a Supabase support request, as it needs `supabase_admin`):
+A natural reaction to the 2026-06-26 outage is "put a `statement_timeout` on the `cli_login_postgres` role so a runaway CLI query self-aborts." We investigated and **closed #397 without doing this**, because the live config disproves the premise:
 
-```sql
-alter role cli_login_postgres set statement_timeout = '5min';
-alter role cli_login_postgres set idle_in_transaction_session_timeout = '60s';
-```
+- **The cluster already caps every query at 2 minutes.** `statement_timeout` is set to `120000` ms at the cluster level (`pg_settings.source = 'configuration file'`), which applies to any role/session without an explicit override — including `cli_login_postgres`. A role-level `5min` would have been *looser*, not tighter.
+- **`pg_dump` disables the cap for its own session, and nothing can stop it.** `supabase db push` runs a `pg_dump` of prod first; `pg_dump` issues `SET statement_timeout = 0` (plus `lock_timeout` / `idle_in_transaction_session_timeout` / `transaction_timeout` = 0) as its first statements. Those are per-session USERSET settings, so they override the 2-minute cluster default *and* any role-level value. The ~10-minute COPYs on 2026-06-26 ran precisely because of this. No `statement_timeout` anywhere — role, database, or cluster — can constrain a `pg_dump`.
+- **We could not set it anyway.** Altering `cli_login_postgres` needs `supabase_admin`; Supabase does not grant even the account owner true superuser (the `postgres` role gets only limited `supautils` privileges). Attempting the `alter role` in the dashboard returns `42501: permission denied to alter role`.
 
-Verify (settings apply to the role's **next** login, not existing sessions):
-
-```sql
-select rolname, rolconfig from pg_roles where rolname = 'cli_login_postgres';
-```
-
-**Important caveat — this does NOT cap the dump that caused the 2026-06-26 outage.** `supabase db push` runs a `pg_dump` of prod first, and `pg_dump` issues `SET statement_timeout = 0` (plus `lock_timeout`, `idle_in_transaction_session_timeout`, `transaction_timeout` = 0) at the start of its own session, overriding any role default. So these limits guard *interactive* and *migration-apply* queries, but not the `pg_dump` COPY. The real mitigation for the dump path is the process rule (#392): don't `db push` from a laptop; apply small additive migrations via the dashboard SQL editor. These role limits are defense-in-depth, not a replacement.
-
-**Escape hatch for a deliberate long migration:** `statement_timeout` is a per-session setting any role can raise, so a genuinely long, intentional migration can run `set statement_timeout = 0;` (or a higher value) at the top of that session to opt out. Run such migrations deliberately and off-peak.
-
-**After a full Supabase project restore (Scenario A):** role-level GUCs on platform-managed roles are not guaranteed to survive a restore — re-apply the two `alter role` statements above and re-run the verify query.
+**The real mitigation is the process rule (#392): don't `db push` from a laptop; apply small additive migrations via the dashboard SQL editor.** Pool-exhaustion visibility is tracked separately (#395). The one genuine gap — no `idle_in_transaction_session_timeout` on the CLI role (it is `0` cluster-wide) — was judged not worth a support request, since `pg_dump` disables that too and it would only catch an abandoned-mid-transaction connection, not this outage.
 
 ## Escalation
 
