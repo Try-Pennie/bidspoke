@@ -6,3 +6,12 @@ node scripts/typecheck-tracked.mjs
 if [ -z "$SKIP_DOCS_CHECK" ]; then
   pnpm --filter=web docs:check
 fi
+
+# Copy guards (#415): the em-dash / emoji scans are vitest tests in apps/web, so
+# they run in CI's test job but NOT in this pre-push gate. A banned character in
+# new alert or UI copy (e.g. apps/worker/src/lib/slack.ts) therefore passes the
+# push locally and only turns CI red afterward. Run them here too (fast, ~100ms).
+# Skip with SKIP_COPY_CHECK=1 if ever needed.
+if [ -z "$SKIP_COPY_CHECK" ]; then
+  pnpm --filter=web test run em-dash emoji
+fi
