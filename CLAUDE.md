@@ -67,15 +67,26 @@ Migrations must be **backward-compatible (expand/contract)** so schema and code 
 Recovery runbook for catastrophic loss (Supabase, Cloudflare, secrets, destructive migration), plus the warm-Pipedream rollback target: [docs/disaster-recovery.md](./docs/disaster-recovery.md). Note: worker secrets are not escrowed yet — see the runbook's Secret inventory.
 
 ## Worker secrets (production)
-These must be set via `wrangler secret put <NAME> --name bidspoke-worker`. Never committed to git.
+These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never committed to git. There are ~20, not the handful below.
 
-| Secret | Purpose |
-|--------|---------|
-| `SUPABASE_SECRET_KEY` | Supabase service role key |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token for syncing partner secrets |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
-| `API_KEY_MAP` | JSON map of webhook API keys to source names |
-| `SECRET_ENCRYPTION_KEY` | AES-GCM key for encrypting env var secret values (enables reveal in UI) |
+**Authoritative sources** (don't trust this table to be exhaustive):
+- Live truth: `wrangler secret list --name bidspoke-worker`.
+- Annotated inventory with where to re-obtain each (for recovery): [docs/disaster-recovery.md](./docs/disaster-recovery.md) (Secret inventory).
+- The ~15 no-default secrets are runtime-guarded: a daily cron check (`apps/worker/src/lib/required-secrets.ts`, #386) alerts Slack if any is unset in prod.
+- Note: the worker's `Env` TypeScript interface (`apps/worker/src/index.ts`) is NOT a complete list. Several partner secrets (Salesforce, Achieve, Equifax) are read dynamically and aren't declared there.
+
+| Group | Secrets |
+|-------|---------|
+| Supabase | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` |
+| Webhook auth | `API_KEY_MAP` (JSON map of webhook API keys to source names) |
+| Cloudflare (partner-secret sync) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| Encryption / PII | `SECRET_ENCRYPTION_KEY` (env-var reveal), `SSN_HASH_PEPPER` (person dedup — effectively immutable) |
+| Snowflake export | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
+| Salesforce | `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
+| Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY` |
+| Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `ANTHROPIC_API_KEY` (changelog drafting) |
+
+Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (changing it breaks person dedup) and `SECRET_ENCRYPTION_KEY` (for old reveals).
 
 ### Rotating `SECRET_ENCRYPTION_KEY`
 Generate: `openssl rand -base64 32`, then `wrangler secret put SECRET_ENCRYPTION_KEY --name bidspoke-worker`.
