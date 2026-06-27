@@ -10,6 +10,11 @@ import { executeStatement, type SnowflakeConfig } from './snowflake'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
 const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
+// Per-run backstop on rows exported per table. Far above a normal night (~83K
+// finalized sightings) so steady-state runs are unaffected; it only bounds a
+// catch-up run draining a large backlog, alongside the platform clean-stop in
+// exportTable. A multi-day backlog drains over a few runs rather than one giant run.
+const MAX_ROWS_PER_RUN = 400_000
 
 // Column names + Snowflake types for value formatting. 'variant' carries JSON:
 // the value travels as an escaped string in the VALUES list (Snowflake VALUES
@@ -131,6 +136,7 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
       SIGHTING_COLS,
       // Sightings: only finalized, non-test, un-exported
       (q) => q.eq('outcome_state', 'finalized').eq('is_test', false).is('exported_at', null),
+      MAX_ROWS_PER_RUN,
     )
   } catch (e) {
     summary.errors.push(`sightings export: ${formatErr(e)}`)
@@ -143,6 +149,7 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
       'lead_sighting_bids',
       BID_COLS,
       (q) => q.eq('is_test', false).is('exported_at', null),
+      MAX_ROWS_PER_RUN,
     )
   } catch (e) {
     summary.errors.push(`bids export: ${formatErr(e)}`)
@@ -187,33 +194,70 @@ export async function exportTable(
   tableName: string,
   cols: ColSpec[],
   applyFilter: FilterFn,
+  // Backstop so one run can't loop unbounded against a large backlog (e.g. the
+  // ~700K pile-up after an export was wedged for days). The real platform ceiling
+  // is enforced by the clean-stop below; this is just a guard rail.
+  maxRows: number = Number.POSITIVE_INFINITY,
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   let totalExported = 0
 
-  // Loop until no more un-exported rows.
+  // Loop until no more un-exported rows (or we hit the per-run cap / platform limit).
   while (true) {
-    const baseQuery = supabase.from(tableName).select(colNames).limit(BATCH_SIZE)
-    const { data, error } = await applyFilter(baseQuery)
-    if (error) throw error
-    if (!data || data.length === 0) break
+    const remaining = maxRows - totalExported
+    if (remaining <= 0) break
+    const batchLimit = Math.min(BATCH_SIZE, remaining)
 
-    const rows = data as unknown as Array<Record<string, unknown>>
-    const sql = buildMergeSql(tableName, cols, rows)
-    await executeStatement(config, sql)
+    try {
+      const baseQuery = supabase.from(tableName).select(colNames).limit(batchLimit)
+      const { data, error } = await applyFilter(baseQuery)
+      if (error) throw error
+      if (!data || data.length === 0) break
 
-    const ids = rows.map((r) => r.id as string)
-    const { error: updErr } = await supabase
-      .from(tableName)
-      .update({ exported_at: new Date().toISOString() })
-      .in('id', ids)
-    if (updErr) throw updErr
+      const rows = data as unknown as Array<Record<string, unknown>>
+      const sql = buildMergeSql(tableName, cols, rows)
+      await executeStatement(config, sql)
 
-    totalExported += rows.length
-    if (rows.length < BATCH_SIZE) break
+      const ids = rows.map((r) => r.id as string)
+      const { error: updErr } = await supabase
+        .from(tableName)
+        .update({ exported_at: new Date().toISOString() })
+        .in('id', ids)
+      if (updErr) throw updErr
+
+      totalExported += rows.length
+      if (rows.length < batchLimit) break
+    } catch (e) {
+      // Cloudflare caps subrequests per invocation. When draining a large backlog
+      // we may hit it mid-run; that is NOT a failure -- stop cleanly, keep the rows
+      // already exported, and let the next scheduled run continue (rows are still
+      // un-exported, the MERGE is idempotent). Anything else is a real error and
+      // must propagate so it still alerts.
+      if (isSubrequestLimit(e)) {
+        console.warn(
+          `[sightings-export] ${tableName}: hit platform subrequest limit after ${totalExported} rows; remaining backlog continues next run`
+        )
+        break
+      }
+      throw e
+    }
   }
 
   return totalExported
+}
+
+// Detects the Cloudflare "Too many subrequests" platform error so a backlog drain
+// can stop cleanly instead of failing the run.
+export function isSubrequestLimit(e: unknown): boolean {
+  const msg =
+    e instanceof Error
+      ? e.message
+      : typeof e === 'string'
+        ? e
+        : typeof (e as { message?: unknown } | null)?.message === 'string'
+          ? (e as { message: string }).message
+          : ''
+  return /too many subrequests|subrequest limit/i.test(msg)
 }
 
 export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
