@@ -276,6 +276,24 @@ export async function purgeOldExported(supabase: SupabaseClient, tableName: stri
   return count ?? 0
 }
 
-function formatErr(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
+// Thrown Supabase/PostgREST errors are plain objects ({ message, code,
+// details, hint }), not Error instances, so the old `String(e)` rendered them
+// as the useless "[object Object]" that hid the real cause in export alerts.
+// Surface the message (plus code when present); fall back to JSON for any other
+// object so we never emit "[object Object]" again.
+export function formatErr(e: unknown): string {
+  if (e instanceof Error) return e.message
+  if (e && typeof e === 'object') {
+    const obj = e as { message?: unknown; code?: unknown }
+    const message = typeof obj.message === 'string' ? obj.message : undefined
+    const code =
+      typeof obj.code === 'string' || typeof obj.code === 'number' ? String(obj.code) : undefined
+    if (message) return code ? `${message} (${code})` : message
+    try {
+      return JSON.stringify(e)
+    } catch {
+      return '[unserializable error]'
+    }
+  }
+  return String(e)
 }
