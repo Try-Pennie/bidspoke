@@ -34,19 +34,23 @@ export const REQUIRED_SECRETS = [
 ] as const satisfies readonly (keyof Env)[]
 
 /**
- * Partner secrets that live workflows depend on but the typed `Env` doesn't cover:
- * Salesforce/Achieve are read dynamically (cast off Env), and Equifax/Tripoint are
- * consumed inside code-node scripts (the sandbox), invisible to a source grep. This
- * list is curated to the partners that are live and mandatory (confirmed 2026-06-26):
- * Salesforce, Equifax, Tripoint. Feature-gated partners (Achieve until its node is
- * flipped to prod, Eligibility Scout) are deliberately excluded to avoid false alarms.
+ * Partner values that live workflows depend on but the typed `Env` doesn't cover:
+ * Salesforce is read dynamically (cast off Env), and Equifax/Tripoint are consumed
+ * inside code-node scripts (the sandbox), invisible to a source grep.
+ *
+ * This guard checks the worker's *secret bindings*, so it must only list values that
+ * are genuine wrangler secrets. The Salesforce/Equifax connection details that live
+ * as non-secret rows in the `environment_variables` table (SALESFORCE_INSTANCE_URL,
+ * SALESFORCE_CLIENT_ID, EQUIFAX_USERNAME) are NOT worker secrets — they are owned by
+ * the separate required-env-vars guard (#394). Listing them here produced a daily
+ * false-positive alert (they are always absent from the binding); likewise EQ_USER /
+ * EQ_PASS were never real keys (the Equifax password secret is EQUIFAX_PASSWORD).
+ * Feature-gated partners (Achieve, Eligibility Scout) stay excluded to avoid false
+ * alarms.
  */
 export const REQUIRED_PARTNER_SECRETS = [
-  'SALESFORCE_INSTANCE_URL',
-  'SALESFORCE_CLIENT_ID',
   'SALESFORCE_CLIENT_SECRET',
-  'EQ_USER',
-  'EQ_PASS',
+  'EQUIFAX_PASSWORD',
   'TRIPOINT_PROXY_SECRET',
 ] as const
 

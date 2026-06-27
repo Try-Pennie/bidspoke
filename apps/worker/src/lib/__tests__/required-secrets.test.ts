@@ -59,19 +59,28 @@ describe('findMissingRequiredSecrets', () => {
     expect(REQUIRED_SECRETS).toContain('SECRET_ENCRYPTION_KEY')
   })
 
-  it('flags a missing partner secret (Equifax EQ_USER)', () => {
+  it('flags a missing partner secret (Equifax EQUIFAX_PASSWORD)', () => {
     const env = fullSecretEnv()
-    delete env.EQ_USER
-    expect(findMissingRequiredSecrets(env as unknown as Env)).toEqual(['EQ_USER'])
+    delete env.EQUIFAX_PASSWORD
+    expect(findMissingRequiredSecrets(env as unknown as Env)).toEqual(['EQUIFAX_PASSWORD'])
   })
 
-  it('includes the live partner secrets (Salesforce, Equifax, Tripoint) in the required partner set', () => {
-    expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_CLIENT_ID')
+  it('only requires partner values that are genuine worker secrets', () => {
     expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_CLIENT_SECRET')
-    expect(REQUIRED_PARTNER_SECRETS).toContain('SALESFORCE_INSTANCE_URL')
-    expect(REQUIRED_PARTNER_SECRETS).toContain('EQ_USER')
-    expect(REQUIRED_PARTNER_SECRETS).toContain('EQ_PASS')
     expect(REQUIRED_PARTNER_SECRETS).toContain('TRIPOINT_PROXY_SECRET')
+    expect(REQUIRED_PARTNER_SECRETS).toContain('EQUIFAX_PASSWORD')
+  })
+
+  it('does not require partner config that lives in the environment_variables table (guarded by #394) or misnamed keys', () => {
+    // SALESFORCE_INSTANCE_URL / SALESFORCE_CLIENT_ID are non-secret DB env vars,
+    // not worker secrets, so this guard always saw them as absent (false positive).
+    // EQ_USER / EQ_PASS never existed (the real keys are EQUIFAX_USERNAME in the DB
+    // and EQUIFAX_PASSWORD as a worker secret).
+    expect(REQUIRED_PARTNER_SECRETS).not.toContain('SALESFORCE_INSTANCE_URL')
+    expect(REQUIRED_PARTNER_SECRETS).not.toContain('SALESFORCE_CLIENT_ID')
+    expect(REQUIRED_PARTNER_SECRETS).not.toContain('EQ_USER')
+    expect(REQUIRED_PARTNER_SECRETS).not.toContain('EQ_PASS')
+    expect(REQUIRED_PARTNER_SECRETS).not.toContain('EQUIFAX_USERNAME')
   })
 
   it('does not require feature-gated partner secrets (Achieve, Scout)', () => {
