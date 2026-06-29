@@ -4,6 +4,7 @@ import {
   normalizeRefSegments,
   chainToWatchedField,
   collectStructuredRefs,
+  collectCodeRefs,
 } from '../watched-fields'
 
 describe('extractChains', () => {
@@ -76,5 +77,34 @@ describe('collectStructuredRefs', () => {
     const set = new Set<string>()
     collectStructuredRefs({ script: 'steps.x.output.final', source: 'steps.y.output.v' }, set)
     expect([...set].sort()).toEqual(['y.v'])
+  })
+})
+
+describe('collectCodeRefs', () => {
+  it('captures the Scout field from a full literal path', () => {
+    const set = new Set<string>()
+    const readable = collectCodeRefs(
+      'const debt = steps.pennie_or_eligibility?.$return_value?.final ?? null',
+      set,
+    )
+    expect(readable).toBe(true)
+    expect([...set]).toEqual(['pennie_or_eligibility.final'])
+  })
+  it('captures multiple fields across a script', () => {
+    const set = new Set<string>()
+    collectCodeRefs('const a = steps.x.$return_value.v; const b = steps.y.output.w', set)
+    expect([...set].sort()).toEqual(['x.v', 'y.w'])
+  })
+  it('bails open on bracket access and adds nothing', () => {
+    const set = new Set<string>()
+    const readable = collectCodeRefs('const v = steps["foo"].bar', set)
+    expect(readable).toBe(false)
+    expect(set.size).toBe(0)
+  })
+  it('bails open on whole-object aliasing', () => {
+    const set = new Set<string>()
+    const readable = collectCodeRefs('const all = steps; return all.x.final', set)
+    expect(readable).toBe(false)
+    expect(set.size).toBe(0)
   })
 })

@@ -1,3 +1,5 @@
+import { hasDynamicStepsAccess } from './nodes/code'
+
 // Watched-field derivation (#420). Pulls every `steps.X.Y.Z` output field any
 // node reads out of a workflow definition, so the field-presence capture can
 // record whether each read field carried a value per execution. Under-derivation
@@ -56,4 +58,15 @@ export function collectStructuredRefs(value: unknown, into: Set<string>): void {
       collectStructuredRefs(v, into)
     }
   }
+}
+
+// Scan a code node's script for full literal `steps.X.Y.Z` field reads. Bails
+// open (returns false, adds nothing) on the same dynamic-access patterns
+// extractReferencedSteps bails on, so a node we cannot statically read is never
+// given a wrong watch. A field read ONLY through a renamed local and never once
+// as a full literal is missed by design (scan, not instrument); see the spec.
+export function collectCodeRefs(script: string, into: Set<string>): boolean {
+  if (hasDynamicStepsAccess(script)) return false
+  for (const chain of extractChains(script)) into.add(chainToWatchedField(chain))
+  return true
 }
