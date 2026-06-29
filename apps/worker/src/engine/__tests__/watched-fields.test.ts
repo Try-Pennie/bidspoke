@@ -5,7 +5,9 @@ import {
   chainToWatchedField,
   collectStructuredRefs,
   collectCodeRefs,
+  deriveWatchedFields,
 } from '../watched-fields'
+import type { WorkflowDefinition } from '../../types'
 
 describe('extractChains', () => {
   it('finds a chain inside a template', () => {
@@ -106,5 +108,76 @@ describe('collectCodeRefs', () => {
     const readable = collectCodeRefs('const all = steps; return all.x.final', set)
     expect(readable).toBe(false)
     expect(set.size).toBe(0)
+  })
+})
+
+function def(partial: Partial<WorkflowDefinition>): WorkflowDefinition {
+  return {
+    id: 'wf',
+    name: 'wf',
+    trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } },
+    nodes: [],
+    edges: [],
+    ...partial,
+  }
+}
+
+describe('deriveWatchedFields', () => {
+  it('returns [] for the empty definition', () => {
+    expect(deriveWatchedFields(def({}))).toEqual([])
+  })
+
+  it('collects structured refs from a node config and an edge condition', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'resp', type: 'response', config: { body: '{{steps.x.output.final}}' } } as any,
+      ],
+      edges: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        {
+          id: 'e1',
+          source: 'a',
+          target: 'b',
+          condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.y.output.score', operator: 'gt', value: 600 }] }] },
+        } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual(['x.final', 'y.score'])
+  })
+
+  it('scans a code node script and normalizes the Scout field (end to end)', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        {
+          id: 'n1',
+          namespace: 'pennie_or_eligibility',
+          type: 'code',
+          config: { script: 'const debt = steps.pennie_or_eligibility?.$return_value?.final ?? null; return { final: debt }' },
+        } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual(['pennie_or_eligibility.final'])
+  })
+
+  it('does not pick up structured refs from inside a script and bails the node open', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'c', type: 'code', config: { script: 'const all = steps; return all.x.final' } } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual([])
+  })
+
+  it('dedups the same field reached via output and $return_value wrappers', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'r', type: 'response', config: { a: 'steps.x.output.v', b: 'steps.x.$return_value.v' } } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual(['x.v'])
   })
 })

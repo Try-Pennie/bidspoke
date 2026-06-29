@@ -1,4 +1,5 @@
 import { hasDynamicStepsAccess } from './nodes/code'
+import type { WorkflowDefinition } from '../types'
 
 // Watched-field derivation (#420). Pulls every `steps.X.Y.Z` output field any
 // node reads out of a workflow definition, so the field-presence capture can
@@ -69,4 +70,20 @@ export function collectCodeRefs(script: string, into: Set<string>): boolean {
   if (hasDynamicStepsAccess(script)) return false
   for (const chain of extractChains(script)) into.add(chainToWatchedField(chain))
   return true
+}
+
+// The full watched-field set for a definition: structured references across the
+// whole tree (node configs minus their `script`, node variables, edge
+// conditions) plus deep field reads from each readable code-node script. Derived
+// in-engine from the running definition, so it always matches the live version
+// (no stored column, no drift).
+export function deriveWatchedFields(definition: WorkflowDefinition): string[] {
+  const set = new Set<string>()
+  collectStructuredRefs(definition.nodes, set)
+  collectStructuredRefs(definition.edges, set)
+  for (const node of definition.nodes) {
+    const script = node.config?.script
+    if (typeof script === 'string') collectCodeRefs(script, set)
+  }
+  return [...set].sort()
 }
