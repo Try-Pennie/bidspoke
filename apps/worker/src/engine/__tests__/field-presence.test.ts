@@ -62,7 +62,7 @@ describe('computeFieldPresence', () => {
 })
 
 describe('deriveWatchedFields', () => {
-  it('returns [] in Phase 0 (watched map arrives in Phase 1)', () => {
+  it('returns [] for an empty definition', () => {
     const definition = { nodes: [], edges: [] } as unknown as WorkflowDefinition
     expect(deriveWatchedFields(definition)).toEqual([])
   })
@@ -78,7 +78,43 @@ describe('fieldPresenceForCapture — flag gate', () => {
     expect(fieldPresenceForCapture('1', steps, definition)).toBeUndefined()
   })
 
-  it('returns the (empty in Phase 0) presence map when the flag is "true"', () => {
+  it('returns the presence map when the flag is "true"', () => {
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({})
+  })
+})
+
+describe('computeFieldPresence with $return_value paths', () => {
+  it('resolves a $return_value field path the same as output', () => {
+    const steps = { foo: step({ final: 7 }) }
+    expect(computeFieldPresence(steps, ['foo.$return_value.final'])).toEqual({ 'foo.final': true })
+  })
+})
+
+describe('deriveWatchedFields (wired through field-presence)', () => {
+  it('derives real fields from a definition (no longer a stub)', () => {
+    const definition: WorkflowDefinition = {
+      id: 'wf',
+      name: 'wf',
+      trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      nodes: [{ id: 'n', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.final}}' } } as any],
+      edges: [],
+    }
+    expect(deriveWatchedFields(definition)).toEqual(['x.final'])
+  })
+})
+
+describe('fieldPresenceForCapture with a real definition', () => {
+  it('records presence for a derived field when the flag is on', () => {
+    const steps = { x: step({ final: 'ok' }) }
+    const definition: WorkflowDefinition = {
+      id: 'wf',
+      name: 'wf',
+      trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      nodes: [{ id: 'n', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.final}}' } } as any],
+      edges: [],
+    }
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({ 'x.final': true })
   })
 })
