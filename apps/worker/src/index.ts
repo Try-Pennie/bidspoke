@@ -58,6 +58,11 @@ export interface Env {
   // PII redaction — comma-separated field patterns, empty = disabled (PRD 12.4)
   PII_REDACTION_FIELDS: string
 
+  // Field-presence capture (#419/#410). 'true' enables the dark write of the
+  // per-execution watched-field presence map; off or unset disables it.
+  // Default off so deploying before the migration is applied is safe.
+  FIELD_PRESENCE_CAPTURE?: string
+
   // Frontend URL — used for deep links in Slack alerts
   APP_URL: string
 

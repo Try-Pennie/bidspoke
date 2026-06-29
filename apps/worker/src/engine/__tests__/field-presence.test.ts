@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeFieldPresence, deriveWatchedFields } from '../field-presence'
+import { computeFieldPresence, deriveWatchedFields, fieldPresenceForCapture } from '../field-presence'
 import type { StepOutput, WorkflowDefinition } from '../../types'
 
 function step(output: unknown): StepOutput {
@@ -65,5 +65,20 @@ describe('deriveWatchedFields', () => {
   it('returns [] in Phase 0 (watched map arrives in Phase 1)', () => {
     const definition = { nodes: [], edges: [] } as unknown as WorkflowDefinition
     expect(deriveWatchedFields(definition)).toEqual([])
+  })
+})
+
+describe('fieldPresenceForCapture — flag gate', () => {
+  const steps = { foo: step({ final: 1 }) }
+  const definition = { nodes: [], edges: [] } as unknown as WorkflowDefinition
+
+  it('returns undefined when the flag is not "true"', () => {
+    expect(fieldPresenceForCapture(undefined, steps, definition)).toBeUndefined()
+    expect(fieldPresenceForCapture('false', steps, definition)).toBeUndefined()
+    expect(fieldPresenceForCapture('1', steps, definition)).toBeUndefined()
+  })
+
+  it('returns the (empty in Phase 0) presence map when the flag is "true"', () => {
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({})
   })
 })

@@ -47,3 +47,18 @@ export function computeFieldPresence(
 export function deriveWatchedFields(_definition: WorkflowDefinition): string[] {
   return []
 }
+
+/**
+ * Finalize-time glue: when FIELD_PRESENCE_CAPTURE is enabled, derive the watched
+ * map for this definition and compute presence from the in-memory step outputs.
+ * Returns undefined when the flag is off so callers can omit the column entirely.
+ * Dark/log-only in Phase 0 (watched map is empty, so this yields {}).
+ */
+export function fieldPresenceForCapture(
+  flag: string | undefined,
+  steps: Record<string, StepOutput>,
+  definition: WorkflowDefinition,
+): Record<string, boolean> | undefined {
+  if (flag !== 'true') return undefined
+  return computeFieldPresence(steps, deriveWatchedFields(definition))
+}
