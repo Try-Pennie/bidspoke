@@ -171,6 +171,16 @@ describe('deriveWatchedFields', () => {
     expect(deriveWatchedFields(d)).toEqual([])
   })
 
+  it('skips the script key in the structured walk even when the script bails open', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'c', type: 'code', config: { script: 'const all = steps; const d = steps.x.output.final' } } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual([])
+  })
+
   it('dedups the same field reached via output and $return_value wrappers', () => {
     const d = def({
       nodes: [

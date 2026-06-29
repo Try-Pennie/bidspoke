@@ -16,13 +16,7 @@ const CHAIN_RE =
   /(?<![\w$])steps(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*(?:(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*)*/g
 
 export function extractChains(text: string): string[] {
-  const out: string[] = []
-  let m: RegExpExecArray | null
-  CHAIN_RE.lastIndex = 0
-  while ((m = CHAIN_RE.exec(text)) !== null) {
-    out.push(m[0])
-  }
-  return out
+  return [...text.matchAll(CHAIN_RE)].map((m) => m[0])
 }
 
 // Segments AFTER the `steps` root. Drops a leading output wrapper segment

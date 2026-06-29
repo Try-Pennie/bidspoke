@@ -41,10 +41,9 @@ export function computeFieldPresence(
 }
 
 /**
- * Finalize-time glue: when FIELD_PRESENCE_CAPTURE is enabled, derive the watched
- * map for this definition and compute presence from the in-memory step outputs.
- * Returns undefined when the flag is off so callers can omit the column entirely.
- * Dark/log-only in Phase 0 (watched map is empty, so this yields {}).
+ * Finalize-time glue: derives the watched-field map for this definition and
+ * computes presence from the in-memory step outputs. Returns undefined when the
+ * flag is off so callers can omit the column entirely.
  */
 export function fieldPresenceForCapture(
   flag: string | undefined,
