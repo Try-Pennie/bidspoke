@@ -59,7 +59,7 @@ $$;
 GRANT EXECUTE ON FUNCTION refresh_field_presence_daily(INTEGER) TO service_role;
 
 -- RLS: org-scoped via the workflows join (table has workflow_id, no
--- organization_id) — identical shape to workflow_stats_daily_org. The worker
+-- organization_id), identical shape to workflow_stats_daily_org. The worker
 -- (service_role) and pg_cron (postgres) both bypass RLS; this only gates direct
 -- PostgREST reads by an authenticated user.
 ALTER TABLE field_presence_daily ENABLE ROW LEVEL SECURITY;
@@ -82,8 +82,8 @@ BEGIN
 END;
 $$;
 
--- Incremental refresh every 5 minutes — 2-day lookback covers UTC day rollover
--- and late-completing executions.
+-- Incremental refresh every 5 minutes (2-day lookback covers UTC day rollover
+-- and late-completing executions).
 SELECT cron.schedule(
   'refresh-field-presence-daily',
   '*/5 * * * *',
