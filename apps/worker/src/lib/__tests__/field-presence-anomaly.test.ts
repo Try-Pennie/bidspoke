@@ -53,6 +53,12 @@ describe('detectDrought', () => {
   it('does NOT fire when today is still within the stable band', () => {
     expect(detectDrought(STABLE, 0.99, 100)).toBeNull()
   })
+  it('does NOT over-fire on a zero-variance baseline for a small dip (collapse floor)', () => {
+    expect(detectDrought([1, 1, 1, 1, 1], 0.95, 100)).toBeNull()
+  })
+  it('fires on a zero-variance baseline for a real collapse below the floor', () => {
+    expect(detectDrought([1, 1, 1, 1, 1], 0.5, 100)).not.toBeNull()
+  })
 })
 
 describe('detectDayOneDead', () => {
@@ -92,6 +98,11 @@ describe('findDroughts', () => {
     rows.push(row('wf1', 'scout.final', TODAY, 5, 0))   // below MIN_TODAY_SAMPLE
     expect(findDroughts(rows, TODAY)).toEqual([])
   })
+  it('skips a field that has baseline rows but no row for today', () => {
+    const rows = DAYS.map((d) => row('wf1', 'scout.final', d, 100, 100))
+    // no TODAY row for scout.final
+    expect(findDroughts(rows, TODAY)).toEqual([])
+  })
 })
 
 describe('findDayOneDead', () => {
@@ -107,5 +118,15 @@ describe('findDayOneDead', () => {
       row('wf2', 'eligibility.final', '2026-06-28', DMR, 0),
     ]
     expect(findDayOneDead(rows)).toEqual([])
+  })
+  it('does not mark everHealthy on a high-rate day with too few runs', () => {
+    const rows = [
+      row('wf2', 'eligibility.final', '2026-06-26', 5, 5),      // 100% rate but only 5 runs (< floor) -> must NOT set everHealthy
+      row('wf2', 'eligibility.final', '2026-06-28', 2000, 0),   // large dead day keeps window rate <= DEAD_MAX_RATE
+    ]
+    expect(findDayOneDead(rows).map((h) => h.field_path)).toEqual(['eligibility.final'])
+  })
+  it('does not flag day-one-dead just below the run floor', () => {
+    expect(findDayOneDead([row('wf2', 'eligibility.final', '2026-06-28', DMR - 1, 0)])).toEqual([])
   })
 })

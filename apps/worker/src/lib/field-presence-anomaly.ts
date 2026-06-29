@@ -13,6 +13,7 @@ export const BASELINE_MIN_DAY_RUNS = 10
 export const STABLE_MEAN_MIN = 0.98
 export const STABLE_STDDEV_MAX = 0.02
 export const COLLAPSE_K = 4
+export const COLLAPSE_FLOOR = 0.10
 export const MIN_TODAY_SAMPLE = 20
 export const DEAD_WINDOW_DAYS = 7
 export const DEAD_MIN_RUNS = 200
@@ -56,7 +57,8 @@ export function detectDrought(
   if (!isStableBaseline(baselineRates)) return null
   const m = mean(baselineRates)
   const sd = stddev(baselineRates)
-  if (todayRate < m - COLLAPSE_K * sd) {
+  const margin = Math.max(COLLAPSE_K * sd, COLLAPSE_FLOOR)
+  if (todayRate < m - margin) {
     return { mean: m, stddev: sd, todayRate }
   }
   return null
@@ -170,11 +172,12 @@ const DAY_MS = 24 * 60 * 60 * 1000
 // Active, non-deleted workflow ids. Log-only runs across all of them (not just
 // Slack-configured orgs) for dark-run coverage; Phase 4 adds org/Slack scoping.
 async function activeWorkflowIds(supabase: SupabaseClient): Promise<string[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('workflows')
     .select('id')
     .eq('is_active', true)
     .is('deleted_at', null)
+  if (error) console.error('[field-presence] workflows read failed:', error)
   return (data ?? []).map((w) => w.id as string)
 }
 
@@ -183,19 +186,35 @@ async function readPresenceRows(
   workflowIds: string[],
   sinceDate: string,
 ): Promise<PresenceRow[]> {
-  const { data } = await supabase
-    .from('field_presence_daily')
-    .select('workflow_id, field_path, day, ran_count, present_count')
-    .in('workflow_id', workflowIds)
-    .gte('day', sinceDate)
-    .eq('is_test', false)
-  return (data ?? []).map((r) => ({
-    workflow_id: r.workflow_id as string,
-    field_path: r.field_path as string,
-    day: r.day as string,
-    ran_count: Number(r.ran_count),
-    present_count: Number(r.present_count),
-  }))
+  const PAGE = 1000
+  const out: PresenceRow[] = []
+  let from = 0
+  for (;;) {
+    const { data, error } = await supabase
+      .from('field_presence_daily')
+      .select('workflow_id, field_path, day, ran_count, present_count')
+      .in('workflow_id', workflowIds)
+      .gte('day', sinceDate)
+      .eq('is_test', false)
+      .range(from, from + PAGE - 1)
+    if (error) {
+      console.error('[field-presence] field_presence_daily read failed:', error)
+      break
+    }
+    const rows = data ?? []
+    for (const r of rows) {
+      out.push({
+        workflow_id: r.workflow_id as string,
+        field_path: r.field_path as string,
+        day: r.day as string,
+        ran_count: Number(r.ran_count),
+        present_count: Number(r.present_count),
+      })
+    }
+    if (rows.length < PAGE) break
+    from += PAGE
+  }
+  return out
 }
 
 // Tier-1 (hourly). Logs intended pages; sends nothing this phase.
