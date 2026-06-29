@@ -234,6 +234,9 @@ export async function updateExecutionRecord(
     // #353: durable projection of the rich sighting-finalize fields, recovered by
     // the strand drain when the live finalize is lost to isolate eviction.
     sighting_finalize?: unknown
+    // #419: per-execution field-presence booleans (which watched fields carried
+    // a value this run). Dark capture behind FIELD_PRESENCE_CAPTURE.
+    field_presence?: Record<string, boolean>
   }
 ): Promise<void> {
   // The finalize update lands in the same partition-purge window as the insert,

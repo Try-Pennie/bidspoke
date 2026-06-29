@@ -21,6 +21,7 @@ import { classifyHttpError, classifyTransportError, classifyStepError, formatCod
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
+import { fieldPresenceForCapture } from './field-presence'
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import {
@@ -525,6 +526,20 @@ export async function executeWorkflow(
           { lastCompletedNamespace: finalNodeNamespace, walkStatus, executionStatus, successNamespaces },
           { sightingId, isTest: options.isTest },
         )
+        // Phase 0 (#419): dark field-presence capture. Behind a default-off
+        // flag, log-only. The watched map is an empty stub until Phase 1 (#420),
+        // so this writes {} — enough to prove the column + write path. Computed
+        // from in-memory ctx.steps (raw, before PII redaction in flushStepLogs);
+        // only booleans persist, so no value leaves the worker.
+        const fieldPresence = fieldPresenceForCapture(env.FIELD_PRESENCE_CAPTURE, ctx.steps, definition)
+        if (fieldPresence) {
+          console.log('[field-presence] captured', {
+            workflowId,
+            executionId,
+            watched: Object.keys(fieldPresence).length,
+            present: Object.values(fieldPresence).filter(Boolean).length,
+          })
+        }
         await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,
           outcome,
@@ -543,6 +558,7 @@ export async function executeWorkflow(
           failed_step_type: resolveFailedStepType(definition.nodes, failedStep),
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
+          ...(fieldPresence ? { field_presence: fieldPresence } : {}),
         })
 
         // Mirror the immediate alert gate: skip business rejections

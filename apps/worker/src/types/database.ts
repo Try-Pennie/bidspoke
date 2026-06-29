@@ -1486,6 +1486,7 @@ export type Database = {
           duration_ms: number | null
           error_message: string | null
           failed_step_type: string | null
+          field_presence: Json | null
           final_node_id: string | null
           final_node_namespace: string | null
           id: string
@@ -1515,6 +1516,7 @@ export type Database = {
           duration_ms?: number | null
           error_message?: string | null
           failed_step_type?: string | null
+          field_presence?: Json | null
           final_node_id?: string | null
           final_node_namespace?: string | null
           id?: string
@@ -1544,6 +1546,7 @@ export type Database = {
           duration_ms?: number | null
           error_message?: string | null
           failed_step_type?: string | null
+          field_presence?: Json | null
           final_node_id?: string | null
           final_node_namespace?: string | null
           id?: string
