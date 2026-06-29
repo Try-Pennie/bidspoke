@@ -73,3 +73,93 @@ export function detectDayOneDead(
   if (everHealthy) return false
   return dailyRate(windowRan, windowPresent) <= DEAD_MAX_RATE
 }
+
+export interface PresenceRow {
+  workflow_id: string
+  field_path: string
+  day: string
+  ran_count: number
+  present_count: number
+}
+
+export interface DroughtHit {
+  workflow_id: string
+  field_path: string
+  mean: number
+  stddev: number
+  today_rate: number
+  today_ran: number
+}
+
+export interface DeadHit {
+  workflow_id: string
+  field_path: string
+  window_ran: number
+  window_present: number
+}
+
+function groupByField(rows: PresenceRow[]): Map<string, PresenceRow[]> {
+  const groups = new Map<string, PresenceRow[]>()
+  for (const r of rows) {
+    const key = `${r.workflow_id}|${r.field_path}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(r)
+    else groups.set(key, [r])
+  }
+  return groups
+}
+
+// Tier-1: per field, build a baseline from prior days with enough runs, take the
+// most recent 7, and test today's partial rate against the stability gate.
+export function findDroughts(rows: PresenceRow[], today: string): DroughtHit[] {
+  const hits: DroughtHit[] = []
+  for (const bucket of groupByField(rows).values()) {
+    const todayRow = bucket.find((r) => r.day === today)
+    if (!todayRow) continue
+    const baselineRates = bucket
+      .filter((r) => r.day < today && r.ran_count >= BASELINE_MIN_DAY_RUNS)
+      .sort((a, b) => a.day.localeCompare(b.day))
+      .slice(-7)
+      .map((r) => dailyRate(r.ran_count, r.present_count))
+    const todayRate = dailyRate(todayRow.ran_count, todayRow.present_count)
+    const result = detectDrought(baselineRates, todayRate, todayRow.ran_count)
+    if (result) {
+      hits.push({
+        workflow_id: todayRow.workflow_id,
+        field_path: todayRow.field_path,
+        mean: result.mean,
+        stddev: result.stddev,
+        today_rate: result.todayRate,
+        today_ran: todayRow.ran_count,
+      })
+    }
+  }
+  return hits
+}
+
+// Tier-2: per field, sum the window and check day-one-dead. A field is counted
+// as "ever healthy" only on a day with enough runs to trust its rate.
+export function findDayOneDead(rows: PresenceRow[]): DeadHit[] {
+  const hits: DeadHit[] = []
+  for (const bucket of groupByField(rows).values()) {
+    let windowRan = 0
+    let windowPresent = 0
+    let everHealthy = false
+    for (const r of bucket) {
+      windowRan += r.ran_count
+      windowPresent += r.present_count
+      if (r.ran_count >= BASELINE_MIN_DAY_RUNS && dailyRate(r.ran_count, r.present_count) >= STABLE_MEAN_MIN) {
+        everHealthy = true
+      }
+    }
+    if (detectDayOneDead(windowRan, windowPresent, everHealthy)) {
+      hits.push({
+        workflow_id: bucket[0].workflow_id,
+        field_path: bucket[0].field_path,
+        window_ran: windowRan,
+        window_present: windowPresent,
+      })
+    }
+  }
+  return hits
+}

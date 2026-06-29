@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest'
+import type { PresenceRow } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
-  MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
+  findDroughts, findDayOneDead, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
 } from '../field-presence-anomaly'
+
+const DMR = DEAD_MIN_RUNS
 
 describe('numeric helpers', () => {
   it('dailyRate is present/ran', () => {
@@ -61,5 +64,48 @@ describe('detectDayOneDead', () => {
   })
   it('does NOT fire with too few runs', () => {
     expect(detectDayOneDead(DEAD_MIN_RUNS - 1, 0, false)).toBe(false)
+  })
+})
+
+function row(wf: string, field: string, day: string, ran: number, present: number): PresenceRow {
+  return { workflow_id: wf, field_path: field, day, ran_count: ran, present_count: present }
+}
+
+const DAYS = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+const TODAY = '2026-06-29'
+
+describe('findDroughts', () => {
+  it('flags a stable field that collapses today, and ignores a normal no-bid field', () => {
+    const rows: PresenceRow[] = []
+    for (const d of DAYS) {
+      rows.push(row('wf1', 'scout.final', d, 100, 100))   // stable, always present
+      rows.push(row('wf1', 'bid.amount', d, 100, 40))     // no-bid: ~40%, low rate -> not stable
+    }
+    rows.push(row('wf1', 'scout.final', TODAY, 80, 0))    // collapsed today, enough runs
+    rows.push(row('wf1', 'bid.amount', TODAY, 80, 0))     // 0% today but never stable
+    const hits = findDroughts(rows, TODAY)
+    expect(hits.map((h) => h.field_path)).toEqual(['scout.final'])
+  })
+
+  it('does not flag when today has too few runs', () => {
+    const rows: PresenceRow[] = DAYS.map((d) => row('wf1', 'scout.final', d, 100, 100))
+    rows.push(row('wf1', 'scout.final', TODAY, 5, 0))   // below MIN_TODAY_SAMPLE
+    expect(findDroughts(rows, TODAY)).toEqual([])
+  })
+})
+
+describe('findDayOneDead', () => {
+  it('flags a field with many runs and zero presence, never healthy', () => {
+    const rows = [row('wf2', 'eligibility.final', '2026-06-28', DMR, 0)]
+    const hits = findDayOneDead(rows)
+    expect(hits.map((h) => h.field_path)).toEqual(['eligibility.final'])
+  })
+
+  it('does not flag a field that was healthy on some day', () => {
+    const rows = [
+      row('wf2', 'eligibility.final', '2026-06-27', 100, 100),  // healthy day
+      row('wf2', 'eligibility.final', '2026-06-28', DMR, 0),
+    ]
+    expect(findDayOneDead(rows)).toEqual([])
   })
 })
