@@ -516,6 +516,33 @@ export type Database = {
         }
         Relationships: []
       }
+      field_presence_daily: {
+        Row: {
+          day: string
+          field_path: string
+          is_test: boolean
+          present_count: number
+          ran_count: number
+          workflow_id: string
+        }
+        Insert: {
+          day: string
+          field_path: string
+          is_test: boolean
+          present_count?: number
+          ran_count?: number
+          workflow_id: string
+        }
+        Update: {
+          day?: string
+          field_path?: string
+          is_test?: boolean
+          present_count?: number
+          ran_count?: number
+          workflow_id?: string
+        }
+        Relationships: []
+      }
       folders: {
         Row: {
           created_at: string
@@ -1799,6 +1826,10 @@ export type Database = {
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number
+      }
+      refresh_field_presence_daily: {
+        Args: { p_lookback_days?: number }
+        Returns: undefined
       }
       refresh_workflow_stats_daily: {
         Args: { p_lookback_days?: number }
