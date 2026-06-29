@@ -1,8 +1,26 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeCodeNode, unionReferencedSteps, scopeSteps } from '../code'
+import { executeCodeNode, unionReferencedSteps, scopeSteps, hasDynamicStepsAccess } from '../code'
 import { codeWorkerName, codeBundleName, buildBundledWorkerScript } from '../../../lib/code-node-deployer'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../../../types'
 import type { Env } from '../../../index'
+
+describe('hasDynamicStepsAccess', () => {
+  it('is false for plain dot references', () => {
+    expect(hasDynamicStepsAccess('const x = steps.foo.output.a')).toBe(false)
+  })
+  it('is true for bracket access', () => {
+    expect(hasDynamicStepsAccess('steps["foo"]')).toBe(true)
+  })
+  it('is true for whole-object aliasing', () => {
+    expect(hasDynamicStepsAccess('const all = steps')).toBe(true)
+  })
+  it('is true for Object.keys(steps)', () => {
+    expect(hasDynamicStepsAccess('Object.keys(steps)')).toBe(true)
+  })
+  it('is true for for-in over steps', () => {
+    expect(hasDynamicStepsAccess('for (const k in steps) {}')).toBe(true)
+  })
+})
 
 // #190: the chain code-node path used to send the full step context to every
 // chained node. These two pure helpers let it scope to the union of what the

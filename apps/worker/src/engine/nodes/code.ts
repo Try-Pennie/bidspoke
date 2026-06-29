@@ -41,6 +41,20 @@ export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext):
 }
 
 /**
+ * True when a script accesses `steps` in a way that defeats static analysis:
+ * bracket access, whole-object aliasing, Object.* iteration, or for-in/of.
+ * Shared by extractReferencedSteps (step-scoping, #190) and the watched-field
+ * code scanner (#420), so both bail open on exactly the same patterns.
+ */
+export function hasDynamicStepsAccess(script: string): boolean {
+  if (/\bsteps\s*\[/.test(script)) return true
+  if (/\b(?:const|let|var)\s+\w+\s*=\s*steps\b(?!\.)/.test(script)) return true
+  if (/\bObject\s*\.\s*(?:keys|entries|values|assign)\s*\(\s*steps\b/.test(script)) return true
+  if (/\bfor\s*\(\s*(?:const|let|var)\s+\w+\s+(?:in|of)\s+steps\b/.test(script)) return true
+  return false
+}
+
+/**
  * Static-analyzes a user script for `steps.X` dot references and returns the
  * set of step namespaces referenced. Used to filter the `steps` object we
  * pass to the dispatched code worker — without this, every code node subrequest
@@ -59,10 +73,7 @@ export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext):
  * - Everything else → scan for `steps.<ident>` dot references
  */
 function extractReferencedSteps(script: string): Set<string> | null {
-  if (/\bsteps\s*\[/.test(script)) return null
-  if (/\b(?:const|let|var)\s+\w+\s*=\s*steps\b(?!\.)/.test(script)) return null
-  if (/\bObject\s*\.\s*(?:keys|entries|values|assign)\s*\(\s*steps\b/.test(script)) return null
-  if (/\bfor\s*\(\s*(?:const|let|var)\s+\w+\s+(?:in|of)\s+steps\b/.test(script)) return null
+  if (hasDynamicStepsAccess(script)) return null
   const refs = new Set<string>()
   const re = /\bsteps\s*\.\s*([a-zA-Z_$][\w$]*)/g
   let m: RegExpExecArray | null
