@@ -24,6 +24,7 @@ import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
 import { runMatrixAudit } from './lib/sf-matrix-audit'
+import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
 export { DailyCapObject } from './durable-objects/daily-cap'
@@ -190,6 +191,10 @@ export default {
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
       ctx.waitUntil(
+        runFieldPresenceDeadCheck(supabase)
+          .catch((e) => console.error('[field-presence-dead] failed:', e))
+      )
+      ctx.waitUntil(
         runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[timeout-audit] check failed:', e))
       )
@@ -249,6 +254,10 @@ export default {
         runMatrixAudit(env, supabase)
           .then((r) => console.log(`[sf-matrix-audit] fetched=${r.rows_fetched} added=${r.rows_added} edited=${r.rows_edited} removed=${r.rows_removed} alerted=${r.alerted}`))
           .catch((e) => console.error('[sf-matrix-audit] failed:', e))
+      )
+      ctx.waitUntil(
+        runFieldPresenceDroughtCheck(supabase)
+          .catch((e) => console.error('[field-presence-drought] failed:', e))
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(

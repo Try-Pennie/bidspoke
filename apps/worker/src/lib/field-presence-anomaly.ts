@@ -5,6 +5,7 @@
 // validated during the dark run; the stability gate is load-bearing (it stops
 // normal no-bid/no-debt nulls from firing).
 
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { MIN_BASELINE_DAYS } from './volume-anomaly'
 
 export { MIN_BASELINE_DAYS }
@@ -162,4 +163,61 @@ export function findDayOneDead(rows: PresenceRow[]): DeadHit[] {
     }
   }
   return hits
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Active, non-deleted workflow ids. Log-only runs across all of them (not just
+// Slack-configured orgs) for dark-run coverage; Phase 4 adds org/Slack scoping.
+async function activeWorkflowIds(supabase: SupabaseClient): Promise<string[]> {
+  const { data } = await supabase
+    .from('workflows')
+    .select('id')
+    .eq('is_active', true)
+    .is('deleted_at', null)
+  return (data ?? []).map((w) => w.id as string)
+}
+
+async function readPresenceRows(
+  supabase: SupabaseClient,
+  workflowIds: string[],
+  sinceDate: string,
+): Promise<PresenceRow[]> {
+  const { data } = await supabase
+    .from('field_presence_daily')
+    .select('workflow_id, field_path, day, ran_count, present_count')
+    .in('workflow_id', workflowIds)
+    .gte('day', sinceDate)
+    .eq('is_test', false)
+  return (data ?? []).map((r) => ({
+    workflow_id: r.workflow_id as string,
+    field_path: r.field_path as string,
+    day: r.day as string,
+    ran_count: Number(r.ran_count),
+    present_count: Number(r.present_count),
+  }))
+}
+
+// Tier-1 (hourly). Logs intended pages; sends nothing this phase.
+export async function runFieldPresenceDroughtCheck(supabase: SupabaseClient): Promise<void> {
+  const workflowIds = await activeWorkflowIds(supabase)
+  if (workflowIds.length === 0) return
+  const today = new Date().toISOString().slice(0, 10)
+  const since = new Date(Date.now() - (MIN_BASELINE_DAYS + 8) * DAY_MS).toISOString().slice(0, 10)
+  const rows = await readPresenceRows(supabase, workflowIds, since)
+  const hits = findDroughts(rows, today)
+  for (const h of hits) {
+    console.log(JSON.stringify({ event: 'field_presence_drought', ...h }))
+  }
+  console.log(`[field-presence-drought] checked=${workflowIds.length} workflows hits=${hits.length}`)
+}
+
+// Tier-2 (daily). Logs the day-one-dead digest as one event; sends nothing.
+export async function runFieldPresenceDeadCheck(supabase: SupabaseClient): Promise<void> {
+  const workflowIds = await activeWorkflowIds(supabase)
+  if (workflowIds.length === 0) return
+  const since = new Date(Date.now() - DEAD_WINDOW_DAYS * DAY_MS).toISOString().slice(0, 10)
+  const rows = await readPresenceRows(supabase, workflowIds, since)
+  const hits = findDayOneDead(rows)
+  console.log(JSON.stringify({ event: 'field_presence_dead_digest', count: hits.length, fields: hits }))
 }
