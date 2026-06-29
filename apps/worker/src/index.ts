@@ -164,17 +164,6 @@ export default {
     const supabase = createSupabaseClient(env)
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
-        runSightingsExport(supabase, env)
-          .then((s) => {
-            console.log('[sightings-export]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Lead sightings export', s.errors)
-          })
-          .catch((e) => {
-            console.error('[sightings-export] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)])
-          })
-      )
-      ctx.waitUntil(
         runAchieveExport(supabase, env)
           .then((s) => {
             console.log('[achieve-export]', JSON.stringify(s))
@@ -228,6 +217,22 @@ export default {
         runDrainStallCheck(supabase, env.IDEMPOTENCY)
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
+      )
+    } else if (event.cron === '0 */2 * * *') {
+      // Lead sightings export runs every 2 hours in its own invocation so it gets a
+      // full per-run subrequest budget. One run drains ~50K rows (the platform
+      // ceiling, handled by exportTable's clean-stop) and inflow is ~83K/day, so a
+      // once-daily run fell permanently behind; 12 runs/day stays well ahead.
+      ctx.waitUntil(
+        runSightingsExport(supabase, env)
+          .then((s) => {
+            console.log('[sightings-export]', JSON.stringify(s))
+            return notifyExportFailure(supabase, 'Lead sightings export', s.errors)
+          })
+          .catch((e) => {
+            console.error('[sightings-export] failed:', e)
+            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)])
+          })
       )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(
