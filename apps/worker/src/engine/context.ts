@@ -133,6 +133,25 @@ function evalArithmetic(tokens: string[], ctx: ExecutionContext): number | undef
   return Number.isFinite(result) ? result : undefined
 }
 
+/**
+ * Resolve a `steps.*` reference against the step outputs. `segments` are the
+ * path parts AFTER the `steps` root, so segments[0] is the namespace. Tolerates
+ * an explicit `.output` segment after the namespace, matching the copy-path and
+ * code-node conventions. Returns the step output, a nested field, or undefined
+ * when the namespace or path is absent. Shared by resolveReference and the
+ * field-presence capture so both agree on path semantics.
+ */
+export function resolveStepField(steps: Record<string, StepOutput>, segments: string[]): unknown {
+  const ns = segments[0]
+  if (!ns) return undefined
+  const step = steps[ns]
+  if (!step) return undefined
+  if (segments.length === 1) return step.output
+  const pathParts = segments[1] === 'output' ? segments.slice(2) : segments.slice(1)
+  if (pathParts.length === 0) return step.output
+  return getPath(step.output, pathParts)
+}
+
 /** A plain path reference: env.X, trigger.*, execution.*, steps.* — with
  * optional bracket segments (`map[trigger.payload.key]`, `arr[0]`, `obj['k']`)
  * whose keys resolve before the lookup. */
@@ -164,15 +183,7 @@ function resolveReference(expr: string, ctx: ExecutionContext): unknown {
     return getPath(ctx.execution, parts.slice(1))
   }
   if (parts[0] === 'steps' && parts[1]) {
-    const step = ctx.steps[parts[1]]
-    if (!step) return undefined
-    if (parts.length === 2) return step.output
-    // Tolerate explicit `.output` — matches the copy-path format from the JSON tree
-    // and the code-node-script convention. `{{steps.X.output}}` and `{{steps.X.output.Y}}`
-    // resolve the same as `{{steps.X}}` and `{{steps.X.Y}}`.
-    const pathParts = parts[2] === 'output' ? parts.slice(3) : parts.slice(2)
-    if (pathParts.length === 0) return step.output
-    return getPath(step.output, pathParts)
+    return resolveStepField(ctx.steps, parts.slice(1))
   }
   return undefined
 }
