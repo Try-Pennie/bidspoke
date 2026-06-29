@@ -35,10 +35,11 @@ function sliceBlock(src: string, header: string): string {
 
 describe('field_presence_daily migration', () => {
   const sql = readFileSync(MIGRATION, 'utf8')
+  const sqlNoComments = sql.replace(/--.*$/gm, '')
 
-  it('creates the table with exactly the expected columns', () => {
+  it('migration SQL references all expected columns (excluding comments)', () => {
     for (const col of EXPECTED_COLUMNS) {
-      expect(sql).toMatch(new RegExp(`\\b${col}\\b`))
+      expect(sqlNoComments).toMatch(new RegExp(`\\b${col}\\b`))
     }
   })
 
@@ -60,7 +61,7 @@ describe('field_presence_daily database.ts types', () => {
     expect(block.length).toBeGreaterThan(0)
   })
 
-  it('Row declares exactly the expected columns', () => {
+  it('Row declares all expected columns', () => {
     for (const col of EXPECTED_COLUMNS) {
       expect(block).toMatch(new RegExp(`\\b${col}\\b`))
     }
