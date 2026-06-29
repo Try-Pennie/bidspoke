@@ -162,7 +162,20 @@ A field read in a script **only** through a renamed local (e.g.
 `const r = steps.x.$return_value; ... r.final`) and **never once** as a full
 `steps.x...final` literal is silently unwatched — the literal-path scan cannot see
 it. This is inherent to scan-not-instrument (the chosen approach; instrumenting
-live money-moving code was rejected). Verified the live Main Flow does not hit this
+live money-moving code was rejected).
+
+A second, related accepted gap: a reference that uses bracket access on the
+`steps` root in a structured string or template (e.g. `{{steps['x'].output.final}}`
+or `steps["x"].y`) yields no chain and is silently unwatched, because the chain
+regex requires `steps` followed by a dot. The engine does resolve that form at
+runtime, so it is the dangerous under-derivation direction in principle. Exposure
+today is ~nil: the reference-autocomplete UI emits dot paths, the live Main Flow
+uses dot notation throughout, and the feature ships dark. Unlike the code-script
+path (which bails open and is flagged unreadable for Phase 4), the structured path
+has no equivalent signal. If real exposure ever appears, the cheap mitigation is to
+have the structured walk note strings containing `steps[` so Phase 4's coverage
+view can surface them the same way it surfaces unreadable scripts. Accepted as a
+limitation for Phase 1 (2026-06-29). Verified the live Main Flow does not hit this
 for Scout: the field appears as a full literal at
 `docs/reference/main-flow-pipedream.ts:520`, so it is caught — but coverage hinges
 on that one occurrence. Phase 4's coverage view flags nodes the scanner cannot read
