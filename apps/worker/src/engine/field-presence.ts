@@ -41,6 +41,22 @@ export function computeFieldPresence(
 }
 
 /**
+ * Whether to emit the per-execution capture heartbeat log for this execution
+ * (#434). The dark capture writes the field_presence column on every run, but
+ * logging on every run is ~500K lines/month for a dark feature. Sample ~1%
+ * deterministically off the execution id (FNV-ish string hash mod 100) so a
+ * heartbeat still proves the write path is alive at ~1% of the volume. The DB
+ * write itself is unaffected.
+ */
+export function shouldLogCapture(executionId: string): boolean {
+  let h = 0
+  for (let i = 0; i < executionId.length; i++) {
+    h = (h * 31 + executionId.charCodeAt(i)) | 0
+  }
+  return Math.abs(h) % 100 === 0
+}
+
+/**
  * Finalize-time glue: derives the watched-field map for this definition and
  * computes presence from the in-memory step outputs. Returns undefined when the
  * flag is off so callers can omit the column entirely.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeFieldPresence, deriveWatchedFields, fieldPresenceForCapture } from '../field-presence'
+import { computeFieldPresence, deriveWatchedFields, fieldPresenceForCapture, shouldLogCapture } from '../field-presence'
 import type { StepOutput, WorkflowDefinition } from '../../types'
 
 function step(output: unknown): StepOutput {
@@ -116,5 +116,28 @@ describe('fieldPresenceForCapture with a real definition', () => {
       edges: [],
     }
     expect(fieldPresenceForCapture('true', steps, definition)).toEqual({ 'x.final': true })
+  })
+})
+
+describe('shouldLogCapture — ~1% deterministic sample (#434)', () => {
+  it('is deterministic for the same execution id', () => {
+    const id = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+    expect(shouldLogCapture(id)).toBe(shouldLogCapture(id))
+  })
+  it('samples roughly 1% across many ids (between 0.3% and 3%)', () => {
+    const total = 20000
+    let n = 0
+    for (let i = 0; i < total; i++) if (shouldLogCapture(`00000000-0000-0000-0000-${String(i).padStart(12, '0')}`)) n++
+    const rate = n / total
+    expect(rate).toBeGreaterThan(0.003)
+    expect(rate).toBeLessThan(0.03)
+  })
+  it('suppresses the vast majority (not all ids log)', () => {
+    const logged = Array.from({ length: 200 }, (_, i) => shouldLogCapture(`exec-${i}`)).filter(Boolean).length
+    expect(logged).toBeLessThan(200)
+  })
+  it('logs at least some ids (sampler is not always-false)', () => {
+    const logged = Array.from({ length: 5000 }, (_, i) => shouldLogCapture(`exec-${i}`)).filter(Boolean).length
+    expect(logged).toBeGreaterThan(0)
   })
 })
