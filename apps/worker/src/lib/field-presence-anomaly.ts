@@ -167,6 +167,29 @@ export function findDayOneDead(rows: PresenceRow[]): DeadHit[] {
   return hits
 }
 
+// Drop any hit whose (workflow_id, field_path) is in the silenced set. The key is
+// `${workflow_id} ${field_path}` (a space separator a field path cannot contain).
+export function excludeSilenced<T extends { workflow_id: string; field_path: string }>(
+  hits: T[],
+  silenced: Set<string>,
+): T[] {
+  return hits.filter((h) => !silenced.has(`${h.workflow_id} ${h.field_path}`))
+}
+
+// Author-set silences for the active workflows. Keyed to match excludeSilenced.
+// A read failure returns an empty set (log-only detector still logs everything).
+async function readSilences(supabase: SupabaseClient, workflowIds: string[]): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('field_presence_silences')
+    .select('workflow_id, field_path')
+    .in('workflow_id', workflowIds)
+  if (error) {
+    console.error('[field-presence] silences read failed:', error)
+    return new Set()
+  }
+  return new Set((data ?? []).map((r) => `${r.workflow_id as string} ${r.field_path as string}`))
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000
 
 // Active, non-deleted workflow ids. Log-only runs across all of them (not just
@@ -225,10 +248,12 @@ export async function runFieldPresenceDroughtCheck(supabase: SupabaseClient): Pr
   const since = new Date(Date.now() - (MIN_BASELINE_DAYS + 8) * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
   const hits = findDroughts(rows, today)
-  for (const h of hits) {
+  const silenced = await readSilences(supabase, workflowIds)
+  const visible = excludeSilenced(hits, silenced)
+  for (const h of visible) {
     console.log(JSON.stringify({ event: 'field_presence_drought', ...h }))
   }
-  console.log(`[field-presence-drought] checked=${workflowIds.length} workflows hits=${hits.length}`)
+  console.log(`[field-presence-drought] checked=${workflowIds.length} workflows hits=${visible.length}`)
 }
 
 // Tier-2 (daily). Logs the day-one-dead digest as one event; sends nothing.
@@ -238,5 +263,7 @@ export async function runFieldPresenceDeadCheck(supabase: SupabaseClient): Promi
   const since = new Date(Date.now() - DEAD_WINDOW_DAYS * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
   const hits = findDayOneDead(rows)
-  console.log(JSON.stringify({ event: 'field_presence_dead_digest', count: hits.length, fields: hits }))
+  const silenced = await readSilences(supabase, workflowIds)
+  const visible = excludeSilenced(hits, silenced)
+  console.log(JSON.stringify({ event: 'field_presence_dead_digest', count: visible.length, fields: visible }))
 }

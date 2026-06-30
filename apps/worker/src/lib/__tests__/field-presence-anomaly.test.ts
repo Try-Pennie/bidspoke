@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { PresenceRow } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
-  findDroughts, findDayOneDead, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
+  findDroughts, findDayOneDead, excludeSilenced, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -128,5 +128,20 @@ describe('findDayOneDead', () => {
   })
   it('does not flag day-one-dead just below the run floor', () => {
     expect(findDayOneDead([row('wf2', 'eligibility.final', '2026-06-28', DMR - 1, 0)])).toEqual([])
+  })
+})
+
+describe('excludeSilenced', () => {
+  it('drops hits whose (workflow, field) is silenced and keeps the rest', () => {
+    const hits = [
+      { workflow_id: 'wf1', field_path: 'a.b' },
+      { workflow_id: 'wf1', field_path: 'c.d' },
+    ]
+    const silenced = new Set(['wf1 a.b'])
+    expect(excludeSilenced(hits, silenced)).toEqual([{ workflow_id: 'wf1', field_path: 'c.d' }])
+  })
+  it('keeps everything when nothing is silenced', () => {
+    const hits = [{ workflow_id: 'wf1', field_path: 'a.b' }]
+    expect(excludeSilenced(hits, new Set())).toEqual(hits)
   })
 })
