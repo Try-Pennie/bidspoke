@@ -20,7 +20,7 @@ jobs:
       # (#324). Absent -> the alert step no-ops; the job still fails as usual.
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Pinned (#323): `latest` installs whatever CLI shipped that night, a
       # non-reproducible source of spurious drift failures if the generator's
