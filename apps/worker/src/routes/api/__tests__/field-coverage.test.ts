@@ -40,6 +40,19 @@ function request(app: { request: Function }, method: string, path: string) {
   return app.request(path, { method, headers: { Authorization: 'Bearer tok' } }, testEnv, mockCtx)
 }
 
+function jsonRequest(app: { request: Function }, method: string, path: string, body: unknown) {
+  return app.request(
+    path,
+    {
+      method,
+      headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    testEnv,
+    mockCtx,
+  )
+}
+
 describe('field-coverage routes (#423)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
@@ -89,5 +102,74 @@ describe('field-coverage routes (#423)', () => {
     ])
     expect(body.unreadable_nodes).toEqual([])
     expect(body.silences).toEqual([{ field_path: 'y.skip', reason: 'always empty', created_at: '2026-06-29T00:00:00Z' }])
+  })
+
+  it('POST silence returns 404 when the workflow is not in the caller org', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { maybeSingle: null } }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'POST', '/field-coverage/wf-x/silence', { field: 'x.final', reason: 'r' })
+    expect(res.status).toBe(404)
+  })
+
+  it('POST silence requires a reason (400 without)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { maybeSingle: { id: 'wf-1' } } }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'POST', '/field-coverage/wf-1/silence', { field: 'x.final' })
+    expect(res.status).toBe(400)
+  })
+
+  it('POST silence upserts with field + reason for an owned workflow', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_silences: { upsertResult: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'POST', '/field-coverage/wf-1/silence', {
+      field: 'x.final',
+      reason: 'always empty for FDR leads',
+    })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(),
+      'org-abc',
+      'field_presence_silence',
+      'wf-1:x.final',
+      'field_silence_set',
+      'user-1',
+      expect.objectContaining({ reason: 'always empty for FDR leads' }),
+    )
+  })
+
+  it('DELETE silence requires a field (400 without)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { maybeSingle: { id: 'wf-1' } } }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'DELETE', '/field-coverage/wf-1/silence', {})
+    expect(res.status).toBe(400)
+  })
+
+  it('DELETE silence removes the silence for an owned workflow', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_silences: {},
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'DELETE', '/field-coverage/wf-1/silence', { field: 'x.final' })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(),
+      'org-abc',
+      'field_presence_silence',
+      'wf-1:x.final',
+      'field_silence_cleared',
+      'user-1',
+      expect.anything(),
+    )
   })
 })

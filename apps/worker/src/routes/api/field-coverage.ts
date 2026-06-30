@@ -7,6 +7,7 @@ import { dbError } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
+import { writeAuditLog } from '../../lib/audit'
 import { loadWorkflowDefinition } from '../../engine/definition-loader'
 import { deriveWatchedFieldMap } from '../../engine/watched-fields'
 import { findDroughts, findDayOneDead, type PresenceRow } from '../../lib/field-presence-anomaly'
@@ -102,6 +103,57 @@ fieldCoverage.get('/:workflowId', async (c) => {
       created_at: s.created_at as string,
     })),
   })
+})
+
+// Silence a (workflow, field): the detector skips it because the field is
+// legitimately allowed to be empty. reason is required so the manifest can show
+// why. Upsert so re-silencing the same field updates the reason in place.
+fieldCoverage.post('/:workflowId/silence', async (c) => {
+  const workflowId = c.req.param('workflowId')
+  const { orgId, userId, email } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  if (!(await ownedWorkflow(supabase, workflowId, orgId))) {
+    return c.json({ error: 'Workflow not found' }, 404)
+  }
+  const body = (await c.req.json().catch(() => null)) as { field?: string; reason?: string } | null
+  if (!body?.field || !body?.reason) {
+    return c.json({ error: 'field and reason are required' }, 400)
+  }
+  const { error } = await supabase
+    .from('field_presence_silences')
+    .upsert(
+      { workflow_id: workflowId, field_path: body.field, reason: body.reason, created_by: email },
+      { onConflict: 'workflow_id,field_path' },
+    )
+  if (error) return dbError(c, error)
+  await writeAuditLog(supabase, orgId, 'field_presence_silence', `${workflowId}:${body.field}`, 'field_silence_set', userId, {
+    field: body.field,
+    reason: body.reason,
+  })
+  return c.json({ ok: true })
+})
+
+fieldCoverage.delete('/:workflowId/silence', async (c) => {
+  const workflowId = c.req.param('workflowId')
+  const { orgId, userId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+  if (!(await ownedWorkflow(supabase, workflowId, orgId))) {
+    return c.json({ error: 'Workflow not found' }, 404)
+  }
+  const body = (await c.req.json().catch(() => null)) as { field?: string } | null
+  if (!body?.field) {
+    return c.json({ error: 'field is required' }, 400)
+  }
+  const { error } = await supabase
+    .from('field_presence_silences')
+    .delete()
+    .eq('workflow_id', workflowId)
+    .eq('field_path', body.field)
+  if (error) return dbError(c, error)
+  await writeAuditLog(supabase, orgId, 'field_presence_silence', `${workflowId}:${body.field}`, 'field_silence_cleared', userId, {
+    field: body.field,
+  })
+  return c.json({ ok: true })
 })
 
 export default fieldCoverage
