@@ -543,6 +543,33 @@ export type Database = {
         }
         Relationships: []
       }
+      field_presence_silences: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          field_path: string
+          id: string
+          reason: string
+          workflow_id: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          field_path: string
+          id?: string
+          reason: string
+          workflow_id: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          field_path?: string
+          id?: string
+          reason?: string
+          workflow_id?: string
+        }
+        Relationships: []
+      }
       folders: {
         Row: {
           created_at: string
