@@ -115,7 +115,7 @@ fieldCoverage.post('/:workflowId/silence', async (c) => {
   if (!(await ownedWorkflow(supabase, workflowId, orgId))) {
     return c.json({ error: 'Workflow not found' }, 404)
   }
-  const body = (await c.req.json().catch(() => null)) as { field?: string; reason?: string } | null
+  const body = await c.req.json<{ field?: string; reason?: string }>().catch(() => null)
   if (!body?.field || !body?.reason) {
     return c.json({ error: 'field and reason are required' }, 400)
   }
@@ -140,7 +140,7 @@ fieldCoverage.delete('/:workflowId/silence', async (c) => {
   if (!(await ownedWorkflow(supabase, workflowId, orgId))) {
     return c.json({ error: 'Workflow not found' }, 404)
   }
-  const body = (await c.req.json().catch(() => null)) as { field?: string } | null
+  const body = await c.req.json<{ field?: string }>().catch(() => null)
   if (!body?.field) {
     return c.json({ error: 'field is required' }, 400)
   }

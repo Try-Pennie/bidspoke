@@ -422,6 +422,16 @@ Response `201` (the only time the key is shown in full):
 |--------|------|---------|
 | GET | `/api/config-warnings` | List configuration warnings for your org's live workflows. |
 
+## Field coverage
+
+`/api/field-coverage`. Coverage manifest for the silent-output-field detector: what fields it watches per workflow (each field's source and current health), the code nodes it cannot statically read, and the author-set silences (fields legitimately allowed to be empty). The manifest reports presence rates and booleans only, never resolved field values. Silences set here make the detector skip those fields.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/field-coverage/:workflowId` | Manifest: watched fields (path, source, health), unreadable nodes, and silences. |
+| POST | `/api/field-coverage/:workflowId/silence` | Silence a field. Body `{ field, reason }`; reason is required. |
+| DELETE | `/api/field-coverage/:workflowId/silence` | Clear a field's silence. Body `{ field }`. |
+
 ## Settings
 
 `/api/settings`. Org-level settings. Currently the Anthropic API key used to draft changelog summaries on save.
