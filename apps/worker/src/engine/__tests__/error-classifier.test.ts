@@ -6,6 +6,7 @@ import {
   evaluateResponseClassification,
   shouldSuppressAlert,
   isSaturationError,
+  isDeterministicCodeError,
   formatCodeErrorMessage,
 } from '../error-classifier'
 import { PartnerApiError } from '../partner-bid-error'
@@ -93,6 +94,65 @@ describe('classifyTransportError', () => {
 
   it('unknown errors are transient', () => {
     expect(classifyTransportError('some string error')).toBe('transient')
+  })
+})
+
+// ── Deterministic code-node errors (#458) ────────────────────────────────────
+// A code node that throws a programming error (TypeError reading an undefined
+// step, ReferenceError, etc.) used to default to transient and get retried up
+// to `retries` times — re-firing any outbound call the script already made
+// (observed: duplicate engine lead creation). The sandbox now reports the
+// thrown error's constructor name; deterministic ones classify permanent so the
+// retry loop fails fast.
+
+const codeErr = (name: string, message: string) =>
+  Object.assign(new Error(message), { codeErrorName: name })
+
+describe('isDeterministicCodeError (#458)', () => {
+  it('is true for a TypeError with a programming message', () => {
+    expect(isDeterministicCodeError('TypeError', "Cannot read properties of undefined (reading 'output')")).toBe(true)
+  })
+  it('is true for ReferenceError, SyntaxError, RangeError', () => {
+    expect(isDeterministicCodeError('ReferenceError', 'x is not defined')).toBe(true)
+    expect(isDeterministicCodeError('SyntaxError', 'Unexpected token')).toBe(true)
+    expect(isDeterministicCodeError('RangeError', 'Maximum call stack size exceeded')).toBe(true)
+  })
+  it('is false for a TypeError whose message is a network failure (fetch throws TypeError)', () => {
+    expect(isDeterministicCodeError('TypeError', 'Network connection lost')).toBe(false)
+    expect(isDeterministicCodeError('TypeError', 'fetch failed')).toBe(false)
+    expect(isDeterministicCodeError('TypeError', 'Failed to fetch')).toBe(false)
+  })
+  it('is false for an undefined error name', () => {
+    expect(isDeterministicCodeError(undefined, "Cannot read properties of undefined")).toBe(false)
+  })
+  it('is false for a generic Error name', () => {
+    expect(isDeterministicCodeError('Error', 'something the script threw on purpose')).toBe(false)
+  })
+})
+
+describe('classifyTransportError — deterministic code-node errors (#458)', () => {
+  it('classifies a code-node TypeError as permanent', () => {
+    expect(classifyTransportError(codeErr('TypeError', "Cannot read properties of undefined (reading 'output')"))).toBe('permanent')
+  })
+  it('classifies ReferenceError / SyntaxError / RangeError as permanent', () => {
+    expect(classifyTransportError(codeErr('ReferenceError', 'x is not defined'))).toBe('permanent')
+    expect(classifyTransportError(codeErr('SyntaxError', 'Unexpected token'))).toBe('permanent')
+    expect(classifyTransportError(codeErr('RangeError', 'stack overflow'))).toBe('permanent')
+  })
+  it('keeps a fetch-failure TypeError transient so network blips still retry', () => {
+    expect(classifyTransportError(codeErr('TypeError', 'Network connection lost'))).toBe('transient')
+  })
+  it('leaves a generic Error (no codeErrorName) transient — unchanged behavior', () => {
+    expect(classifyTransportError(new Error('boom'))).toBe('transient')
+  })
+  it('leaves a code-node generic Error name transient', () => {
+    expect(classifyTransportError(codeErr('Error', 'custom thrown'))).toBe('transient')
+  })
+})
+
+describe('classifyStepError — code-node programming errors (#458)', () => {
+  it('routes a code-node TypeError to permanent end-to-end', () => {
+    expect(classifyStepError(codeErr('TypeError', "Cannot read properties of undefined (reading 'output')"))).toBe('permanent')
   })
 })
 

@@ -47,8 +47,50 @@ export function classifyTransportError(err: unknown): ErrorType {
   if (err && typeof err === 'object' && (err as { permanent?: boolean }).permanent === true) {
     return 'permanent'
   }
+  // A deterministic programming error thrown inside a code-node sandbox
+  // (TypeError reading an undefined step, ReferenceError, etc.) can never
+  // succeed on retry — and retrying re-fires any outbound call the script
+  // already made before crashing (observed: duplicate engine lead creation,
+  // #458). Classify it permanent so withRetry fails fast. The sandbox reports
+  // the thrown error's constructor name as `codeErrorName`.
+  if (err && typeof err === 'object') {
+    const codeErrorName = (err as { codeErrorName?: string }).codeErrorName
+    const message = err instanceof Error ? err.message : ''
+    if (isDeterministicCodeError(codeErrorName, message)) return 'permanent'
+  }
   // Network failures, timeouts, DNS errors are always transient
   return 'transient'
+}
+
+// Native error constructors that signal a deterministic bug in a code-node
+// script. These never resolve on retry.
+const DETERMINISTIC_CODE_ERROR_NAMES = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError']
+
+// fetch() network failures in Workers also reject with a TypeError, so a
+// TypeError carrying one of these messages is a transient network blip, not a
+// programming bug — keep retrying those. Matched case-insensitively.
+const NETWORK_FAILURE_MARKERS = [
+  'fetch failed',
+  'failed to fetch',
+  'network connection lost',
+  'the network connection was lost',
+  'connection was closed',
+  'connection lost',
+]
+
+/**
+ * True when a code-node sandbox error is a deterministic programming error that
+ * will never succeed on retry (#458). Takes the thrown error's constructor name
+ * and message. A TypeError whose message looks like a fetch network failure is
+ * excluded — those stay transient so genuine network blips still retry.
+ */
+export function isDeterministicCodeError(errorName: string | undefined, message: string): boolean {
+  if (!errorName || !DETERMINISTIC_CODE_ERROR_NAMES.includes(errorName)) return false
+  if (errorName === 'TypeError') {
+    const lower = message.toLowerCase()
+    if (NETWORK_FAILURE_MARKERS.some((m) => lower.includes(m))) return false
+  }
+  return true
 }
 
 // ── PRD Section 11.2 — Per-partner response classification overrides ───────────

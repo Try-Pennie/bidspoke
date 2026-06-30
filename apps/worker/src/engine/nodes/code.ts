@@ -188,8 +188,12 @@ export async function executeCodeNode(
     const err = new Error(detail) as Error & {
       logs?: import('../../types').StepLogEntry[]
       resolvedInput?: ResolvedStepInput
+      codeErrorName?: string
     }
     if (envelope && Array.isArray(envelope.logs)) err.logs = envelope.logs as import('../../types').StepLogEntry[]
+    // Carry the thrown error's constructor name so the classifier can fail a
+    // deterministic programming error fast instead of retrying it (#458).
+    if (envelope && typeof envelope.name === 'string') err.codeErrorName = envelope.name
     err.resolvedInput = resolvedInput
     throw err
   }
@@ -245,7 +249,7 @@ export function buildCodeSandboxBody(
   })
 }
 
-function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string } {
+function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string; name?: string } {
   return v !== null && typeof v === 'object' && (v as { __bsv?: unknown }).__bsv === 1
 }
 

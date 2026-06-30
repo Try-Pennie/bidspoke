@@ -17,7 +17,7 @@ import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
-import { classifyHttpError, classifyTransportError, classifyStepError, formatCodeErrorMessage } from './error-classifier'
+import { classifyHttpError, classifyTransportError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
@@ -1148,12 +1148,19 @@ export async function walkGraph(
           const r = chainResult.results[i]
           const chainNode = chain[i]
           const stepStartedAtIso = new Date(Date.now() - r.durationMs).toISOString()
+          // A deterministic programming error (TypeError, etc.) reported by the
+          // sandbox is permanent — never transient — so it isn't mislabeled in
+          // alerts/logs (#458). The chain path isn't retried (chainable nodes
+          // carry retries=0), but classification still drives alerting.
+          const chainErrorType: import('../types').ErrorType = r.status === 'failed'
+            ? (isDeterministicCodeError(r.errorName, r.error ?? '') ? 'permanent' : 'transient')
+            : null
           if (r.status === 'completed') {
             log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs })
           } else {
-            log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs, error_message: r.error, error_type: 'transient' })
+            log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs, error_message: r.error, error_type: chainErrorType })
           }
-          recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: r.status === 'failed' ? 'transient' : null })
+          recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: chainErrorType })
           // Chained code steps don't get the standard ResolvedStepInput from the
           // executor (the bundled worker batches them). Reconstruct the same
           // template/resolved shape from the chain node's props config — the
@@ -1162,7 +1169,7 @@ export async function walkGraph(
           // resolveValue is cheap (string templating against ctx); fine on the
           // hot path for a chain of ~3-5 nodes.
           const chainResolvedInput = buildCodeStepInput(chainNode, ctx)
-          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, r.status === 'failed' ? 'transient' : null, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
+          logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
           stepOrder++
           if (r.status === 'completed') lastOutput = r.output
 
@@ -1192,7 +1199,7 @@ export async function walkGraph(
 
           if (r.status === 'failed') {
             terminated = true
-            throw new StepFailureError(r.error ?? 'Code node failed', chainNode.namespace, 'transient')
+            throw new StepFailureError(r.error ?? 'Code node failed', chainNode.namespace, chainErrorType ?? 'transient')
           }
         }
 
@@ -1671,6 +1678,9 @@ interface ChainStepResult {
   status: 'completed' | 'failed'
   output?: unknown
   error?: string
+  // Constructor name of the thrown error (#458) — lets the chain path classify a
+  // deterministic programming error as permanent rather than transient.
+  errorName?: string
   durationMs: number
   sentinel?: { kind: 'response' | 'exit'; continueAfter: boolean }
   logs?: import('../types').StepLogEntry[]

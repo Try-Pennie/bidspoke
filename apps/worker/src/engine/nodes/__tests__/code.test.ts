@@ -153,6 +153,23 @@ describe('executeCodeNode', () => {
     await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow('Gmail API error 403: quota exceeded')
   })
 
+  // #458: the sandbox now reports the thrown error's constructor name in the
+  // envelope. The executor attaches it as codeErrorName so the classifier can
+  // fail deterministic programming errors fast instead of retrying them.
+  it('attaches the sandbox error name (codeErrorName) from the 500 envelope', async () => {
+    const envelope = { __bsv: 1, error: "Cannot read properties of undefined (reading 'output')", name: 'TypeError' }
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(envelope), { status: 500 })))
+    const err = await executeCodeNode(node({ script: 'return {}' }), ctx(), env).catch((e: unknown) => e)
+    expect((err as { codeErrorName?: string }).codeErrorName).toBe('TypeError')
+  })
+
+  it('leaves codeErrorName unset when the envelope carries no name (older bundle)', async () => {
+    const envelope = { __bsv: 1, error: 'boom' }
+    const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(envelope), { status: 500 })))
+    const err = await executeCodeNode(node({ script: 'return {}' }), ctx(), env).catch((e: unknown) => e)
+    expect((err as { codeErrorName?: string }).codeErrorName).toBeUndefined()
+  })
+
   it('returns earlyResponse when script returns { response: { status, body } }', async () => {
     const sentinel = { response: { status: 200, body: { status: 'rejected', reason: 'ineligible state' } } }
     const env = makeEnv(() => vi.fn().mockResolvedValue(new Response(JSON.stringify(sentinel), { status: 200 })))
@@ -345,5 +362,16 @@ describe('buildBundledWorkerScript', () => {
     const bundle = buildBundledWorkerScript([{ namespace: 'x', script: 'return trigger.payload' }])
     expect(bundle).toContain('const trigger = { payload }')
     expect(bundle).toContain('const process = { env }')
+  })
+
+  // #458: both the single-execute and chain catch blocks must surface the thrown
+  // error's constructor name so the engine can classify deterministic
+  // programming errors as permanent (no retry).
+  it('surfaces the thrown error name in both the single-execute and chain catch blocks', () => {
+    const bundle = buildBundledWorkerScript([{ namespace: 'x', script: 'return 1' }])
+    // Null-safe extraction (a script can `throw null`): never dereference
+    // .constructor on a falsy throw value.
+    const nameOccurrences = bundle.split("err && err.name ? err.name : (err ? err.constructor.name : 'Error')").length - 1
+    expect(nameOccurrences).toBeGreaterThanOrEqual(2)
   })
 })

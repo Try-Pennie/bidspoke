@@ -1,0 +1,14 @@
+- generic [active] [ref=e1]:
+  - 'heading "Focus ring: before vs after (#288)" [level=2] [ref=e2]'
+  - generic [ref=e3]:
+    - generic [ref=e4]: BEFORE — focus:ring-1 ring-p-blue-light (#ECF8FF), ~invisible on white
+    - textbox [ref=e5]: acme_partner
+  - generic [ref=e6]:
+    - generic [ref=e7]: AFTER — focus:ring-2 ring-p-blue-dark (#1B72BA), clearly visible
+    - textbox [ref=e8]: acme_partner
+  - generic [ref=e9]:
+    - generic [ref=e10]: AFTER — focusable dashboard row (ring-inset)
+    - generic [ref=e11]: Lead 8842 — failed · 1.2s
+  - generic [ref=e12]:
+    - generic [ref=e13]: Unfocused (for reference)
+    - textbox [ref=e14]: acme_partner

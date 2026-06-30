@@ -144,7 +144,7 @@ export default {
           if (sentinel) break
         } catch (err) {
           const durationMs = Date.now() - startMs
-          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), logs: c.captured, durationMs })
+          results.push({ namespace, status: 'failed', error: String(err && err.message ? err.message : err), errorName: err && err.name ? err.name : (err ? err.constructor.name : 'Error'), logs: c.captured, durationMs })
           break
         }
       }
@@ -170,7 +170,10 @@ export default {
       // dispatchWithFallback treats it as bundle-present-with-error and reports
       // the actual message, not a misleading "Worker not found" fallback miss.
       const message = err && err.message ? err.message : String(err)
-      return new Response(JSON.stringify({ __bsv: 1, error: message, logs: c.captured }), { status: 500, headers: { 'Content-Type': 'application/json' } })
+      // Report the thrown error's constructor name so the engine can fail a
+      // deterministic programming error fast instead of retrying it (#458).
+      const name = err && err.name ? err.name : (err ? err.constructor.name : 'Error')
+      return new Response(JSON.stringify({ __bsv: 1, error: message, name: name, logs: c.captured }), { status: 500, headers: { 'Content-Type': 'application/json' } })
     }
   }
 }`
