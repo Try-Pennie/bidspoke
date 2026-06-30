@@ -22,6 +22,7 @@ import settings from './settings'
 import folders from './folders'
 import envFolders from './env-folders'
 import configWarnings from './config-warnings'
+import fieldCoverage from './field-coverage'
 
 type Variables = AuthVariables
 
@@ -49,6 +50,7 @@ api.route('/settings', settings)
 api.route('/folders', folders)
 api.route('/env-folders', envFolders)
 api.route('/config-warnings', configWarnings)
+api.route('/field-coverage', fieldCoverage)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)
