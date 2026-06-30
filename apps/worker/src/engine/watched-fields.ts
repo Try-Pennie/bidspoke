@@ -66,18 +66,58 @@ export function collectCodeRefs(script: string, into: Set<string>): boolean {
   return true
 }
 
-// The full watched-field set for a definition: structured references across the
-// whole tree (node configs minus their `script`, node variables, edge
-// conditions) plus deep field reads from each readable code-node script. Derived
-// in-engine from the running definition, so it always matches the live version
-// (no stored column, no drift).
-export function deriveWatchedFields(definition: WorkflowDefinition): string[] {
-  const set = new Set<string>()
-  collectStructuredRefs(definition.nodes, set)
-  collectStructuredRefs(definition.edges, set)
+export type WatchedFieldSource = 'structured' | 'code'
+
+export interface WatchedField {
+  path: string
+  source: WatchedFieldSource
+}
+
+export interface WatchedFieldMap {
+  fields: WatchedField[]
+  unreadableNodes: string[]
+}
+
+// Full watched-field map with each field's source and the code nodes whose
+// scripts could not be statically read (bailed open). Structured references win
+// on dedup (higher confidence than a code-scan match). Derived in-engine from the
+// running definition, so it always matches the live version (no stored column, no
+// drift).
+export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFieldMap {
+  const structured = new Set<string>()
+  collectStructuredRefs(definition.nodes, structured)
+  collectStructuredRefs(definition.edges, structured)
+
+  const code = new Set<string>()
+  const unreadableNodes: string[] = []
   for (const node of definition.nodes) {
     const script = node.config?.script
-    if (typeof script === 'string') collectCodeRefs(script, set)
+    if (typeof script !== 'string') continue
+    const readable = collectCodeRefs(script, code)
+    if (!readable) unreadableNodes.push(node.namespace)
   }
-  return [...set].sort()
+
+  const fields: WatchedField[] = []
+  const seen = new Set<string>()
+  for (const path of [...structured].sort()) {
+    fields.push({ path, source: 'structured' })
+    seen.add(path)
+  }
+  for (const path of [...code].sort()) {
+    if (seen.has(path)) continue
+    fields.push({ path, source: 'code' })
+    seen.add(path)
+  }
+  return { fields, unreadableNodes }
+}
+
+// The full watched-field set for a definition: structured references across the
+// whole tree (node configs minus their `script`, node variables, edge
+// conditions) plus deep field reads from each readable code-node script. A
+// projection over deriveWatchedFieldMap so the Phase 0 finalize capture seam is
+// byte-for-byte unchanged.
+export function deriveWatchedFields(definition: WorkflowDefinition): string[] {
+  return deriveWatchedFieldMap(definition)
+    .fields.map((f) => f.path)
+    .sort()
 }

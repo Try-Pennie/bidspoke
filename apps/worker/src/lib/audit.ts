@@ -15,6 +15,7 @@ export type AuditEntityType =
   | 'webhook_endpoint'
   | 'api_source'
   | 'partner_uuid'
+  | 'field_presence_silence'
 
 export type AuditAction =
   | 'created'
@@ -25,6 +26,8 @@ export type AuditAction =
   | 'secret_revealed'
   | 'secrets_resynced'
   | 'schema_synced'
+  | 'field_silence_set'
+  | 'field_silence_cleared'
 
 export async function writeAuditLog(
   supabase: SupabaseClient,
