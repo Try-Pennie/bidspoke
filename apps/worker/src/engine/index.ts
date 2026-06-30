@@ -21,7 +21,7 @@ import { classifyHttpError, classifyTransportError, classifyStepError, formatCod
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
-import { fieldPresenceForCapture } from './field-presence'
+import { fieldPresenceForCapture, shouldLogCapture } from './field-presence'
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import {
@@ -532,7 +532,9 @@ export async function executeWorkflow(
         // from in-memory ctx.steps (raw, before PII redaction in flushStepLogs);
         // only booleans persist, so no value leaves the worker.
         const fieldPresence = fieldPresenceForCapture(env.FIELD_PRESENCE_CAPTURE, ctx.steps, definition)
-        if (fieldPresence) {
+        // Heartbeat log sampled to ~1% (#434): the column is written every run
+        // below, but logging every run is ~500K lines/month for a dark feature.
+        if (fieldPresence && shouldLogCapture(executionId)) {
           console.log('[field-presence] captured', {
             workflowId,
             executionId,
