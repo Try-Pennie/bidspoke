@@ -6,6 +6,7 @@ import {
   collectStructuredRefs,
   collectCodeRefs,
   deriveWatchedFields,
+  deriveWatchedFieldMap,
 } from '../watched-fields'
 import type { WorkflowDefinition } from '../../types'
 
@@ -189,5 +190,61 @@ describe('deriveWatchedFields', () => {
       ],
     })
     expect(deriveWatchedFields(d)).toEqual(['x.v'])
+  })
+})
+
+describe('deriveWatchedFieldMap', () => {
+  it('tags structured refs and code refs with their source', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.final}}' } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'c', type: 'code', config: { script: 'const v = steps.y.output.v' } } as any,
+      ],
+    })
+    const map = deriveWatchedFieldMap(d)
+    expect(map.fields).toEqual([
+      { path: 'x.final', source: 'structured' },
+      { path: 'y.v', source: 'code' },
+    ])
+    expect(map.unreadableNodes).toEqual([])
+  })
+
+  it('records a code node that bails open as unreadable and contributes no code fields', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'dyn', type: 'code', config: { script: 'const all = steps; return all.x.final' } } as any,
+      ],
+    })
+    const map = deriveWatchedFieldMap(d)
+    expect(map.fields).toEqual([])
+    expect(map.unreadableNodes).toEqual(['dyn'])
+  })
+
+  it('dedups a path reached both structurally and via code, structured wins', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.v}}' } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'c', type: 'code', config: { script: 'const v = steps.x.output.v' } } as any,
+      ],
+    })
+    const map = deriveWatchedFieldMap(d)
+    expect(map.fields).toEqual([{ path: 'x.v', source: 'structured' }])
+  })
+
+  it('deriveWatchedFields still returns the same sorted path list', () => {
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'r', type: 'response', config: { body: '{{steps.x.output.final}}' } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'c', type: 'code', config: { script: 'const v = steps.y.output.v' } } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual(['x.final', 'y.v'])
   })
 })
