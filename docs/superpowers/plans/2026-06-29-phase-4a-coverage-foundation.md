@@ -1,5 +1,7 @@
 # Phase 4a (#423) — Coverage foundation Implementation Plan
 
+> **STATUS 2026-06-30: IMPLEMENTED** on branch `feature/field-coverage-4a-423` (5 commits, all 5 tasks). Worker suite 1640 passing, web guards green, typecheck clean. Detector stays log-only. Migration `20260629000002` NOT yet applied to prod (apply by hand before deploy verify).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the coverage foundation for the silent-output detector: watched-field metadata (source + unreadable nodes), a silences table + worker API to set/clear them, detector silence-skip, and a read-only coverage manifest API. Detector stays log-only.
