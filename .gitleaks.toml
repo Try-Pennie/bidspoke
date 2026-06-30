@@ -7,13 +7,19 @@ title = "Bidspoke gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Paths with no production secrets: committed build output, test fixtures, doc examples, local-only files."
+description = "No production secrets: the Supabase publishable key (public by design), build output, test fixtures, doc examples, local-only files."
+# The Supabase publishable/anon key is public by design (embedded in client code;
+# RLS protects the data). Allow it by value wherever it legitimately appears.
+regexes = [
+  '''sb_publishable_[A-Za-z0-9_-]{20,}''',
+]
 paths = [
-  # Committed Cloudflare/Vercel build output: baked PUBLIC keys + build-log tokens,
-  # not source secrets. (Separately worth gitignoring; tracked today.)
+  # Cloudflare/Vercel build output (now gitignored; regenerated at deploy time).
+  # Kept here so a local build doesn't trip the scanner.
   '''apps/web/\.vercel/''',
-  # Playwright e2e auth fixtures for the dedicated isolated test account.
-  '''apps/web/e2e/''',
+  # Playwright generated auth storage only (now gitignored). Scoped to the .auth
+  # dir, NOT all of e2e/, so a real secret in an e2e source file still fails.
+  '''apps/web/e2e/\.auth/''',
   # Documentation curl examples with truncated placeholder keys (9a1f...e4c2).
   '''docs/reference/webhook-contract\.md''',
   # Local-only files (gitignored, never in CI) — kept so local runs match CI.
