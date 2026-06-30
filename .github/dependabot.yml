@@ -1,0 +1,32 @@
+# Dependency update automation (#263). Grouped weekly PRs for routine updates,
+# plus immediate PRs for security advisories. Keep the audit baseline in
+# docs/security/dependency-audit-baseline.md in sync when these land.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # One PR for routine non-major bumps so the queue stays reviewable.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore(deps)
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: chore(ci)
