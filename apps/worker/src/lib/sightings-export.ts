@@ -309,15 +309,58 @@ export function formatValue(v: unknown, type: ColType): string {
   }
 }
 
-export async function purgeOldExported(supabase: SupabaseClient, tableName: string): Promise<number> {
+// Rows per purge DELETE. A single unbounded DELETE over a large backlog (2.3M
+// rows was observed) exceeds the 2-min cluster statement_timeout and is
+// cancelled (57014), so the purge deletes bounded pages instead: select a page
+// of ids, then delete exactly those ids. Kept small so the id list stays within
+// the PostgREST request-URL length limit and each DELETE is trivially fast.
+export const PURGE_BATCH = 200
+
+export async function purgeOldExported(
+  supabase: SupabaseClient,
+  tableName: string,
+  // Per-run backstop so a huge backlog drains over several nights rather than
+  // running the worker until it hits the platform subrequest ceiling. Steady
+  // state (~a day's exported rows) is far below this.
+  maxRows: number = MAX_ROWS_PER_RUN,
+): Promise<number> {
   const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
-  const { error, count } = await supabase
-    .from(tableName)
-    .delete({ count: 'exact' })
-    .not('exported_at', 'is', null)
-    .lt('exported_at', cutoff)
-  if (error) throw error
-  return count ?? 0
+  let purged = 0
+
+  while (purged < maxRows) {
+    const batch = Math.min(PURGE_BATCH, maxRows - purged)
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('id')
+      .not('exported_at', 'is', null)
+      .lt('exported_at', cutoff)
+      .limit(batch)
+    if (error) throw error
+    const ids = (data ?? []).map((r) => (r as { id: string }).id)
+    if (ids.length === 0) break
+
+    const { error: delErr, count } = await supabase
+      .from(tableName)
+      .delete({ count: 'exact' })
+      .in('id', ids)
+    if (delErr) {
+      // Cloudflare caps subrequests per invocation; hitting it mid-drain is not a
+      // failure — stop cleanly and let the next scheduled run continue (rows are
+      // still exported, so nothing is lost). Anything else is a real error.
+      if (isSubrequestLimit(delErr)) {
+        console.warn(
+          `[sightings-export] ${tableName}: hit platform subrequest limit after purging ${purged} rows; remaining backlog continues next run`
+        )
+        break
+      }
+      throw delErr
+    }
+
+    purged += count ?? ids.length
+    if (ids.length < batch) break // drained: last page was short
+  }
+
+  return purged
 }
 
 // Thrown Supabase/PostgREST errors are plain objects ({ message, code,

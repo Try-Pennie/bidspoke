@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { formatErr, exportTable } from '../sightings-export'
+import { formatErr, exportTable, purgeOldExported, PURGE_BATCH } from '../sightings-export'
 import { executeStatement } from '../snowflake'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 vi.mock('../snowflake', () => ({ executeStatement: vi.fn().mockResolvedValue(undefined) }))
 
@@ -127,5 +128,78 @@ describe('exportTable backlog guard', () => {
     await expect(exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)).rejects.toThrow(
       /SQL compilation error/
     )
+  })
+})
+
+// Batched purge (issue: the old single unbounded DELETE hit statement_timeout
+// 57014 on a large backlog). purgeOldExported now selects a page of ids and
+// deletes them in bounded batches so no single DELETE exceeds the 2-min limit.
+function fakePurgeSupabase(opts: { total: number; deleteError?: unknown }) {
+  let remaining = opts.total
+  let deleteCalls = 0
+  let selectCalls = 0
+  const tableApi = {
+    select() {
+      const q = {
+        not() { return q },
+        lt() { return q },
+        limit(n: number) {
+          selectCalls++
+          const size = Math.min(remaining, n)
+          const data = Array.from({ length: size }, (_, i) => ({ id: `id_${selectCalls}_${i}` }))
+          return Promise.resolve({ data, error: null })
+        },
+      }
+      return q
+    },
+    delete() {
+      return {
+        in(_col: string, ids: string[]) {
+          deleteCalls++
+          if (opts.deleteError) return Promise.resolve({ error: opts.deleteError, count: null })
+          remaining -= ids.length
+          return Promise.resolve({ error: null, count: ids.length })
+        },
+      }
+    },
+  }
+  const supabase = { from: () => tableApi } as unknown as SupabaseClient
+  return { supabase, deleteCalls: () => deleteCalls, selectCalls: () => selectCalls }
+}
+
+describe('purgeOldExported — batched delete', () => {
+  it('drains a backlog larger than one batch, never issuing an unbounded delete', async () => {
+    const total = PURGE_BATCH * 2 + 50
+    const { supabase, deleteCalls } = fakePurgeSupabase({ total })
+    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    expect(purged).toBe(total)
+    // full, full, then a short final batch -> exactly 3 bounded deletes
+    expect(deleteCalls()).toBe(3)
+  })
+
+  it('does nothing (no delete) when there is no purgeable backlog', async () => {
+    const { supabase, deleteCalls } = fakePurgeSupabase({ total: 0 })
+    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    expect(purged).toBe(0)
+    expect(deleteCalls()).toBe(0)
+  })
+
+  it('caps a single run at maxRows so a huge backlog drains over several runs', async () => {
+    const { supabase } = fakePurgeSupabase({ total: 10_000_000 })
+    const purged = await purgeOldExported(supabase, 'lead_sightings', PURGE_BATCH * 2)
+    expect(purged).toBe(PURGE_BATCH * 2)
+  })
+
+  it('stops cleanly (no throw) when the platform refuses more subrequests', async () => {
+    const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: new Error('Too many subrequests.') })
+    // First select yields a batch, the delete hits the CF ceiling -> stop clean, 0 purged, no alert.
+    const purged = await purgeOldExported(supabase, 'lead_sightings')
+    expect(purged).toBe(0)
+  })
+
+  it('propagates a genuine delete error so real failures still alert', async () => {
+    const dbErr = { message: 'permission denied for table lead_sightings', code: '42501' }
+    const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: dbErr })
+    await expect(purgeOldExported(supabase, 'lead_sightings')).rejects.toMatchObject({ code: '42501' })
   })
 })
