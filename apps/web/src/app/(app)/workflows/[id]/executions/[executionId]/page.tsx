@@ -6,12 +6,13 @@ import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
+import { ArrowLeft, LayoutTemplate, CheckCircle, XCircle, Clock, SkipForward, RefreshCw, Copy, Check, AlertTriangle, ChevronRight, HelpCircle } from 'lucide-react'
 import { formatDatetime, formatLogTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
 import { ExpandableError } from '@/components/ExpandableError'
-import { isNotFoundError } from '@/lib/execution-retention'
+import { useExecution } from '@/hooks/useExecution'
+import { resolveExecutionStatus } from '@/lib/execution-status'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
 type Step = Execution['steps'][number]
@@ -71,14 +72,62 @@ const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: 
   skipped:              { icon: <SkipForward className="h-4 w-4" />, label: 'Skipped',      bg: 'bg-gray-50',   text: 'text-gray-500'  },
   running:              { icon: <Clock className="h-4 w-4" />,       label: 'Running',      bg: 'bg-p-blue-light', text: 'text-p-blue-dark' },
   failed_with_fallback: { icon: <RefreshCw className="h-4 w-4" />,   label: 'Fallback',     bg: 'bg-yellow-50', text: 'text-yellow-700'},
+  // A run that has been 'running' past the stall threshold — almost always a
+  // strand that never finalized (#477). Amber-warning, distinct from the blue
+  // live-running badge.
+  stalled:              { icon: <AlertTriangle className="h-4 w-4" />, label: 'Stalled',    bg: 'bg-amber-50',  text: 'text-amber-700' },
+  // Any status we don't recognize. Neutral — never masquerade as running.
+  unknown:              { icon: <HelpCircle className="h-4 w-4" />,  label: 'Unknown',      bg: 'bg-gray-100',  text: 'text-gray-600'  },
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_STYLES[status] ?? STATUS_STYLES.running
+  const s = STATUS_STYLES[status] ?? STATUS_STYLES.unknown
   return (
     <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${s.bg} ${s.text}`}>
       {s.icon}
       {s.label}
+    </span>
+  )
+}
+
+function formatElapsed(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${totalSeconds}s`
+  const m = Math.floor(totalSeconds / 60)
+  const s = totalSeconds % 60
+  return s === 0 ? `${m}m` : `${m}m ${s}s`
+}
+
+/**
+ * Header badge for the whole execution. Unlike the plain per-step StatusBadge,
+ * this resolves the raw status into a display status that ticks: a running run
+ * shows live elapsed ("Running · 12s") so it reads as still-alive (#492 rule),
+ * and once it has run past the stall threshold it converts to "Stalled" (#477).
+ */
+export function ExecutionStatusBadge({ status, startedAt }: { status: string; startedAt: string }) {
+  const startedAtMs = new Date(startedAt).getTime()
+  const isRunning = status === 'running'
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!isRunning) return
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [isRunning])
+
+  const display = resolveExecutionStatus(status, startedAtMs, isRunning ? now : startedAtMs)
+  const s = STATUS_STYLES[display] ?? STATUS_STYLES.unknown
+  const showElapsed = display === 'running' || display === 'stalled'
+  const elapsedSeconds = Math.max(0, Math.floor((now - startedAtMs) / 1000))
+
+  return (
+    <span
+      className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${s.bg} ${s.text}`}
+      title={display === 'stalled' ? 'No update past the 60s stall threshold. This run likely never finalized.' : undefined}
+    >
+      {s.icon}
+      {s.label}
+      {showElapsed && <span className="tabular-nums opacity-80">· {formatElapsed(elapsedSeconds)}</span>}
     </span>
   )
 }
@@ -537,10 +586,7 @@ export default function ExecutionDetailPage() {
   const workflowId = params.id as string
   const executionId = params.executionId as string
 
-  const [execution, setExecution] = useState<Execution | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [notFound, setNotFound] = useState(false)
+  const { execution, loading, error, notFound } = useExecution(executionId)
   const [copied, setCopied] = useState(false)
 
   async function copyReport() {
@@ -568,29 +614,6 @@ export default function ExecutionDetailPage() {
       document.body.removeChild(ta)
     }
   }
-
-  // The replay-lineage links navigate to a different executionId on the SAME
-  // route segment, so this component instance is reused. Reset state on every
-  // executionId change (otherwise a stale error banner / the old execution shows
-  // under the new one and there's no loading indicator), and guard with a
-  // cancellation flag so a slower earlier request can't overwrite newer data or
-  // setState after unmount (#101).
-  useEffect(() => {
-    let cancelled = false
-    setExecution(null)
-    setError(null)
-    setNotFound(false)
-    setLoading(true)
-    api.executions.get(executionId)
-      .then((e) => { if (!cancelled) setExecution(e) })
-      .catch((e) => {
-        if (cancelled) return
-        setError(e.message)
-        setNotFound(isNotFoundError(e))
-      })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [executionId])
 
   return (
     <NavLayout>
@@ -686,7 +709,7 @@ export default function ExecutionDetailPage() {
                 <h1 className="text-3xl font-bold text-graphite">Execution detail</h1>
                 <p className="mt-1 font-mono text-xs text-gray-500">{execution.id}</p>
               </div>
-              <StatusBadge status={execution.status} />
+              <ExecutionStatusBadge status={execution.status} startedAt={execution.started_at} />
             </div>
 
             {/* Degraded explainer — the lead was served, but a post-response writeback failed (#310) */}
