@@ -5,6 +5,8 @@ export const runtime = 'edge'
 import { useState } from 'react'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
+import ConfirmDialog from '@/components/ConfirmDialog'
+import { useElapsed } from '@/hooks/useElapsed'
 import { Loader2, CheckCircle, XCircle, ArrowRight } from 'lucide-react'
 
 interface Result {
@@ -26,8 +28,11 @@ export default function MigrateCodeWorkersPage() {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<Response | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const elapsed = useElapsed(running)
 
   const run = async () => {
+    setConfirming(false)
     setRunning(true)
     setError(null)
     setResult(null)
@@ -53,14 +58,14 @@ export default function MigrateCodeWorkersPage() {
 
         <div className="mt-6">
           <button
-            onClick={run}
+            onClick={() => setConfirming(true)}
             disabled={running}
             className="inline-flex items-center gap-2 rounded-md bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
           >
             {running ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                Migrating...
+                Migrating… {elapsed}s
               </>
             ) : (
               <>
@@ -70,6 +75,16 @@ export default function MigrateCodeWorkersPage() {
             )}
           </button>
         </div>
+
+        {confirming && (
+          <ConfirmDialog
+            title="Run code-worker migration?"
+            body="This force-redeploys every active workflow's code nodes. It's safe to run more than once, but it makes real deployments. Continue?"
+            confirmLabel="Run migration"
+            onConfirm={run}
+            onCancel={() => setConfirming(false)}
+          />
+        )}
 
         {error && (
           <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">

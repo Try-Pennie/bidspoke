@@ -21,6 +21,7 @@ import { isHardCoded4xx } from '@/lib/response-status'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
+import { useElapsed } from '@/hooks/useElapsed'
 import JsonTreeView from './JsonTreeView'
 
 interface Props {
@@ -474,6 +475,7 @@ function NodeTestSection({
   const [payloadText, setPayloadText] = useState(() => JSON.stringify(defaultPayload ?? {}, null, 2))
   const [parseError, setParseError] = useState<string | null>(null)
   const [running, setRunning] = useState<null | 'run' | 'cold'>(null)
+  const elapsed = useElapsed(running !== null)
   const payloadFieldId = useId()
 
   async function run(useLastRun: boolean) {
@@ -518,7 +520,7 @@ function NodeTestSection({
               className="inline-flex items-center gap-1.5 rounded-md bg-purple-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {running === 'run' ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-              Build from run
+              {running === 'run' ? `Building… ${elapsed}s` : 'Build from run'}
             </button>
             <button
               onClick={() => run(false)}
@@ -527,7 +529,7 @@ function NodeTestSection({
               className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40"
             >
               {running === 'cold' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
-              Run cold
+              {running === 'cold' ? `Running… ${elapsed}s` : 'Run cold'}
             </button>
           </div>
           {!canBuildFromRun && (
@@ -1692,6 +1694,7 @@ function IntegrationConfig({
   const [connections, setConnections] = useState<ServiceConnection[]>([])
   const [selectedObject, setSelectedObject] = useState<string>('')
   const [syncingSchema, setSyncingSchema] = useState(false)
+  const schemaSyncElapsed = useElapsed(syncingSchema)
   const [schemaError, setSchemaError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -1779,7 +1782,7 @@ function IntegrationConfig({
                 disabled={syncingSchema}
                 className="text-xs text-p-blue-dark hover:text-navy disabled:opacity-50"
               >
-                {syncingSchema ? 'Syncing…' : activeConnection.schema_synced_at ? 'Re-sync' : 'Sync schema'}
+                {syncingSchema ? `Syncing… ${schemaSyncElapsed}s` : activeConnection.schema_synced_at ? 'Re-sync' : 'Sync schema'}
               </button>
             ) : (
               <span className="text-xs text-amber-500">No connection configured</span>

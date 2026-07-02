@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { ExecutionStep, SavedTestPayload, WorkflowDef } from '@/types/workflow'
 import RailResizeHandle from './RailResizeHandle'
 import { findParallelSuggestions } from '@/lib/parallel-suggestions'
+import { useElapsed } from '@/hooks/useElapsed'
 
 type TestStep = {
   step_namespace: string
@@ -68,6 +69,7 @@ export default function TestRunPanel({
   const effectiveWidth = width ?? 384
   const [payload, setPayload] = useState(initialPayload ?? DEFAULT_PAYLOAD)
   const [running, setRunning] = useState(false)
+  const elapsed = useElapsed(running)
   const [result, setResult] = useState<{ ok: boolean; body: unknown } | null>(null)
   const [resultKey, setResultKey] = useState(0)
   const [parseError, setParseError] = useState<string | null>(null)
@@ -526,7 +528,7 @@ export default function TestRunPanel({
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-p-blue-dark py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-          {running ? 'Running…' : 'Run test'}
+          {running ? `Running… ${elapsed}s` : 'Run test'}
         </button>
       </div>
     </aside>
