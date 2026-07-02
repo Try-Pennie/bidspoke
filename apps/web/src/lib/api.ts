@@ -321,7 +321,54 @@ function redirectOnAuthRejection(status: number): boolean {
   return false
 }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
+// Default ceiling for a normal request. Long-running operations (test runs,
+// schema syncs, the code-worker migration, replay/resume) pass a higher
+// timeoutMs — see the per-endpoint call sites below.
+const DEFAULT_TIMEOUT_MS = 30_000
+// Operations that hit real partners / redeploy workers / walk a full execution.
+const LONG_TIMEOUT_MS = 120_000
+const MIGRATION_TIMEOUT_MS = 180_000
+const SCHEMA_SYNC_TIMEOUT_MS = 60_000
+
+type ReqInit = RequestInit & { timeoutMs?: number }
+
+// An Error raised when a request exceeds its ceiling. Callers can branch on
+// `timedOut` to offer a retry; the message warns that the action may have
+// reached the server, so a blind retry could double-fire (#492).
+export class TimeoutError extends Error {
+  readonly timedOut = true
+  constructor(timeoutMs: number) {
+    super(
+      `Timed out after ${Math.round(timeoutMs / 1000)}s. It may still be processing. ` +
+        `Check execution history before retrying.`,
+    )
+    this.name = 'TimeoutError'
+  }
+}
+
+// fetch with a client-side abort ceiling. Uses a manual setTimeout + AbortController
+// (rather than AbortSignal.timeout) so the timer is controllable in tests and the
+// timeout can be told apart from any other abort.
+async function fetchWithTimeout(url: string, init: ReqInit, headers: HeadersInit): Promise<Response> {
+  const timeoutMs = init.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const { timeoutMs: _omit, ...rest } = init
+  try {
+    return await fetch(url, {
+      ...rest,
+      signal: controller.signal,
+      headers: { ...(rest.headers ?? {}), ...headers },
+    })
+  } catch (e) {
+    if (controller.signal.aborted) throw new TimeoutError(timeoutMs)
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function req<T>(path: string, init?: ReqInit): Promise<T> {
   let headers: HeadersInit
   try {
     headers = await authHeaders()
@@ -329,10 +376,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     redirectToLogin()
     throw new Error('Not authenticated')
   }
-  const res = await fetch(`${WORKER_URL}${path}`, {
-    ...init,
-    headers: { ...(init?.headers ?? {}), ...headers },
-  })
+  const res = await fetchWithTimeout(`${WORKER_URL}${path}`, init ?? {}, headers)
   if (!res.ok) {
     if (redirectOnAuthRejection(res.status)) {
       throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
@@ -403,6 +447,7 @@ export const api = {
       req<unknown>(`/api/workflows/${id}/test`, {
         method: 'POST',
         body: JSON.stringify({ payload, execution_id: executionId, definition }),
+        timeoutMs: LONG_TIMEOUT_MS,
       }),
     testNode: (id: string, data: { namespace: string; definition: unknown; execution_id?: string; trigger_payload?: unknown; steps?: Record<string, unknown> }) =>
       req<{
@@ -590,7 +635,7 @@ export const api = {
         redirectToLogin()
         throw new Error('Not authenticated')
       }
-      const res = await fetch(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', headers })
+      const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
           throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
@@ -610,7 +655,7 @@ export const api = {
         redirectToLogin()
         throw new Error('Not authenticated')
       }
-      const res = await fetch(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', headers })
+      const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
           throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
@@ -772,6 +817,7 @@ export const api = {
     syncSchema: (service_type: string) =>
       req<{ ok: boolean; object_count: number }>(`/api/connections/${service_type}/sync-schema`, {
         method: 'POST',
+        timeoutMs: SCHEMA_SYNC_TIMEOUT_MS,
       }),
   },
 
@@ -782,7 +828,7 @@ export const api = {
         skipped: number
         errored: number
         results: { id: string; name: string; status: string; error?: string; node_count?: number }[]
-      }>('/api/admin/migrate-code-workers', { method: 'POST' }),
+      }>('/api/admin/migrate-code-workers', { method: 'POST', timeoutMs: MIGRATION_TIMEOUT_MS }),
   },
 
   settings: {
