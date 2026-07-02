@@ -328,7 +328,9 @@ const DEFAULT_TIMEOUT_MS = 30_000
 // Operations that hit real partners / redeploy workers / walk a full execution.
 const LONG_TIMEOUT_MS = 120_000
 const MIGRATION_TIMEOUT_MS = 180_000
-const SCHEMA_SYNC_TIMEOUT_MS = 60_000
+// A full schema pull for a large Salesforce org can exceed a minute; give it the
+// same headroom as a test run so it doesn't false-timeout mid-fetch (#492).
+const SCHEMA_SYNC_TIMEOUT_MS = 120_000
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 
