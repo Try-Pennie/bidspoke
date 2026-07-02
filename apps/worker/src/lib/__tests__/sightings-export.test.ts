@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import {
   formatErr,
   exportTable,
+  formatValue,
   purgeOldExported,
   PURGE_BATCH,
   isStatementTimeout,
@@ -113,6 +114,36 @@ describe('formatErr', () => {
   it('handles null and undefined without throwing', () => {
     expect(formatErr(null)).toBe('null')
     expect(formatErr(undefined)).toBe('undefined')
+  })
+})
+
+describe('formatValue — SQL literal escaping', () => {
+  // Snowflake treats backslash as an escape character inside single-quoted
+  // string literals (like the variant branch has always known). A value ending
+  // in a lone backslash, if only its quotes are doubled, escapes the closing
+  // quote and breaks out of the literal — corrupting the row and, worst case,
+  // executing partner-controlled SQL as the Snowflake service role. Every
+  // quoted type must double backslashes, not just variant.
+
+  it('doubles a trailing backslash in a varchar so it cannot escape the closing quote', () => {
+    // A user_agent / decline_reason ending in backslash is the real-world vector.
+    expect(formatValue('mozilla\\', 'varchar')).toBe("'mozilla\\\\'")
+  })
+
+  it('doubles backslashes before a quote so \\\\\' is not read as an escaped quote', () => {
+    expect(formatValue("a\\'b", 'varchar')).toBe("'a\\\\''b'")
+  })
+
+  it('escapes backslashes in timestamp_tz literals too', () => {
+    expect(formatValue('x\\', 'timestamp_tz')).toBe("'x\\\\'::TIMESTAMP_TZ")
+  })
+
+  it('escapes backslashes in timestamp_ntz literals too', () => {
+    expect(formatValue('x\\', 'timestamp_ntz')).toBe("'x\\\\'::TIMESTAMP_NTZ")
+  })
+
+  it('still doubles single quotes on their own', () => {
+    expect(formatValue("O'Brien", 'varchar')).toBe("'O''Brien'")
   })
 })
 

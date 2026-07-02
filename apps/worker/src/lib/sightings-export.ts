@@ -336,21 +336,29 @@ WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${sourceColList})
 `.trim()
 }
 
+// Encode a string for a Snowflake single-quoted literal. Snowflake treats
+// backslash as an escape character inside string literals, so a lone trailing
+// backslash would escape the closing quote and break out of the literal (SQL
+// injection / export-wedge). Double backslashes first, then double quotes.
+function escapeSqlLiteral(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "''")
+}
+
 export function formatValue(v: unknown, type: ColType): string {
   if (v === null || v === undefined || v === '') return 'NULL'
   switch (type) {
     case 'varchar':
-      return `'${coerceString(v).replace(/'/g, "''")}'`
+      return `'${escapeSqlLiteral(coerceString(v))}'`
     case 'number':
       return Number.isFinite(Number(v)) ? String(Number(v)) : 'NULL'
     case 'boolean':
       return v === true || v === 'true' || v === 1 || v === '1' ? 'TRUE' : 'FALSE'
     case 'timestamp_tz':
-      return `'${coerceString(v).replace(/'/g, "''")}'::TIMESTAMP_TZ`
+      return `'${escapeSqlLiteral(coerceString(v))}'::TIMESTAMP_TZ`
     case 'timestamp_ntz':
-      return `'${coerceString(v).replace(/'/g, "''")}'::TIMESTAMP_NTZ`
+      return `'${escapeSqlLiteral(coerceString(v))}'::TIMESTAMP_NTZ`
     case 'variant':
-      return `'${JSON.stringify(v).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`
+      return `'${escapeSqlLiteral(JSON.stringify(v))}'`
   }
 }
 
