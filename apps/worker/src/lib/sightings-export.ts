@@ -187,6 +187,9 @@ export function readSnowflakeConfig(env: Env): SnowflakeConfig {
 }
 
 type FilterFn = <T extends { eq: (k: string, v: unknown) => T; is: (k: string, v: unknown) => T }>(q: T) => T
+type Sleep = (ms: number) => Promise<void>
+
+const DEFAULT_SLEEP: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function exportTable(
   supabase: SupabaseClient,
@@ -198,6 +201,7 @@ export async function exportTable(
   // ~700K pile-up after an export was wedged for days). The real platform ceiling
   // is enforced by the clean-stop below; this is just a guard rail.
   maxRows: number = Number.POSITIVE_INFINITY,
+  sleep: Sleep = DEFAULT_SLEEP,
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   let totalExported = 0
@@ -209,24 +213,29 @@ export async function exportTable(
     const batchLimit = Math.min(BATCH_SIZE, remaining)
 
     try {
-      const baseQuery = supabase.from(tableName).select(colNames).limit(batchLimit)
-      const { data, error } = await applyFilter(baseQuery)
-      if (error) throw error
-      if (!data || data.length === 0) break
+      const exportedCount = await withStatementTimeoutRetry(async () => {
+        const baseQuery = supabase.from(tableName).select(colNames).limit(batchLimit)
+        const { data, error } = await applyFilter(baseQuery)
+        if (error) throw error
+        if (!data || data.length === 0) return 0
 
-      const rows = data as unknown as Array<Record<string, unknown>>
-      const sql = buildMergeSql(tableName, cols, rows)
-      await executeStatement(config, sql)
+        const rows = data as unknown as Array<Record<string, unknown>>
+        const sql = buildMergeSql(tableName, cols, rows)
+        await executeStatement(config, sql)
 
-      const ids = rows.map((r) => r.id as string)
-      const { error: updErr } = await supabase
-        .from(tableName)
-        .update({ exported_at: new Date().toISOString() })
-        .in('id', ids)
-      if (updErr) throw updErr
+        const ids = rows.map((r) => r.id as string)
+        const { error: updErr } = await supabase
+          .from(tableName)
+          .update({ exported_at: new Date().toISOString() })
+          .in('id', ids)
+        if (updErr) throw updErr
 
-      totalExported += rows.length
-      if (rows.length < batchLimit) break
+        return rows.length
+      }, sleep)
+
+      if (exportedCount === 0) break
+      totalExported += exportedCount
+      if (exportedCount < batchLimit) break
     } catch (e) {
       // Cloudflare caps subrequests per invocation. When draining a large backlog
       // we may hit it mid-run; that is NOT a failure -- stop cleanly, keep the rows
@@ -258,6 +267,42 @@ export function isSubrequestLimit(e: unknown): boolean {
           ? (e as { message: string }).message
           : ''
   return /too many subrequests|subrequest limit/i.test(msg)
+}
+
+// Production traffic goes through PostgREST, which authenticates as a role
+// with an 8s statement_timeout/lock_timeout -- much tighter than the 2min
+// cluster default (a direct DB connection bypasses this and looked healthy,
+// which is what made the 2026-07-02 recurrence look unexplained). A query
+// this fast (single-digit ms with the right index) only needs a moment to
+// clear a transient collision with the table's constant live-traffic writes,
+// so a couple of short retries recovers most of these without masking a
+// genuine, persistent failure.
+export function isStatementTimeout(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code
+  if (code === '57014') return true
+  const msg =
+    e instanceof Error
+      ? e.message
+      : typeof e === 'string'
+        ? e
+        : typeof (e as { message?: unknown } | null)?.message === 'string'
+          ? (e as { message: string }).message
+          : ''
+  return /57014|statement timeout/i.test(msg)
+}
+
+export const STATEMENT_TIMEOUT_MAX_ATTEMPTS = 3
+const STATEMENT_TIMEOUT_RETRY_DELAY_MS = 250
+
+async function withStatementTimeoutRetry<T>(fn: () => Promise<T>, sleep: Sleep): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn()
+    } catch (e) {
+      if (!isStatementTimeout(e) || attempt >= STATEMENT_TIMEOUT_MAX_ATTEMPTS) throw e
+      await sleep(STATEMENT_TIMEOUT_RETRY_DELAY_MS * attempt)
+    }
+  }
 }
 
 export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
@@ -310,10 +355,11 @@ export function formatValue(v: unknown, type: ColType): string {
 }
 
 // Rows per purge DELETE. A single unbounded DELETE over a large backlog (2.3M
-// rows was observed) exceeds the 2-min cluster statement_timeout and is
-// cancelled (57014), so the purge deletes bounded pages instead: select a page
-// of ids, then delete exactly those ids. Kept small so the id list stays within
-// the PostgREST request-URL length limit and each DELETE is trivially fast.
+// rows was observed) could run long enough to be cancelled (57014) under the
+// production PostgREST role's 8s statement_timeout, so the purge deletes
+// bounded pages instead: select a page of ids, then delete exactly those ids.
+// Kept small so the id list stays within the PostgREST request-URL length
+// limit and each DELETE is normally trivially fast.
 export const PURGE_BATCH = 200
 
 export async function purgeOldExported(
@@ -323,41 +369,49 @@ export async function purgeOldExported(
   // running the worker until it hits the platform subrequest ceiling. Steady
   // state (~a day's exported rows) is far below this.
   maxRows: number = MAX_ROWS_PER_RUN,
+  sleep: Sleep = DEFAULT_SLEEP,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
   let purged = 0
 
   while (purged < maxRows) {
     const batch = Math.min(PURGE_BATCH, maxRows - purged)
-    const { data, error } = await supabase
-      .from(tableName)
-      .select('id')
-      .not('exported_at', 'is', null)
-      .lt('exported_at', cutoff)
-      .limit(batch)
-    if (error) throw error
-    const ids = (data ?? []).map((r) => (r as { id: string }).id)
-    if (ids.length === 0) break
 
-    const { error: delErr, count } = await supabase
-      .from(tableName)
-      .delete({ count: 'exact' })
-      .in('id', ids)
-    if (delErr) {
+    try {
+      const purgedCount = await withStatementTimeoutRetry(async () => {
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('id')
+          .not('exported_at', 'is', null)
+          .lt('exported_at', cutoff)
+          .limit(batch)
+        if (error) throw error
+        const ids = (data ?? []).map((r) => (r as { id: string }).id)
+        if (ids.length === 0) return { count: 0, drained: true }
+
+        const { error: delErr, count } = await supabase
+          .from(tableName)
+          .delete({ count: 'exact' })
+          .in('id', ids)
+        if (delErr) throw delErr
+
+        return { count: count ?? ids.length, drained: ids.length < batch }
+      }, sleep)
+
+      purged += purgedCount.count
+      if (purgedCount.count === 0 || purgedCount.drained) break
+    } catch (e) {
       // Cloudflare caps subrequests per invocation; hitting it mid-drain is not a
       // failure — stop cleanly and let the next scheduled run continue (rows are
       // still exported, so nothing is lost). Anything else is a real error.
-      if (isSubrequestLimit(delErr)) {
+      if (isSubrequestLimit(e)) {
         console.warn(
           `[sightings-export] ${tableName}: hit platform subrequest limit after purging ${purged} rows; remaining backlog continues next run`
         )
         break
       }
-      throw delErr
+      throw e
     }
-
-    purged += count ?? ids.length
-    if (ids.length < batch) break // drained: last page was short
   }
 
   return purged

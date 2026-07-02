@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { formatErr, exportTable, purgeOldExported, PURGE_BATCH } from '../sightings-export'
+import {
+  formatErr,
+  exportTable,
+  purgeOldExported,
+  PURGE_BATCH,
+  isStatementTimeout,
+  STATEMENT_TIMEOUT_MAX_ATTEMPTS,
+} from '../sightings-export'
 import { executeStatement } from '../snowflake'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
@@ -12,11 +19,14 @@ const COLS = [{ name: 'id', type: 'varchar' as const }]
 // applyFilter mirrors the real call shape: chains .eq().eq().is() then is awaited.
 const FILTER: FilterArg = (q) => q.eq('outcome_state', 'finalized').eq('is_test', false).is('exported_at', null)
 const CONFIG = {} as SnowflakeConfigArg
+const NO_SLEEP = () => Promise.resolve()
 
 // Fake Supabase whose select().limit(n) yields `sizeFor(callIndex)` rows (capped at n),
 // simulating a backlog. update().in() resolves clean. mergeThrow lets a test make the
-// Nth Snowflake MERGE throw, to exercise the stop-clean / propagate paths.
-function fakeSupabase(sizeFor: (call: number) => number) {
+// Nth Snowflake MERGE throw, to exercise the stop-clean / propagate paths. `errorFor`
+// lets a test make a specific select call (by 0-based call index) return an error
+// instead of data, to exercise the statement-timeout retry path.
+function fakeSupabase(sizeFor: (call: number) => number, errorFor?: (call: number) => unknown) {
   let call = 0
   return {
     from() {
@@ -24,9 +34,24 @@ function fakeSupabase(sizeFor: (call: number) => number) {
         select() {
           return {
             limit(n: number) {
-              const size = Math.min(sizeFor(call), n)
+              const thisCall = call
               call++
-              const data = Array.from({ length: size }, (_, i) => ({ id: `r${call}_${i}` }))
+              const err = errorFor?.(thisCall)
+              if (err) {
+                return {
+                  eq() {
+                    return this
+                  },
+                  is() {
+                    return this
+                  },
+                  then(resolve: (v: { data: null; error: unknown }) => void) {
+                    resolve({ data: null, error: err })
+                  },
+                }
+              }
+              const size = Math.min(sizeFor(thisCall), n)
+              const data = Array.from({ length: size }, (_, i) => ({ id: `r${thisCall}_${i}` }))
               return {
                 eq() {
                   return this
@@ -129,15 +154,42 @@ describe('exportTable backlog guard', () => {
       /SQL compilation error/
     )
   })
+
+  it('retries a batch that hits a statement timeout, then completes once it clears', async () => {
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    const supabase = fakeSupabase(() => 200, (call) => (call === 0 ? timeoutErr : undefined))
+    const exported = await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 200, NO_SLEEP)
+    expect(exported).toBe(200)
+    // Only the successful (second) attempt reaches Snowflake.
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up after exhausting retries on a statement timeout that never clears', async () => {
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    let selectAttempts = 0
+    const supabase = fakeSupabase(() => 200, () => {
+      selectAttempts++
+      return timeoutErr
+    })
+    await expect(
+      exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 200, NO_SLEEP)
+    ).rejects.toMatchObject({ code: '57014' })
+    expect(selectAttempts).toBe(STATEMENT_TIMEOUT_MAX_ATTEMPTS)
+  })
 })
 
 // Batched purge (issue: the old single unbounded DELETE hit statement_timeout
 // 57014 on a large backlog). purgeOldExported now selects a page of ids and
 // deletes them in bounded batches so no single DELETE exceeds the 2-min limit.
-function fakePurgeSupabase(opts: { total: number; deleteError?: unknown }) {
+function fakePurgeSupabase(opts: {
+  total: number
+  deleteError?: unknown
+  selectErrorOnce?: unknown
+}) {
   let remaining = opts.total
   let deleteCalls = 0
   let selectCalls = 0
+  let selectErrorFired = false
   const tableApi = {
     select() {
       const q = {
@@ -145,6 +197,10 @@ function fakePurgeSupabase(opts: { total: number; deleteError?: unknown }) {
         lt() { return q },
         limit(n: number) {
           selectCalls++
+          if (opts.selectErrorOnce && !selectErrorFired) {
+            selectErrorFired = true
+            return Promise.resolve({ data: null, error: opts.selectErrorOnce })
+          }
           const size = Math.min(remaining, n)
           const data = Array.from({ length: size }, (_, i) => ({ id: `id_${selectCalls}_${i}` }))
           return Promise.resolve({ data, error: null })
@@ -201,5 +257,40 @@ describe('purgeOldExported — batched delete', () => {
     const dbErr = { message: 'permission denied for table lead_sightings', code: '42501' }
     const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: dbErr })
     await expect(purgeOldExported(supabase, 'lead_sightings')).rejects.toMatchObject({ code: '42501' })
+  })
+
+  it('retries a batch whose row-finding select hits a statement timeout, then completes once it clears', async () => {
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    const { supabase, deleteCalls } = fakePurgeSupabase({ total: 50, selectErrorOnce: timeoutErr })
+    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+    expect(purged).toBe(50)
+    expect(deleteCalls()).toBe(1)
+  })
+
+  it('gives up after exhausting retries on a delete that keeps hitting a statement timeout', async () => {
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    const { supabase, deleteCalls } = fakePurgeSupabase({ total: 10_000, deleteError: timeoutErr })
+    await expect(
+      purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+    ).rejects.toMatchObject({ code: '57014' })
+    expect(deleteCalls()).toBe(STATEMENT_TIMEOUT_MAX_ATTEMPTS)
+  })
+})
+
+describe('isStatementTimeout', () => {
+  it('detects a Postgres 57014 code on a PostgREST-style error object', () => {
+    expect(isStatementTimeout({ code: '57014', message: 'canceling statement due to statement timeout' })).toBe(true)
+  })
+
+  it('detects 57014 by message text when there is no code field', () => {
+    expect(isStatementTimeout(new Error('canceling statement due to statement timeout (57014)'))).toBe(true)
+  })
+
+  it('does not flag an unrelated database error', () => {
+    expect(isStatementTimeout({ code: '42501', message: 'permission denied for table lead_sightings' })).toBe(false)
+  })
+
+  it('does not flag the Cloudflare subrequest-limit error', () => {
+    expect(isStatementTimeout(new Error('Too many subrequests.'))).toBe(false)
   })
 })
