@@ -256,6 +256,17 @@ export async function exportTable(
         )
         break
       }
+      // A batch that permanently times out after exhausting retries is sustained
+      // contention on this specific batch, not a broken run -- if earlier batches
+      // in this run already exported real rows, keep that progress instead of
+      // discarding it and reporting 0. Only propagate (and alert) when nothing
+      // exported yet this run, which is a genuinely stuck state worth flagging.
+      if (isStatementTimeout(e) && totalExported > 0) {
+        console.warn(
+          `[sightings-export] ${tableName}: batch permanently hit statement timeout after ${totalExported} rows exported this run; remaining backlog continues next run`
+        )
+        break
+      }
       throw e
     }
   }
@@ -415,6 +426,14 @@ export async function purgeOldExported(
       if (isSubrequestLimit(e)) {
         console.warn(
           `[sightings-export] ${tableName}: hit platform subrequest limit after purging ${purged} rows; remaining backlog continues next run`
+        )
+        break
+      }
+      // Same reasoning as exportTable: a batch that permanently times out after
+      // retries shouldn't discard rows already purged earlier in this run.
+      if (isStatementTimeout(e) && purged > 0) {
+        console.warn(
+          `[sightings-export] ${tableName}: purge batch permanently hit statement timeout after purging ${purged} rows this run; remaining backlog continues next run`
         )
         break
       }

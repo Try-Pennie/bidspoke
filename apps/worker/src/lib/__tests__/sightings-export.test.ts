@@ -212,6 +212,18 @@ describe('exportTable backlog guard', () => {
     ).rejects.toMatchObject({ code: '57014' })
     expect(selectAttempts).toBe(STATEMENT_TIMEOUT_MAX_ATTEMPTS)
   })
+
+  it('preserves rows exported by earlier batches when a later batch permanently times out', async () => {
+    // First logical batch (call 0) succeeds; every batch after that (call >= 1,
+    // covering all retry attempts of the second logical batch) times out. A large
+    // backlog run should not lose the 200 rows it already exported to Snowflake
+    // just because a later batch hit sustained contention on the hot table.
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    const supabase = fakeSupabase(() => 200, (call) => (call >= 1 ? timeoutErr : undefined))
+    const exported = await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 1000, NO_SLEEP)
+    expect(exported).toBe(200)
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
+  })
 })
 
 // Batched purge (issue: the old single unbounded DELETE hit statement_timeout
@@ -310,6 +322,42 @@ describe('purgeOldExported — batched delete', () => {
       purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
     ).rejects.toMatchObject({ code: '57014' })
     expect(deleteCalls()).toBe(STATEMENT_TIMEOUT_MAX_ATTEMPTS)
+  })
+
+  it('preserves rows purged by earlier batches when a later batch permanently times out', async () => {
+    // First batch deletes cleanly; every select after that permanently hits a
+    // statement timeout (contention on the hot table). A large purge backlog
+    // should not lose the rows it already deleted just because a later batch
+    // never clears.
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    let selectCalls = 0
+    const tableApi = {
+      select() {
+        const q = {
+          not() {
+            return q
+          },
+          lt() {
+            return q
+          },
+          limit(_n: number) {
+            selectCalls++
+            if (selectCalls === 1) {
+              const data = Array.from({ length: PURGE_BATCH }, (_, i) => ({ id: `id_${i}` }))
+              return Promise.resolve({ data, error: null })
+            }
+            return Promise.resolve({ data: null, error: timeoutErr })
+          },
+        }
+        return q
+      },
+      delete() {
+        return { in: (_col: string, ids: string[]) => Promise.resolve({ error: null, count: ids.length }) }
+      },
+    }
+    const supabase = { from: () => tableApi } as unknown as SupabaseClient
+    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
+    expect(purged).toBe(PURGE_BATCH)
   })
 })
 
