@@ -25,6 +25,11 @@ export default function PartnersPage() {
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  // Synchronous re-entry guard: a state flag alone can't block a same-tick
+  // double-click (no re-render between the two clicks), so the delete would
+  // fire twice against a money-path config (#495).
+  const deletingRef = useRef(false)
   const [formDirty, setFormDirty] = useState(false)
 
   // Confirm before discarding unsaved partner-form edits. Used to guard the
@@ -79,22 +84,26 @@ export default function PartnersPage() {
   }
 
   async function handleDelete(id: string) {
+    if (deletingRef.current) return
+    deletingRef.current = true
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmDelete(null)
-    const item = partners.find((p) => p.id === id)
-    if (selected?.id === id) clearSelection()
-    setRemovingId(id)
-    removeTimerRef.current = setTimeout(() => {
-      setPartners((prev) => prev.filter((p) => p.id !== id))
-      setRemovingId(null)
-    }, 150)
+    setDeletingId(id)
     try {
+      // Wait for the server before removing the row, so the button shows a real
+      // in-flight state and a failure leaves the config in place (#495).
       await api.partners.delete(id)
+      setConfirmDelete(null)
+      if (selected?.id === id) clearSelection()
+      setRemovingId(id)
+      removeTimerRef.current = setTimeout(() => {
+        setPartners((prev) => prev.filter((p) => p.id !== id))
+        setRemovingId(null)
+      }, 150)
     } catch (e) {
-      if (removeTimerRef.current) clearTimeout(removeTimerRef.current)
-      setRemovingId(null)
-      if (item) setPartners((prev) => prev.find((p) => p.id === id) ? prev : [...prev, item])
       setError(e instanceof Error ? e.message : 'Failed to delete partner')
+    } finally {
+      deletingRef.current = false
+      setDeletingId(null)
     }
   }
 
@@ -208,7 +217,7 @@ export default function PartnersPage() {
               confirmingDelete={confirmDelete === selected?.id}
               onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
               onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
-              deleting={false}
+              deleting={deletingId === selected?.id}
               onDirtyChange={setFormDirty}
             />
           ) : pendingSelection ? (
