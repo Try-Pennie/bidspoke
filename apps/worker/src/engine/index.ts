@@ -153,6 +153,19 @@ export async function executeWorkflow(
     resolvedIdempotencyKey = options.idempotencyKeyHeader ?? null
     if (!resolvedIdempotencyKey && idempotencyConfig.derive_from_fields?.length) {
       resolvedIdempotencyKey = await deriveIdempotencyKey(payload, idempotencyConfig.derive_from_fields)
+      if (resolvedIdempotencyKey === null) {
+        // Every configured derive field was absent/empty. Rather than hash a
+        // constant key (which would let unrelated malformed leads share a cache
+        // entry), we skip idempotency for this run and flag it — a persistent
+        // stream of these means the derive_from_fields config no longer matches
+        // the incoming payload shape.
+        log({
+          event: 'idempotency_derive_empty',
+          trace_id: traceId,
+          workflow_id: workflowId,
+          fields: idempotencyConfig.derive_from_fields,
+        })
+      }
     }
   }
   // const so the useIdempotency alias below narrows it at the call sites

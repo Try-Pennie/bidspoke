@@ -23,6 +23,7 @@ export type LogEvent =
   | 'cap_check_failed'
   | 'circuit_breaker_record_failed'
   | 'idempotency_hit'
+  | 'idempotency_derive_empty'
 
 export interface LogFields {
   event: LogEvent

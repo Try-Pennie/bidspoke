@@ -1,13 +1,20 @@
-// Derive an idempotency key by hashing selected fields from the payload
+// Derive an idempotency key by hashing selected fields from the payload.
+// Returns null when every configured field is absent/empty: the key would
+// otherwise collapse to a constant hash (all fields join to ''), so two
+// different malformed leads would share one idempotency entry and could
+// receive each other's cached response. A null key means "skip idempotency".
 export async function deriveIdempotencyKey(
   payload: unknown,
   fields: string[]
-): Promise<string> {
-  const values = fields.map((path) => getNestedValue(payload, path) ?? '')
+): Promise<string | null> {
   // Preserve the exact historical String() coercion (arrays -> 'a,b', objects ->
-  // '[object Object]') so idempotency/dedup hashes never shift on deploy.
+  // '[object Object]') so idempotency/dedup hashes never shift on deploy. Array
+  // .join applies the same coercion element-by-element, so building the parts
+  // explicitly keeps the hashed input byte-for-byte identical to before.
   // eslint-disable-next-line @typescript-eslint/no-base-to-string
-  const input = values.join('|')
+  const parts = fields.map((path) => String(getNestedValue(payload, path) ?? ''))
+  if (parts.every((p) => p === '')) return null
+  const input = parts.join('|')
   const encoded = new TextEncoder().encode(input)
   const digest = await crypto.subtle.digest('SHA-256', encoded)
   return Array.from(new Uint8Array(digest))
