@@ -4,7 +4,7 @@
  * and (issue #89) polls an async 202 to completion instead of caching empty.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { fetchSnowflakeSchema } from '../snowflake'
+import { fetchSnowflakeSchema, buildSchemaFilter } from '../snowflake'
 
 const CREDS = JSON.stringify({
   account: 'xy12345.us-east-1',
@@ -33,6 +33,28 @@ function fetchSequence(responses: MockRes[]) {
 }
 
 afterEach(() => vi.unstubAllGlobals())
+
+describe('buildSchemaFilter — SQL literal safety', () => {
+  it('returns an empty filter when no schema is configured', () => {
+    expect(buildSchemaFilter(undefined)).toBe('')
+    expect(buildSchemaFilter('')).toBe('')
+  })
+
+  it('uppercases and quotes a normal schema name', () => {
+    expect(buildSchemaFilter('public')).toBe("AND TABLE_SCHEMA = 'PUBLIC'")
+  })
+
+  it('doubles a trailing backslash so it cannot escape the closing quote', () => {
+    // Snowflake treats backslash as an escape char inside string literals; a
+    // lone trailing backslash would escape the closing quote and break the
+    // query (same class as the sightings-export vector).
+    expect(buildSchemaFilter('foo\\')).toBe("AND TABLE_SCHEMA = 'FOO\\\\'")
+  })
+
+  it('doubles single quotes instead of stripping them', () => {
+    expect(buildSchemaFilter("a'b")).toBe("AND TABLE_SCHEMA = 'A''B'")
+  })
+})
 
 describe('fetchSnowflakeSchema', () => {
   it('groups columns into schema.table objects', async () => {

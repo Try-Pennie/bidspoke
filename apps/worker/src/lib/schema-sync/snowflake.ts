@@ -1,5 +1,6 @@
 import type { SchemaCache, SchemaObject, SchemaField } from './types'
 import { parseJson } from '../json'
+import { escapeSqlLiteral } from '../snowflake'
 
 interface SnowflakeCredentials {
   account: string    // e.g. "xy12345.us-east-1"
@@ -31,6 +32,16 @@ export interface SnowflakeFetchOptions {
 const DEFAULT_POLL_INTERVAL_MS = 1500
 const DEFAULT_POLL_TIMEOUT_MS = 20000
 
+// Build the optional `AND TABLE_SCHEMA = '...'` clause for the columns query.
+// The schema name comes from admin-entered connection credentials (trusted, not
+// partner data), but a stray backslash or quote would still corrupt the query,
+// so it goes through the shared SQL-literal escaper like every other hand-built
+// statement.
+export function buildSchemaFilter(schema: string | undefined): string {
+  if (!schema) return ''
+  return `AND TABLE_SCHEMA = '${escapeSqlLiteral(schema.toUpperCase())}'`
+}
+
 export async function fetchSnowflakeSchema(
   credsJson: string,
   opts: SnowflakeFetchOptions = {},
@@ -44,9 +55,7 @@ export async function fetchSnowflakeSchema(
     'X-Snowflake-Authorization-Token-Type': 'BASIC',
   }
 
-  const schemaFilter = schema
-    ? `AND TABLE_SCHEMA = '${schema.toUpperCase().replace(/'/g, '')}'`
-    : ''
+  const schemaFilter = buildSchemaFilter(schema)
 
   const sqlText = `
     SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE

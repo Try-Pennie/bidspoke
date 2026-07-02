@@ -11,7 +11,12 @@ import {
 import { executeStatement } from '../snowflake'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-vi.mock('../snowflake', () => ({ executeStatement: vi.fn().mockResolvedValue(undefined) }))
+// Stub only the network call; keep the real escapeSqlLiteral (a pure helper
+// formatValue depends on) so the escaping tests exercise real behavior.
+vi.mock('../snowflake', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../snowflake')>()),
+  executeStatement: vi.fn().mockResolvedValue(undefined),
+}))
 
 type SnowflakeConfigArg = Parameters<typeof exportTable>[1]
 type FilterArg = Parameters<typeof exportTable>[4]

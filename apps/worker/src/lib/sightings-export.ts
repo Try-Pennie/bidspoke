@@ -6,7 +6,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import type { Env } from '../index'
-import { executeStatement, type SnowflakeConfig } from './snowflake'
+import { executeStatement, escapeSqlLiteral, type SnowflakeConfig } from './snowflake'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
 const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
@@ -334,14 +334,6 @@ ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET ${updateSet}
 WHEN NOT MATCHED THEN INSERT (${colList}) VALUES (${sourceColList})
 `.trim()
-}
-
-// Encode a string for a Snowflake single-quoted literal. Snowflake treats
-// backslash as an escape character inside string literals, so a lone trailing
-// backslash would escape the closing quote and break out of the literal (SQL
-// injection / export-wedge). Double backslashes first, then double quotes.
-function escapeSqlLiteral(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/'/g, "''")
 }
 
 export function formatValue(v: unknown, type: ColType): string {

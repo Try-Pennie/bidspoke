@@ -148,6 +148,16 @@ export function snowflakeHost(account: string): string {
   return `${account.toLowerCase()}.snowflakecomputing.com`
 }
 
+// Encode a string for a Snowflake single-quoted literal. Snowflake treats
+// backslash as an escape character inside string literals, so a lone trailing
+// backslash would escape the closing quote and break out of the literal (SQL
+// injection / query corruption). Double backslashes first, then double quotes.
+// Shared by every call site that hand-builds SQL text (export VALUES lists,
+// schema-sync filters) so the escaping lives in exactly one place.
+export function escapeSqlLiteral(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/'/g, "''")
+}
+
 function accountForJwt(account: string): string {
   // JWT iss/sub uses just the account locator (no region), uppercased.
   return account.split('.')[0].toUpperCase()
