@@ -307,11 +307,25 @@ describe('executeCodeNode — bundle fallback to per-node worker', () => {
     expect(perNodeFetch).not.toHaveBeenCalled()
   })
 
-  it('falls back when the binding itself throws', async () => {
+  // #475: a transient dispatch throw (not a genuine "Worker not found") must NOT
+  // fall back to the stale orphaned per-node worker — that would silently run old
+  // code on a live lead. Re-throw so the engine's retry/classification handles it.
+  it('re-throws a transient binding error instead of running the stale per-node worker (#475)', async () => {
     const bundleFetch = vi.fn().mockRejectedValue(new Error('binding resolve failed'))
     const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
     const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
+    await expect(executeCodeNode(node({ script: 'return {}' }), ctx(), env)).rejects.toThrow('binding resolve failed')
+    expect(perNodeFetch).not.toHaveBeenCalled()
+  })
+
+  // #475: a genuine "Worker not found" throw means the bundle isn't deployed, so
+  // the legacy per-node fallback is still correct during migration.
+  it('falls back to the per-node worker when the binding throws "Worker not found" (#475)', async () => {
+    const bundleFetch = vi.fn().mockRejectedValue(new Error('Worker not found: bs-wf-abc123'))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
     const result = await executeCodeNode(node({ script: 'return {}' }), ctx(), env)
+    expect(perNodeFetch).toHaveBeenCalledTimes(1)
     expect(result.output).toEqual({ ok: true })
   })
 })

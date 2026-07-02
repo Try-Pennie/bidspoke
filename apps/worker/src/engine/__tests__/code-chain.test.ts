@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { collectCodeChain, isChainableCodeNode, executeCodeChain } from '../index'
+import { codeBundleName } from '../../lib/code-node-deployer'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition, EdgeDefinition } from '../../types'
 
@@ -140,5 +141,47 @@ describe('executeCodeChain dispatch timeout (#62)', () => {
     expect(results).toHaveLength(1)
     expect(results[0].status).toBe('failed')
     expect(results[0].error).toMatch(/Code chain timed out after 100ms/)
+  })
+})
+
+describe('executeCodeChain binding-throw fallback discrimination (#475)', () => {
+  const chainCtx = () => ({
+    trigger: { payload: {}, source: 't', workflow_id: 'wf', org_id: '', trace_id: 'tr' },
+    steps: {}, env: {},
+  }) as ExecutionContext
+
+  // Routes the bundle name to `bundleFetch` and any per-node name to `perNodeFetch`.
+  function makeEnv(bundleFetch: ReturnType<typeof vi.fn>, perNodeFetch: ReturnType<typeof vi.fn>): Env {
+    const bundle = codeBundleName('wf')
+    return {
+      DYNAMIC_WORKER_LOADER: {
+        get: (name: string) => ({ fetch: name === bundle ? bundleFetch : perNodeFetch }),
+      },
+    } as unknown as Env
+  }
+
+  it('fails the chain on a transient binding throw instead of re-running it on stale per-node workers', async () => {
+    const bundleFetch = vi.fn().mockRejectedValue(new Error('binding resolve failed'))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv(bundleFetch, perNodeFetch)
+    const chain = [code('a'), code('b')]
+
+    const { results } = await executeCodeChain(chain, chainCtx(), env)
+    expect(perNodeFetch).not.toHaveBeenCalled()
+    expect(results[0].status).toBe('failed')
+    expect(results[0].error).toMatch(/binding resolve failed/)
+  })
+
+  it('falls back to per-node workers when the binding throws "Worker not found" (migration case)', async () => {
+    const bundleFetch = vi.fn().mockRejectedValue(new Error('Worker not found: ' + codeBundleName('wf')))
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv(bundleFetch, perNodeFetch)
+    const chain = [code('a'), code('b')]
+
+    const { results } = await executeCodeChain(chain, chainCtx(), env)
+    expect(perNodeFetch).toHaveBeenCalled()
+    expect(perNodeFetch.mock.calls[0][0]).toBe('https://worker/execute')
+    expect(results[0].status).toBe('completed')
+    expect(results[0].output).toEqual({ ok: true })
   })
 })
