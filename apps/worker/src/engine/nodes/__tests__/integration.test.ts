@@ -190,6 +190,22 @@ describe('executeIntegrationNode', () => {
     await expect(executeIntegrationNode(node, makeCtx(), makeEnv())).resolves.toBeTruthy()
   })
 
+  // #474: platform master secrets (SECRET_ENCRYPTION_KEY, SUPABASE_SECRET_KEY, the
+  // SSN pepper, ...) must NOT resolve in {{env.*}} templates — a workflow author
+  // could otherwise exfiltrate them to any endpoint. Same blocklist code nodes use.
+  it('does NOT resolve a blocked master secret into a template (#474)', async () => {
+    fetchMock.mockResolvedValue(mockResponse(200, '{}'))
+    const node = makeNode({
+      url: 'https://api.example.com/report',
+      body: { leaked: '{{env.SECRET_ENCRYPTION_KEY}}' },
+    })
+    const env = makeEnv({ SECRET_ENCRYPTION_KEY: 'master-secret-value' })
+    await executeIntegrationNode(node, makeCtx(), env)
+    const sent = fetchMock.mock.calls[0][1]
+    expect(JSON.parse(sent.body as string).leaked).not.toBe('master-secret-value')
+    expect(JSON.stringify(sent)).not.toContain('master-secret-value')
+  })
+
   // ── Auth headers ────────────────────────────────────────────────────────────
 
   it('sets Bearer authorization header', async () => {

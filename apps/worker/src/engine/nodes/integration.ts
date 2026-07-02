@@ -22,6 +22,7 @@ import { resolveValue, warnDroppedBodyFields } from '../context'
 import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
+import { sandboxEnvBindings } from '../../lib/sandbox-env'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -97,13 +98,11 @@ export async function executeIntegrationNode(
 
   // Merge CF secrets (string-valued bindings) into env so {{env.SECRET}} resolves.
   // CF secrets are not in ctx.env (which only has non-secret Supabase vars).
-  const rawEnv = env as unknown as Record<string, unknown>
-  const cfSecrets: Record<string, string> = {}
-  for (const key of Object.keys(rawEnv)) {
-    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key]
-  }
-  // CF bindings take precedence over same-named Supabase env vars
-  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...cfSecrets } }
+  // Filtered through the sandbox blocklist (#474) so platform master secrets
+  // (SUPABASE_SECRET_KEY, SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never
+  // resolve in a template — same blocklist code nodes enforce.
+  // CF bindings take precedence over same-named Supabase env vars.
+  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...sandboxEnvBindings(env) } }
 
   const method = (config.method ?? 'POST').toUpperCase()
   const timeoutMs = config.timeout_ms ?? 15000

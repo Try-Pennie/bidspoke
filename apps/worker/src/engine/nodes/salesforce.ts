@@ -23,6 +23,7 @@ import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 import { BulkheadClient, salesforceBulkheadLimit, type AcquireResult } from '../../lib/bulkhead-client'
+import { sandboxEnvBindings } from '../../lib/sandbox-env'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -97,13 +98,11 @@ export async function executeSalesforceNode(
   // Shadow dry-run: don't touch Salesforce (no token fetch, no write).
   if (isShadowDryRun(ctx)) return shadowSalesforceStub()
 
-  // Merge CF secrets so {{env.*}} templates resolve
-  const rawEnv = env as unknown as Record<string, unknown>
-  const cfSecrets: Record<string, string> = {}
-  for (const key of Object.keys(rawEnv)) {
-    if (typeof rawEnv[key] === 'string') cfSecrets[key] = rawEnv[key] as string
-  }
-  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...cfSecrets } }
+  // Merge CF secrets so {{env.*}} templates resolve. Filtered through the sandbox
+  // blocklist (#474) so platform master secrets (SUPABASE_SECRET_KEY,
+  // SECRET_ENCRYPTION_KEY, SSN_HASH_PEPPER, ...) never resolve in a template —
+  // same blocklist code nodes enforce. SALESFORCE_* creds are not blocked.
+  const enrichedCtx: ExecutionContext = { ...ctx, env: { ...ctx.env, ...sandboxEnvBindings(env) } }
 
   const instanceUrl = (enrichedCtx.env.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
   const clientId = enrichedCtx.env.SALESFORCE_CLIENT_ID ?? ''

@@ -336,6 +336,26 @@ describe('executeSalesforceNode', () => {
     expect(sent.secret).toBe('secret-val')
   })
 
+  // #474: platform master secrets must NOT resolve in {{env.*}} templates. A
+  // workflow author could otherwise put {{env.SUPABASE_SECRET_KEY}} in a field and
+  // exfiltrate a key that bypasses RLS. SF/partner creds (SALESFORCE_*, TRIPOINT_*)
+  // are NOT on the blocklist so they still resolve (covered by the test above).
+  it('does NOT resolve a blocked master secret into the SF body (#474)', async () => {
+    const env = makeEnv({ SECRET_ENCRYPTION_KEY: 'master-secret-value' })
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(201, '{"id":"SF-1"}'))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: { leaked: '{{env.SECRET_ENCRYPTION_KEY}}' } }),
+      makeCtx(),
+      env
+    )
+
+    const sent = fetchMock.mock.calls[0][1]
+    expect(JSON.parse(sent.body as string).leaked).not.toBe('master-secret-value')
+    expect(JSON.stringify(sent)).not.toContain('master-secret-value')
+  })
+
   // ── 401 token eviction ──────────────────────────────────────────────────────
 
   it('evicts sf-token-{orgId} from KV cache on 401 response', async () => {
