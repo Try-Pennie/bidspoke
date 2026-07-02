@@ -173,11 +173,11 @@ export default {
         runAchieveExport(supabase, env)
           .then((s) => {
             console.log('[achieve-export]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Achieve export', s.errors)
+            return notifyExportFailure(supabase, 'Achieve export', s.errors, env.IDEMPOTENCY)
           })
           .catch((e) => {
             console.error('[achieve-export] failed:', e)
-            return notifyExportFailure(supabase, 'Achieve export', [e instanceof Error ? e.message : String(e)])
+            return notifyExportFailure(supabase, 'Achieve export', [e instanceof Error ? e.message : String(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 13 * * *') {
@@ -237,11 +237,11 @@ export default {
         runSightingsExport(supabase, env)
           .then((s) => {
             console.log('[sightings-export]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Lead sightings export', s.errors)
+            return notifyExportFailure(supabase, 'Lead sightings export', s.errors, env.IDEMPOTENCY)
           })
           .catch((e) => {
             console.error('[sightings-export] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)])
+            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 * * * *') {

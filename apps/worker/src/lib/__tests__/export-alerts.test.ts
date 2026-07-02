@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../slack', () => ({ sendExportFailureAlert: vi.fn() }))
 
-import { notifyExportFailure } from '../export-alerts'
+import { notifyExportFailure, EXPORT_ALERT_BACKSTOP_TTL_SECONDS } from '../export-alerts'
 import { sendExportFailureAlert } from '../slack'
 
 function makeSupabase(orgIds: string[]) {
@@ -22,6 +22,21 @@ function makeSupabase(orgIds: string[]) {
     },
   })
   return { from: () => chain } as never
+}
+
+function makeKv(initial: Record<string, string> = {}) {
+  const store = new Map(Object.entries(initial))
+  return {
+    get: vi.fn((key: string) => Promise.resolve(store.has(key) ? store.get(key)! : null)),
+    put: vi.fn((key: string, value: string) => {
+      store.set(key, value)
+      return Promise.resolve()
+    }),
+    delete: vi.fn((key: string) => {
+      store.delete(key)
+      return Promise.resolve()
+    }),
+  }
 }
 
 describe('notifyExportFailure', () => {
@@ -48,5 +63,40 @@ describe('notifyExportFailure', () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     await notifyExportFailure(makeSupabase(['org-1', 'org-1']), 'x', ['boom'])
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+  })
+
+  it('suppresses repeat alerts for the same job while cooldown state is set', async () => {
+    const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
+    const from = vi.fn()
+    await notifyExportFailure({ from } as never, 'Lead sightings export', ['still broken'], kv)
+    expect(from).not.toHaveBeenCalled()
+    expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
+  })
+
+  it('alerts and sets an 8h cooldown state on the first failure when kv is provided', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv()
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['Snowflake 503'], kv)
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    expect(kv.put).toHaveBeenCalledWith(
+      'export-alert-state:Lead sightings export',
+      '1',
+      { expirationTtl: EXPORT_ALERT_BACKSTOP_TTL_SECONDS },
+    )
+  })
+
+  it('does not set cooldown state when the alert failed to deliver', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(false)
+    const kv = makeKv()
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['Snowflake 503'], kv)
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('clears cooldown state on a successful run when kv is provided', async () => {
+    const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
+    const from = vi.fn()
+    await notifyExportFailure({ from } as never, 'Lead sightings export', [], kv)
+    expect(from).not.toHaveBeenCalled()
+    expect(kv.delete).toHaveBeenCalledWith('export-alert-state:Lead sightings export')
   })
 })
