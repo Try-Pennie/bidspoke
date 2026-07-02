@@ -1684,7 +1684,7 @@ type ExecutionContext_CF = {
 
 // ── Code-node chain execution helpers ───────────────────────────────────────
 
-import { codeBundleName, codeWorkerName } from '../lib/code-node-deployer'
+import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../lib/code-node-deployer'
 
 interface ChainStepResult {
   namespace: string
@@ -1815,10 +1815,20 @@ export async function executeCodeChain(
     return { results: [{ namespace: chain[0].namespace, status: 'failed', error: `Code chain timed out after ${chainTimeoutMs}ms`, durationMs: chainTimeoutMs }] }
   }
 
-  // Fallback: if the bundled worker is old (no /execute-chain) or missing,
-  // run each step as an individual subrequest via the single-step path.
+  // A transient binding throw (not a genuine "Worker not found") must fail the
+  // chain rather than fall back to per-node — the fallback re-runs the whole
+  // chain and could repeat side effects, and would run stale orphaned code on a
+  // live lead (#475). Same guarantee as the single-node path in code.ts.
+  if (bindingError !== undefined && !isWorkerNotFoundError(bindingError)) {
+    const message = bindingError instanceof Error ? bindingError.message : 'non-Error dispatch throw'
+    return { results: [{ namespace: chain[0].namespace, status: 'failed', error: `Chain dispatch failed: ${message}`, durationMs: 0 }] }
+  }
+
+  // Fallback: if the bundled worker is old (no /execute-chain) or missing (a
+  // "Worker not found" throw or 503/404), run each step as an individual
+  // subrequest via the single-step path.
   const chainUnsupported =
-    bindingError !== undefined ||
+    bindingError !== undefined ||   // guaranteed a "Worker not found" throw at this point
     bundleRes?.status === 404 ||
     bundleRes?.status === 503
 

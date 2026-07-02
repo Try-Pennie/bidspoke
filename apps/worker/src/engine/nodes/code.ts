@@ -7,7 +7,7 @@
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
-import { codeBundleName, codeWorkerName } from '../../lib/code-node-deployer'
+import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
@@ -292,8 +292,17 @@ async function dispatchWithFallback(
     bindingError = err
   }
 
+  // A transient binding throw (network blip, dispatch infra error) is NOT a
+  // bundle-missing signal. Falling back to the legacy per-node worker here would
+  // silently run stale orphaned code on a live lead (#475). Only a genuine
+  // "Worker not found" throw means the bundle isn't deployed. Re-throw anything
+  // else so the engine's retry/error classification handles it.
+  if (bindingError !== undefined && !isWorkerNotFoundError(bindingError)) {
+    throw bindingError instanceof Error ? bindingError : new Error(String(bindingError))
+  }
+
   const bundleMissing =
-    bindingError !== undefined ||
+    bindingError !== undefined ||   // guaranteed a "Worker not found" throw at this point
     bundleRes?.status === 503 ||
     bundleRes?.status === 404
 

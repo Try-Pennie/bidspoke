@@ -30,6 +30,19 @@ export function codeWorkerName(workflowId: string, namespace: string): string {
 }
 
 /**
+ * True when a dispatch-binding throw means the target worker doesn't exist in
+ * the namespace. Workers for Platforms surfaces this as an Error whose message
+ * starts with "Worker not found" (per Cloudflare's documented dispatcher.get
+ * pattern). ONLY this case may trigger the legacy per-node fallback — a
+ * transient dispatch error must re-throw / fail instead, so stale orphaned code
+ * never runs on a live lead (#475).
+ */
+export function isWorkerNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return /worker not found/i.test(message)
+}
+
+/**
  * Wraps all user scripts for a workflow into a single Worker module with a
  * path-routed dispatcher. Each user script gets its own closure with the same
  * (payload, steps, env, execution) contract as the old per-node worker plus
