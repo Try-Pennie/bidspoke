@@ -148,11 +148,14 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     errors: [],
   }
 
+  let backfillOk = true
   try {
     summary.trades_backfilled = await backfillTrades(supabase)
   } catch (e) {
-    // Trades are an enrichment; a failed backfill should not block the export
-    // (the MERGE updates re-exported rows, so a later run can fill trades in).
+    // Trades are an enrichment, so a failed backfill must not block the export
+    // of rows that already carry trades. But it does gate trades-null rows: see
+    // the export filter below (#484).
+    backfillOk = false
     summary.errors.push(`trades backfill: ${formatErr(e)}`)
   }
 
@@ -163,7 +166,18 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
       config,
       'achieve_evaluations',
       ACHIEVE_COLS,
-      (q) => q.eq('is_test', false).is('exported_at', null),
+      (q) => {
+        const base = q.eq('is_test', false).is('exported_at', null)
+        // When the backfill failed this run, a trades-null row is ambiguous: it
+        // could be legitimately trades-less, or a row we simply failed to
+        // enrich. Exporting it stamps exported_at, which permanently hides it
+        // from the next backfill (it filters exported_at IS NULL) and purges the
+        // source ~24h later -- the trades would be lost for good. So defer every
+        // trades-null row until a run whose backfill succeeded. Rows that
+        // already have trades still export. The failure alerts via summary.errors
+        // (notifyExportFailure), so a persistently-failing backfill is visible.
+        return backfillOk ? base : base.not('trades', 'is', null)
+      },
     )
   } catch (e) {
     summary.errors.push(`evaluations export: ${formatErr(e)}`)

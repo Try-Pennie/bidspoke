@@ -186,7 +186,15 @@ export function readSnowflakeConfig(env: Env): SnowflakeConfig {
   }
 }
 
-type FilterFn = <T extends { eq: (k: string, v: unknown) => T; is: (k: string, v: unknown) => T }>(q: T) => T
+type FilterFn = <
+  T extends {
+    eq: (k: string, v: unknown) => T
+    is: (k: string, v: unknown) => T
+    not: (k: string, op: string, v: unknown) => T
+  },
+>(
+  q: T,
+) => T
 type Sleep = (ms: number) => Promise<void>
 
 const DEFAULT_SLEEP: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

@@ -1,6 +1,50 @@
-import { describe, it, expect } from 'vitest'
-import { matchTradesToEvaluations, ACHIEVE_COLS } from '../achieve-export'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { matchTradesToEvaluations, ACHIEVE_COLS, runAchieveExport } from '../achieve-export'
 import { buildMergeSql, formatValue } from '../sightings-export'
+
+const mocks = vi.hoisted(() => ({
+  exportTable: vi.fn(),
+  purgeOldExported: vi.fn(),
+  executeStatement: vi.fn(),
+}))
+
+vi.mock('../sightings-export', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sightings-export')>()
+  return {
+    ...actual,
+    readSnowflakeConfig: () => ({}),
+    exportTable: mocks.exportTable,
+    purgeOldExported: mocks.purgeOldExported,
+  }
+})
+
+vi.mock('../snowflake', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../snowflake')>()
+  return { ...actual, executeStatement: mocks.executeStatement }
+})
+
+// Thenable query builder: awaiting it anywhere in the chain resolves to `result`.
+function makeThenableBuilder(result: { data: unknown; error: unknown }) {
+  const b: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'update', 'not']) {
+    b[m] = vi.fn(() => b)
+  }
+  b.then = (resolve: (r: unknown) => unknown) => resolve(result)
+  return b
+}
+
+// Records which filter methods a captured applyFilter closure calls.
+function makeRecordingBuilder() {
+  const calls: Array<{ method: string; args: unknown[] }> = []
+  const b: Record<string, unknown> = {}
+  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) {
+    b[m] = (...args: unknown[]) => {
+      calls.push({ method: m, args })
+      return b
+    }
+  }
+  return { b, calls }
+}
 
 describe('matchTradesToEvaluations', () => {
   it('pairs evaluations with their execution trades output', () => {
@@ -16,6 +60,46 @@ describe('matchTradesToEvaluations', () => {
 
   it('returns empty when no steps match', () => {
     expect(matchTradesToEvaluations([{ id: 'a', execution_id: 'x' }], [])).toEqual([])
+  })
+})
+
+describe('runAchieveExport trades-backfill failure', () => {
+  beforeEach(() => {
+    mocks.exportTable.mockReset().mockResolvedValue(0)
+    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
+    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('defers trades-null rows from the export when the backfill throws', async () => {
+    // First achieve_evaluations select errors -> backfillTrades throws.
+    const supabase = {
+      from: vi.fn(() => makeThenableBuilder({ data: null, error: new Error('boom') })),
+    }
+    const summary = await runAchieveExport(supabase as never, {} as never)
+
+    expect(summary.errors.some((e) => e.startsWith('trades backfill:'))).toBe(true)
+    expect(mocks.exportTable).toHaveBeenCalledTimes(1)
+
+    // The export must exclude trades-null rows so they are not stamped exported
+    // (and then purged) with permanently-null trades.
+    const applyFilter = mocks.exportTable.mock.calls[0][4] as (q: unknown) => unknown
+    const { b, calls } = makeRecordingBuilder()
+    applyFilter(b)
+    expect(calls).toContainEqual({ method: 'not', args: ['trades', 'is', null] })
+  })
+
+  it('exports trades-null rows normally when the backfill succeeds', async () => {
+    // Empty backfill select -> backfillTrades returns cleanly.
+    const supabase = {
+      from: vi.fn(() => makeThenableBuilder({ data: [], error: null })),
+    }
+    const summary = await runAchieveExport(supabase as never, {} as never)
+
+    expect(summary.errors).toEqual([])
+    const applyFilter = mocks.exportTable.mock.calls[0][4] as (q: unknown) => unknown
+    const { b, calls } = makeRecordingBuilder()
+    applyFilter(b)
+    expect(calls.some((c) => c.method === 'not')).toBe(false)
   })
 })
 
