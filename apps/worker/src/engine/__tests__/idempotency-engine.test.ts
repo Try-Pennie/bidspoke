@@ -345,6 +345,31 @@ describe('processing marker ordering (#67)', () => {
   })
 })
 
+describe('all-empty derive fields (#476)', () => {
+  it('does not answer a second malformed lead from the first lead\'s cache', async () => {
+    mockNodesSucceed()
+    const harness = makeHarness()
+
+    // First malformed lead: the configured derive field ('email') is absent.
+    // It must execute and MUST NOT persist a cache entry under a collapsed key.
+    const first = await run({ payload: { name: 'Alice' } }, harness).result
+    await harness.flush()
+    expect(first.idempotentReplay).toBeUndefined()
+    expect(vi.mocked(executeNode)).toHaveBeenCalled()
+    // No idempotency entry was written for the all-empty key.
+    expect([...harness.store.keys()].some((k) => k.startsWith(`idempotent-${WF_ID}-`))).toBe(false)
+
+    // Second, different malformed lead. Before the fix it collided with the
+    // first on the constant key and could replay Alice's response; now it
+    // executes on its own.
+    vi.mocked(executeNode).mockClear()
+    const second = await run({ payload: { name: 'Bob' } }, harness).result
+    await harness.flush()
+    expect(second.idempotentReplay).toBeUndefined()
+    expect(vi.mocked(executeNode)).toHaveBeenCalled()
+  })
+})
+
 describe('test runs', () => {
   it('neither read from nor write to the idempotency cache', async () => {
     mockNodesSucceed()
