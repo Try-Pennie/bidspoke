@@ -1,15 +1,20 @@
 import type { IdempotencyState } from '../types'
 
-const key = (workflowId: string, idempotencyKey: string) =>
-  `idempotent-${workflowId}-${idempotencyKey}`
+// Source is part of the key so two different sources hitting the same
+// workflow (the default, unrestricted posture — see enforceSourceAssignment)
+// can never collide on a caller-supplied or payload-derived idempotency key
+// and replay each other's cached response (#490).
+const key = (workflowId: string, source: string, idempotencyKey: string) =>
+  `idempotent-${workflowId}-${source}-${idempotencyKey}`
 
 // Returns cached response if found, null otherwise
 export async function checkIdempotency(
   kv: KVNamespace,
   workflowId: string,
+  source: string,
   idempotencyKey: string
 ): Promise<IdempotencyState | null> {
-  const cached = await kv.get(key(workflowId, idempotencyKey), 'json')
+  const cached = await kv.get(key(workflowId, source, idempotencyKey), 'json')
   return cached as IdempotencyState | null
 }
 
@@ -17,11 +22,12 @@ export async function checkIdempotency(
 export async function setIdempotencyProcessing(
   kv: KVNamespace,
   workflowId: string,
+  source: string,
   idempotencyKey: string,
   ttlSeconds: number
 ): Promise<void> {
   const state: IdempotencyState = { status: 'processing' }
-  await kv.put(key(workflowId, idempotencyKey), JSON.stringify(state), {
+  await kv.put(key(workflowId, source, idempotencyKey), JSON.stringify(state), {
     expirationTtl: ttlSeconds,
   })
 }
@@ -32,6 +38,7 @@ export async function setIdempotencyProcessing(
 export async function setIdempotencyResult(
   kv: KVNamespace,
   workflowId: string,
+  source: string,
   idempotencyKey: string,
   response: unknown,
   ttlSeconds: number,
@@ -44,7 +51,7 @@ export async function setIdempotencyResult(
     responseStatus,
     responseHeaders,
   }
-  await kv.put(key(workflowId, idempotencyKey), JSON.stringify(state), {
+  await kv.put(key(workflowId, source, idempotencyKey), JSON.stringify(state), {
     expirationTtl: ttlSeconds,
   })
 }
@@ -55,7 +62,8 @@ export async function setIdempotencyResult(
 export async function clearIdempotency(
   kv: KVNamespace,
   workflowId: string,
+  source: string,
   idempotencyKey: string
 ): Promise<void> {
-  await kv.delete(key(workflowId, idempotencyKey))
+  await kv.delete(key(workflowId, source, idempotencyKey))
 }

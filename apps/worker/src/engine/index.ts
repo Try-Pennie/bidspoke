@@ -195,7 +195,7 @@ export async function executeWorkflow(
 
   const [idempotencyCached, envVars] = await Promise.all([
     useIdempotency && !isRecoveryRun
-      ? checkIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey)
+      ? checkIdempotency(env.IDEMPOTENCY, workflowId, source, idempotencyKey)
       : Promise.resolve(null),
     loadEnvVars(org_id, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY),
     // Pre-warm partner constants KV so constants node finds a hot cache instead of
@@ -231,7 +231,7 @@ export async function executeWorkflow(
   // duplicate can observe it. We start it here so it overlaps the synchronous
   // setup that follows and adds minimal latency before that await.
   const idempotencyProcessingPromise = useIdempotency && !isRecoveryRun
-    ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, idempotencyKey, ttl)
+    ? setIdempotencyProcessing(env.IDEMPOTENCY, workflowId, source, idempotencyKey, ttl)
     : Promise.resolve()
   const executionRecordPromise = createExecutionRecord(supabase, {
     id: executionId,
@@ -734,14 +734,14 @@ export async function executeWorkflow(
       executionCtx.waitUntil(
         idempotencyProcessingPromise
           .catch(() => {})
-          .then(() => setIdempotencyResult(env.IDEMPOTENCY, workflowId, idempotencyKey, response, ttl, walkStatus, walkHeaders))
+          .then(() => setIdempotencyResult(env.IDEMPOTENCY, workflowId, source, idempotencyKey, response, ttl, walkStatus, walkHeaders))
           .catch((e) => console.error('[idempotency] failed to cache result:', e))
       )
     } else if (!isRecoveryRun) {
       executionCtx.waitUntil(
         idempotencyProcessingPromise
           .catch(() => {})
-          .then(() => clearIdempotency(env.IDEMPOTENCY, workflowId, idempotencyKey))
+          .then(() => clearIdempotency(env.IDEMPOTENCY, workflowId, source, idempotencyKey))
           .catch((e) => console.error('[idempotency] failed to clear failed-run entry:', e))
       )
     }

@@ -120,9 +120,9 @@ const supabase = {
   }),
 } as unknown as SupabaseClient
 
-async function kvEntry(store: Map<string, string>): Promise<IdempotencyState | null> {
+async function kvEntry(store: Map<string, string>, source = 'test-source'): Promise<IdempotencyState | null> {
   const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
-  const raw = store.get(`idempotent-${WF_ID}-${key}`)
+  const raw = store.get(`idempotent-${WF_ID}-${source}-${key}`)
   return raw ? (JSON.parse(raw) as IdempotencyState) : null
 }
 
@@ -185,7 +185,7 @@ describe('completed executions', () => {
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
     harness.store.set(
-      `idempotent-${WF_ID}-${key}`,
+      `idempotent-${WF_ID}-test-source-${key}`,
       JSON.stringify({ status: 'complete', response: { ok: true } })
     )
 
@@ -199,7 +199,7 @@ describe('completed executions', () => {
     mockNodesSucceed()
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
-    harness.store.set(`idempotent-${WF_ID}-${key}`, JSON.stringify({ status: 'processing' }))
+    harness.store.set(`idempotent-${WF_ID}-test-source-${key}`, JSON.stringify({ status: 'processing' }))
 
     const r = await run({}, harness).result
     expect(r.status).toBe(409)
@@ -239,7 +239,7 @@ describe('resume and replay (recovery runs)', () => {
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
     harness.store.set(
-      `idempotent-${WF_ID}-${key}`,
+      `idempotent-${WF_ID}-test-source-${key}`,
       JSON.stringify({ status: 'complete', response: { stale: true } })
     )
 
@@ -252,7 +252,7 @@ describe('resume and replay (recovery runs)', () => {
     mockNodesSucceed()
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
-    harness.store.set(`idempotent-${WF_ID}-${key}`, JSON.stringify({ status: 'processing' }))
+    harness.store.set(`idempotent-${WF_ID}-test-source-${key}`, JSON.stringify({ status: 'processing' }))
 
     const r = await run({ resumeFromExecutionId: 'orig-1' }, harness).result
     expect(r.status).toBe(200)
@@ -275,12 +275,12 @@ describe('resume and replay (recovery runs)', () => {
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
     const original = JSON.stringify({ status: 'complete', response: { good: true }, responseStatus: 200 })
-    harness.store.set(`idempotent-${WF_ID}-${key}`, original)
+    harness.store.set(`idempotent-${WF_ID}-test-source-${key}`, original)
 
     await run({ parentExecutionId: 'orig-1' }, harness).result
     await harness.flush()
 
-    expect(harness.store.get(`idempotent-${WF_ID}-${key}`)).toBe(original)
+    expect(harness.store.get(`idempotent-${WF_ID}-test-source-${key}`)).toBe(original)
   })
 })
 
@@ -370,13 +370,50 @@ describe('all-empty derive fields (#476)', () => {
   })
 })
 
+describe('cross-source isolation (#490)', () => {
+  it('two sources sharing a workflow and deriving the same key do not replay each other', async () => {
+    mockNodesSucceed()
+    const harness = makeHarness()
+
+    // Source A submits a lead; response is cached under source A's key.
+    const first = await run({ source: 'source-a' }, harness).result
+    await harness.flush()
+    expect(first.idempotentReplay).toBeUndefined()
+
+    // Source B submits the identical payload (same derived key, same
+    // workflow) within the TTL window. Before the fix this replayed source
+    // A's cached response instead of running source B's own execution.
+    vi.mocked(executeNode).mockClear()
+    const second = await run({ source: 'source-b' }, harness).result
+    await harness.flush()
+
+    expect(second.idempotentReplay).toBeUndefined()
+    expect(vi.mocked(executeNode)).toHaveBeenCalled()
+    expect(await kvEntry(harness.store, 'source-a')).not.toBeNull()
+    expect(await kvEntry(harness.store, 'source-b')).not.toBeNull()
+  })
+
+  it('a duplicate from the SAME source still replays from cache', async () => {
+    mockNodesSucceed()
+    const harness = makeHarness()
+
+    await run({ source: 'source-a' }, harness).result
+    await harness.flush()
+
+    vi.mocked(executeNode).mockClear()
+    const replay = await run({ source: 'source-a' }, harness).result
+    expect(replay.idempotentReplay).toBe(true)
+    expect(vi.mocked(executeNode)).not.toHaveBeenCalled()
+  })
+})
+
 describe('test runs', () => {
   it('neither read from nor write to the idempotency cache', async () => {
     mockNodesSucceed()
     const harness = makeHarness()
     const key = await deriveIdempotencyKey(PAYLOAD, ['email'])
     const original = JSON.stringify({ status: 'complete', response: { live: true } })
-    harness.store.set(`idempotent-${WF_ID}-${key}`, original)
+    harness.store.set(`idempotent-${WF_ID}-test-source-${key}`, original)
 
     const r = await run({ isTest: true }, harness).result
     await harness.flush()
@@ -385,6 +422,6 @@ describe('test runs', () => {
     expect(r.idempotentReplay).toBeUndefined()
     expect(vi.mocked(executeNode)).toHaveBeenCalled()
     // …and the live entry was not overwritten by the test run.
-    expect(harness.store.get(`idempotent-${WF_ID}-${key}`)).toBe(original)
+    expect(harness.store.get(`idempotent-${WF_ID}-test-source-${key}`)).toBe(original)
   })
 })
