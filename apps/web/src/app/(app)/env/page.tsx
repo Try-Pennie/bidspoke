@@ -18,6 +18,8 @@ import {
   ChevronDown,
   Pencil,
   RefreshCw,
+  Check,
+  X,
 } from 'lucide-react'
 import { formatDatetime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -68,6 +70,9 @@ export default function EnvPage() {
   const [movingFolderId, setMovingFolderId] = useState<string | null>(null)
   const folderMoveMenuRef = useRef<HTMLDivElement>(null)
   const [rowMenuOpen, setRowMenuOpen] = useState<string | null>(null)
+
+  // Edit value (#480)
+  const [editingValueId, setEditingValueId] = useState<string | null>(null)
 
   // Re-sync secrets to Cloudflare (#199) — repairs drift the daily check alerts on.
   const [resyncing, setResyncing] = useState(false)
@@ -444,6 +449,31 @@ export default function EnvPage() {
     }
   }
 
+  function startEditValue(id: string) {
+    setRowMenuOpen(null)
+    setEditingValueId(id)
+  }
+
+  function cancelEditValue() {
+    setEditingValueId(null)
+  }
+
+  async function handleUpdateValue(v: EnvVar, newValue: string) {
+    try {
+      const updated = await api.env.update(v.id, { value: newValue })
+      setVars((vs) => vs.map((x) => (x.id === v.id ? updated : x)))
+      setEditingValueId(null)
+      if (v.is_secret) {
+        // A rotation makes the value revealable again — drop any stale cached
+        // reveal state left over from before this edit.
+        setRevealedValues((prev) => { const next = { ...prev }; delete next[v.id]; return next })
+        setRevealUnavailable((s) => { const next = new Set(s); next.delete(v.id); return next })
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update value')
+    }
+  }
+
   async function handleMoveFolder(folderId: string, parentId: string | null) {
     setMovingFolderId(null)
     setFolderMenuOpen(null)
@@ -588,7 +618,9 @@ export default function EnvPage() {
           {v.key}
         </td>
         <td className="px-4 py-3 font-mono text-xs text-gray-500">
-          {v.is_secret ? (
+          {editingValueId === v.id ? (
+            <EditValueRow v={v} onSave={handleUpdateValue} onCancel={cancelEditValue} />
+          ) : v.is_secret ? (
             <div className="flex items-center gap-1.5">
               {revealUnavailable.has(v.id)
                 ? <span className="font-sans text-gray-500 italic">Rotate to enable reveal</span>
@@ -672,6 +704,13 @@ export default function EnvPage() {
             )}
             {rowMenuOpen === v.id && (
               <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                <button
+                  onClick={() => startEditValue(v.id)}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
+                >
+                  <Pencil className="h-4 w-4 text-gray-500" />
+                  Edit value
+                </button>
                 <button
                   onClick={() => { setRowMenuOpen(null); setMovingVarId(v.id) }}
                   className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
@@ -1047,6 +1086,63 @@ export default function EnvPage() {
         )}
       </div>
     </NavLayout>
+  )
+}
+
+// Inline value editor for a single row. Owns its input state locally, same
+// self-contained pattern as NewVariableForm. Secrets always start blank
+// (the value is masked server-side) — a new value must be typed to rotate.
+function EditValueRow({
+  v,
+  onSave,
+  onCancel,
+}: {
+  v: EnvVar
+  onSave: (v: EnvVar, value: string) => Promise<void>
+  onCancel: () => void
+}) {
+  const [value, setValue] = useState(v.is_secret ? '' : v.value ?? '')
+  const [saving, setSaving] = useState(false)
+  const disabled = v.is_secret && !value.trim()
+
+  async function submit() {
+    if (disabled || saving) return
+    setSaving(true)
+    try {
+      await onSave(v, value)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); submit() }} className="flex items-center gap-1.5">
+      <input
+        autoFocus
+        type={v.is_secret ? 'password' : 'text'}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
+        placeholder={v.is_secret ? 'Enter new value to rotate' : undefined}
+        className="input w-40 font-mono text-xs"
+      />
+      <button
+        type="submit"
+        disabled={disabled || saving}
+        className="rounded p-1 text-p-blue-dark hover:bg-p-blue-light disabled:cursor-not-allowed disabled:opacity-40"
+        aria-label="Save value"
+      >
+        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="rounded p-1 text-gray-500 hover:text-gray-600"
+        aria-label="Cancel edit"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </form>
   )
 }
 
