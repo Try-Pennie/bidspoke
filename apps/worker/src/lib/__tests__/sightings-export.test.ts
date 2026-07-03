@@ -4,12 +4,15 @@ import {
   exportTable,
   formatValue,
   purgeOldExported,
+  runSightingsExport,
   PURGE_BATCH,
   isStatementTimeout,
   STATEMENT_TIMEOUT_MAX_ATTEMPTS,
+  WALL_TIME_BUDGET_MS,
 } from '../sightings-export'
 import { executeStatement } from '../snowflake'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../../index'
 
 // Stub only the network call; keep the real escapeSqlLiteral (a pure helper
 // formatValue depends on) so the escaping tests exercise real behavior.
@@ -243,6 +246,25 @@ describe('exportTable backlog guard', () => {
     expect(exported).toBe(200)
     expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
   })
+
+  it('stops cleanly (no throw) when the wall-time deadline has already passed, without starting another batch (#exceededWallTime, 2026-07-03)', async () => {
+    const supabase = fakeSupabase(() => 200)
+    const exported = await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 100_000, NO_SLEEP, 1000, () => 2000)
+    expect(exported).toBe(0)
+    expect(vi.mocked(executeStatement)).not.toHaveBeenCalled()
+  })
+
+  it('keeps rows exported by batches that started before the deadline passed', async () => {
+    // First iteration's check passes (now=0 < deadline=1000) and exports a full
+    // batch; the second iteration's check sees now=1500 >= deadline=1000 and
+    // stops before starting another batch.
+    const supabase = fakeSupabase(() => 200)
+    let call = 0
+    const now = () => (call++ === 0 ? 0 : 1500)
+    const exported = await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 100_000, NO_SLEEP, 1000, now)
+    expect(exported).toBe(200)
+    expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
+  })
 })
 
 // Batched purge (issue: the old single unbounded DELETE hit statement_timeout
@@ -377,6 +399,43 @@ describe('purgeOldExported — batched delete', () => {
     const supabase = { from: () => tableApi } as unknown as SupabaseClient
     const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP)
     expect(purged).toBe(PURGE_BATCH)
+  })
+
+  it('stops cleanly (no throw) when the wall-time deadline has already passed, without starting another delete batch (#exceededWallTime, 2026-07-03)', async () => {
+    const { supabase } = fakePurgeSupabase({ total: 10_000 })
+    const purged = await purgeOldExported(supabase, 'lead_sightings', undefined, NO_SLEEP, 1000, () => 2000)
+    expect(purged).toBe(0)
+  })
+})
+
+describe('runSightingsExport — shared wall-time budget (#exceededWallTime, 2026-07-03)', () => {
+  it('stops every phase cleanly, with no supabase calls and no errors, once the deadline computed at the start has passed', async () => {
+    // A 2026-07-03 prod run drained 29,600 real rows before Cloudflare's ~15min
+    // cron wall-time limit silently killed the whole invocation mid-run -- no
+    // completion log, no failure alert, nothing. The fix is a shared soft
+    // deadline (set once, before any phase runs) so every phase stops itself
+    // cleanly with time to spare, and the caller's .then()/.catch() still runs.
+    const supabase = {
+      from: () => {
+        throw new Error('should never touch supabase once the shared deadline has passed')
+      },
+    } as unknown as SupabaseClient
+    const env = {} as Env
+    let call = 0
+    // call 0 sets the deadline (now() + WALL_TIME_BUDGET_MS); every call after
+    // that returns a value already past it, as if the whole budget was consumed
+    // before any phase after the first got a chance to run.
+    const now = () => (call++ === 0 ? 0 : WALL_TIME_BUDGET_MS + 1)
+
+    const summary = await runSightingsExport(supabase, env, now)
+
+    expect(summary).toEqual({
+      sightings_exported: 0,
+      bids_exported: 0,
+      sightings_purged: 0,
+      bids_purged: 0,
+      errors: [],
+    })
   })
 })
 

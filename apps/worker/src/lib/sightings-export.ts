@@ -16,6 +16,18 @@ const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many h
 // exportTable. A multi-day backlog drains over a few runs rather than one giant run.
 const MAX_ROWS_PER_RUN = 400_000
 
+// Cloudflare Cron Trigger invocations get killed by the platform at ~15 minutes
+// wall time (observed: outcome "exceededWallTime" at exactly 899985ms on
+// 2026-07-03, draining a large backlog). That kill is silent -- the whole
+// invocation dies mid-run, so runSightingsExport's .then()/.catch() (the
+// completion log + failure alert) never runs, even though the run itself made
+// real progress (29,600 rows exported before the kill that day). This budget
+// is a soft, self-imposed deadline well under the platform's hard limit so
+// every phase stops itself cleanly -- same as the existing subrequest-limit /
+// permanent-statement-timeout clean-stops -- leaving room for the last
+// in-flight batch plus the completion log/alert to actually run.
+export const WALL_TIME_BUDGET_MS = 12 * 60 * 1000
+
 // Column names + Snowflake types for value formatting. 'variant' carries JSON:
 // the value travels as an escaped string in the VALUES list (Snowflake VALUES
 // only allows constants) and the USING projection wraps it in PARSE_JSON.
@@ -118,7 +130,11 @@ export interface ExportSummary {
 // version timed out on the multi-partition UPDATE at the PostgREST 8s gateway and
 // failed silently (#351); the pg_cron versions have no gateway limit. So by export
 // time every stale in_flight row is already 'finalized' and picked up below.
-export async function runSightingsExport(supabase: SupabaseClient, env: Env): Promise<ExportSummary> {
+export async function runSightingsExport(
+  supabase: SupabaseClient,
+  env: Env,
+  now: () => number = Date.now,
+): Promise<ExportSummary> {
   const config = readSnowflakeConfig(env)
   const summary: ExportSummary = {
     sightings_exported: 0,
@@ -127,6 +143,11 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
     bids_purged: 0,
     errors: [],
   }
+  // One deadline for the whole invocation, set once up front and shared across
+  // all four phases below -- NOT recomputed per phase, so a phase that starts
+  // late (because earlier phases used most of the budget draining a backlog)
+  // inherits however little time is left instead of getting a fresh budget.
+  const deadline = now() + WALL_TIME_BUDGET_MS
 
   try {
     summary.sightings_exported = await exportTable(
@@ -137,6 +158,9 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
       // Sightings: only finalized, non-test, un-exported
       (q) => q.eq('outcome_state', 'finalized').eq('is_test', false).is('exported_at', null),
       MAX_ROWS_PER_RUN,
+      DEFAULT_SLEEP,
+      deadline,
+      now,
     )
   } catch (e) {
     summary.errors.push(`sightings export: ${formatErr(e)}`)
@@ -150,19 +174,22 @@ export async function runSightingsExport(supabase: SupabaseClient, env: Env): Pr
       BID_COLS,
       (q) => q.eq('is_test', false).is('exported_at', null),
       MAX_ROWS_PER_RUN,
+      DEFAULT_SLEEP,
+      deadline,
+      now,
     )
   } catch (e) {
     summary.errors.push(`bids export: ${formatErr(e)}`)
   }
 
   try {
-    summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings')
+    summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings', MAX_ROWS_PER_RUN, DEFAULT_SLEEP, deadline, now)
   } catch (e) {
     summary.errors.push(`sightings purge: ${formatErr(e)}`)
   }
 
   try {
-    summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids')
+    summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids', MAX_ROWS_PER_RUN, DEFAULT_SLEEP, deadline, now)
   } catch (e) {
     summary.errors.push(`bids purge: ${formatErr(e)}`)
   }
@@ -210,6 +237,10 @@ export async function exportTable(
   // is enforced by the clean-stop below; this is just a guard rail.
   maxRows: number = Number.POSITIVE_INFINITY,
   sleep: Sleep = DEFAULT_SLEEP,
+  // Soft wall-time deadline (epoch ms); undefined = no deadline (existing
+  // direct-call behavior is unchanged). See WALL_TIME_BUDGET_MS.
+  deadline?: number,
+  now: () => number = Date.now,
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
   let totalExported = 0
@@ -218,6 +249,12 @@ export async function exportTable(
   while (true) {
     const remaining = maxRows - totalExported
     if (remaining <= 0) break
+    if (deadline !== undefined && now() >= deadline) {
+      console.warn(
+        `[sightings-export] ${tableName}: hit wall-time budget after ${totalExported} rows; remaining backlog continues next run`
+      )
+      break
+    }
     const batchLimit = Math.min(BATCH_SIZE, remaining)
 
     try {
@@ -395,11 +432,21 @@ export async function purgeOldExported(
   // state (~a day's exported rows) is far below this.
   maxRows: number = MAX_ROWS_PER_RUN,
   sleep: Sleep = DEFAULT_SLEEP,
+  // Soft wall-time deadline (epoch ms); undefined = no deadline (existing
+  // direct-call behavior is unchanged). See WALL_TIME_BUDGET_MS.
+  deadline?: number,
+  now: () => number = Date.now,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
   let purged = 0
 
   while (purged < maxRows) {
+    if (deadline !== undefined && now() >= deadline) {
+      console.warn(
+        `[sightings-export] ${tableName}: purge hit wall-time budget after purging ${purged} rows; remaining backlog continues next run`
+      )
+      break
+    }
     const batch = Math.min(PURGE_BATCH, maxRows - purged)
 
     try {
