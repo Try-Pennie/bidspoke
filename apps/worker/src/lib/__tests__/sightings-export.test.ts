@@ -200,6 +200,25 @@ describe('exportTable backlog guard', () => {
     expect(vi.mocked(executeStatement)).toHaveBeenCalledTimes(1)
   })
 
+  it('waits seconds (not milliseconds) between statement-timeout retries', async () => {
+    // A statement timeout here means the table is congested, and congestion at
+    // the observed collision windows lasts minutes -- sub-second backoff burned
+    // all attempts inside the same bad window (2026-07-03 incident). Waits must
+    // be long enough to escape it: >= 5s before retry 2, longer again before
+    // retry 3.
+    const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
+    const delays: number[] = []
+    const recordingSleep = (ms: number) => {
+      delays.push(ms)
+      return Promise.resolve()
+    }
+    const supabase = fakeSupabase(() => 200, (call) => (call <= 1 ? timeoutErr : undefined))
+    await exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER, 200, recordingSleep)
+    expect(delays).toHaveLength(2)
+    expect(delays[0]).toBeGreaterThanOrEqual(5000)
+    expect(delays[1]).toBeGreaterThan(delays[0])
+  })
+
   it('gives up after exhausting retries on a statement timeout that never clears', async () => {
     const timeoutErr = { code: '57014', message: 'canceling statement due to statement timeout' }
     let selectAttempts = 0

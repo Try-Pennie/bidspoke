@@ -311,7 +311,13 @@ export function isStatementTimeout(e: unknown): boolean {
 }
 
 export const STATEMENT_TIMEOUT_MAX_ATTEMPTS = 3
-const STATEMENT_TIMEOUT_RETRY_DELAY_MS = 250
+// A statement timeout on these tables means congestion (a pg_cron job, a
+// checkpoint, a burst of live-traffic writes), and the observed congestion
+// windows last minutes -- the original 250/500ms backoff burned every retry
+// inside the same bad window (2026-07-03 incident: all 3 attempts cancelled
+// within ~30s of each other, every run). Waits must be long enough to escape
+// the window, not just a transient lock.
+const STATEMENT_TIMEOUT_RETRY_DELAYS_MS = [5_000, 20_000]
 
 async function withStatementTimeoutRetry<T>(fn: () => Promise<T>, sleep: Sleep): Promise<T> {
   for (let attempt = 1; ; attempt++) {
@@ -319,7 +325,7 @@ async function withStatementTimeoutRetry<T>(fn: () => Promise<T>, sleep: Sleep):
       return await fn()
     } catch (e) {
       if (!isStatementTimeout(e) || attempt >= STATEMENT_TIMEOUT_MAX_ATTEMPTS) throw e
-      await sleep(STATEMENT_TIMEOUT_RETRY_DELAY_MS * attempt)
+      await sleep(STATEMENT_TIMEOUT_RETRY_DELAYS_MS[attempt - 1])
     }
   }
 }

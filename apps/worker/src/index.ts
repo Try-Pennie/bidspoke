@@ -228,11 +228,16 @@ export default {
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
       )
-    } else if (event.cron === '0 */2 * * *') {
+    } else if (event.cron === '37 */2 * * *') {
       // Lead sightings export runs every 2 hours in its own invocation so it gets a
       // full per-run subrequest budget. One run drains ~50K rows (the platform
       // ceiling, handled by exportTable's clean-stop) and inflow is ~83K/day, so a
       // once-daily run fell permanently behind; 12 runs/day stays well ahead.
+      // At :37, NOT :00 -- the top of the hour is the DB's most congested moment
+      // (the :00/:30 reduce_finalize_stranded pg_cron job alone runs 30s+ against
+      // this same table, plus the 5-minute stats refreshes and the hourly
+      // bid-matrix sync), and this job's statements carry PostgREST's 8s budget.
+      // Pinned to :00 it lost that race on every run (2026-07-03 incident).
       ctx.waitUntil(
         runSightingsExport(supabase, env)
           .then((s) => {
