@@ -392,7 +392,24 @@ async function req<T>(path: string, init?: ReqInit): Promise<T> {
     let message = ''
     try {
       const parsed = JSON.parse(body)
-      if (parsed && typeof parsed.error === 'string') message = parsed.error
+      if (parsed && typeof parsed.error === 'string') {
+        message = parsed.error
+        // Folder-delete 409s carry child counts — spell out what's still inside
+        // instead of the bare "folder not empty".
+        if (parsed.error === 'folder not empty') {
+          const parts: string[] = []
+          if (typeof parsed.child_folders === 'number' && parsed.child_folders > 0) {
+            parts.push(`${parsed.child_folders} subfolder${parsed.child_folders === 1 ? '' : 's'}`)
+          }
+          if (typeof parsed.child_workflows === 'number' && parsed.child_workflows > 0) {
+            parts.push(`${parsed.child_workflows} workflow${parsed.child_workflows === 1 ? '' : 's'}`)
+          }
+          if (typeof parsed.child_variables === 'number' && parsed.child_variables > 0) {
+            parts.push(`${parsed.child_variables} variable${parsed.child_variables === 1 ? '' : 's'}`)
+          }
+          if (parts.length) message = `Folder still has ${parts.join(' and ')} — move or delete them first.`
+        }
+      }
     } catch {
       // Body is not JSON (e.g. a short plain-text server message). Use it as-is,
       // but collapse infrastructure error pages (HTML, or anything very long)

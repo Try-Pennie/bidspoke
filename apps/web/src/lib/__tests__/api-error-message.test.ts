@@ -64,3 +64,30 @@ describe('req() surfaces the server error message (#337)', () => {
     await expect(api.workflows.list()).rejects.toThrow(/^API 500$/)
   })
 })
+
+describe('req() spells out folder contents on a 409 "folder not empty" (#479)', () => {
+  it('names subfolder and workflow counts for a workflow folder', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockResponse(409, JSON.stringify({ error: 'folder not empty', child_folders: 1, child_workflows: 2 }))
+    )
+    await expect(api.folders.delete('f1')).rejects.toThrow(
+      /^Folder still has 1 subfolder and 2 workflows — move or delete them first\.$/
+    )
+  })
+
+  it('names the variable count for an env-var folder', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockResponse(409, JSON.stringify({ error: 'folder not empty', child_folders: 0, child_variables: 1 }))
+    )
+    await expect(api.envFolders.delete('f2')).rejects.toThrow(
+      /^Folder still has 1 variable — move or delete them first\.$/
+    )
+  })
+
+  it('falls back to the bare message when no counts are present', async () => {
+    vi.stubGlobal('fetch', mockResponse(409, JSON.stringify({ error: 'folder not empty' })))
+    await expect(api.folders.delete('f3')).rejects.toThrow(/^folder not empty$/)
+  })
+})

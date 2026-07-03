@@ -59,6 +59,8 @@ export default function EnvPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [folderMenuOpen, setFolderMenuOpen] = useState<string | null>(null)
   const folderMenuRef = useRef<HTMLDivElement>(null)
+  const [confirmingFolderDelete, setConfirmingFolderDelete] = useState<string | null>(null)
+  const folderDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [movingVarId, setMovingVarId] = useState<string | null>(null)
@@ -397,8 +399,21 @@ export default function EnvPage() {
     }
   }
 
-  async function handleDeleteFolder(folder: EnvVarFolder) {
+  function requestDeleteFolder(folder: EnvVarFolder) {
     setFolderMenuOpen(null)
+    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
+    setConfirmingFolderDelete(folder.id)
+    folderDeleteTimerRef.current = setTimeout(() => setConfirmingFolderDelete(null), 4000)
+  }
+
+  function cancelDeleteFolder() {
+    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
+    setConfirmingFolderDelete(null)
+  }
+
+  async function handleDeleteFolder(folder: EnvVarFolder) {
+    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
+    setConfirmingFolderDelete(null)
     try {
       await api.envFolders.delete(folder.id)
       setFolders((fs) => fs.filter((f) => f.id !== folder.id))
@@ -742,12 +757,25 @@ export default function EnvPage() {
               <div ref={folderMenuOpen === folder.id || movingFolderId === folder.id ? folderMenuRef : undefined} className="relative">
                 <button
                   onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
-                  className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
+                  className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${confirmingFolderDelete === folder.id ? 'invisible pointer-events-none' : ''} ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                   title="Folder options"
                   aria-label="Folder options"
                 >
                   <MoreHorizontal className="h-4 w-4" />
                 </button>
+                {confirmingFolderDelete === folder.id && (
+                  <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap rounded bg-gray-50/70 pl-1">
+                    <button
+                      onClick={() => handleDeleteFolder(folder)}
+                      className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                    >
+                      Delete
+                    </button>
+                    <button onClick={cancelDeleteFolder} className="text-xs text-gray-500 hover:text-gray-600">
+                      Cancel
+                    </button>
+                  </div>
+                )}
                 {folderMenuOpen === folder.id && (
                   <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
                     <button
@@ -780,7 +808,7 @@ export default function EnvPage() {
                     </button>
                     <div className="my-1 border-t border-gray-100" />
                     <button
-                      onClick={() => handleDeleteFolder(folder)}
+                      onClick={() => requestDeleteFolder(folder)}
                       className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
                     >
                       <Trash2 className="h-4 w-4" />
