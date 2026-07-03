@@ -8,6 +8,14 @@ const BRANCH = 'main'
 const WORKFLOWS_DIR = 'workflows'
 // GitHub's REST API requires a User-Agent on every request (#240).
 const USER_AGENT = 'bidspoke-worker'
+// Matches the disposable workflow names the Playwright E2E suite creates
+// (apps/web/e2e/workflows.spec.ts: `E2E-${Date.now()}`). Local `wrangler dev`
+// shares the real Supabase project and Slack connection with production but has
+// no GITHUB_TOKEN in .dev.vars, so every local E2E save used to trip the
+// "misconfigured" throw and, after two saves, the real org's backup-failure
+// Slack alert. These workflows are test data — never worth a real commit or
+// a real alert, so they're skipped entirely, same as "no repo configured".
+const E2E_TEST_WORKFLOW_NAME = /^E2E-\d+$/
 
 interface GitHubFileResponse {
   sha?: string
@@ -62,6 +70,8 @@ export async function pushWorkflowToGitHub(
 ): Promise<string | null> {
   // No repo configured = backup intentionally disabled; stay silent.
   if (!repo) return null
+  // E2E test workflow = disposable test data; stay silent regardless of token.
+  if (E2E_TEST_WORKFLOW_NAME.test(workflowName)) return null
   // Repo IS configured but token is missing = misconfiguration, not a disable.
   // Throw so the caller's log + failure-alert path runs instead of silently
   // skipping — a silent skip here hid the backup outage for ~2 months (#240).

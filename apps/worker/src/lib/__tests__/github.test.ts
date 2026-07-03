@@ -40,6 +40,15 @@ describe('pushWorkflowToGitHub', () => {
     expect(await pushWorkflowToGitHub(undefined, undefined, WF_ID, WF_NAME, DEFINITION, VERSION)).toBeNull()
   })
 
+  it('returns null (intentional, silent) for E2E test workflows, even without a token, so the local Playwright suite does not trip the backup-failure Slack alert', async () => {
+    const mockFetch = vi.fn()
+    vi.stubGlobal('fetch', mockFetch)
+
+    expect(await pushWorkflowToGitHub(undefined, REPO, WF_ID, 'E2E-1783085799102', DEFINITION, VERSION)).toBeNull()
+    expect(await pushWorkflowToGitHub(TOKEN, REPO, WF_ID, 'E2E-1783085799102', DEFINITION, VERSION)).toBeNull()
+    expect(mockFetch).not.toHaveBeenCalled()
+  })
+
   it('creates a new file when none exists (no existing SHA)', async () => {
     const commitSha = 'abc123'
     const mockFetch = vi.fn()
