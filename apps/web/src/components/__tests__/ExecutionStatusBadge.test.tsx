@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, act } from '@testing-library/react'
-import { ExecutionStatusBadge } from '../page'
+import { ExecutionStatusBadge } from '../ExecutionStatusBadge'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
