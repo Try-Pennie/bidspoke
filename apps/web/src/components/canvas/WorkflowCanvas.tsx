@@ -71,7 +71,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
-import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState } from '@/lib/save-dirty-guard'
+import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState, confirmDiscardIfDirty, UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
@@ -2803,8 +2803,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           <Link
             href="/workflows"
             onClick={(e) => {
-              // Let the browser handle modifier / middle clicks natively (open in new tab).
+              // Let the browser handle modifier / middle clicks natively (open in new tab) —
+              // this tab's unsaved edits aren't going anywhere.
               if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+              // #478: this Link never fires beforeunload, so a client-side navigation away
+              // from a dirty canvas silently discarded the edits. Gate it the same way
+              // PartnerForm guards its own away-clicks.
+              if (!confirmDiscardIfDirty(isDirty, () => window.confirm(UNSAVED_CHANGES_MESSAGE))) {
+                e.preventDefault()
+                return
+              }
               if (typeof document === 'undefined' || !('startViewTransition' in document)) return
               e.preventDefault()
               ;(document as Document & { startViewTransition(cb: () => void): void })
