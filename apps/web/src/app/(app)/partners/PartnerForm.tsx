@@ -14,10 +14,11 @@ import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
+import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
-// Shared across the form's own guards (Cancel, tab close, link nav) and the
-// parent page's partner-switch / New guards so the prompt copy stays identical.
-export const UNSAVED_CHANGES_MESSAGE = 'You have unsaved changes. Leave without saving?'
+// Re-exported for the parent page's partner-switch / New guards, and the
+// canvas's own away-click guard (#478), so the prompt copy stays identical.
+export { UNSAVED_CHANGES_MESSAGE }
 
 // ── Signal rule builder ───────────────────────────────────────────────────────
 

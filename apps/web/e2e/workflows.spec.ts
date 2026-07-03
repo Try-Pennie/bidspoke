@@ -98,4 +98,36 @@ test.describe('Workflows list', () => {
 
     await expect(copyText).not.toBeVisible({ timeout: 5000 })
   })
+
+  test('unsaved edit warns before leaving via the back link (#478)', async ({ page }) => {
+    const name = UNIQUE()
+
+    await page.getByRole('button', { name: /new workflow/i }).first().click()
+    await expect(page).toHaveURL(/\/workflows\/.+\?mode=edit/, { timeout: 10000 })
+
+    const nameInput = page.locator('input[style*="workflow-name"]')
+    await nameInput.fill(name)
+
+    // Save so the row is named for afterAll cleanup and to establish a clean baseline.
+    // A clean save switches to view mode (URL flips to ?mode=view) — wait on that
+    // instead of the "Saved" flash, which can come and go within a single frame.
+    await page.getByRole('button', { name: 'Save' }).first().click()
+    await page.getByRole('button', { name: 'Save' }).last().click()
+    await expect(page).toHaveURL(/mode=view/, { timeout: 10000 })
+
+    await page.getByRole('button', { name: 'Edit' }).click()
+    await nameInput.fill(`${name}-edited`)
+    await expect(page.getByRole('button', { name: /^Save$/ })).toBeEnabled()
+
+    // Dismiss: the click is blocked and the canvas keeps the unsaved edit.
+    page.once('dialog', (d) => d.dismiss())
+    await page.getByRole('link', { name: '← Workflows' }).click()
+    await expect(page).toHaveURL(/\/workflows\/.+/)
+    await expect(nameInput).toHaveValue(`${name}-edited`)
+
+    // Confirm: navigation proceeds and the unsaved rename is discarded.
+    page.once('dialog', (d) => d.accept())
+    await page.getByRole('link', { name: '← Workflows' }).click()
+    await expect(page).toHaveURL(/\/workflows$/, { timeout: 10000 })
+  })
 })
