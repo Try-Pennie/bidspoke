@@ -12,7 +12,7 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    workflows: { list: vi.fn() },
+    workflows: { list: vi.fn(), save: vi.fn() },
     stats: { get: vi.fn() },
     folders: { list: vi.fn(), delete: vi.fn() },
   },
@@ -22,6 +22,18 @@ import WorkflowsPage from '../page'
 import { api } from '@/lib/api'
 
 const folder = { id: 'fol-1', organization_id: 'org-1', parent_id: null, name: 'Misc', created_at: '', updated_at: '' }
+const workflow = {
+  id: 'wf-1',
+  organization_id: 'org-1',
+  folder_id: null,
+  name: 'My Workflow',
+  description: null,
+  is_active: true,
+  updated_at: '2026-07-01T00:00:00.000Z',
+  updated_by_name: null,
+  updated_by_email: null,
+  capture_sightings: true,
+} as never
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -70,5 +82,24 @@ describe('Workflows page — folder delete requires confirm (#479)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
 
     expect(await screen.findByText('Folder still has 1 workflow — move or delete them first.')).toBeInTheDocument()
+  })
+})
+
+describe('Workflows page — failed rename surfaces an error (#514)', () => {
+  it('shows an error and reverts the name when save fails, instead of failing silently', async () => {
+    vi.mocked(api.workflows.list).mockResolvedValue([workflow])
+    vi.mocked(api.workflows.save).mockRejectedValue(new Error('Failed to save workflow'))
+    render(<WorkflowsPage />)
+
+    fireEvent.click(await screen.findByLabelText('More options'))
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+
+    const input = screen.getByDisplayValue('My Workflow')
+    fireEvent.change(input, { target: { value: 'Renamed Workflow' } })
+    fireEvent.click(screen.getByLabelText('Save name'))
+
+    expect(await screen.findByText('Failed to save workflow')).toBeInTheDocument()
+    expect(await screen.findByText('My Workflow')).toBeInTheDocument()
+    expect(screen.queryByText('Renamed Workflow')).not.toBeInTheDocument()
   })
 })

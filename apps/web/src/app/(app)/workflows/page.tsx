@@ -541,13 +541,16 @@ export default function WorkflowsPage() {
   async function commitRename(id: string, nextName: string) {
     const trimmed = nextName.trim()
     if (!trimmed) { setRenamingId(null); return }
+    const original = workflows.find((w) => w.id === id)
     setWorkflows((ws) => ws.map((w) => w.id === id ? { ...w, name: trimmed } : w))
     setRenamingId(null)
     try {
       await api.workflows.save(id, { name: trimmed })
-    } catch {
-      // Reload to revert optimistic update
-      api.workflows.list().then(setWorkflows).catch(() => {})
+    } catch (e) {
+      if (original) {
+        setWorkflows((ws) => ws.map((w) => w.id === id ? original : w))
+      }
+      setError(e instanceof Error ? e.message : 'Failed to rename workflow')
     }
   }
 

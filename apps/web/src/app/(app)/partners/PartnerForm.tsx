@@ -866,11 +866,12 @@ export default function PartnerForm({
                     disabled={removingUuidId === u.id}
                     onClick={async () => {
                       setRemovingUuidId(u.id)
+                      setUuidError(null)
                       try {
                         await api.partnerUuids.delete(u.id)
                         setUuids((prev) => prev.filter((x) => x.id !== u.id))
-                      } catch {
-                        // noop
+                      } catch (err) {
+                        setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
                       } finally {
                         setRemovingUuidId(null)
                       }
