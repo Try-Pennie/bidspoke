@@ -46,6 +46,7 @@ export interface Env {
   // Max simultaneous in-flight Salesforce calls (string env var; default 20,
   // kept below SF's ~25-slot concurrency governor). Optional.
   SALESFORCE_BULKHEAD_LIMIT?: string
+  SALESFORCE_BULKHEAD_WAIT_MS?: string
 
   // Supabase (secrets)
   SUPABASE_URL: string

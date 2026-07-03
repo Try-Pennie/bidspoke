@@ -22,7 +22,7 @@ import { coerceString } from '../../lib/coerce'
 import { parseJson } from '../../lib/json'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
-import { BulkheadClient, salesforceBulkheadLimit, type AcquireResult } from '../../lib/bulkhead-client'
+import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
@@ -214,26 +214,37 @@ export async function executeSalesforceNode(
   }
 
   // Salesforce bulkhead (ADR 0005 / #312): bound inflight SF calls below the org's
-  // ~25-slot concurrency governor. At capacity, fail fast with a permanent error
-  // (routes to the step's on_error/fallback, no SF retry) instead of piling more
-  // load onto a saturated Salesforce. Fail OPEN if the limiter itself errors — a
-  // bulkhead-DO outage must not block all SF traffic.
+  // ~25-slot concurrency governor. At capacity, wait briefly for a freed slot —
+  // observed bursts clear in seconds, and a waiting request adds zero Salesforce
+  // load (it was refused at our own gate, it never reached SF). Only if the wait
+  // budget expires does the lead shed with a permanent error (routes to the
+  // step's on_error/fallback, no SF retry) — that now genuinely means sustained
+  // saturation. Fail OPEN if the limiter itself errors — a bulkhead-DO outage
+  // must not block all SF traffic.
   const bulkhead = env.SALESFORCE_BULKHEAD
     ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env))
     : null
+  const waitMs = salesforceBulkheadWaitMs(env)
+  const acquireStart = Date.now()
   const lease = bulkhead
-    ? await bulkhead.acquire().catch(() => ({ allowed: true } as AcquireResult))
+    ? await bulkhead.acquireWithWait(waitMs, { signal }).catch(() => ({ allowed: true } as AcquireResult))
     : ({ allowed: true } as AcquireResult)
+  const waitedMs = Date.now() - acquireStart
   if (!lease.allowed) {
     // Distinctive message so an unhandled shed flows through the existing failure
     // + failure-rate Slack alerts without new alert infra.
-    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} trace=${ctx.trigger.trace_id}`)
+    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} waited_ms=${waitedMs} trace=${ctx.trigger.trace_id}`)
     const shedErr = new Error(
-      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight)`,
+      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight, waited ${waitedMs}ms)`,
     ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput }
     shedErr.permanent = true
     shedErr.resolvedInput = resolvedInput
     throw shedErr
+  }
+  if (waitedMs > 1000) {
+    // Slot obtained but only after real waiting — saturation is close. Visible in
+    // logs so a creeping-toward-capacity trend can be spotted before sheds start.
+    console.log(`[salesforce] event=salesforce_bulkhead_waited waited_ms=${waitedMs} inflight=${lease.inflight} limit=${lease.limit} trace=${ctx.trigger.trace_id}`)
   }
 
   const controller = new AbortController()

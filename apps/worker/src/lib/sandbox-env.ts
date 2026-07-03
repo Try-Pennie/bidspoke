@@ -46,6 +46,7 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   GITHUB_REPO: 'expose',
   DEPLOYED_SHA: 'expose', // non-secret: the live worker's git commit (#327)
   SALESFORCE_BULKHEAD_LIMIT: 'expose', // non-secret: SF inflight cap (#312)
+  SALESFORCE_BULKHEAD_WAIT_MS: 'expose', // non-secret: at-capacity wait budget
   FIELD_PRESENCE_CAPTURE: 'expose', // non-secret: field-presence capture flag (#419)
 }
 

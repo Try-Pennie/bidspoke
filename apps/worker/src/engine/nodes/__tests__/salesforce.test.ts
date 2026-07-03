@@ -123,15 +123,17 @@ describe('executeSalesforceNode', () => {
     expect(signals[1]?.aborted).toBe(true) // the write call carries the aborted signal
   })
 
-  // #312: when the Salesforce bulkhead is at capacity, the node sheds — throwing
-  // a permanent error (routes to on_error/fallback, no retry) WITHOUT calling the
-  // Salesforce operation. Only the token fetch happens; the write is shed.
+  // #312: when the Salesforce bulkhead stays at capacity past the wait budget,
+  // the node sheds — throwing a permanent error (routes to on_error/fallback, no
+  // retry) WITHOUT calling the Salesforce operation. Only the token fetch
+  // happens; the write is shed. WAIT_MS=0 gives the old one-shot behavior so
+  // this test exercises the shed path without real sleeps.
   it('sheds with a permanent error when the bulkhead is at capacity (#312)', async () => {
     fetchMock.mockResolvedValueOnce(mockTokenResponse())
     const acquire = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ allowed: false, inflight: 20, limit: 20 })),
     )
-    const env = makeEnv()
+    const env = makeEnv({ SALESFORCE_BULKHEAD_WAIT_MS: '0' })
     ;(env as unknown as { SALESFORCE_BULKHEAD: unknown }).SALESFORCE_BULKHEAD = {
       idFromName: vi.fn().mockReturnValue('id'),
       get: vi.fn().mockReturnValue({ fetch: acquire }),
@@ -147,6 +149,41 @@ describe('executeSalesforceNode', () => {
     expect(caught?.permanent).toBe(true)
     expect(acquire).toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1) // token fetch only — the write was shed
+  })
+
+  // Burst tolerance: a lead arriving during a brief saturation spike waits for a
+  // slot instead of dying (16 live leads were shed 2026-07-01..07-03 during
+  // bursts that cleared within a minute). Capacity frees on the second poll and
+  // the write proceeds normally.
+  it('waits out a transient at-capacity burst and completes the call', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockTokenResponse())
+      .mockResolvedValueOnce(mockResponse(201, '{"id":"SF-001"}'))
+    let polls = 0
+    const acquire = vi.fn((url: string) => {
+      if (new URL(url).pathname === '/acquire') {
+        polls++
+        const body = polls >= 2
+          ? { allowed: true, token: 't-1', inflight: 20, limit: 20 }
+          : { allowed: false, inflight: 20, limit: 20 }
+        return Promise.resolve(new Response(JSON.stringify(body)))
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })))
+    })
+    // Small real budget keeps the test fast; the poll interval clamps below it.
+    const env = makeEnv({ SALESFORCE_BULKHEAD_WAIT_MS: '80' })
+    ;(env as unknown as { SALESFORCE_BULKHEAD: unknown }).SALESFORCE_BULKHEAD = {
+      idFromName: vi.fn().mockReturnValue('id'),
+      get: vi.fn().mockReturnValue({ fetch: acquire }),
+    }
+    const result = await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env,
+    )
+    expect(polls).toBeGreaterThanOrEqual(2)
+    expect((result.output as { body: { id: string } }).body.id).toBe('SF-001')
+    expect(fetchMock).toHaveBeenCalledTimes(2) // token + the write went through
   })
 
   // ── Token fetch + cache ─────────────────────────────────────────────────────
