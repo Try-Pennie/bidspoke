@@ -175,8 +175,14 @@ export async function alertIfTripped(
   orgId: string,
   slug: string,
   outcome: BreakerRecordResult | undefined,
+  isLocalDev?: boolean,
 ): Promise<boolean> {
   if (!outcome?.tripped) return false
+  // LOCAL_DEV (set only in .dev.vars, never in production) means this run is
+  // against the real production Supabase/Slack connection from a local
+  // `wrangler dev` process — paging the real org's Slack here would be a false
+  // alarm from local testing, not a real partner outage.
+  if (isLocalDev) return false
   await sendCircuitAlert(supabase, orgId, null, { service_name: slug, state: 'opened' }).catch(() => {})
   return true
 }
@@ -481,7 +487,7 @@ export async function executePartnerBidNode(
       }))
       // Page ops if this error just tripped the breaker open — otherwise the
       // partner silently drops out of bidding for hours with no signal (1.2).
-      await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome)
+      await alertIfTripped(supabase, ctx.trigger.org_id, p.slug, outcome, !!env.LOCAL_DEV)
     }
 
     // Pull resolver-side input off the thrown error (callBidApi attaches its

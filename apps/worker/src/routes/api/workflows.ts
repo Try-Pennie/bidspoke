@@ -396,6 +396,11 @@ workflows.put('/:id', async (c) => {
       })
       .catch(async (e) => {
         console.error('[github] backup failed:', e)
+        // LOCAL_DEV (set only in .dev.vars, never in production) means this save is
+        // running against the real production Supabase/Slack connection from a local
+        // `wrangler dev` process, which has no GITHUB_TOKEN. Recording the failure here
+        // would trip the real org's backup-failure Slack alert from local testing.
+        if (c.env.LOCAL_DEV) return
         await recordBackupFailure({
           supabase,
           kv: c.env.IDEMPOTENCY,

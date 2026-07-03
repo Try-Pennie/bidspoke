@@ -328,6 +328,27 @@ describe('PUT /workflows/:id', () => {
     expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
   })
 
+  it('does not record/alert a backup failure when LOCAL_DEV is set, even for a normally-named workflow (local wrangler dev shares the real org Slack connection)', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub backup misconfigured: GITHUB_TOKEN is not set (GITHUB_REPO is configured)'))
+    const newVersion = { id: 'ver-bk3', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const localEnv = { ...testEnv, LOCAL_DEV: 'true' } as unknown as Env
+    await app.request('/workflows/wf-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: JSON.stringify({ definition: { nodes: [] } }),
+    }, localEnv, mockCtx)
+    await drainWaitUntil()
+    expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
+    expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
+  })
+
   it('writes an audit log entry', async () => {
     const newVersion = { id: 'ver-3', version_number: 2, workflow_id: 'wf-1' }
     vi.mocked(createSupabaseClient).mockReturnValue(

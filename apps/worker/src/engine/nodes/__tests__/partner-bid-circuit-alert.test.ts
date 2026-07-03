@@ -62,4 +62,10 @@ describe('alertIfTripped', () => {
     const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true })
     expect(alerted).toBe(true)
   })
+
+  it('does not page Slack when running under local wrangler dev, even on a real trip (shares the real org Slack connection)', async () => {
+    const alerted = await alertIfTripped(supabase, 'org-1', 'sofi', { ok: true, state: 'open', tripped: true }, true)
+    expect(alerted).toBe(false)
+    expect(vi.mocked(sendCircuitAlert)).not.toHaveBeenCalled()
+  })
 })

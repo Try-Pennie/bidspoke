@@ -113,6 +113,13 @@ export interface Env {
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
   ANTHROPIC_API_KEY?: string
 
+  // Set to 'true' ONLY in apps/worker/.dev.vars (gitignored, never in production).
+  // Local `wrangler dev` shares the real production Supabase project and Slack
+  // connection — there is no separate local backend — so this flags "running
+  // locally" for guards that would otherwise fire real production alerts from
+  // local testing (e.g. the GitHub-backup-failure Slack alert).
+  LOCAL_DEV?: string
+
 }
 
 const app = new Hono<{ Bindings: Env }>()
