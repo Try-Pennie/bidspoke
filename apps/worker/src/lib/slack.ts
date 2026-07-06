@@ -721,7 +721,7 @@ export async function sendTimeoutConfigAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout below what recent run history needs. Slower-than-typical runs hit the timeout and burn retries, or fail outright when the value sits below p99.`,
+        text: `*Below the suggested value:* ${underCount} step${underCount === 1 ? '' : 's'} ${underCount === 1 ? 'has' : 'have'} a timeout below what typical run history clears: most runs at this step time out or burn a retry, not just the rare slow outlier.`,
       },
     })
     for (const w of underProvisioned) {
@@ -729,8 +729,7 @@ export async function sendTimeoutConfigAlert(
         .slice(0, 20)
         .map((n) => {
           const nodeUrl = `${appUrl}/workflows/${w.workflow_id}?node=${n.node_id}`
-          const impact = n.severity === 'red' ? 'most runs would time out' : 'slow runs will time out'
-          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms.toLocaleString()}ms, ${impact}. Try ${n.suggested_ms.toLocaleString()}ms (p99 ${n.p99_ms.toLocaleString()}ms over ${n.sample_size.toLocaleString()} runs)`
+          return `• <${nodeUrl}|${n.label || n.namespace}> (${n.type}): set to ${n.configured_ms.toLocaleString()}ms, most runs would time out. Try ${n.suggested_ms.toLocaleString()}ms (p99 ${n.p99_ms.toLocaleString()}ms over ${n.sample_size.toLocaleString()} runs)`
         })
       const more = w.nodes.length > 20 ? `\n_and ${w.nodes.length - 20} more_` : ''
       blocks.push({

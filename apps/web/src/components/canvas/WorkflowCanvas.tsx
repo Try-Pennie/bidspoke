@@ -3774,11 +3774,11 @@ function EdgeRemoveButton({
       onMouseLeave={onMouseLeave}
       onClick={onClick}
       style={{ left, top, transform: 'translate(-50%, -50%)' }}
-      className="absolute z-10 flex h-5 w-5 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
+      className="absolute z-10 flex h-4 w-4 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-500 shadow-sm hover:border-red-400 hover:bg-red-50 hover:text-red-600"
       aria-label="Disconnect"
       title="Disconnect"
     >
-      <X className="h-3 w-3" />
+      <X className="h-2.5 w-2.5" />
     </button>
   )
 }

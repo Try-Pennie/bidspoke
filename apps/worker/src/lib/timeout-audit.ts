@@ -290,8 +290,16 @@ export function findUnderProvisionedNodes(
  * exactly the false "below the suggested value" alerts this guards against. The
  * dashboard panel still shows these (with their sample size visible); only the
  * push alert is held to the higher bar.
+ *
+ * Also requires severity 'red': amber means typical runs still clear the
+ * timeout (p99/max) and only a rare slow outlier would burn a retry — real,
+ * but the same low-urgency tier as over-provisioned nodes, which are already
+ * dashboard-only. Without this, a node sitting a few hundred ms under its
+ * suggestion (configured essentially at, not meaningfully below, the
+ * suggested value) paged the same as one that fails on every typical run.
  */
 export function isAlertWorthyUnderProvision(node: UnderProvisionedNode): boolean {
+  if (node.severity !== 'red') return false
   return node.sample_size >= SAMPLE_CONFIDENT || (node.window_days ?? 0) >= 7
 }
 

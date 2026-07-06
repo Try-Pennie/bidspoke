@@ -372,6 +372,17 @@ describe('isAlertWorthyUnderProvision', () => {
     expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: 2 / 24 }))).toBe(false)
     expect(isAlertWorthyUnderProvision(mk({ sample_size: 100, window_days: null }))).toBe(false)
   })
+
+  it('is NOT worthy when only amber — headroom is thin but typical runs still succeed', () => {
+    // Amber means the timeout clears p99/max (real runs pass); only the rare
+    // slow outlier would time out. That's real but low-urgency, same tier as
+    // over-provisioned — dashboard-only, not an unprompted Slack page.
+    expect(isAlertWorthyUnderProvision(mk({ severity: 'amber', sample_size: SAMPLE_CONFIDENT }))).toBe(false)
+  })
+
+  it('is worthy when red and confidently sampled — typical runs actually time out', () => {
+    expect(isAlertWorthyUnderProvision(mk({ severity: 'red', sample_size: SAMPLE_CONFIDENT }))).toBe(true)
+  })
 })
 
 describe('alertWorthyUnderProvisioned', () => {
