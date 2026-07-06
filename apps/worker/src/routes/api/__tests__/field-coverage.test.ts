@@ -104,6 +104,43 @@ describe('field-coverage routes (#423)', () => {
     expect(body.silences).toEqual([{ field_path: 'y.skip', reason: 'always empty', created_at: '2026-06-29T00:00:00Z' }])
   })
 
+  it('GET pages past a 1,000-row field_presence_daily response instead of truncating', async () => {
+    // field_presence_daily is a known big table (#488): a bare, unpaginated read
+    // would silently drop anything past PostgREST's 1,000-row cap. Page 1 is a
+    // full 1,000-row page for an unwatched field (so it carries no signal by
+    // itself); page 2 has the single row for the watched field 'x.final'. If the
+    // route ever regresses to a single unpaginated/capped read, only page 1 is
+    // fetched and 'x.final' never shows up in the response.
+    const fullPage = Array.from({ length: 1000 }, (_, i) => ({
+      workflow_id: 'wf-1',
+      field_path: 'x.other',
+      day: `2026-06-${String((i % 20) + 1).padStart(2, '0')}`,
+      ran_count: 10,
+      present_count: 10,
+    }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_daily: [
+          { list: fullPage },
+          { list: [{ workflow_id: 'wf-1', field_path: 'x.final', day: '2026-06-29', ran_count: 5, present_count: 5 }] },
+        ],
+        field_presence_silences: { list: [] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await request(app, 'GET', '/field-coverage/wf-1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { fields: Array<{ path: string; health: unknown }> }
+    expect(body.fields).toEqual([
+      {
+        path: 'x.final',
+        source: 'structured',
+        health: { latest_day: '2026-06-29', ran: 5, present: 5, rate: 1, drought: false, dead: false },
+      },
+    ])
+  })
+
   it('POST silence returns 404 when the workflow is not in the caller org', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, workflows: { maybeSingle: null } }) as unknown as ReturnType<typeof createSupabaseClient>,

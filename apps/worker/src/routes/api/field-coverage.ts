@@ -11,6 +11,7 @@ import { writeAuditLog } from '../../lib/audit'
 import { loadWorkflowDefinition } from '../../engine/definition-loader'
 import { deriveWatchedFieldMap } from '../../engine/watched-fields'
 import { findDroughts, findDayOneDead, type PresenceRow } from '../../lib/field-presence-anomaly'
+import { fetchAllPaged } from '../../lib/paginate'
 
 type Variables = AuthVariables
 const fieldCoverage = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -50,18 +51,25 @@ fieldCoverage.get('/:workflowId', async (c) => {
     .toISOString()
     .slice(0, 10)
   const today = new Date().toISOString().slice(0, 10)
-  const { data: rollupRows, error } = await supabase
-    .from('field_presence_daily')
-    .select('workflow_id, field_path, day, ran_count, present_count')
-    .eq('workflow_id', workflowId)
-    .gte('day', since)
-    .eq('is_test', false)
-    // Filtered to one workflow's watched fields over a 10-day window (currently
-    // well under 1,000 rows even for the busiest workflow); this is a generous
-    // ceiling, not an expected count, to keep the big-table guard satisfied.
-    .limit(5000)
-  if (error) return dbError(c, error)
-  const rows: PresenceRow[] = (rollupRows ?? []).map((r) => ({
+  let rollupRows: Record<string, unknown>[]
+  try {
+    rollupRows = await fetchAllPaged<Record<string, unknown>>(
+      (from, to) =>
+        supabase
+          .from('field_presence_daily')
+          .select('workflow_id, field_path, day, ran_count, present_count')
+          .eq('workflow_id', workflowId)
+          .gte('day', since)
+          .eq('is_test', false)
+          .order('day', { ascending: true })
+          .order('field_path', { ascending: true })
+          .range(from, to),
+      'field_presence_daily',
+    )
+  } catch (e) {
+    return dbError(c, e)
+  }
+  const rows: PresenceRow[] = rollupRows.map((r) => ({
     workflow_id: r.workflow_id as string,
     field_path: r.field_path as string,
     day: r.day as string,
