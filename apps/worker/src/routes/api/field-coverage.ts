@@ -56,6 +56,10 @@ fieldCoverage.get('/:workflowId', async (c) => {
     .eq('workflow_id', workflowId)
     .gte('day', since)
     .eq('is_test', false)
+    // Filtered to one workflow's watched fields over a 10-day window (currently
+    // well under 1,000 rows even for the busiest workflow); this is a generous
+    // ceiling, not an expected count, to keep the big-table guard satisfied.
+    .limit(5000)
   if (error) return dbError(c, error)
   const rows: PresenceRow[] = (rollupRows ?? []).map((r) => ({
     workflow_id: r.workflow_id as string,

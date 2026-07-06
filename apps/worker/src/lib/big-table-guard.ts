@@ -31,6 +31,7 @@ export const KNOWN_BIG_TABLES = new Set([
   'persons',
   'achieve_evaluations',
   'audit_log',
+  'field_presence_daily',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads
