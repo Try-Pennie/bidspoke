@@ -1,0 +1,74 @@
+# Auto-merges only the routine, low-risk Dependabot PRs once CI passes.
+#
+# This repo is on GitHub's free plan for a private repo, so branch protection
+# and repository rulesets aren't available, meaning GitHub's built-in
+# "auto-merge" (gh pr merge --auto) has nothing to actually wait on and would
+# merge immediately instead of waiting for CI. This workflow instead triggers
+# after the CI workflow finishes and only merges once it has actually
+# succeeded.
+#
+# What counts as safe to merge automatically:
+#   - The grouped npm "minor-and-patch" PR (dependabot.yml groups every
+#     non-major npm update into one PR per week; any ungrouped npm PR is by
+#     definition a major-version bump, since minor/patch always lands in the
+#     group).
+#   - Any github-actions ecosystem PR (these only affect the CI pipeline
+#     itself, not the deployed app, and a bad bump fails CI loudly rather
+#     than shipping broken production code).
+# Everything else (major-version app dependency bumps) is left for manual
+# review.
+name: Dependabot Auto-merge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find the PR for this CI run
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${{ github.event.workflow_run.head_sha }}/pulls" --jq '.[0].number // empty')
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Merge if it's a routine Dependabot PR
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          AUTHOR=$(gh pr view "$PR_NUMBER" --json author --jq .author.login)
+          BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+
+          if [ "$AUTHOR" != "dependabot[bot]" ]; then
+            echo "PR #$PR_NUMBER was not opened by Dependabot, skipping."
+            exit 0
+          fi
+
+          case "$BRANCH" in
+            dependabot/npm_and_yarn/minor-and-patch-*)
+              SAFE=true ;;
+            dependabot/github_actions/*)
+              SAFE=true ;;
+            *)
+              SAFE=false ;;
+          esac
+
+          if [ "$SAFE" = "true" ]; then
+            echo "Merging routine Dependabot PR #$PR_NUMBER ($BRANCH)"
+            gh pr merge "$PR_NUMBER" --squash --delete-branch
+          else
+            echo "PR #$PR_NUMBER ($BRANCH) is not in the auto-merge allowlist (likely a major-version bump), leaving for manual review."
+          fi
