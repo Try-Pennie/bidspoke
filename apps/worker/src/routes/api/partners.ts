@@ -10,6 +10,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 import { asJson } from '../../lib/json'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -185,7 +186,7 @@ partners.put('/:id', async (c) => {
 
   if (fetchError) return c.json({ error: 'Partner not found' }, 404)
 
-  const updates: Record<string, unknown> = {
+  const updates: Database['public']['Tables']['partner_configs']['Update'] = {
     updated_by: userId,
     updated_by_email: email,
     updated_by_name: c.get('user').name,
@@ -202,7 +203,7 @@ partners.put('/:id', async (c) => {
     'click_url', 'partner_type', 'sub_account_min_bids',
   ]
   for (const f of fields) {
-    if (body[f] !== undefined) updates[f] = body[f]
+    if (body[f] !== undefined) (updates as Record<string, unknown>)[f] = body[f]
   }
 
   const { data, error } = await supabase

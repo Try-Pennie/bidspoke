@@ -7,6 +7,7 @@ import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../lib/cf-sec
 import { writeAuditLog } from '../../lib/audit'
 import { invalidateEnvCache } from '../../lib/env-loader'
 import { encryptSecret, decryptSecret } from '../../lib/secret-crypto'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -167,7 +168,7 @@ env.put('/:id', async (c) => {
     updatedValue = body.value ?? existing.value
   }
 
-  const updates: Record<string, unknown> = {
+  const updates: Database['public']['Tables']['environment_variables']['Update'] = {
     key: newKey,
     value: updatedValue ?? existing.value,
     updated_by: userId,
