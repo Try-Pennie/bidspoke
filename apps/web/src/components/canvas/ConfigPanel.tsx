@@ -3228,6 +3228,23 @@ function coerceForType(raw: string, type: ConstantType): unknown {
   }
 }
 
+// A constants object is "flat" when every value is a type the table editor can
+// represent (string/number/boolean/array). Nested objects and null have no row
+// type, so switching to table would silently mangle them. Returns an error
+// message, or null when valid.
+function validateFlatConstants(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return 'Must be a JSON object, e.g. {}'
+  }
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (key.trim() === '') return 'Keys must not be blank'
+    if (v === null || (typeof v === 'object' && !Array.isArray(v))) {
+      return `"${key}" must be a string, number, boolean, or array: nested objects aren't supported`
+    }
+  }
+  return null
+}
+
 function ConstantsConfig({
   config,
   onChange,
@@ -3241,8 +3258,45 @@ function ConstantsConfig({
   const persist = useCallback((next: Record<string, unknown>) => onChange({ data: next }), [onChange])
   // Stable-id rows so a key field keeps focus while typed and a rename can't merge
   // two entries (#96). typeOverrides key by row id, not the editable name.
-  const { rows, invalidIds, setKey, setValue, addRow, removeRow } = useKeyValueRows<unknown>(data, persist, '', reportValidity)
+  const { rows, invalidIds, isValid: tableValid, setKey, setValue, addRow, removeRow } =
+    useKeyValueRows<unknown>(data, persist, '')
   const [typeOverrides, setTypeOverrides] = useState<Record<string, ConstantType>>({})
+
+  const [mode, setMode] = useState<'table' | 'json'>('table')
+  const [jsonText, setJsonText] = useState(() => JSON.stringify(data, null, 2))
+  const [jsonError, setJsonError] = useState<string | null>(null)
+
+  // While in JSON view, whether the JSON textarea can round-trip decides
+  // validity instead of the table's own row validation.
+  const isValid = mode === 'json' ? jsonError === null : tableValid
+  useEffect(() => {
+    reportValidity?.(isValid)
+  }, [isValid, reportValidity])
+  useEffect(() => () => reportValidity?.(true), [reportValidity])
+
+  function switchToJson() {
+    setJsonText(JSON.stringify(data, null, 2))
+    setJsonError(null)
+    setMode('json')
+  }
+
+  function handleJsonChange(text: string) {
+    setJsonText(text)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      setJsonError('Invalid JSON')
+      return
+    }
+    const err = validateFlatConstants(parsed)
+    if (err) {
+      setJsonError(err)
+      return
+    }
+    setJsonError(null)
+    persist(parsed as Record<string, unknown>)
+  }
 
   function effectiveType(id: string, value: unknown): ConstantType {
     return typeOverrides[id] ?? detectType(value)
@@ -3259,16 +3313,57 @@ function ConstantsConfig({
       <div>
         <div className="mb-2 flex items-center justify-between">
           <p className="text-xs font-medium text-gray-600">Workflow constants</p>
-          <button
-            type="button"
-            onClick={addRow}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
-          >
-            <Plus className="h-3 w-3" />
-            Add key
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5">
+              <button
+                type="button"
+                onClick={() => setMode('table')}
+                disabled={jsonError !== null}
+                className={`rounded px-2 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                  mode === 'table' ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-600 hover:text-gray-800'
+                }`}
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                onClick={switchToJson}
+                className={`rounded px-2 py-1 text-xs font-medium transition ${
+                  mode === 'json' ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-600 hover:text-gray-800'
+                }`}
+              >
+                JSON
+              </button>
+            </div>
+            {mode === 'table' && (
+              <button
+                type="button"
+                onClick={addRow}
+                className="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
+              >
+                <Plus className="h-3 w-3" />
+                Add key
+              </button>
+            )}
+          </div>
         </div>
-        {rows.length === 0 ? (
+        {mode === 'json' ? (
+          <div>
+            <textarea
+              aria-label="Constants JSON"
+              value={jsonText}
+              onChange={(e) => handleJsonChange(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              className={`w-full rounded-lg border bg-white px-3 py-2 font-mono text-xs text-gray-800 focus:outline-none focus:ring-2 ${
+                jsonError
+                  ? 'border-red-400 focus:ring-red-300'
+                  : 'border-gray-200 focus:ring-p-blue-dark'
+              }`}
+            />
+            {jsonError && <p className="mt-1.5 text-xs text-red-600">{jsonError}</p>}
+          </div>
+        ) : rows.length === 0 ? (
           <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-center text-xs text-gray-500">
             No constants defined. Click &ldquo;Add key&rdquo; to start.
           </p>
@@ -3338,9 +3433,11 @@ function ConstantsConfig({
             })}
           </div>
         )}
-        <p className="mt-2 text-xs text-gray-500">
-          For array values, enter comma-separated items.
-        </p>
+        {mode === 'table' && (
+          <p className="mt-2 text-xs text-gray-500">
+            For array values, enter comma-separated items.
+          </p>
+        )}
       </div>
 
       <div className="rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3">

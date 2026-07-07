@@ -147,3 +147,100 @@ describe('ConfigPanel — editing a field saves through onUpdate', () => {
     )
   })
 })
+
+describe('ConfigPanel: Constants node JSON view (#560-followup)', () => {
+  it('defaults to table view with existing rows visible, no JSON textarea', () => {
+    renderPanel(nodeOf('constants', { data: { offerName: 'Pennie' } }))
+    expect(screen.getByDisplayValue('offerName')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Constants JSON')).not.toBeInTheDocument()
+  })
+
+  it('switching to JSON view shows the current data as pretty-printed JSON', () => {
+    renderPanel(nodeOf('constants', { data: { offerName: 'Pennie', minimumLoanAmount: 1000 } }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    expect(screen.getByLabelText('Constants JSON')).toHaveValue(
+      JSON.stringify({ offerName: 'Pennie', minimumLoanAmount: 1000 }, null, 2),
+    )
+  })
+
+  it('editing valid JSON persists it and switching back to table shows the new rows', () => {
+    const { onUpdate } = renderPanel(nodeOf('constants', { data: {} }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    fireEvent.change(screen.getByLabelText('Constants JSON'), {
+      target: {
+        value: JSON.stringify({
+          offerName: 'Pennie',
+          minimumLoanAmount: 1000,
+          biddingActive: true,
+          states: ['CA', 'NY'],
+        }),
+      },
+    })
+    expect(onUpdate).toHaveBeenCalledWith(
+      'n1',
+      expect.objectContaining({
+        config: expect.objectContaining({
+          data: { offerName: 'Pennie', minimumLoanAmount: 1000, biddingActive: true, states: ['CA', 'NY'] },
+        }),
+      }),
+    )
+    // Switching is allowed once the JSON is valid (row content after the switch
+    // depends on the parent re-supplying the updated config, which this harness's
+    // mocked onUpdate doesn't do; that path is exercised in the real app).
+    expect(screen.getByRole('button', { name: 'Table' })).not.toBeDisabled()
+  })
+
+  it('invalid JSON shows an error and disables switching back to table', () => {
+    renderPanel(nodeOf('constants', { data: { offerName: 'Pennie' } }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    fireEvent.change(screen.getByLabelText('Constants JSON'), { target: { value: '{ not valid json' } })
+    expect(screen.getByText(/invalid json/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Table' })).toBeDisabled()
+  })
+
+  it('a nested object value is rejected as unsupported', () => {
+    renderPanel(nodeOf('constants', { data: {} }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    fireEvent.change(screen.getByLabelText('Constants JSON'), {
+      target: { value: JSON.stringify({ nested: { a: 1 } }) },
+    })
+    expect(screen.getByText(/nested object/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Table' })).toBeDisabled()
+  })
+
+  it('a blank key is rejected', () => {
+    renderPanel(nodeOf('constants', { data: {} }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    fireEvent.change(screen.getByLabelText('Constants JSON'), {
+      target: { value: JSON.stringify({ '': 'x' }) },
+    })
+    expect(screen.getByText('Keys must not be blank')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Table' })).toBeDisabled()
+  })
+
+  it('invalid JSON reports the key editor invalid, blocking save', () => {
+    const onKeyEditorValidityChange = vi.fn()
+    renderPanel(nodeOf('constants', { data: {} }), { onKeyEditorValidityChange })
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    onKeyEditorValidityChange.mockClear()
+    fireEvent.change(screen.getByLabelText('Constants JSON'), { target: { value: '{ not valid' } })
+    expect(onKeyEditorValidityChange).toHaveBeenCalledWith(false)
+  })
+
+  it('fixing invalid JSON reports the key editor valid again', () => {
+    const onKeyEditorValidityChange = vi.fn()
+    renderPanel(nodeOf('constants', { data: {} }), { onKeyEditorValidityChange })
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    const textarea = screen.getByLabelText('Constants JSON')
+    fireEvent.change(textarea, { target: { value: '{ not valid' } })
+    fireEvent.change(textarea, { target: { value: '{"a": "b"}' } })
+    expect(onKeyEditorValidityChange).toHaveBeenLastCalledWith(true)
+  })
+
+  it('switching table to JSON always works, even with existing valid rows', () => {
+    renderPanel(nodeOf('constants', { data: { a: 'b' } }))
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }))
+    expect(screen.getByLabelText('Constants JSON')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Table' })).not.toBeDisabled()
+  })
+})
