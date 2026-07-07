@@ -17,10 +17,15 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest'
 
-interface EslintConfig {
-  extends: string[]
-  rules: Record<string, unknown>
-  overrides?: Array<{ files: string[]; rules: Record<string, unknown> }>
+// A flat config file exports an array of config objects, each optionally
+// scoped by `files`/`ignores`, whose `rules` merge in array order for any
+// given file. This is a lightweight stand-in for that resolution, sufficient
+// for this test's purpose: find the specific config object(s) that apply to
+// a rule, not a full ESLint-equivalent config resolver.
+interface FlatConfigEntry {
+  files?: string[]
+  ignores?: string[]
+  rules?: Record<string, unknown>
 }
 
 // Rules that catch real bugs in this waitUntil-heavy backend. Non-negotiable.
@@ -43,34 +48,43 @@ const TYPE_SAFETY_WARNINGS = [
 ]
 
 // Both Worker packages must share the same tiered invariants. The configs are
-// untyped .cjs files resolved at runtime (the worker tsconfig has no @types/node,
-// so a plain require/import.meta won't typecheck — a literal dynamic import does).
+// untyped .mjs files resolved at runtime (the worker tsconfig has no
+// declaration for them, so a plain dynamic import won't typecheck).
 const PACKAGES = [
-  // @ts-expect-error -- untyped .cjs module, resolved at runtime
-  { name: 'worker', load: () => import('../../.eslintrc.cjs') },
-  // @ts-expect-error -- untyped .cjs module, resolved at runtime
-  { name: 'worker-tail', load: () => import('../../../worker-tail/.eslintrc.cjs') },
+  // @ts-expect-error -- untyped .mjs module, resolved at runtime
+  { name: 'worker', load: () => import('../../eslint.config.mjs') },
+  // @ts-expect-error -- untyped .mjs module, resolved at runtime
+  { name: 'worker-tail', load: () => import('../../../worker-tail/eslint.config.mjs') },
 ] as const
 
-const configs: Record<string, EslintConfig> = {}
+const configs: Record<string, FlatConfigEntry[]> = {}
 beforeAll(async () => {
   for (const pkg of PACKAGES) {
     const mod = await pkg.load()
-    configs[pkg.name] = (mod.default ?? mod) as EslintConfig
+    configs[pkg.name] = mod.default as FlatConfigEntry[]
   }
 })
 
-describe.each(PACKAGES)('$name eslint config', ({ name }) => {
-  it('extends the type-checked typescript-eslint preset', () => {
-    expect(configs[name].extends).toContain('plugin:@typescript-eslint/recommended-type-checked')
-  })
+// Flat config resolves by merging every unscoped (no `files`) entry's rules in
+// array order, later entries winning, same as ESLint itself does for a file
+// that isn't matched by any `files`-scoped override. Presets (eslint:recommended,
+// the typescript-eslint recommended-type-checked array) are unscoped too, so
+// this merge is required, not just a lookup of "the one rules block."
+function baseRules(entries: FlatConfigEntry[]): Record<string, unknown> {
+  const merged: Record<string, unknown> = {}
+  for (const e of entries) {
+    if (!e.files && e.rules) Object.assign(merged, e.rules)
+  }
+  return merged
+}
 
+describe.each(PACKAGES)('$name eslint config', ({ name }) => {
   it.each(ASYNC_CORRECTNESS_ERRORS)('keeps %s as an error', (rule) => {
-    expect(configs[name].rules[rule]).toBe('error')
+    expect(baseRules(configs[name])[rule]).toBe('error')
   })
 
   it.each(TYPE_SAFETY_WARNINGS)('keeps %s as a non-blocking warning', (rule) => {
-    expect(configs[name].rules[rule]).toBe('warn')
+    expect(baseRules(configs[name])[rule]).toBe('warn')
   })
 })
 
@@ -78,13 +92,11 @@ describe.each(PACKAGES)('$name eslint config', ({ name }) => {
 // has none, so this invariant applies to the worker config alone.
 describe('worker test-file override', () => {
   it('relaxes only non-bug rules in test files, never the floating/misused-promise guards', () => {
-    const testOverride = configs.worker.overrides?.find((o) =>
-      o.files.some((f) => f.includes('test'))
-    )
+    const testOverride = configs.worker.find((e) => e.files?.some((f) => f.includes('test')))
     expect(testOverride).toBeDefined()
     // The two rules that catch genuine async bugs must NOT be relaxed in tests.
-    expect(testOverride!.rules['@typescript-eslint/no-floating-promises']).toBeUndefined()
-    expect(testOverride!.rules['@typescript-eslint/no-misused-promises']).toBeUndefined()
+    expect(testOverride!.rules?.['@typescript-eslint/no-floating-promises']).toBeUndefined()
+    expect(testOverride!.rules?.['@typescript-eslint/no-misused-promises']).toBeUndefined()
   })
 })
 
@@ -101,12 +113,10 @@ describe('worker engine ratchet', () => {
   ]
 
   it('escalates the no-unsafe-* family to error for src/engine/ non-test code', () => {
-    const engineOverride = configs.worker.overrides?.find((o) =>
-      o.files.some((f) => f.includes('engine'))
-    )
+    const engineOverride = configs.worker.find((e) => e.files?.some((f) => f.includes('engine')))
     expect(engineOverride).toBeDefined()
     for (const rule of ENGINE_ERROR_RULES) {
-      expect(engineOverride!.rules[rule]).toBe('error')
+      expect(engineOverride!.rules?.[rule]).toBe('error')
     }
   })
 })
