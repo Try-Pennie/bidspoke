@@ -1,9 +1,9 @@
 /**
  * Issue #550: the Create endpoint button was disabled whenever the partner
- * slug was empty, with no message telling the user why — and a layout bug
- * elsewhere on the form made the slug input hard to reach, so it silently
- * stayed empty. This locks in that submitting without a slug now surfaces
- * an explicit error instead of doing nothing.
+ * slug was empty, with no message telling the user why. A layout bug
+ * elsewhere on the form also made the slug input hard to reach, so it
+ * silently stayed empty. This locks in that submitting without a slug now
+ * surfaces an explicit error instead of doing nothing.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'

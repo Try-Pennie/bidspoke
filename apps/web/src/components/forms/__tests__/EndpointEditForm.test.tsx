@@ -1,5 +1,5 @@
 /**
- * Issue #550: same fix as EndpointCreateForm — clearing the partner slug and
+ * Issue #550: same fix as EndpointCreateForm. Clearing the partner slug and
  * saving must surface an explicit error, not a silently disabled button.
  */
 import { describe, it, expect, vi } from 'vitest'
