@@ -2574,6 +2574,7 @@ function SalesforceConfig({
   const extValue  = (config.external_id_value as string | undefined) ?? ''
   const soql      = (config.soql as string | undefined) ?? ''
   const apexPath  = (config.apex_path as string | undefined) ?? ''
+  const apexMethod = config.apex_method === 'GET' ? 'GET' : 'POST'
   const expectedErrors = (config.expected_errors as { code: string; message_contains?: string; response_body?: unknown; response_status?: number }[] | undefined) ?? []
   const transientErrors = (config.transient_errors as { code: string; message_contains?: string }[] | undefined) ?? []
   const injectedFields = (config.injected_fields as Record<string, string> | undefined) ?? {}
@@ -2647,7 +2648,7 @@ function SalesforceConfig({
     }
   }
 
-  const showBody   = operation !== 'query'
+  const showBody   = operation !== 'query' && !(operation === 'apex' && apexMethod === 'GET')
   const showId     = operation === 'update'
   const showUpsert = operation === 'upsert'
   const showSoql   = operation === 'query'
@@ -2698,7 +2699,23 @@ function SalesforceConfig({
 
       {showApex && (
         <div>
-          <label htmlFor={apexPathId} className="mb-1 block text-xs font-medium text-gray-600">Apex path</label>
+          <div className="mb-1 flex items-center justify-between">
+            <label htmlFor={apexPathId} className="block text-xs font-medium text-gray-600">Apex path</label>
+            <div className="inline-flex rounded-md border border-gray-200 bg-white p-0.5">
+              {(['GET', 'POST'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => onChange({ apex_method: m })}
+                  className={`rounded px-2 py-1 text-xs font-medium transition ${
+                    apexMethod === m ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-600 hover:text-gray-800'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
           <input
             id={apexPathId}
             className="w-full rounded border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-blue-400 focus:outline-none"
@@ -2706,6 +2723,11 @@ function SalesforceConfig({
             onChange={(e) => onChange({ apex_path: e.target.value })}
             placeholder="/services/apexrest/my-endpoint"
           />
+          {apexMethod === 'GET' && (
+            <p className="mt-1.5 text-xs text-gray-500">
+              GET requests include the path exactly as typed (add any query string, e.g. ?name=X). No body is sent.
+            </p>
+          )}
         </div>
       )}
 

@@ -46,6 +46,7 @@ interface SalesforceConfig {
   external_id_value?: string  // upsert: template-enabled external ID value
   soql?: string         // template-enabled SOQL query string
   apex_path?: string    // apex: relative path, e.g. /services/apexrest/prospect-trades
+  apex_method?: 'GET' | 'POST'  // apex: HTTP method. Defaults to POST. GET sends no body.
   expected_errors?: ExpectedError[]  // SF rejections treated as business rejections, not failures.
                                      // Matched by errorCode AND optional message substring.
                                      // Step logs as completed and the workflow exits here.
@@ -169,9 +170,11 @@ export async function executeSalesforceNode(
     const apexPath = (config.apex_path ?? '').replace(/^\/?/, '/')
     if (!apexPath || apexPath === '/') throw new Error('Salesforce apex requires apex_path')
     url = `${instanceUrl}${apexPath}`
-    method = 'POST'
-    resolvedBodyForInput = resolveValue(config.body, enrichedCtx)
-    bodyStr = JSON.stringify(resolvedBodyForInput)
+    method = config.apex_method === 'GET' ? 'GET' : 'POST'
+    if (method === 'POST') {
+      resolvedBodyForInput = resolveValue(config.body, enrichedCtx)
+      bodyStr = JSON.stringify(resolvedBodyForInput)
+    }
   } else {
     throw new Error(`Unknown Salesforce operation: ${operation}`)
   }
@@ -199,6 +202,7 @@ export async function executeSalesforceNode(
       external_id_value: config.external_id_value,
       soql: config.soql,
       apex_path: config.apex_path,
+      apex_method: config.apex_method,
       injected_fields: config.injected_fields,
     },
     resolved: {
