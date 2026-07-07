@@ -10,6 +10,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -83,7 +84,7 @@ envFolders.patch('/:id', async (c) => {
   if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'folder not found' }, 404)
 
-  const patch: Record<string, unknown> = {}
+  const patch: Database['public']['Tables']['env_var_folders']['Update'] = {}
   if (typeof body.name === 'string') {
     const trimmed = body.name.trim()
     if (!trimmed) return c.json({ error: 'name cannot be empty' }, 400)
