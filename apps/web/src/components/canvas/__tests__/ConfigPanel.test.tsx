@@ -244,3 +244,31 @@ describe('ConfigPanel: Constants node JSON view (#560-followup)', () => {
     expect(screen.getByRole('button', { name: 'Table' })).not.toBeDisabled()
   })
 })
+
+describe('ConfigPanel: Salesforce apex GET support (#563-followup)', () => {
+  it('apex: shows a method toggle defaulting to POST, body field visible', () => {
+    renderPanel(nodeOf('salesforce', { operation: 'apex', apex_path: '/services/apexrest/prospect-trades' }))
+    expect(screen.getByRole('button', { name: 'POST' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'GET' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Body (JSON)')).toBeInTheDocument()
+  })
+
+  it('apex: selecting GET calls onUpdate with apex_method GET', () => {
+    const { onUpdate } = renderPanel(nodeOf('salesforce', { operation: 'apex', apex_path: '/services/apexrest/custommdt/bid?name=Lead_Economy' }))
+    fireEvent.click(screen.getByRole('button', { name: 'GET' }))
+    expect(onUpdate).toHaveBeenCalledWith(
+      'n1',
+      expect.objectContaining({ config: expect.objectContaining({ apex_method: 'GET' }) }),
+    )
+  })
+
+  it('apex: body field is hidden when apex_method is GET', () => {
+    renderPanel(nodeOf('salesforce', { operation: 'apex', apex_path: '/services/apexrest/custommdt/bid?name=Lead_Economy', apex_method: 'GET' }))
+    expect(screen.queryByLabelText('Body (JSON)')).not.toBeInTheDocument()
+  })
+
+  it('non-apex operations show no method toggle', () => {
+    renderPanel(nodeOf('salesforce', { operation: 'create', object: 'Prospect__c' }))
+    expect(screen.queryByRole('button', { name: 'GET' })).not.toBeInTheDocument()
+  })
+})

@@ -326,6 +326,22 @@ describe('executeSalesforceNode', () => {
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
   })
 
+  it('apex: GETs with no body when apex_method is "GET", query string included as-is', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(200, '{"IsActive":true}'))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'apex', apex_method: 'GET', apex_path: '/services/apexrest/custommdt/bid?name=Lead_Economy' }),
+      makeCtx(),
+      env
+    )
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${INSTANCE}/services/apexrest/custommdt/bid?name=Lead_Economy`)
+    expect(fetchMock.mock.calls[0][1].method).toBe('GET')
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined()
+  })
+
   // ── Template resolution ─────────────────────────────────────────────────────
 
   it('resolves {{trigger.payload.*}} in body', async () => {
