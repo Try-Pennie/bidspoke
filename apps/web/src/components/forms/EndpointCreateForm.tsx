@@ -65,7 +65,14 @@ export default function EndpointCreateForm({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!form.subdomain || !form.workflow_id) return
+    if (!form.subdomain) {
+      setError('Partner slug is required.')
+      return
+    }
+    if (!form.workflow_id) {
+      setError('Select a workflow.')
+      return
+    }
     setSaving(true)
     setError(null)
     try {
@@ -102,41 +109,38 @@ export default function EndpointCreateForm({
         </div>
       )}
 
-      <div className="grid grid-cols-2 items-end gap-2">
-        <div>
-          <label htmlFor={subdomainId} className="mb-1 block text-xs font-medium text-gray-600">Partner slug</label>
-          <div className="flex items-center rounded-lg border border-gray-200 bg-white focus-within:border-p-blue-dark focus-within:ring-2 focus-within:ring-p-blue-dark/20">
-            <span className="flex-shrink-0 rounded-l-lg border-r border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-500">hook.trypennie.dev/</span>
-            <input
-              id={subdomainId}
-              ref={subdomainInputRef}
-              className="min-w-0 flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-500"
-              placeholder="partner-name"
-              value={form.subdomain}
-              onChange={(e) => {
-                const subdomain = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')
-                setForm((f) => ({ ...f, subdomain, source_name: deriveSourceName(subdomain, f.source_name, sourceNameEdited) }))
-              }}
-              required
-            />
-          </div>
-        </div>
-        <div>
-          <label htmlFor={pathId} className="mb-1 block text-xs font-medium text-gray-600">
-            Path <span className="font-normal text-gray-500">(optional)</span>
-          </label>
+      <div>
+        <label htmlFor={subdomainId} className="mb-1 block text-xs font-medium text-gray-600">Partner slug</label>
+        <div className="flex items-center rounded-lg border border-gray-200 bg-white focus-within:border-p-blue-dark focus-within:ring-2 focus-within:ring-p-blue-dark/20">
+          <span className="flex-shrink-0 truncate rounded-l-lg border-r border-gray-100 bg-gray-50 px-2 py-2 font-mono text-xs text-gray-500">hook.trypennie.dev/</span>
           <input
-            id={pathId}
-            className="input w-full font-mono"
-            placeholder="/bidding"
-            value={form.path}
+            id={subdomainId}
+            ref={subdomainInputRef}
+            className="min-w-[6rem] flex-1 rounded-r-lg bg-transparent px-3 py-2 font-mono text-sm text-graphite outline-none placeholder:text-gray-500"
+            placeholder="partner-name"
+            value={form.subdomain}
             onChange={(e) => {
-              let v = e.target.value.toLowerCase().replace(/[^a-z0-9\-_/]/g, '')
-              if (v && !v.startsWith('/')) v = '/' + v
-              setForm((f) => ({ ...f, path: v }))
+              const subdomain = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')
+              setForm((f) => ({ ...f, subdomain, source_name: deriveSourceName(subdomain, f.source_name, sourceNameEdited) }))
             }}
           />
         </div>
+      </div>
+      <div>
+        <label htmlFor={pathId} className="mb-1 block text-xs font-medium text-gray-600">
+          Path <span className="font-normal text-gray-500">(optional)</span>
+        </label>
+        <input
+          id={pathId}
+          className="input w-full font-mono"
+          placeholder="/bidding"
+          value={form.path}
+          onChange={(e) => {
+            let v = e.target.value.toLowerCase().replace(/[^a-z0-9\-_/]/g, '')
+            if (v && !v.startsWith('/')) v = '/' + v
+            setForm((f) => ({ ...f, path: v }))
+          }}
+        />
       </div>
 
       {lockWorkflow ? (
@@ -154,7 +158,6 @@ export default function EndpointCreateForm({
             className="input w-full"
             value={form.workflow_id}
             onChange={(e) => setForm((f) => ({ ...f, workflow_id: e.target.value }))}
-            required
           >
             <option value="">Select a workflow…</option>
             {workflows.map((wf) => (
@@ -184,7 +187,7 @@ export default function EndpointCreateForm({
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={saving || !form.subdomain || !form.workflow_id}
+          disabled={saving}
           className="flex items-center gap-2 rounded-lg bg-p-blue-dark px-4 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
         >
           {saving ? <><Loader2 className="h-4 w-4 animate-spin" /> Creating…</> : 'Create endpoint'}
