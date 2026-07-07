@@ -13,6 +13,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -174,7 +175,7 @@ endpoints.put('/:id', async (c) => {
   if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  const updates: Database['public']['Tables']['webhook_endpoints']['Update'] = { updated_at: new Date().toISOString() }
 
   if (body.subdomain !== undefined) {
     const sub = body.subdomain.trim().toLowerCase()

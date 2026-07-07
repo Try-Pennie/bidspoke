@@ -19,6 +19,7 @@ import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../.
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 import { asJson } from '../../lib/json'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -333,14 +334,14 @@ workflows.put('/:id', async (c) => {
   if (versionError) return dbError(c, versionError)
 
   // Update workflow
-  const updates: Record<string, unknown> = {
+  const updates: Database['public']['Tables']['workflows']['Update'] = {
     updated_by: userId,
     updated_by_email: email,
     updated_by_name: name,
   }
   if (body.name !== undefined) updates.name = body.name
   if (body.description !== undefined) updates.description = body.description
-  if (body.definition !== undefined) updates.definition = body.definition
+  if (body.definition !== undefined) updates.definition = asJson(body.definition)
   if (body.slack_channel !== undefined) updates.slack_channel = body.slack_channel
 
   const { data: updated, error: updateError } = await supabase
@@ -507,7 +508,7 @@ workflows.patch('/:id', async (c) => {
 
   if (fetchError) return c.json({ error: 'Workflow not found' }, 404)
 
-  const updates: Record<string, unknown> = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
+  const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
   if (body.is_active !== undefined) updates.is_active = body.is_active
   if (body.capture_sightings !== undefined) updates.capture_sightings = body.capture_sightings
   if ('folder_id' in body) {
@@ -1087,7 +1088,7 @@ workflows.post('/:id/rename-apply', async (c) => {
     const legacyChanged = nextLegacy !== p.bid_formula
     if (!cfgChanged && !legacyChanged) continue
 
-    const update: Record<string, unknown> = { updated_by: userId }
+    const update: Database['public']['Tables']['partner_configs']['Update'] = { updated_by: userId }
     if (legacyChanged) update.bid_formula = nextLegacy
     if (cfgChanged) update.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
 

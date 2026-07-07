@@ -13,6 +13,7 @@ import { writeAuditLog } from '../../lib/audit'
 import { syncBidConfig } from '../../lib/bid-matrix-sync'
 import { fetchAllPaged } from '../../lib/paginate'
 import { asJson } from '../../lib/json'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -147,7 +148,7 @@ route.put('/:id', async (c) => {
     .single()
   if (fetchErr) return c.json({ error: 'Config not found' }, 404)
 
-  const updates: Record<string, unknown> = {
+  const updates: Database['public']['Tables']['partner_bid_configs']['Update'] = {
     updated_by: userId,
     updated_by_email: email,
     updated_by_name: c.get('user').name,
@@ -157,7 +158,7 @@ route.put('/:id', async (c) => {
     'name', 'is_default', 'is_active', 'sync_source', 'sf_object', 'sf_filters', 'dimensions',
   ]
   for (const f of fields) {
-    if (body[f] !== undefined) updates[f] = body[f]
+    if (body[f] !== undefined) (updates as Record<string, unknown>)[f] = body[f]
   }
 
   const { data, error } = await supabase

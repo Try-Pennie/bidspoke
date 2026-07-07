@@ -4,6 +4,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
 
@@ -63,7 +64,7 @@ servicePresets.put('/:id', async (c) => {
     return c.json({ error: 'invalid auth_type' }, 400)
   }
 
-  const patch: Record<string, unknown> = {}
+  const patch: Database['public']['Tables']['service_presets']['Update'] = {}
   if (body.name) patch.name = body.name.trim()
   if (body.auth_type) patch.auth_type = body.auth_type
   if ('base_url' in body) patch.base_url = body.base_url?.trim() || null
