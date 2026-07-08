@@ -80,6 +80,7 @@ function makeSupabase(opts: {
 }) {
   const updates: { id: string; payload: Record<string, unknown> }[] = []
   const stepLookups: string[] = []
+  const stepLimitCalls: number[] = []
 
   return {
     client: {
@@ -113,7 +114,12 @@ function makeSupabase(opts: {
                 stepLookups.push(id)
                 return {
                   gte: () => ({
-                    limit: async () => {
+                    // The real query bounds this with .limit(n) -- capture what
+                    // was asked for so callers can assert it's actually applied,
+                    // not just assumed. Only resolving here (not at .gte()) means
+                    // the code under test MUST call .limit() to get any data back.
+                    limit: async (n: number) => {
+                      stepLimitCalls.push(n)
                       if (opts.stepsError) return { data: null, error: opts.stepsError }
                       return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
                     },
@@ -127,6 +133,7 @@ function makeSupabase(opts: {
       },
     },
     updates,
+    stepLimitCalls,
     stepLookups,
   }
 }
@@ -158,6 +165,15 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       error_message: 'equifax_api_error: ACRO_GATEWAY',
       failed_step_type: 'partner_bid',
     })
+  })
+
+  it('bounds the per-execution execution_steps read instead of fetching unbounded rows', async () => {
+    const { client, stepLimitCalls } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: '2026-07-08T02:37:57.000Z' }],
+      stepsByExecutionId: { 'exec-1': [] },
+    })
+    await runReduceFinalizeStrandedExecutions(client as never)
+    expect(stepLimitCalls).toEqual([1000])
   })
 
   it('honestly labels a stranded execution with no step history, without touching execution_steps in a way that fabricates success', async () => {
