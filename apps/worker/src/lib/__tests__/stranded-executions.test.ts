@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveStrandedExecution } from '../stranded-executions'
+import { resolveStrandedExecution, runReduceFinalizeStrandedExecutions, type StrandStepEvidence } from '../stranded-executions'
 
 describe('resolveStrandedExecution', () => {
   it('honestly labels an execution with no step history as unrecoverable, never guessing success', () => {
@@ -63,5 +63,150 @@ describe('resolveStrandedExecution', () => {
     )
     expect(resolved.completed_at).toBe('2026-07-01T01:00:00.000Z')
     expect(resolved.duration_ms).toBe(0)
+  })
+})
+
+interface FakeExec {
+  id: string
+  started_at: string
+}
+
+function makeSupabase(opts: {
+  stranded: FakeExec[]
+  stepsByExecutionId?: Record<string, StrandStepEvidence[]>
+  strandedError?: { message: string } | null
+  stepsError?: { message: string } | null
+  updateErrorForId?: string | null
+}) {
+  const updates: { id: string; payload: Record<string, unknown> }[] = []
+  const stepLookups: string[] = []
+
+  return {
+    client: {
+      from(table: string) {
+        if (table === 'workflow_executions') {
+          return {
+            select: () => ({
+              eq: () => ({
+                lt: () => ({
+                  gte: () => ({
+                    order: () => ({
+                      limit: async () => ({ data: opts.stranded, error: opts.strandedError ?? null }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+            update: (payload: Record<string, unknown>) => ({
+              eq: async (_col: string, id: string) => {
+                updates.push({ id, payload })
+                if (opts.updateErrorForId === id) return { error: { message: 'update failed' } }
+                return { error: null }
+              },
+            }),
+          }
+        }
+        if (table === 'execution_steps') {
+          return {
+            select: () => ({
+              eq: (_col: string, id: string) => {
+                stepLookups.push(id)
+                return {
+                  gte: async () => {
+                    if (opts.stepsError) return { data: null, error: opts.stepsError }
+                    return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
+                  },
+                }
+              },
+            }),
+          }
+        }
+        throw new Error(`unexpected table in test mock: ${table}`)
+      },
+    },
+    updates,
+    stepLookups,
+  }
+}
+
+describe('runReduceFinalizeStrandedExecutions', () => {
+  it('does nothing and reports zero when no rows are stranded', async () => {
+    const { client, updates } = makeSupabase({ stranded: [] })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 0, errors: 0 })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('finalizes a stranded execution as failed using its failed step as evidence', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: '2026-07-08T02:37:57.000Z' }],
+      stepsByExecutionId: {
+        'exec-1': [
+          { status: 'failed', step_type: 'partner_bid', error_message: 'equifax_api_error: ACRO_GATEWAY', completed_at: '2026-07-08T02:38:05.000Z' },
+        ],
+      },
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(updates).toHaveLength(1)
+    expect(updates[0].id).toBe('exec-1')
+    expect(updates[0].payload).toMatchObject({
+      status: 'failed',
+      outcome: 'failed',
+      error_message: 'equifax_api_error: ACRO_GATEWAY',
+      failed_step_type: 'partner_bid',
+    })
+  })
+
+  it('honestly labels a stranded execution with no step history, without touching execution_steps in a way that fabricates success', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-2', started_at: '2026-07-01T01:00:00.000Z' }],
+      stepsByExecutionId: {},
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(updates[0].payload.outcome).toBeNull()
+    expect(updates[0].payload.error_message).toMatch(/recovered/i)
+  })
+
+  it('counts a scan failure as an error and does not process anything', async () => {
+    const { client, updates } = makeSupabase({ stranded: [], strandedError: { message: 'db down' } })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('counts a step-lookup failure as an error for that row without touching workflow_executions', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-3', started_at: '2026-07-01T01:00:00.000Z' }],
+      stepsError: { message: 'partition unavailable' },
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(updates).toHaveLength(0)
+  })
+
+  it('counts an update failure as an error rather than silently reporting success', async () => {
+    const { client } = makeSupabase({
+      stranded: [{ id: 'exec-4', started_at: '2026-07-01T01:00:00.000Z' }],
+      stepsByExecutionId: { 'exec-4': [] },
+      updateErrorForId: 'exec-4',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 0, errors: 1 })
+  })
+
+  it('processes multiple stranded rows independently, one bad row does not block the rest', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [
+        { id: 'exec-good', started_at: '2026-07-01T01:00:00.000Z' },
+        { id: 'exec-bad', started_at: '2026-07-01T01:05:00.000Z' },
+      ],
+      stepsByExecutionId: { 'exec-good': [] },
+      updateErrorForId: 'exec-bad',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 1, errors: 1 })
+    expect(updates.map((u) => u.id)).toEqual(['exec-good', 'exec-bad'])
   })
 })
