@@ -10,18 +10,27 @@
  * "still running" as "still in flight" (e.g. slow-execution-rate.ts, which
  * counts a stranded row's ever-growing elapsed time as a slow run).
  *
- * This does NOT try to guess 'completed' from execution_steps evidence alone.
- * A first attempt at that (a pg_cron SQL function, reverted same day) assumed
- * every workflow signals "response sent" with a dedicated 'response'/'exit'
- * step -- false for Engine Bidding Workflow (the majority of stranded rows),
- * which sends its response from inside a Code node's own script (an early
+ * This does NOT guess 'completed' from execution_steps evidence alone. A first
+ * attempt at that (a pg_cron SQL function, reverted same day) assumed every
+ * workflow signals "response sent" with a dedicated 'response'/'exit' step --
+ * false for Engine Bidding Workflow (the majority of stranded rows), which
+ * sends its response from inside a Code node's own script (an early
  * $.respond()-style sentinel), logged with step_type='code' like any other
  * code step. There is no reliable, workflow-agnostic signal in execution_steps
  * alone that distinguishes "the walk finished" from "the walk was cut off here
- * mid-graph" -- so guessing 'completed' risks overstating success on a run
- * that never actually served the lead.
+ * mid-graph" -- so guessing 'completed' from step types risks overstating
+ * success on a run that never actually served the lead.
  *
- * Instead this mirrors finalize_unrecoverable_stranded's "label honestly,
+ * There IS one precise, workflow-agnostic signal though (#571): the workflow
+ * graph itself. If the last-completed step landed on a node with zero outgoing
+ * edges (a true graph dead end that exists in the definition), the walk ran to
+ * the end of the graph rather than being cut off mid-flight -- real evidence of
+ * completion. resolveStrandedExecution uses that when a StrandGraph is supplied
+ * (built once per workflow_version and cached across rows) to honestly claim
+ * 'completed'; without it, or when the last node is not a dead end, it falls
+ * back to the conservative unresolved label below.
+ *
+ * Otherwise this mirrors finalize_unrecoverable_stranded's "label honestly,
  * don't guess" precedent: only claim 'failed' with real evidence (a step that
  * actually failed); everything else is honestly marked unresolved rather than
  * masqueraded as either outcome. completed_at is always reconstructed from
@@ -31,6 +40,7 @@
  * failure-rate.ts window on completed_at and would page on as a false spike.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { WorkflowDefinition } from '../types'
 
 export const MIN_AGE_MINUTES = 30
 export const LOOKBACK_DAYS = 14
@@ -41,22 +51,57 @@ export interface StrandStepEvidence {
   step_type: string | null
   error_message: string | null
   completed_at: string | null
+  step_node_id?: string | null
+  step_namespace?: string | null
 }
 
 export interface ResolvedStrand {
-  status: 'failed'
-  outcome: 'failed' | null
+  status: 'failed' | 'completed'
+  outcome: 'successful' | 'completed' | 'failed' | null
   completed_at: string
   duration_ms: number
-  error_message: string
+  error_message: string | null
   failed_step_type: string | null
+}
+
+/**
+ * Graph analysis of a workflow_version's definition, precomputed once per
+ * version and reused across every stranded execution that shares it (#571).
+ * `outgoingEdgeCount` maps a node id to how many edges leave it; a node id that
+ * exists in `nodeIds` with a count of zero is a true graph dead end -- reaching
+ * and completing it means the walk finished naturally, not that it was cut off.
+ */
+export interface StrandGraph {
+  nodeIds: Set<string>
+  outgoingEdgeCount: Map<string, number>
+  successNamespaces: string[]
+}
+
+export function buildStrandGraph(definition: WorkflowDefinition): StrandGraph {
+  const nodeIds = new Set<string>()
+  for (const node of definition.nodes ?? []) nodeIds.add(node.id)
+
+  const outgoingEdgeCount = new Map<string, number>()
+  for (const edge of definition.edges ?? []) {
+    outgoingEdgeCount.set(edge.source, (outgoingEdgeCount.get(edge.source) ?? 0) + 1)
+  }
+
+  return {
+    nodeIds,
+    outgoingEdgeCount,
+    successNamespaces: definition.trigger?.config?.success_node_namespaces ?? [],
+  }
 }
 
 const UNRESOLVED_MESSAGE =
   '[recovered] execution stranded: isolate evicted before finalize, outcome could not be confirmed'
 const FAILED_NO_MESSAGE_FALLBACK = '[recovered] execution stranded after a failed step'
 
-export function resolveStrandedExecution(steps: StrandStepEvidence[], startedAtIso: string): ResolvedStrand {
+export function resolveStrandedExecution(
+  steps: StrandStepEvidence[],
+  startedAtIso: string,
+  graph?: StrandGraph
+): ResolvedStrand {
   const startedAtMs = new Date(startedAtIso).getTime()
 
   // Only the LAST step chronologically decides this -- an earlier failure
@@ -83,6 +128,31 @@ export function resolveStrandedExecution(steps: StrandStepEvidence[], startedAtI
 
   const completedAtIso = lastStep?.completed_at ?? startedAtIso
 
+  // Graph-confirmed completion (#571): if the last-completed step landed on a
+  // node that exists in the definition and has zero outgoing edges, the walk
+  // reached a true dead end -- it ran to the end of the graph, it wasn't cut
+  // off mid-flight. That is real evidence of completion, so we can honestly
+  // claim 'completed' instead of the conservative unresolved label. The node-id
+  // existence guard matters: a node id absent from the definition also has zero
+  // outgoing edges, but that is missing evidence, not a dead end, so it must not
+  // read as a false completion.
+  const lastNodeId = lastStep?.step_node_id
+  if (graph && lastStep && lastNodeId != null && graph.nodeIds.has(lastNodeId) && (graph.outgoingEdgeCount.get(lastNodeId) ?? 0) === 0) {
+    // Mirror the engine's own outcome attribution: 'successful' if the walk
+    // passed through a configured success node, else 'completed'.
+    const passedThroughSuccessNode = graph.successNamespaces.some((ns) =>
+      steps.some((s) => s.step_namespace === ns && s.status === 'completed')
+    )
+    return {
+      status: 'completed',
+      outcome: passedThroughSuccessNode ? 'successful' : 'completed',
+      completed_at: completedAtIso,
+      duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
+      error_message: null,
+      failed_step_type: null,
+    }
+  }
+
   return {
     status: 'failed',
     outcome: null,
@@ -96,6 +166,32 @@ export function resolveStrandedExecution(steps: StrandStepEvidence[], startedAtI
 export interface ReduceFinalizeResult {
   processed: number
   errors: number
+}
+
+/**
+ * Loads a workflow_version's definition and builds its StrandGraph. Returns null
+ * when the definition can't be loaded (missing version, DB error, or malformed
+ * definition) -- graph confirmation is a best-effort precision boost, so a
+ * failure here just falls back to the honest-unresolved labeling rather than
+ * failing the row.
+ */
+async function loadStrandGraph(supabase: SupabaseClient, versionId: string): Promise<StrandGraph | null> {
+  const { data, error } = await supabase
+    .from('workflow_versions')
+    .select('definition')
+    .eq('id', versionId)
+    .maybeSingle()
+
+  if (error || !data?.definition) {
+    if (error) console.warn('[stranded-executions] version definition lookup failed', { versionId, error })
+    return null
+  }
+  try {
+    return buildStrandGraph(data.definition as unknown as WorkflowDefinition)
+  } catch (e) {
+    console.warn('[stranded-executions] malformed definition, skipping graph confirmation', { versionId, error: String(e) })
+    return null
+  }
 }
 
 /**
@@ -114,7 +210,7 @@ export async function runReduceFinalizeStrandedExecutions(
 
   const { data: stranded, error: strandedErr } = await supabase
     .from('workflow_executions')
-    .select('id, started_at')
+    .select('id, started_at, workflow_version_id')
     .eq('status', 'running')
     .lt('started_at', ageFloor)
     .gte('started_at', lookbackStart)
@@ -129,14 +225,29 @@ export async function runReduceFinalizeStrandedExecutions(
 
   let processed = 0
   let errors = 0
+  // Definitions are fetched at most once per workflow_version_id -- the strand
+  // backlog is dominated by a handful of high-volume workflows (822 of the
+  // first 1094 rows were one workflow), so many rows share a version. A null
+  // cache entry records a version we already tried and could not load, so we
+  // don't re-fetch it per row.
+  const graphCache = new Map<string, StrandGraph | null>()
 
   for (const exec of stranded) {
+    const versionId = exec.workflow_version_id as string | null
+    let graph: StrandGraph | undefined
+    if (versionId) {
+      if (!graphCache.has(versionId)) {
+        graphCache.set(versionId, await loadStrandGraph(supabase, versionId))
+      }
+      graph = graphCache.get(versionId) ?? undefined
+    }
+
     // A single execution's own step count is bounded by the workflow graph
     // (tens, not thousands) -- .limit matches PostgREST's own row cap as a
     // defensive ceiling rather than relying on that alone.
     const { data: steps, error: stepsErr } = await supabase
       .from('execution_steps')
-      .select('status, step_type, error_message, completed_at')
+      .select('status, step_type, error_message, completed_at, step_node_id, step_namespace')
       .eq('execution_id', exec.id as string)
       .gte('execution_started_at', lookbackStart)
       .limit(1000)
@@ -147,7 +258,7 @@ export async function runReduceFinalizeStrandedExecutions(
       continue
     }
 
-    const resolved = resolveStrandedExecution((steps ?? []) as StrandStepEvidence[], exec.started_at as string)
+    const resolved = resolveStrandedExecution((steps ?? []) as StrandStepEvidence[], exec.started_at as string, graph)
     const { error: updateErr } = await supabase
       .from('workflow_executions')
       .update({
