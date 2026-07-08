@@ -58,25 +58,30 @@ const FAILED_NO_MESSAGE_FALLBACK = '[recovered] execution stranded after a faile
 
 export function resolveStrandedExecution(steps: StrandStepEvidence[], startedAtIso: string): ResolvedStrand {
   const startedAtMs = new Date(startedAtIso).getTime()
-  const failedStep = steps.find((s) => s.status === 'failed')
 
-  if (failedStep) {
-    const completedAtIso = failedStep.completed_at ?? startedAtIso
+  // Only the LAST step chronologically decides this -- an earlier failure
+  // followed by a later completed step means an on_error/fallback_node path
+  // recovered and the walk kept going, so an earlier failure is not proof the
+  // execution ultimately failed. Only claim 'failed' when failure is what the
+  // walk actually stopped on.
+  const stepsWithCompletion = [...steps]
+    .filter((s) => s.completed_at != null)
+    .sort((a, b) => new Date(b.completed_at as string).getTime() - new Date(a.completed_at as string).getTime())
+  const lastStep = stepsWithCompletion[0]
+
+  if (lastStep?.status === 'failed') {
+    const completedAtIso = lastStep.completed_at ?? startedAtIso
     return {
       status: 'failed',
       outcome: 'failed',
       completed_at: completedAtIso,
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
-      error_message: failedStep.error_message ?? FAILED_NO_MESSAGE_FALLBACK,
-      failed_step_type: failedStep.step_type,
+      error_message: lastStep.error_message ?? FAILED_NO_MESSAGE_FALLBACK,
+      failed_step_type: lastStep.step_type,
     }
   }
 
-  const lastCompletedAt = steps
-    .map((s) => s.completed_at)
-    .filter((c): c is string => c != null)
-    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0]
-  const completedAtIso = lastCompletedAt ?? startedAtIso
+  const completedAtIso = lastStep?.completed_at ?? startedAtIso
 
   return {
     status: 'failed',

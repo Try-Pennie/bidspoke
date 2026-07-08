@@ -48,6 +48,21 @@ describe('resolveStrandedExecution', () => {
     expect(resolved.completed_at).toBe('2026-07-01T01:00:13.293Z')
   })
 
+  it('does not call it failed when an earlier failed step was recovered by a later successful step (on_error/fallback_node)', () => {
+    const resolved = resolveStrandedExecution(
+      [
+        { status: 'failed', step_type: 'partner_bid', error_message: 'timeout', completed_at: '2026-07-08T02:38:00.000Z' },
+        { status: 'completed', step_type: 'partner_bid', error_message: null, completed_at: '2026-07-08T02:38:05.000Z' },
+      ],
+      '2026-07-08T02:37:57.000Z'
+    )
+    expect(resolved.status).toBe('failed')
+    expect(resolved.outcome).toBeNull()
+    expect(resolved.error_message).toMatch(/recovered/i)
+    expect(resolved.failed_step_type).toBeNull()
+    expect(resolved.completed_at).toBe('2026-07-08T02:38:05.000Z')
+  })
+
   it('never produces a negative duration even if a completed_at predates started_at', () => {
     const resolved = resolveStrandedExecution(
       [{ status: 'completed', step_type: 'code', error_message: null, completed_at: '2026-07-01T01:00:00.000Z' }],
