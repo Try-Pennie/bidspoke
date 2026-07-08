@@ -432,7 +432,10 @@ export const api = {
     create: (name: string, folder_id?: string | null) =>
       req<Workflow>('/api/workflows', { method: 'POST', body: JSON.stringify({ name, folder_id: folder_id ?? null }) }),
     save: (id: string, data: { name?: string; definition?: WorkflowDef; message?: string; slack_channel?: string | null }) =>
-      req<Workflow & { deploy_errors?: { namespace: string; error: string }[] }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      // no_changes (#569): the server short-circuits a save whose definition is
+      // identical to what's stored: the row is untouched, so version_id and the
+      // Workflow body are absent. Callers branch on no_changes before reading them.
+      req<Workflow & { deploy_errors?: { namespace: string; error: string }[]; version_id?: string; no_changes?: boolean }>(`/api/workflows/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     draftChangelog: (id: string, definition: WorkflowDef) =>
       req<{ draft: string | null; reason?: 'no_previous_version' | 'no_changes' | 'unavailable' | 'error'; cached?: boolean }>(
         `/api/workflows/${id}/draft-changelog`,

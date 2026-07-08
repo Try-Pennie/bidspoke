@@ -19,6 +19,7 @@ import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../.
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 import { asJson } from '../../lib/json'
+import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 
 type Variables = AuthVariables
@@ -279,7 +280,7 @@ workflows.put('/:id', async (c) => {
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, definition')
+    .select('id, definition, name, slack_channel')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -302,6 +303,30 @@ workflows.put('/:id', async (c) => {
         400,
       )
     }
+  }
+
+  // #569: short-circuit a no-op save. If the incoming definition is structurally
+  // identical to what's stored (jsonb reorders object keys, so this must be a
+  // key-order-independent compare, not a string compare) and no other field is
+  // changing, nothing would actually be written. The old code still inserted a
+  // redundant version row and returned a plain 200 (indistinguishable from a
+  // real save), so a client edit that silently failed to reach the payload
+  // looked "Saved" with an unchanged DB (the reported bug). Report `no_changes`
+  // instead and skip the snapshot / cache churn / audit entry so the UI can flag
+  // the discrepancy loudly ("fail loud, not silent").
+  const nameUnchanged = body.name === undefined || body.name === existing.name
+  const slackUnchanged =
+    body.slack_channel === undefined ||
+    (body.slack_channel ?? null) === (existing.slack_channel ?? null)
+  const descriptionNotTouched = body.description === undefined
+  if (
+    body.definition !== undefined &&
+    nameUnchanged &&
+    slackUnchanged &&
+    descriptionNotTouched &&
+    jsonEqual(body.definition, existing.definition)
+  ) {
+    return c.json({ id, no_changes: true })
   }
 
   // Get next version number. `.single()` reports "no prior versions" (first save)

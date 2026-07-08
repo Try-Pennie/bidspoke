@@ -72,6 +72,7 @@ import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
 import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState, confirmDiscardIfDirty, UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
+import { classifySave } from '@/lib/save-verification'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
 import {
@@ -2725,6 +2726,29 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         slack_channel: slackChannel || null,
         ...(trimmed ? { message: trimmed } : {}),
       })
+      // #569: confirm the save actually persisted before showing "Saved". The
+      // server reports a no-op save (no_changes) instead of silently creating a
+      // redundant version; and a 200 alone doesn't prove the definition reached
+      // the DB, so we re-fetch and compare. classifySave folds both signals into
+      // one verdict. A failed read-back is inconclusive (treated as saved) so we
+      // never reverse a genuine 200 with a false failure.
+      let persisted: { definition: unknown } | null = null
+      if (!result.no_changes) {
+        try {
+          persisted = await api.workflows.get(workflow.id)
+        } catch {
+          // Inconclusive: PUT returned 200 but we couldn't read it back.
+        }
+      }
+      const verdict = classifySave({ noChanges: !!result.no_changes, sentDefinition: definition, persisted })
+      if (verdict === 'no_changes') {
+        setSaveError('Nothing was saved: the workflow is identical to the stored version. If you just made an edit, it did not register. Check the node and try saving again.')
+        return
+      }
+      if (verdict === 'unverified') {
+        setSaveError('Save could not be verified: the server did not persist your latest changes. They are still on the canvas, so please try saving again.')
+        return
+      }
       setCommitMessage('')
       aiDraftKeyRef.current = null
       // A new version was just created — refresh an open Version History panel (#241).

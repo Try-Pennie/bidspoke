@@ -287,7 +287,10 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
+    // so the save is real and exercises the version/cache/audit/backup paths
+    // rather than short-circuiting as a #569 no-op.
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     expect(vi.mocked(invalidateWorkflowCache)).toHaveBeenCalledWith('wf-1', expect.anything())
   })
 
@@ -305,7 +308,10 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
+    // so the save is real and exercises the version/cache/audit/backup paths
+    // rather than short-circuiting as a #569 no-op.
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
@@ -322,7 +328,10 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
+    // so the save is real and exercises the version/cache/audit/backup paths
+    // rather than short-circuiting as a #569 no-op.
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1' }))
     expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
@@ -358,10 +367,76 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [] } } })
+    // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
+    // so the save is real and exercises the version/cache/audit/backup paths
+    // rather than short-circuiting as a #569 no-op.
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-1', 'updated', 'user-1', expect.anything()
     )
+  })
+
+  // #569: a save whose definition (and name/slack) is byte-for-byte the same as
+  // what's stored used to still create a redundant version and return a plain
+  // 200 (indistinguishable from a real save). When a client edit silently fails
+  // to reach the payload, that false "Saved" is the exact data-safety bug. The
+  // server now reports no_changes and skips the snapshot so the UI can flag it.
+  it('returns no_changes and creates no version when definition, name and slack are unchanged', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', {
+      body: { name: 'Lead Routing', definition: { nodes: [] } },
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { no_changes?: boolean; version_id?: string }
+    expect(body.no_changes).toBe(true)
+    expect(body.version_id).toBeUndefined()
+    // No snapshot, no cache churn, no audit entry for a no-op.
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('treats a key-reordered but structurally identical definition as no_changes (jsonb round-trip)', async () => {
+    const stored = {
+      ...existingWorkflow,
+      definition: { nodes: [], trigger: { type: 'http_webhook', config: {} } },
+    }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: stored },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    // Same content, keys in a different order (as jsonb would return them).
+    const res = await request(app, 'PUT', '/workflows/wf-1', {
+      body: { name: 'Lead Routing', definition: { trigger: { config: {}, type: 'http_webhook' }, nodes: [] } },
+    })
+    const body = await res.json() as { no_changes?: boolean }
+    expect(body.no_changes).toBe(true)
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+  })
+
+  it('saves and creates a version when the definition content actually changed', async () => {
+    const newVersion = { id: 'ver-chg', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', {
+      body: { name: 'Lead Routing', definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } },
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { no_changes?: boolean; version_id?: string }
+    expect(body.no_changes).toBeFalsy()
+    expect(body.version_id).toBe('ver-chg')
+    expect(vi.mocked(invalidateWorkflowCache)).toHaveBeenCalledWith('wf-1', expect.anything())
   })
 })
 
