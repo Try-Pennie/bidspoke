@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+@config '../../tailwind.config.ts';
 
 /* Pin the page canvas (and the rubber-band overscroll region) to the app's
    beige and force a light color scheme. Without this, Safari in OS dark mode
