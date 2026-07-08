@@ -25,6 +25,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
+import { fetchAllPaged } from './paginate'
 
 export const DEFAULT_LOW_THRESHOLD_PCT = 50
 export const DEFAULT_HIGH_THRESHOLD_PCT = 200
@@ -130,17 +131,32 @@ export async function runVolumeAnomalyCheck(
   //    weekend baselines have enough samples. The rollup buckets by
   //    (workflow_id, status, outcome, day, is_test); we sum run_count across
   //    status/outcome to get per-workflow per-day totals.
+  //
+  //    Paginated: workflow_stats_daily is growing toward PostgREST's 1,000-row
+  //    cap (already ~500 rows as of 2026-07-08) -- a bare .select() would
+  //    silently truncate past it, the exact bug this table's doc comment
+  //    above already describes for the table it replaced. Ordered by every
+  //    column in the rollup's grouping key (status/outcome included even
+  //    though not selected) so pagination has a unique, stable tiebreak.
   const lookbackStartDate = new Date(Date.now() - 22 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const { data: rollup } = await supabase
-    .from('workflow_stats_daily')
-    .select('workflow_id, day, run_count')
-    .in('workflow_id', allWorkflowIds)
-    .gte('day', lookbackStartDate)
-    .eq('is_test', false)
+  const rollup = await fetchAllPaged<{ workflow_id: string; day: string; run_count: number }>(
+    (from, to) => supabase
+      .from('workflow_stats_daily')
+      .select('workflow_id, day, run_count')
+      .in('workflow_id', allWorkflowIds)
+      .gte('day', lookbackStartDate)
+      .eq('is_test', false)
+      .order('workflow_id', { ascending: true })
+      .order('day', { ascending: true })
+      .order('status', { ascending: true })
+      .order('outcome', { ascending: true })
+      .range(from, to),
+    'volume-anomaly workflow_stats_daily'
+  )
 
   // 4. Group by org + day
   const orgDailyCounts: Record<string, Record<string, number>> = {}
-  for (const row of rollup ?? []) {
+  for (const row of rollup) {
     const orgId = wfToOrg[row.workflow_id as string]
     const day = row.day as string
     if (!orgId || !day) continue

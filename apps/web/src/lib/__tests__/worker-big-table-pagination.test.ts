@@ -37,6 +37,7 @@ const BIG_TABLES = [
   'achieve_evaluations',
   'audit_log',
   'field_presence_daily',
+  'workflow_stats_daily',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])

@@ -3,8 +3,9 @@
  * Covers: drop detection, spike detection, insufficient-data guard,
  * zero-baseline guard, threshold edge cases.
  */
-import { describe, it, expect } from 'vitest'
-import { detectAnomaly, MIN_BASELINE_DAYS } from '../volume-anomaly'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { detectAnomaly, MIN_BASELINE_DAYS, runVolumeAnomalyCheck } from '../volume-anomaly'
+import { PAGE_SIZE } from '../paginate'
 
 function buildCounts(days: string[], count: number): Record<string, number> {
   return Object.fromEntries(days.map((d) => [d, count]))
@@ -188,5 +189,83 @@ describe('detectAnomaly()', () => {
     const result = detectAnomaly(counts, YESTERDAY)
     expect(result?.kind).toBe('drop')
     expect(result?.baselineAvg).toBe(100)
+  })
+})
+
+// workflow_stats_daily is growing toward PostgREST's 1,000-row cap (the
+// big-table-guard alert on 2026-07-08). A bare .select() of it silently
+// truncates past that cap, exactly the class of bug the doc comment at the
+// top of volume-anomaly.ts already describes for the table this rollup
+// replaced. This mock simulates that cap: `.eq()` alone (no `.range()`)
+// resolves to only the first PAGE_SIZE rows, matching real PostgREST
+// behavior; `.range(from, to)` returns the correctly sliced page.
+function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: number; is_test: boolean }[]) {
+  const terminal = (): unknown => ({
+    then: (resolve: (v: unknown) => void) => resolve({ data: statsRows.slice(0, PAGE_SIZE), error: null }),
+    range: (from: number, to: number) => Promise.resolve({ data: statsRows.slice(from, to + 1), error: null }),
+    order: () => terminal(), // chainable no-op, matches real query builder semantics
+  })
+  return {
+    from(table: string) {
+      if (table === 'service_connections') {
+        return {
+          select: () => ({
+            eq: (col: string) => {
+              if (col === 'organization_id') {
+                return { eq: () => ({ maybeSingle: async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#alerts' } }, error: null }) }) }
+              }
+              return Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null })
+            },
+          }),
+        }
+      }
+      if (table === 'workflows') {
+        return { select: () => ({ in: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'wf-1', organization_id: 'org-1' }], error: null }) }) }) }) }
+      }
+      if (table === 'workflow_stats_daily') {
+        return { select: () => ({ in: () => ({ gte: () => ({ eq: () => terminal() }) }) }) }
+      }
+      throw new Error(`unexpected table in test mock: ${table}`)
+    },
+  }
+}
+
+describe('runVolumeAnomalyCheck', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-04-08T13:00:00Z')) // "yesterday" = 2026-04-07 (Tue)
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.2' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('detects a real anomaly whose baseline rows sit past row 1000, instead of truncating them away', async () => {
+    // All filler dated "today" (2026-04-08): detectAnomaly's `day < yesterday`
+    // filter excludes it entirely, so it contributes zero baseline days on its
+    // own. A test where filler happens to supply its own accidental baseline
+    // (e.g. spread across real historical weekdays) would pass even without
+    // pagination, proving nothing.
+    const filler = Array.from({ length: PAGE_SIZE }, () => ({
+      workflow_id: 'wf-1', day: '2026-04-08', run_count: 1, is_test: false,
+    }))
+    const real = [
+      { workflow_id: 'wf-1', day: '2026-04-01', run_count: 100, is_test: false }, // Wed
+      { workflow_id: 'wf-1', day: '2026-04-02', run_count: 100, is_test: false }, // Thu
+      { workflow_id: 'wf-1', day: '2026-04-03', run_count: 100, is_test: false }, // Fri
+      { workflow_id: 'wf-1', day: '2026-04-07', run_count: 20, is_test: false },  // Tue (yesterday), a real drop
+    ]
+    const supabase = makeSupabase([...filler, ...real])
+
+    await runVolumeAnomalyCheck(supabase as never)
+
+    // A bare truncated-at-1000 read only ever sees `filler` (all dated 2025,
+    // outside the baseline window) and never finds 3 same-day-type baseline
+    // days, so detectAnomaly returns null and no alert fires. Full pagination
+    // sees the real rows past index 1000 and correctly detects the drop.
+    expect(fetchMock).toHaveBeenCalled()
   })
 })
