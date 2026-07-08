@@ -48,9 +48,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+        # This job has no checkout step, so every gh command below needs --repo
+        # explicitly -- without it gh falls back to reading the local git remote
+        # to infer the repository, which fails ("not a git repository") since
+        # nothing has been cloned here. Every run of this job failed on this
+        # exact line from the workflow's creation until this fix (2026-07-08).
         run: |
-          AUTHOR=$(gh pr view "$PR_NUMBER" --json author --jq .author.login)
-          BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+          AUTHOR=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json author --jq .author.login)
+          BRANCH=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefName --jq .headRefName)
 
           if [ "$AUTHOR" != "dependabot[bot]" ]; then
             echo "PR #$PR_NUMBER was not opened by Dependabot, skipping."
@@ -68,7 +73,7 @@ jobs:
 
           if [ "$SAFE" = "true" ]; then
             echo "Merging routine Dependabot PR #$PR_NUMBER ($BRANCH)"
-            gh pr merge "$PR_NUMBER" --squash --delete-branch
+            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch
           else
             echo "PR #$PR_NUMBER ($BRANCH) is not in the auto-merge allowlist (likely a major-version bump), leaving for manual review."
           fi
