@@ -1,0 +1,23 @@
+-- ============================================================
+-- PAUSE reduce_finalize_stranded_executions (emergency, see 20260708000001)
+-- ============================================================
+-- The function shipped in 20260708000001 infers a stranded execution's true
+-- outcome from execution_steps, gated on step_type IN ('response','exit').
+-- Discovered immediately after shipping: Engine Bidding Workflow (822 of the
+-- 1094 stranded rows -- the majority) has NO 'response'/'exit' step at all on
+-- tens of thousands of genuinely-successful completed runs (checked: 86,457
+-- in the last 3 days alone). The function would have marked most of its 822
+-- stranded rows 'failed', mislabeling served-fine leads as failures.
+--
+-- Deeper problem, not yet resolved: execution_steps itself may be incomplete
+-- for a stranded execution. Step logs flush to the DB via the SAME kind of
+-- post-response waitUntil that strands the execution record -- so a strand
+-- could plausibly also be missing some of its later step rows even though the
+-- HTTP response was already sent to the caller. That means "no failed step
+-- recorded" is not reliably "no failure occurred" for these rows, and a safe
+-- recovery rule needs more design/verification before it runs automatically
+-- against production data.
+--
+-- Pausing (not dropping) the cron job so nothing writes to workflow_executions
+-- until that's sorted out. The function definition stays for reference/testing.
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'reduce-finalize-stranded-executions';

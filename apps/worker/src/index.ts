@@ -17,6 +17,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
+import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport } from './lib/sightings-export'
@@ -284,6 +285,11 @@ export default {
       ctx.waitUntil(
         runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[slow-spike] check failed:', e))
+      )
+      ctx.waitUntil(
+        runReduceFinalizeStrandedExecutions(supabase)
+          .then((r) => { if (r.processed > 0 || r.errors > 0) console.log(`[stranded-executions] processed=${r.processed} errors=${r.errors}`) })
+          .catch((e) => console.error('[stranded-executions] check failed:', e))
       )
       ctx.waitUntil(
         runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
