@@ -112,10 +112,12 @@ function makeSupabase(opts: {
               eq: (_col: string, id: string) => {
                 stepLookups.push(id)
                 return {
-                  gte: async () => {
-                    if (opts.stepsError) return { data: null, error: opts.stepsError }
-                    return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
-                  },
+                  gte: () => ({
+                    limit: async () => {
+                      if (opts.stepsError) return { data: null, error: opts.stepsError }
+                      return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
+                    },
+                  }),
                 }
               },
             }),

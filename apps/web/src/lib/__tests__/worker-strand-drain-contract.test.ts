@@ -62,7 +62,11 @@ function latestDrainSql(): string {
   const defining = readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
     .filter((f) =>
-      /create\s+or\s+replace\s+function\s+public\.reduce_finalize_stranded/i.test(
+      // Word-boundary the function name so a differently-named function that merely
+      // shares the prefix (e.g. reduce_finalize_stranded_executions, added 2026-07-08
+      // for the workflow_executions strand, unrelated to this lead_sightings drain)
+      // isn't mistaken for a CREATE OR REPLACE of the real drain.
+      /create\s+or\s+replace\s+function\s+public\.reduce_finalize_stranded\s*\(/i.test(
         readFileSync(path.join(dir, f), 'utf8'),
       ),
     )

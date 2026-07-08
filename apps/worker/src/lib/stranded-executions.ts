@@ -126,11 +126,15 @@ export async function runReduceFinalizeStrandedExecutions(
   let errors = 0
 
   for (const exec of stranded) {
+    // A single execution's own step count is bounded by the workflow graph
+    // (tens, not thousands) -- .limit matches PostgREST's own row cap as a
+    // defensive ceiling rather than relying on that alone.
     const { data: steps, error: stepsErr } = await supabase
       .from('execution_steps')
       .select('status, step_type, error_message, completed_at')
       .eq('execution_id', exec.id as string)
       .gte('execution_started_at', lookbackStart)
+      .limit(1000)
 
     if (stepsErr) {
       console.error('[stranded-executions] step lookup failed', { id: exec.id, error: stepsErr })
