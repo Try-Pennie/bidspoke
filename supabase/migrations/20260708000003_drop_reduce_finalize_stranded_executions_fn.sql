@@ -1,0 +1,17 @@
+-- ============================================================
+-- Drop reduce_finalize_stranded_executions (superseded, see 20260708000002)
+-- ============================================================
+-- The pg_cron job was already paused in 20260708000002 before it ever ran (0
+-- rows touched). Dropping the function itself rather than leaving a dormant,
+-- known-buggy SQL function in prod. The workflow_executions strand ([[project
+-- memory: project_workflow_executions_strand_2026_07_08]]) is being reworked
+-- as a proper TypeScript module (apps/worker/src/lib/stranded-executions.ts),
+-- matching the existing pattern used by every other reduce/recover guard in
+-- this codebase (drain-stall.ts, slow-execution-rate.ts, sightings-export.ts),
+-- so the classification logic is unit-testable and doesn't silently write a
+-- fabricated completed_at='now()' that would land recovered rows inside a
+-- live alerting window (a real bug found in this function: bulk-recovering the
+-- backlog with completed_at=now() would make hundreds of days-old executions
+-- look like they just failed simultaneously, which upstream-outage.ts and
+-- failure-rate.ts window on completed_at and would page on as a false spike).
+DROP FUNCTION IF EXISTS public.reduce_finalize_stranded_executions(int, int);
