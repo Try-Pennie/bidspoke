@@ -5,7 +5,7 @@
 // DELETE /api/integrations/slack        — disconnect
 
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
 import { fetchJson } from '../../lib/json'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -245,16 +245,12 @@ integrations.delete('/slack', async (c) => {
   // this stays 200. The audit row is gated on the rows the delete actually
   // removed rather than on a prior read that can race it, which also lets that
   // read go away entirely (#588).
-  const { data: deleted, error } = await supabase
-    .from('service_connections')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .select('id')
+  const { rows, blocked } = await rowsTouched<{ id: string }>(c, 'service_connections.slack_disconnect', () =>
+    supabase.from('service_connections').delete().eq('organization_id', orgId).eq('service_type', 'slack').select('id')
+  )
+  if (blocked) return blocked
 
-  if (error) return dbError(c, error)
-
-  const removed = (deleted ?? [])[0] as { id: string } | undefined
+  const removed = rows[0]
   if (removed) {
     await writeAuditLog(supabase, orgId, 'service_connection', removed.id, 'deleted', userId, { service_type: 'slack' })
   }

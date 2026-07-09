@@ -75,10 +75,37 @@ export async function requireRowOr404(
   notFoundMessage: string,
   op: () => PromiseLike<{ data: unknown[] | null; error: DbError | null }>
 ): Promise<Response | null> {
-  const { error } = await requireRowsAffected(notFoundMessage, async () => op())
+  const { error } = await requireRowsAffected(notFoundMessage, op)
   if (!error) return null
   if (isNoRowMatchedError(error)) return c.json({ error: notFoundMessage }, 404)
   return dbError(c, error)
+}
+
+/**
+ * The write-side guard for an endpoint where a zero-row match is EXPECTED (#590).
+ *
+ * Clearing a setting that was never set, or disconnecting a Slack that was never
+ * connected, is a no-op rather than an error, so those routes answer 200 either
+ * way. What they must not do is record an audit row for an action that never
+ * happened. `rows` is what gates that side effect.
+ *
+ * `blocked` is a generic 500 when the database itself failed, and null
+ * otherwise. A missing row is normal here; a broken database is not.
+ *
+ *   const { rows, blocked } = await rowsTouched(c, 'app_settings.key', () =>
+ *     supabase.from('app_settings').delete().eq('key', k).select('key')
+ *   )
+ *   if (blocked) return blocked
+ *   if (rows.length > 0) await writeAuditLog(...)
+ */
+export async function rowsTouched<T = unknown>(
+  c: Context,
+  target: string,
+  op: () => PromiseLike<{ data: T[] | null; error: DbError | null }>
+): Promise<{ rows: T[]; blocked: Response | null }> {
+  const { rows, error } = await requireRowsAffected(target, op)
+  if (error && !isNoRowMatchedError(error)) return { rows: [], blocked: dbError(c, error) }
+  return { rows, blocked: null }
 }
 
 export function dbError(c: Context, err: unknown) {

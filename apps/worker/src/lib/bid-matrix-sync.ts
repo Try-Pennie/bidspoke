@@ -21,6 +21,7 @@ import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary, MatrixConfigP
 import { fetchAllPaged } from './paginate'
 import { validateMatrix } from './bid-matrix-validate'
 import type { MatrixProblem } from './bid-matrix-validate'
+import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
 
 export interface SyncResult {
   config_id: string
@@ -97,17 +98,13 @@ export async function markConfigSynced(
   configId: string,
   patch: { last_synced_at: string; last_sync_error: string | null },
 ): Promise<void> {
-  const { data, error } = await supabase
-    .from('partner_bid_configs')
-    .update(patch)
-    .eq('id', configId)
-    .select('id')
-  if (error) {
+  const { error } = await requireRowsAffected(
+    'partner_bid_configs.sync_stamp',
+    () => supabase.from('partner_bid_configs').update(patch).eq('id', configId).select('id'),
+    { onMiss: 'error', context: { configId } },
+  )
+  if (error && !isNoRowMatchedError(error)) {
     console.error('[bid-matrix-sync] failed to stamp sync state', { configId, error: error.message })
-    return
-  }
-  if (!data?.length) {
-    console.error('[bid-matrix-sync] sync stamp matched zero rows, partner_bid_config is missing', { configId })
   }
 }
 

@@ -53,6 +53,15 @@ export function isDuplicateError(err: DbError | null): boolean {
   return err?.code === '23505'
 }
 
+/**
+ * A DbError is a plain object, not an Error, so it cannot be thrown directly.
+ * Wraps it while keeping the SQLSTATE on the thrown value, so a catch that
+ * classifies by `code` still can.
+ */
+export function toThrowable(err: DbError): Error {
+  return Object.assign(new Error(err.message), { code: err.code })
+}
+
 export function toDbError(e: unknown): DbError {
   const err = e as { code?: unknown; message?: unknown }
   return {
@@ -69,30 +78,61 @@ export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 // schema-cache reload window.
 export const DB_WRITE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
 
-// Runs a PostgREST UPDATE/DELETE whose target row MUST exist, and converts the
-// zero-rows-matched case into a real error.
+/**
+ * What a caller wants to happen when the write touched no row (#590).
+ *
+ * `silent` returns the synthetic error and says nothing, leaving the caller to
+ * branch (a route turns it into a 404; an idempotent clear reads `rows` and
+ * skips its audit write). `error` and `warn` emit one structured line. `throw`
+ * raises, for the writes whose miss corrupts the job (an unmarked export batch
+ * re-exports forever).
+ */
+export type ZeroRowPolicy = 'silent' | 'warn' | 'error' | 'throw'
+
+export interface RequireRowsOptions {
+  onMiss?: ZeroRowPolicy
+  /** Extra fields folded into the structured log line (ids, slugs, workflow). */
+  context?: Record<string, unknown>
+}
+
+// Runs a PostgREST UPDATE/DELETE whose target row MUST exist, converts the
+// zero-rows-matched case into a real error, and reports how many rows it hit.
 //
 // PostgREST answers a well-formed UPDATE that matched nothing with
 // `{ data: [], error: null }`, a statement that succeeded and changed nothing.
 // Destructuring `error` therefore reports success for a write that silently did
 // not happen. The caller must add `.select(<col>)` so PostgREST returns the rows
-// it touched; `data` is only read for its length.
+// it touched.
 //
 // `target` names the write (e.g. 'lead_sighting_bids.winner') and lands in the
-// error message, the log, and any dead-letter alert.
-export async function requireRowsAffected(
+// error message, the log, and any dead-letter alert. `onMiss` is the reaction:
+// it exists so the six sites that used to hand-roll this check, each reacting
+// differently, share one implementation (#590).
+//
+// A real database error is NEVER run through `onMiss`. It is a different failure
+// from a missing row, it may be transient, and it flows back untouched so the
+// caller can retry or answer 500. Collapsing the two is the #303 bug.
+export async function requireRowsAffected<T = unknown>(
   target: string,
-  op: () => Promise<{ data: unknown[] | null; error: DbError | null }>,
-): Promise<{ error: DbError | null }> {
+  op: () => PromiseLike<{ data: T[] | null; error: DbError | null }>,
+  opts: RequireRowsOptions = {},
+): Promise<{ rows: T[]; error: DbError | null }> {
   const { data, error } = await op()
-  if (error) return { error }
-  if (data?.length) return { error: null }
-  return {
-    error: {
-      code: NO_ROW_MATCHED_CODE,
-      message: `${target}: write matched zero rows (the target row does not exist)`,
-    },
+  if (error) return { rows: [], error }
+
+  // `rows` is the rows the write touched, so `rows.length` is the count and the
+  // rows themselves are available to a caller that needs the id it just deleted.
+  if (data?.length) return { rows: data, error: null }
+
+  const message = `${target}: write matched zero rows (the target row does not exist)`
+  const onMiss = opts.onMiss ?? 'silent'
+  if (onMiss === 'throw') throw new Error(message)
+  if (onMiss === 'error' || onMiss === 'warn') {
+    const line = JSON.stringify({ event: 'zero_row_write', target, message, ...opts.context })
+    if (onMiss === 'error') console.error(line)
+    else console.warn(line)
   }
+  return { rows: [], error: { code: NO_ROW_MATCHED_CODE, message } }
 }
 
 // Runs a PostgREST operation (one that resolves to `{ error }`), retrying on

@@ -5,6 +5,7 @@ import {
   isPermanentDbError,
   isDuplicateError,
   isNoRowMatchedError,
+  requireRowsAffected,
   sleep,
   NO_ROW_MATCHED_CODE,
   type DbError,
@@ -66,31 +67,23 @@ async function updateExecutionOnce(
   started_at: string,
   update: Record<string, unknown>
 ): Promise<{ error: DbError | null }> {
-  // Use started_at for partition pruning; fall back to id-only if no rows matched.
-  const { data, error } = await supabase
-    .from('workflow_executions')
-    .update(update)
-    .eq('id', id)
-    .eq('started_at', started_at)
-    .select('id')
-  if (error) return { error: { code: error.code, message: error.message } }
-  if (data?.length) return { error: null }
+  const target = `workflow_executions (id=${id}): the execution record is missing`
+
+  // Use started_at for partition pruning. A zero-row match here is NOT yet a
+  // missing row, so onMiss stays silent and we fall through to the id-only
+  // statement below.
+  const first = await requireRowsAffected(target, () =>
+    supabase.from('workflow_executions').update(update).eq('id', id).eq('started_at', started_at).select('id')
+  )
+  if (first.error && !isNoRowMatchedError(first.error)) return { error: first.error }
+  if (first.rows.length) return { error: null }
 
   // An UPDATE without the partition key still scans every partition, so zero
   // rows here means the row genuinely does not exist anywhere.
-  const { data: d2, error: e2 } = await supabase
-    .from('workflow_executions')
-    .update(update)
-    .eq('id', id)
-    .select('id')
-  if (e2) return { error: { code: e2.code, message: e2.message } }
-  if (d2?.length) return { error: null }
-  return {
-    error: {
-      code: NO_ROW_MATCHED_CODE,
-      message: `no workflow_executions row matched id=${id}: the execution record is missing`,
-    },
-  }
+  const second = await requireRowsAffected(target, () =>
+    supabase.from('workflow_executions').update(update).eq('id', id).select('id')
+  )
+  return { error: second.error }
 }
 
 export async function writeStepLog(

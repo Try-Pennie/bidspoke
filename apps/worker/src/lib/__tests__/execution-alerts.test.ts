@@ -37,11 +37,16 @@ const call = (client: never) =>
   writeExecutionAlertState(client, 'exec-1', '2026-07-09T00:00:00Z', { slack_alert_type: 'failure' }, 'record alert metadata')
 
 describe('writeExecutionAlertState (#583)', () => {
+  // The zero-row line now comes from requireRowsAffected as one structured JSON
+  // record, so its context is inside the line rather than a second argument (#590).
   it('reports a write that matched zero rows: the execution row is missing', async () => {
     await call(clientReturning({ data: [], error: null }))
     expect(errSpy).toHaveBeenCalledOnce()
     expect(String(errSpy.mock.calls[0][0])).toContain('matched zero rows')
-    expect(errSpy.mock.calls[0][1]).toMatchObject({ executionId: 'exec-1' })
+    expect(JSON.parse(errSpy.mock.calls[0][0] as string)).toMatchObject({
+      event: 'zero_row_write',
+      executionId: 'exec-1',
+    })
   })
 
   it('reports a genuine database error', async () => {

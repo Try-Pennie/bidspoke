@@ -358,8 +358,15 @@ describe('PUT /workflows/:id', () => {
     await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
     await drainWaitUntil()
 
+    // One structured zero_row_write line, emitted by requireRowsAffected rather
+    // than hand-rolled at the call site (#590). The target names the write.
     const logged = errSpy.mock.calls.map((call) => String(call[0]))
-    expect(logged.some((line) => line.includes('workflow_version_commit_sha_unset'))).toBe(true)
+    const miss = logged.map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(miss).toContainEqual(expect.objectContaining({
+      event: 'zero_row_write',
+      target: 'workflow_versions.commit_sha',
+      version_id: 'ver-bk1',
+    }))
     // The GitHub push itself succeeded, so the failure streak must still reset.
     // Only the bookkeeping is broken, and only the bookkeeping is reported.
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
@@ -385,7 +392,7 @@ describe('PUT /workflows/:id', () => {
     await drainWaitUntil()
 
     const logged = errSpy.mock.calls.map((call) => String(call[0]))
-    expect(logged.some((line) => line.includes('workflow_version_commit_sha_unset'))).toBe(false)
+    expect(logged.some((line) => line.includes('zero_row_write'))).toBe(false)
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
   })
 
@@ -884,8 +891,12 @@ describe('POST /workflows/:id/rename-apply: zero-row partner update', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ updated: 0 })
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-    const warned = warnSpy.mock.calls.map((call) => String(call[0]))
-    expect(warned.some((line) => line.includes('partner_rename_skipped'))).toBe(true)
+    const warned = warnSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(warned).toContainEqual(expect.objectContaining({
+      event: 'zero_row_write',
+      target: 'partner_configs.step_id_rename',
+      partner_id: 'p-1',
+    }))
   })
 
   it('counts and audits a partner whose update lands', async () => {

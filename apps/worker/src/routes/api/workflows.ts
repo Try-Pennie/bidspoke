@@ -21,6 +21,7 @@ import type { WorkflowDefinition, StepOutput } from '../../types'
 import { asJson } from '../../lib/json'
 import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
+import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 
 type Variables = AuthVariables
 
@@ -422,18 +423,18 @@ workflows.put('/:id', async (c) => {
         // leaving a version row with no commit_sha that still looked like a
         // healthy backup. The GitHub push itself did succeed, so the streak is
         // still reset; only the bookkeeping is reported as broken (#588).
-        const { data: stamped, error: stampError } = await supabase
-          .from('workflow_versions')
-          .update({ commit_sha: commitSha })
-          .eq('id', version.id)
-          .select('id')
-        if (stampError || !stamped?.length) {
+        const { error: stampError } = await requireRowsAffected(
+          'workflow_versions.commit_sha',
+          () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', version.id).select('id'),
+          { onMiss: 'error', context: { workflow_id: id, version_id: version.id } }
+        )
+        if (stampError && !isNoRowMatchedError(stampError)) {
           console.error(
             JSON.stringify({
               event: 'workflow_version_commit_sha_unset',
               workflow_id: id,
               version_id: version.id,
-              reason: stampError ? stampError.message : 'update matched zero rows',
+              reason: stampError.message,
             })
           )
         }
@@ -1154,28 +1155,17 @@ workflows.post('/:id/rename-apply', async (c) => {
     if (legacyChanged) update.bid_formula = nextLegacy
     if (cfgChanged) update.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
 
-    const { data: touched, error: upErr } = await supabase
-      .from('partner_configs')
-      .update(update)
-      .eq('id', p.id)
-      .eq('organization_id', orgId)
-      .select('id')
-    if (upErr) return dbError(c, upErr)
-
     // A partner deleted between the SELECT above and this UPDATE matches zero
     // rows. Aborting a bulk rename over one vanished partner is worse than
-    // skipping it, but it must not be counted or audited as renamed (#588).
-    if (!touched?.length) {
-      console.warn(
-        JSON.stringify({
-          event: 'partner_rename_skipped',
-          partner_id: p.id,
-          workflow_id: id,
-          reason: 'update matched zero rows',
-        })
-      )
-      continue
-    }
+    // skipping it, but it must not be counted or audited as renamed (#588). A
+    // real database error is a different thing, and still aborts.
+    const { rows: touched, error: upErr } = await requireRowsAffected(
+      'partner_configs.step_id_rename',
+      () => supabase.from('partner_configs').update(update).eq('id', p.id).eq('organization_id', orgId).select('id'),
+      { onMiss: 'warn', context: { partner_id: p.id, workflow_id: id } }
+    )
+    if (upErr && !isNoRowMatchedError(upErr)) return dbError(c, upErr)
+    if (touched.length === 0) continue
 
     await writeAuditLog(supabase, orgId, 'partner_config', p.id, 'updated', userId, {
       reason: 'step_id_renamed',
