@@ -403,11 +403,17 @@ describe('markConfigSynced (#583)', () => {
       }),
     }) as never
 
+  // The zero-row line now comes from requireRowsAffected as one structured JSON
+  // record, so its context is inside the line rather than a second argument (#590).
   it('reports a stamp that matched zero rows instead of claiming the sync recorded', async () => {
     await markConfigSynced(clientReturning({ data: [], error: null }), 'cfg-1', { last_synced_at: 'now', last_sync_error: null })
     expect(errSpy).toHaveBeenCalledOnce()
     expect(String(errSpy.mock.calls[0][0])).toContain('matched zero rows')
-    expect(errSpy.mock.calls[0][1]).toMatchObject({ configId: 'cfg-1' })
+    expect(JSON.parse(errSpy.mock.calls[0][0] as string)).toMatchObject({
+      event: 'zero_row_write',
+      target: 'partner_bid_configs.sync_stamp',
+      configId: 'cfg-1',
+    })
   })
 
   it('reports a genuine database error, which the old code dropped on the floor', async () => {

@@ -9,6 +9,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import type { Env } from '../index'
 import { executeStatement, escapeSqlLiteral, type SnowflakeConfig } from './snowflake'
+import { requireRowsAffected, toThrowable } from './db-retry'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
 const PURGE_GRACE_HOURS = 24      // delete from Supabase only after this many hours since export
@@ -279,17 +280,13 @@ export async function exportTable(
         // re-exports every run and the table never drains (#583). A PARTIAL match
         // is benign (those rows vanished, so they cannot be re-selected); zero
         // matched with rows in hand is a real failure.
-        const { data: marked, error: updErr } = await supabase
-          .from(tableName)
-          .update({ exported_at: new Date().toISOString() })
-          .in('id', ids)
-          .select('id')
-        if (updErr) throw updErr
-        if (!marked?.length) {
-          throw new Error(
-            `${tableName}: exported_at update matched zero rows for ${ids.length} exported rows; the batch would re-export forever`
-          )
-        }
+        // onMiss 'throw': a batch whose exported_at never lands re-exports forever.
+        const { rows: marked, error: updErr } = await requireRowsAffected(
+          `${tableName}.exported_at (${ids.length} rows; the batch would re-export forever)`,
+          () => supabase.from(tableName).update({ exported_at: new Date().toISOString() }).in('id', ids).select('id'),
+          { onMiss: 'throw' },
+        )
+        if (updErr) throw toThrowable(updErr)
         if (marked.length < ids.length) {
           console.warn(
             `[sightings-export] ${tableName}: marked ${marked.length}/${ids.length} exported rows; the rest vanished between select and update`

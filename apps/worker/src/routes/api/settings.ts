@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, rowsTouched } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -98,16 +98,12 @@ settings.delete('/anthropic-key', async (c) => {
   // Clearing a key that was never set is a no-op, and the response is true
   // either way, so this stays 200. Only the audit row is gated on the rows the
   // delete actually removed (#588).
-  const { data: deleted, error } = await supabase
-    .from('app_settings')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('key', ANTHROPIC_KEY_SETTING)
-    .select('key')
+  const { rows, blocked } = await rowsTouched(c, 'app_settings.anthropic_key', () =>
+    supabase.from('app_settings').delete().eq('organization_id', orgId).eq('key', ANTHROPIC_KEY_SETTING).select('key')
+  )
+  if (blocked) return blocked
 
-  if (error) return dbError(c, error)
-
-  if (deleted?.length) {
+  if (rows.length > 0) {
     await writeAuditLog(supabase, orgId, 'app_setting', ANTHROPIC_KEY_SETTING, 'deleted', userId, {
       changed_by_email: email,
     })

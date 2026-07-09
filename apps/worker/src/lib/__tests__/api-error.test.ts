@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404, rowsTouched } from '../api-error'
 
 const app = new Hono()
 app.get('/boom', (c) =>
@@ -146,5 +146,57 @@ describe('requireRowOr404', () => {
     })
     expect(spy).toHaveBeenCalledTimes(1)
     expect(JSON.parse(spy.mock.calls[0][0] as string)).toMatchObject({ event: 'api_error', code: '42P01' })
+  })
+})
+
+// The write-side twin of requireRowOr404 for endpoints where a zero-row match is
+// EXPECTED, not an error: clearing a setting that was never set, disconnecting a
+// Slack that was never connected. Those stay 200, but must not record an audit
+// row for an action that did not happen (#588, consolidated in #590).
+describe('rowsTouched', () => {
+  const routeFor = (result: { data: unknown[] | null; error: { code?: string; message: string } | null }) => {
+    const audited: string[] = []
+    const local = new Hono()
+    local.delete('/thing', async (c) => {
+      const { rows, blocked } = await rowsTouched(c, 'thing.clear', async () => result)
+      if (blocked) return blocked
+      if (rows.length > 0) audited.push('cleared')
+      return c.json({ cleared: rows.length })
+    })
+    return { local, audited }
+  }
+
+  it('reports the rows a landed write touched', async () => {
+    const { local, audited } = routeFor({ data: [{ id: 'a' }], error: null })
+    const res = await local.request('/thing', { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cleared: 1 })
+    expect(audited).toEqual(['cleared'])
+  })
+
+  it('stays 200 with zero rows and does not invent an error, so the side effect is skipped', async () => {
+    const { local, audited } = routeFor({ data: [], error: null })
+    const res = await local.request('/thing', { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ cleared: 0 })
+    expect(audited).toEqual([])
+  })
+
+  // A missing row is normal here. A broken database is not.
+  it('blocks with a generic 500 on a real database error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { local, audited } = routeFor({ data: null, error: { code: '42P01', message: 'relation missing' } })
+    const res = await local.request('/thing', { method: 'DELETE' })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(audited).toEqual([])
+  })
+
+  it('says nothing on a zero-row miss, and logs once on a real error', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await routeFor({ data: [], error: null }).local.request('/thing', { method: 'DELETE' })
+    expect(spy).not.toHaveBeenCalled()
+    await routeFor({ data: null, error: { code: '42P01', message: 'x' } }).local.request('/thing', { method: 'DELETE' })
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 })

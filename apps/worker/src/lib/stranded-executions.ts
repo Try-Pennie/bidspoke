@@ -41,6 +41,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
+import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
 
 export const MIN_AGE_MINUTES = 30
 export const LOOKBACK_DAYS = 14
@@ -262,30 +263,31 @@ export async function runReduceFinalizeStrandedExecutions(
     }
 
     const resolved = resolveStrandedExecution((steps ?? []) as StrandStepEvidence[], exec.started_at as string, graph)
-    // .select('id') so a zero-row match is visible: PostgREST reports an UPDATE
-    // that touched nothing as a plain success, and counting that as a repair
-    // made this job's own processed metric lie (#583).
-    const { data: updated, error: updateErr } = await supabase
-      .from('workflow_executions')
-      .update({
-        status: resolved.status,
-        outcome: resolved.outcome,
-        completed_at: resolved.completed_at,
-        duration_ms: resolved.duration_ms,
-        error_message: resolved.error_message,
-        failed_step_type: resolved.failed_step_type,
-      })
-      .eq('id', exec.id as string)
-      .select('id')
+    // onMiss 'warn': a zero-row match here is benign, not an error. The nightly
+    // partition purge can drop the row between the scan and this update. It is
+    // simply not a repair, so it must not be counted as one (#583).
+    const { rows, error: updateErr } = await requireRowsAffected(
+      'workflow_executions.strand_repair',
+      () =>
+        supabase
+          .from('workflow_executions')
+          .update({
+            status: resolved.status,
+            outcome: resolved.outcome,
+            completed_at: resolved.completed_at,
+            duration_ms: resolved.duration_ms,
+            error_message: resolved.error_message,
+            failed_step_type: resolved.failed_step_type,
+          })
+          .eq('id', exec.id as string)
+          .select('id'),
+      { onMiss: 'warn', context: { id: exec.id } },
+    )
 
-    if (updateErr) {
+    if (updateErr && !isNoRowMatchedError(updateErr)) {
       console.error('[stranded-executions] update failed', { id: exec.id, error: updateErr })
       errors++
-    } else if (!updated?.length) {
-      // Benign, not an error: the nightly partition purge can drop the row
-      // between the scan and this update. It is simply not a repair, so it must
-      // not be counted as one.
-      console.warn('[stranded-executions] update matched zero rows, row vanished after scan', { id: exec.id })
+    } else if (rows.length === 0) {
       vanished++
     } else {
       processed++

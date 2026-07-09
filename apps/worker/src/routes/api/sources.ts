@@ -7,12 +7,13 @@
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
-import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { dbError, isNotFoundError, requireRowOr404, rowsTouched } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { setCfSecret } from '../../lib/cf-secrets'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 
 type Variables = AuthVariables
 
@@ -108,22 +109,22 @@ sources.post('/', async (c) => {
   } catch (err) {
     // Roll back so a half-created source (in the table but not the auth map)
     // doesn't linger and block re-creation with a 409.
-    const { data: rolledBack, error: rollbackError } = await supabase
-      .from('api_sources')
-      .delete()
-      .eq('organization_id', orgId)
-      .eq('name', name)
-      .select('id')
     // A rollback that errors, or that matches nothing, leaves exactly the
     // half-created source this catch block exists to prevent. Nothing here can
-    // recover it, so make the failure loud instead of silent (#588).
-    if (rollbackError || !rolledBack?.length) {
+    // recover it, so make the failure loud instead of silent (#588). onMiss
+    // 'error' covers the zero-row case; a real database error is logged below.
+    const { error: rollbackError } = await requireRowsAffected(
+      'api_sources.rollback',
+      () => supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id'),
+      { onMiss: 'error', context: { source_name: name, organization_id: orgId } }
+    )
+    if (rollbackError && !isNoRowMatchedError(rollbackError)) {
       console.error(
         JSON.stringify({
           event: 'api_source_rollback_failed',
           source_name: name,
           organization_id: orgId,
-          reason: rollbackError ? rollbackError.message : 'delete matched zero rows',
+          reason: rollbackError.message,
         })
       )
     }
@@ -231,16 +232,18 @@ sources.delete('/:name/workflows/:workflow_id', async (c) => {
   // Unassigning a source that is not assigned is a no-op, so this stays 200 and
   // stays idempotent. Only the audit row is gated on the row actually removed,
   // so an unassign that changed nothing no longer logs one (#588).
-  const { data: unassigned, error } = await supabase
-    .from('source_workflow_assignments')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('source_name', name)
-    .eq('workflow_id', workflowId)
-    .select('workflow_id')
-  if (error) return dbError(c, error)
+  const { rows, blocked } = await rowsTouched(c, 'source_workflow_assignments.unassign', () =>
+    supabase
+      .from('source_workflow_assignments')
+      .delete()
+      .eq('organization_id', orgId)
+      .eq('source_name', name)
+      .eq('workflow_id', workflowId)
+      .select('workflow_id')
+  )
+  if (blocked) return blocked
 
-  if (unassigned?.length) {
+  if (rows.length > 0) {
     const { data: src } = await supabase
       .from('api_sources')
       .select('id')

@@ -17,6 +17,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
 import { exportTable, purgeOldExported, readSnowflakeConfig, type ColSpec } from './sightings-export'
+import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
 // output = { status, body } with the trades response in body).
@@ -125,16 +126,13 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
       // .select('id') because a zero-row UPDATE is reported as a success. The row
       // can legitimately vanish (purged between select and update), which is not
       // an error, but it is also not a backfill and must not be counted (#583).
-      const { data: updated, error: updErr } = await supabase
-        .from('achieve_evaluations')
-        .update({ trades: u.trades })
-        .eq('id', u.id)
-        .select('id')
-      if (updErr) throw updErr
-      if (!updated?.length) {
-        console.warn('[achieve-export] trades update matched zero rows, evaluation vanished', { id: u.id })
-        continue
-      }
+      const { rows, error: updErr } = await requireRowsAffected(
+        'achieve_evaluations.trades_backfill',
+        () => supabase.from('achieve_evaluations').update({ trades: u.trades }).eq('id', u.id).select('id'),
+        { onMiss: 'warn', context: { id: u.id } },
+      )
+      if (updErr && !isNoRowMatchedError(updErr)) throw toThrowable(updErr)
+      if (rows.length === 0) continue
       total++
     }
 

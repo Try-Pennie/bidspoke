@@ -30,7 +30,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from './_scan-utils'
 
 const SCAN_DIRS = ['engine', 'lib', 'routes'].map((d) => path.join(WORKER_SRC, d))
 
@@ -125,12 +125,30 @@ function receiverIsSupabase(src: string, dotIndex: number, builderVars: Set<stri
   return builderVars.has(identifierBefore(src, i + 1))
 }
 
+// The shared helpers that consume a write's rowcount (#590). A write must sit
+// inside a call to one of these.
+const ROWCOUNT_HELPERS = /\b(requireRowsAffected|requireRowOr404|rowsTouched)\s*(<[^>]*>)?\s*\(/g
+
+/** Character ranges spanned by each helper call's argument list. */
+function helperCallRanges(src: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = []
+  ROWCOUNT_HELPERS.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = ROWCOUNT_HELPERS.exec(src))) {
+    const open = src.indexOf('(', m.index + m[1].length)
+    if (open < 0) continue
+    ranges.push([open, consumeParens(src, open)])
+  }
+  return ranges
+}
+
 function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
   // sanitizeSource blanks comments and string CONTENTS in place, preserving
   // length, so offsets are shared between the two and we can slice either.
   const src = sanitizeSource(rawSrc)
   const rawLines = rawSrc.split('\n')
   const builderVars = collectBuilderVars(src)
+  const helperRanges = helperCallRanges(src)
   const findings: Finding[] = []
   // `.update(` or `.delete(` reached off a supabase query builder.
   const re = /\.(update|delete)\(/g
@@ -144,10 +162,22 @@ function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
 
     if (!receiverIsSupabase(src, m.index, builderVars)) continue
 
-    // Two ways to learn the rowcount: ask PostgREST to return the rows
-    // (.select) or ask it for an exact count (.delete({ count: 'exact' })).
-    if (/\.select\(/.test(stmt)) continue
+    // PostgREST hands the rowcount straight back here, so there is nothing for a
+    // helper to wrap. Bulk purges use it, where zero rows just means drained.
     if (/count:\s*'exact'/.test(rawStmt)) continue
+
+    // A write ending in `.single()` is not the silent-success class at all:
+    // PostgREST answers zero rows with a PGRST116 ERROR, which the caller's
+    // `if (error)` already catches. (`.maybeSingle()` does not: it returns
+    // `data: null, error: null`, so it stays in scope.)
+    if (/\.single\(\)/.test(stmt)) continue
+
+    // Otherwise the write must both expose its rowcount (.select) and hand it to
+    // one of the shared helpers. A bare .select() whose count is then checked by
+    // hand is what #590 removed: six copies of one check, each reacting
+    // differently, is how this class kept coming back.
+    const inHelper = helperRanges.some(([open, close]) => m!.index > open && m!.index < close)
+    if (/\.select\(/.test(stmt) && inHelper) continue
 
     // Opt-out comment above the write. The window spans several lines because
     // the comment sits above the statement head (`const { error } = await
@@ -174,8 +204,9 @@ describe('worker zero-row write guard (#583)', () => {
 
     expect(
       findings,
-      `Supabase update/delete without .select(...): a zero-row match would be reported as success.\n` +
-        `Use requireRowsAffected() from lib/db-retry, or check data?.length.\n` +
+      `Supabase update/delete whose rowcount nothing consumes: a zero-row match would be reported as success.\n` +
+        `End the statement in .select(...) and pass it to requireRowsAffected() (lib/db-retry),\n` +
+        `or requireRowOr404()/rowsTouched() (lib/api-error) in a route. Do not check data?.length by hand.\n` +
         `Deliberate exception? Add "// zero-row-ok: <reason>" above the write.\n\n` +
         findings.map((f) => `  ${f.file}:${f.line}  ${f.snippet}`).join('\n')
     ).toEqual([])
@@ -195,19 +226,33 @@ describe('the guard itself detects what it claims to (#583)', () => {
     expect(findUncheckedWrites(src, 'x.ts')).toHaveLength(1)
   })
 
-  it('accepts an update that selects the rows it touched', () => {
-    const src = wrap(`const { data } = await supabase.from('t').update({ a: 1 }).eq('id', id).select('id');`)
+  it('accepts an update that selects the rows it touched and hands them to the helper', () => {
+    const src = wrap(`await requireRowsAffected('t.row', () => supabase.from('t').update({ a: 1 }).eq('id', id).select('id'));`)
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
   })
 
   it('accepts a multi-line chained update ending in select', () => {
     const src = wrap(`
-      const { data } = await supabase
-        .from('t')
-        .update({ a: 1 })
-        .eq('id', id)
-        .select('id');`)
+      await requireRowsAffected('t.row', () =>
+        supabase
+          .from('t')
+          .update({ a: 1 })
+          .eq('id', id)
+          .select('id')
+      );`)
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  // `.single()` makes PostgREST raise PGRST116 on zero rows, so the caller's
+  // `if (error)` already sees the miss. `.maybeSingle()` swallows it.
+  it('accepts an update-and-return that ends in single()', () => {
+    const src = wrap(`const { data, error } = await supabase.from('t').update({ a: 1 }).eq('id', id).select().single();`)
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('flags a write that ends in maybeSingle(), which reports a miss as null', () => {
+    const src = wrap(`const { data } = await supabase.from('t').update({ a: 1 }).eq('id', id).select().maybeSingle();`)
+    expect(findUncheckedWrites(src, 'x.ts')).toHaveLength(1)
   })
 
   it('does not flag a non-supabase delete (Map, Set, KV)', () => {
@@ -256,13 +301,13 @@ async function a() {
     const src = `
 async function a() {
   let query = supabase.from('t')
-  await query.update({ a: 1 }).eq('id', id).select('id')
+  await requireRowsAffected('t.row', () => query.update({ a: 1 }).eq('id', id).select('id'))
 }`
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
   })
 
   it('is not fooled by a paren inside an eq() argument', () => {
-    const src = wrap(`await supabase.from('t').update({ a: 1 }).eq('id', String(id)).select('id');`)
+    const src = wrap(`await requireRowsAffected('t.row', () => supabase.from('t').update({ a: 1 }).eq('id', String(id)).select('id'));`)
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
   })
 
@@ -289,11 +334,78 @@ async function b() {
   it('ends a semicolon-free chain at the first non-chained line', () => {
     const src = `
 async function a() {
-  const { data } = await supabase
-    .from('t')
-    .update({ a: 1 })
-    .eq('id', id)
-    .select('id')
+  const { rows } = await requireRowsAffected('t.row', () =>
+    supabase
+      .from('t')
+      .update({ a: 1 })
+      .eq('id', id)
+      .select('id')
+  )
+  return rows
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  // #590: `.select(...)` only makes the rowcount VISIBLE. Six sites then checked
+  // it by hand, each reacting differently, which is how this class kept coming
+  // back. The rowcount must now be consumed by the shared helper.
+  it('accepts a write routed through requireRowsAffected', () => {
+    const src = `
+async function a() {
+  const { rows } = await requireRowsAffected('t.row', () =>
+    supabase.from('t').update({ a: 1 }).eq('id', id).select('id')
+  )
+  return rows
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('accepts a write routed through requireRowOr404 or rowsTouched, generics and all', () => {
+    const src = `
+async function a() {
+  const blocked = await requireRowOr404(c, 'Not found', () =>
+    supabase.from('t').delete().eq('id', id).select('id')
+  )
+  const { rows } = await rowsTouched<{ id: string }>(c, 't.clear', () =>
+    supabase.from('u').delete().eq('k', k).select('id')
+  )
+  return blocked ?? rows
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('accepts a write inside a helper callback that awaits into a local first', () => {
+    const src = `
+async function a() {
+  await requireRowsAffected('t.row', async () => {
+    const res = await supabase.from('t').update({ a: 1 }).eq('id', id).select('id')
+    return res
+  })
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('flags a write that selects its rows but checks the count by hand', () => {
+    const src = `
+async function a() {
+  const { data } = await supabase.from('t').update({ a: 1 }).eq('id', id).select('id')
+  if (!data?.length) console.warn('vanished')
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toHaveLength(1)
+  })
+
+  // PostgREST hands the rowcount back directly here, so there is nothing for the
+  // helper to wrap. Bulk purges use it, where zero rows just means drained.
+  it('accepts a bulk delete that asks PostgREST for an exact count, outside any helper', () => {
+    const src = wrap(`const { count } = await supabase.from('t').delete({ count: 'exact' }).in('id', ids);`)
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('honors an opt-out on a hand-checked write', () => {
+    const src = `
+async function a() {
+  // zero-row-ok: bulk cleanup, most ids are already gone
+  const { data } = await supabase.from('t').delete().in('id', ids).select('id')
   return data
 }`
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])

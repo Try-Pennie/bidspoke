@@ -16,6 +16,7 @@ import type { ErrorType, StepStatus } from '../types'
 import { sendDurationAlert, sendFailureAlert, sendThreadReply } from './slack'
 import { draftAlertSummary, type AlertSummaryStep } from './alert-summarizer'
 import { getAnthropicKey } from './changelog-drafter'
+import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
 
 // Minimal slice of Cloudflare's ExecutionContext we actually use. Engine code
 // uses a structural alias for the same reason — `ExecutionContext` is also the
@@ -77,21 +78,20 @@ export async function writeExecutionAlertState(
   patch: Record<string, unknown>,
   operation: string,
 ): Promise<void> {
-  const { data, error } = await supabase
-    .from('workflow_executions')
-    .update(patch)
-    .eq('id', executionId)
-    .eq('started_at', executionStartedAt)
-    .select('id')
-  if (error) {
+  const { error } = await requireRowsAffected(
+    `workflow_executions.${operation}`,
+    () =>
+      supabase
+        .from('workflow_executions')
+        .update(patch)
+        .eq('id', executionId)
+        .eq('started_at', executionStartedAt)
+        .select('id'),
+    { onMiss: 'error', context: { executionId, executionStartedAt, operation } },
+  )
+  // The zero-row line is the helper's. Only a real database failure is ours.
+  if (error && !isNoRowMatchedError(error)) {
     console.error(`[execution-alerts] failed to ${operation}`, { executionId, error: error.message })
-    return
-  }
-  if (!data?.length) {
-    console.error(`[execution-alerts] ${operation}: update matched zero rows, execution record is missing`, {
-      executionId,
-      executionStartedAt,
-    })
   }
 }
 
