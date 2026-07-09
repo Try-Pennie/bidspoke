@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionRecord, updateExecutionRecord } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord, NO_ROW_MATCHED_CODE } from '../step-logger'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Regression guard for the 2026-06-10 incident: the nightly partition purge
@@ -188,6 +188,82 @@ describe('updateExecutionRecord', () => {
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ response_status: 200, response_body: { ok: true } })
     )
+  })
+})
+
+// Issue #487 (AUD-024): the id-only fallback checked `error` but never whether
+// any row was matched, so a finalize against a missing base row (createExecution
+// Record failed permanently, yet finalize still runs) returned success. A lead
+// was served a real response and left no execution row, no steps, and nothing
+// for the strand drain to find, while the write that lost it reported OK.
+
+// Mocks the two statements updateExecutionOnce issues:
+//   partition-keyed: update(...).eq('id').eq('started_at').select('id')
+//   id-only fallback: update(...).eq('id').select('id')
+function updateClientWith(
+  keyed: { data?: unknown[]; error?: { code?: string; message: string } | null },
+  fallback: { data?: unknown[]; error?: { code?: string; message: string } | null }
+) {
+  const keyedSelect = vi.fn().mockResolvedValue({ error: null, ...keyed })
+  const fallbackSelect = vi.fn().mockResolvedValue({ error: null, ...fallback })
+  const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
+  const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: fallbackSelect })
+  const update = vi.fn().mockReturnValue({ eq: eqId })
+  const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+  return { client, update, keyedSelect, fallbackSelect }
+}
+
+const finalize = {
+  status: 'completed',
+  completed_at: '2026-06-11T00:00:01Z',
+  duration_ms: 1000,
+}
+
+describe('updateExecutionRecord: missing base row (#487)', () => {
+  it('reports an error when neither statement matches a row', async () => {
+    const { client } = updateClientWith({ data: [] }, { data: [] })
+    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize)
+    expect(error).not.toBeNull()
+    expect(error?.code).toBe(NO_ROW_MATCHED_CODE)
+    expect(error?.message).toContain('exec-gone')
+  })
+
+  it('does not burn the retry ladder on a missing row (a row that does not exist cannot appear)', async () => {
+    const { client, update } = updateClientWith({ data: [] }, { data: [] })
+    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize)
+    // One finalize attempt = the keyed statement plus its id-only fallback.
+    expect(update).toHaveBeenCalledTimes(2)
+  })
+
+  it('still succeeds when the id-only fallback matches the row (partition-pruning miss)', async () => {
+    const { client, fallbackSelect } = updateClientWith({ data: [] }, { data: [{ id: 'exec-1' }] })
+    const error = await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
+    expect(error).toBeNull()
+    expect(fallbackSelect).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the error after the retry ladder is exhausted on a transient failure', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client } = updateClientWith({ error: { code: 'PGRST002', message: 'schema cache' } }, { data: [] })
+      const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
+      await vi.advanceTimersByTimeAsync(8000)
+      const error = await p
+      expect(error?.code).toBe('PGRST002')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns the error on a permanent failure', async () => {
+    const { client } = updateClientWith({ error: { code: '42703', message: 'column does not exist' } }, { data: [] })
+    const error = await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
+    expect(error?.code).toBe('42703')
+  })
+
+  it('returns null on a clean finalize', async () => {
+    const { client } = updateClientWith({ data: [{ id: 'exec-1' }] }, { data: [] })
+    await expect(updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)).resolves.toBeNull()
   })
 })
 
