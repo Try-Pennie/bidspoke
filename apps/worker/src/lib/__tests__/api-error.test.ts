@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../api-error'
 
 const app = new Hono()
 app.get('/boom', (c) =>
@@ -86,5 +86,65 @@ describe('dbErrorUnlessNotFound', () => {
     const res = await app.request('/lookup?err=' + encodeURIComponent('{"code":"42P01"}'))
     expect(res.status).toBe(500)
     expect((await res.json()) as { error: string }).toEqual({ error: 'Internal error' })
+  })
+})
+
+describe('requireRowOr404', () => {
+  // PostgREST answers an UPDATE/DELETE that matched nothing with
+  // `{ data: [], error: null }`, so a route that only checks `error` tells the
+  // dashboard an edit landed when nothing changed (#588). The write must end in
+  // `.select(...)` for the rowcount to be visible at all.
+  const routeFor = (result: { data: unknown[] | null; error: { code?: string; message: string } | null }) => {
+    const local = new Hono()
+    local.patch('/thing/:id', async (c) => {
+      const blocked = await requireRowOr404(c, 'Thing not found', async () => result)
+      if (blocked) return blocked
+      return c.json({ ok: true })
+    })
+    return local
+  }
+
+  it('returns null when the write touched a row, so the caller proceeds', async () => {
+    const res = await routeFor({ data: [{ id: 'a' }], error: null }).request('/thing/a', { method: 'PATCH' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+  })
+
+  it('returns 404 with the caller message when the write matched zero rows', async () => {
+    const res = await routeFor({ data: [], error: null }).request('/thing/a', { method: 'PATCH' })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Thing not found' })
+  })
+
+  it('treats a null data payload as zero rows, not as success', async () => {
+    const res = await routeFor({ data: null, error: null }).request('/thing/a', { method: 'PATCH' })
+    expect(res.status).toBe(404)
+  })
+
+  // The failure path that matters: a transient DB error must never be reported
+  // as a 404. Conflating the two is the #303 bug (a caller reads 404 as "gone"
+  // and stops retrying) pointed at the write side.
+  it('returns a generic 500 for a real DB error, never a 404', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const res = await routeFor({ data: null, error: { code: '42P01', message: 'relation missing' } }).request(
+      '/thing/a',
+      { method: 'PATCH' }
+    )
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error: string }
+    expect(body).toEqual({ error: 'Internal error' })
+    expect(body.error).not.toBe('Thing not found')
+  })
+
+  it('logs a real DB error server-side but stays quiet on a plain zero-row miss', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await routeFor({ data: [], error: null }).request('/thing/a', { method: 'PATCH' })
+    expect(spy).not.toHaveBeenCalled()
+
+    await routeFor({ data: null, error: { code: '42P01', message: 'relation missing' } }).request('/thing/a', {
+      method: 'PATCH',
+    })
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(spy.mock.calls[0][0] as string)).toMatchObject({ event: 'api_error', code: '42P01' })
   })
 })
