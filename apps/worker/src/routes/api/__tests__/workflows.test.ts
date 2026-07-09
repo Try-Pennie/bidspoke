@@ -832,6 +832,44 @@ describe('POST /workflows/:id/test-node', () => {
     expect(execFilters).toContainEqual(['workflow_id', 'wf-1'])
     expect(execFilters.some(([col]) => col === 'organization_id')).toBe(false)
   })
+
+  // branch_end has no config of its own. It passes through whatever ran before
+  // it. The engine hands it the walk's chain output; this route has no walk, so
+  // it must hand over the last step of the reconstructed context instead, or a
+  // re-run of a branch_end silently yields null (#489).
+  it('passes the last reconstructed step output to a branch_end node', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+
+    const definition = {
+      nodes: [{ id: 'be', namespace: 'converge', type: 'branch_end', config: {} }],
+      edges: [],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows/wf-1/test-node', {
+      body: {
+        namespace: 'converge',
+        definition,
+        steps: {
+          enrich: { output: { from: 'enrich' }, status: 'completed' },
+        },
+      },
+    })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(executeNode)).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'branch_end' }),
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      { from: 'enrich' }
+    )
+  })
 })
 
 describe('GET /workflows/:id/timeout-suggestions', () => {
