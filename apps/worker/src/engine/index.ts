@@ -258,11 +258,17 @@ export async function executeWorkflow(
   // retries dead-letters instead of vanishing into a log line.
   const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL }
 
+  // Awaited by the finalize block below: finalize UPDATEs the row this promise
+  // INSERTs, and both run in waitUntil after the response is sent. Left
+  // unawaited, finalize beat the insert on ~18% of live leads and its UPDATE
+  // matched a row that did not exist yet.
+  let sightingWritePromise: Promise<void> = Promise.resolve()
+
   if (sightingId) {
     const sightingPayloadFields = extractSightingFields(payload)
     const personFields = extractPersonFields(payload)
     const startedAtDate = new Date(startedAt)
-    const sightingWritePromise = (async () => {
+    sightingWritePromise = (async () => {
       let personId: string | null = null
       if (personFields) {
         personId = await upsertPerson(
@@ -644,6 +650,10 @@ export async function executeWorkflow(
     executionCtx.waitUntil(
       walkPromiseCaught
         .then(async () => {
+          // The row finalize is about to UPDATE is INSERTed by this promise.
+          // It already carries its own .catch, so a failed insert resolves here
+          // and finalize still runs (and now honestly reports the missing row).
+          await sightingWritePromise
           const completedAtDate = new Date(completedAt)
           // Rich finalize fields (winner/bid/enrichment/reject_reason/outcome),
           // computed by the shared pure fn so this live finalize and the durable
