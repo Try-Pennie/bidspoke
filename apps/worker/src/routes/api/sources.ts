@@ -7,7 +7,7 @@
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
-import { dbError, isNotFoundError } from '../../lib/api-error'
+import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { setCfSecret } from '../../lib/cf-secrets'
@@ -108,7 +108,25 @@ sources.post('/', async (c) => {
   } catch (err) {
     // Roll back so a half-created source (in the table but not the auth map)
     // doesn't linger and block re-creation with a 409.
-    await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
+    const { data: rolledBack, error: rollbackError } = await supabase
+      .from('api_sources')
+      .delete()
+      .eq('organization_id', orgId)
+      .eq('name', name)
+      .select('id')
+    // A rollback that errors, or that matches nothing, leaves exactly the
+    // half-created source this catch block exists to prevent. Nothing here can
+    // recover it, so make the failure loud instead of silent (#588).
+    if (rollbackError || !rolledBack?.length) {
+      console.error(
+        JSON.stringify({
+          event: 'api_source_rollback_failed',
+          source_name: name,
+          organization_id: orgId,
+          reason: rollbackError ? rollbackError.message : 'delete matched zero rows',
+        })
+      )
+    }
     return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
   }
 
@@ -210,25 +228,31 @@ sources.delete('/:name/workflows/:workflow_id', async (c) => {
   const workflowId = c.req.param('workflow_id')
 
   const supabase = createSupabaseClient(c.env)
-  const { error } = await supabase
+  // Unassigning a source that is not assigned is a no-op, so this stays 200 and
+  // stays idempotent. Only the audit row is gated on the row actually removed,
+  // so an unassign that changed nothing no longer logs one (#588).
+  const { data: unassigned, error } = await supabase
     .from('source_workflow_assignments')
     .delete()
     .eq('organization_id', orgId)
     .eq('source_name', name)
     .eq('workflow_id', workflowId)
+    .select('workflow_id')
   if (error) return dbError(c, error)
 
-  const { data: src } = await supabase
-    .from('api_sources')
-    .select('id')
-    .eq('organization_id', orgId)
-    .eq('name', name)
-    .single()
-  await writeAuditLog(supabase, orgId, 'api_source', (src as { id: string } | null)?.id ?? workflowId, 'updated', userId, {
-    source_name: name,
-    workflow_id: workflowId,
-    action: 'source_unassigned_from_workflow',
-  })
+  if (unassigned?.length) {
+    const { data: src } = await supabase
+      .from('api_sources')
+      .select('id')
+      .eq('organization_id', orgId)
+      .eq('name', name)
+      .single()
+    await writeAuditLog(supabase, orgId, 'api_source', (src as { id: string } | null)?.id ?? workflowId, 'updated', userId, {
+      source_name: name,
+      workflow_id: workflowId,
+      action: 'source_unassigned_from_workflow',
+    })
+  }
 
   return c.json({ ok: true })
 })
@@ -258,7 +282,10 @@ sources.delete('/:name', async (c) => {
   const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
   await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
 
-  await supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name)
+  const deleteBlocked = await requireRowOr404(c, 'Source not found', () =>
+    supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await writeAuditLog(supabase, orgId, 'api_source', sourceId, 'deleted', userId, {
     source_name: name,

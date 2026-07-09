@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -89,12 +89,10 @@ servicePresets.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
-  const { error } = await supabase
-    .from('service_presets')
-    .delete()
-    .eq('id', id)
-    .eq('organization_id', orgId)
-  if (error) return dbError(c, error)
+  const blocked = await requireRowOr404(c, 'Preset not found', () =>
+    supabase.from('service_presets').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (blocked) return blocked
   await writeAuditLog(supabase, orgId, 'service_preset', id, 'deleted', userId)
   return c.json({ ok: true })
 })

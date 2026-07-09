@@ -165,15 +165,31 @@ describe('REST API — org scoping', () => {
     expect(res.status).toBe(404)
   })
 
-  it('DELETE /:id — returns 200 (delete is org-scoped via RLS, no explicit ownership check)', async () => {
+  // The soft delete is org-scoped, so another org's workflow matches zero rows.
+  // PostgREST calls that a success, and this route used to pass it straight
+  // through as 200 {ok:true}: a caller could not tell a delete that worked from
+  // one that silently touched nothing in a workflow it does not own (#588).
+  it('DELETE /:id: returns 404 when the workflow belongs to a different org', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        workflows: { single: null },
+        workflows: { writeRows: [] },
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-other', { auth: 'Bearer tok' })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+  })
+
+  it('DELETE /:id: scopes the soft delete to the caller org', async () => {
+    const supabase = makeSupabase({ users: { single: testUser }, workflows: { writeRows: [{ id: 'wf-1' }] } })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'DELETE', '/workflows/wf-1', { auth: 'Bearer tok' })
     expect(res.status).toBe(200)
+    expect(supabase.eqCalls['workflows']).toEqual([
+      ['id', 'wf-1'],
+      ['organization_id', USER_ORG],
+    ])
   })
 
   it('GET /:id/versions — returns 404 when workflow belongs to a different org', async () => {

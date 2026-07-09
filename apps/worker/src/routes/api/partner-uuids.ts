@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -63,13 +63,10 @@ partnerUuids.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  const { error } = await supabase
-    .from('partner_uuid_map')
-    .delete()
-    .eq('id', id)
-    .eq('org_id', orgId)
-
-  if (error) return dbError(c, error)
+  const blocked = await requireRowOr404(c, 'Partner UUID not found', () =>
+    supabase.from('partner_uuid_map').delete().eq('id', id).eq('org_id', orgId).select('id')
+  )
+  if (blocked) return blocked
 
   await writeAuditLog(supabase, orgId, 'partner_uuid', id, 'deleted', userId)
 

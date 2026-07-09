@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -307,7 +307,13 @@ env.delete('/:id', async (c) => {
     await deleteCfSecret(existing.key, c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
   }
 
-  await supabase.from('environment_variables').delete().eq('id', id)
+  // The Cloudflare secret is already gone by here, so a silent zero-row delete
+  // would leave the row in Supabase pointing at a secret that no longer exists,
+  // while the response and the audit log both claim it was removed (#588).
+  const deleteBlocked = await requireRowOr404(c, 'Variable not found', () =>
+    supabase.from('environment_variables').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, { key: existing.key }),

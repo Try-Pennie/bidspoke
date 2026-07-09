@@ -5,7 +5,7 @@
 // DELETE /api/integrations/slack        — disconnect
 
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import { fetchJson } from '../../lib/json'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -214,12 +214,15 @@ integrations.patch('/slack/settings', async (c) => {
     ...(body.backup_alerts_enabled !== undefined ? { backup_alerts_enabled: body.backup_alerts_enabled } : {}),
   }
 
-  const { error } = await supabase
-    .from('service_connections')
-    .update({ config: nextConfig, updated_by: userId })
-    .eq('id', existing.id)
-
-  if (error) return dbError(c, error)
+  const updateBlocked = await requireRowOr404(c, 'Slack is not connected', () =>
+    supabase
+      .from('service_connections')
+      .update({ config: nextConfig, updated_by: userId })
+      .eq('id', existing.id)
+      .eq('organization_id', orgId)
+      .select('id')
+  )
+  if (updateBlocked) return updateBlocked
 
   await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'updated', userId, {
     service_type: 'slack',
@@ -238,23 +241,22 @@ integrations.delete('/slack', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: existing } = await supabase
-    .from('service_connections')
-    .select('id')
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
-
-  const { error } = await supabase
+  // Disconnecting a Slack that was never connected is a no-op, not an error, so
+  // this stays 200. The audit row is gated on the rows the delete actually
+  // removed rather than on a prior read that can race it, which also lets that
+  // read go away entirely (#588).
+  const { data: deleted, error } = await supabase
     .from('service_connections')
     .delete()
     .eq('organization_id', orgId)
     .eq('service_type', 'slack')
+    .select('id')
 
   if (error) return dbError(c, error)
 
-  if (existing) {
-    await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'deleted', userId, { service_type: 'slack' })
+  const removed = (deleted ?? [])[0] as { id: string } | undefined
+  if (removed) {
+    await writeAuditLog(supabase, orgId, 'service_connection', removed.id, 'deleted', userId, { service_type: 'slack' })
   }
 
   return c.json({ ok: true })

@@ -64,3 +64,44 @@ describe('PUT /service-presets/:id — DB error => 5xx, not 404 (#320)', () => {
     expect(res.status).toBe(500)
   })
 })
+
+describe('DELETE /service-presets/:id: zero-row + DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404, writes no audit log, and scopes the delete to the org when it matches zero rows', async () => {
+    // #588: this route deletes without a prior existence read, so a zero-row
+    // delete is the ONLY signal the preset was missing. It must become a 404, and
+    // must not audit a delete that never landed.
+    const mock = makeSupabase({
+      users: { single: testUser },
+      service_presets: { writeRows: [] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(mock as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'DELETE', '/service-presets/sp-1')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Preset not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    // The delete is org-scoped (application-level defense mirroring RLS).
+    expect(mock.eqCalls['service_presets']).toContainEqual(['organization_id', 'org-abc'])
+  })
+
+  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_presets: { deleteError: { code: '42P01', message: 'relation missing' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/service-presets/sp-1')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})

@@ -3,7 +3,7 @@
  * CRUD for partner_configs. Daily cap count comes from the DailyCapDO.
  */
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -252,13 +252,10 @@ partners.delete('/:id', async (c) => {
   if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Partner not found' }, 404)
 
-  const { error } = await supabase
-    .from('partner_configs')
-    .delete()
-    .eq('id', id)
-    .eq('organization_id', orgId)
-
-  if (error) return dbError(c, error)
+  const deleteBlocked = await requireRowOr404(c, 'Partner not found', () =>
+    supabase.from('partner_configs').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'deleted', userId, {
     name: existing.name,

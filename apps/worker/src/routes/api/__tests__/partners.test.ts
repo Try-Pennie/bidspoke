@@ -13,6 +13,7 @@ vi.mock('../../../lib/partner-constants-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
+import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -62,5 +63,46 @@ describe('Partner routes — DB error => 5xx, not 404 (#320)', () => {
     )
     const res = await request(app, 'GET', '/partners/p-1/cap-count')
     expect(res.status).toBe(500)
+  })
+})
+
+describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 and writes no audit log when the delete matches zero rows', async () => {
+    // #588: the existence read succeeds but the DELETE touches nothing (the row
+    // raced away or is another org's). Auditing it would log a delete that never
+    // happened.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { slug: 'sofi', name: 'SoFi' } }, { writeRows: [] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partners/p-1')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Partner not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    // A transient write failure must surface as a retryable 500, never a 404.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { slug: 'sofi', name: 'SoFi' } }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partners/p-1')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

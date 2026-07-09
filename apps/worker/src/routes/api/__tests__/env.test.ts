@@ -304,7 +304,10 @@ describe('DELETE /env/:id', () => {
   it('returns 200 when deleting a non-secret variable', async () => {
     const existing = { id: 'v1', key: 'API_URL', is_secret: false }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, environment_variables: { single: existing } }) as never
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { writeRows: [{ id: 'v1' }] }],
+      }) as never
     )
     const res = await request(app, 'DELETE', '/env/v1')
     expect(res.status).toBe(200)
@@ -405,5 +408,49 @@ describe('POST /env/resync-secrets (#199)', () => {
     const res = await request(app, 'POST', '/env/resync-secrets')
     expect(res.status).toBe(503)
     expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+  })
+})
+
+describe('DELETE /env/:id: zero-row + write DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404, writes no audit log, and does not invalidate the env cache when the delete matches zero rows', async () => {
+    // #588: the row was found on read but the DELETE removed nothing. Reporting a
+    // success here would audit a delete that never happened and pointlessly drop
+    // the env-cache key.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: { key: 'API_URL', is_secret: false } }, { writeRows: [] }],
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/env/v1')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Variable not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    // invalidateEnvCache drops the per-org KV key via WORKFLOW_CACHE.delete; it
+    // must not run for a delete that changed nothing.
+    expect(vi.mocked(testEnv.WORKFLOW_CACHE.delete)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the delete write hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: { key: 'API_URL', is_secret: false } }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/env/v1')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

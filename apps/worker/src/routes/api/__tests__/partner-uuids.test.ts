@@ -63,12 +63,64 @@ describe('partner-uuids audit (#105)', () => {
 
   it('audits delete as partner_uuid with the row id', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, partner_uuid_map: {} }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, partner_uuid_map: { writeRows: [{ id: 'pu-9' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/partner-uuids/pu-9')
     expect(res.status).toBe(200)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'partner_uuid', 'pu-9', 'deleted', 'user-1'
     )
+  })
+})
+
+// This handler never looked the row up before deleting it, so a delete of an id
+// that never existed (or that belongs to another org) was indistinguishable from
+// a real one: 200 {ok:true}, plus an audit row claiming a deletion happened.
+describe('partner-uuids zero-row delete (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(invalidatePartnerConstantsCache).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 when the delete matches no row, and does not audit or invalidate', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, partner_uuid_map: { writeRows: [] } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partner-uuids/pu-gone')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Partner UUID not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
+  })
+
+  it('scopes the delete to the caller org so another org row reads as not found', async () => {
+    const supabase = makeSupabase({ users: { single: testUser }, partner_uuid_map: { writeRows: [] } })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'DELETE', '/partner-uuids/pu-other-org')
+    expect(supabase.eqCalls['partner_uuid_map']).toEqual([
+      ['id', 'pu-other-org'],
+      ['org_id', USER_ORG],
+    ])
+  })
+
+  // A real database failure must stay a 500. Reporting it as 404 would tell the
+  // dashboard the row is gone when it may still be there (#303).
+  it('returns 500, not 404, when the delete fails for a real database reason', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_uuid_map: { deleteError: { code: '42P01', message: 'relation missing' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partner-uuids/pu-9')
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

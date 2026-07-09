@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError } from '../../lib/api-error'
+import { dbError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -54,11 +54,13 @@ access.delete('/:email', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const { error } = await supabase
-    .from('user_allowlist')
-    .delete()
-    .eq('email', email)
-  if (error) return dbError(c, error)
+  // The allowlist is global: user_allowlist has no organization_id column, so
+  // the email is the only key. A delete matching nothing means the email was
+  // never on the list, and must not be audited as a removal (#588).
+  const blocked = await requireRowOr404(c, 'Email not on the allowlist', () =>
+    supabase.from('user_allowlist').delete().eq('email', email).select('email')
+  )
+  if (blocked) return blocked
 
   await writeAuditLog(supabase, orgId, 'user_allowlist', crypto.randomUUID(), 'deleted', userId, { email })
   return c.json({ ok: true })

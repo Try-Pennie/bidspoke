@@ -207,7 +207,8 @@ describe('DELETE /connections/:service_type', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        service_connections: { single: existingConn },
+        // Lookup, then the DELETE, whose .select('id') reports the touched row.
+        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
       }) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
@@ -249,7 +250,11 @@ describe('POST /connections/:service_type/sync-schema', () => {
     const mockSchema = { objects: [{ name: 'Lead', label: 'Lead', fields: [] }] }
     vi.mocked(fetchSalesforceSchema).mockResolvedValue(mockSchema)
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
+      makeSupabase({
+        users: { single: testUser },
+        // Lookup, then the schema UPDATE, whose .select('id') reports the row.
+        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
+      }) as never
     )
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
     expect(res.status).toBe(200)
@@ -266,7 +271,10 @@ describe('POST /connections/:service_type/sync-schema', () => {
     const mockSchema = { objects: [{ name: 'leads', label: 'leads', fields: [] }] }
     vi.mocked(fetchSupabaseSchema).mockResolvedValue(mockSchema)
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: supabaseConn } }) as never
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: [{ single: supabaseConn }, { writeRows: [{ id: 'conn-1' }] }],
+      }) as never
     )
     const res = await request(app, 'POST', '/connections/supabase/sync-schema', { env: envWithCreds })
     expect(res.status).toBe(200)
@@ -279,7 +287,10 @@ describe('POST /connections/:service_type/sync-schema', () => {
     const mockSchema = { objects: [] }
     vi.mocked(fetchSnowflakeSchema).mockResolvedValue(mockSchema)
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: snowflakeConn } }) as never
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: [{ single: snowflakeConn }, { writeRows: [{ id: 'conn-1' }] }],
+      }) as never
     )
     const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env: envWithCreds })
     expect(res.status).toBe(200)
@@ -289,11 +300,82 @@ describe('POST /connections/:service_type/sync-schema', () => {
   it('returns 502 when the schema fetcher throws', async () => {
     vi.mocked(fetchSalesforceSchema).mockRejectedValue(new Error('Salesforce SObject list failed (401)'))
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
+      makeSupabase({
+        users: { single: testUser },
+        // Lookup, then the schema UPDATE, whose .select('id') reports the row.
+        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
+      }) as never
     )
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
     expect(res.status).toBe(502)
     const body = await res.json() as { error: string }
     expect(body.error).toMatch(/401/)
+  })
+})
+
+describe('DELETE /connections/:service_type: zero-row + DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 and writes no audit log when the delete matches zero rows', async () => {
+    // #588: the connection existed at the read but the DELETE removed nothing, so
+    // it must surface as a 404 rather than a success that audits a phantom delete.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: [{ single: existingConn }, { writeRows: [] }],
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/connections/salesforce')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Connection not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: [{ single: existingConn }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/connections/salesforce')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
+
+describe('POST /connections/:service_type/sync-schema: zero-row update (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 and writes no audit log when the schema update matches zero rows', async () => {
+    // #588: the schema fetch succeeds but the UPDATE that stores it touches no
+    // row (connection deleted mid-request), so we must not report a synced schema.
+    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [{ name: 'Lead', label: 'Lead', fields: [] }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: [{ single: existingConn }, { writeRows: [] }],
+      }) as never
+    )
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Connection not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -417,7 +417,26 @@ workflows.put('/:id', async (c) => {
       .then(async (commitSha) => {
         // null = backup not configured (no token/repo) — not a failure, leave the streak alone.
         if (!commitSha) return
-        await supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', version.id)
+        // Runs after the save has already been answered, so there is no response
+        // to fail. Both a real error and a zero-row match were discarded here,
+        // leaving a version row with no commit_sha that still looked like a
+        // healthy backup. The GitHub push itself did succeed, so the streak is
+        // still reset; only the bookkeeping is reported as broken (#588).
+        const { data: stamped, error: stampError } = await supabase
+          .from('workflow_versions')
+          .update({ commit_sha: commitSha })
+          .eq('id', version.id)
+          .select('id')
+        if (stampError || !stamped?.length) {
+          console.error(
+            JSON.stringify({
+              event: 'workflow_version_commit_sha_unset',
+              workflow_id: id,
+              version_id: version.id,
+              reason: stampError ? stampError.message : 'update matched zero rows',
+            })
+          )
+        }
         await recordBackupSuccess(c.env.IDEMPOTENCY, orgId)
       })
       .catch(async (e) => {
@@ -581,14 +600,19 @@ workflows.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  const { error } = await supabase
-    .from('workflows')
-    .update({ deleted_at: new Date().toISOString(), is_active: false, updated_by: userId })
-    .eq('id', id)
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-
-  if (error) return dbError(c, error)
+  // Unlike its sibling handlers this one never looked the workflow up first, so
+  // a workflow that never existed, belongs to another org, or was already
+  // soft-deleted all collapsed into the same 200 {ok:true} (#588).
+  const blocked = await requireRowOr404(c, 'Workflow not found', () =>
+    supabase
+      .from('workflows')
+      .update({ deleted_at: new Date().toISOString(), is_active: false, updated_by: userId })
+      .eq('id', id)
+      .eq('organization_id', orgId)
+      .is('deleted_at', null)
+      .select('id')
+  )
+  if (blocked) return blocked
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
@@ -730,10 +754,19 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   })
   if (restoreInsertError) return dbError(c, restoreInsertError)
 
-  await supabase
-    .from('workflows')
-    .update({ definition: version.definition, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
-    .eq('id', id)
+  // The version snapshot is already inserted above. This update discarded its
+  // result entirely, so a restore could write history, fail to move the live
+  // definition, and still answer 200: history and definition silently diverge
+  // (#588).
+  const restoreBlocked = await requireRowOr404(c, 'Workflow not found', () =>
+    supabase
+      .from('workflows')
+      .update({ definition: version.definition, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
+      .eq('id', id)
+      .eq('organization_id', orgId)
+      .select('id')
+  )
+  if (restoreBlocked) return restoreBlocked
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
@@ -1121,12 +1154,28 @@ workflows.post('/:id/rename-apply', async (c) => {
     if (legacyChanged) update.bid_formula = nextLegacy
     if (cfgChanged) update.bid_resolver_config = { ...cfg, formula: nextCfgFormula }
 
-    const { error: upErr } = await supabase
+    const { data: touched, error: upErr } = await supabase
       .from('partner_configs')
       .update(update)
       .eq('id', p.id)
       .eq('organization_id', orgId)
+      .select('id')
     if (upErr) return dbError(c, upErr)
+
+    // A partner deleted between the SELECT above and this UPDATE matches zero
+    // rows. Aborting a bulk rename over one vanished partner is worse than
+    // skipping it, but it must not be counted or audited as renamed (#588).
+    if (!touched?.length) {
+      console.warn(
+        JSON.stringify({
+          event: 'partner_rename_skipped',
+          partner_id: p.id,
+          workflow_id: id,
+          reason: 'update matched zero rows',
+        })
+      )
+      continue
+    }
 
     await writeAuditLog(supabase, orgId, 'partner_config', p.id, 'updated', userId, {
       reason: 'step_id_renamed',

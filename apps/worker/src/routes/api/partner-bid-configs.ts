@@ -5,7 +5,7 @@
  * exactly one is_default. Rows live in bid_matrix_rows.
  */
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -192,13 +192,10 @@ route.delete('/:id', async (c) => {
   if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'Config not found' }, 404)
 
-  const { error } = await supabase
-    .from('partner_bid_configs')
-    .delete()
-    .eq('id', id)
-    .eq('organization_id', orgId)
-
-  if (error) return dbError(c, error)
+  const deleteBlocked = await requireRowOr404(c, 'Config not found', () =>
+    supabase.from('partner_bid_configs').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
   await writeAuditLog(supabase, orgId, 'partner_bid_config', id, 'deleted', userId, existing)
   return c.json({ ok: true })
 })

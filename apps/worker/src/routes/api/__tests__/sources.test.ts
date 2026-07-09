@@ -253,3 +253,61 @@ describe('DELETE /sources/:name', () => {
     expect(parsed['crmkey']).toBeUndefined()        // deleted source's key gone
   })
 })
+
+describe('DELETE /sources: zero-row + DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('DELETE /:name/workflows/:workflow_id still returns 200 but writes no audit log when the unassign matches zero rows', async () => {
+    // Unassigning a source that is not assigned is an idempotent no-op (200), but
+    // the audit line must be gated on the row actually removed (#588).
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        source_workflow_assignments: { writeRows: [] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/sources/website_form/workflows/wf-1')
+    expect(res.status).toBe(200)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('DELETE /:name returns 404 when the api_sources delete matches zero rows', async () => {
+    // The source existed at the read, but the revoke DELETE removed nothing, so
+    // the revoke must be a 404 rather than a success that audits a phantom delete.
+    const row = { id: 'src-1', name: 'website_form', api_key: 'abcd1234' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        // existence read, then rebuildKeyMap read, then the DELETE touches nothing.
+        api_sources: [{ list: [row] }, { list: [row] }, { writeRows: [] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/sources/website_form')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Source not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('DELETE /:name returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const row = { id: 'src-1', name: 'website_form', api_key: 'abcd1234' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        api_sources: [{ list: [row] }, { list: [row] }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/sources/website_form')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})

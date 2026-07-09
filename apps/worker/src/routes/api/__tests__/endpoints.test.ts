@@ -117,3 +117,56 @@ describe('PUT /endpoints/:id — workflow org check', () => {
     expect(res.status).toBe(404)
   })
 })
+
+describe('DELETE /endpoints/:id: zero-row + DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  // A KV cache with a spy so we can prove a no-op delete does not invalidate it.
+  const cacheDelete = vi.fn()
+  const envWithCache = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { delete: cacheDelete } } as unknown as Env
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  function del(path: string) {
+    return app.request(path, { method: 'DELETE', headers: { Authorization: 'Bearer tok' } }, envWithCache, mockCtx)
+  }
+
+  it('returns 404 and skips the KV cache + audit log when the delete matches zero rows', async () => {
+    // #588: PostgREST reports a zero-row DELETE as a plain success. The row is
+    // gone (or belonged to another org), so invalidating KV and writing an audit
+    // line would both record work that never happened.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        // Existence lookup finds the row, then the DELETE touches nothing.
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/' } }, { writeRows: [] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await del('/endpoints/ep-1')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Endpoint not found' })
+    expect(cacheDelete).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    // A transient write failure must not masquerade as a 404: that would tell the
+    // caller the endpoint is gone for good. This is the #303 conflation, on the
+    // write side (#588).
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: { subdomain: 'rml', path: '/' } }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await del('/endpoints/ep-1')
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})

@@ -222,4 +222,50 @@ describe('DELETE /integrations/slack', () => {
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
   })
+
+  it('still returns 200 but writes no audit log when the delete matches zero rows (#588)', async () => {
+    // Disconnecting a Slack that was never connected is a legitimate no-op, so
+    // this stays 200. But the audit line is gated on the row the delete actually
+    // removed, so a zero-row delete must not log a disconnect that never happened.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: { writeRows: [] },
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { ok: boolean }
+    expect(body.ok).toBe(true)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 and audits the removed row id when the delete matches a row (#588)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: { writeRows: [{ id: 'sc-9' }] },
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(), USER_ORG, 'service_connection', 'sc-9', 'deleted', 'user-1', { service_type: 'slack' }
+    )
+  })
+
+  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
+    // A transient write failure must surface as a retryable 500, never be
+    // swallowed into the no-op 200 path (#588).
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: { deleteError: { code: '42P01', message: 'relation missing' } },
+      }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
 })

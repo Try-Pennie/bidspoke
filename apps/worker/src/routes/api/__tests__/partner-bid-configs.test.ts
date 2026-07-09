@@ -65,3 +65,44 @@ describe('Partner-bid-config routes — DB error => 5xx, not 404 (#320)', () => 
     expect(res.status).toBe(500)
   })
 })
+
+describe('DELETE /partner-bid-configs/:id: zero-row + write DB error (#588)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 and writes no audit log when the delete matches zero rows', async () => {
+    // #588: existence read passes but the DELETE touches nothing, so the 200 that
+    // PostgREST implies must become a 404 and skip the audit line.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_bid_configs: [{ single: { slug: 's', name: 'n' } }, { writeRows: [] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partner-bid-configs/c-1')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Config not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the delete write hits a real DB error', async () => {
+    // Distinct from the existing existence-lookup error test: here the lookup
+    // succeeds and the write itself fails, which still must be a 500, not a 404.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_bid_configs: [{ single: { slug: 's', name: 'n' } }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/partner-bid-configs/c-1')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
