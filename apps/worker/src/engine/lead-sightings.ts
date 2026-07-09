@@ -5,7 +5,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
-import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, type ProjectedBidAttempt } from './bid-log'
 
@@ -518,14 +518,19 @@ export async function finalizeSighting(
 
   // Retry transient failures (schema-cache reload during the nightly purge) so
   // the finalize doesn't strand the sighting in 'in_flight' (#237).
-  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, async () => {
-    const res = await supabase
-      .from('lead_sightings')
-      .update(update)
-      .eq('id', sighting_id)
-      .eq('execution_started_at_utc', execution_started_at_utc.toISOString())
-    return { error: res.error }
-  })
+  // .select('id') so a zero-row match surfaces as an error rather than a silent
+  // success that leaves the sighting stuck at 'in_flight' forever (#583).
+  const { error } = await runOutcome('lead_sightings.finalize', supabase, deps, () =>
+    requireRowsAffected('lead_sightings.finalize', async () => {
+      const res = await supabase
+        .from('lead_sightings')
+        .update(update)
+        .eq('id', sighting_id)
+        .eq('execution_started_at_utc', execution_started_at_utc.toISOString())
+        .select('id')
+      return { data: res.data, error: res.error }
+    })
+  )
 
   if (error) {
     console.error('[lead-sightings] finalizeSighting failed:', error.message)
@@ -539,14 +544,21 @@ export async function finalizeSighting(
     // Snowflake. Nulling exported_at re-queues it for the next export, which
     // re-MERGEs the corrected flag (the MERGE is idempotent on id). In the common
     // case the bid hasn't exported yet, so exported_at is already null — a no-op.
-    const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, async () => {
-      const res = await supabase
-        .from('lead_sighting_bids')
-        .update({ is_winner: true, exported_at: null })
-        .eq('execution_id', execution_id)
-        .eq('partner_slug', fields.winning_partner_slug)
-      return { error: res.error }
-    })
+    // A zero-row match here is the failure engine/index.ts warns about: the bid
+    // row was never inserted (or its insert had not committed), so the winner is
+    // left is_winner=false forever. Surface it instead of assuming success (#583).
+    const winnerTarget = `lead_sighting_bids.winner (execution_id=${execution_id}, partner_slug=${fields.winning_partner_slug})`
+    const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, () =>
+      requireRowsAffected(winnerTarget, async () => {
+        const res = await supabase
+          .from('lead_sighting_bids')
+          .update({ is_winner: true, exported_at: null })
+          .eq('execution_id', execution_id)
+          .eq('partner_slug', fields.winning_partner_slug)
+          .select('id')
+        return { data: res.data, error: res.error }
+      })
+    )
 
     if (bidError) {
       console.error('[lead-sightings] finalize: mark winner failed:', bidError.message)

@@ -18,7 +18,13 @@ const client = {
   from: () => ({
     insert: async () => ({ error: null }),
     upsert: async () => ({ error: null }),
-    update: () => ({ eq: () => ({ eq: async () => ({ error: null }) }) }),
+    update: () => {
+      const chain: Record<string, unknown> = {
+        eq: () => chain,
+        select: async () => ({ data: [{ id: 'r-1' }], error: null }),
+      }
+      return chain
+    },
   }),
 } as unknown as SupabaseClient
 

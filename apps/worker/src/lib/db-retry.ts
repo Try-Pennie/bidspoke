@@ -16,6 +16,12 @@ export interface DbError {
   message: string
 }
 
+// Synthetic code for a write whose target row does not exist (#487, #583). Not a
+// SQLSTATE: PostgREST reports a zero-row UPDATE/DELETE as a plain success, so we
+// manufacture the error ourselves. Permanent by definition, because waiting
+// cannot make a row that does not exist appear.
+export const NO_ROW_MATCHED_CODE = 'BIDSPOKE_NO_ROW_MATCHED'
+
 // SQLSTATE / PostgREST codes where retrying cannot help — the row is malformed
 // or the schema drifted. Everything else (lock contention, schema-cache reload,
 // connection blips) is transient and retried. 23505 (unique_violation) is
@@ -32,10 +38,15 @@ const PERMANENT_DB_CODES = new Set([
   '42P01', // undefined_table
   '42804', // datatype_mismatch
   'PGRST204', // PostgREST: column not in schema cache (drift, not transient)
+  NO_ROW_MATCHED_CODE,
 ])
 
 export function isPermanentDbError(err: DbError | null): boolean {
   return !!err?.code && PERMANENT_DB_CODES.has(err.code)
+}
+
+export function isNoRowMatchedError(err: DbError | null): boolean {
+  return err?.code === NO_ROW_MATCHED_CODE
 }
 
 export function isDuplicateError(err: DbError | null): boolean {
@@ -57,6 +68,32 @@ export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 // execution-log CREATE ladder so it outlasts the same partition-purge
 // schema-cache reload window.
 export const DB_WRITE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
+
+// Runs a PostgREST UPDATE/DELETE whose target row MUST exist, and converts the
+// zero-rows-matched case into a real error.
+//
+// PostgREST answers a well-formed UPDATE that matched nothing with
+// `{ data: [], error: null }`, a statement that succeeded and changed nothing.
+// Destructuring `error` therefore reports success for a write that silently did
+// not happen. The caller must add `.select(<col>)` so PostgREST returns the rows
+// it touched; `data` is only read for its length.
+//
+// `target` names the write (e.g. 'lead_sighting_bids.winner') and lands in the
+// error message, the log, and any dead-letter alert.
+export async function requireRowsAffected(
+  target: string,
+  op: () => Promise<{ data: unknown[] | null; error: DbError | null }>,
+): Promise<{ error: DbError | null }> {
+  const { data, error } = await op()
+  if (error) return { error }
+  if (data?.length) return { error: null }
+  return {
+    error: {
+      code: NO_ROW_MATCHED_CODE,
+      message: `${target}: write matched zero rows (the target row does not exist)`,
+    },
+  }
+}
 
 // Runs a PostgREST operation (one that resolves to `{ error }`), retrying on
 // transient errors and failing fast on permanent ones. Returns the final

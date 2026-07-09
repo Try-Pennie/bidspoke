@@ -1,12 +1,19 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
 import { redactPii, parsePiiFields } from './pii-redactor'
-import { isPermanentDbError, isDuplicateError, sleep, type DbError } from '../lib/db-retry'
+import {
+  isPermanentDbError,
+  isDuplicateError,
+  isNoRowMatchedError,
+  sleep,
+  NO_ROW_MATCHED_CODE,
+  type DbError,
+} from '../lib/db-retry'
 
 // Re-export so existing importers of these from step-logger keep working; the
 // definitions now live in lib/db-retry (single source of truth, shared with the
 // lead-sightings writes — see #237).
-export { isPermanentDbError, type DbError }
+export { isPermanentDbError, NO_ROW_MATCHED_CODE, type DbError }
 
 export interface StepLogEntry {
   execution_id: string
@@ -48,15 +55,6 @@ async function insertRowsOnce(
 ): Promise<{ error: DbError | null }> {
   const { error } = await supabase.from(table).insert(rows)
   return { error: error ? { code: error.code, message: error.message } : null }
-}
-
-// Synthetic error code for a finalize UPDATE that matched no rows: the base
-// workflow_executions row is gone (its insert failed permanently, yet finalize
-// still runs, see #487). Distinct from any SQLSTATE so callers can branch on it.
-export const NO_ROW_MATCHED_CODE = 'BIDSPOKE_NO_ROW_MATCHED'
-
-function isNoRowMatchedError(err: DbError | null): boolean {
-  return err?.code === NO_ROW_MATCHED_CODE
 }
 
 // One update attempt for workflow_executions, keyed by (id, started_at) with an

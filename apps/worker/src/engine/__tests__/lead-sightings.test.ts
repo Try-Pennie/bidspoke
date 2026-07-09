@@ -25,7 +25,8 @@ function makeSupabase() {
           return chain
         },
         eq() { return chain },
-        then(resolve: (v: { error: null }) => unknown) { return resolve({ error: null }) },
+        // The write chains end in .select('id') so a zero-row match is detectable (#583).
+        select() { return Promise.resolve({ data: [{ id: 'r-1' }], error: null }) },
       }
       return chain
     },

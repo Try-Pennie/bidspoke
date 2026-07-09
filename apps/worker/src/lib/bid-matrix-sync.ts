@@ -83,6 +83,34 @@ interface SalesforceBidRow {
   IsSellOff__c: boolean
 }
 
+/**
+ * Stamps last_synced_at / last_sync_error on a partner_bid_config.
+ *
+ * Both call sites (success and failure) share this so the sync-stamp semantics
+ * live in one place. Failure here is logged, never thrown: the sync itself has
+ * already done its real work, and losing the timestamp is not worth aborting it.
+ * The .select('id') is what makes a zero-row stamp (a config deleted mid-sync)
+ * visible instead of silently leaving last_synced_at stale forever (#583).
+ */
+export async function markConfigSynced(
+  supabase: SupabaseClient,
+  configId: string,
+  patch: { last_synced_at: string; last_sync_error: string | null },
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('partner_bid_configs')
+    .update(patch)
+    .eq('id', configId)
+    .select('id')
+  if (error) {
+    console.error('[bid-matrix-sync] failed to stamp sync state', { configId, error: error.message })
+    return
+  }
+  if (!data?.length) {
+    console.error('[bid-matrix-sync] sync stamp matched zero rows, partner_bid_config is missing', { configId })
+  }
+}
+
 export async function syncBidConfig(
   configId: string,
   env: Env,
@@ -114,10 +142,7 @@ export async function syncBidConfig(
     const { upserted, deleted, diff, skippedEmptyDelete } = await applyToDb(config, rows, startedAt, supabase)
     const problems = validateSyncedRows(config, rows)
 
-    await supabase
-      .from('partner_bid_configs')
-      .update({ last_synced_at: startedAt, last_sync_error: null })
-      .eq('id', configId)
+    await markConfigSynced(supabase, configId, { last_synced_at: startedAt, last_sync_error: null })
 
     if (diff) {
       await writeHistory(configId, supabase, {
@@ -145,10 +170,7 @@ export async function syncBidConfig(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    await supabase
-      .from('partner_bid_configs')
-      .update({ last_synced_at: startedAt, last_sync_error: message })
-      .eq('id', configId)
+    await markConfigSynced(supabase, configId, { last_synced_at: startedAt, last_sync_error: message })
     throw err
   }
 }
@@ -276,6 +298,8 @@ async function applyToDb(
     removedSourceIds = new Set(staleRows.map((r) => r.source_id).filter((s): s is string => !!s))
 
     if (deleteIds.length > 0) {
+      // zero-row-ok: idempotent cleanup of rows observed stale moments earlier;
+      // a concurrent sync having already removed them is success, not a miss.
       const { error: delErr } = await supabase
         .from('bid_matrix_rows')
         .delete()

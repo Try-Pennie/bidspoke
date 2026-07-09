@@ -273,11 +273,28 @@ export async function exportTable(
         await executeStatement(config, sql)
 
         const ids = rows.map((r) => r.id as string)
-        const { error: updErr } = await supabase
+        // .select('id') because PostgREST reports an UPDATE that matched nothing
+        // as a plain success. The exported_at stamp is what makes a row purgeable
+        // and stops it being re-selected, so a silent no-op means this batch
+        // re-exports every run and the table never drains (#583). A PARTIAL match
+        // is benign (those rows vanished, so they cannot be re-selected); zero
+        // matched with rows in hand is a real failure.
+        const { data: marked, error: updErr } = await supabase
           .from(tableName)
           .update({ exported_at: new Date().toISOString() })
           .in('id', ids)
+          .select('id')
         if (updErr) throw updErr
+        if (!marked?.length) {
+          throw new Error(
+            `${tableName}: exported_at update matched zero rows for ${ids.length} exported rows; the batch would re-export forever`
+          )
+        }
+        if (marked.length < ids.length) {
+          console.warn(
+            `[sightings-export] ${tableName}: marked ${marked.length}/${ids.length} exported rows; the rest vanished between select and update`
+          )
+        }
 
         return rows.length
       }, sleep)

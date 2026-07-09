@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { computeDiff, validateSyncedRows, shouldSkipStaleDelete, groupMatrixSyncIssues } from '../bid-matrix-sync'
+import { computeDiff, validateSyncedRows, shouldSkipStaleDelete, groupMatrixSyncIssues, markConfigSynced } from '../bid-matrix-sync'
 import type { SyncResult } from '../bid-matrix-sync'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
@@ -384,3 +384,46 @@ describe('sendMatrixValidationAlert (#182)', () => {
 
 // fetchAllPaged was extracted to lib/paginate.ts (#115); its tests live in
 // paginate.test.ts.
+
+// #583: both sync-stamp writes ignored `error` entirely AND could match zero
+// rows, so a sync against a deleted partner_bid_config reported success while
+// last_synced_at stayed stale forever in the UI. Neither failure is worth
+// aborting a sync that already did its real work, so both are loud logs.
+describe('markConfigSynced (#583)', () => {
+  let errSpy: ReturnType<typeof vi.spyOn>
+  beforeEach(() => {
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+  afterEach(() => vi.restoreAllMocks())
+
+  const clientReturning = (result: { data: unknown[] | null; error: unknown }) =>
+    ({
+      from: () => ({
+        update: () => ({ eq: () => ({ select: () => Promise.resolve(result) }) }),
+      }),
+    }) as never
+
+  it('reports a stamp that matched zero rows instead of claiming the sync recorded', async () => {
+    await markConfigSynced(clientReturning({ data: [], error: null }), 'cfg-1', { last_synced_at: 'now', last_sync_error: null })
+    expect(errSpy).toHaveBeenCalledOnce()
+    expect(String(errSpy.mock.calls[0][0])).toContain('matched zero rows')
+    expect(errSpy.mock.calls[0][1]).toMatchObject({ configId: 'cfg-1' })
+  })
+
+  it('reports a genuine database error, which the old code dropped on the floor', async () => {
+    await markConfigSynced(clientReturning({ data: null, error: { message: 'db down' } }), 'cfg-1', {
+      last_synced_at: 'now',
+      last_sync_error: null,
+    })
+    expect(errSpy).toHaveBeenCalledOnce()
+    expect(errSpy.mock.calls[0][1]).toMatchObject({ configId: 'cfg-1', error: 'db down' })
+  })
+
+  it('stays silent when the stamp lands', async () => {
+    await markConfigSynced(clientReturning({ data: [{ id: 'cfg-1' }], error: null }), 'cfg-1', {
+      last_synced_at: 'now',
+      last_sync_error: null,
+    })
+    expect(errSpy).not.toHaveBeenCalled()
+  })
+})
