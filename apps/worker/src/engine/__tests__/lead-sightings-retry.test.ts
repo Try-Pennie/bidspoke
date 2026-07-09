@@ -43,7 +43,10 @@ function scriptedSupabase(script: { insert?: Array<{ error: unknown }>; upsert?:
         upsert: () => next('upsert'),
         update: () => chain,
         eq: () => chain,
-        then: (resolve: (v: unknown) => unknown) => next('update').then(resolve),
+        // update() ... .select('id') resolves here; scripted errors map to the
+        // update sequence, and a success reports one matched row (#583).
+        select: () =>
+          next('update').then((r) => ({ data: (r as { error: unknown }).error ? null : [{ id: 'r-1' }], ...(r as object) })),
       }
       return chain
     },

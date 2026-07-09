@@ -36,7 +36,13 @@ const NO_SLEEP = () => Promise.resolve()
 // Nth Snowflake MERGE throw, to exercise the stop-clean / propagate paths. `errorFor`
 // lets a test make a specific select call (by 0-based call index) return an error
 // instead of data, to exercise the statement-timeout retry path.
-function fakeSupabase(sizeFor: (call: number) => number, errorFor?: (call: number) => unknown) {
+function fakeSupabase(
+  sizeFor: (call: number) => number,
+  errorFor?: (call: number) => unknown,
+  // #583: how many rows the exported_at UPDATE reports it matched. Defaults to
+  // "all of them"; a test can return 0 to model a mark that silently did nothing.
+  markedRowsFor?: (ids: string[]) => unknown[],
+) {
   let call = 0
   return {
     from() {
@@ -77,7 +83,15 @@ function fakeSupabase(sizeFor: (call: number) => number, errorFor?: (call: numbe
           }
         },
         update() {
-          return { in: () => Promise.resolve({ error: null }) }
+          return {
+            in: (_col: string, ids: string[]) => ({
+              select: () =>
+                Promise.resolve({
+                  data: markedRowsFor ? markedRowsFor(ids) : ids.map((id) => ({ id })),
+                  error: null,
+                }),
+            }),
+          }
         },
       }
     },
@@ -515,5 +529,39 @@ describe('isStatementTimeout', () => {
 
   it('does not flag the Cloudflare subrequest-limit error', () => {
     expect(isStatementTimeout(new Error('Too many subrequests.'))).toBe(false)
+  })
+})
+
+// #583: the exported_at mark is what makes a row purgeable and stops it being
+// re-selected next run. PostgREST reports an UPDATE that matched nothing as a
+// plain success, so a mark that silently did nothing left the batch exported to
+// Snowflake but never stamped: it re-exports every run and never purges, which
+// is exactly the unbounded-growth failure mode. The MERGE is idempotent so no
+// data is corrupted; the cost is a table that never drains.
+describe('exportTable: exported_at mark matched zero rows (#583)', () => {
+  it('throws rather than reporting a successful export it did not actually mark', async () => {
+    const supabase = fakeSupabase(() => 5, undefined, () => [])
+    await expect(
+      exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)
+    ).rejects.toThrow(/zero rows/i)
+  })
+
+  it('names the table so the failure is diagnosable', async () => {
+    const supabase = fakeSupabase(() => 5, undefined, () => [])
+    await expect(
+      exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)
+    ).rejects.toThrow(/lead_sightings/)
+  })
+
+  it('tolerates a partial match (rows purged between select and mark) without throwing', async () => {
+    // 3 of 5 marked: the missing 2 no longer exist, so they will not be
+    // re-selected and cannot loop. Not a failure.
+    const supabase = fakeSupabase((c) => (c === 0 ? 5 : 0), undefined, (ids) => ids.slice(0, 3).map((id) => ({ id })))
+    await expect(exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)).resolves.toBe(5)
+  })
+
+  it('still exports normally when every row is marked', async () => {
+    const supabase = fakeSupabase((c) => (c === 0 ? 5 : 0))
+    await expect(exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)).resolves.toBe(5)
   })
 })

@@ -166,6 +166,8 @@ export function resolveStrandedExecution(
 export interface ReduceFinalizeResult {
   processed: number
   errors: number
+  /** Rows that vanished between the scan and the update (purged mid-run). Not repairs, not errors. */
+  vanished: number
 }
 
 /**
@@ -219,12 +221,13 @@ export async function runReduceFinalizeStrandedExecutions(
 
   if (strandedErr) {
     console.error('[stranded-executions] scan failed', strandedErr)
-    return { processed: 0, errors: 1 }
+    return { processed: 0, errors: 1, vanished: 0 }
   }
-  if (!stranded?.length) return { processed: 0, errors: 0 }
+  if (!stranded?.length) return { processed: 0, errors: 0, vanished: 0 }
 
   let processed = 0
   let errors = 0
+  let vanished = 0
   // Definitions are fetched at most once per workflow_version_id -- the strand
   // backlog is dominated by a handful of high-volume workflows (822 of the
   // first 1094 rows were one workflow), so many rows share a version. A null
@@ -259,7 +262,10 @@ export async function runReduceFinalizeStrandedExecutions(
     }
 
     const resolved = resolveStrandedExecution((steps ?? []) as StrandStepEvidence[], exec.started_at as string, graph)
-    const { error: updateErr } = await supabase
+    // .select('id') so a zero-row match is visible: PostgREST reports an UPDATE
+    // that touched nothing as a plain success, and counting that as a repair
+    // made this job's own processed metric lie (#583).
+    const { data: updated, error: updateErr } = await supabase
       .from('workflow_executions')
       .update({
         status: resolved.status,
@@ -270,15 +276,24 @@ export async function runReduceFinalizeStrandedExecutions(
         failed_step_type: resolved.failed_step_type,
       })
       .eq('id', exec.id as string)
+      .select('id')
 
     if (updateErr) {
       console.error('[stranded-executions] update failed', { id: exec.id, error: updateErr })
       errors++
+    } else if (!updated?.length) {
+      // Benign, not an error: the nightly partition purge can drop the row
+      // between the scan and this update. It is simply not a repair, so it must
+      // not be counted as one.
+      console.warn('[stranded-executions] update matched zero rows, row vanished after scan', { id: exec.id })
+      vanished++
     } else {
       processed++
     }
   }
 
-  console.log(`[stranded-executions] processed=${processed} errors=${errors} scanned=${stranded.length}`)
-  return { processed, errors }
+  console.log(
+    `[stranded-executions] processed=${processed} errors=${errors} vanished=${vanished} scanned=${stranded.length}`
+  )
+  return { processed, errors, vanished }
 }

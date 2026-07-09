@@ -240,6 +240,8 @@ function makeSupabase(opts: {
   stepsError?: { message: string } | null
   versionError?: { message: string } | null
   updateErrorForId?: string | null
+  // Ids whose UPDATE matches zero rows (row purged between scan and update).
+  updateMatchesNoRowsForId?: string | null
 }) {
   const updates: { id: string; payload: Record<string, unknown> }[] = []
   const stepLookups: string[] = []
@@ -277,11 +279,16 @@ function makeSupabase(opts: {
               }),
             }),
             update: (payload: Record<string, unknown>) => ({
-              eq: async (_col: string, id: string) => {
-                updates.push({ id, payload })
-                if (opts.updateErrorForId === id) return { error: { message: 'update failed' } }
-                return { error: null }
-              },
+              // The real query ends in .select('id') so a zero-row match is
+              // detectable rather than reported as a silent success (#583).
+              eq: (_col: string, id: string) => ({
+                select: async () => {
+                  updates.push({ id, payload })
+                  if (opts.updateErrorForId === id) return { data: null, error: { message: 'update failed' } }
+                  if (opts.updateMatchesNoRowsForId === id) return { data: [], error: null }
+                  return { data: [{ id }], error: null }
+                },
+              }),
             }),
           }
         }
@@ -321,7 +328,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('does nothing and reports zero when no rows are stranded', async () => {
     const { client, updates } = makeSupabase({ stranded: [] })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 0 })
+    expect(result).toEqual({ processed: 0, errors: 0, vanished: 0 })
     expect(updates).toHaveLength(0)
   })
 
@@ -335,7 +342,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
     expect(updates).toHaveLength(1)
     expect(updates[0].id).toBe('exec-1')
     expect(updates[0].payload).toMatchObject({
@@ -361,7 +368,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       stepsByExecutionId: {},
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
     expect(updates[0].payload.outcome).toBeNull()
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -369,7 +376,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
   it('counts a scan failure as an error and does not process anything', async () => {
     const { client, updates } = makeSupabase({ stranded: [], strandedError: { message: 'db down' } })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
     expect(updates).toHaveLength(0)
   })
 
@@ -379,7 +386,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       stepsError: { message: 'partition unavailable' },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
     expect(updates).toHaveLength(0)
   })
 
@@ -390,7 +397,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-4',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 0, errors: 1 })
+    expect(result).toEqual({ processed: 0, errors: 1, vanished: 0 })
   })
 
   it('marks a stranded row completed when its last step landed on a graph dead end', async () => {
@@ -404,7 +411,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       definitionsByVersionId: { 'ver-1': makeDefinition() },
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
     expect(updates[0].payload).toMatchObject({ status: 'completed', outcome: 'completed', error_message: null })
   })
 
@@ -433,7 +440,7 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       definitionsByVersionId: {},
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 0 })
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
     expect(updates[0].payload).toMatchObject({ status: 'failed', outcome: null })
     expect(updates[0].payload.error_message).toMatch(/recovered/i)
   })
@@ -460,7 +467,62 @@ describe('runReduceFinalizeStrandedExecutions', () => {
       updateErrorForId: 'exec-bad',
     })
     const result = await runReduceFinalizeStrandedExecutions(client as never)
-    expect(result).toEqual({ processed: 1, errors: 1 })
+    expect(result).toEqual({ processed: 1, errors: 1, vanished: 0 })
     expect(updates.map((u) => u.id)).toEqual(['exec-good', 'exec-bad'])
+  })
+})
+
+// #583: the drain's UPDATE is keyed on id alone, and PostgREST reports a
+// zero-row UPDATE as a plain success. The drain counted every such write as
+// processed++, so the repair-job metric claimed work it had not done.
+//
+// A vanished row here is benign, not an error: the nightly partition purge can
+// drop the row between the scan and the update. It just must not be counted as
+// a repair.
+describe('runReduceFinalizeStrandedExecutions: zero-row update (#583)', () => {
+  const stranded = [{ id: 'exec-gone', started_at: '2026-07-08T02:37:57.000Z' }]
+  const steps = {
+    'exec-gone': [
+      { status: 'failed' as const, step_type: 'partner_bid', error_message: 'boom', completed_at: '2026-07-08T02:38:05.000Z' },
+    ],
+  }
+
+  it('does not count a vanished row as processed', async () => {
+    const { client } = makeSupabase({
+      stranded,
+      stepsByExecutionId: steps,
+      updateMatchesNoRowsForId: 'exec-gone',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result.processed).toBe(0)
+  })
+
+  it('reports the vanished row separately rather than as an error', async () => {
+    const { client } = makeSupabase({
+      stranded,
+      stepsByExecutionId: steps,
+      updateMatchesNoRowsForId: 'exec-gone',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result.vanished).toBe(1)
+    expect(result.errors).toBe(0)
+  })
+
+  it('still counts a genuine repair as processed and reports no vanished rows', async () => {
+    const { client } = makeSupabase({ stranded, stepsByExecutionId: steps })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+  })
+
+  it('still counts a real update failure as an error, not as a vanished row', async () => {
+    const { client } = makeSupabase({
+      stranded,
+      stepsByExecutionId: steps,
+      updateErrorForId: 'exec-gone',
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result.errors).toBe(1)
+    expect(result.vanished).toBe(0)
+    expect(result.processed).toBe(0)
   })
 })

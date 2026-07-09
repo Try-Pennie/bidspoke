@@ -61,6 +61,40 @@ export interface ExecutionAlertArgs {
   stepLogQueue: readonly StepLogShape[]
 }
 
+/**
+ * Best-effort write of alert bookkeeping onto a workflow_executions row.
+ *
+ * Shared by both alert writes (the pre-send snapshot and the post-send summary
+ * attach) so the semantics live in one place. Never throws: the Slack alert
+ * matters more than its bookkeeping. The .select('id') makes a zero-row match
+ * visible, which is what happens when the execution row is missing entirely
+ * (#487) rather than the write being reported as a silent success (#583).
+ */
+export async function writeExecutionAlertState(
+  supabase: SupabaseClient,
+  executionId: string,
+  executionStartedAt: string,
+  patch: Record<string, unknown>,
+  operation: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('workflow_executions')
+    .update(patch)
+    .eq('id', executionId)
+    .eq('started_at', executionStartedAt)
+    .select('id')
+  if (error) {
+    console.error(`[execution-alerts] failed to ${operation}`, { executionId, error: error.message })
+    return
+  }
+  if (!data?.length) {
+    console.error(`[execution-alerts] ${operation}: update matched zero rows, execution record is missing`, {
+      executionId,
+      executionStartedAt,
+    })
+  }
+}
+
 export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void> {
   const bottleneck = pickBottleneck(args)
   if (!bottleneck) return // nothing to alert on (e.g. failure with no logged steps)
@@ -96,18 +130,17 @@ export async function fireExecutionAlert(args: ExecutionAlertArgs): Promise<void
   // Persist the snapshot BEFORE sending Slack — even if Slack fails, the banner
   // will still render with the structured fallback. Best-effort; a write failure
   // here shouldn't prevent the alert from going out.
-  await args.supabase
-    .from('workflow_executions')
-    .update({
+  await writeExecutionAlertState(
+    args.supabase,
+    args.executionId,
+    args.executionStartedAt,
+    {
       slack_alert_type: args.alertType,
       slack_alert_fired_at: args.timestamp,
       slack_alert_reason: reason,
-    })
-    .eq('id', args.executionId)
-    .eq('started_at', args.executionStartedAt)
-    .then(({ error }) => {
-      if (error) console.error('[execution-alerts] failed to record alert metadata:', error)
-    })
+    },
+    'record alert metadata',
+  )
 
   const handle = args.alertType === 'duration'
     ? await sendDurationAlert(args.supabase, args.orgId, args.slackChannel, {
@@ -162,14 +195,13 @@ async function summarizeAndAttach(args: ExecutionAlertArgs & {
   const updatedReason: Record<string, unknown> = { ...args.reason, summary }
   if (args.handle) updatedReason.slack_ts = args.handle.ts
 
-  await args.supabase
-    .from('workflow_executions')
-    .update({ slack_alert_reason: updatedReason })
-    .eq('id', args.executionId)
-    .eq('started_at', args.executionStartedAt)
-    .then(({ error }) => {
-      if (error) console.error('[execution-alerts] failed to attach summary:', error)
-    })
+  await writeExecutionAlertState(
+    args.supabase,
+    args.executionId,
+    args.executionStartedAt,
+    { slack_alert_reason: updatedReason },
+    'attach summary',
+  )
 
   if (args.handle) await sendThreadReply(args.handle, summary)
 }

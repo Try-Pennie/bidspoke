@@ -152,3 +152,49 @@ describe('variant column merge SQL', () => {
     expect(sql).toContain('ON t.id = s.id')
   })
 })
+
+// #583: the trades backfill counted every matched evaluation as backfilled,
+// but PostgREST reports an UPDATE that matched nothing as a plain success. An
+// evaluation row purged between the select and the update is benign (it cannot
+// be re-selected), but it is not a backfill and must not be counted as one, or
+// trades_backfilled reports work that never happened.
+describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
+  beforeEach(() => {
+    mocks.exportTable.mockReset().mockResolvedValue(0)
+    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
+    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+  })
+
+  // One evaluation, one matching trades step, and an UPDATE that reports
+  // `markedRows` matched rows.
+  function supabaseWith(markedRows: unknown[]) {
+    return {
+      from: vi.fn((table: string) => {
+        const b: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) b[m] = vi.fn(() => b)
+        if (table === 'achieve_evaluations') {
+          b.update = vi.fn(() => ({
+            eq: () => ({ select: () => Promise.resolve({ data: markedRows, error: null }) }),
+          }))
+          b.then = (resolve: (r: unknown) => unknown) =>
+            resolve({ data: [{ id: 'e-1', execution_id: 'exec-1', requested_at_utc: '2026-07-01T00:00:00Z' }], error: null })
+        } else {
+          b.then = (resolve: (r: unknown) => unknown) =>
+            resolve({ data: [{ execution_id: 'exec-1', output: { status: 200, body: { trades: [1] } } }], error: null })
+        }
+        return b
+      }),
+    }
+  }
+
+  it('does not count an evaluation whose update matched zero rows', async () => {
+    const summary = await runAchieveExport(supabaseWith([]) as never, {} as never)
+    expect(summary.trades_backfilled).toBe(0)
+    expect(summary.errors).toEqual([])
+  })
+
+  it('counts an evaluation whose update actually landed', async () => {
+    const summary = await runAchieveExport(supabaseWith([{ id: 'e-1' }]) as never, {} as never)
+    expect(summary.trades_backfilled).toBe(1)
+  })
+})

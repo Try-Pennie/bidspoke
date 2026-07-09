@@ -117,6 +117,8 @@ export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promis
     const fetchedIds = new Set(sfRows.map((r) => r.Id))
     const removedIds = existing.filter((e) => !fetchedIds.has(e.source_id)).map((e) => e.source_id)
     if (removedIds.length > 0) {
+      // zero-row-ok: idempotent cleanup of source_ids observed missing moments
+      // earlier; a concurrent audit having already removed them is success.
       const { error } = await supabase
         .from('sf_bid_matrix_audit')
         .delete()

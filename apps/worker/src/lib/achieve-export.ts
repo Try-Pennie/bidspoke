@@ -122,13 +122,21 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
 
     const updates = matchTradesToEvaluations(evals, (steps ?? []) as Array<{ execution_id: string; output: unknown }>)
     for (const u of updates) {
-      const { error: updErr } = await supabase
+      // .select('id') because a zero-row UPDATE is reported as a success. The row
+      // can legitimately vanish (purged between select and update), which is not
+      // an error, but it is also not a backfill and must not be counted (#583).
+      const { data: updated, error: updErr } = await supabase
         .from('achieve_evaluations')
         .update({ trades: u.trades })
         .eq('id', u.id)
+        .select('id')
       if (updErr) throw updErr
+      if (!updated?.length) {
+        console.warn('[achieve-export] trades update matched zero rows, evaluation vanished', { id: u.id })
+        continue
+      }
+      total++
     }
-    total += updates.length
 
     // Rows with no trades step would re-match forever; the loop is bounded by
     // the un-exported set, which the export below drains, so a partial batch
