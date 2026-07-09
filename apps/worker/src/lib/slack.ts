@@ -5,6 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
 import { isPermanentDbError, sleep, toDbError } from './db-retry'
+import { GENERIC_FIX_HINT } from './export-error-hints'
 import type { ErrorType } from '../types'
 
 export interface SlackConnection {
@@ -1100,7 +1101,7 @@ export async function sendExportFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: { jobName: string; errors: string[] },
+  payload: { jobName: string; errors: string[]; fixHint?: string },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
@@ -1120,7 +1121,9 @@ export async function sendExportFailureAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* check Snowflake availability and the export credentials. If it stays down, watch Supabase disk: the un-purged rows accumulate until a run succeeds.',
+        // The hint is derived from the actual error class by the caller (#542).
+        // Falls back to the generic line for callers that don't classify.
+        text: `*How to fix:* ${payload.fixHint ?? GENERIC_FIX_HINT}`,
       },
     },
   ]

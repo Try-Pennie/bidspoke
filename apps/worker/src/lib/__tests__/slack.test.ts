@@ -522,6 +522,26 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(JSON.stringify(body.blocks).toLowerCase()).not.toContain('nightly')
   })
 
+  it('renders a caller-supplied fix hint instead of the canned Snowflake line (#542)', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings export',
+      errors: ['bids export: Snowflake 503: connection termination'],
+      fixHint: 'No action needed. The rows retry on the next run.',
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('No action needed. The rows retry on the next run.')
+    expect(text).not.toContain('Check Snowflake availability')
+  })
+
+  it('falls back to the generic fix line when no hint is supplied', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'x', errors: ['boom'],
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(JSON.stringify(body.blocks)).toContain('Check Snowflake availability')
+  })
+
   it('does nothing when there are no errors', async () => {
     const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [] })
     expect(sent).toBe(false)

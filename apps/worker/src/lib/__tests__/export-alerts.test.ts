@@ -59,6 +59,18 @@ describe('notifyExportFailure', () => {
     expect(payload).toMatchObject({ jobName: 'Lead sightings export', errors: ['Snowflake 503'] })
   })
 
+  it('passes a fix hint derived from the actual error class (#542)', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', [
+      'sightings export: canceling statement due to statement timeout (57014)',
+    ])
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    // A DB congestion error must not tell the reader to go look at Snowflake.
+    expect(payload.fixHint).toBeDefined()
+    expect(payload.fixHint).not.toContain('Snowflake availability')
+    expect(payload.fixHint?.toLowerCase()).toContain('congestion')
+  })
+
   it('de-duplicates org ids', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     await notifyExportFailure(makeSupabase(['org-1', 'org-1']), 'x', ['boom'])

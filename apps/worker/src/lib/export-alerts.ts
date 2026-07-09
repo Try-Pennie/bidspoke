@@ -10,6 +10,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sendExportFailureAlert } from './slack'
+import { buildFixHint } from './export-error-hints'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -44,10 +45,13 @@ export async function notifyExportFailure(
     .eq('service_type', 'slack')
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
+  // Classify once, not per org: the same errors produce the same advice.
+  const fixHint = buildFixHint(errors)
+
   let delivered = false
   for (const orgId of orgIds) {
     try {
-      if (await sendExportFailureAlert(supabase, orgId, null, { jobName, errors })) delivered = true
+      if (await sendExportFailureAlert(supabase, orgId, null, { jobName, errors, fixHint })) delivered = true
     } catch (err) {
       console.error(`[export-alerts] alert failed for org ${orgId}:`, err)
     }
