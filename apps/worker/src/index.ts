@@ -14,6 +14,7 @@ import { runRequiredSecretsCheck } from './lib/required-secrets'
 import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
 import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
+import { formatErr } from './lib/format-error'
 import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -186,7 +187,7 @@ export default {
           })
           .catch((e) => {
             console.error('[achieve-export] failed:', e)
-            return notifyExportFailure(supabase, 'Achieve export', [e instanceof Error ? e.message : String(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 13 * * *') {
@@ -255,7 +256,7 @@ export default {
           })
           .catch((e) => {
             console.error('[sightings-export] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sightings export', [e instanceof Error ? e.message : String(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 * * * *') {
