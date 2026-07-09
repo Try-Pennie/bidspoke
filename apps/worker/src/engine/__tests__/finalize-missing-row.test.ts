@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
 import { NO_ROW_MATCHED_CODE } from '../step-logger'
+import { formatErr } from '../../lib/format-error'
 
 vi.mock('../definition-loader')
 vi.mock('../../lib/env-loader', () => ({ loadEnvVars: vi.fn().mockResolvedValue({}) }))
@@ -120,16 +121,17 @@ describe('finalize update failure (#487)', () => {
 
     await harness.flush()
 
-    // The cause must be an Error: recordOutcomeDeadLetter stringifies anything
-    // else, and "[object Object]" in a Slack alert names no failure at all.
+    // The cause is handed over as-is: recordOutcomeDeadLetter runs it through
+    // formatErr, so the alert names the failure rather than "[object Object]".
     expect(vi.mocked(recordOutcomeDeadLetter)).toHaveBeenCalledWith(
       'execution_finalize',
-      expect.any(Error),
+      expect.anything(),
       expect.objectContaining({ orgId: 'org-1' })
     )
-    const cause = vi.mocked(recordOutcomeDeadLetter).mock.calls[0][1] as Error
-    expect(cause.message).toContain(NO_ROW_MATCHED_CODE)
-    expect(cause.message).toContain('execution record is missing')
+    const rendered = formatErr(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][1])
+    expect(rendered).not.toContain('[object Object]')
+    expect(rendered).toContain(NO_ROW_MATCHED_CODE)
+    expect(rendered).toContain('execution record is missing')
   })
 
   it('dead-letters a finalize update that exhausted its retries', async () => {
@@ -141,11 +143,12 @@ describe('finalize update failure (#487)', () => {
 
     expect(vi.mocked(recordOutcomeDeadLetter)).toHaveBeenCalledWith(
       'execution_finalize',
-      expect.any(Error),
+      expect.anything(),
       expect.anything()
     )
-    const cause = vi.mocked(recordOutcomeDeadLetter).mock.calls[0][1] as Error
-    expect(cause.message).toContain('PGRST002')
+    const rendered = formatErr(vi.mocked(recordOutcomeDeadLetter).mock.calls[0][1])
+    expect(rendered).not.toContain('[object Object]')
+    expect(rendered).toContain('PGRST002')
   })
 
   it('does not dead-letter a clean finalize', async () => {

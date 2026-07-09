@@ -11,6 +11,7 @@ import worker from '../index'
 import type { Env } from '../index'
 import { runSightingsExport } from '../lib/sightings-export'
 import { runAchieveExport } from '../lib/achieve-export'
+import { notifyExportFailure } from '../lib/export-alerts'
 
 const env = {} as unknown as Env
 
@@ -20,6 +21,18 @@ function fakeCtx() {
 
 function fire(cron: string) {
   worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, fakeCtx())
+}
+
+// The export runs are handed to waitUntil, so a plain fire() returns before the
+// catch block has reported anything. Collect and drain them.
+async function fireAndFlush(cron: string) {
+  const pending: Promise<unknown>[] = []
+  const ctx = {
+    waitUntil: (p: Promise<unknown>) => pending.push(p),
+    passThroughOnException: vi.fn(),
+  } as unknown as ExecutionContext
+  worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
+  await Promise.all(pending)
 }
 
 describe('scheduled export dispatch', () => {
@@ -45,5 +58,49 @@ describe('scheduled export dispatch', () => {
     fire('0 9 * * *')
     expect(runAchieveExport).toHaveBeenCalledTimes(1)
     expect(runSightingsExport).not.toHaveBeenCalled()
+  })
+})
+
+// A crashed export rejects with whatever Supabase threw, which is a plain object
+// ({ message, code }), not an Error. String()-ing it reported "[object Object]" and
+// the failure alert named no cause. Same defect class as #512 / #598.
+describe('export crash alerts name the real cause', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  it('renders a plain Supabase error object from a crashed Achieve export', async () => {
+    vi.mocked(runAchieveExport).mockRejectedValueOnce({
+      message: 'permission denied for table achieve_evaluations',
+      code: '42501',
+    })
+
+    await fireAndFlush('0 9 * * *')
+
+    const errors = vi.mocked(notifyExportFailure).mock.calls[0][2]
+    expect(errors[0]).not.toContain('[object Object]')
+    expect(errors[0]).toBe('permission denied for table achieve_evaluations (42501)')
+  })
+
+  it('renders a plain Supabase error object from a crashed sightings export', async () => {
+    vi.mocked(runSightingsExport).mockRejectedValueOnce({
+      message: 'could not query the database for the schema cache',
+      code: 'PGRST002',
+    })
+
+    await fireAndFlush('37 */2 * * *')
+
+    const errors = vi.mocked(notifyExportFailure).mock.calls[0][2]
+    expect(errors[0]).not.toContain('[object Object]')
+    expect(errors[0]).toBe('could not query the database for the schema cache (PGRST002)')
+  })
+
+  it('still uses the message of a real Error', async () => {
+    vi.mocked(runAchieveExport).mockRejectedValueOnce(new Error('Snowflake 503'))
+
+    await fireAndFlush('0 9 * * *')
+
+    expect(vi.mocked(notifyExportFailure).mock.calls[0][2][0]).toBe('Snowflake 503')
   })
 })

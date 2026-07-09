@@ -16,6 +16,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
+import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../lib/slack'
 
 interface KvLike {
@@ -118,7 +119,7 @@ export async function recordOutcomeDeadLetter(
     {
       label,
       consecutive_failures: streak,
-      error_message: error instanceof Error ? error.message : String(error),
+      error_message: formatErr(error),
     },
     deps.appUrl,
   )

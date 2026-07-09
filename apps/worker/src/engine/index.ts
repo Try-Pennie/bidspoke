@@ -589,13 +589,8 @@ export async function executeWorkflow(
         // dead-letter them through the same rate-aggregated alert the SF
         // writeback uses rather than accepting the loss silently (#487).
         if (finalizeError && !options.isTest) {
-          // recordOutcomeDeadLetter stringifies a non-Error cause, so hand it an
-          // Error carrying both the code and the message.
-          const cause = new Error(
-            `execution finalize update failed (${finalizeError.code ?? 'unknown'}): ${finalizeError.message}`,
-          )
           executionCtx.waitUntil(
-            recordOutcomeDeadLetter('execution_finalize', cause, { ...outcomeDeps, supabase }).catch((e) =>
+            recordOutcomeDeadLetter('execution_finalize', finalizeError, { ...outcomeDeps, supabase }).catch((e) =>
               console.error('[durability] execution_finalize dead-letter failed:', e),
             ),
           )
