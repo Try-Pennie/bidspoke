@@ -38,8 +38,12 @@ export default [
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
       '@typescript-eslint/unbound-method': 'warn',
-      '@typescript-eslint/no-base-to-string': 'warn',
       '@typescript-eslint/restrict-template-expressions': 'warn',
+
+      // Information loss, not a style nit: stringifying a plain object yields
+      // "[object Object]" and destroys the cause. Held at error in both Worker
+      // packages so the invariant can't drift (#601).
+      '@typescript-eslint/no-base-to-string': 'error',
 
       // tsc already enforces these via noUnusedLocals/noUnusedParameters
       '@typescript-eslint/no-unused-vars': 'off',

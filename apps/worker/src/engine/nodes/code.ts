@@ -8,6 +8,7 @@
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput, ResolvedStepInput } from '../../types'
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
+import { formatErr } from '../../lib/format-error'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
@@ -298,7 +299,7 @@ async function dispatchWithFallback(
   // "Worker not found" throw means the bundle isn't deployed. Re-throw anything
   // else so the engine's retry/error classification handles it.
   if (bindingError !== undefined && !isWorkerNotFoundError(bindingError)) {
-    throw bindingError instanceof Error ? bindingError : new Error(String(bindingError))
+    throw bindingError instanceof Error ? bindingError : new Error(formatErr(bindingError))
   }
 
   const bundleMissing =

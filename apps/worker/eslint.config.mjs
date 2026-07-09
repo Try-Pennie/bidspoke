@@ -32,6 +32,15 @@ export default [
       '@typescript-eslint/no-implied-eval': 'error',
       '@typescript-eslint/only-throw-error': 'error',
 
+      // --- Information loss: ERROR (#601) ---
+      // Stringifying an object with a default toString yields "[object Object]".
+      // A Supabase/PostgREST error IS a plain object, so this silently destroyed
+      // the cause in dead-letter alerts, export alerts, and a code-node throw
+      // (#598). It reads as a style nit; it is a bug that blinds you mid-incident.
+      // Caveat: with default options this does NOT fire on a value still typed
+      // `unknown` (only once narrowing widens it to `{}`). A ratchet, not a proof.
+      '@typescript-eslint/no-base-to-string': 'error',
+
       // --- Type-safety on `any` boundaries: WARN (tracked debt, non-blocking) ---
       '@typescript-eslint/no-unsafe-assignment': 'warn',
       '@typescript-eslint/no-unsafe-member-access': 'warn',
@@ -42,7 +51,6 @@ export default [
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
       '@typescript-eslint/unbound-method': 'warn',
-      '@typescript-eslint/no-base-to-string': 'warn',
       '@typescript-eslint/restrict-template-expressions': 'warn',
 
       // tsc already enforces these via noUnusedLocals/noUnusedParameters
