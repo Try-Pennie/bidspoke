@@ -100,6 +100,37 @@ describe('custom endpoint error mapping (#107)', () => {
   })
 })
 
+// Same 409 pass-through as the generic webhook route (#482). Custom endpoints
+// carry live partner traffic, so a duplicate the engine is still processing
+// must be rejected with 409, not accepted as 200, and not 500'd into a retry.
+describe('custom endpoint in-flight duplicate returns 409 (#482)', () => {
+  const duplicate = {
+    response: { error: 'Duplicate request in progress' },
+    status: 409,
+    executionId: 'exec-dup',
+    traceId: 'trace-dup',
+  }
+
+  it('returns 409 with the engine body when the duplicate is still in flight', async () => {
+    vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+    const res = await post()
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({ error: 'Duplicate request in progress' })
+  })
+
+  it('still sets X-Trace-Id on the 409 so the rejected duplicate is traceable', async () => {
+    vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+    const res = await post()
+    expect(res.headers.get('X-Trace-Id')).toBe('trace-dup')
+  })
+
+  it('does not set X-Idempotent-Replay on the 409', async () => {
+    vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+    const res = await post()
+    expect(res.headers.get('X-Idempotent-Replay')).toBeNull()
+  })
+})
+
 describe('custom endpoint lookup failure handling (#303)', () => {
   it('returns 503 (retryable), not 404, on a real DB error during endpoint lookup', async () => {
     // A 404 tells the lead source the endpoint is gone, so it stops retrying and

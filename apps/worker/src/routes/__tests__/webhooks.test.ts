@@ -250,4 +250,53 @@ describe('POST /webhooks/:workflow_id', () => {
       )
     })
   })
+
+  // The engine answers a duplicate that is still in flight with 409 rather than
+  // re-running partner bids. That status has to survive the route: a 200 here
+  // tells the source its duplicate was accepted, a 500 makes it retry the lead.
+  // Engine-side behavior lives in engine/__tests__/idempotency-engine.test.ts;
+  // these cover the route's status pass-through (#482).
+  describe('in-flight duplicate returns 409 (#482)', () => {
+    const duplicate = {
+      response: { error: 'Duplicate request in progress' },
+      status: 409,
+      executionId: 'exec-dup',
+      traceId: 'trace-dup',
+    }
+
+    it('returns 409 with the engine body when the duplicate is still in flight', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+      const res = await request('wf-1', { apiKey: 'sk_test_key', idempotencyKey: 'idem-dup' })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({ error: 'Duplicate request in progress' })
+    })
+
+    it('still sets X-Trace-Id on the 409 so the rejected duplicate is traceable', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+      const res = await request('wf-1', { apiKey: 'sk_test_key', idempotencyKey: 'idem-dup' })
+      expect(res.headers.get('X-Trace-Id')).toBe('trace-dup')
+    })
+
+    // A 409 is a rejection, not a replay of a stored response. Tagging it as a
+    // replay would tell the source it already received this result.
+    it('does not set X-Idempotent-Replay on the 409', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue(duplicate)
+      const res = await request('wf-1', { apiKey: 'sk_test_key', idempotencyKey: 'idem-dup' })
+      expect(res.headers.get('X-Idempotent-Replay')).toBeNull()
+    })
+
+    // A workflow whose Response node sets a non-JSON Content-Type takes the
+    // c.body() branch instead of c.json(); the status must carry through there too.
+    it('returns 409 through the non-JSON Content-Type branch', async () => {
+      vi.mocked(executeWorkflow).mockResolvedValue({
+        ...duplicate,
+        response: '<error>duplicate</error>',
+        responseHeaders: { 'Content-Type': 'application/xml' },
+      })
+      const res = await request('wf-1', { apiKey: 'sk_test_key', idempotencyKey: 'idem-dup' })
+      expect(res.status).toBe(409)
+      expect(res.headers.get('Content-Type')).toBe('application/xml')
+      expect(await res.text()).toBe('<error>duplicate</error>')
+    })
+  })
 })
