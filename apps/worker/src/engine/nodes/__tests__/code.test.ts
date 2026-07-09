@@ -318,6 +318,24 @@ describe('executeCodeNode — bundle fallback to per-node worker', () => {
     expect(perNodeFetch).not.toHaveBeenCalled()
   })
 
+  // #601: a non-Error throw (a plain object, which is what a platform or fetch
+  // layer often rejects with) was re-thrown as `new Error(String(err))`, so the
+  // step failed with the message "[object Object]" and the engine's error
+  // classification and execution_steps log recorded nothing usable.
+  it('names a non-Error binding throw instead of re-throwing [object Object]', async () => {
+    const bundleFetch = vi.fn().mockRejectedValue({ message: 'dispatch namespace unavailable', code: 'ENS_DOWN' })
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    const env = makeEnv((name) => (name === codeBundleName('wf-abc123') ? bundleFetch : perNodeFetch))
+
+    const err = await executeCodeNode(node({ script: 'return {}' }), ctx(), env).catch((e: Error) => e)
+
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).not.toContain('[object Object]')
+    expect((err as Error).message).toContain('dispatch namespace unavailable')
+    // Still a transient throw, so the stale per-node worker must not run (#475).
+    expect(perNodeFetch).not.toHaveBeenCalled()
+  })
+
   // #475: a genuine "Worker not found" throw means the bundle isn't deployed, so
   // the legacy per-node fallback is still correct during migration.
   it('falls back to the per-node worker when the binding throws "Worker not found" (#475)', async () => {

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from '../lib/coerce'
+import { formatErr } from '../lib/format-error'
 import { resolveFailedStepType } from '../lib/upstream-outage'
 import { parseJson } from '../lib/json'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
@@ -1844,7 +1845,7 @@ export async function executeCodeChain(
   // chain and could repeat side effects, and would run stale orphaned code on a
   // live lead (#475). Same guarantee as the single-node path in code.ts.
   if (bindingError !== undefined && !isWorkerNotFoundError(bindingError)) {
-    const message = bindingError instanceof Error ? bindingError.message : 'non-Error dispatch throw'
+    const message = formatErr(bindingError)
     return { results: [{ namespace: chain[0].namespace, status: 'failed', error: `Chain dispatch failed: ${message}`, durationMs: 0 }] }
   }
 

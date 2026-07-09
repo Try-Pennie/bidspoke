@@ -38,6 +38,19 @@ const ASYNC_CORRECTNESS_ERRORS = [
   '@typescript-eslint/only-throw-error',
 ]
 
+// Information-loss rules: ERROR. These do not catch a type-safety smell, they
+// catch a bug that silently destroys the evidence you need during an incident.
+// `no-base-to-string` fires on stringifying an object with a default toString,
+// which is exactly how a plain Supabase/PostgREST error became the "[object
+// Object]" that blanked every dead-letter alert (#598, #601).
+//
+// Caveat, deliberately not papered over: with default options the rule does not
+// fire on a value still typed `unknown` (it fires once narrowing widens it to
+// `{}`). So `String(err)` on an untouched `unknown` still slips through, e.g.
+// lib/code-node-deployer.ts's isWorkerNotFoundError. This rule is a ratchet, not
+// a proof.
+const INFORMATION_LOSS_ERRORS = ['@typescript-eslint/no-base-to-string']
+
 // Type-safety debt: surfaced but non-blocking. Must stay 'warn', not error/off.
 const TYPE_SAFETY_WARNINGS = [
   '@typescript-eslint/no-unsafe-assignment',
@@ -85,6 +98,10 @@ describe.each(PACKAGES)('$name eslint config', ({ name }) => {
 
   it.each(TYPE_SAFETY_WARNINGS)('keeps %s as a non-blocking warning', (rule) => {
     expect(baseRules(configs[name])[rule]).toBe('warn')
+  })
+
+  it.each(INFORMATION_LOSS_ERRORS)('keeps %s as an error', (rule) => {
+    expect(baseRules(configs[name])[rule]).toBe('error')
   })
 })
 
