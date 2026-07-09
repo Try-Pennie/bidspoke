@@ -38,8 +38,13 @@ export function codeWorkerName(workflowId: string, namespace: string): string {
  * never runs on a live lead (#475).
  */
 export function isWorkerNotFoundError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err)
-  return /worker not found/i.test(message)
+  // Conservative by contract (#604): only a genuine Error may authorize the
+  // fallback. The old `String(err)` arm let a bare string throw (or any object
+  // with a custom toString) match the regex and run stale orphaned code on a
+  // live lead, the exact outcome #475 forbids. Anything we cannot positively
+  // identify as the platform's not-found Error is a transient dispatch failure.
+  if (!(err instanceof Error)) return false
+  return /worker not found/i.test(err.message)
 }
 
 /**
