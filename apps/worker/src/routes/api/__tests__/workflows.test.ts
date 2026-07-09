@@ -1251,3 +1251,181 @@ describe('POST /workflows/:id/test-node', () => {
     expect(res.status).toBe(400)
   })
 })
+
+// #595: these three handlers end their write in .update().select().single().
+// PostgREST answers a zero-row match there with PGRST116, which the old
+// `if (error) return dbError(c, error)` turned into a 500. It must read as a 404,
+// while a genuine DB error must still surface as a retryable 500. In this local
+// mock a write's terminal .single() resolves from the from()-call's `single`
+// config, `updateError` models a real DB failure, and `single: null` a zero-row
+// match.
+describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const payloadBody = { test_payloads: [{ name: 'lead', payload: { lead_id: 'L1' } }] }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  it('returns 404 (not 500) when the update matches zero rows', async () => {
+    // This handler has no prior ownership read, so the write is the only guard:
+    // a zero-row match must read as not-found, not a 500 reachable by any caller.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-gone/test-payloads', { body: payloadBody })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+  })
+
+  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { updateError: { code: '42P01', message: 'relation missing' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1/test-payloads', { body: payloadBody })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+  })
+
+  it('returns 200 with the saved payloads on the happy path', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: { test_payloads: payloadBody.test_payloads } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1/test-payloads', { body: payloadBody })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ test_payloads: payloadBody.test_payloads })
+  })
+})
+
+describe('PUT /workflows/:id: zero-row update 404 vs real DB error (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
+    vi.mocked(recordBackupFailure).mockResolvedValue(false)
+    app = await makeApp()
+  })
+
+  it('returns 404 (not 500), skips audit + cache when the workflow-row update matches zero rows', async () => {
+    // Ownership read passes and the version snapshot is inserted, then the
+    // workflows UPDATE touches nothing (raced away or another org). That zero-row
+    // write must read as not-found, and must not audit or bust the cache.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: null }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the workflow-row update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { updateError: { code: '42P01', message: 'relation missing' } }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 with the updated workflow on the happy path', async () => {
+    const updated = { ...existingWorkflow, name: 'Renamed' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: updated }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { version_id: string; name: string }
+    expect(body.version_id).toBe('ver-1')
+    expect(body.name).toBe('Renamed')
+  })
+})
+
+describe('PATCH /workflows/:id: zero-row update 404 vs real DB error (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 (not 500), skips audit + cache when the update matches zero rows', async () => {
+    // Ownership read passes, then the field UPDATE touches nothing. That zero-row
+    // write must read as not-found, and must not audit or bust the cache.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: null }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { updateError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 with the updated fields on the happy path', async () => {
+    const updated = { id: 'wf-1', name: 'Lead Routing', is_active: false, updated_at: '2026-01-01' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: updated }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { is_active: boolean }
+    expect(body.is_active).toBe(false)
+  })
+})

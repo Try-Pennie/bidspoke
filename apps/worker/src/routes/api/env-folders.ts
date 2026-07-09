@@ -116,10 +116,12 @@ envFolders.patch('/:id', async (c) => {
     .eq('organization_id', orgId)
     .select('id, organization_id, parent_id, name, created_at, updated_at')
     .single()
-  if (error) {
-    if (error.message?.includes('cycle')) return c.json({ error: 'cannot move a folder into one of its descendants' }, 400)
-    return dbError(c, error)
-  }
+  // The cycle trigger is a real database error, so it is read before
+  // dbErrorUnlessNotFound turns every non-PGRST116 error into a 500.
+  if (error?.message?.includes('cycle')) return c.json({ error: 'cannot move a folder into one of its descendants' }, 400)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'folder not found' }, 404)
 
   await writeAuditLog(supabase, orgId, 'env_var_folder', id, 'updated', userId, {
     before: { name: existing.name, parent_id: existing.parent_id },

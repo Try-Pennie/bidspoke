@@ -30,7 +30,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens, findSupabaseWrites } from './_scan-utils'
 
 const SCAN_DIRS = ['engine', 'lib', 'routes'].map((d) => path.join(WORKER_SRC, d))
 
@@ -43,86 +43,6 @@ interface Finding {
   file: string
   line: number
   snippet: string
-}
-
-// End of the method-chain statement that starts at `.update(` / `.delete(`.
-//
-// This codebase does not use semicolons, so a statement ends at a newline that
-// leaves us outside every open paren AND is not continued by a chained `.method(`
-// on the next line. Paren depth is what stops `.eq('id', String(id))` from
-// ending the chain early. Operates on SANITIZED source, where parens inside
-// string literals have already been blanked away.
-function statementEnd(src: string, start: number): number {
-  let depth = 0
-  for (let i = start; i < src.length; i++) {
-    const ch = src[i]
-    if (ch === '(') depth++
-    else if (ch === ')') depth--
-    else if (ch === ';' && depth <= 0) return i + 1
-    else if (ch === '\n' && depth <= 0) {
-      const next = /\S/.exec(src.slice(i + 1))
-      // A chained `.select(...)` on the following line continues this statement.
-      if (next && next[0] === '.') continue
-      return i
-    }
-  }
-  return src.length
-}
-
-// Index of the `(` matching the `)` at `closeIndex`, or -1. Safe on sanitized
-// source, where parens inside string literals are already blanked.
-function matchingOpenParen(src: string, closeIndex: number): number {
-  let depth = 0
-  for (let k = closeIndex; k >= 0; k--) {
-    if (src[k] === ')') depth++
-    else if (src[k] === '(') {
-      depth--
-      if (depth === 0) return k
-    }
-  }
-  return -1
-}
-
-/** The identifier ending at `end` (exclusive), reading backwards. */
-function identifierBefore(src: string, end: number): string {
-  let i = end - 1
-  while (i >= 0 && /\s/.test(src[i])) i--
-  const stop = i + 1
-  while (i >= 0 && /[\w$]/.test(src[i])) i--
-  return src.slice(i + 1, stop)
-}
-
-// Names bound to a supabase query builder (`let query = supabase...`). This
-// codebase builds detached builders for conditional filters, so a write can be
-// reached through one instead of directly off `.from(...)`.
-function collectBuilderVars(src: string): Set<string> {
-  const vars = new Set<string>()
-  const re = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*supabase\b/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(src))) vars.add(m[1])
-  return vars
-}
-
-/**
- * True when the `.update(`/`.delete(` whose dot sits at `dotIndex` is a
- * PostgREST write.
- *
- * The receiver is what decides it: either the `from(...)` call the write hangs
- * off, or a variable holding a detached builder. An earlier version asked only
- * whether a `.from(` appeared within 400 characters, which is true of nearly
- * every line in a route file and so flagged Hono's `router.delete(path, handler)`
- * and Cloudflare KV's `kv.delete(key)` as database writes (#588).
- */
-function receiverIsSupabase(src: string, dotIndex: number, builderVars: Set<string>): boolean {
-  let i = dotIndex - 1
-  while (i >= 0 && /\s/.test(src[i])) i--
-  if (i < 0) return false
-  if (src[i] === ')') {
-    const open = matchingOpenParen(src, i)
-    if (open < 0) return false
-    return identifierBefore(src, open) === 'from'
-  }
-  return builderVars.has(identifierBefore(src, i + 1))
 }
 
 // The shared helpers that consume a write's rowcount (#590). A write must sit
@@ -147,47 +67,37 @@ function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
   // length, so offsets are shared between the two and we can slice either.
   const src = sanitizeSource(rawSrc)
   const rawLines = rawSrc.split('\n')
-  const builderVars = collectBuilderVars(src)
   const helperRanges = helperCallRanges(src)
   const findings: Finding[] = []
-  // `.update(` or `.delete(` reached off a supabase query builder.
-  const re = /\.(update|delete)\(/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(src))) {
-    const line = src.slice(0, m.index).split('\n').length
-    const end = statementEnd(src, m.index)
-    const stmt = src.slice(m.index, end)
-    // String contents survive here, so `count: 'exact'` is matchable.
-    const rawStmt = rawSrc.slice(m.index, end)
 
-    if (!receiverIsSupabase(src, m.index, builderVars)) continue
-
+  for (const w of findSupabaseWrites(src, rawSrc)) {
     // PostgREST hands the rowcount straight back here, so there is nothing for a
     // helper to wrap. Bulk purges use it, where zero rows just means drained.
-    if (/count:\s*'exact'/.test(rawStmt)) continue
+    if (/count:\s*'exact'/.test(w.rawStmt)) continue
 
     // A write ending in `.single()` is not the silent-success class at all:
     // PostgREST answers zero rows with a PGRST116 ERROR, which the caller's
     // `if (error)` already catches. (`.maybeSingle()` does not: it returns
-    // `data: null, error: null`, so it stays in scope.)
-    if (/\.single\(\)/.test(stmt)) continue
+    // `data: null, error: null`, so it stays in scope.) Whether that error is
+    // then turned into a 404 is a different guard's job (#595).
+    if (/\.single\(\)/.test(w.stmt)) continue
 
     // Otherwise the write must both expose its rowcount (.select) and hand it to
     // one of the shared helpers. A bare .select() whose count is then checked by
     // hand is what #590 removed: six copies of one check, each reacting
     // differently, is how this class kept coming back.
-    const inHelper = helperRanges.some(([open, close]) => m!.index > open && m!.index < close)
-    if (/\.select\(/.test(stmt) && inHelper) continue
+    const inHelper = helperRanges.some(([open, close]) => w.index > open && w.index < close)
+    if (/\.select\(/.test(w.stmt) && inHelper) continue
 
     // Opt-out comment above the write. The window spans several lines because
     // the comment sits above the statement head (`const { error } = await
     // supabase`), which can be a few lines up from the `.delete(` itself in a
     // formatted chain. Read from the RAW source: sanitizeSource has already
     // blanked comments out of `src`.
-    const optOutWindow = rawLines.slice(Math.max(0, line - OPT_OUT_LOOKBACK - 1), line).join('\n')
+    const optOutWindow = rawLines.slice(Math.max(0, w.line - OPT_OUT_LOOKBACK - 1), w.line).join('\n')
     if (OPT_OUT.test(optOutWindow)) continue
 
-    findings.push({ file, line, snippet: (rawLines[line - 1] ?? '').trim() })
+    findings.push({ file, line: w.line, snippet: (rawLines[w.line - 1] ?? '').trim() })
   }
   return findings
 }

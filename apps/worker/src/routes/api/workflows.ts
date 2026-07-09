@@ -377,7 +377,9 @@ workflows.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (updateError) return dbError(c, updateError)
+  const updateBlocked = dbErrorUnlessNotFound(c, updateError)
+  if (updateBlocked) return updateBlocked
+  if (!updated) return c.json({ error: 'Workflow not found' }, 404)
 
   // Invalidate KV cache
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
@@ -579,7 +581,9 @@ workflows.patch('/:id', async (c) => {
     .select('id, name, is_active, capture_sightings, folder_id, updated_at')
     .single()
 
-  if (error) return dbError(c, error)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Workflow not found' }, 404)
 
   await invalidateWorkflowCache(id, c.env.WORKFLOW_CACHE)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
@@ -640,7 +644,9 @@ workflows.patch('/:id/test-payloads', async (c) => {
     .select('test_payloads')
     .single()
 
-  if (error) return dbError(c, error)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Workflow not found' }, 404)
   return c.json(data)
 })
 

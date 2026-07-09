@@ -198,7 +198,9 @@ env.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return dbError(c, error)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Variable not found' }, 404)
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', id, existing.is_secret ? 'secret_rotated' : 'updated', userId, {
