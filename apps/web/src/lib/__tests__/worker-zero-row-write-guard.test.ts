@@ -68,15 +68,70 @@ function statementEnd(src: string, start: number): number {
   return src.length
 }
 
+// Index of the `(` matching the `)` at `closeIndex`, or -1. Safe on sanitized
+// source, where parens inside string literals are already blanked.
+function matchingOpenParen(src: string, closeIndex: number): number {
+  let depth = 0
+  for (let k = closeIndex; k >= 0; k--) {
+    if (src[k] === ')') depth++
+    else if (src[k] === '(') {
+      depth--
+      if (depth === 0) return k
+    }
+  }
+  return -1
+}
+
+/** The identifier ending at `end` (exclusive), reading backwards. */
+function identifierBefore(src: string, end: number): string {
+  let i = end - 1
+  while (i >= 0 && /\s/.test(src[i])) i--
+  const stop = i + 1
+  while (i >= 0 && /[\w$]/.test(src[i])) i--
+  return src.slice(i + 1, stop)
+}
+
+// Names bound to a supabase query builder (`let query = supabase...`). This
+// codebase builds detached builders for conditional filters, so a write can be
+// reached through one instead of directly off `.from(...)`.
+function collectBuilderVars(src: string): Set<string> {
+  const vars = new Set<string>()
+  const re = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*supabase\b/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) vars.add(m[1])
+  return vars
+}
+
+/**
+ * True when the `.update(`/`.delete(` whose dot sits at `dotIndex` is a
+ * PostgREST write.
+ *
+ * The receiver is what decides it: either the `from(...)` call the write hangs
+ * off, or a variable holding a detached builder. An earlier version asked only
+ * whether a `.from(` appeared within 400 characters, which is true of nearly
+ * every line in a route file and so flagged Hono's `router.delete(path, handler)`
+ * and Cloudflare KV's `kv.delete(key)` as database writes (#588).
+ */
+function receiverIsSupabase(src: string, dotIndex: number, builderVars: Set<string>): boolean {
+  let i = dotIndex - 1
+  while (i >= 0 && /\s/.test(src[i])) i--
+  if (i < 0) return false
+  if (src[i] === ')') {
+    const open = matchingOpenParen(src, i)
+    if (open < 0) return false
+    return identifierBefore(src, open) === 'from'
+  }
+  return builderVars.has(identifierBefore(src, i + 1))
+}
+
 function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
   // sanitizeSource blanks comments and string CONTENTS in place, preserving
   // length, so offsets are shared between the two and we can slice either.
   const src = sanitizeSource(rawSrc)
   const rawLines = rawSrc.split('\n')
+  const builderVars = collectBuilderVars(src)
   const findings: Finding[] = []
-  // `.update(` or `.delete(` reached off a supabase query builder. A `.from(`
-  // on the statement is what distinguishes a PostgREST write from a Map/Set/KV
-  // `.delete(`.
+  // `.update(` or `.delete(` reached off a supabase query builder.
   const re = /\.(update|delete)\(/g
   let m: RegExpExecArray | null
   while ((m = re.exec(src))) {
@@ -86,8 +141,7 @@ function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
     // String contents survive here, so `count: 'exact'` is matchable.
     const rawStmt = rawSrc.slice(m.index, end)
 
-    const prefix = src.slice(Math.max(0, m.index - 400), m.index)
-    if (!/\.from\(/.test(prefix) && !/\.from\(/.test(stmt)) continue
+    if (!receiverIsSupabase(src, m.index, builderVars)) continue
 
     // Two ways to learn the rowcount: ask PostgREST to return the rows
     // (.select) or ask it for an exact count (.delete({ count: 'exact' })).
@@ -157,6 +211,52 @@ describe('the guard itself detects what it claims to (#583)', () => {
 
   it('does not flag a non-supabase delete (Map, Set, KV)', () => {
     const src = wrap(`cache.delete(key); store.delete('k'); await env.IDEMPOTENCY.delete(k);`)
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  // A router file reaches for `.from(` constantly, so "is there a `.from(`
+  // nearby" cannot tell a supabase write from a Hono route registration or a KV
+  // delete. Only the write's immediate receiver can. Without this, widening the
+  // guard to routes/ buries the real findings under a pile of noise (#588).
+  it('does not flag a Hono route registration that sits near a supabase read', () => {
+    const src = `
+const { data } = await supabase.from('user_allowlist').select('email')
+
+access.delete('/:email', async (c) => {
+  return c.json({ ok: true })
+})`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  it('does not flag a KV delete that sits near a supabase write', () => {
+    const src = `
+async function a() {
+  const { data } = await supabase.from('webhook_endpoints').select('id').eq('id', id)
+  await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
+  })
+
+  // The receiver of a supabase write is normally the `.from(...)` call itself,
+  // but this codebase also builds detached query builders (`let query =
+  // supabase`, then `query = query.eq(...)`). A receiver check that only knows
+  // about `.from(...)` would go blind to a write made through one of those.
+  it('flags an unchecked write made through a detached query builder', () => {
+    const src = `
+async function a() {
+  let query = supabase.from('t')
+  if (orgId) query = query.eq('organization_id', orgId)
+  await query.update({ a: 1 }).eq('id', id)
+}`
+    expect(findUncheckedWrites(src, 'x.ts')).toHaveLength(1)
+  })
+
+  it('accepts a detached-builder write that selects the rows it touched', () => {
+    const src = `
+async function a() {
+  let query = supabase.from('t')
+  await query.update({ a: 1 }).eq('id', id).select('id')
+}`
     expect(findUncheckedWrites(src, 'x.ts')).toEqual([])
   })
 

@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { isNoRowMatchedError, requireRowsAffected, type DbError } from './db-retry'
 
 /**
  * Database/internal error responder for authenticated API routes.
@@ -40,6 +41,39 @@ export function isNotFoundError(err: unknown): boolean {
 export function dbErrorUnlessNotFound(c: Context, err: unknown): Response | null {
   if (err && !isNotFoundError(err)) return dbError(c, err)
   return null
+}
+
+/**
+ * The correct guard for an UPDATE or DELETE that assumes its target row exists
+ * (#588), and the write-side twin of `dbErrorUnlessNotFound`.
+ *
+ * PostgREST reports a well-formed write that matched zero rows as
+ * `{ data: [], error: null }`, so `if (error) return dbError(c, error)` returns
+ * 200 for a write that changed nothing. The row may never have existed, or may
+ * belong to another organization, and the caller cannot tell either from a
+ * success. Any audit-log line written afterwards then records an action that
+ * never happened.
+ *
+ * `op` MUST end its chain in `.select(...)` or PostgREST returns no rows to
+ * count. Returns `null` when at least one row was touched; a 404 carrying
+ * `notFoundMessage` when none was; and a generic 500 when the database itself
+ * failed. That last split is the point: a transient failure must never surface
+ * as a 404, the conflation behind #303.
+ *
+ *   const blocked = await requireRowOr404(c, 'Workflow not found', () =>
+ *     supabase.from('workflows').update(patch).eq('id', id).eq('organization_id', orgId).select('id')
+ *   )
+ *   if (blocked) return blocked
+ */
+export async function requireRowOr404(
+  c: Context,
+  notFoundMessage: string,
+  op: () => Promise<{ data: unknown[] | null; error: DbError | null }>
+): Promise<Response | null> {
+  const { error } = await requireRowsAffected(notFoundMessage, op)
+  if (!error) return null
+  if (isNoRowMatchedError(error)) return c.json({ error: notFoundMessage }, 404)
+  return dbError(c, error)
 }
 
 export function dbError(c: Context, err: unknown) {
