@@ -110,3 +110,128 @@ export function consumeParens(src: string, open: number): number {
   }
   return src.length
 }
+
+// ── Supabase write scanning ──────────────────────────────────────────────────
+//
+// Shared by the guards that police PostgREST writes (worker-zero-row-write-guard,
+// worker-single-write-404-guard). Both need to answer the same question first:
+// "is this `.update(`/`.delete(` a database write, and where does its statement
+// end?" Keeping one implementation is the point of this file (#522).
+
+/** Index of the `(` matching the `)` at `closeIndex`, or -1. */
+export function matchingOpenParen(src: string, closeIndex: number): number {
+  let depth = 0
+  for (let k = closeIndex; k >= 0; k--) {
+    if (src[k] === ')') depth++
+    else if (src[k] === '(') {
+      depth--
+      if (depth === 0) return k
+    }
+  }
+  return -1
+}
+
+/** The identifier ending at `end` (exclusive), reading backwards. */
+export function identifierBefore(src: string, end: number): string {
+  let i = end - 1
+  while (i >= 0 && /\s/.test(src[i])) i--
+  const stop = i + 1
+  while (i >= 0 && /[\w$]/.test(src[i])) i--
+  return src.slice(i + 1, stop)
+}
+
+/**
+ * Names bound to a supabase query builder (`let query = supabase...`). This
+ * codebase builds detached builders for conditional filters, so a write can be
+ * reached through one instead of directly off `.from(...)`.
+ */
+export function collectBuilderVars(src: string): Set<string> {
+  const vars = new Set<string>()
+  const re = /\b(?:const|let|var)\s+([\w$]+)\s*=\s*supabase\b/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) vars.add(m[1])
+  return vars
+}
+
+/**
+ * True when the `.update(`/`.delete(` whose dot sits at `dotIndex` is a
+ * PostgREST write.
+ *
+ * The receiver decides it: either the `from(...)` call the write hangs off, or a
+ * variable holding a detached builder. Asking instead whether a `.from(` appears
+ * within N characters is true of nearly every line in a route file, and so
+ * mistakes Hono's `router.delete(path, handler)` and KV's `kv.delete(key)` for
+ * database writes (#588).
+ */
+export function receiverIsSupabase(src: string, dotIndex: number, builderVars: Set<string>): boolean {
+  let i = dotIndex - 1
+  while (i >= 0 && /\s/.test(src[i])) i--
+  if (i < 0) return false
+  if (src[i] === ')') {
+    const open = matchingOpenParen(src, i)
+    if (open < 0) return false
+    return identifierBefore(src, open) === 'from'
+  }
+  return builderVars.has(identifierBefore(src, i + 1))
+}
+
+/**
+ * End of the method-chain statement starting at `.update(` / `.delete(`.
+ *
+ * This codebase writes no semicolons, so a statement ends at a newline that
+ * leaves us outside every open paren AND is not continued by a chained `.method(`
+ * on the next line. Paren depth is what stops `.eq('id', String(id))` from ending
+ * the chain early. Operates on SANITIZED source, where parens inside string
+ * literals have already been blanked.
+ */
+export function statementEnd(src: string, start: number): number {
+  let depth = 0
+  for (let i = start; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (ch === ';' && depth <= 0) return i + 1
+    else if (ch === '\n' && depth <= 0) {
+      const next = /\S/.exec(src.slice(i + 1))
+      if (next && next[0] === '.') continue
+      return i
+    }
+  }
+  return src.length
+}
+
+export interface SupabaseWrite {
+  /** 'update' or 'delete'. */
+  op: string
+  /** Index of the `.` in `.update(` / `.delete(`, within the SANITIZED source. */
+  index: number
+  /** 1-based line number. */
+  line: number
+  /** Statement text, sanitized. */
+  stmt: string
+  /** Statement text, raw (string contents intact, so `count: 'exact'` matches). */
+  rawStmt: string
+  /** Index just past the statement. */
+  end: number
+}
+
+/** Every PostgREST `.update(`/`.delete(` write in `sanitized`, in source order. */
+export function findSupabaseWrites(sanitized: string, raw: string): SupabaseWrite[] {
+  const builderVars = collectBuilderVars(sanitized)
+  const out: SupabaseWrite[] = []
+  const re = /\.(update|delete)\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(sanitized))) {
+    if (!receiverIsSupabase(sanitized, m.index, builderVars)) continue
+    const end = statementEnd(sanitized, m.index)
+    out.push({
+      op: m[1],
+      index: m.index,
+      line: sanitized.slice(0, m.index).split('\n').length,
+      stmt: sanitized.slice(m.index, end),
+      rawStmt: raw.slice(m.index, end),
+      end,
+    })
+  }
+  return out
+}

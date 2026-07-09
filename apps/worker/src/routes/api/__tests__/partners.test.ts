@@ -14,6 +14,7 @@ vi.mock('../../../lib/partner-constants-loader')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
+import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
 import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -104,5 +105,72 @@ describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
     const res = await request(app, 'DELETE', '/partners/p-1')
     expect(res.status).toBe(500)
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
+
+// #595: PUT /:id ends its write in .update().select().single(). PostgREST
+// answers a zero-row match there with PGRST116, which the old
+// `if (error) return dbError(c, error)` turned into a 500. It must be a 404,
+// while a genuine DB error must still surface as a retryable 500.
+describe('PUT /partners/:id: zero-row 404 vs real DB error (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  function put(path: string, body: unknown) {
+    return app.request(
+      path,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) },
+      testEnv,
+      mockCtx
+    )
+  }
+
+  it('returns 404 (not 500) and skips audit + cache when the update matches zero rows', async () => {
+    // Ownership read finds the row, then the UPDATE touches nothing (raced away
+    // or another org). That zero-row write must read as not-found, not an error.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { id: 'p-1' } }, { single: null }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Partner not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { id: 'p-1' } }, { updateError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 with the updated row on the happy path', async () => {
+    const updated = { id: 'p-1', name: 'Renamed', slug: 'sofi' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: [{ single: { id: 'p-1' } }, { updateResult: updated }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(updated)
   })
 })

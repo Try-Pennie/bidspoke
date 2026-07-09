@@ -8,7 +8,7 @@
  */
 
 import { Hono } from 'hono'
-import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -215,12 +215,14 @@ endpoints.put('/:id', async (c) => {
     .select('id, subdomain, path, workflow_id, source_name, is_active, created_at, updated_at')
     .single()
 
-  if (error) {
-    if (error.code === '23505') {
-      return c.json({ error: 'An endpoint already exists at that subdomain + path' }, 409)
-    }
-    return dbError(c, error)
+  // dbErrorUnlessNotFound turns every non-PGRST116 error into a 500, so the
+  // duplicate-key case is read first.
+  if (error?.code === '23505') {
+    return c.json({ error: 'An endpoint already exists at that subdomain + path' }, 409)
   }
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Endpoint not found' }, 404)
 
   // Invalidate KV cache for old and new subdomain+path
   const oldKey = cacheKey(existing.subdomain, existing.path)

@@ -454,3 +454,63 @@ describe('DELETE /env/:id: zero-row + write DB error (#588)', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
+
+// #595: PUT /:id ends its write in .update().select().single(); a zero-row match
+// there is PGRST116, which must become a 404, not the old 500. A real DB error
+// must still be a retryable 500.
+describe('PUT /env/:id: zero-row 404 vs real DB error (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const existing = { id: 'v1', key: 'API_URL', value: 'https://old.example.com', is_secret: false }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(setCfSecret).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('returns 404 (not 500), skips audit, and does not invalidate the env cache when the update matches zero rows', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { single: null }],
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v1', { body: { value: 'https://new.example.com' } })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Variable not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    // invalidateEnvCache drops the per-org KV key via WORKFLOW_CACHE.delete.
+    expect(vi.mocked(testEnv.WORKFLOW_CACHE.delete)).not.toHaveBeenCalled()
+  })
+
+  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { updateError: { code: '42P01', message: 'relation missing' } }],
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v1', { body: { value: 'https://new.example.com' } })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 with the updated row on the happy path', async () => {
+    const updated = { id: 'v1', key: 'API_URL', value: 'https://new.example.com', is_secret: false }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        environment_variables: [{ single: existing }, { updateResult: updated }],
+      }) as never
+    )
+    const res = await request(app, 'PUT', '/env/v1', { body: { value: 'https://new.example.com' } })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { value: string }
+    expect(body.value).toBe('https://new.example.com')
+  })
+})

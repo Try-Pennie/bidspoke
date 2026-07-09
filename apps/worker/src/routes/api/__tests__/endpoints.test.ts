@@ -170,3 +170,83 @@ describe('DELETE /endpoints/:id: zero-row + DB error (#588)', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
+
+// #595: PUT /:id ends its write in .update().select().single(). A zero-row match
+// there is PGRST116 and must read as a 404, not the old 500. The duplicate-key
+// (23505) branch runs before the not-found check, so it must still return 409,
+// and a genuine DB error must still surface as a retryable 500.
+describe('PUT /endpoints/:id: zero-row 404, duplicate 409, real DB error 500 (#595)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const cacheDelete = vi.fn()
+  const envWithCache = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { delete: cacheDelete } } as unknown as Env
+  const existing = { subdomain: 'rml', path: '/' }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  function put(path: string, body: unknown) {
+    return app.request(
+      path,
+      { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) },
+      envWithCache,
+      mockCtx
+    )
+  }
+
+  it('returns 404 (not 500), skips audit + KV invalidation when the update matches zero rows', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: existing }, { single: null }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/endpoints/ep-1', { source_name: 'newsrc' })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Endpoint not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(cacheDelete).not.toHaveBeenCalled()
+  })
+
+  it('returns 409 when the update collides on the subdomain+path unique key', async () => {
+    // The 23505 branch runs BEFORE the not-found check, so it must still win.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: existing }, { updateError: { code: '23505', message: 'duplicate key' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/endpoints/ep-1', { source_name: 'newsrc' })
+    expect(res.status).toBe(409)
+  })
+
+  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: existing }, { updateError: { code: '42P01', message: 'relation missing' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/endpoints/ep-1', { source_name: 'newsrc' })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('returns 200 with the updated row on the happy path', async () => {
+    const updated = { id: 'ep-1', subdomain: 'rml', path: '/', workflow_id: 'wf-mine', source_name: 'newsrc', is_active: true }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        webhook_endpoints: [{ single: existing }, { updateResult: updated }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/endpoints/ep-1', { source_name: 'newsrc' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(updated)
+  })
+})

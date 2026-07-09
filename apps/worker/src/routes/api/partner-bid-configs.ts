@@ -168,7 +168,9 @@ route.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return dbError(c, error)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Config not found' }, 404)
   await writeAuditLog(supabase, orgId, 'partner_bid_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => !k.startsWith('updated_')),
   })

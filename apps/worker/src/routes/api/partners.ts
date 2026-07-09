@@ -213,7 +213,9 @@ partners.put('/:id', async (c) => {
     .select()
     .single()
 
-  if (error) return dbError(c, error)
+  const updateBlocked = dbErrorUnlessNotFound(c, error)
+  if (updateBlocked) return updateBlocked
+  if (!data) return c.json({ error: 'Partner not found' }, 404)
 
   await writeAuditLog(supabase, orgId, 'partner_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => k !== 'updated_by' && k !== 'updated_by_email' && k !== 'updated_by_name'),
