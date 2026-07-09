@@ -495,16 +495,17 @@ function readPath(obj: unknown, dotPath: string): unknown {
   return cur
 }
 
+// Coercion goes through coerceNumeric, which rejects NaN and +/-Infinity. A
+// non-finite bid would beat every honest bid and corrupt bid_cents, and it is
+// reachable from plain JSON: JSON.parse('1e999') is Infinity, and
+// parseFloat('Infinity') is too (#506). A non-finite value is treated like any
+// other unparseable one: skip the field and keep scanning.
 function extractBid(raw: unknown): number | null {
   if (typeof raw !== 'object' || raw === null) return null
   const r = raw as Record<string, unknown>
   for (const field of ['bid', 'bid_amount', 'amount', 'price', 'offer']) {
-    const val = r[field]
-    if (typeof val === 'number') return val
-    if (typeof val === 'string') {
-      const n = parseFloat(val)
-      if (!isNaN(n)) return n
-    }
+    const n = coerceNumeric(r[field])
+    if (n !== null) return n
   }
   return null
 }

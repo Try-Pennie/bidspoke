@@ -523,3 +523,83 @@ describe('evaluateFormula', () => {
     expect(result.bid).toBeCloseTo(40000 * 0.0013, 5)  // 52.0
   })
 })
+
+// Issue #506 (AUD-043): the default top-level bid scan accepted anything
+// parseFloat would chew on, including non-finite values. JSON.parse('1e999')
+// yields Infinity as a genuine number, and parseFloat('Infinity') yields
+// Infinity too. An infinite bid beats every honest bid, so a partner whose
+// response shape drifts silently hijacks the auction and writes a non-finite
+// bid_cents. The bid_path branch already routed through coerceNumeric and was
+// never affected; only the default scan was.
+describe('api resolver: non-finite bids are rejected (#506)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  function apiPartner(overrides: Partial<PartnerForResolver> = {}) {
+    return makePartner({
+      bid_resolver_type: 'api',
+      api_endpoint: 'https://partner.example/bid',
+      ...overrides,
+    })
+  }
+
+  function mockBody(body: string) {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } })
+    )
+  }
+
+  it('rejects a numeric overflow literal that JSON.parse turns into Infinity', async () => {
+    mockBody('{"bid":1e999}')
+    const result = await resolveBid(apiPartner(), makeCtx({ debt: 5000 }), env)
+    expect(result.bid).toBeNull()
+    expect(result.bid_reason).toBe('no recognized bid field in response')
+  })
+
+  it('rejects the string "Infinity", which parseFloat happily accepts', async () => {
+    mockBody('{"bid":"Infinity"}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBeNull()
+  })
+
+  it('rejects a string overflow literal', async () => {
+    mockBody('{"bid":"1e999"}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBeNull()
+  })
+
+  it('rejects -Infinity rather than treating it as a real (losing) bid', async () => {
+    mockBody('{"bid":"-Infinity"}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBeNull()
+  })
+
+  it('rejects a NaN-valued number field instead of returning NaN as a bid', async () => {
+    mockBody('{"bid":"not-a-number","price":"NaN"}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBeNull()
+  })
+
+  it('still accepts an ordinary finite bid, as a number or a numeric string', async () => {
+    mockBody('{"bid":42}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBe(42)
+    vi.restoreAllMocks()
+    mockBody('{"bid":"42.5"}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBe(42.5)
+  })
+
+  it('still accepts a legitimate zero bid (a decline, not a missing field)', async () => {
+    mockBody('{"bid":0}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBe(0)
+  })
+
+  it('falls through to the next candidate field when the first is non-finite, matching the existing unparseable-value behavior', async () => {
+    mockBody('{"bid":"Infinity","amount":25}')
+    expect((await resolveBid(apiPartner(), makeCtx(), env)).bid).toBe(25)
+  })
+
+  it('leaves the bid_path branch alone: it already rejected non-finite values', async () => {
+    mockBody('{"data":{"bid":1e999}}')
+    const partner = apiPartner({ bid_resolver_config: { bid_path: 'data.bid' } })
+    const result = await resolveBid(partner, makeCtx(), env)
+    expect(result.bid).toBeNull()
+    expect(result.bid_reason).toContain("bid_path 'data.bid'")
+  })
+})
