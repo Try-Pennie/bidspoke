@@ -50,8 +50,18 @@ async function insertRowsOnce(
   return { error: error ? { code: error.code, message: error.message } : null }
 }
 
+// Synthetic error code for a finalize UPDATE that matched no rows: the base
+// workflow_executions row is gone (its insert failed permanently, yet finalize
+// still runs, see #487). Distinct from any SQLSTATE so callers can branch on it.
+export const NO_ROW_MATCHED_CODE = 'BIDSPOKE_NO_ROW_MATCHED'
+
+function isNoRowMatchedError(err: DbError | null): boolean {
+  return err?.code === NO_ROW_MATCHED_CODE
+}
+
 // One update attempt for workflow_executions, keyed by (id, started_at) with an
-// id-only fallback for the partition-pruning case.
+// id-only fallback for the partition-pruning case. Both statements return the
+// matched ids: an UPDATE that touches nothing is a missing row, not a success.
 async function updateExecutionOnce(
   supabase: SupabaseClient,
   id: string,
@@ -66,11 +76,23 @@ async function updateExecutionOnce(
     .eq('started_at', started_at)
     .select('id')
   if (error) return { error: { code: error.code, message: error.message } }
-  if (!data?.length) {
-    const { error: e2 } = await supabase.from('workflow_executions').update(update).eq('id', id)
-    if (e2) return { error: { code: e2.code, message: e2.message } }
+  if (data?.length) return { error: null }
+
+  // An UPDATE without the partition key still scans every partition, so zero
+  // rows here means the row genuinely does not exist anywhere.
+  const { data: d2, error: e2 } = await supabase
+    .from('workflow_executions')
+    .update(update)
+    .eq('id', id)
+    .select('id')
+  if (e2) return { error: { code: e2.code, message: e2.message } }
+  if (d2?.length) return { error: null }
+  return {
+    error: {
+      code: NO_ROW_MATCHED_CODE,
+      message: `no workflow_executions row matched id=${id}: the execution record is missing`,
+    },
   }
-  return { error: null }
 }
 
 export async function writeStepLog(
@@ -238,19 +260,30 @@ export async function updateExecutionRecord(
     // a value this run). Dark capture behind FIELD_PRESENCE_CAPTURE.
     field_presence?: Record<string, boolean>
   }
-): Promise<void> {
+): Promise<DbError | null> {
   // The finalize update lands in the same partition-purge window as the insert,
-  // so it gets the same transient-retry ladder. Failure is logged, not thrown:
+  // so it gets the same transient-retry ladder. Failure is returned, not thrown:
   // the HTTP response already went out, and a stuck 'running' row is less harmful
-  // than aborting the finalize chain.
+  // than aborting the finalize chain. The caller dead-letters the returned error
+  // so a lost execution record is announced rather than silently accepted (#487).
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
     const { error } = await updateExecutionOnce(supabase, id, started_at, update)
-    if (!error) return
+    if (!error) return null
+    // A row that does not exist will not appear by waiting, and schema drift is
+    // not fixed by waiting either. Both fail fast.
+    if (isNoRowMatchedError(error)) {
+      console.error('[step-logger] workflow_executions update matched zero rows, execution record lost', {
+        id,
+        started_at,
+        status: update.status,
+      })
+      return error
+    }
     if (isPermanentDbError(error)) {
       console.error('[step-logger] workflow_executions update failed (permanent)', { id, error: error.message })
-      return
+      return error
     }
     lastError = error
   }
@@ -258,4 +291,5 @@ export async function updateExecutionRecord(
     id,
     error: lastError?.message,
   })
+  return lastError
 }
