@@ -92,7 +92,7 @@ export interface Env {
   // CRITICAL: rotating this secret breaks all dedup lookups (old hashes become unmatchable)
   SSN_HASH_PEPPER: string
 
-  // Snowflake REST API — nightly export of lead_sightings + lead_sighting_bids.
+  // Snowflake REST API: export of lead_sightings + lead_sighting_bids (every 2h).
   // Auth: key-pair JWT. Service user `bidspoke_service` with role `bidspoke_role`.
   SNOWFLAKE_ACCOUNT: string         // URL prefix, e.g. 'jyc55588.us-east-1'
   SNOWFLAKE_USER: string

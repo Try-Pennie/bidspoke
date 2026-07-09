@@ -8,7 +8,13 @@
  * never completed. These tests cover the poll-to-terminal behavior.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { resolveStatementResult, pollStatement, type SnowflakeConfig } from '../snowflake'
+import {
+  resolveStatementResult,
+  pollStatement,
+  isTransientSnowflakeError,
+  postStatementWithRetry,
+  type SnowflakeConfig,
+} from '../snowflake'
 
 const config = { account: 'acct.us-east-1' } as SnowflakeConfig
 const headers = { Authorization: 'Bearer x' }
@@ -48,6 +54,90 @@ describe('resolveStatementResult', () => {
     await expect(
       resolveStatementResult(config, headers, 202, JSON.stringify({ message: 'no handle' }), fast),
     ).rejects.toThrow(/202 without a statementHandle/)
+  })
+})
+
+/**
+ * Transient-failure retry (2026-07-09 incident). A single Envoy 503 ("upstream
+ * connect error or disconnect/reset before headers") aborted the whole bids
+ * export phase because executeStatement did one fetch and threw on any non-2xx.
+ * Retries are made safe by Snowflake's own idempotency contract: the same
+ * requestId + retry=true means Snowflake will not re-execute a statement that
+ * already succeeded.
+ */
+describe('isTransientSnowflakeError', () => {
+  it.each([429, 502, 503, 504])('treats %i as transient', (status) => {
+    expect(isTransientSnowflakeError(status)).toBe(true)
+  })
+
+  it.each([400, 401, 403, 422])('treats %i as permanent', (status) => {
+    expect(isTransientSnowflakeError(status)).toBe(false)
+  })
+
+  it('treats 500 as permanent so a real statement failure is not retried', () => {
+    expect(isTransientSnowflakeError(500)).toBe(false)
+  })
+})
+
+describe('postStatementWithRetry', () => {
+  const url = 'https://acct.snowflakecomputing.com/api/v2/statements'
+  const retryOpts = { maxAttempts: 3, delaysMs: [0, 0], sleep: async () => {} }
+
+  it('sends requestId but not retry=true on the first attempt', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+    await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+    const calledUrl = spy.mock.calls[0][0] as string
+    expect(calledUrl).toContain('requestId=req-1')
+    expect(calledUrl).not.toContain('retry=true')
+  })
+
+  it('retries a 503 and resubmits with the same requestId plus retry=true', async () => {
+    const spy = mockFetchSequence([
+      { status: 503, body: 'upstream connect error or disconnect/reset before headers' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
+    const retryUrl = spy.mock.calls[1][0] as string
+    expect(retryUrl).toContain('requestId=req-1') // same id => Snowflake won't re-execute
+    expect(retryUrl).toContain('retry=true')
+  })
+
+  it('retries a network error (fetch rejects before any response)', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValueOnce(new TypeError('Network connection lost.'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: '090001' }), { status: 200 }))
+
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry a permanent 400 and throws immediately', async () => {
+    const spy = mockFetchSequence([{ status: 400, body: 'SQL compilation error' }])
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(
+      /Snowflake 400: SQL compilation error/,
+    )
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws with the real status and body once transient retries are exhausted', async () => {
+    const spy = mockFetchSequence([{ status: 503, body: 'connection termination' }])
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(
+      /Snowflake 503: connection termination/,
+    )
+    expect(spy).toHaveBeenCalledTimes(3) // maxAttempts, not unbounded
+  })
+
+  it('rethrows the network error once transient retries are exhausted', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('Network connection lost.'))
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(
+      /Network connection lost/,
+    )
+    expect(spy).toHaveBeenCalledTimes(3)
   })
 })
 

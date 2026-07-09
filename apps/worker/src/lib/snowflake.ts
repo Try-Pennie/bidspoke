@@ -62,12 +62,79 @@ export async function executeStatement(
     'X-Snowflake-Authorization-Token-Type': 'KEYPAIR_JWT',
   }
 
-  const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
-  const text = await res.text()
-  if (!res.ok) {
-    throw new Error(`Snowflake ${res.status}: ${text}`)
+  // A fresh requestId per statement. Resubmitting the SAME requestId with
+  // retry=true is Snowflake's idempotency contract: it will not execute a
+  // statement that already succeeded, which is what makes retrying a request
+  // that died before we saw its response safe.
+  const { status, text } = await postStatementWithRetry(url, headers, JSON.stringify(body), crypto.randomUUID())
+  return resolveStatementResult(config, headers, status, text)
+}
+
+// Statuses worth resubmitting. 429/503/504 are Snowflake's own documented
+// retryable set; 502 is the same Envoy-proxy class as the 503 that aborted the
+// bids export on 2026-07-09 ("upstream connect error or disconnect/reset before
+// headers"). 500 is deliberately NOT here: it can mean the statement itself
+// failed server-side, and retrying would just hide a real error behind a delay.
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504])
+
+export function isTransientSnowflakeError(status: number): boolean {
+  return TRANSIENT_STATUSES.has(status)
+}
+
+export interface RetryOptions {
+  maxAttempts?: number
+  delaysMs?: number[]
+  sleep?: (ms: number) => Promise<void>
+}
+
+// Bounded on purpose. The export's per-run wall-time budget (12 min, see
+// sightings-export.ts) is spent across hundreds of batches, so a long retry
+// ladder on any one batch would starve the drain. Worst case here is ~5s of
+// waiting per batch, and exportTable's deadline check stops the run cleanly if
+// a sustained Snowflake outage eats the budget anyway.
+const RETRY_MAX_ATTEMPTS = 3
+const RETRY_DELAYS_MS = [1_000, 4_000]
+
+/**
+ * POST a statement, resubmitting on transient failures.
+ *
+ * Retries carry the original requestId plus retry=true so Snowflake dedupes a
+ * statement that already ran. That matters most for the case we cannot observe:
+ * a connection dropped before headers, where the MERGE may or may not have been
+ * applied. Exported for unit testing.
+ */
+export async function postStatementWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  requestId: string,
+  opts: RetryOptions = {},
+): Promise<{ status: number; text: string }> {
+  const maxAttempts = opts.maxAttempts ?? RETRY_MAX_ATTEMPTS
+  const delaysMs = opts.delaysMs ?? RETRY_DELAYS_MS
+  const doSleep = opts.sleep ?? sleep
+
+  for (let attempt = 1; ; attempt++) {
+    const target = `${url}?requestId=${encodeURIComponent(requestId)}${attempt > 1 ? '&retry=true' : ''}`
+    let retryable: boolean
+    let error: Error
+
+    try {
+      const res = await fetch(target, { method: 'POST', headers, body })
+      const text = await res.text()
+      if (res.ok) return { status: res.status, text }
+      retryable = isTransientSnowflakeError(res.status)
+      error = new Error(`Snowflake ${res.status}: ${text}`)
+    } catch (e) {
+      // fetch rejected, so no response ever arrived. Always retryable: the
+      // requestId contract covers the ambiguity about whether it executed.
+      retryable = true
+      error = e instanceof Error ? e : new Error(String(e))
+    }
+
+    if (!retryable || attempt >= maxAttempts) throw error
+    await doSleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)])
   }
-  return resolveStatementResult(config, headers, res.status, text)
 }
 
 // Decide the result of a 2xx statement response. A 200 carries the completed

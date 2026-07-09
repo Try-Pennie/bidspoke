@@ -1086,11 +1086,15 @@ export async function sendMatrixSyncFailureAlert(
 }
 
 /**
- * Alert that a nightly Snowflake export reported errors (#412). The export jobs
+ * Alert that a Snowflake export reported errors (#412). The export jobs
  * accumulate failures into a returned summary rather than throwing, so a Snowflake
  * outage was previously only console-logged. Rows stay in Supabase (not purged)
  * until a later run succeeds, so there's no data loss, only a stalled pipeline and
  * disk pressure. Uses the config-alerts toggle. Returns true when delivered.
+ *
+ * Deliberately does not say "nightly": only the Achieve export runs once a day.
+ * The lead sightings export has run every 2 hours since 2026-06-29, so a single
+ * failed run is normally picked back up well before the next morning.
  */
 export async function sendExportFailureAlert(
   supabase: SupabaseClient,
@@ -1104,7 +1108,7 @@ export async function sendExportFailureAlert(
 
   const lines = payload.errors.slice(0, 20).map((e) => `• ${e}`).join('\n')
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: 'Nightly export failed', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: 'Snowflake export failed', emoji: false } },
     {
       type: 'section',
       text: {

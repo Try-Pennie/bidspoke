@@ -9,6 +9,7 @@ import {
   isStatementTimeout,
   STATEMENT_TIMEOUT_MAX_ATTEMPTS,
   WALL_TIME_BUDGET_MS,
+  PartialExportError,
 } from '../sightings-export'
 import { executeStatement } from '../snowflake'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -436,6 +437,66 @@ describe('runSightingsExport — shared wall-time budget (#exceededWallTime, 202
       bids_purged: 0,
       errors: [],
     })
+  })
+})
+
+/**
+ * Progress reporting on a failed run (2026-07-09 incident). The 10:37 UTC run
+ * genuinely exported 1,600 bid rows and stamped exported_at on every one of
+ * them, then hit a Snowflake 503 and threw. exportTable's throw discarded
+ * totalExported, so the alert claimed 0 rows exported and the run looked like a
+ * total loss when it was really a partial success. The error must still
+ * propagate (it is a real failure worth alerting on), but it has to carry the
+ * count of work already committed.
+ */
+describe('PartialExportError: preserves committed progress across a failure', () => {
+  it('reports how many rows were exported before a non-retryable failure', async () => {
+    const supabase = fakeSupabase(() => 200)
+    // Two batches land, the third fails with something that is not a clean-stop.
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce(undefined as never)
+      .mockResolvedValueOnce(undefined as never)
+      .mockRejectedValueOnce(new Error('Snowflake 503: connection termination'))
+
+    const err = await exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, FILTER).catch((e) => e)
+
+    expect(err).toBeInstanceOf(PartialExportError)
+    expect((err as PartialExportError).exported).toBe(400)
+    expect(formatErr(err)).toContain('Snowflake 503')
+  })
+
+  it('throws the original error untouched when nothing was exported yet', async () => {
+    const supabase = fakeSupabase(() => 200)
+    vi.mocked(executeStatement).mockRejectedValueOnce(new Error('Snowflake 503: connection termination'))
+
+    const err = await exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, FILTER).catch((e) => e)
+
+    expect(err).not.toBeInstanceOf(PartialExportError)
+    expect((err as Error).message).toBe('Snowflake 503: connection termination')
+  })
+
+  it('runSightingsExport records the partial count alongside the error', async () => {
+    // The sightings phase drains cleanly; the bids phase exports 400 then fails.
+    // The summary must show 400 bids exported AND the error, not 0 and the error.
+    const supabase = fakeSupabase((c) => (c < 2 ? 200 : c === 2 ? 0 : 200))
+    vi.mocked(executeStatement)
+      .mockResolvedValueOnce(undefined as never) // sightings batch 1
+      .mockResolvedValueOnce(undefined as never) // sightings batch 2
+      .mockResolvedValueOnce(undefined as never) // bids batch 1
+      .mockResolvedValueOnce(undefined as never) // bids batch 2
+      .mockRejectedValue(new Error('Snowflake 503: connection termination'))
+
+    const summary = await runSightingsExport(supabase, {} as Env)
+
+    // The sightings phase drained fully; the bids phase committed 400 rows and
+    // then failed. Both facts have to survive into the summary. (fakeSupabase
+    // has no delete(), so the two purge phases also error here; that is harness
+    // noise, not behavior under test.)
+    expect(summary.sightings_exported).toBe(400)
+    expect(summary.bids_exported).toBe(400)
+    expect(summary.errors).toContainEqual(
+      expect.stringContaining('bids export: Snowflake 503: connection termination'),
+    )
   })
 })
 
