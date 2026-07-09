@@ -509,6 +509,19 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(text).toContain('not purged')
   })
 
+  it('does not call the export nightly (lead sightings runs every 2 hours)', async () => {
+    // The header said "Nightly export failed" long after the sightings export
+    // moved to a 2-hourly cron (2026-06-29). On 2026-07-09 that made a blip
+    // that self-healed within 2 hours read like a full night of stale analytics.
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const header = body.blocks[0].text.text
+    expect(header).toBe('Snowflake export failed')
+    expect(JSON.stringify(body.blocks).toLowerCase()).not.toContain('nightly')
+  })
+
   it('does nothing when there are no errors', async () => {
     const sent = await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [] })
     expect(sent).toBe(false)

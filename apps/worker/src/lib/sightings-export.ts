@@ -1,7 +1,9 @@
-// Nightly export of lead_sightings + lead_sighting_bids to Snowflake.
-// Runs at 09:00 UTC (4am ET winter / 5am ET summer) via the scheduled trigger
-// in apps/worker/src/index.ts. Snowflake is canonical for analytics; Supabase
-// is a write buffer that gets purged 24h after successful export.
+// Export of lead_sightings + lead_sighting_bids to Snowflake.
+// Runs every 2 hours at :37 (cron "37 */2 * * *") via the scheduled trigger in
+// apps/worker/src/index.ts -- NOT nightly; the daily cadence could not keep pace
+// with inflow and was changed 2026-06-29. Snowflake is canonical for analytics;
+// Supabase is a write buffer that gets purged 24h after successful export.
+// A failed run therefore normally self-heals on the next run, under 2h later.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
@@ -163,6 +165,7 @@ export async function runSightingsExport(
       now,
     )
   } catch (e) {
+    if (e instanceof PartialExportError) summary.sightings_exported = e.exported
     summary.errors.push(`sightings export: ${formatErr(e)}`)
   }
 
@@ -179,6 +182,7 @@ export async function runSightingsExport(
       now,
     )
   } catch (e) {
+    if (e instanceof PartialExportError) summary.bids_exported = e.exported
     summary.errors.push(`bids export: ${formatErr(e)}`)
   }
 
@@ -304,11 +308,29 @@ export async function exportTable(
         )
         break
       }
-      throw e
+      // A real failure, but earlier batches already exported and stamped their
+      // rows. Propagate (this still alerts) while carrying the committed count,
+      // so the summary reports "400 exported, then failed" rather than "0".
+      throw totalExported > 0 ? new PartialExportError(e, totalExported) : e
     }
   }
 
   return totalExported
+}
+
+// Wraps a genuine export failure that happened *after* some rows were already
+// exported and stamped. The run is still a failure and still alerts; this only
+// stops the committed progress from being reported as zero.
+export class PartialExportError extends Error {
+  readonly originalError: unknown
+  readonly exported: number
+
+  constructor(originalError: unknown, exported: number) {
+    super(formatErr(originalError))
+    this.name = 'PartialExportError'
+    this.originalError = originalError
+    this.exported = exported
+  }
 }
 
 // Detects the Cloudflare "Too many subrequests" platform error so a backlog drain
