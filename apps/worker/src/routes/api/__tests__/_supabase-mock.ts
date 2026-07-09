@@ -43,6 +43,16 @@ export interface TableConfig {
   upsertResult?: Record<string, unknown> | null
   upsertError?: QueryError
   deleteError?: QueryError
+  /**
+   * Rows PostgREST hands back from a write that ends in `.select(...)`, i.e.
+   * the rows the write actually touched (#588). `[{ id: 'x' }]` models a write
+   * that landed; `[]` models one that matched nothing, which PostgREST reports
+   * as a plain success and a route must turn into a 404.
+   *
+   * Unset falls back to the older behavior (the table's `list`), so a write
+   * whose rowcount a test does not care about keeps working.
+   */
+  writeRows?: Record<string, unknown>[]
 }
 
 export interface MockSupabaseOptions {
@@ -59,11 +69,26 @@ type Outcome = { data: unknown; error: unknown }
 // write-specific result/error is configured it wins; otherwise it falls back to
 // the table's read behavior — preserving the older mocks where a write was a
 // passthrough and a configured `singleError` surfaced on the write's `.single()`.
-function writeChain(result: unknown, error: unknown, readSingle: () => Outcome, readList: () => Outcome): unknown {
+function writeChain(
+  result: unknown,
+  error: unknown,
+  readSingle: () => Outcome,
+  readList: () => Outcome,
+  writeRows?: Record<string, unknown>[],
+  onEq?: (col: string, val: unknown) => void,
+): unknown {
   const onSingle = (): Outcome =>
     error ? { data: null, error } : result !== undefined ? { data: result, error: null } : readSingle()
+  // `writeRows` wins over `result` because it answers a different question: how
+  // many rows the write touched, not what a `.single()` on it returns.
   const onAwait = (): Outcome =>
-    error ? { data: null, error } : result !== undefined ? { data: result, error: null } : readList()
+    error
+      ? { data: null, error }
+      : writeRows !== undefined
+        ? { data: writeRows, error: null }
+        : result !== undefined
+          ? { data: result, error: null }
+          : readList()
   const c: unknown = new Proxy(
     {},
     {
@@ -71,6 +96,14 @@ function writeChain(result: unknown, error: unknown, readSingle: () => Outcome, 
         if (typeof p === 'symbol') return undefined
         if (p === 'single') return () => Promise.resolve(onSingle())
         if (p === 'then') return (resolve: (v: unknown) => unknown) => Promise.resolve(onAwait()).then(resolve)
+        // Filters on a WRITE are what scope it to an org. Record them like the
+        // read chain does, so a test can assert an update/delete is org-scoped.
+        if (p === 'eq' && onEq) {
+          return (col: string, val: unknown) => {
+            onEq(col, val)
+            return c
+          }
+        }
         return () => c
       },
     },
@@ -122,6 +155,10 @@ export function makeSupabase(
       const idx = callCounts[table] ?? 0
       callCounts[table] = idx + 1
       const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)] ?? {}
+      const recordEq = (col: string, val: unknown) => {
+        const calls = (eqCalls[table] ??= [])
+        calls.push([col, val])
+      }
 
       const chain: unknown = new Proxy(
         {},
@@ -131,8 +168,7 @@ export function makeSupabase(
 
             if (prop === 'eq') {
               return (col: string, val: unknown) => {
-                const calls = (eqCalls[table] ??= [])
-                calls.push([col, val])
+                recordEq(col, val)
                 return chain
               }
             }
@@ -158,16 +194,16 @@ export function makeSupabase(
             }
 
             if (prop === 'insert') {
-              return () => writeChain(cfg.insertResult, cfg.insertError, readSingle, readList)
+              return () => writeChain(cfg.insertResult, cfg.insertError, readSingle, readList, cfg.writeRows, recordEq)
             }
             if (prop === 'update') {
-              return () => writeChain(cfg.updateResult, cfg.updateError, readSingle, readList)
+              return () => writeChain(cfg.updateResult, cfg.updateError, readSingle, readList, cfg.writeRows, recordEq)
             }
             if (prop === 'upsert') {
-              return () => writeChain(cfg.upsertResult, cfg.upsertError, readSingle, readList)
+              return () => writeChain(cfg.upsertResult, cfg.upsertError, readSingle, readList, cfg.writeRows, recordEq)
             }
             if (prop === 'delete') {
-              return () => writeChain(undefined, cfg.deleteError, readSingle, readList)
+              return () => writeChain(undefined, cfg.deleteError, readSingle, readList, cfg.writeRows, recordEq)
             }
 
             return () => chain

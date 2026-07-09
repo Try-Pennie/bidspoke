@@ -5,7 +5,7 @@
 // POST   /api/connections/:service_type/sync-schema — trigger schema refresh
 
 import { Hono } from 'hono'
-import { dbError, isNotFoundError } from '../../lib/api-error'
+import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -121,7 +121,15 @@ connections.delete('/:service_type', async (c) => {
     c.env.CLOUDFLARE_API_TOKEN
   ).catch(() => {}) // best-effort — secret may already be gone
 
-  await supabase.from('service_connections').delete().eq('id', existing.id)
+  const deleteBlocked = await requireRowOr404(c, 'Connection not found', () =>
+    supabase
+      .from('service_connections')
+      .delete()
+      .eq('id', existing.id)
+      .eq('organization_id', orgId)
+      .select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'deleted', userId, {
     service_type: serviceType,
@@ -161,12 +169,15 @@ connections.post('/:service_type/sync-schema', async (c) => {
     return c.json({ error: err instanceof Error ? err.message : 'Schema fetch failed' }, 502)
   }
 
-  const { error } = await supabase
-    .from('service_connections')
-    .update({ schema_cache: asJson(schema), schema_synced_at: new Date().toISOString() })
-    .eq('id', conn.id)
-
-  if (error) return dbError(c, error)
+  const syncBlocked = await requireRowOr404(c, 'Connection not found', () =>
+    supabase
+      .from('service_connections')
+      .update({ schema_cache: asJson(schema), schema_synced_at: new Date().toISOString() })
+      .eq('id', conn.id)
+      .eq('organization_id', orgId)
+      .select('id')
+  )
+  if (syncBlocked) return syncBlocked
 
   await writeAuditLog(supabase, orgId, 'service_connection', conn.id, 'schema_synced', userId, {
     service_type: serviceType,

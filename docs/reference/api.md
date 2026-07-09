@@ -26,6 +26,8 @@ Errors return a JSON object with an `error` string and an appropriate status cod
 
 Common statuses: `400` (bad request body or query), `401` (auth), `404` (not found or not in your org), `409` (conflict, e.g. duplicate name or idempotency race), `500` (server or upstream error).
 
+A `PATCH` or `DELETE` whose target row does not exist, or belongs to another organization, returns `404`. It never returns a success for a write that changed nothing. Four endpoints are deliberate exceptions, because clearing something that was never set is a no-op rather than an error, and they return `200` either way: `DELETE /api/integrations/slack`, `DELETE /api/settings/anthropic-key`, `DELETE /api/sources/:name/workflows/:workflow_id`, and `DELETE /api/field-coverage/:workflowId/silence`. Even there, nothing is written to the audit log unless a row actually changed.
+
 ## Workflows
 
 `/api/workflows`

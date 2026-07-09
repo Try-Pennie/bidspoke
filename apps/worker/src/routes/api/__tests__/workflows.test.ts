@@ -36,9 +36,13 @@ import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-ba
  */
 type TableConfig = {
   single?: Record<string, unknown> | null
+  /** Bare-await result. For a write ending in `.select(...)`, these are the rows
+   *  it touched: `[]` models the zero-row write PostgREST calls a success. */
   list?: Record<string, unknown>[]
   insertResult?: Record<string, unknown> | null
   singleError?: { code: string; message: string }
+  /** A real database failure on an `.update(...)`, as opposed to zero rows. */
+  updateError?: { code: string; message: string }
 }
 
 function makeSupabase(
@@ -96,6 +100,22 @@ function makeSupabase(
           if (prop === 'then') {
             return (resolve: (v: unknown) => unknown) =>
               Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
+          }
+          // An update gets its own chain so a configured updateError surfaces as
+          // a real database error, distinct from the zero-row write that `list:
+          // []` models. Conflating the two is exactly the bug under test (#588).
+          if (prop === 'update' && cfg.updateError) {
+            const uc: unknown = new Proxy({}, {
+              get(__, p) {
+                if (typeof p === 'symbol') return undefined
+                if (p === 'then') {
+                  return (resolve: (v: unknown) => unknown) =>
+                    Promise.resolve({ data: null, error: cfg.updateError }).then(resolve)
+                }
+                return () => uc
+              },
+            })
+            return () => uc
           }
           if (prop === 'insert') {
             return () => {
@@ -315,6 +335,58 @@ describe('PUT /workflows/:id', () => {
     await drainWaitUntil()
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
+  })
+
+  // The commit-sha stamp runs inside waitUntil, after the save has already been
+  // answered, and used to discard both its error and its rowcount. A version row
+  // left with no commit_sha then looked like a healthy backup (#588).
+  it('logs when the commit-sha stamp matches no row, and still clears the backup streak', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-sha-123')
+    const newVersion = { id: 'ver-bk1', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [
+          { single: { version_number: 1 } },
+          { insertResult: newVersion },
+          { list: [] },                      // the commit_sha UPDATE touches nothing
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await drainWaitUntil()
+
+    const logged = errSpy.mock.calls.map((call) => String(call[0]))
+    expect(logged.some((line) => line.includes('workflow_version_commit_sha_unset'))).toBe(true)
+    // The GitHub push itself succeeded, so the failure streak must still reset.
+    // Only the bookkeeping is broken, and only the bookkeeping is reported.
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+    expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
+  })
+
+  it('stays quiet when the commit-sha stamp lands on its version row', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-sha-123')
+    const newVersion = { id: 'ver-bk1', version_number: 2, workflow_id: 'wf-1' }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [
+          { single: { version_number: 1 } },
+          { insertResult: newVersion },
+          { list: [{ id: 'ver-bk1' }] },
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await drainWaitUntil()
+
+    const logged = errSpy.mock.calls.map((call) => String(call[0]))
+    expect(logged.some((line) => line.includes('workflow_version_commit_sha_unset'))).toBe(false)
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
   })
 
   it('records a backup failure (for alerting) when the push throws', async () => {
@@ -588,9 +660,13 @@ describe('DELETE /workflows/:id', () => {
     app = await makeApp()
   })
 
+  // `list` is what a write's `.select('id')` resolves to in this mock, i.e. the
+  // rows the soft-delete UPDATE actually touched.
+  const softDeleteHit = { users: { single: testUser }, workflows: { list: [{ id: 'wf-1' }] } }
+
   it('returns 200 ok', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-1')
     expect(res.status).toBe(200)
@@ -600,7 +676,7 @@ describe('DELETE /workflows/:id', () => {
 
   it('calls invalidateWorkflowCache', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/workflows/wf-1')
     expect(vi.mocked(invalidateWorkflowCache)).toHaveBeenCalledWith('wf-1', expect.anything())
@@ -608,12 +684,27 @@ describe('DELETE /workflows/:id', () => {
 
   it('writes an audit log entry', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(softDeleteHit) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/workflows/wf-1')
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-1', 'deleted', 'user-1'
     )
+  })
+
+  // This handler has no ownership lookup: the soft-delete UPDATE is the only
+  // guard. A workflow that never existed, sits in another org, or was already
+  // soft-deleted all match zero rows, and all used to answer 200 {ok:true}
+  // while writing an audit row claiming a deletion (#588).
+  it('returns 404 and writes nothing when the soft delete matches no row', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, workflows: { list: [] } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/workflows/wf-gone')
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Workflow not found' })
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
 
@@ -668,7 +759,10 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
           { single: { version_number: 3 } },   // get current max version number
           { insertResult: { id: 'ver-4', version_number: 4 } },
         ],
-        workflows: { single: existingWorkflow },
+        workflows: [
+          { single: existingWorkflow },        // ownership lookup
+          { list: [{ id: 'wf-1' }] },          // the definition UPDATE touches one row
+        ],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
@@ -676,6 +770,31 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     const body = await res.json() as { ok: boolean; version_number: number }
     expect(body.ok).toBe(true)
     expect(typeof body.version_number).toBe('number')
+  })
+
+  // The version snapshot is inserted before the definition UPDATE. That update
+  // discarded its result entirely, so a restore could write history, fail to
+  // move the live definition, and still answer 200 (#588).
+  it('returns 404 when the definition update matches no row, so history and definition cannot silently diverge', async () => {
+    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_versions: [
+          { single: oldVersion },
+          { single: { version_number: 3 } },
+          { insertResult: { id: 'ver-4', version_number: 4 } },
+        ],
+        workflows: [
+          { single: existingWorkflow },        // ownership lookup passes
+          { list: [] },                        // ...then the workflow vanishes
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(404)
+    expect(vi.mocked(invalidateWorkflowCache)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
   it('aborts the restore when the version-number lookup hits a real DB error (#303)', async () => {
@@ -718,11 +837,91 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
           { single: { version_number: 3 } },
           { insertResult: { id: 'ver-4', version_number: 4 } },
         ],
-        workflows: { single: existingWorkflow },
+        workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     expect(vi.mocked(invalidateWorkflowCache)).toHaveBeenCalledWith('wf-1', expect.anything())
+  })
+})
+
+// A partner can be deleted between the SELECT that lists rename candidates and
+// the UPDATE that rewrites its formula. That UPDATE then matches zero rows, which
+// PostgREST reports as success, so the partner was counted and audited as
+// renamed when nothing changed (#588).
+describe('POST /workflows/:id/rename-apply: zero-row partner update', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const partnerRow = {
+    id: 'p-1',
+    name: 'Tripoint',
+    slug: 'tripoint',
+    bid_formula: 'steps.old_ns.output.score',
+    bid_resolver_config: null,
+  }
+  const renameBody = { old: 'old_ns', new: 'new_ns', partner_ids: ['p-1'] }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it('skips a partner whose update matches no row: not counted, not audited', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        partner_configs: [
+          { list: [partnerRow] },   // the rename candidates
+          { list: [] },             // ...then the UPDATE touches nothing
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ updated: 0 })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    const warned = warnSpy.mock.calls.map((call) => String(call[0]))
+    expect(warned.some((line) => line.includes('partner_rename_skipped'))).toBe(true)
+  })
+
+  it('counts and audits a partner whose update lands', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        partner_configs: [{ list: [partnerRow] }, { list: [{ id: 'p-1' }] }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ updated: 1 })
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
+      expect.anything(), USER_ORG, 'partner_config', 'p-1', 'updated', 'user-1', expect.anything()
+    )
+  })
+
+  // A real database error is not a vanished partner: it must abort with a 500,
+  // never be swallowed as a skip.
+  it('returns 500 when the partner update fails for a real database reason', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+        partner_configs: [
+          { list: [partnerRow] },
+          { updateError: { code: '42P01', message: 'relation missing' } },
+        ],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', { body: renameBody })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'Internal error' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
 

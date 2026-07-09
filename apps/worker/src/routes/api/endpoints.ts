@@ -8,7 +8,7 @@
  */
 
 import { Hono } from 'hono'
-import { dbError, isNotFoundError } from '../../lib/api-error'
+import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -255,13 +255,10 @@ endpoints.delete('/:id', async (c) => {
   if (existingError && !isNotFoundError(existingError)) return dbError(c, existingError)
   if (!existing) return c.json({ error: 'Endpoint not found' }, 404)
 
-  const { error } = await supabase
-    .from('webhook_endpoints')
-    .delete()
-    .eq('id', id)
-    .eq('organization_id', orgId)
-
-  if (error) return dbError(c, error)
+  const deleteBlocked = await requireRowOr404(c, 'Endpoint not found', () =>
+    supabase.from('webhook_endpoints').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await c.env.WORKFLOW_CACHE.delete(cacheKey(existing.subdomain, existing.path))
 

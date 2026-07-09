@@ -194,7 +194,7 @@ describe('field-coverage routes (#423)', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: { maybeSingle: { id: 'wf-1' } },
-        field_presence_silences: {},
+        field_presence_silences: { writeRows: [{ field_path: 'x.final' }] },
       }) as unknown as ReturnType<typeof createSupabaseClient>,
     )
     const res = await jsonRequest(app, 'DELETE', '/field-coverage/wf-1/silence', { field: 'x.final' })
@@ -208,5 +208,36 @@ describe('field-coverage routes (#423)', () => {
       'user-1',
       expect.anything(),
     )
+  })
+
+  it('DELETE silence still returns 200 but writes no audit log when the clear matches zero rows (#588)', async () => {
+    // Clearing a silence that was never set is an idempotent no-op (200); the
+    // audit line is gated on the row actually removed, so it must not fire here.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_silences: { writeRows: [] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'DELETE', '/field-coverage/wf-1/silence', { field: 'x.final' })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('DELETE silence returns 500 (not a false 200/404) when the delete hits a real DB error (#588)', async () => {
+    // A transient write failure must surface as a retryable 500, not be swallowed
+    // into the no-op 200 path.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_silences: { deleteError: { code: '42P01', message: 'relation missing' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await jsonRequest(app, 'DELETE', '/field-coverage/wf-1/silence', { field: 'x.final' })
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })

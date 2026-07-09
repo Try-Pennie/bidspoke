@@ -95,17 +95,23 @@ settings.delete('/anthropic-key', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { error } = await supabase
+  // Clearing a key that was never set is a no-op, and the response is true
+  // either way, so this stays 200. Only the audit row is gated on the rows the
+  // delete actually removed (#588).
+  const { data: deleted, error } = await supabase
     .from('app_settings')
     .delete()
     .eq('organization_id', orgId)
     .eq('key', ANTHROPIC_KEY_SETTING)
+    .select('key')
 
   if (error) return dbError(c, error)
 
-  await writeAuditLog(supabase, orgId, 'app_setting', ANTHROPIC_KEY_SETTING, 'deleted', userId, {
-    changed_by_email: email,
-  })
+  if (deleted?.length) {
+    await writeAuditLog(supabase, orgId, 'app_setting', ANTHROPIC_KEY_SETTING, 'deleted', userId, {
+      changed_by_email: email,
+    })
+  }
 
   return c.json({ configured: false })
 })

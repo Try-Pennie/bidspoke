@@ -15,10 +15,11 @@
  * can check how many rows it touched. Pair it with `requireRowsAffected()` from
  * lib/db-retry, or check `data?.length` directly.
  *
- * SCOPE: engine/ and lib/ only. The routes/api/ surface has the same latent
- * problem, but with different semantics (a zero-row PATCH/DELETE there should be
- * a 404, not a data-loss alert) and is tracked separately. Do not widen this
- * guard to routes/ without doing that work.
+ * SCOPE: engine/, lib/ and routes/. A background write that touches nothing is
+ * data loss; a route write that touches nothing is a lie to the caller, so
+ * routes pair `.select(...)` with `requireRowOr404()` from lib/api-error to
+ * answer 404 instead of a false 200 (#588). Either way the rule is the same:
+ * end the statement in `.select(...)` so the rowcount is visible at all.
  *
  * A deliberate exception opts out with a `// zero-row-ok: <reason>` comment on
  * the statement.
@@ -31,7 +32,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { WORKER_SRC, listTsFiles, sanitizeSource } from './_scan-utils'
 
-const SCAN_DIRS = ['engine', 'lib'].map((d) => path.join(WORKER_SRC, d))
+const SCAN_DIRS = ['engine', 'lib', 'routes'].map((d) => path.join(WORKER_SRC, d))
 
 const OPT_OUT = /\/\/\s*zero-row-ok:/
 // Lines above a write to search for its opt-out comment. A formatted chain puts
@@ -162,7 +163,7 @@ function findUncheckedWrites(rawSrc: string, file: string): Finding[] {
 }
 
 describe('worker zero-row write guard (#583)', () => {
-  it('every supabase update/delete in engine and lib checks how many rows it touched', () => {
+  it('every supabase update/delete in engine, lib and routes checks how many rows it touched', () => {
     const findings: Finding[] = []
     for (const dir of SCAN_DIRS) {
       for (const file of listTsFiles(dir)) {

@@ -64,13 +64,18 @@ export function dbErrorUnlessNotFound(c: Context, err: unknown): Response | null
  *     supabase.from('workflows').update(patch).eq('id', id).eq('organization_id', orgId).select('id')
  *   )
  *   if (blocked) return blocked
+ *
+ * `op` returns a PromiseLike, not a Promise, so a supabase query builder can be
+ * handed over directly. The builder is a thenable without `.catch`/`.finally`,
+ * and requiring a real Promise would force every call site to wrap it in an
+ * `async () => { ... }` block.
  */
 export async function requireRowOr404(
   c: Context,
   notFoundMessage: string,
-  op: () => Promise<{ data: unknown[] | null; error: DbError | null }>
+  op: () => PromiseLike<{ data: unknown[] | null; error: DbError | null }>
 ): Promise<Response | null> {
-  const { error } = await requireRowsAffected(notFoundMessage, op)
+  const { error } = await requireRowsAffected(notFoundMessage, async () => op())
   if (!error) return null
   if (isNoRowMatchedError(error)) return c.json({ error: notFoundMessage }, 404)
   return dbError(c, error)

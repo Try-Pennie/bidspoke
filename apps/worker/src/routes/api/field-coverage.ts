@@ -156,15 +156,21 @@ fieldCoverage.delete('/:workflowId/silence', async (c) => {
   if (!body?.field) {
     return c.json({ error: 'field is required' }, 400)
   }
-  const { error } = await supabase
+  // Clearing a silence that was never set is a no-op, so this stays 200. The
+  // table has no organization_id column: ownedWorkflow() above is what scopes
+  // it. Only the audit row is gated on the rows actually removed (#588).
+  const { data: cleared, error } = await supabase
     .from('field_presence_silences')
     .delete()
     .eq('workflow_id', workflowId)
     .eq('field_path', body.field)
+    .select('field_path')
   if (error) return dbError(c, error)
-  await writeAuditLog(supabase, orgId, 'field_presence_silence', `${workflowId}:${body.field}`, 'field_silence_cleared', userId, {
-    field: body.field,
-  })
+  if (cleared?.length) {
+    await writeAuditLog(supabase, orgId, 'field_presence_silence', `${workflowId}:${body.field}`, 'field_silence_cleared', userId, {
+      field: body.field,
+    })
+  }
   return c.json({ ok: true })
 })
 

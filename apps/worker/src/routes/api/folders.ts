@@ -5,7 +5,7 @@
 // DELETE /api/folders/:id    — delete if empty; 409 with child counts otherwise
 
 import { Hono } from 'hono'
-import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -163,8 +163,10 @@ folders.delete('/:id', async (c) => {
     )
   }
 
-  const { error } = await supabase.from('folders').delete().eq('id', id).eq('organization_id', orgId)
-  if (error) return dbError(c, error)
+  const deleteBlocked = await requireRowOr404(c, 'folder not found', () =>
+    supabase.from('folders').delete().eq('id', id).eq('organization_id', orgId).select('id')
+  )
+  if (deleteBlocked) return deleteBlocked
 
   await writeAuditLog(supabase, orgId, 'folder', id, 'deleted', userId, { name: existing.name })
 
