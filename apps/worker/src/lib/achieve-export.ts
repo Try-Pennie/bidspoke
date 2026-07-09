@@ -18,6 +18,7 @@ import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
 import { exportTable, purgeOldExported, readSnowflakeConfig, type ColSpec } from './sightings-export'
 import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
+import { formatErr } from './format-error'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
 // output = { status, body } with the trades response in body).
@@ -198,6 +199,3 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
   return summary
 }
 
-function formatErr(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
-}

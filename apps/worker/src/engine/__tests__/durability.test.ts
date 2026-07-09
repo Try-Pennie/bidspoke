@@ -100,4 +100,27 @@ describe('recordOutcomeDeadLetter', () => {
       'https://app.test',
     )
   })
+
+  // A DbError is a plain object, not an Error, and it is what writeOutcome (the
+  // dominant caller) actually passes. String()-ing it yielded "[object Object]",
+  // which named no failure and blanked every tier-2 alert in production.
+  it('renders a plain DbError cause, not [object Object]', async () => {
+    const kv = fakeKv()
+    const dbError = { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'lead_sightings.finalize: write matched zero rows' }
+    await recordOutcomeDeadLetter('lead_sightings.finalize', dbError, deps(kv))
+
+    const { error_message } = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0][1]
+    expect(error_message).not.toContain('[object Object]')
+    expect(error_message).toContain('write matched zero rows')
+    expect(error_message).toContain('BIDSPOKE_NO_ROW_MATCHED')
+  })
+
+  it('renders a DbError that reaches the alert through writeOutcome', async () => {
+    const kv = fakeKv()
+    await writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), deps(kv))
+
+    const { error_message } = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls[0][1]
+    expect(error_message).not.toContain('[object Object]')
+    expect(error_message).toContain('not-null violation')
+  })
 })
