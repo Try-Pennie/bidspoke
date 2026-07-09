@@ -310,14 +310,27 @@ export function warnDroppedBodyFields(
 // real step, not the join marker the workflow happens to converge through.
 const END_NODE_TYPES = new Set(['branch_end', 'parallel_end'])
 
+export interface RecordStepOptions {
+  /** The node's type, so synthetic join markers can be skipped. */
+  nodeType?: string
+  /**
+   * True only for a step the walk itself executed in its own chain. Writes that
+   * are NOT chain steps (a bid_group partner attempt, a parallel child) still
+   * land in ctx.steps but must never advance lastCompletedNamespace: a bid
+   * attempt that loses its race keeps running and records long after the walk
+   * moved on, so "whoever wrote last" is not "whoever ran last" (#489).
+   */
+  chainStep?: boolean
+}
+
 export function recordStepOutput(
   ctx: ExecutionContext,
   namespace: string,
   result: StepOutput,
-  nodeType?: string
+  opts: RecordStepOptions = {}
 ): void {
   ctx.steps[namespace] = result
-  if (result.status === 'completed' && !END_NODE_TYPES.has(nodeType ?? '')) {
+  if (opts.chainStep && result.status === 'completed' && !END_NODE_TYPES.has(opts.nodeType ?? '')) {
     ctx.lastCompletedNamespace = namespace
   }
 }

@@ -910,7 +910,11 @@ workflows.post('/:id/test-node', async (c) => {
 
   const started = Date.now()
   try {
-    const result = await executeNode(node, ctx, c.env, supabase)
+    // branch_end passes through its chain's preceding step. The engine supplies
+    // that from the walk; here the rebuilt ctx.steps IS the chain (one prior
+    // execution, in order), so its last entry is the equivalent (#489).
+    const chainOutput = Object.values(ctx.steps).at(-1)?.output ?? null
+    const result = await executeNode(node, ctx, c.env, supabase, undefined, chainOutput)
     // Mirror the engine's sentinel-failed check (engine/index.ts:825): a code
     // node that returns { response: { status: 4xx/5xx } } is signaling its own
     // failure. Without this, Re-run shows green for error responses.

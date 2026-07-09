@@ -21,7 +21,10 @@ export async function executeNode(
   supabase?: SupabaseClient,
   // Fires when the step-level timeout elapses; forwarded to every node type that
   // makes an outbound call so the in-flight request is canceled before a retry (#66).
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // Output of the step the caller's walk just executed in THIS chain. Only
+  // branch_end consumes it; see executeBranchEndNode (#489).
+  chainOutput?: unknown
 ): Promise<StepExecutionResult> {
   switch (node.type) {
     case 'filter':
@@ -51,7 +54,7 @@ export async function executeNode(
       // path the branch's selected handle led down; once that chain reaches
       // branch_end, this returns the prior step's output and the main walk
       // continues to branch_end's successor.
-      return executeBranchEndNode(node, ctx)
+      return executeBranchEndNode(chainOutput)
     case 'webhook':
       return executeIntegrationNode(node, ctx, env, signal)
     case 'transform':
@@ -78,11 +81,16 @@ function executeExitNode(node: NodeDefinition): StepExecutionResult {
   }
 }
 
-function executeBranchEndNode(_node: NodeDefinition, ctx: ExecutionContext): StepExecutionResult {
-  // Whichever branch handle's chain led here, the most recent step's output
-  // is what we want to surface as branch_end's output. Mirrors how
-  // parallel_end inherits the parallel's output, but here we pass through
-  // the single winning chain instead of an array of fan-out results.
-  const lastStep = Object.values(ctx.steps).at(-1)
-  return { output: lastStep?.output ?? null }
+function executeBranchEndNode(chainOutput: unknown): StepExecutionResult {
+  // Whichever branch handle's chain led here, that chain's final step output is
+  // what we surface. Mirrors how parallel_end inherits the parallel's output,
+  // but here we pass through the single winning chain instead of an array of
+  // fan-out results.
+  //
+  // This used to read Object.values(ctx.steps).at(-1). ctx.steps is shared with
+  // writers that are not on this chain (a bid_group partner attempt that lost
+  // its race keeps running and appends itself whenever it finally settles), so
+  // "newest key" was not "my chain's last step" and branch_end could emit some
+  // other partner's bid. The caller passes its own walk-local value now (#489).
+  return { output: chainOutput ?? null }
 }

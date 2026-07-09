@@ -919,7 +919,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: parallelDurationMs, error_message: errorMessage, error_type: errorType })
       }
 
-      recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType })
+      recordStepOutput(ctx, node.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType }, { chainStep: true })
       logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelStartOrder)
 
       // Locate the parallel_end join node. Reuse the same detection logic
@@ -928,7 +928,7 @@ export async function walkGraph(
       const childIdSet = new Set(resolvedChildren.map((c) => c.id))
       const endNode = endNodePreview
       if (endNode) {
-        recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType }, endNode.type)
+        recordStepOutput(ctx, endNode.namespace, { output, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: endNode.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, endNode, stepStatus, null, output, errorMessage, errorType, 0, stepStartedAt, parallelEndOrder)
       }
 
@@ -1089,7 +1089,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: groupDurationMs, error_message: groupErrorMessage })
       }
 
-      recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: groupErrorType })
+      recordStepOutput(ctx, node.namespace, { output: groupOutput, status: groupStatus, error: groupErrorMessage, error_type: groupErrorType }, { chainStep: true })
       const groupResolvedInput: ResolvedStepInput = {
         template: {
           mode: config.mode,
@@ -1173,7 +1173,7 @@ export async function walkGraph(
           } else {
             log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: chainNode.namespace, step_type: chainNode.type, duration_ms: r.durationMs, error_message: r.error, error_type: chainErrorType })
           }
-          recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: chainErrorType })
+          recordStepOutput(ctx, chainNode.namespace, { output: r.output ?? null, status: r.status, error: r.error, error_type: chainErrorType }, { chainStep: true })
           // Chained code steps don't get the standard ResolvedStepInput from the
           // executor (the bundled worker batches them). Reconstruct the same
           // template/resolved shape from the chain node's props config — the
@@ -1265,7 +1265,7 @@ export async function walkGraph(
 
     try {
       const result = await withRetry(
-        (signal) => executeNode(node, ctx, env, supabase, signal),
+        (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
         retryStats
@@ -1304,7 +1304,7 @@ export async function walkGraph(
         } else {
           log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMsEarly })
         }
-        recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType }, node.type)
+        recordStepOutput(ctx, node.namespace, { output, status: earlyStepStatus, error: earlyErrorMessage, error_type: earlyErrorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, earlyStepStatus, resolvedInput, output, earlyErrorMessage, earlyErrorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         loggedEarly = true
         if (result.continueAfterResponse && result.earlyResponse) {
@@ -1358,7 +1358,7 @@ export async function walkGraph(
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
         const fallback = findNode(node.config.fallback_node as string, definition.nodes)
         if (fallback) {
-          recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
+          recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
           logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
           current = fallback
           stepOrder++
@@ -1368,7 +1368,7 @@ export async function walkGraph(
       } else {
         stepStatus = 'failed'
         log({ event: 'step_error', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs, error_message: errorMessage, error_type: errorType })
-        recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, node.type)
+        recordStepOutput(ctx, node.namespace, { output: null, status: stepStatus, error: errorMessage, error_type: errorType }, { nodeType: node.type, chainStep: true })
         logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
         throw new StepFailureError(errorMessage, node.namespace, errorType, suppressAlert)
       }
@@ -1380,7 +1380,7 @@ export async function walkGraph(
     if (!loggedEarly) {
       const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
       log({ event: 'step_complete', trace_id: ctx.trigger.trace_id, workflow_id: ctx.trigger.workflow_id, workflow_version_id: workflowVersionId, step_namespace: node.namespace, step_type: node.type, duration_ms: seqDurationMs })
-      recordStepOutput(ctx, node.namespace, { output, status: stepStatus }, node.type)
+      recordStepOutput(ctx, node.namespace, { output, status: stepStatus }, { nodeType: node.type, chainStep: true })
       logStep(stepLogQueue, executionId, executionStartedAt, node, stepStatus, resolvedInput, output, errorMessage, errorType, retriesUsed, stepStartedAt, stepOrder, undefined, stepLogs)
     }
 
@@ -1595,7 +1595,7 @@ export async function runParallelChild(
 
     try {
       const result = await withRetry(
-        (signal) => executeNode(node, ctx, env, supabase, signal),
+        (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
         retryStats
