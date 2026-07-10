@@ -346,6 +346,47 @@ describe('DB error => retryable 5xx, not a false 404 (#320)', () => {
     const res = await request(app, 'POST', '/executions/exec-1/replay')
     expect(res.status).toBe(500)
   })
+
+  // #596: the SECOND lookup (the workflows ownership check) used the bare
+  // `if (ownerError) return 404` form. With the first lookup succeeding, an error
+  // on the ownership lookup must now surface as a retryable 5xx, not a false 404
+  // that tells the caller the row is gone during a transient DB blip.
+  it('GET /:id/steps/:stepId returns 5xx when the OWNERSHIP lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        execution_steps: { single: testSteps[0] },
+        workflow_executions: { single: testExecution },
+        workflows: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/executions/exec-1/steps/step-1')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/resume returns 5xx when the OWNERSHIP lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: testExecution },
+        workflows: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/executions/exec-1/resume')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/replay returns 5xx when the OWNERSHIP lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: testExecution },
+        workflows: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/executions/exec-1/replay')
+    expect(res.status).toBe(500)
+  })
 })
 
 describe('POST /executions/:id/replay', () => {

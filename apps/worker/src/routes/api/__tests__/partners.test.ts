@@ -173,4 +173,20 @@ describe('PUT /partners/:id: zero-row 404 vs real DB error (#595)', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(updated)
   })
+
+  // #596: the ownership READ preceding the update used the bare
+  // `if (fetchError) return 404` form. A real DB error on that read must be a
+  // retryable 500, not a 404 that says the partner is gone during a blip.
+  it('returns 500 (not a false 404) when the ownership read hits a real DB error (#596)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await put('/partners/p-1', { name: 'Renamed' })
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
 })

@@ -852,6 +852,100 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
   })
 })
 
+// #596: the workflow read and the restore ownership lookup used the bare
+// `if (error) return 404` form. A real DB error on either must surface as a
+// retryable 5xx, not a false 404 that says the workflow is gone during a blip.
+describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const DB_ERROR = { code: '57014', message: 'canceling statement due to statement timeout' }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    app = await makeApp()
+  })
+
+  it('GET /:id returns 5xx when the workflow read errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'GET', '/workflows/wf-1')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/versions/:version_id/restore returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { singleError: DB_ERROR },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  // Each remaining fixed handler: a DB error on its ownership lookup is a 5xx,
+  // never a false 404. Injecting singleError on the first workflows read (the
+  // ownership check) is exactly what the old bare `if (error) return 404` turned
+  // into a 404.
+  function withOwnershipError() {
+    return makeSupabase({
+      users: { single: testUser },
+      workflows: { singleError: DB_ERROR },
+    }) as unknown as ReturnType<typeof createSupabaseClient>
+  }
+
+  it('PATCH /:id returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/versions returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'GET', '/workflows/wf-1/versions')
+    expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/versions/:version_id returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'GET', '/workflows/wf-1/versions/ver-1')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/test returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'POST', '/workflows/wf-1/test', { body: { payload: {} } })
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/test-node returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'POST', '/workflows/wf-1/test-node', { body: { namespace: 'n' } })
+    expect(res.status).toBe(500)
+  })
+
+  it('GET /:id/rename-impact returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'GET', '/workflows/wf-1/rename-impact?old=foo&new=bar')
+    expect(res.status).toBe(500)
+  })
+
+  it('POST /:id/rename-apply returns 5xx when the ownership lookup errors (not 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(withOwnershipError())
+    const res = await request(app, 'POST', '/workflows/wf-1/rename-apply', {
+      body: { old: 'foo', new: 'bar', partner_ids: ['p-1'] },
+    })
+    expect(res.status).toBe(500)
+  })
+})
+
 // A partner can be deleted between the SELECT that lists rename candidates and
 // the UPDATE that rewrites its formula. That UPDATE then matches zero rows, which
 // PostgREST reports as success, so the partner was counted and audited as
