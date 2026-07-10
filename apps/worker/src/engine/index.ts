@@ -581,6 +581,19 @@ export async function executeWorkflow(
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
           ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+        }, {
+          // #584: hand finalize the create fields so a missing base row (a
+          // permanent createExecutionRecord insert failure) is reconstructed from
+          // them plus the final-state update above, rather than lost. Mirrors the
+          // createExecutionRecord call earlier in this function.
+          workflow_id: workflowId,
+          workflow_version_id,
+          source,
+          trigger_payload: payload,
+          trace_id: traceId,
+          is_test: options.isTest ?? false,
+          parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
+          resumed_from_execution_id: options.resumeFromExecutionId,
         })
 
         // The finalize UPDATE is the only durable record that this lead was

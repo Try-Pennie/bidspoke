@@ -6,6 +6,7 @@ import {
   isDuplicateError,
   isNoRowMatchedError,
   requireRowsAffected,
+  withDbRetry,
   sleep,
   NO_ROW_MATCHED_CODE,
   type DbError,
@@ -227,6 +228,59 @@ export async function createExecutionRecord(
   throw new Error(`workflow_executions insert failed: ${lastError?.message}`)
 }
 
+// #584: the create-time fields the finalize call site threads through so a
+// missing base row can be reconstructed. Mirrors createExecutionRecord's input
+// minus id/started_at (already function params) and trigger_type (constant).
+export interface ExecutionCreateFields {
+  workflow_id: string
+  workflow_version_id?: string | null
+  source?: string | null
+  trigger_payload?: unknown
+  trace_id?: string | null
+  is_test: boolean
+  parent_execution_id?: string | null
+  resumed_from_execution_id?: string | null
+}
+
+// #584: recreate a lost workflow_executions row from the create fields plus the
+// final-state finalize columns. Runs only after updateExecutionOnce confirmed the
+// row is genuinely absent (both partition-keyed and id-only statements matched
+// zero rows), so a plain insert is correct. A concurrent writer that landed the
+// row first surfaces as a duplicate, which is success. Any other error is
+// returned so the caller still dead-letters it (#487). Uses the shared transient
+// retry ladder so a schema-cache blip during reconstruction self-heals.
+async function reconstructExecutionRecord(
+  supabase: SupabaseClient,
+  id: string,
+  started_at: string,
+  update: Record<string, unknown>,
+  createFields: ExecutionCreateFields
+): Promise<DbError | null> {
+  const row = { id, started_at, trigger_type: 'http_webhook', ...createFields, ...update }
+  const { error } = await withDbRetry(async () => {
+    const res = await insertRowsOnce(supabase, 'workflow_executions', [row])
+    // A duplicate means the row exists now (success, not a loss). Report it as
+    // no-error so withDbRetry stops immediately without burning the ladder.
+    if (res.error && isDuplicateError(res.error)) return { error: null }
+    return res
+  })
+  if (error) {
+    console.error('[step-logger] workflow_executions reconstruction insert failed, execution record lost', {
+      id,
+      started_at,
+      status: update.status,
+      error: error.message,
+    })
+    return error
+  }
+  console.warn('[step-logger] workflow_executions row reconstructed at finalize (base insert had failed)', {
+    id,
+    started_at,
+    status: update.status,
+  })
+  return null
+}
+
 export async function updateExecutionRecord(
   supabase: SupabaseClient,
   id: string,
@@ -250,7 +304,14 @@ export async function updateExecutionRecord(
     // #419: per-execution field-presence booleans (which watched fields carried
     // a value this run). Dark capture behind FIELD_PRESENCE_CAPTURE.
     field_presence?: Record<string, boolean>
-  }
+  },
+  // #584: the NOT NULL create fields the finalize call site can hand over. When
+  // the base row is missing (createExecutionRecord failed permanently), these let
+  // us reconstruct the row from them plus the final-state update, instead of only
+  // dead-lettering a served lead that would otherwise leave no audit record. When
+  // omitted, a missing row still returns NO_ROW_MATCHED for the caller to
+  // dead-letter (the pre-#584 behavior, kept for direct callers).
+  createFields?: ExecutionCreateFields
 ): Promise<DbError | null> {
   // The finalize update lands in the same partition-purge window as the insert,
   // so it gets the same transient-retry ladder. Failure is returned, not thrown:
@@ -265,6 +326,12 @@ export async function updateExecutionRecord(
     // A row that does not exist will not appear by waiting, and schema drift is
     // not fixed by waiting either. Both fail fast.
     if (isNoRowMatchedError(error)) {
+      // #584: reconstruct the row rather than lose it, when the caller supplied
+      // the create fields. The row carries the FINAL status from `update` (not
+      // 'running'), so it is a complete terminal record on the first write.
+      if (createFields) {
+        return reconstructExecutionRecord(supabase, id, started_at, update, createFields)
+      }
       console.error('[step-logger] workflow_executions update matched zero rows, execution record lost', {
         id,
         started_at,
