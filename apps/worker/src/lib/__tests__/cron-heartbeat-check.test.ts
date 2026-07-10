@@ -6,7 +6,14 @@ vi.mock('../slack', () => ({
 }))
 
 import { sendCronHeartbeatAlert } from '../slack'
-import { runDailyHeartbeatCheck, writeDailyHeartbeat, HEARTBEAT_KEY, FIRST_SEEN_KEY } from '../cron-heartbeat'
+import {
+  runHeartbeatChecks,
+  writeHeartbeat,
+  heartbeatKey,
+  firstSeenKey,
+  CRON_JOBS,
+  cronJob,
+} from '../cron-heartbeat'
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
 const H = 3_600_000
@@ -27,61 +34,101 @@ function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
   } as unknown as SupabaseClient
 }
 
+// Fresh every job so a job-under-test can be made stale in isolation.
+function allFresh(nowMs: number): Record<string, string> {
+  return Object.fromEntries(CRON_JOBS.map((j) => [heartbeatKey(j.id), iso(nowMs - 1)]))
+}
+
 beforeEach(() => {
   vi.mocked(sendCronHeartbeatAlert).mockClear()
 })
 
-describe('writeDailyHeartbeat', () => {
-  it('records the run timestamp under the heartbeat key', async () => {
-    const kv = fakeKv()
-    await writeDailyHeartbeat(kv, NOW)
-    expect(kv.store.get(HEARTBEAT_KEY)).toBe(iso(NOW))
+describe('CRON_JOBS registry', () => {
+  it('keeps the daily batch on its legacy KV key so a live deploy does not lose its heartbeat', () => {
+    // Renaming this key would reset the daily job to never_ran on deploy and
+    // false-alarm during the grace window. It must stay byte-for-byte.
+    expect(heartbeatKey('daily-1300')).toBe('cron-heartbeat:daily-1300')
+    expect(firstSeenKey('daily-1300')).toBe('cron-heartbeat:daily-1300:first-seen')
+  })
+
+  it('registers the two-hour export and purge crons as watched jobs', () => {
+    const ids = CRON_JOBS.map((j) => j.id)
+    expect(ids).toContain('sightings-export')
+    expect(ids).toContain('sightings-purge')
+  })
+
+  it('gives the two-hour jobs a tighter stale threshold than the daily job', () => {
+    expect(cronJob('sightings-purge').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
+    // A 2h cadence must still tolerate one on-time run without flapping.
+    expect(cronJob('sightings-purge').staleMs).toBeGreaterThan(2 * H)
   })
 })
 
-describe('runDailyHeartbeatCheck', () => {
-  it('is healthy and silent when the last run is recent', async () => {
-    const kv = fakeKv({ [HEARTBEAT_KEY]: iso(NOW - 1 * H) })
-    const res = await runDailyHeartbeatCheck(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
-    expect(res.status).toBe('healthy')
-    expect(res.alerted).toBe(false)
-    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
-  })
-
-  it('seeds a first-seen marker and stays silent on a fresh deploy with no heartbeat yet', async () => {
+describe('writeHeartbeat', () => {
+  it('records the run timestamp under the per-job heartbeat key', async () => {
     const kv = fakeKv()
-    const res = await runDailyHeartbeatCheck(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
-    expect(res.status).toBe('pending')
-    expect(res.alerted).toBe(false)
-    expect(kv.store.get(FIRST_SEEN_KEY)).toBe(iso(NOW))
+    await writeHeartbeat(kv, 'sightings-purge', NOW)
+    expect(kv.store.get(heartbeatKey('sightings-purge'))).toBe(iso(NOW))
+    // Does not touch a different job's key.
+    expect(kv.store.get(heartbeatKey('daily-1300'))).toBeUndefined()
+  })
+})
+
+describe('runHeartbeatChecks', () => {
+  it('is healthy and silent when every job ran recently', async () => {
+    const kv = fakeKv(allFresh(NOW))
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
+    expect(results.every((r) => r.status === 'healthy')).toBe(true)
     expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
   })
 
-  it('alerts each distinct Slack org once when the heartbeat is stale', async () => {
-    const kv = fakeKv({ [HEARTBEAT_KEY]: iso(NOW - 27 * H) })
-    const res = await runDailyHeartbeatCheck(
+  it('alerts for the one dark job while the others stay silent', async () => {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey('sightings-purge')]: iso(NOW - 5 * H),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
+
+    const purge = results.find((r) => r.jobId === 'sightings-purge')
+    expect(purge?.status).toBe('stale')
+    expect(purge?.alerted).toBe(true)
+    // Exactly one alert, and it names the purge job.
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][2]).toMatchObject({ id: 'sightings-purge' })
+  })
+
+  it('uses a per-job cooldown so one dark job does not suppress alerts for another', async () => {
+    // Purge already alerted (cooldown set); export goes dark next. The export
+    // must still alert -- a shared cooldown key would swallow it.
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey('sightings-export')]: iso(NOW - 5 * H),
+      'cron-heartbeat:sightings-purge:alerted': '1',
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
+
+    expect(results.find((r) => r.jobId === 'sightings-export')?.alerted).toBe(true)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][2]).toMatchObject({ id: 'sightings-export' })
+  })
+
+  it('seeds a per-job first-seen marker and stays silent on a fresh deploy', async () => {
+    const kv = fakeKv()
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
+    expect(results.every((r) => r.status === 'pending')).toBe(true)
+    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
+    expect(kv.store.get(firstSeenKey('sightings-purge'))).toBe(iso(NOW))
+    expect(kv.store.get(firstSeenKey('daily-1300'))).toBe(iso(NOW))
+  })
+
+  it('alerts every distinct Slack org once for a dark job', async () => {
+    const kv = fakeKv({ ...allFresh(NOW), [heartbeatKey('daily-1300')]: iso(NOW - 30 * H) })
+    const res = await runHeartbeatChecks(
       fakeSupabase([{ organization_id: 'o1' }, { organization_id: 'o1' }, { organization_id: 'o2' }]),
       kv,
       NOW,
     )
-    expect(res.status).toBe('stale')
-    expect(res.alerted).toBe(true)
+    expect(res.find((r) => r.jobId === 'daily-1300')?.alerted).toBe(true)
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not re-alert on the next run while the cooldown is active', async () => {
-    const kv = fakeKv({ [HEARTBEAT_KEY]: iso(NOW - 27 * H) })
-    await runDailyHeartbeatCheck(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
-    vi.mocked(sendCronHeartbeatAlert).mockClear()
-    const res = await runDailyHeartbeatCheck(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW + 60_000)
-    expect(res.alerted).toBe(false)
-    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
-  })
-
-  it('alerts when the batch has never run since first being seen long ago', async () => {
-    const kv = fakeKv({ [FIRST_SEEN_KEY]: iso(NOW - 27 * H) })
-    const res = await runDailyHeartbeatCheck(fakeSupabase([{ organization_id: 'o1' }]), kv, NOW)
-    expect(res.status).toBe('never_ran')
-    expect(res.alerted).toBe(true)
   })
 })

@@ -998,6 +998,7 @@ export async function sendBigTableGrowthAlert(
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
+  job: { label: string; triggerCron: string; dependents: string },
   status: 'stale' | 'never_ran',
   ageMs: number | null,
 ): Promise<boolean> {
@@ -1009,19 +1010,19 @@ export async function sendCronHeartbeatAlert(
       ? `has not run since it was first observed${hours === null ? '' : ` ~${hours}h ago`}`
       : `has not run in ~${hours}h`
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Daily health-check batch is dark', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `${job.label} is dark`, emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `The 13:00 UTC health-check batch ${when}. While it is down, these watchdogs are NOT running: volume-anomaly, timeout-audit, secret-drift, required-secrets, big-table-guard, drain-stall.`,
+        text: `The ${job.label} cron (\`${job.triggerCron}\`) ${when}. While it is down: ${job.dependents}.`,
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* confirm the worker deployed with its cron triggers (wrangler.toml `[triggers]` must include `0 13 * * *`) and that the scheduled handler is not throwing before dispatch. Check the Cloudflare dashboard: Workers and Pages > bidspoke-worker > Settings > Triggers, and the worker logs for the 13:00 UTC run.',
+        text: `*How to fix:* confirm the worker deployed with its cron triggers (wrangler.toml \`[triggers]\` must include \`${job.triggerCron}\`) and that the scheduled handler is not throwing before dispatch. Check the Cloudflare dashboard: Workers and Pages > bidspoke-worker > Settings > Triggers, and the worker logs for the \`${job.triggerCron}\` run.`,
       },
     },
   ]
@@ -1029,7 +1030,7 @@ export async function sendCronHeartbeatAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Daily health-check batch is dark (${status})`,
+    `${job.label} is dark (${status})`,
   )) !== null
 }
 

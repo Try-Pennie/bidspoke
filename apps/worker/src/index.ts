@@ -15,7 +15,7 @@ import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
 import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
-import { writeDailyHeartbeat, runDailyHeartbeatCheck } from './lib/cron-heartbeat'
+import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -193,8 +193,8 @@ export default {
     } else if (event.cron === '0 13 * * *') {
       // Dead-man's-switch heartbeat: stamp that this batch dispatched (#358).
       ctx.waitUntil(
-        writeDailyHeartbeat(env.IDEMPOTENCY)
-          .catch((e) => console.error('[cron-heartbeat] write failed:', e))
+        writeHeartbeat(env.IDEMPOTENCY, 'daily-1300')
+          .catch((e) => console.error('[cron-heartbeat] daily write failed:', e))
       )
       ctx.waitUntil(
         runVolumeAnomalyCheck(supabase)
@@ -249,6 +249,10 @@ export default {
       // bid-matrix sync), and this job's statements carry PostgREST's 8s budget.
       // Pinned to :00 it lost that race on every run (2026-07-03 incident).
       ctx.waitUntil(
+        writeHeartbeat(env.IDEMPOTENCY, 'sightings-export')
+          .catch((e) => console.error('[cron-heartbeat] export write failed:', e))
+      )
+      ctx.waitUntil(
         runSightingsExport(supabase, env)
           .then((s) => {
             console.log('[sightings-export]', JSON.stringify(s))
@@ -265,6 +269,10 @@ export default {
       // silently, for days (2026-07-10). Alerts under its own job name: a purge
       // failure must never read as "Snowflake analytics are stale", because the
       // rows are already in Snowflake and only the Supabase cleanup is behind.
+      ctx.waitUntil(
+        writeHeartbeat(env.IDEMPOTENCY, 'sightings-purge')
+          .catch((e) => console.error('[cron-heartbeat] purge write failed:', e))
+      )
       ctx.waitUntil(
         runSightingsPurge(supabase)
           .then((s) => {
@@ -318,8 +326,14 @@ export default {
           .catch((e) => console.error('[upstream-outage] check failed:', e))
       )
       ctx.waitUntil(
-        runDailyHeartbeatCheck(supabase, env.IDEMPOTENCY)
-          .then((r) => { if (r.status === 'stale' || r.status === 'never_ran') console.error(`[cron-heartbeat] daily batch ${r.status} ageMs=${r.ageMs} alerted=${r.alerted}`) })
+        runHeartbeatChecks(supabase, env.IDEMPOTENCY)
+          .then((rs) => {
+            for (const r of rs) {
+              if (r.status === 'stale' || r.status === 'never_ran') {
+                console.error(`[cron-heartbeat] ${r.jobId} ${r.status} ageMs=${r.ageMs} alerted=${r.alerted}`)
+              }
+            }
+          })
           .catch((e) => console.error('[cron-heartbeat] check failed:', e))
       )
     }
