@@ -57,10 +57,22 @@ describe('CRON_JOBS registry', () => {
     expect(ids).toContain('sightings-purge')
   })
 
+  it('watches the bids purge, which runs on its own cron so a sightings backlog cannot starve it', () => {
+    // The bids purge got its own even-hour cron (2026-07-10: sharing one purge
+    // invocation let an 87K sightings backlog exhaust the subrequest budget and
+    // leave bids at zero). A separate cron that nothing watches is exactly the
+    // #612 gap, so it must be registered too.
+    const ids = CRON_JOBS.map((j) => j.id)
+    expect(ids).toContain('sighting-bids-purge')
+    expect(cronJob('sighting-bids-purge').triggerCron).toBe('47 0-22/2 * * *')
+  })
+
   it('gives the two-hour jobs a tighter stale threshold than the daily job', () => {
     expect(cronJob('sightings-purge').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
+    expect(cronJob('sighting-bids-purge').staleMs).toBeLessThan(cronJob('daily-1300').staleMs)
     // A 2h cadence must still tolerate one on-time run without flapping.
     expect(cronJob('sightings-purge').staleMs).toBeGreaterThan(2 * H)
+    expect(cronJob('sighting-bids-purge').staleMs).toBeGreaterThan(2 * H)
   })
 })
 
