@@ -260,17 +260,53 @@ export async function runSightingsPurge(
 
   try {
     summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings', MAX_ROWS_PER_RUN, sleep, deadline, now)
+    await assertNothingLeftToPurge(supabase, 'lead_sightings', summary.sightings_purged)
   } catch (e) {
     summary.errors.push(`sightings purge: ${formatErr(e)}`)
   }
 
   try {
     summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids', MAX_ROWS_PER_RUN, sleep, deadline, now)
+    await assertNothingLeftToPurge(supabase, 'lead_sighting_bids', summary.bids_purged)
   } catch (e) {
     summary.errors.push(`bids purge: ${formatErr(e)}`)
   }
 
   return summary
+}
+
+// purgeOldExported returns 0 for two very different runs: "nothing needed
+// purging" (healthy) and "could not purge anything" (the wall-time budget or the
+// platform subrequest ceiling ended the drain before a delete landed). Both used
+// to report `purged: 0, errors: []`, which is how 107,274 purgeable rows sat
+// past their retention window for days with every run looking clean (#613).
+// Throwing here routes the second case into the caller's existing errors[], which
+// notifyExportFailure already alerts on.
+async function assertNothingLeftToPurge(
+  supabase: SupabaseClient,
+  tableName: string,
+  purged: number,
+): Promise<void> {
+  if (purged > 0) return
+  if (!(await purgeableBacklogExists(supabase, tableName))) return
+  throw new Error(
+    'deleted 0 rows while purgeable rows remain (the wall-time budget or the platform subrequest ceiling ended the drain before any delete landed)'
+  )
+}
+
+// Deliberately an existence probe, not a COUNT: an exact count over a six-figure
+// backlog spanning monthly partitions is the same query shape that keeps hitting
+// service_role's 30s statement_timeout, so a counting check would fail on exactly
+// the bad day it needs to fire. One bounded row answers the only question asked.
+async function purgeableBacklogExists(supabase: SupabaseClient, tableName: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from(tableName)
+    .select('id')
+    .not('exported_at', 'is', null)
+    .lt('exported_at', purgeCutoff())
+    .limit(1)
+  if (error) throw error
+  return (data ?? []).length > 0
 }
 
 // ============================================================
@@ -539,6 +575,13 @@ export function formatValue(v: unknown, type: ColType): string {
 // Kept small so the id list stays within the PostgREST request-URL length limit.
 export const PURGE_BATCH = 200
 
+// Rows are purgeable once they have been exported and have aged past the grace
+// window. Shared by the drain loop and the zero-row backlog check so the two can
+// never disagree about which rows should already be gone.
+export function purgeCutoff(nowMs: number = Date.now()): string {
+  return new Date(nowMs - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
+}
+
 export async function purgeOldExported(
   supabase: SupabaseClient,
   tableName: string,
@@ -552,7 +595,7 @@ export async function purgeOldExported(
   deadline?: number,
   now: () => number = Date.now,
 ): Promise<number> {
-  const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
+  const cutoff = purgeCutoff()
   const partitionKey = partitionKeyFor(tableName)
   let purged = 0
 

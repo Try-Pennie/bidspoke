@@ -267,10 +267,12 @@ function fakePurgeSupabase(opts: {
   total: number
   deleteError?: unknown
   selectErrorOnce?: unknown
+  probeError?: unknown
 }) {
   let remaining = opts.total
   let deleteCalls = 0
   let selectCalls = 0
+  let probeCalls = 0
   let selectErrorFired = false
   const tableApiFor = (table: string) => {
     // The page carries the partition key so the DELETE can be bounded by its
@@ -282,6 +284,13 @@ function fakePurgeSupabase(opts: {
           not() { return q },
           lt() { return q },
           limit(n: number) {
+            // The zero-row backlog check (#613) is the only caller asking for a
+            // single row; the drain loop always asks for a full PURGE_BATCH page.
+            if (n === 1) {
+              probeCalls++
+              if (opts.probeError) return Promise.resolve({ data: null, error: opts.probeError })
+              return Promise.resolve({ data: remaining > 0 ? [{ id: 'probe' }] : [], error: null })
+            }
             selectCalls++
             if (opts.selectErrorOnce && !selectErrorFired) {
               selectErrorFired = true
@@ -317,7 +326,12 @@ function fakePurgeSupabase(opts: {
     }
   }
   const supabase = { from: (table: string) => tableApiFor(table) } as unknown as SupabaseClient
-  return { supabase, deleteCalls: () => deleteCalls, selectCalls: () => selectCalls }
+  return {
+    supabase,
+    deleteCalls: () => deleteCalls,
+    selectCalls: () => selectCalls,
+    probeCalls: () => probeCalls,
+  }
 }
 
 describe('purgeOldExported — batched delete', () => {
@@ -345,7 +359,9 @@ describe('purgeOldExported — batched delete', () => {
 
   it('stops cleanly (no throw) when the platform refuses more subrequests', async () => {
     const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: new Error('Too many subrequests.') })
-    // First select yields a batch, the delete hits the CF ceiling -> stop clean, 0 purged, no alert.
+    // First select yields a batch, the delete hits the CF ceiling -> stop clean, 0 purged.
+    // Stopping clean is this function's contract; runSightingsPurge is what turns a
+    // 0 with a surviving backlog into an alert (#613).
     const purged = await purgeOldExported(supabase, 'lead_sightings')
     expect(purged).toBe(0)
   })
@@ -811,7 +827,13 @@ describe('purge runs on its own budget, not the export leftovers', () => {
 
     expect(summary.sightings_purged).toBe(0)
     expect(summary.bids_purged).toBe(0)
-    expect(summary.errors).toEqual([])
+    // Stopping cleanly is not the same as succeeding: a 10,000 row backlog is
+    // still sitting there, so this must alert rather than report a clean run
+    // (#613). Before that fix this asserted errors == [], which is precisely
+    // the assertion that let the 2026-07-10 incident run silent for days.
+    expect(summary.errors).toHaveLength(2)
+    expect(summary.errors.join(' ')).toMatch(/sightings purge: deleted 0 rows while purgeable rows remain/)
+    expect(summary.errors.join(' ')).toMatch(/bids purge: deleted 0 rows while purgeable rows remain/)
   })
 
   it('reports a purge failure as an error so it can alert, instead of a silent warn', async () => {
@@ -820,5 +842,60 @@ describe('purge runs on its own budget, not the export leftovers', () => {
 
     expect(summary.errors.join(' ')).toMatch(/sightings purge/)
     expect(summary.errors.join(' ')).toMatch(/boom/)
+  })
+})
+
+// #613: purgeOldExported returns 0 both when there was nothing to purge (healthy)
+// and when it could not purge (subrequest ceiling, wall-time budget). Only the
+// second is a problem, and it was reported as `purged: 0, errors: []` while
+// 107,274 purgeable rows accumulated. Tell the two apart by asking whether a
+// purgeable row still exists.
+describe('runSightingsPurge zero-row backlog detection (#613)', () => {
+  it('alerts when the subrequest ceiling stops the drain before a single delete lands', async () => {
+    // The 2026-07-10 incident shape: the run ends without deleting anything and
+    // the backlog is untouched.
+    const { supabase } = fakePurgeSupabase({ total: 10_000, deleteError: new Error('Too many subrequests.') })
+
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+
+    expect(summary.sightings_purged).toBe(0)
+    expect(summary.errors.join(' ')).toMatch(/sightings purge: deleted 0 rows while purgeable rows remain/)
+  })
+
+  it('stays silent when the purge deleted nothing because there was nothing to purge', async () => {
+    const { supabase, probeCalls } = fakePurgeSupabase({ total: 0 })
+
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+
+    expect(summary.sightings_purged).toBe(0)
+    expect(summary.bids_purged).toBe(0)
+    expect(summary.errors).toEqual([])
+    // Checked both tables and found each genuinely empty.
+    expect(probeCalls()).toBe(2)
+  })
+
+  it('skips the backlog check entirely when rows were purged', async () => {
+    // Sightings drains all 500 and never asks; only the now-empty bids table
+    // does. A run that purged rows must not pay for an extra query.
+    const { supabase, probeCalls } = fakePurgeSupabase({ total: 500 })
+
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+
+    expect(summary.sightings_purged).toBe(500)
+    expect(summary.errors).toEqual([])
+    expect(probeCalls()).toBe(1)
+  })
+
+  it('surfaces a failure of the backlog check itself rather than swallowing it', async () => {
+    const { supabase } = fakePurgeSupabase({
+      total: 10_000,
+      deleteError: new Error('Too many subrequests.'),
+      probeError: { code: '57014', message: 'canceling statement due to statement timeout' },
+    })
+
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+
+    expect(summary.errors.join(' ')).toMatch(/sightings purge/)
+    expect(summary.errors.join(' ')).toMatch(/statement timeout/)
   })
 })
