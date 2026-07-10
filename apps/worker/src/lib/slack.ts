@@ -5,6 +5,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
+import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import type { ErrorType } from '../types'
@@ -817,18 +818,36 @@ export interface OutcomeDeadLetterAlert {
 }
 
 /**
- * Cause-specific remediation line for a dead-lettered outcome write (#600).
+ * Cause-specific remediation line for a dead-lettered outcome write (#600, #585).
  *
  * The write already survived the full retry ladder before dead-lettering, so the
  * brief nightly-purge 503 is never the real cause. Classification reuses db-retry
  * (the single source of truth), so this copy can never drift from what the retry
  * logic actually treats as transient vs permanent.
  */
-function outcomeDeadLetterGuidance(errorCode: string | null | undefined): string {
+function outcomeDeadLetterGuidance(label: string, errorCode: string | null | undefined): string {
+  const err = errorCode ? { code: errorCode, message: '' } : null
+
+  // #585: an execution_finalize loss that is NOT a missing row left the
+  // workflow_executions row stuck at status='running' (the UPDATE could not
+  // land). That is exactly what the stranded-execution drain repairs on its
+  // per-minute cron, so this self-heals. Say so instead of paging as if the
+  // record were lost. The no-row case falls through: there is no 'running' row
+  // for the drain to find, so it stays genuinely unrecoverable below.
+  if (label === 'execution_finalize' && !isNoRowMatchedError(err)) {
+    return `*How to fix:* This left the execution row stuck at status='running'; the record itself is intact. The stranded-execution drain runs every minute and finalizes rows once they are older than ${STRAND_DRAIN_MIN_AGE_MINUTES} minutes, so this recovers automatically. Confirm the row reached a terminal status; only escalate if it is still 'running' beyond ${STRAND_DRAIN_MIN_AGE_MINUTES} minutes.`
+  }
+
   const base =
     '*How to fix:* This write is not auto-recovered. The lost record must be re-derived manually from the execution log below.'
-  const err = errorCode ? { code: errorCode, message: '' } : null
   if (isNoRowMatchedError(err)) {
+    // The finalize/execution case is a served lead whose row could not be
+    // created or reconstructed; the lead-sightings case is an ordering race
+    // between two of our own writes. Both are permanent and both need the
+    // execution log, but only the sightings case has the #591 explanation.
+    if (label === 'execution_finalize') {
+      return `${base} The execution row could not be created or reconstructed, so a served lead has no audit record. Inspect the error above.`
+    }
     return `${base} The row it targeted did not exist when it ran, usually an ordering race between two of our own background writes (see #591), not a database outage. Inspect the error above.`
   }
   if (isPermanentDbError(err)) {
@@ -853,19 +872,25 @@ export async function sendOutcomeDeadLetterAlert(
   appUrl: string
 ): Promise<boolean> {
   const errText = truncateErrorForAlert(payload.error_message)
+  // #585: an execution_finalize loss that isn't a missing row self-heals via the
+  // stranded-execution drain. Reframe the whole alert (header + summary) so it
+  // reads as a recoverable delay, not a permanent loss, matching the guidance.
+  const err = payload.error_code ? { code: payload.error_code, message: '' } : null
+  const drainRecoverable = payload.label === 'execution_finalize' && !isNoRowMatchedError(err)
+  const wasWere = payload.window_loss_count === 1 ? 'write was' : 'writes were'
+  const summary = drainRecoverable
+    ? `A finalize write (*${payload.label}*) failed after all retries, so *${payload.window_loss_count}* execution ${payload.window_loss_count === 1 ? 'row is' : 'rows are'} stuck at status='running' from the last ${payload.window_minutes} minutes. The records are intact and the stranded-execution drain recovers them automatically; this is informational unless it persists.`
+    : `A must-not-lose outcome write (*${payload.label}*) failed after all retries. *${payload.window_loss_count}* ${wasWere} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Outcome Record Lost', emoji: false } },
     {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `A must-not-lose outcome write (*${payload.label}*) failed after all retries. *${payload.window_loss_count}* ${payload.window_loss_count === 1 ? 'write was' : 'writes were'} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`,
-      },
+      type: 'header',
+      text: { type: 'plain_text', text: drainRecoverable ? 'Execution Finalize Delayed' : 'Outcome Record Lost', emoji: false },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: summary } },
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.error_code) },
+      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.label, payload.error_code) },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
   ]
@@ -874,7 +899,7 @@ export async function sendOutcomeDeadLetterAlert(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `Outcome record lost: ${payload.label}`
+    drainRecoverable ? `Execution finalize delayed: ${payload.label}` : `Outcome record lost: ${payload.label}`
   )) !== null
 }
 
