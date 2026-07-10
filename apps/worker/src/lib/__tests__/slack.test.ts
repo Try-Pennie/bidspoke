@@ -651,10 +651,10 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
 
   const conn = { bot_token: 'xoxb-test-token', default_channel: '#alerts' } as unknown as SlackConnection
 
-  it('names the lost op, the failure count, the error, and how to fix it', async () => {
+  it('names the lost op, the windowed loss count, the error, and how to fix it', async () => {
     const sent = await sendOutcomeDeadLetterAlert(
       conn,
-      { label: 'lead_sightings.finalize', consecutive_failures: 1, error_message: 'PGRST002 schema cache' },
+      { label: 'lead_sightings.finalize', window_loss_count: 47, window_minutes: 30, error_message: 'PGRST002 schema cache' },
       'https://app.test',
     )
     expect(sent).toBe(true)
@@ -664,8 +664,23 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('Outcome Record Lost')
     expect(text).toContain('lead_sightings.finalize')
+    // #599: report the true windowed magnitude, not a consecutive streak.
+    expect(text).toContain('*47*')
+    expect(text).toContain('writes were lost in the last 30 minutes')
     expect(text).toContain('PGRST002 schema cache')
     expect(text).toContain('How to fix:')
+  })
+
+  it('uses singular copy when exactly one write was lost', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      { label: 'lead_sightings.finalize', window_loss_count: 1, window_minutes: 30, error_message: 'x' },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('*1*')
+    expect(text).toContain('write was lost in the last 30 minutes')
   })
 
   // #605: keep the trailing SQLSTATE code when a rich constraint error runs long.
@@ -673,7 +688,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     const longErr = `insert or update violates foreign key constraint: Key (person_id)=(${'a'.repeat(400)}) is not present. (23503)`
     await sendOutcomeDeadLetterAlert(
       conn,
-      { label: 'lead_sightings.finalize', consecutive_failures: 1, error_message: longErr },
+      { label: 'lead_sightings.finalize', window_loss_count: 3, window_minutes: 30, error_message: longErr },
       'https://app.test',
     )
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
