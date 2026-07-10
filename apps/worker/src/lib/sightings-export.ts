@@ -1,9 +1,19 @@
-// Export of lead_sightings + lead_sighting_bids to Snowflake.
-// Runs every 2 hours at :37 (cron "37 */2 * * *") via the scheduled trigger in
-// apps/worker/src/index.ts -- NOT nightly; the daily cadence could not keep pace
-// with inflow and was changed 2026-06-29. Snowflake is canonical for analytics;
-// Supabase is a write buffer that gets purged 24h after successful export.
-// A failed run therefore normally self-heals on the next run, under 2h later.
+// Export of lead_sightings + lead_sighting_bids to Snowflake, and the purge that
+// drops rows once Snowflake has them.
+//
+// TWO separate cron invocations, on purpose (see index.ts / wrangler.toml):
+//   runSightingsExport  "37 */2 * * *"    every 2h at :37
+//   runSightingsPurge   "47 1-23/2 * * *" odd hours at :47
+// They used to be one invocation sharing one WALL_TIME_BUDGET_MS deadline. When
+// export throughput grew to fill that budget, the purge phases found the deadline
+// already passed, deleted nothing, and logged a console.warn with `errors: []` --
+// so nothing alerted, and the backlog grew by a full day's inflow every day
+// (2026-07-10). A separate invocation gives the purge its own fresh budget.
+//
+// Snowflake is canonical for analytics; Supabase is a write buffer purged 24h
+// after a successful export. A failed EXPORT normally self-heals next run, under
+// 2h later. A failed PURGE does not mean analytics are stale: those rows are
+// already in Snowflake, and only the Supabase cleanup is behind.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
@@ -164,6 +174,10 @@ const BID_COLS: ColSpec[] = [
 export interface ExportSummary {
   sightings_exported: number
   bids_exported: number
+  errors: string[]
+}
+
+export interface PurgeSummary {
   sightings_purged: number
   bids_purged: number
   errors: string[]
@@ -185,14 +199,13 @@ export async function runSightingsExport(
   const summary: ExportSummary = {
     sightings_exported: 0,
     bids_exported: 0,
-    sightings_purged: 0,
-    bids_purged: 0,
     errors: [],
   }
-  // One deadline for the whole invocation, set once up front and shared across
-  // all four phases below -- NOT recomputed per phase, so a phase that starts
-  // late (because earlier phases used most of the budget draining a backlog)
-  // inherits however little time is left instead of getting a fresh budget.
+  // One deadline for both export phases, set once up front, so each stops itself
+  // cleanly before Cloudflare's hard ~15min cron kill. The purge is NOT here: it
+  // runs in its own cron invocation with its own fresh budget. When they shared
+  // this deadline, export growth (the Lead Economy cutover roughly tripled inflow
+  // over 2 days) consumed the whole budget and the purge silently deleted nothing.
   const deadline = now() + WALL_TIME_BUDGET_MS
 
   try {
@@ -230,14 +243,29 @@ export async function runSightingsExport(
     summary.errors.push(`bids export: ${formatErr(e)}`)
   }
 
+  return summary
+}
+
+// Deletes rows Snowflake already has. Runs in its OWN cron invocation, on its own
+// wall-time budget, precisely so a long export cannot leave it with nothing.
+// Nothing here touches Snowflake: a failure means Supabase is carrying rows it
+// should have dropped, NOT that analytics are stale.
+export async function runSightingsPurge(
+  supabase: SupabaseClient,
+  now: () => number = Date.now,
+  sleep: Sleep = DEFAULT_SLEEP,
+): Promise<PurgeSummary> {
+  const summary: PurgeSummary = { sightings_purged: 0, bids_purged: 0, errors: [] }
+  const deadline = now() + WALL_TIME_BUDGET_MS
+
   try {
-    summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings', MAX_ROWS_PER_RUN, DEFAULT_SLEEP, deadline, now)
+    summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings', MAX_ROWS_PER_RUN, sleep, deadline, now)
   } catch (e) {
     summary.errors.push(`sightings purge: ${formatErr(e)}`)
   }
 
   try {
-    summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids', MAX_ROWS_PER_RUN, DEFAULT_SLEEP, deadline, now)
+    summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids', MAX_ROWS_PER_RUN, sleep, deadline, now)
   } catch (e) {
     summary.errors.push(`bids purge: ${formatErr(e)}`)
   }

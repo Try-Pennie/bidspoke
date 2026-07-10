@@ -98,15 +98,24 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    At :37, NOT :00: the top of the hour is the DB's
 #                                    busiest window (:00/:30 strand-recovery pg_cron
 #                                    runs 30s+ on the same table, stats refreshes,
-#                                    hourly SF sync) and this job's 8s-per-statement
+#                                    hourly SF sync) and this job's per-statement
 #                                    PostgREST budget lost that race every run.
+#   "47 1-23/2 * * *" odd hours :47 : purge Supabase rows Snowflake already has.
+#                                    A SEPARATE trigger from the export on purpose:
+#                                    they used to share one 12-min wall budget, and
+#                                    once export growth filled it the purge ran with
+#                                    zero time left and silently deleted nothing for
+#                                    days (2026-07-10). A separate invocation gets its
+#                                    own fresh budget. Offset ~70min from each export
+#                                    so the two never overlap on the same tables, and
+#                                    clear of the :00/:30 pg_cron congestion window.
 #   "0 * * * *"     hourly          — sync partner_bid_configs from Salesforce
 #   "* * * * *"     every 1 min     — pre-warm KV + outbound connection pool
 #                                    (SF token fetch exercises the SF HTTPS pool;
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
 [triggers]
-crons = ["0 9 * * *", "0 13 * * *", "37 */2 * * *", "0 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "0 * * * *", "* * * * *"]
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
