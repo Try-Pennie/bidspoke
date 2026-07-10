@@ -30,6 +30,9 @@ function makeSupabase(rowsByTable: Record<string, unknown[]>) {
         eq() {
           return chain
         },
+        gte() {
+          return chain
+        },
         select() {
           return Promise.resolve({ data: rowsByTable[table] ?? [], error: null })
         },

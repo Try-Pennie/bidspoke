@@ -22,6 +22,12 @@ function runOutcome(
   return deps ? writeOutcome(label, op, { ...deps, supabase }) : withDbRetry(op)
 }
 
+// Slack subtracted from execution start to derive the attempted_at_utc lower
+// bound on the winner-mark UPDATE (#589). One hour comfortably exceeds any
+// execution duration while keeping the bound inside the current month's
+// partition (save a month-boundary straddle, which the slack absorbs).
+const WINNER_MARK_SLACK_MS = 60 * 60 * 1000
+
 // ============================================================
 // Types
 // ============================================================
@@ -547,6 +553,17 @@ export async function finalizeSighting(
     // A zero-row match here is the failure engine/index.ts warns about: the bid
     // row was never inserted (or its insert had not committed), so the winner is
     // left is_winner=false forever. Surface it instead of assuming success (#583).
+    // lead_sighting_bids is partitioned monthly on attempted_at_utc. Without a
+    // predicate on that column the UPDATE scans every partition to flip one row,
+    // a cost that grows with every month the table lives (#589). The winning bid
+    // fired during this run, so its attempted_at_utc is at or after execution
+    // start; a lower bound of (start - slack) prunes the historical partitions
+    // and can never exclude the winner (the bound sits before the earliest a
+    // bid could have been attempted). The slack absorbs any month-boundary
+    // straddle so both the run's month and the prior month stay in the plan.
+    const attemptedLowerBound = new Date(
+      execution_started_at_utc.getTime() - WINNER_MARK_SLACK_MS,
+    ).toISOString()
     const winnerTarget = `lead_sighting_bids.winner (execution_id=${execution_id}, partner_slug=${fields.winning_partner_slug})`
     const { error: bidError } = await runOutcome('lead_sighting_bids.winner', supabase, deps, () =>
       requireRowsAffected(winnerTarget, async () => {
@@ -555,6 +572,7 @@ export async function finalizeSighting(
           .update({ is_winner: true, exported_at: null })
           .eq('execution_id', execution_id)
           .eq('partner_slug', fields.winning_partner_slug)
+          .gte('attempted_at_utc', attemptedLowerBound)
           .select('id')
         return { data: res.data, error: res.error }
       })
