@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateHeartbeat, STALE_THRESHOLD_MS } from '../cron-heartbeat'
+import { evaluateHeartbeat } from '../cron-heartbeat'
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
 const H = 3_600_000
 const iso = (ms: number) => new Date(ms).toISOString()
+// The daily job's threshold; evaluateHeartbeat is pure over any staleMs.
+const STALE_THRESHOLD_MS = 26 * H
 
 describe('evaluateHeartbeat', () => {
   it('is healthy when the last run is recent', () => {

@@ -1,27 +1,84 @@
 /**
- * Dead-man's-switch for the daily 13:00 UTC health-check batch (#358).
+ * Dead-man's-switch for scheduled crons (#358, generalized in #612).
  *
- * That batch (volume-anomaly, timeout-audit, secret-drift, big-table-guard,
- * drain-stall, required-secrets) is the safety net for data-integrity and config
- * problems. Each check has its own try/catch, but nothing signals if the WHOLE
- * batch stops firing (a cron-trigger misconfig or the scheduled handler erroring
- * before dispatch). If it goes dark, every watchdog silently stops.
+ * Each watched cron writes a heartbeat timestamp to KV on every run; the
+ * every-minute cron evaluates freshness for every registered job and alerts
+ * Slack when one goes dark (its trigger failed to register on a deploy, or the
+ * scheduled handler errored before dispatch). A per-job "first seen" marker
+ * gives a fresh deploy a grace period so it does not false-alarm before the
+ * job's first run, while still catching a cron that never fires.
  *
- * Mechanism: the 13:00 batch writes a heartbeat timestamp to KV on each run; the
- * every-minute cron evaluates freshness and alerts Slack if it is stale beyond
- * the threshold. A "first seen" marker gives a fresh deploy a grace period so it
- * doesn't false-alarm before the first daily run, while still catching a daily
- * cron that never fires.
+ * Originally this guarded only the 13:00 UTC health-check batch. #611 moved the
+ * sightings purge onto its own cron, making that the sole path that drops
+ * exported rows from Supabase -- and nothing watched it. The starved-purge
+ * incident (2026-07-10, 107,274 purgeable rows sitting for days) is exactly the
+ * "a cron silently stopped mattering" failure this switch exists to catch, so
+ * the switch is now a registry any cron can join.
+ *
+ * Limitation (unchanged): this lives in the same worker as the crons it watches,
+ * so it catches a watched cron going dark while the minute cron still runs.
+ * Total worker death would also silence this check -- that case needs an
+ * external uptime monitor.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { sendCronHeartbeatAlert } from './slack'
 
-export const HEARTBEAT_KEY = 'cron-heartbeat:daily-1300'
-export const FIRST_SEEN_KEY = 'cron-heartbeat:daily-1300:first-seen'
-const COOLDOWN_KEY = 'cron-heartbeat:daily-1300:alerted'
+const H = 60 * 60 * 1000
 
-/** Daily cadence is 24h; allow 2h of slack before declaring the batch dark. */
-export const STALE_THRESHOLD_MS = 26 * 60 * 60 * 1000
+export interface CronJob {
+  /** Stable id; forms the KV keys. NEVER rename a live one (resets its state). */
+  id: string
+  /** Human name in the alert header. */
+  label: string
+  /** The cron expression, echoed in the fix hint. */
+  triggerCron: string
+  /** Age past which the job is declared dark. Above the cadence, with slack. */
+  staleMs: number
+  /** What stops working while this job is dark (for the alert body). */
+  dependents: string
+}
+
+// The daily job keeps id 'daily-1300' so heartbeatKey()/firstSeenKey() reproduce
+// the pre-#612 keys byte-for-byte and a live deploy does not lose its state.
+export const CRON_JOBS: CronJob[] = [
+  {
+    id: 'daily-1300',
+    label: 'Daily health-check batch',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack.
+    staleMs: 26 * H,
+    dependents:
+      'volume-anomaly, timeout-audit, secret-drift, required-secrets, big-table-guard, drain-stall',
+  },
+  {
+    id: 'sightings-export',
+    label: 'Lead sightings Snowflake export',
+    triggerCron: '37 */2 * * *',
+    // 2h cadence, 1h slack -- one skipped run trips it without flapping.
+    staleMs: 3 * H,
+    dependents: 'finalized lead sightings are no longer being exported to Snowflake',
+  },
+  {
+    id: 'sightings-purge',
+    label: 'Lead sightings purge',
+    triggerCron: '47 1-23/2 * * *',
+    // 2h cadence, 1h slack.
+    staleMs: 3 * H,
+    dependents:
+      'exported rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
+  },
+]
+
+export function cronJob(id: string): CronJob {
+  const job = CRON_JOBS.find((j) => j.id === id)
+  if (!job) throw new Error(`unknown cron job: ${id}`)
+  return job
+}
+
+export const heartbeatKey = (id: string) => `cron-heartbeat:${id}`
+export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
+const cooldownKey = (id: string) => `cron-heartbeat:${id}:alerted`
+
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 
 export type HeartbeatStatus = 'healthy' | 'stale' | 'never_ran' | 'pending'
@@ -54,57 +111,75 @@ export function evaluateHeartbeat(
   return { status: 'pending', ageMs: null }
 }
 
-/** Called by the 13:00 batch on each run to stamp "last ran". */
-export async function writeDailyHeartbeat(kv: KVNamespace, nowMs: number = Date.now()): Promise<void> {
-  await kv.put(HEARTBEAT_KEY, new Date(nowMs).toISOString())
+/** Called by a watched cron on each run to stamp "last ran". */
+export async function writeHeartbeat(
+  kv: KVNamespace,
+  jobId: string,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  await kv.put(heartbeatKey(jobId), new Date(nowMs).toISOString())
 }
 
 export interface HeartbeatCheckResult {
+  jobId: string
   status: HeartbeatStatus
   alerted: boolean
   ageMs: number | null
 }
 
+/** Evaluate one job's freshness, seed its first-seen marker, alert on cooldown. */
+async function checkJob(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+  job: CronJob,
+  nowMs: number,
+  orgIds: string[],
+): Promise<HeartbeatCheckResult> {
+  const lastRan = await kv.get(heartbeatKey(job.id))
+  const firstSeen = await kv.get(firstSeenKey(job.id))
+  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs)
+
+  if (verdict.status === 'pending') {
+    if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
+    return { jobId: job.id, status: 'pending', alerted: false, ageMs: verdict.ageMs }
+  }
+  if (verdict.status === 'healthy') {
+    return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
+  }
+
+  // stale or never_ran -- alert once per per-job cooldown window.
+  if (await kv.get(cooldownKey(job.id))) {
+    return { jobId: job.id, status: verdict.status, alerted: false, ageMs: verdict.ageMs }
+  }
+
+  let alerted = false
+  for (const orgId of orgIds) {
+    if (await sendCronHeartbeatAlert(supabase, orgId, job, verdict.status, verdict.ageMs)) alerted = true
+  }
+  if (alerted) await kv.put(cooldownKey(job.id), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  return { jobId: job.id, status: verdict.status, alerted, ageMs: verdict.ageMs }
+}
+
 /**
- * Called by the every-minute cron. Reads the heartbeat, seeds a first-seen
- * marker on a fresh deploy, and alerts each Slack org (once per cooldown) when
- * the daily batch is stale or has never run.
- *
- * Limitation: this lives in the same worker as the crons it watches, so it
- * catches the daily cron going dark while the minute cron still runs (trigger
- * misconfig, handler erroring before dispatch). Total worker death would also
- * silence this check — that case needs an external uptime monitor.
+ * Called by the every-minute cron. Checks every registered job's freshness and
+ * alerts each Slack org (once per per-job cooldown) for any that are stale or
+ * have never run. The org lookup is shared across jobs so a multi-job outage
+ * costs one query, not one per job.
  */
-export async function runDailyHeartbeatCheck(
+export async function runHeartbeatChecks(
   supabase: SupabaseClient,
   kv: KVNamespace,
   nowMs: number = Date.now(),
-): Promise<HeartbeatCheckResult> {
-  const lastRan = await kv.get(HEARTBEAT_KEY)
-  const firstSeen = await kv.get(FIRST_SEEN_KEY)
-  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, STALE_THRESHOLD_MS)
-
-  if (verdict.status === 'pending') {
-    if (!lastRan && !firstSeen) await kv.put(FIRST_SEEN_KEY, new Date(nowMs).toISOString())
-    return { status: 'pending', alerted: false, ageMs: verdict.ageMs }
-  }
-  if (verdict.status === 'healthy') {
-    return { status: 'healthy', alerted: false, ageMs: verdict.ageMs }
-  }
-
-  // stale or never_ran — alert once per cooldown window.
-  if (await kv.get(COOLDOWN_KEY)) return { status: verdict.status, alerted: false, ageMs: verdict.ageMs }
-
+): Promise<HeartbeatCheckResult[]> {
   const { data: conns } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
-  let alerted = false
-  for (const orgId of orgIds) {
-    if (await sendCronHeartbeatAlert(supabase, orgId, verdict.status, verdict.ageMs)) alerted = true
+  const results: HeartbeatCheckResult[] = []
+  for (const job of CRON_JOBS) {
+    results.push(await checkJob(supabase, kv, job, nowMs, orgIds))
   }
-  if (alerted) await kv.put(COOLDOWN_KEY, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-  return { status: verdict.status, alerted, ageMs: verdict.ageMs }
+  return results
 }
