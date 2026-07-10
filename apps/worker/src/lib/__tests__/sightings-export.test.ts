@@ -10,6 +10,7 @@ import {
   STATEMENT_TIMEOUT_MAX_ATTEMPTS,
   WALL_TIME_BUDGET_MS,
   PartialExportError,
+  partitionKeyFor,
 } from '../sightings-export'
 import { executeStatement } from '../snowflake'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -45,7 +46,11 @@ function fakeSupabase(
 ) {
   let call = 0
   return {
-    from() {
+    from(table: string) {
+      // Rows carry the table's real partition key, because the export bounds its
+      // exported_at UPDATE by that column's range to keep Postgres from fanning
+      // the write out across every monthly partition.
+      const pk = partitionKeyFor(table)
       return {
         select() {
           return {
@@ -67,7 +72,10 @@ function fakeSupabase(
                 }
               }
               const size = Math.min(sizeFor(thisCall), n)
-              const data = Array.from({ length: size }, (_, i) => ({ id: `r${thisCall}_${i}` }))
+              const data = Array.from({ length: size }, (_, i) => ({
+                id: `r${thisCall}_${i}`,
+                [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString(),
+              }))
               return {
                 eq() {
                   return this
@@ -83,15 +91,21 @@ function fakeSupabase(
           }
         },
         update() {
-          return {
-            in: (_col: string, ids: string[]) => ({
-              select: () =>
-                Promise.resolve({
-                  data: markedRowsFor ? markedRowsFor(ids) : ids.map((id) => ({ id })),
-                  error: null,
-                }),
-            }),
+          const q = {
+            in: (_col: string, ids: string[]) => {
+              q.ids = ids
+              return q
+            },
+            gte: () => q,
+            lte: () => q,
+            ids: [] as string[],
+            select: () =>
+              Promise.resolve({
+                data: markedRowsFor ? markedRowsFor(q.ids) : q.ids.map((id) => ({ id })),
+                error: null,
+              }),
           }
+          return q
         },
       }
     },
@@ -246,7 +260,8 @@ describe('exportTable backlog guard', () => {
 
 // Batched purge (issue: the old single unbounded DELETE hit statement_timeout
 // 57014 on a large backlog). purgeOldExported now selects a page of ids and
-// deletes them in bounded batches so no single DELETE exceeds the 2-min limit.
+// deletes them in bounded batches so no single DELETE exceeds service_role's
+// 30s statement_timeout.
 function fakePurgeSupabase(opts: {
   total: number
   deleteError?: unknown
@@ -256,36 +271,51 @@ function fakePurgeSupabase(opts: {
   let deleteCalls = 0
   let selectCalls = 0
   let selectErrorFired = false
-  const tableApi = {
-    select() {
-      const q = {
-        not() { return q },
-        lt() { return q },
-        limit(n: number) {
-          selectCalls++
-          if (opts.selectErrorOnce && !selectErrorFired) {
-            selectErrorFired = true
-            return Promise.resolve({ data: null, error: opts.selectErrorOnce })
-          }
-          const size = Math.min(remaining, n)
-          const data = Array.from({ length: size }, (_, i) => ({ id: `id_${selectCalls}_${i}` }))
-          return Promise.resolve({ data, error: null })
-        },
-      }
-      return q
-    },
-    delete() {
-      return {
-        in(_col: string, ids: string[]) {
-          deleteCalls++
-          if (opts.deleteError) return Promise.resolve({ error: opts.deleteError, count: null })
-          remaining -= ids.length
-          return Promise.resolve({ error: null, count: ids.length })
-        },
-      }
-    },
+  const tableApiFor = (table: string) => {
+    // The page carries the partition key so the DELETE can be bounded by its
+    // range; without it Postgres would fan the delete across every partition.
+    const pk = partitionKeyFor(table)
+    return {
+      select() {
+        const q = {
+          not() { return q },
+          lt() { return q },
+          limit(n: number) {
+            selectCalls++
+            if (opts.selectErrorOnce && !selectErrorFired) {
+              selectErrorFired = true
+              return Promise.resolve({ data: null, error: opts.selectErrorOnce })
+            }
+            const size = Math.min(remaining, n)
+            const data = Array.from({ length: size }, (_, i) => ({
+              id: `id_${selectCalls}_${i}`,
+              [pk]: new Date(Date.UTC(2026, 6, 9, 0, i)).toISOString(),
+            }))
+            return Promise.resolve({ data, error: null })
+          },
+        }
+        return q
+      },
+      delete() {
+        const q = {
+          ids: [] as string[],
+          in(_col: string, ids: string[]) {
+            q.ids = ids
+            return q
+          },
+          gte() { return q },
+          lte() {
+            deleteCalls++
+            if (opts.deleteError) return Promise.resolve({ error: opts.deleteError, count: null })
+            remaining -= q.ids.length
+            return Promise.resolve({ error: null, count: q.ids.length })
+          },
+        }
+        return q
+      },
+    }
   }
-  const supabase = { from: () => tableApi } as unknown as SupabaseClient
+  const supabase = { from: (table: string) => tableApiFor(table) } as unknown as SupabaseClient
   return { supabase, deleteCalls: () => deleteCalls, selectCalls: () => selectCalls }
 }
 
@@ -361,7 +391,10 @@ describe('purgeOldExported — batched delete', () => {
           limit(_n: number) {
             selectCalls++
             if (selectCalls === 1) {
-              const data = Array.from({ length: PURGE_BATCH }, (_, i) => ({ id: `id_${i}` }))
+              const data = Array.from({ length: PURGE_BATCH }, (_, i) => ({
+                id: `id_${i}`,
+                execution_started_at_utc: new Date(Date.UTC(2026, 6, 9, 0, i)).toISOString(),
+              }))
               return Promise.resolve({ data, error: null })
             }
             return Promise.resolve({ data: null, error: timeoutErr })
@@ -370,7 +403,16 @@ describe('purgeOldExported — batched delete', () => {
         return q
       },
       delete() {
-        return { in: (_col: string, ids: string[]) => Promise.resolve({ error: null, count: ids.length }) }
+        const q = {
+          ids: [] as string[],
+          in: (_col: string, ids: string[]) => {
+            q.ids = ids
+            return q
+          },
+          gte: () => q,
+          lte: () => Promise.resolve({ error: null, count: q.ids.length }),
+        }
+        return q
       },
     }
     const supabase = { from: () => tableApi } as unknown as SupabaseClient
@@ -525,5 +567,201 @@ describe('exportTable: exported_at mark matched zero rows (#583)', () => {
   it('still exports normally when every row is marked', async () => {
     const supabase = fakeSupabase((c) => (c === 0 ? 5 : 0))
     await expect(exportTable(supabase, CONFIG, 'lead_sightings', COLS, FILTER)).resolves.toBe(5)
+  })
+})
+
+// Both tables are partitioned on a timestamp (execution_started_at_utc /
+// attempted_at_utc), and `id` is not the partition key. A write keyed on id
+// alone therefore cannot be pruned: Postgres fans it out to every monthly
+// partition, including long-drained ones that still carry their bloat. Measured
+// on prod 2026-07-10: locating 200 ids across the parent took 482ms, 345ms of
+// it inside a partition holding zero rows, and the stamping UPDATE averaged
+// 1,153ms (max 19,809ms) -- the most expensive statement on the table.
+// Bounding each write by the partition key of the rows in hand collapses the
+// fan-out to the one or two partitions the batch actually spans.
+describe('partition pruning on writes', () => {
+  const PK = 'execution_started_at_utc'
+  const DATED_COLS = [
+    { name: 'id', type: 'varchar' as const },
+    { name: PK, type: 'timestamp_ntz' as const },
+  ]
+
+  // Records the filters applied to the exported_at UPDATE.
+  function fakeDatedSupabase(stamps: string[], recorder: Record<string, unknown>) {
+    let selectCall = 0
+    return {
+      from() {
+        return {
+          select() {
+            return {
+              limit(n: number) {
+                const thisCall = selectCall++
+                const rows =
+                  thisCall === 0
+                    ? stamps.slice(0, n).map((s, i) => ({ id: `r${i}`, [PK]: s }))
+                    : []
+                const q = {
+                  eq() { return q },
+                  is() { return q },
+                  then(resolve: (v: { data: unknown; error: null }) => void) {
+                    resolve({ data: rows, error: null })
+                  },
+                }
+                return q
+              },
+            }
+          },
+          update() {
+            const q = {
+              in: (_c: string, ids: string[]) => {
+                recorder.ids = ids
+                return q
+              },
+              gte: (c: string, v: unknown) => {
+                recorder.gteCol = c
+                recorder.gteVal = v
+                return q
+              },
+              lte: (c: string, v: unknown) => {
+                recorder.lteCol = c
+                recorder.lteVal = v
+                return q
+              },
+              select: () =>
+                Promise.resolve({
+                  data: (recorder.ids as string[]).map((id) => ({ id })),
+                  error: null,
+                }),
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as Parameters<typeof exportTable>[0]
+  }
+
+  it('bounds the exported_at stamp by the partition key range of the batch', async () => {
+    const recorder: Record<string, unknown> = {}
+    // Deliberately unsorted: the bounds must come from min/max, not first/last.
+    const stamps = [
+      '2026-07-10T05:00:00.000Z',
+      '2026-07-10T01:00:00.000Z',
+      '2026-07-10T09:00:00.000Z',
+    ]
+    const supabase = fakeDatedSupabase(stamps, recorder)
+
+    await exportTable(supabase, CONFIG, 'lead_sightings', DATED_COLS, FILTER)
+
+    expect(recorder.gteCol).toBe(PK)
+    expect(recorder.lteCol).toBe(PK)
+    expect(recorder.gteVal).toBe('2026-07-10T01:00:00.000Z')
+    expect(recorder.lteVal).toBe('2026-07-10T09:00:00.000Z')
+  })
+
+  it('bounds the purge DELETE by the partition key range of the page', async () => {
+    const recorder: Record<string, unknown> = {}
+    let selectCall = 0
+    const supabase = {
+      from() {
+        return {
+          select(cols: string) {
+            recorder.selectedCols = cols
+            const q = {
+              not() { return q },
+              lt() { return q },
+              limit() {
+                const first = selectCall++ === 0
+                return Promise.resolve({
+                  data: first
+                    ? [
+                        { id: 'a', [PK]: '2026-07-09T22:00:00.000Z' },
+                        { id: 'b', [PK]: '2026-07-09T04:00:00.000Z' },
+                      ]
+                    : [],
+                  error: null,
+                })
+              },
+            }
+            return q
+          },
+          delete() {
+            const q = {
+              in: (_c: string, ids: string[]) => {
+                recorder.ids = ids
+                return q
+              },
+              gte: (c: string, v: unknown) => {
+                recorder.gteCol = c
+                recorder.gteVal = v
+                return q
+              },
+              lte: (c: string, v: unknown) => {
+                recorder.lteCol = c
+                recorder.lteVal = v
+                return Promise.resolve({ error: null, count: (recorder.ids as string[]).length })
+              },
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as Parameters<typeof purgeOldExported>[0]
+
+    await purgeOldExported(supabase, 'lead_sightings', 1000, NO_SLEEP)
+
+    // The purge must fetch the partition key, not just the id, or it has no bounds to send.
+    expect(recorder.selectedCols).toContain(PK)
+    expect(recorder.gteCol).toBe(PK)
+    expect(recorder.gteVal).toBe('2026-07-09T04:00:00.000Z')
+    expect(recorder.lteVal).toBe('2026-07-09T22:00:00.000Z')
+  })
+
+  it('uses attempted_at_utc as the partition key for lead_sighting_bids', async () => {
+    const recorder: Record<string, unknown> = {}
+    const BID_PK = 'attempted_at_utc'
+    let selectCall = 0
+    const supabase = {
+      from() {
+        return {
+          select() {
+            const q = {
+              limit(n: number) {
+                const rows =
+                  selectCall++ === 0
+                    ? [{ id: 'b0', [BID_PK]: '2026-07-10T03:00:00.000Z' }].slice(0, n)
+                    : []
+                const inner = {
+                  eq() { return inner },
+                  is() { return inner },
+                  then(resolve: (v: { data: unknown; error: null }) => void) {
+                    resolve({ data: rows, error: null })
+                  },
+                }
+                return inner
+              },
+            }
+            return q
+          },
+          update() {
+            const q = {
+              in: (_c: string, ids: string[]) => { recorder.ids = ids; return q },
+              gte: (c: string) => { recorder.gteCol = c; return q },
+              lte: (c: string) => { recorder.lteCol = c; return q },
+              select: () => Promise.resolve({ data: [{ id: 'b0' }], error: null }),
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as Parameters<typeof exportTable>[0]
+
+    const BID_COLS_MIN = [
+      { name: 'id', type: 'varchar' as const },
+      { name: BID_PK, type: 'timestamp_ntz' as const },
+    ]
+    await exportTable(supabase, CONFIG, 'lead_sighting_bids', BID_COLS_MIN, (q) => q.is('exported_at', null))
+
+    expect(recorder.gteCol).toBe(BID_PK)
+    expect(recorder.lteCol).toBe(BID_PK)
   })
 })
