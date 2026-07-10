@@ -17,6 +17,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
+import { partitionKeyFor } from './partitioned-tables'
 import type { Env } from '../index'
 import { executeStatement, escapeSqlLiteral, type SnowflakeConfig } from './snowflake'
 import { requireRowsAffected, toThrowable } from './db-retry'
@@ -56,17 +57,10 @@ export interface ColSpec {
 // partition key. A write keyed on id alone cannot be pruned, so Postgres fans it
 // out to every partition -- including drained ones that still carry their bloat.
 // Bounding each write by the key range of the rows already in hand collapses the
-// fan-out to the one or two partitions the batch actually spans.
-const PARTITION_KEY: Record<string, string> = {
-  lead_sightings: 'execution_started_at_utc',
-  lead_sighting_bids: 'attempted_at_utc',
-}
-
-export function partitionKeyFor(tableName: string): string {
-  const key = PARTITION_KEY[tableName]
-  if (!key) throw new Error(`[sightings-export] no partition key registered for ${tableName}`)
-  return key
-}
+// fan-out to the one or two partitions the batch actually spans. The key map is
+// the canonical registry (also read by the partition-key write guard, #619).
+// Re-exported so existing importers of partitionKeyFor from this module still work.
+export { partitionKeyFor }
 
 // Lowest and highest partition-key value in a page of rows. Values are kept as
 // the strings PostgREST returned (never reformatted) so they round-trip exactly;
