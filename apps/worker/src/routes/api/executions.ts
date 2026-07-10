@@ -412,13 +412,15 @@ executions.get('/:id/steps/:stepId', async (c) => {
   if (execBlocked) return execBlocked
   if (!execution) return c.json({ error: 'Step not found' }, 404)
 
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', execution.workflow_id)
     .eq('organization_id', orgId)
     .single()
-  if (ownerError) return c.json({ error: 'Step not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Step not found' }, 404)
 
   // Don't leak execution_id in the response.
   const { execution_id: _eid, ...rest } = step
@@ -441,14 +443,16 @@ executions.post('/:id/resume', async (c) => {
   if (blocked) return blocked
   if (!execution) return c.json({ error: 'Execution not found' }, 404)
 
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', execution.workflow_id)
     .eq('organization_id', orgId)
     .single()
 
-  if (ownerError) return c.json({ error: 'Execution not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Execution not found' }, 404)
 
   const result = await executeWorkflow(
     {
@@ -484,14 +488,16 @@ executions.post('/:id/replay', async (c) => {
   if (blocked) return blocked
   if (!execution) return c.json({ error: 'Execution not found' }, 404)
 
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', execution.workflow_id)
     .eq('organization_id', orgId)
     .single()
 
-  if (ownerError) return c.json({ error: 'Execution not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Execution not found' }, 404)
 
   // Replay = fresh execution from start with original payload, linked back
   // to the original via parent_execution_id so both rows can show the

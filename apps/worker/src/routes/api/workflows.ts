@@ -198,7 +198,9 @@ workflows.get('/:id', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (error) return c.json({ error: 'Workflow not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Workflow not found' }, 404)
   return c.json(data)
 })
 
@@ -545,7 +547,7 @@ workflows.patch('/:id', async (c) => {
     folder_id?: string | null
   }>()
 
-  const { error: fetchError } = await supabase
+  const { data: owner, error: fetchError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
@@ -553,7 +555,9 @@ workflows.patch('/:id', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (fetchError) return c.json({ error: 'Workflow not found' }, 404)
+  const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
+  if (fetchBlocked) return fetchBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
   if (body.is_active !== undefined) updates.is_active = body.is_active
@@ -657,7 +661,7 @@ workflows.get('/:id/versions', async (c) => {
   const supabase = createSupabaseClient(c.env)
 
   // Verify ownership first
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
@@ -665,7 +669,9 @@ workflows.get('/:id/versions', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data, error } = await supabase
     .from('workflow_versions')
@@ -684,7 +690,7 @@ workflows.get('/:id/versions/:version_id', async (c) => {
   const versionId = c.req.param('version_id')
   const supabase = createSupabaseClient(c.env)
 
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
@@ -692,7 +698,9 @@ workflows.get('/:id/versions/:version_id', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data, error } = await supabase
     .from('workflow_versions')
@@ -701,7 +709,9 @@ workflows.get('/:id/versions/:version_id', async (c) => {
     .eq('workflow_id', id)
     .single()
 
-  if (error) return c.json({ error: 'Version not found' }, 404)
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Version not found' }, 404)
   return c.json(data)
 })
 
@@ -716,7 +726,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // org-B caller who knows an org-A (workflow_id, version_id) pair could
   // overwrite org A's live definition and insert into its version history.
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
@@ -724,7 +734,9 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data: version, error: versionError } = await supabase
     .from('workflow_versions')
@@ -792,7 +804,7 @@ workflows.post('/:id/test', async (c) => {
   const body = await c.req.json<{ payload: unknown; execution_id?: string; definition?: unknown }>()
 
   // Verify ownership
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
@@ -800,7 +812,9 @@ workflows.post('/:id/test', async (c) => {
     .is('deleted_at', null)
     .single()
 
-  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   // Deploy code nodes from the current (unsaved) definition to an ephemeral
   // content-hashed bundle so the test runs the EXACT canvas code, with no
@@ -849,14 +863,16 @@ workflows.post('/:id/test-node', async (c) => {
   // workflow's live code-node bundle with attacker-supplied script. The
   // execution_id path below only scopes the execution, not this workflow id.
   // 404 (not 403) to avoid leaking which ids exist, matching siblings.
-  const { error: ownerError } = await supabase
+  const { data: owner, error: ownerError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
-  if (ownerError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownerBlocked = dbErrorUnlessNotFound(c, ownerError)
+  if (ownerBlocked) return ownerBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const body = await c.req.json<{
     namespace: string
@@ -1027,14 +1043,16 @@ workflows.get('/:id/rename-impact', async (c) => {
     return c.json({ partner_formulas: [] })
   }
 
-  const { error: ownError } = await supabase
+  const { data: owner, error: ownError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
-  if (ownError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownBlocked = dbErrorUnlessNotFound(c, ownError)
+  if (ownBlocked) return ownBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data: partners, error: partnersError } = await supabase
     .from('partner_configs')
@@ -1131,14 +1149,16 @@ workflows.post('/:id/rename-apply', async (c) => {
   const partnerIds = body.partner_ids as string[]
   if (partnerIds.length === 0) return c.json({ updated: 0 })
 
-  const { error: ownError } = await supabase
+  const { data: owner, error: ownError } = await supabase
     .from('workflows')
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
     .single()
-  if (ownError) return c.json({ error: 'Workflow not found' }, 404)
+  const ownBlocked = dbErrorUnlessNotFound(c, ownError)
+  if (ownBlocked) return ownBlocked
+  if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
   const { data: partners, error: partnersError } = await supabase
     .from('partner_configs')

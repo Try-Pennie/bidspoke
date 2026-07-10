@@ -177,14 +177,16 @@ partners.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<PartnerBody>()
 
-  const { error: fetchError } = await supabase
+  const { data: partner, error: fetchError } = await supabase
     .from('partner_configs')
     .select('id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
 
-  if (fetchError) return c.json({ error: 'Partner not found' }, 404)
+  const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
+  if (fetchBlocked) return fetchBlocked
+  if (!partner) return c.json({ error: 'Partner not found' }, 404)
 
   const updates: Database['public']['Tables']['partner_configs']['Update'] = {
     updated_by: userId,

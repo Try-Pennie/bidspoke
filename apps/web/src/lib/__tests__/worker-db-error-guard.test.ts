@@ -28,9 +28,16 @@ const HELPER_FILE = path.join(WORKER_SRC, 'lib/api-error.ts')
 
 interface Finding { file: string; line: number }
 
-// (g1) Flag `if (<…error… || …>) … 404` — an error-or-missing-data condition
-// that returns a 404. The fix is to split: dbErrorUnlessNotFound(c, error) for a
-// real error (5xx), then `if (!data) return 404` only for genuine zero-rows.
+// (g1) Flag `if (<...error...>) ... 404`, a condition that mentions an error and
+// returns a 404. This covers BOTH the combined form (`if (error || !data) ...404`)
+// and the bare form (`if (error) ...404`, #596): for a `.single()` lookup `error`
+// is PGRST116 (zero rows) OR a real DB failure, so returning 404 on any error
+// tells the caller a row is gone during a transient blip. The fix is the same
+// split: dbErrorUnlessNotFound(c, error) for a real error (5xx), then
+// `if (!data) return 404` only for genuine zero-rows.
+//
+// A condition that narrows on not-found (`isNotFoundError(...)`) is the correct
+// shape (it 404s ONLY on a genuine zero-rows), so it is not flagged.
 function findConflation(rawSrc: string, file: string): Finding[] {
   const src = sanitizeSource(rawSrc)
   const findings: Finding[] = []
@@ -43,7 +50,10 @@ function findConflation(rawSrc: string, file: string): Finding[] {
     const nl = src.indexOf('\n', close)
     const body = src.slice(close, nl === -1 ? src.length : nl)
     re.lastIndex = close
-    if (!/\|\|/.test(cond) || !/error/i.test(cond) || !/\b404\b/.test(body)) continue
+    if (!/error/i.test(cond) || !/\b404\b/.test(body)) continue
+    // Narrowing on a genuine not-found is the correct gate, not a conflation:
+    // isNotFoundError (read side, PGRST116) or isNoRowMatchedError (write side).
+    if (/isNotFoundError|isNoRowMatchedError/.test(cond)) continue
     const stmt = rawSrc.slice(m.index, nl === -1 ? rawSrc.length : nl)
     if (/db-guard-ok/.test(stmt)) continue
     findings.push({ file: path.relative(WORKER_SRC, file), line: src.slice(0, m.index).split('\n').length })
@@ -119,9 +129,19 @@ function findDroppedError(rawSrc: string, file: string): Finding[] {
 }
 
 describe('findConflation (detector)', () => {
-  it('flags `if (error || !data) return …404` (the real bug)', () => {
+  it('flags `if (error || !data) return …404` (the combined form)', () => {
     expect(findConflation(`if (error || !config) return c.json({ error: 'Config not found' }, 404)`, 'f.ts')).toHaveLength(1)
     expect(findConflation(`if (error || !execution) return c.json({ error: 'Execution not found' }, 404)`, 'f.ts')).toHaveLength(1)
+  })
+  it('flags the bare `if (error) return …404` form with no || (#596)', () => {
+    expect(findConflation(`if (error) return c.json({ error: 'Workflow not found' }, 404)`, 'f.ts')).toHaveLength(1)
+    expect(findConflation(`if (ownerError) return c.json({ error: 'Execution not found' }, 404)`, 'f.ts')).toHaveLength(1)
+  })
+  it('does NOT flag a condition that narrows on not-found (isNotFoundError)', () => {
+    expect(findConflation(`if (isNotFoundError(error)) return c.json({ error: 'Not found' }, 404)`, 'f.ts')).toHaveLength(0)
+  })
+  it('does NOT flag the write-side not-found narrowing (isNoRowMatchedError)', () => {
+    expect(findConflation(`if (isNoRowMatchedError(error)) return c.json({ error: notFoundMessage }, 404)`, 'f.ts')).toHaveLength(0)
   })
   it('does NOT flag the corrected split (real error → 5xx, then !data → 404)', () => {
     const fixed = `const blocked = dbErrorUnlessNotFound(c, error)\n  if (blocked) return blocked\n  if (!config) return c.json({ error: 'Config not found' }, 404)`
