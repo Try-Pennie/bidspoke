@@ -6,6 +6,7 @@ import { coerceString } from './coerce'
 import { parseJson } from './json'
 import { isPermanentDbError, sleep, toDbError } from './db-retry'
 import { GENERIC_FIX_HINT } from './export-error-hints'
+import { truncateErrorForAlert } from './format-error'
 import type { ErrorType } from '../types'
 
 export interface SlackConnection {
@@ -814,7 +815,7 @@ export async function sendOutcomeDeadLetterAlert(
   payload: OutcomeDeadLetterAlert,
   appUrl: string
 ): Promise<boolean> {
-  const errText = payload.error_message.length > 300 ? `${payload.error_message.slice(0, 300)}…` : payload.error_message
+  const errText = truncateErrorForAlert(payload.error_message)
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Outcome Record Lost', emoji: false } },
     {
@@ -854,7 +855,7 @@ export async function sendBackupFailureAlert(
   payload: BackupFailureAlert,
   appUrl: string
 ): Promise<boolean> {
-  const errText = payload.error_message.length > 300 ? `${payload.error_message.slice(0, 300)}…` : payload.error_message
+  const errText = truncateErrorForAlert(payload.error_message)
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Workflow Backup Failing', emoji: false } },
     {
