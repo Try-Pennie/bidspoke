@@ -161,6 +161,26 @@ describe('finalize update failure (#487)', () => {
     expect(vi.mocked(recordOutcomeDeadLetter)).not.toHaveBeenCalled()
   })
 
+  // #584: finalize must hand updateExecutionRecord the create fields so a missing
+  // base row can be reconstructed instead of only dead-lettered. Without this
+  // wiring the reconstruction path is unreachable in production.
+  it('passes the create fields to finalize so a missing row can be reconstructed', async () => {
+    vi.mocked(updateExecutionRecord).mockResolvedValue(null)
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const createFields = vi.mocked(updateExecutionRecord).mock.calls[0][4]
+    expect(createFields).toMatchObject({
+      workflow_id: WF_ID,
+      workflow_version_id: 'v1',
+      source: 'engine',
+      trigger_payload: { lead: 1 },
+      is_test: false,
+    })
+  })
+
   it('does not dead-letter a test run', async () => {
     vi.mocked(updateExecutionRecord).mockResolvedValue({
       code: NO_ROW_MATCHED_CODE,

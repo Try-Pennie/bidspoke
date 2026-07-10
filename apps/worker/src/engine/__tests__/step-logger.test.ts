@@ -267,6 +267,79 @@ describe('updateExecutionRecord: missing base row (#487)', () => {
   })
 })
 
+// Issue #584: a missing base row means createExecutionRecord failed permanently,
+// yet the lead was served a real response. Alerting alone leaves the audit row
+// gone forever. When the finalize call site can supply the create fields, the
+// row is reconstructed from them plus the final-state finalize columns, so the
+// record of a served lead survives. The dead-letter is kept only for the case
+// where the reconstruction insert itself fails.
+
+// Mocks both the update path (two statements, both zero-row) and the
+// reconstruction insert on the same `workflow_executions` table.
+function reconClientWith(insertResult: { error: { code?: string; message: string } | null }) {
+  const zero = vi.fn().mockResolvedValue({ error: null, data: [] })
+  const eqStartedAt = vi.fn().mockReturnValue({ select: zero })
+  const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: zero })
+  const update = vi.fn().mockReturnValue({ eq: eqId })
+  const insert = vi.fn().mockResolvedValue(insertResult)
+  const client = { from: vi.fn().mockReturnValue({ update, insert }) } as unknown as SupabaseClient
+  return { client, update, insert }
+}
+
+const createFields = {
+  workflow_id: 'wf-1',
+  workflow_version_id: 'ver-1',
+  source: 'engine',
+  trigger_payload: { lead: 1 },
+  trace_id: 'trace-1',
+  is_test: false,
+}
+
+describe('updateExecutionRecord: reconstruction on missing base row (#584)', () => {
+  it('reconstructs the row from createFields + the final-state update, and returns null', async () => {
+    const { client, insert } = reconClientWith({ error: null })
+    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields)
+
+    expect(error).toBeNull()
+    expect(insert).toHaveBeenCalledTimes(1)
+    const [rows] = insert.mock.calls[0]
+    expect(rows).toHaveLength(1)
+    // Identity + NOT NULL create fields, plus the FINAL status from finalize
+    // (not 'running') so the reconstructed row is a complete terminal record.
+    expect(rows[0]).toMatchObject({
+      id: 'exec-gone',
+      started_at: '2026-06-11T00:00:00Z',
+      workflow_id: 'wf-1',
+      workflow_version_id: 'ver-1',
+      source: 'engine',
+      trace_id: 'trace-1',
+      trigger_type: 'http_webhook',
+      status: 'completed',
+      completed_at: '2026-06-11T00:00:01Z',
+      duration_ms: 1000,
+    })
+  })
+
+  it('returns the insert error when reconstruction also fails permanently', async () => {
+    const { client } = reconClientWith({ error: { code: '42703', message: 'column does not exist' } })
+    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields)
+    expect(error?.code).toBe('42703')
+  })
+
+  it('treats a duplicate on reconstruction as success (row already landed)', async () => {
+    const { client } = reconClientWith({ error: { code: '23505', message: 'duplicate key' } })
+    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields)
+    expect(error).toBeNull()
+  })
+
+  it('does not attempt reconstruction when no createFields are supplied (keeps the #487 dead-letter path)', async () => {
+    const { client, insert } = reconClientWith({ error: null })
+    const error = await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize)
+    expect(error?.code).toBe(NO_ROW_MATCHED_CODE)
+    expect(insert).not.toHaveBeenCalled()
+  })
+})
+
 describe('flushStepLogs stamping', () => {
   it('stamps workflow_id and is_test on every row (issue #32: per-namespace percentile sampling)', async () => {
     const insert = vi.fn().mockResolvedValue({ error: null })
