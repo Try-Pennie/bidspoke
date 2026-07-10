@@ -2,14 +2,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // Mock the export entry points + their alert/supabase deps so we can assert which
 // cron triggers dispatch the sightings export, without running real export work.
-vi.mock('../lib/sightings-export', () => ({ runSightingsExport: vi.fn().mockResolvedValue({ errors: [] }) }))
+vi.mock('../lib/sightings-export', () => ({
+  runSightingsExport: vi.fn().mockResolvedValue({ errors: [] }),
+  runSightingsPurge: vi.fn().mockResolvedValue({ errors: [] }),
+}))
 vi.mock('../lib/achieve-export', () => ({ runAchieveExport: vi.fn().mockResolvedValue({ errors: [] }) }))
 vi.mock('../lib/export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/supabase', () => ({ createSupabaseClient: vi.fn(() => ({})) }))
 
 import worker from '../index'
 import type { Env } from '../index'
-import { runSightingsExport } from '../lib/sightings-export'
+import { runSightingsExport, runSightingsPurge } from '../lib/sightings-export'
 import { runAchieveExport } from '../lib/achieve-export'
 import { notifyExportFailure } from '../lib/export-alerts'
 
@@ -102,5 +105,40 @@ describe('export crash alerts name the real cause', () => {
     await fireAndFlush('0 9 * * *')
 
     expect(vi.mocked(notifyExportFailure).mock.calls[0][2][0]).toBe('Snowflake 503')
+  })
+})
+
+// The purge used to run inside the export invocation, sharing its 12-minute wall
+// budget. Once the export grew to fill that budget the purge got zero time and
+// silently deleted nothing for days (2026-07-10). It now has its own trigger, so
+// it always starts with a fresh budget no matter how long the export ran.
+describe('scheduled purge dispatch', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('runs the purge on its own odd-hour cron', () => {
+    fire('47 1-23/2 * * *')
+    expect(runSightingsPurge).toHaveBeenCalledTimes(1)
+    expect(runSightingsExport).not.toHaveBeenCalled()
+  })
+
+  it('does NOT purge inside the export invocation', () => {
+    fire('37 */2 * * *')
+    expect(runSightingsExport).toHaveBeenCalledTimes(1)
+    expect(runSightingsPurge).not.toHaveBeenCalled()
+  })
+
+  it('alerts under its own job name, so a purge failure never reads as stale Snowflake analytics', async () => {
+    vi.mocked(runSightingsPurge).mockResolvedValueOnce({
+      sightings_purged: 0,
+      bids_purged: 0,
+      errors: ['sightings purge: canceling statement due to statement timeout (57014)'],
+    })
+    await fireAndFlush('47 1-23/2 * * *')
+    expect(notifyExportFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      'Lead sightings purge',
+      ['sightings purge: canceling statement due to statement timeout (57014)'],
+      undefined,
+    )
   })
 })

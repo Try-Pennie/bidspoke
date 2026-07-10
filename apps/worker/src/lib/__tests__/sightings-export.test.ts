@@ -5,6 +5,7 @@ import {
   formatValue,
   purgeOldExported,
   runSightingsExport,
+  runSightingsPurge,
   PURGE_BATCH,
   isStatementTimeout,
   STATEMENT_TIMEOUT_MAX_ATTEMPTS,
@@ -427,13 +428,14 @@ describe('purgeOldExported — batched delete', () => {
   })
 })
 
-describe('runSightingsExport — shared wall-time budget (#exceededWallTime, 2026-07-03)', () => {
+describe('runSightingsExport wall-time budget (#exceededWallTime, 2026-07-03)', () => {
   it('stops every phase cleanly, with no supabase calls and no errors, once the deadline computed at the start has passed', async () => {
     // A 2026-07-03 prod run drained 29,600 real rows before Cloudflare's ~15min
     // cron wall-time limit silently killed the whole invocation mid-run -- no
-    // completion log, no failure alert, nothing. The fix is a shared soft
-    // deadline (set once, before any phase runs) so every phase stops itself
-    // cleanly with time to spare, and the caller's .then()/.catch() still runs.
+    // completion log, no failure alert, nothing. The fix is a soft deadline (set
+    // once, before any phase runs) so every phase stops itself cleanly with time
+    // to spare, and the caller's .then()/.catch() still runs. The purge no longer
+    // shares this budget; see runSightingsPurge.
     const supabase = {
       from: () => {
         throw new Error('should never touch supabase once the shared deadline has passed')
@@ -451,8 +453,6 @@ describe('runSightingsExport — shared wall-time budget (#exceededWallTime, 202
     expect(summary).toEqual({
       sightings_exported: 0,
       bids_exported: 0,
-      sightings_purged: 0,
-      bids_purged: 0,
       errors: [],
     })
   })
@@ -763,5 +763,62 @@ describe('partition pruning on writes', () => {
 
     expect(recorder.gteCol).toBe(BID_PK)
     expect(recorder.lteCol).toBe(BID_PK)
+  })
+})
+
+// The export and the purge used to share one WALL_TIME_BUDGET_MS deadline, set
+// once before the first phase. Once export throughput grew to fill that budget
+// (the Lead Economy cutover roughly tripled inflow in 2 days), the purge phases
+// found the deadline already passed and exited having deleted nothing -- logging
+// a console.warn with `errors: []`, so no alert fired. The backlog grew by a
+// full day's inflow every day, silently, for days. The purge now runs in its own
+// cron invocation with its own fresh budget, so the export cannot starve it.
+describe('purge runs on its own budget, not the export leftovers', () => {
+  it('runSightingsExport no longer purges, so a slow export cannot starve the purge', async () => {
+    // This fake models only the export's query shapes: it has no delete(), and its
+    // select() has no .not()/.lt(). Any attempt to purge from here would therefore
+    // throw and land in summary.errors, which is exactly what must not happen.
+    const supabase = fakeSupabase((c) => (c === 0 ? 5 : 0))
+    const summary = await runSightingsExport(supabase, {} as Env)
+
+    expect(summary.errors).toEqual([])
+    expect(summary.sightings_exported).toBe(5)
+    expect(summary).not.toHaveProperty('sightings_purged')
+    expect(summary).not.toHaveProperty('bids_purged')
+  })
+
+  it('runSightingsPurge drains a backlog on a budget it computes for itself', async () => {
+    const { supabase, deleteCalls } = fakePurgeSupabase({ total: 500 })
+    // A clock that is already far past the *export's* notional start deadline.
+    // runSightingsPurge must anchor its own deadline at its own first now() call.
+    let t = 10 * WALL_TIME_BUDGET_MS
+    const now = () => (t += 1)
+
+    const summary = await runSightingsPurge(supabase, now, NO_SLEEP)
+
+    expect(summary.sightings_purged).toBe(500)
+    expect(summary.errors).toEqual([])
+    expect(deleteCalls()).toBeGreaterThan(0)
+  })
+
+  it('stops cleanly once its own deadline passes, without inheriting a stale one', async () => {
+    const { supabase } = fakePurgeSupabase({ total: 10_000 })
+    let call = 0
+    // Call 0 anchors the deadline; every later call is already past it.
+    const now = () => (call++ === 0 ? 0 : WALL_TIME_BUDGET_MS + 1)
+
+    const summary = await runSightingsPurge(supabase, now, NO_SLEEP)
+
+    expect(summary.sightings_purged).toBe(0)
+    expect(summary.bids_purged).toBe(0)
+    expect(summary.errors).toEqual([])
+  })
+
+  it('reports a purge failure as an error so it can alert, instead of a silent warn', async () => {
+    const { supabase } = fakePurgeSupabase({ total: 100, deleteError: new Error('boom') })
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+
+    expect(summary.errors.join(' ')).toMatch(/sightings purge/)
+    expect(summary.errors.join(' ')).toMatch(/boom/)
   })
 })

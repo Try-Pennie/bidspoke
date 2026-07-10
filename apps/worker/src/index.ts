@@ -21,7 +21,7 @@ import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
-import { runSightingsExport } from './lib/sightings-export'
+import { runSightingsExport, runSightingsPurge } from './lib/sightings-export'
 import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
@@ -257,6 +257,23 @@ export default {
           .catch((e) => {
             console.error('[sightings-export] failed:', e)
             return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY)
+          })
+      )
+    } else if (event.cron === '47 1-23/2 * * *') {
+      // Its own invocation, so the purge gets its own wall-time budget. Sharing the
+      // export's budget let a growing export starve it to zero rows deleted,
+      // silently, for days (2026-07-10). Alerts under its own job name: a purge
+      // failure must never read as "Snowflake analytics are stale", because the
+      // rows are already in Snowflake and only the Supabase cleanup is behind.
+      ctx.waitUntil(
+        runSightingsPurge(supabase)
+          .then((s) => {
+            console.log('[sightings-purge]', JSON.stringify(s))
+            return notifyExportFailure(supabase, 'Lead sightings purge', s.errors, env.IDEMPOTENCY)
+          })
+          .catch((e) => {
+            console.error('[sightings-purge] failed:', e)
+            return notifyExportFailure(supabase, 'Lead sightings purge', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 * * * *') {
