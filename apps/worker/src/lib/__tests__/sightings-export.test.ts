@@ -899,3 +899,57 @@ describe('runSightingsPurge zero-row backlog detection (#613)', () => {
     expect(summary.errors.join(' ')).toMatch(/statement timeout/)
   })
 })
+
+// The two tables share one Cloudflare invocation's subrequest budget, and the
+// purge does sightings first. On 2026-07-10 the first real run spent that whole
+// budget draining an 87K sightings backlog, so lead_sighting_bids got zero: the
+// starvation moved one level down, from wall-time (export vs purge) to
+// subrequests (sightings vs bids inside the purge). Scoping each cron to one
+// table gives each its own invocation, so neither can starve the other.
+describe('runSightingsPurge table scoping', () => {
+  // Records every table name passed to from(), and throws if a table this run is
+  // not scoped to is touched at all.
+  function scopedFake(allowed: string[]) {
+    const touched: string[] = []
+    const supabase = {
+      from(table: string) {
+        touched.push(table)
+        if (!allowed.includes(table)) {
+          throw new Error(`out-of-scope table touched: ${table}`)
+        }
+        const q: Record<string, unknown> = {
+          select() {
+            const s = {
+              not() { return s },
+              lt() { return s },
+              limit() { return Promise.resolve({ data: [], error: null }) },
+            }
+            return s
+          },
+        }
+        return q
+      },
+    } as unknown as SupabaseClient
+    return { supabase, touched: () => touched }
+  }
+
+  it('touches only lead_sightings when scoped to it', async () => {
+    const { supabase, touched } = scopedFake(['lead_sightings'])
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP, ['lead_sightings'])
+    expect(summary.errors).toEqual([])
+    expect([...new Set(touched())]).toEqual(['lead_sightings'])
+  })
+
+  it('touches only lead_sighting_bids when scoped to it', async () => {
+    const { supabase, touched } = scopedFake(['lead_sighting_bids'])
+    const summary = await runSightingsPurge(supabase, () => 0, NO_SLEEP, ['lead_sighting_bids'])
+    expect(summary.errors).toEqual([])
+    expect([...new Set(touched())]).toEqual(['lead_sighting_bids'])
+  })
+
+  it('defaults to purging both tables when no scope is given', async () => {
+    const { supabase, touched } = scopedFake(['lead_sightings', 'lead_sighting_bids'])
+    await runSightingsPurge(supabase, () => 0, NO_SLEEP)
+    expect([...new Set(touched())].sort()).toEqual(['lead_sighting_bids', 'lead_sightings'])
+  })
+})

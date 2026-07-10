@@ -250,26 +250,31 @@ export async function runSightingsExport(
 // wall-time budget, precisely so a long export cannot leave it with nothing.
 // Nothing here touches Snowflake: a failure means Supabase is carrying rows it
 // should have dropped, NOT that analytics are stale.
+// The two tables share one Cloudflare invocation's subrequest budget, and this
+// runs sightings before bids. On 2026-07-10 the first real run spent the whole
+// budget draining an 87K sightings backlog and lead_sighting_bids got zero, so
+// the scheduled dispatch scopes each cron to ONE table (see index.ts): a
+// separate invocation per table means neither can starve the other of
+// subrequests. `tables` defaults to both for direct/manual use.
 export async function runSightingsPurge(
   supabase: SupabaseClient,
   now: () => number = Date.now,
   sleep: Sleep = DEFAULT_SLEEP,
+  tables: readonly ('lead_sightings' | 'lead_sighting_bids')[] = ['lead_sightings', 'lead_sighting_bids'],
 ): Promise<PurgeSummary> {
   const summary: PurgeSummary = { sightings_purged: 0, bids_purged: 0, errors: [] }
   const deadline = now() + WALL_TIME_BUDGET_MS
 
-  try {
-    summary.sightings_purged = await purgeOldExported(supabase, 'lead_sightings', MAX_ROWS_PER_RUN, sleep, deadline, now)
-    await assertNothingLeftToPurge(supabase, 'lead_sightings', summary.sightings_purged)
-  } catch (e) {
-    summary.errors.push(`sightings purge: ${formatErr(e)}`)
-  }
-
-  try {
-    summary.bids_purged = await purgeOldExported(supabase, 'lead_sighting_bids', MAX_ROWS_PER_RUN, sleep, deadline, now)
-    await assertNothingLeftToPurge(supabase, 'lead_sighting_bids', summary.bids_purged)
-  } catch (e) {
-    summary.errors.push(`bids purge: ${formatErr(e)}`)
+  for (const tableName of tables) {
+    const label = tableName === 'lead_sightings' ? 'sightings' : 'bids'
+    try {
+      const purged = await purgeOldExported(supabase, tableName, MAX_ROWS_PER_RUN, sleep, deadline, now)
+      if (tableName === 'lead_sightings') summary.sightings_purged = purged
+      else summary.bids_purged = purged
+      await assertNothingLeftToPurge(supabase, tableName, purged)
+    } catch (e) {
+      summary.errors.push(`${label} purge: ${formatErr(e)}`)
+    }
   }
 
   return summary

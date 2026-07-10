@@ -100,7 +100,7 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    runs 30s+ on the same table, stats refreshes,
 #                                    hourly SF sync) and this job's per-statement
 #                                    PostgREST budget lost that race every run.
-#   "47 1-23/2 * * *" odd hours :47 : purge Supabase rows Snowflake already has.
+#   "47 1-23/2 * * *" odd hours :47 : purge exported lead_sightings from Supabase.
 #                                    A SEPARATE trigger from the export on purpose:
 #                                    they used to share one 12-min wall budget, and
 #                                    once export growth filled it the purge ran with
@@ -109,13 +109,20 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    own fresh budget. Offset ~70min from each export
 #                                    so the two never overlap on the same tables, and
 #                                    clear of the :00/:30 pg_cron congestion window.
+#   "47 0-22/2 * * *" even hours :47 : purge exported lead_sighting_bids. Its OWN
+#                                    invocation, separate from the sightings purge
+#                                    above, so the two tables never share one run's
+#                                    subrequest budget: on 2026-07-10 the first
+#                                    combined run spent it all on an 87K sightings
+#                                    backlog and left bids at zero. Even hours, so it
+#                                    never runs the same hour as the sightings purge.
 #   "0 * * * *"     hourly          — sync partner_bid_configs from Salesforce
 #   "* * * * *"     every 1 min     — pre-warm KV + outbound connection pool
 #                                    (SF token fetch exercises the SF HTTPS pool;
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
 [triggers]
-crons = ["0 9 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "0 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "* * * * *"]
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.

@@ -266,15 +266,18 @@ export default {
     } else if (event.cron === '47 1-23/2 * * *') {
       // Its own invocation, so the purge gets its own wall-time budget. Sharing the
       // export's budget let a growing export starve it to zero rows deleted,
-      // silently, for days (2026-07-10). Alerts under its own job name: a purge
-      // failure must never read as "Snowflake analytics are stale", because the
-      // rows are already in Snowflake and only the Supabase cleanup is behind.
+      // silently, for days (2026-07-10). Scoped to lead_sightings only: bids purge
+      // runs on the even-hour cron below, so a large sightings backlog cannot
+      // exhaust one invocation's subrequest budget and leave bids at zero (the
+      // first real run's symptom, 2026-07-10). Alerts under its own job name: a
+      // purge failure must never read as "Snowflake analytics are stale", because
+      // the rows are already in Snowflake and only the Supabase cleanup is behind.
       ctx.waitUntil(
         writeHeartbeat(env.IDEMPOTENCY, 'sightings-purge')
           .catch((e) => console.error('[cron-heartbeat] purge write failed:', e))
       )
       ctx.waitUntil(
-        runSightingsPurge(supabase)
+        runSightingsPurge(supabase, Date.now, undefined, ['lead_sightings'])
           .then((s) => {
             console.log('[sightings-purge]', JSON.stringify(s))
             return notifyExportFailure(supabase, 'Lead sightings purge', s.errors, env.IDEMPOTENCY)
@@ -282,6 +285,24 @@ export default {
           .catch((e) => {
             console.error('[sightings-purge] failed:', e)
             return notifyExportFailure(supabase, 'Lead sightings purge', [formatErr(e)], env.IDEMPOTENCY)
+          })
+      )
+    } else if (event.cron === '47 0-22/2 * * *') {
+      // Bids purge on the even hours, its own invocation so it never shares a
+      // subrequest budget with the sightings purge (see the odd-hour block above).
+      ctx.waitUntil(
+        writeHeartbeat(env.IDEMPOTENCY, 'sighting-bids-purge')
+          .catch((e) => console.error('[cron-heartbeat] bids purge write failed:', e))
+      )
+      ctx.waitUntil(
+        runSightingsPurge(supabase, Date.now, undefined, ['lead_sighting_bids'])
+          .then((s) => {
+            console.log('[sighting-bids-purge]', JSON.stringify(s))
+            return notifyExportFailure(supabase, 'Lead sighting bids purge', s.errors, env.IDEMPOTENCY)
+          })
+          .catch((e) => {
+            console.error('[sighting-bids-purge] failed:', e)
+            return notifyExportFailure(supabase, 'Lead sighting bids purge', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
     } else if (event.cron === '0 * * * *') {

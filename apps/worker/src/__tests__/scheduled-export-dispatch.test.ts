@@ -115,9 +115,20 @@ describe('export crash alerts name the real cause', () => {
 describe('scheduled purge dispatch', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('runs the purge on its own odd-hour cron', () => {
+  it('runs the sightings purge on its own odd-hour cron, scoped to lead_sightings', () => {
     fire('47 1-23/2 * * *')
     expect(runSightingsPurge).toHaveBeenCalledTimes(1)
+    // Scoped to one table: sightings and bids each get their own invocation, so
+    // draining a large sightings backlog cannot starve bids of the shared
+    // per-invocation subrequest budget (2026-07-10 first-run symptom).
+    expect(vi.mocked(runSightingsPurge).mock.calls[0][3]).toEqual(['lead_sightings'])
+    expect(runSightingsExport).not.toHaveBeenCalled()
+  })
+
+  it('runs the bids purge on its own even-hour cron, scoped to lead_sighting_bids', () => {
+    fire('47 0-22/2 * * *')
+    expect(runSightingsPurge).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(runSightingsPurge).mock.calls[0][3]).toEqual(['lead_sighting_bids'])
     expect(runSightingsExport).not.toHaveBeenCalled()
   })
 
@@ -138,6 +149,21 @@ describe('scheduled purge dispatch', () => {
       expect.anything(),
       'Lead sightings purge',
       ['sightings purge: canceling statement due to statement timeout (57014)'],
+      undefined,
+    )
+  })
+
+  it('alerts the bids purge under its own distinct job name', async () => {
+    vi.mocked(runSightingsPurge).mockResolvedValueOnce({
+      sightings_purged: 0,
+      bids_purged: 0,
+      errors: ['bids purge: deleted 0 rows while purgeable rows remain'],
+    })
+    await fireAndFlush('47 0-22/2 * * *')
+    expect(notifyExportFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      'Lead sighting bids purge',
+      ['bids purge: deleted 0 rows while purgeable rows remain'],
       undefined,
     )
   })
