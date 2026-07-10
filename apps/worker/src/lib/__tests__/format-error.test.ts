@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatErr } from '../format-error'
+import { formatErr, truncateErrorForAlert } from '../format-error'
 
 describe('formatErr', () => {
   it('uses the message of an Error instance', () => {
@@ -75,5 +75,40 @@ describe('formatErr', () => {
   it('ignores non-string and empty details', () => {
     expect(formatErr({ message: 'boom', details: { nested: true }, code: 'X1' })).toBe('boom (X1)')
     expect(formatErr({ message: 'boom', details: '   ', code: 'X1' })).toBe('boom (X1)')
+  })
+})
+
+describe('truncateErrorForAlert', () => {
+  it('returns a short message unchanged', () => {
+    expect(truncateErrorForAlert('permission denied (42501)')).toBe('permission denied (42501)')
+  })
+
+  it('returns a message exactly at the limit unchanged', () => {
+    const text = 'x'.repeat(300)
+    expect(truncateErrorForAlert(text, 300)).toBe(text)
+  })
+
+  // The regression this fixes: #602 folded Postgres `details` into the message,
+  // pushing a long constraint violation past 300 chars. Head-only truncation then
+  // sliced off the trailing `(23503)` -- the single most searchable token.
+  it('keeps the trailing SQLSTATE code on an over-limit constraint error', () => {
+    const longDetail = 'Key (person_id)=(' + 'a'.repeat(400) + ') is not present in table "persons".'
+    const full = `insert or update on table "lead_sightings" violates foreign key constraint: ${longDetail} (23503)`
+    expect(full.length).toBeGreaterThan(300)
+
+    const out = truncateErrorForAlert(full, 300)
+    expect(out).toContain('(23503)')
+    // reading order preserved: the head still leads with the human-readable rule.
+    expect(out.startsWith('insert or update on table "lead_sightings" violates foreign key constraint')).toBe(true)
+    // and it actually truncated (a marker is present, and it stayed near budget).
+    expect(out).toContain('…')
+    expect(out.length).toBeLessThanOrEqual(300)
+  })
+
+  it('preserves the tail even when the code is the very last token with no trailing space', () => {
+    const full = 'A'.repeat(500) + '(BIDSPOKE_NO_ROW_MATCHED)'
+    const out = truncateErrorForAlert(full, 300)
+    expect(out).toContain('(BIDSPOKE_NO_ROW_MATCHED)')
+    expect(out.endsWith('(BIDSPOKE_NO_ROW_MATCHED)')).toBe(true)
   })
 })

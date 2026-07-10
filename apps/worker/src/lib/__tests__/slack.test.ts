@@ -625,6 +625,20 @@ describe('sendBackupFailureAlert (#206)', () => {
     expect(text).toContain('…')
     expect(text).not.toContain('e'.repeat(400))
   })
+
+  // #605: the trailing SQLSTATE code is the most searchable token; head-only
+  // truncation dropped it once #602 folded Postgres details into the message.
+  it('keeps the trailing error code when truncating a long constraint error', async () => {
+    const longErr = `insert or update violates foreign key constraint: Key (person_id)=(${'a'.repeat(400)}) is not present. (23503)`
+    await sendBackupFailureAlert(
+      conn,
+      { workflow_id: 'wf-9', workflow_name: 'X', consecutive_failures: 2, error_message: longErr },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('(23503)')
+  })
 })
 
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
@@ -652,6 +666,19 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(text).toContain('lead_sightings.finalize')
     expect(text).toContain('PGRST002 schema cache')
     expect(text).toContain('How to fix:')
+  })
+
+  // #605: keep the trailing SQLSTATE code when a rich constraint error runs long.
+  it('keeps the trailing error code when truncating a long constraint error', async () => {
+    const longErr = `insert or update violates foreign key constraint: Key (person_id)=(${'a'.repeat(400)}) is not present. (23503)`
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      { label: 'lead_sightings.finalize', consecutive_failures: 1, error_message: longErr },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('(23503)')
   })
 })
 

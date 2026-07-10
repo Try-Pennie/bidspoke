@@ -16,6 +16,21 @@ function nonEmptyString(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() !== '' ? v : undefined
 }
 
+// Truncate an alert error to `max` characters WITHOUT dropping the tail.
+// formatErr renders `message: details (code)`, so the SQLSTATE / PostgREST code
+// sits at the very end -- the single most searchable token in the alert. Slicing
+// only the head (the old behavior) cut it off once #602 folded `details` in and
+// pushed long constraint errors past the limit (#605). Keep both ends: the head
+// preserves reading order, the tail preserves the code.
+const ALERT_TAIL_CHARS = 96
+const ALERT_ELLIPSIS = ' … '
+
+export function truncateErrorForAlert(text: string, max = 300): string {
+  if (text.length <= max) return text
+  const headLen = Math.max(0, max - ALERT_TAIL_CHARS - ALERT_ELLIPSIS.length)
+  return text.slice(0, headLen) + ALERT_ELLIPSIS + text.slice(text.length - ALERT_TAIL_CHARS)
+}
+
 export function formatErr(e: unknown): string {
   if (e instanceof Error) return e.message
   if (e && typeof e === 'object') {
