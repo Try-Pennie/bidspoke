@@ -683,6 +683,94 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(text).toContain('write was lost in the last 30 minutes')
   })
 
+  // #600: the guidance must not blame Supabase / the purge window for a
+  // permanent no-row-matched cause (the #591 ordering race). It should name the
+  // real cause and never send the reader at infrastructure.
+  it('gives ordering-race guidance and no Supabase/purge blame for a no-row-matched loss', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 3,
+        window_minutes: 30,
+        error_message: 'finalize matched zero rows (BIDSPOKE_NO_ROW_MATCHED)',
+        error_code: 'BIDSPOKE_NO_ROW_MATCHED',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('How to fix:')
+    expect(text).not.toContain('Supabase')
+    expect(text).not.toContain('purge')
+    expect(text).toContain('execution log')
+    expect(text).toMatch(/ordering race|#591/)
+  })
+
+  // #600: a permanent constraint code is not fixable by waiting; don't blame the
+  // purge window or Supabase health.
+  it('gives permanent-error guidance and no Supabase/purge blame for a constraint loss', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 2,
+        window_minutes: 30,
+        error_message: 'violates foreign key constraint (23503)',
+        error_code: '23503',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).not.toContain('Supabase')
+    expect(text).not.toContain('purge')
+    expect(text).toMatch(/permanent/i)
+    expect(text).toContain('execution log')
+  })
+
+  // #600: a genuinely transient DB code is the ONLY case that mentions Supabase,
+  // and it must not blame the brief nightly purge (a dead-letter already outlasted
+  // the full retry ladder).
+  it('mentions Supabase (but not the purge window) for a transient DB code', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 5,
+        window_minutes: 30,
+        error_message: 'Could not query the database for the schema cache (PGRST002)',
+        error_code: 'PGRST002',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('Supabase')
+    expect(text).not.toContain('nightly partition-purge')
+    expect(text).toContain('execution log')
+  })
+
+  // #600: an error with no DB code (e.g. tier-3 Salesforce writeback) must not be
+  // blamed on Supabase; it gets neutral inspect-the-error guidance.
+  it('gives neutral guidance and no Supabase blame when there is no error code', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'salesforce.writeback',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'Salesforce 503 Service Unavailable',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toContain('How to fix:')
+    expect(text).not.toContain('Supabase')
+    expect(text).toContain('execution log')
+  })
+
   // #605: keep the trailing SQLSTATE code when a rich constraint error runs long.
   it('keeps the trailing error code when truncating a long constraint error', async () => {
     const longErr = `insert or update violates foreign key constraint: Key (person_id)=(${'a'.repeat(400)}) is not present. (23503)`

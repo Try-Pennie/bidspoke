@@ -165,4 +165,18 @@ describe('recordOutcomeDeadLetter', () => {
     expect(error_message).not.toContain('[object Object]')
     expect(error_message).toContain('not-null violation')
   })
+
+  // #600: the alert copy is gated on the SQLSTATE / PostgREST code, so the code
+  // must reach the alert payload, not just the rendered message string.
+  it('threads the DbError code into the alert payload for cause-specific guidance', async () => {
+    const kv = fakeKv()
+    const dbError = { code: 'BIDSPOKE_NO_ROW_MATCHED', message: 'write matched zero rows' }
+    await recordOutcomeDeadLetter('lead_sightings.finalize', dbError, deps(kv))
+
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ error_code: 'BIDSPOKE_NO_ROW_MATCHED' }),
+      'https://app.test',
+    )
+  })
 })
