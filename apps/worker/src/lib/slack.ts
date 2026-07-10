@@ -4,7 +4,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
-import { isPermanentDbError, sleep, toDbError } from './db-retry'
+import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import type { ErrorType } from '../types'
@@ -806,6 +806,38 @@ export interface OutcomeDeadLetterAlert {
   /** Length of that window in minutes, for the copy. */
   window_minutes: number
   error_message: string
+  /**
+   * SQLSTATE / PostgREST code of the cause, when the loss was a Supabase write
+   * (undefined for a non-DB failure like a tier-3 Salesforce writeback). Gates
+   * the "How to fix" copy: only a genuinely transient DB code points the reader
+   * at Supabase health; a permanent code (constraint, no-row-matched) does not
+   * (#600).
+   */
+  error_code?: string | null
+}
+
+/**
+ * Cause-specific remediation line for a dead-lettered outcome write (#600).
+ *
+ * The write already survived the full retry ladder before dead-lettering, so the
+ * brief nightly-purge 503 is never the real cause. Classification reuses db-retry
+ * (the single source of truth), so this copy can never drift from what the retry
+ * logic actually treats as transient vs permanent.
+ */
+function outcomeDeadLetterGuidance(errorCode: string | null | undefined): string {
+  const base =
+    '*How to fix:* This write is not auto-recovered. The lost record must be re-derived manually from the execution log below.'
+  const err = errorCode ? { code: errorCode, message: '' } : null
+  if (isNoRowMatchedError(err)) {
+    return `${base} The row it targeted did not exist when it ran, usually an ordering race between two of our own background writes (see #591), not a database outage. Inspect the error above.`
+  }
+  if (isPermanentDbError(err)) {
+    return `${base} The error above is permanent, so retrying cannot fix it (the write is malformed or the schema drifted). Fix the cause rather than waiting it out.`
+  }
+  if (errorCode) {
+    return `${base} The write exhausted its full retry ladder, so Supabase was likely degraded for longer than the retry window. Check Supabase health.`
+  }
+  return `${base} Inspect the error above to find the cause.`
 }
 
 /**
@@ -833,10 +865,7 @@ export async function sendOutcomeDeadLetterAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },
     {
       type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: '*How to fix:* check Supabase health and the nightly partition-purge window (writes 503 briefly during the purge). If the database is healthy, inspect the error above. The lost write must be re-derived manually from the execution log.',
-      },
+      text: { type: 'mrkdwn', text: outcomeDeadLetterGuidance(payload.error_code) },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
   ]

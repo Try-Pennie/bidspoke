@@ -15,7 +15,7 @@
 //    withDbRetry — an HTTP PATCH is not a PostgREST op).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { withDbRetry, isDuplicateError, type DbError } from '../lib/db-retry'
+import { withDbRetry, isDuplicateError, toDbError, type DbError } from '../lib/db-retry'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert } from '../lib/slack'
 
@@ -131,6 +131,9 @@ export async function recordOutcomeDeadLetter(
       window_loss_count: windowCount,
       window_minutes: OUTCOME_DEAD_LETTER_WINDOW_MINUTES,
       error_message: formatErr(error),
+      // Pass the SQLSTATE / PostgREST code so the alert can give cause-specific
+      // remediation instead of always blaming Supabase / the purge window (#600).
+      error_code: toDbError(error).code ?? null,
     },
     deps.appUrl,
   )
