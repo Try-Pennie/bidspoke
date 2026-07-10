@@ -116,6 +116,15 @@ describe('postStatementWithRetry', () => {
     expect(spy).toHaveBeenCalledTimes(2)
   })
 
+  // #606: a fetch that rejects with a plain object (not an Error) must surface
+  // its content, not "[object Object]". The old `new Error(String(e))` blanked
+  // the cause; `formatErr(e)` renders it.
+  it('renders a non-Error fetch rejection as its content, not [object Object]', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue({ message: 'pool exhausted', code: 'CONN' })
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(/pool exhausted/)
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.not.toThrow(/\[object Object\]/)
+  })
+
   it('does not retry a permanent 400 and throws immediately', async () => {
     const spy = mockFetchSequence([{ status: 400, body: 'SQL compilation error' }])
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(

@@ -32,7 +32,7 @@ describe('dbError', () => {
     })
   })
 
-  it('falls back to String(err) when the error has no message', async () => {
+  it('falls back to formatErr(err) when the error is a plain string', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const local = new Hono()
     local.get('/x', (c) => dbError(c, 'plain string failure'))
@@ -40,6 +40,19 @@ describe('dbError', () => {
     expect(res.status).toBe(500)
     const logged = JSON.parse(spy.mock.calls[0][0] as string)
     expect(logged.message).toBe('plain string failure')
+  })
+
+  // #606: a plain-object error with no `message` field used to log "[object
+  // Object]" (the old String(err) fallback); formatErr renders its content so the
+  // cause survives the log.
+  it('renders a message-less object error as its content, not [object Object]', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const local = new Hono()
+    local.get('/x', (c) => dbError(c, { code: 'CUSTOM', details: 'boom detail' }))
+    await local.request('/x')
+    const logged = JSON.parse(spy.mock.calls[0][0] as string)
+    expect(logged.message).not.toContain('[object Object]')
+    expect(logged.message).toContain('boom detail')
   })
 })
 

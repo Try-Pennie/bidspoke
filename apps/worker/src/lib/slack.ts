@@ -1168,7 +1168,7 @@ export async function sendExportFailureAlert(
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
 
-  const lines = payload.errors.slice(0, 20).map((e) => `• ${e}`).join('\n')
+  const lines = payload.errors.slice(0, 20).map((line) => `• ${line}`).join('\n')
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Snowflake export failed', emoji: false } },
     {

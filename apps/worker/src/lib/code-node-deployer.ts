@@ -255,9 +255,9 @@ export async function deployTestCodeBundle(
   const workerScript = buildBundledWorkerScript(scripts)
   const scriptBytes = new TextEncoder().encode(workerScript).length
   if (scriptBytes > MAX_SCRIPT_BYTES) {
-    const err = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
-    console.error(`[code-deployer] ${err}`)
-    return { bundleName: null, error: err }
+    const msg = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
+    console.error(`[code-deployer] ${msg}`)
+    return { bundleName: null, error: msg }
   }
 
   const hash = await sha256Hex(workerScript)
@@ -362,9 +362,9 @@ export async function deployCodeNodes(
   const scriptBytes = new TextEncoder().encode(workerScript).length
 
   if (scriptBytes > MAX_SCRIPT_BYTES) {
-    const err = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
-    console.error(`[code-deployer] ${err}`)
-    return codeNodes.map((n) => ({ namespace: n.namespace, error: err }))
+    const msg = `Bundled code exceeds ${MAX_SCRIPT_BYTES} bytes (${scriptBytes}). Shrink scripts or split the workflow.`
+    console.error(`[code-deployer] ${msg}`)
+    return codeNodes.map((n) => ({ namespace: n.namespace, error: msg }))
   }
 
   // Hash-and-skip: if the current bundle matches what's already deployed,

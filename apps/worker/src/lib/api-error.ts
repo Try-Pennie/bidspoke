@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import { isNoRowMatchedError, requireRowsAffected, type DbError } from './db-retry'
+import { formatErr } from './format-error'
 
 /**
  * Database/internal error responder for authenticated API routes.
@@ -115,7 +116,7 @@ export function dbError(c: Context, err: unknown) {
       event: 'api_error',
       method: c.req.method,
       path: c.req.path,
-      message: e?.message ?? String(err),
+      message: e?.message ?? formatErr(err),
       code: e?.code,
       details: e?.details,
       hint: e?.hint,

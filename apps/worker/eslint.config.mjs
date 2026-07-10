@@ -41,6 +41,30 @@ export default [
       // `unknown` (only once narrowing widens it to `{}`). A ratchet, not a proof.
       '@typescript-eslint/no-base-to-string': 'error',
 
+      // no-base-to-string is blind to a value still typed `unknown` (it only fires
+      // once narrowing widens the type to `{}`), which is exactly the most common
+      // place this bug appears: a caught error. This name-based guard closes that
+      // gap (#606). It bans a bare `String(err)` and a `${err}` template
+      // interpolation on an identifier named err/error/e, pointing at the shared
+      // renderer. It deliberately exempts the established
+      // `err instanceof Error ? err.message : String(err)` idiom (String() as a
+      // ternary branch) so only the unguarded shape is flagged. Crude by name, but
+      // unlike the type-aware rule it does not care whether the type was narrowed.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.name='String']:not(ConditionalExpression > .consequent):not(ConditionalExpression > .alternate) > Identifier[name=/^(err|error|e)$/]",
+          message:
+            'Do not String() a caught error: a plain Supabase/PostgREST error renders as "[object Object]" and blanks the alert. Use formatErr() from lib/format-error.ts.',
+        },
+        {
+          selector: "TemplateLiteral > Identifier[name=/^(err|error|e)$/]",
+          message:
+            'Do not interpolate a caught error into a template: a plain object renders as "[object Object]". Use formatErr() from lib/format-error.ts.',
+        },
+      ],
+
       // --- Type-safety on `any` boundaries: WARN (tracked debt, non-blocking) ---
       '@typescript-eslint/no-unsafe-assignment': 'warn',
       '@typescript-eslint/no-unsafe-member-access': 'warn',
@@ -86,6 +110,15 @@ export default [
     },
   },
   {
+    // format-error.ts is the sanctioned single renderer: its base case genuinely
+    // is `String(e)` (a primitive that has already fallen through the Error and
+    // object branches), so the caught-error guard must not fire on itself (#606).
+    files: ['src/lib/format-error.ts'],
+    rules: {
+      'no-restricted-syntax': 'off',
+    },
+  },
+  {
     // Test fixtures legitimately use `any` and no-await async stubs; the
     // async-correctness errors (floating/misused promises) still apply.
     files: ['**/__tests__/**', '**/*.test.ts'],
@@ -99,6 +132,9 @@ export default [
       '@typescript-eslint/no-unsafe-return': 'off',
       '@typescript-eslint/no-base-to-string': 'off',
       '@typescript-eslint/no-unnecessary-type-assertion': 'off',
+      // Test code stringifies caught errors freely (assertions, fixtures); the
+      // guard is about production alert paths, not tests (#606).
+      'no-restricted-syntax': 'off',
     },
   },
 ]

@@ -16,6 +16,7 @@
  * configs; the shared invariants are asserted against BOTH so they can't drift.
  */
 import { describe, it, expect, beforeAll } from 'vitest'
+import { Linter } from 'eslint'
 
 // A flat config file exports an array of config objects, each optionally
 // scoped by `files`/`ignores`, whose `rules` merge in array order for any
@@ -103,6 +104,14 @@ describe.each(PACKAGES)('$name eslint config', ({ name }) => {
   it.each(INFORMATION_LOSS_ERRORS)('keeps %s as an error', (rule) => {
     expect(baseRules(configs[name])[rule]).toBe('error')
   })
+
+  // #606: the caught-error stringification guard is held at error in BOTH Worker
+  // packages so the invariant can't drift (matching the no-base-to-string parity).
+  it('keeps the no-restricted-syntax caught-error guard at error', () => {
+    const entry = baseRules(configs[name])['no-restricted-syntax']
+    expect(Array.isArray(entry)).toBe(true)
+    expect((entry as unknown[])[0]).toBe('error')
+  })
 })
 
 // Only apps/worker has test files (and therefore a test-file override); worker-tail
@@ -135,5 +144,50 @@ describe('worker engine ratchet', () => {
     for (const rule of ENGINE_ERROR_RULES) {
       expect(engineOverride!.rules?.[rule]).toBe('error')
     }
+  })
+})
+
+// #606: no-base-to-string is structurally blind to a value still typed `unknown`
+// (the most common case: a caught error). A name-based no-restricted-syntax guard
+// closes that gap. This is a real mutation check (the issue's requirement): it
+// runs ESLint against the SHIPPED selector, so it goes red if the guard is
+// removed or a String(err) shape is reintroduced, and stays green for the
+// established `instanceof`-guarded idiom and the formatErr() fix.
+describe('worker caught-error stringification guard (#606)', () => {
+  function lint(code: string): Linter.LintMessage[] {
+    const rule = baseRules(configs.worker)['no-restricted-syntax']
+    const linter = new Linter()
+    return linter.verify(code, { rules: { 'no-restricted-syntax': rule as Linter.RuleEntry } })
+  }
+  const guardHits = (code: string) =>
+    lint(code).filter((m) => m.ruleId === 'no-restricted-syntax').length
+
+  it('fires on a bare String(err) in a catch block', () => {
+    expect(guardHits('try { go() } catch (err) { console.error(String(err)) }')).toBeGreaterThan(0)
+  })
+
+  it('fires on String(error) and String(e) too', () => {
+    expect(guardHits('const a = String(error)')).toBeGreaterThan(0)
+    expect(guardHits('const a = String(e)')).toBeGreaterThan(0)
+  })
+
+  it('fires on template interpolation of a caught error', () => {
+    expect(guardHits('try { go() } catch (err) { console.error(`boom ${err}`) }')).toBeGreaterThan(0)
+  })
+
+  it('fires on String(err) wrapped in new Error()', () => {
+    expect(guardHits('const x = e instanceof Error ? e : new Error(String(e))')).toBeGreaterThan(0)
+  })
+
+  it('does NOT fire on the established instanceof-guarded ternary', () => {
+    expect(guardHits('const m = err instanceof Error ? err.message : String(err)')).toBe(0)
+  })
+
+  it('does NOT fire on the formatErr() fix', () => {
+    expect(guardHits('const m = formatErr(err)')).toBe(0)
+  })
+
+  it('does NOT fire on String() of a non-error identifier', () => {
+    expect(guardHits('const m = String(count)')).toBe(0)
   })
 })
