@@ -42,6 +42,48 @@ export interface ColSpec {
   type: ColType
 }
 
+// Both tables are partitioned monthly on a timestamp, and `id` is not the
+// partition key. A write keyed on id alone cannot be pruned, so Postgres fans it
+// out to every partition -- including drained ones that still carry their bloat.
+// Bounding each write by the key range of the rows already in hand collapses the
+// fan-out to the one or two partitions the batch actually spans.
+const PARTITION_KEY: Record<string, string> = {
+  lead_sightings: 'execution_started_at_utc',
+  lead_sighting_bids: 'attempted_at_utc',
+}
+
+export function partitionKeyFor(tableName: string): string {
+  const key = PARTITION_KEY[tableName]
+  if (!key) throw new Error(`[sightings-export] no partition key registered for ${tableName}`)
+  return key
+}
+
+// Lowest and highest partition-key value in a page of rows. Values are kept as
+// the strings PostgREST returned (never reformatted) so they round-trip exactly;
+// only the comparison parses them, which keeps a mixed-precision fractional
+// second from ordering wrong the way a lexicographic compare would.
+export function partitionBounds(
+  rows: Array<Record<string, unknown>>,
+  key: string,
+): { min: string; max: string } {
+  let min: string | undefined
+  let max: string | undefined
+  for (const row of rows) {
+    const value = row[key]
+    if (typeof value !== 'string') {
+      // Never silently fall back to an unbounded write: that is the slow path we
+      // are removing, and it would regress invisibly.
+      throw new Error(`[sightings-export] row is missing partition key ${key}; cannot bound the write`)
+    }
+    if (min === undefined || Date.parse(value) < Date.parse(min)) min = value
+    if (max === undefined || Date.parse(value) > Date.parse(max)) max = value
+  }
+  if (min === undefined || max === undefined) {
+    throw new Error(`[sightings-export] cannot compute partition bounds from an empty page`)
+  }
+  return { min, max }
+}
+
 const SIGHTING_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
   { name: 'ssn', type: 'varchar' },
@@ -249,6 +291,7 @@ export async function exportTable(
   now: () => number = Date.now,
 ): Promise<number> {
   const colNames = cols.map((c) => c.name).join(', ')
+  const partitionKey = partitionKeyFor(tableName)
   let totalExported = 0
 
   // Loop until no more un-exported rows (or we hit the per-run cap / platform limit).
@@ -275,6 +318,7 @@ export async function exportTable(
         await executeStatement(config, sql)
 
         const ids = rows.map((r) => r.id as string)
+        const { min, max } = partitionBounds(rows, partitionKey)
         // .select('id') because PostgREST reports an UPDATE that matched nothing
         // as a plain success. The exported_at stamp is what makes a row purgeable
         // and stops it being re-selected, so a silent no-op means this batch
@@ -284,7 +328,14 @@ export async function exportTable(
         // onMiss 'throw': a batch whose exported_at never lands re-exports forever.
         const { rows: marked, error: updErr } = await requireRowsAffected(
           `${tableName}.exported_at (${ids.length} rows; the batch would re-export forever)`,
-          () => supabase.from(tableName).update({ exported_at: new Date().toISOString() }).in('id', ids).select('id'),
+          () =>
+            supabase
+              .from(tableName)
+              .update({ exported_at: new Date().toISOString() })
+              .in('id', ids)
+              .gte(partitionKey, min)
+              .lte(partitionKey, max)
+              .select('id'),
           { onMiss: 'throw' },
         )
         if (updErr) throw toThrowable(updErr)
@@ -362,14 +413,13 @@ export function isSubrequestLimit(e: unknown): boolean {
   return /too many subrequests|subrequest limit/i.test(msg)
 }
 
-// Production traffic goes through PostgREST, which authenticates as a role
-// with an 8s statement_timeout/lock_timeout -- much tighter than the 2min
-// cluster default (a direct DB connection bypasses this and looked healthy,
-// which is what made the 2026-07-02 recurrence look unexplained). A query
-// this fast (single-digit ms with the right index) only needs a moment to
-// clear a transient collision with the table's constant live-traffic writes,
-// so a couple of short retries recovers most of these without masking a
-// genuine, persistent failure.
+// Production traffic goes through PostgREST. The Worker authenticates with
+// SUPABASE_SECRET_KEY, so its statements run as `service_role`, whose
+// statement_timeout is 30s (verified 2026-07-10 in pg_db_role_setting; the 8s
+// figure this comment used to cite belongs to `authenticated`/`authenticator`,
+// which the Worker never uses). A 57014 from the Worker therefore means a
+// statement ran past 30 SECONDS -- a far louder signal than a brief lock
+// collision, and worth investigating rather than just retrying through.
 export function isStatementTimeout(e: unknown): boolean {
   const code = (e as { code?: unknown } | null)?.code
   if (code === '57014') return true
@@ -454,11 +504,11 @@ export function formatValue(v: unknown, type: ColType): string {
 }
 
 // Rows per purge DELETE. A single unbounded DELETE over a large backlog (2.3M
-// rows was observed) could run long enough to be cancelled (57014) under the
-// production PostgREST role's 8s statement_timeout, so the purge deletes
-// bounded pages instead: select a page of ids, then delete exactly those ids.
-// Kept small so the id list stays within the PostgREST request-URL length
-// limit and each DELETE is normally trivially fast.
+// rows was observed) could run long enough to be cancelled (57014) under
+// service_role's 30s statement_timeout, so the purge deletes bounded pages
+// instead: select a page of ids, then delete exactly those ids, bounded by the
+// page's partition-key range so Postgres prunes to the partitions in play.
+// Kept small so the id list stays within the PostgREST request-URL length limit.
 export const PURGE_BATCH = 200
 
 export async function purgeOldExported(
@@ -475,6 +525,7 @@ export async function purgeOldExported(
   now: () => number = Date.now,
 ): Promise<number> {
   const cutoff = new Date(Date.now() - PURGE_GRACE_HOURS * 3600 * 1000).toISOString()
+  const partitionKey = partitionKeyFor(tableName)
   let purged = 0
 
   while (purged < maxRows) {
@@ -488,20 +539,26 @@ export async function purgeOldExported(
 
     try {
       const purgedCount = await withStatementTimeoutRetry(async () => {
+        // The partition key comes back with the page so the DELETE can be bounded
+        // by it; selecting `id` alone leaves nothing to prune on.
         const { data, error } = await supabase
           .from(tableName)
-          .select('id')
+          .select(`id, ${partitionKey}`)
           .not('exported_at', 'is', null)
           .lt('exported_at', cutoff)
           .limit(batch)
         if (error) throw error
-        const ids = (data ?? []).map((r) => (r as { id: string }).id)
+        const page = (data ?? []) as unknown as Array<Record<string, unknown>>
+        const ids = page.map((r) => r.id as string)
         if (ids.length === 0) return { count: 0, drained: true }
+        const { min, max } = partitionBounds(page, partitionKey)
 
         const { error: delErr, count } = await supabase
           .from(tableName)
           .delete({ count: 'exact' })
           .in('id', ids)
+          .gte(partitionKey, min)
+          .lte(partitionKey, max)
         if (delErr) throw delErr
 
         return { count: count ?? ids.length, drained: ids.length < batch }
