@@ -48,13 +48,21 @@ describe('writeObservability (tier 1)', () => {
 })
 
 describe('writeOutcome (tier 2)', () => {
-  it('returns success and clears the failure streak', async () => {
+  it('returns success without alerting', async () => {
     const kv = fakeKv()
-    kv.store.set('outcome-deadletter:org-1:lead_sightings.insert', '3')
     const res = await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv))
     expect(res.error).toBeNull()
-    expect(kv.store.has('outcome-deadletter:org-1:lead_sightings.insert')).toBe(false)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+  })
+
+  // #599: a success must NOT reset the window loss counter. A partial outage
+  // interleaves successes with losses; clearing on success is exactly what let
+  // the old streak counter collapse to "1 in a row".
+  it('leaves the window loss counter untouched on success', async () => {
+    const kv = fakeKv()
+    kv.store.set('outcome-deadletter-window:org-1:lead_sightings.insert', '5')
+    await writeOutcome('lead_sightings.insert', async () => ({ error: null }), deps(kv))
+    expect(kv.store.get('outcome-deadletter-window:org-1:lead_sightings.insert')).toBe('5')
   })
 
   it('records a dead-letter alert when the write fails after retries', async () => {
@@ -64,23 +72,57 @@ describe('writeOutcome (tier 2)', () => {
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
 
-  it('treats a duplicate (23505) as success — no dead-letter, streak cleared', async () => {
+  it('treats a duplicate (23505) as success (no dead-letter, window untouched)', async () => {
     const kv = fakeKv()
-    kv.store.set('outcome-deadletter:org-1:lead_sightings.insert', '2')
+    kv.store.set('outcome-deadletter-window:org-1:lead_sightings.insert', '2')
     const dup = { code: '23505', message: 'duplicate key' }
     const res = await writeOutcome('lead_sightings.insert', async () => ({ error: dup }), deps(kv))
     expect(res.error).toBe(dup)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
-    expect(kv.store.has('outcome-deadletter:org-1:lead_sightings.insert')).toBe(false)
+    expect(kv.store.get('outcome-deadletter-window:org-1:lead_sightings.insert')).toBe('2')
   })
 })
 
 describe('recordOutcomeDeadLetter', () => {
+  const cooldownKeyFor = (label: string) => `outcome-deadletter-cooldown:org-1:${label}`
+  const lossCount = (callIndex = -1) =>
+    (vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.at(callIndex)![1] as unknown as { window_loss_count: number })
+      .window_loss_count
+
   it('alerts on the first exhausted loss, then suppresses within the cooldown', async () => {
     const kv = fakeKv()
     await recordOutcomeDeadLetter('sf_writeback', new Error('boom'), deps(kv))
     await recordOutcomeDeadLetter('sf_writeback', new Error('boom'), deps(kv))
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
+  })
+
+  // The bug (#599): the alert reported a consecutive-failure streak cleared on
+  // every success, so a partial outage (successes interleaved with losses) always
+  // said "1 in a row" even when hundreds were lost. The windowed counter must
+  // accumulate ALL losses in the window, across suppressed alerts and across
+  // interleaved successes, and report that total at the next alert.
+  it('reports the total losses in the window, not just consecutive ones', async () => {
+    const kv = fakeKv()
+    const label = 'lead_sightings.finalize'
+
+    // 1st loss: alerts (window=1), starts the cooldown.
+    await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
+    // 2nd loss inside the cooldown: suppressed but counted (window=2).
+    await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
+    // a SUCCESS in between must NOT reset the window counter.
+    await writeOutcome(label, async () => ({ error: null }), deps(kv))
+    // 3rd loss inside the cooldown: suppressed but counted (window=3).
+    await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
+
+    // cooldown expires...
+    kv.store.delete(cooldownKeyFor(label))
+
+    // 4th loss: alerts again, reporting the full accumulated count.
+    await recordOutcomeDeadLetter(label, new Error('x'), deps(kv))
+
+    expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(2)
+    expect(lossCount(0)).toBe(1)
+    expect(lossCount(-1)).toBe(4)
   })
 
   it('does not alert when config alerts are disabled', async () => {

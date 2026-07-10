@@ -799,7 +799,12 @@ export interface BackupFailureAlert {
 export interface OutcomeDeadLetterAlert {
   /** The tier-2 op that was lost, e.g. 'lead_sightings.finalize'. */
   label: string
-  consecutive_failures: number
+  /** Losses accumulated in the alert window, including those the cooldown
+   *  suppressed. NOT a consecutive streak: a partial outage interleaves successes,
+   *  so a streak understated the incident (#599). */
+  window_loss_count: number
+  /** Length of that window in minutes, for the copy. */
+  window_minutes: number
   error_message: string
 }
 
@@ -822,7 +827,7 @@ export async function sendOutcomeDeadLetterAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `A must-not-lose outcome write (*${payload.label}*) failed after all retries (*${payload.consecutive_failures}* in a row). The record that feeds billing, win-tracking, and repeat-lead analytics was not saved and is not auto-recovered.`,
+        text: `A must-not-lose outcome write (*${payload.label}*) failed after all retries. *${payload.window_loss_count}* ${payload.window_loss_count === 1 ? 'write was' : 'writes were'} lost in the last ${payload.window_minutes} minutes. These records feed billing, win-tracking, and repeat-lead analytics; they were not saved and are not auto-recovered.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `*Error:* ${errText}` } },

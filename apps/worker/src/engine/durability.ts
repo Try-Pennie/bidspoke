@@ -43,10 +43,16 @@ export type OutcomeAlertDeps = Omit<OutcomeDeps, 'supabase'>
 // then rate-aggregates a burst so one outage pages once, not once per lead.
 export const OUTCOME_DEAD_LETTER_THRESHOLD = 1
 export const OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS = 30 * 60
-// Let a stale streak expire so a loss months ago doesn't count toward today's.
-const STREAK_TTL_SECONDS = 7 * 24 * 60 * 60
+export const OUTCOME_DEAD_LETTER_WINDOW_MINUTES = OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS / 60
 
-const streakKey = (orgId: string, label: string) => `outcome-deadletter:${orgId}:${label}`
+// Count of losses in the current burst, NOT a consecutive streak (#599). The old
+// streak was cleared on every success, so a partial outage (only the fast path
+// racing, successes interleaved) almost never exceeded 1 and every alert said
+// "1 in a row" while hundreds were lost. This counter is incremented on every
+// dead-letter and never cleared on success, so the alert reports the true window
+// total. A sliding TTL equal to the cooldown lets an ongoing outage keep climbing
+// while a finished burst expires (so a later, unrelated loss starts fresh at 1).
+const windowKey = (orgId: string, label: string) => `outcome-deadletter-window:${orgId}:${label}`
 const cooldownKey = (orgId: string, label: string) => `outcome-deadletter-cooldown:${orgId}:${label}`
 
 // Tier 1. Named home for best-effort observability writes; behavior unchanged
@@ -80,16 +86,14 @@ export async function writeOutcome(
     return r
   })
 
-  if (duplicate) {
-    await deps.kv.delete(streakKey(deps.orgId, label)).catch(() => {})
-    return { error: duplicate }
-  }
+  // A duplicate landed (success), and a clean success both do nothing to the
+  // window counter: it must survive interleaved successes to count a partial
+  // outage (#599). The counter expires on its own sliding TTL once losses stop.
+  if (duplicate) return { error: duplicate }
   if (result.error) {
     await recordOutcomeDeadLetter(label, result.error, deps).catch((e) =>
       console.error('[durability] dead-letter alert failed:', e),
     )
-  } else {
-    await deps.kv.delete(streakKey(deps.orgId, label)).catch(() => {})
   }
   return result
 }
@@ -105,10 +109,16 @@ export async function recordOutcomeDeadLetter(
 ): Promise<boolean> {
   const { kv, orgId } = deps
 
-  const streak = Number((await kv.get(streakKey(orgId, label))) ?? '0') + 1
-  await kv.put(streakKey(orgId, label), String(streak), { expirationTtl: STREAK_TTL_SECONDS })
+  // Count this loss into the window BEFORE the cooldown check, so suppressed
+  // losses still accumulate and the next alert reports what was suppressed (#599).
+  // Sliding TTL: refreshed on every loss, so an ongoing outage never expires
+  // mid-burst, and a finished burst clears itself after the window.
+  const windowCount = Number((await kv.get(windowKey(orgId, label))) ?? '0') + 1
+  await kv.put(windowKey(orgId, label), String(windowCount), {
+    expirationTtl: OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS,
+  })
 
-  if (streak < OUTCOME_DEAD_LETTER_THRESHOLD) return false
+  if (windowCount < OUTCOME_DEAD_LETTER_THRESHOLD) return false
   if (await kv.get(cooldownKey(orgId, label))) return false
 
   const slack = await getSlackConnection(deps.supabase, orgId)
@@ -118,7 +128,8 @@ export async function recordOutcomeDeadLetter(
     slack,
     {
       label,
-      consecutive_failures: streak,
+      window_loss_count: windowCount,
+      window_minutes: OUTCOME_DEAD_LETTER_WINDOW_MINUTES,
       error_message: formatErr(error),
     },
     deps.appUrl,
