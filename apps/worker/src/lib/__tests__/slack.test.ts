@@ -771,6 +771,70 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
     expect(text).toContain('execution log')
   })
 
+  // #585: an execution_finalize loss that left the row stuck at 'running' is
+  // recovered automatically by the stranded-execution drain. The alert must say
+  // so, so an on-call reader knows it self-heals rather than panicking.
+  it('tells the reader the stranded drain will recover an execution_finalize row stuck at running', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'execution_finalize',
+        window_loss_count: 4,
+        window_minutes: 30,
+        error_message: 'Could not query the database for the schema cache (PGRST002)',
+        error_code: 'PGRST002',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).toMatch(/stranded/i)
+    expect(text).toMatch(/running/)
+    // It self-heals, so it must NOT claim the record is lost / not auto-recovered.
+    expect(text).not.toContain('not auto-recovered')
+  })
+
+  // #585: the zero-row (BIDSPOKE_NO_ROW_MATCHED) case is genuinely unrecoverable
+  // by the drain (no 'running' row exists to repair), so it keeps paging and must
+  // NOT promise automatic recovery.
+  it('keeps paging (no drain promise) for an execution_finalize no-row loss', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'execution_finalize',
+        window_loss_count: 1,
+        window_minutes: 30,
+        error_message: 'the execution record is missing (BIDSPOKE_NO_ROW_MATCHED)',
+        error_code: 'BIDSPOKE_NO_ROW_MATCHED',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).not.toMatch(/stranded/i)
+    expect(text).not.toMatch(/recover(s|ed|ered) automatically|will be recovered/i)
+  })
+
+  // #585: the drain note is specific to execution_finalize; a lead_sightings loss
+  // with the same transient code keeps its Supabase-health guidance.
+  it('does not add the drain note for a non-execution_finalize label', async () => {
+    await sendOutcomeDeadLetterAlert(
+      conn,
+      {
+        label: 'lead_sightings.finalize',
+        window_loss_count: 2,
+        window_minutes: 30,
+        error_message: 'schema cache (PGRST002)',
+        error_code: 'PGRST002',
+      },
+      'https://app.test',
+    )
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
+    expect(text).not.toMatch(/stranded/i)
+    expect(text).toContain('Supabase')
+  })
+
   // #605: keep the trailing SQLSTATE code when a rich constraint error runs long.
   it('keeps the trailing error code when truncating a long constraint error', async () => {
     const longErr = `insert or update violates foreign key constraint: Key (person_id)=(${'a'.repeat(400)}) is not present. (23503)`
