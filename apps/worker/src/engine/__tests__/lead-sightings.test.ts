@@ -25,6 +25,7 @@ function makeSupabase() {
           return chain
         },
         eq() { return chain },
+        gte() { return chain },
         // The write chains end in .select('id') so a zero-row match is detectable (#583).
         select() { return Promise.resolve({ data: [{ id: 'r-1' }], error: null }) },
       }

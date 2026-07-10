@@ -122,6 +122,12 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
       .gte('started_at', sinceBound)
     if (stepsErr) throw stepsErr
 
+    // requested_at_utc is the partition key. Matching id alone scans every
+    // monthly partition to update one row (#589); pairing id with the row's own
+    // requested_at_utc prunes to the single owning partition, the way
+    // lead_sightings.finalize matches its exact partition-key value.
+    const requestedById = new Map(evals.map((e) => [e.id, String(e.requested_at_utc)]))
+
     const updates = matchTradesToEvaluations(evals, (steps ?? []) as Array<{ execution_id: string; output: unknown }>)
     for (const u of updates) {
       // .select('id') because a zero-row UPDATE is reported as a success. The row
@@ -129,7 +135,13 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
       // an error, but it is also not a backfill and must not be counted (#583).
       const { rows, error: updErr } = await requireRowsAffected(
         'achieve_evaluations.trades_backfill',
-        () => supabase.from('achieve_evaluations').update({ trades: u.trades }).eq('id', u.id).select('id'),
+        () =>
+          supabase
+            .from('achieve_evaluations')
+            .update({ trades: u.trades })
+            .eq('id', u.id)
+            .eq('requested_at_utc', requestedById.get(u.id)!)
+            .select('id'),
         { onMiss: 'warn', context: { id: u.id } },
       )
       if (updErr && !isNoRowMatchedError(updErr)) throw toThrowable(updErr)

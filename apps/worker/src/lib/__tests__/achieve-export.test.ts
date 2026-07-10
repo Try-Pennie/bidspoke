@@ -173,9 +173,13 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
         const b: Record<string, unknown> = {}
         for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) b[m] = vi.fn(() => b)
         if (table === 'achieve_evaluations') {
-          b.update = vi.fn(() => ({
-            eq: () => ({ select: () => Promise.resolve({ data: markedRows, error: null }) }),
-          }))
+          b.update = vi.fn(() => {
+            const u: Record<string, unknown> = {
+              eq: vi.fn(() => u),
+              select: () => Promise.resolve({ data: markedRows, error: null }),
+            }
+            return u
+          })
           b.then = (resolve: (r: unknown) => unknown) =>
             resolve({ data: [{ id: 'e-1', execution_id: 'exec-1', requested_at_utc: '2026-07-01T00:00:00Z' }], error: null })
         } else {
@@ -196,5 +200,56 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
   it('counts an evaluation whose update actually landed', async () => {
     const summary = await runAchieveExport(supabaseWith([{ id: 'e-1' }]) as never, {} as never)
     expect(summary.trades_backfilled).toBe(1)
+  })
+})
+
+// #589: achieve_evaluations is partitioned monthly on requested_at_utc, but the
+// trades backfill UPDATE matched id alone and so scanned every partition. The
+// evaluation row carries requested_at_utc (the partition key), so an exact
+// predicate on it prunes to the single owning partition, mirroring
+// lead_sightings.finalize.
+describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
+  beforeEach(() => {
+    mocks.exportTable.mockReset().mockResolvedValue(0)
+    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
+    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+  })
+
+  // Records the eq() filters applied to the achieve_evaluations UPDATE chain.
+  function supabaseRecordingUpdate() {
+    const updateFilters: Array<{ col: string; val: unknown }> = []
+    const supabase = {
+      from: vi.fn((table: string) => {
+        const b: Record<string, unknown> = {}
+        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) b[m] = vi.fn(() => b)
+        if (table === 'achieve_evaluations') {
+          b.update = vi.fn(() => {
+            const u: Record<string, unknown> = {
+              eq: vi.fn((col: string, val: unknown) => {
+                updateFilters.push({ col, val })
+                return u
+              }),
+              select: () => Promise.resolve({ data: [{ id: 'e-1' }], error: null }),
+            }
+            return u
+          })
+          b.then = (resolve: (r: unknown) => unknown) =>
+            resolve({ data: [{ id: 'e-1', execution_id: 'exec-1', requested_at_utc: '2026-07-01T00:00:00Z' }], error: null })
+        } else {
+          b.then = (resolve: (r: unknown) => unknown) =>
+            resolve({ data: [{ execution_id: 'exec-1', output: { status: 200, body: { trades: [1] } } }], error: null })
+        }
+        return b
+      }),
+    }
+    return { supabase, updateFilters }
+  }
+
+  it('bounds the UPDATE by the row requested_at_utc alongside its id', async () => {
+    const { supabase, updateFilters } = supabaseRecordingUpdate()
+    await runAchieveExport(supabase as never, {} as never)
+
+    expect(updateFilters).toContainEqual({ col: 'id', val: 'e-1' })
+    expect(updateFilters).toContainEqual({ col: 'requested_at_utc', val: '2026-07-01T00:00:00Z' })
   })
 })
