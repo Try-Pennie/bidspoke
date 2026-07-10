@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   resolveStrandedExecution,
   buildStrandGraph,
@@ -413,6 +413,31 @@ describe('runReduceFinalizeStrandedExecutions', () => {
     const result = await runReduceFinalizeStrandedExecutions(client as never)
     expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
     expect(updates[0].payload).toMatchObject({ status: 'completed', outcome: 'completed', error_message: null })
+  })
+
+  // #606: a malformed definition makes buildStrandGraph throw. loadStrandGraph
+  // catches it, logs the cause via formatErr (never a bare String() that would
+  // print "[object Object]"), and falls back to the honest-unresolved labeling so
+  // the run continues instead of failing the row.
+  it('logs the real cause and falls back gracefully when a definition is malformed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-bad', started_at: '2026-07-01T01:00:12.000Z', workflow_version_id: 'v-bad' }],
+      stepsByExecutionId: { 'exec-bad': [] },
+      // `nodes: 5` is truthy but not iterable, so `for (const n of definition.nodes)` throws.
+      definitionsByVersionId: { 'v-bad': { nodes: 5 } as unknown as WorkflowDefinition },
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+
+    // The row is still resolved (unresolved-label fallback), not counted as an error.
+    expect(result).toEqual({ processed: 1, errors: 0, vanished: 0 })
+    expect(updates).toHaveLength(1)
+    // The warn log names the cause instead of blanking it to "[object Object]".
+    expect(warn).toHaveBeenCalled()
+    const logged = warn.mock.calls.find((c) => String(c[0]).includes('malformed definition'))
+    expect(logged).toBeDefined()
+    expect(JSON.stringify(logged![1])).not.toContain('[object Object]')
+    warn.mockRestore()
   })
 
   it('fetches each workflow_version definition only once even across many rows sharing it', async () => {

@@ -45,6 +45,27 @@ export default [
       // packages so the invariant can't drift (#601).
       '@typescript-eslint/no-base-to-string': 'error',
 
+      // no-base-to-string is blind to a value still typed `unknown` (a caught
+      // error), so a name-based guard bans a bare String(err) / `${err}` on an
+      // identifier named err/error/e, exempting the established
+      // `err instanceof Error ? err.message : String(err)` idiom (#606). Held in
+      // both Worker packages so the invariant can't drift; render a caught error
+      // safely (never a bare String()).
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.name='String']:not(ConditionalExpression > .consequent):not(ConditionalExpression > .alternate) > Identifier[name=/^(err|error|e)$/]",
+          message:
+            'Do not String() a caught error: a plain object renders as "[object Object]" and blanks the alert. Render it safely (never a bare String()).',
+        },
+        {
+          selector: "TemplateLiteral > Identifier[name=/^(err|error|e)$/]",
+          message:
+            'Do not interpolate a caught error into a template: a plain object renders as "[object Object]". Render it safely (never a bare template).',
+        },
+      ],
+
       // tsc already enforces these via noUnusedLocals/noUnusedParameters
       '@typescript-eslint/no-unused-vars': 'off',
       'no-constant-condition': ['error', { checkLoops: false }],

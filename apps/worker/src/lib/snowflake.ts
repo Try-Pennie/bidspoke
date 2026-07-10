@@ -2,6 +2,8 @@
 // Auth: key-pair JWT (RS256). Service user `bidspoke_service` with RSA_PUBLIC_KEY
 // configured in Snowflake; private key lives in the SNOWFLAKE_PRIVATE_KEY worker secret.
 
+import { formatErr } from './format-error'
+
 export interface SnowflakeConfig {
   account: string         // e.g., 'jyc55588.us-east-1' (URL prefix)
   user: string            // e.g., 'bidspoke_service'
@@ -129,7 +131,7 @@ export async function postStatementWithRetry(
       // fetch rejected, so no response ever arrived. Always retryable: the
       // requestId contract covers the ambiguity about whether it executed.
       retryable = true
-      error = e instanceof Error ? e : new Error(String(e))
+      error = e instanceof Error ? e : new Error(formatErr(e))
     }
 
     if (!retryable || attempt >= maxAttempts) throw error

@@ -42,6 +42,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { WorkflowDefinition } from '../types'
 import { isNoRowMatchedError, requireRowsAffected } from './db-retry'
+import { formatErr } from './format-error'
 
 export const MIN_AGE_MINUTES = 30
 export const LOOKBACK_DAYS = 14
@@ -192,7 +193,7 @@ async function loadStrandGraph(supabase: SupabaseClient, versionId: string): Pro
   try {
     return buildStrandGraph(data.definition as unknown as WorkflowDefinition)
   } catch (e) {
-    console.warn('[stranded-executions] malformed definition, skipping graph confirmation', { versionId, error: String(e) })
+    console.warn('[stranded-executions] malformed definition, skipping graph confirmation', { versionId, error: formatErr(e) })
     return null
   }
 }
