@@ -100,7 +100,13 @@ jobs:
             echo "No migration content changes, nothing to check."
             exit 0
           fi
-          if echo "$MIGS" | xargs grep -ilE 'create table|drop table|add column|drop column|alter column|rename column|create type|alter type|create view|drop view|create materialized view' >/dev/null 2>&1; then
+          # A column DEFAULT is not part of the generated types, so `ALTER COLUMN ... SET/DROP
+          # DEFAULT` must not demand a regen: there would be nothing to regenerate and the
+          # check could never be satisfied. Drop those statements before matching. Every other
+          # ALTER COLUMN (a type change, SET NOT NULL) still counts, as does ADD/DROP COLUMN.
+          if echo "$MIGS" | xargs cat \
+               | grep -ivE 'alter[[:space:]]+column[[:space:]]+[^;]*(set|drop)[[:space:]]+default' \
+               | grep -qiE 'create table|drop table|add column|drop column|alter column|rename column|create type|alter type|create view|drop view|create materialized view'; then
             if ! echo "$CHANGED" | grep -qx 'apps/worker/src/types/database.ts'; then
               echo "::error::A migration changes table/column/type DDL but apps/worker/src/types/database.ts was not regenerated. Run 'pnpm --filter worker db:types' and commit the result."
               exit 1
