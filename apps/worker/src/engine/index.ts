@@ -12,13 +12,13 @@ import { loadPartnerConstants } from '../lib/partner-constants-loader'
 import { buildContext, recordStepOutput, resolveValue } from './context'
 import { executeNode } from './nodes/index'
 import { executeParallelNode } from './nodes/parallel'
-import type { ParallelChildResult } from './nodes/parallel'
+import type { ParallelChildResult, ParallelFailureCause } from './nodes/parallel'
 import { executeBidGroupNode } from './nodes/bid-group'
 import type { BidGroupAttempt, BidGroupOutput } from './nodes/bid-group'
 import { executePartnerBidNode } from './nodes/partner-bid'
 import { buildCodeStepInput, unionReferencedSteps, scopeSteps } from './nodes/code'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
-import { classifyHttpError, classifyTransportError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
+import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
@@ -913,6 +913,7 @@ export async function walkGraph(
       let stepStatus: StepStatus = 'completed'
       let errorMessage: string | undefined
       let errorType: ErrorType = null
+      let parallelSuppressAlert = false
 
       try {
         // Slot handle ids parallel to resolvedChildren — needed when wait_for='specific'.
@@ -952,11 +953,22 @@ export async function walkGraph(
       } catch (err) {
         stepStatus = 'failed'
         errorMessage = err instanceof Error ? err.message : String(err)
-        // A parallel failure (a child rejected, or the group timed out) is an
-        // operational error, never a clean business rejection — give it a real
-        // type so the failure alert fires. A null type is read as a business
-        // rejection and stays silent (#64).
-        errorType = classifyStepError(err) ?? 'transient'
+        // A parallel failure the children didn't reach a verdict on (a timeout, a
+        // structural error, a mix of outcomes) is operational, never a clean
+        // business rejection, so give it a real type and let the failure alert
+        // fire. A null type reads as a business rejection and stays silent (#64).
+        //
+        // When the rejected children DID agree (#486), inherit their verdict
+        // instead: a partner declining a lead is a business rejection whether the
+        // node sits in a parallel block or in the main line, and a failure the
+        // partner config says not to page on stays unpaged either way.
+        const cause = (err as { parallelFailureCause?: ParallelFailureCause }).parallelFailureCause
+        if (cause) {
+          errorType = cause.errorType
+          parallelSuppressAlert = cause.suppressAlert
+        } else {
+          errorType = classifyStepError(err) ?? 'transient'
+        }
       }
 
       const parallelDurationMs = Date.now() - new Date(stepStartedAt).getTime()
@@ -980,7 +992,7 @@ export async function walkGraph(
       }
 
       if (stepStatus === 'failed') {
-        throw new StepFailureError(errorMessage!, node.namespace, errorType)
+        throw new StepFailureError(errorMessage!, node.namespace, errorType, parallelSuppressAlert)
       }
 
       if (endNode) {
@@ -1384,14 +1396,13 @@ export async function walkGraph(
       // resolved values to thrown errors so failed steps don't show blank input.
       const errResolvedInput = extractResolvedInput(err)
       if (errResolvedInput) resolvedInput = errResolvedInput
-      if (err instanceof PartnerApiError) {
-        errorType = err.errorType
-        suppressAlert = err.suppressAlert
-      } else if (err instanceof Response) {
-        errorType = classifyHttpError(err.status)
-      } else {
-        errorType = classifyTransportError(err)
-      }
+      // Identical to the parallel child's catch by construction (#486). These two
+      // hand-rolled the same three-way classification separately, and the copy in
+      // the child drifted: it lost the PartnerApiError branch, so the same partner
+      // failure was typed differently depending on where the node sat. One shared
+      // helper, one behavior.
+      errorType = classifyStepError(err)
+      suppressAlert = err instanceof PartnerApiError ? err.suppressAlert : false
 
       errorMessage = err instanceof Error ? err.message : String(err)
       const onError = node.config.on_error ?? 'fail'
@@ -1634,6 +1645,7 @@ export async function runParallelChild(
     let stepStatus: StepStatus = 'completed'
     let errorMessage: string | undefined
     let errorType: ErrorType = null
+    let suppressAlert = false
     let stepLogs: import('../types').StepLogEntry[] | undefined
     let resolvedInput: ResolvedStepInput | null = null
     // Captures the real retry count from withRetry (mutated in place on both the
@@ -1666,7 +1678,15 @@ export async function runParallelChild(
     } catch (err) {
       stepStatus = 'failed'
       errorMessage = err instanceof Error ? err.message : String(err)
-      errorType = err instanceof Response ? classifyHttpError(err.status) : classifyTransportError(err)
+      // #486: classifyStepError honors a PartnerApiError's own errorType. The
+      // hand-rolled Response-or-transport ternary this replaces never checked for
+      // one, so a partner's authoritative verdict (from its
+      // response_classification config) was overwritten with 'transient', while
+      // the identical failure outside a parallel block classified correctly. The
+      // retry ladder above already used this helper; only the recorded type
+      // disagreed.
+      errorType = classifyStepError(err)
+      suppressAlert = err instanceof PartnerApiError ? err.suppressAlert : false
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
       const errResolvedInput = extractResolvedInput(err)
@@ -1695,7 +1715,7 @@ export async function runParallelChild(
       // The slot's result is the FIRST node's namespace — but downstream chain
       // failures still surface as a slot rejection so executeParallelNode's
       // on_child_error policy applies.
-      return { namespace: slotNamespace, status: 'rejected', error: errorMessage }
+      return { namespace: slotNamespace, status: 'rejected', error: errorMessage, errorType, suppressAlert }
     }
 
     lastOutput = output

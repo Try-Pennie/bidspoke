@@ -16,7 +16,7 @@
  *
  * Output: ParallelOutput — array of child results consumed downstream.
  */
-import type { NodeDefinition, StepExecutionResult } from '../../types'
+import type { ErrorType, NodeDefinition, StepExecutionResult } from '../../types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +25,45 @@ export interface ParallelChildResult {
   status: 'fulfilled' | 'rejected' | 'timeout'
   output?: unknown   // present when fulfilled
   error?: string     // present when rejected
+  // Present when rejected (#486). The child already classified its own failure,
+  // authoritatively so for a PartnerApiError, whose type comes from the
+  // partner's response_classification config. Without carrying it up, the parent
+  // could only re-derive a type from the wrapper Error below, which always came
+  // out 'transient', so a partner's business rejection (or a failure it asked us
+  // not to page on) paged anyway, and the recorded type was a lie.
+  errorType?: ErrorType
+  suppressAlert?: boolean
+}
+
+// Attached to the Error a failed group throws, when the failure is attributable
+// to specific rejected children. Absent for a timeout or a structural failure,
+// which are operational no matter what the children said.
+export interface ParallelFailureCause {
+  errorType: ErrorType
+  suppressAlert: boolean
+}
+
+// The classification the parent should record for a group failure, derived from
+// the children that actually rejected. The rule: the group inherits the child's
+// verdict only when every rejected child agrees. One partner declining a lead is
+// a business rejection (silent, as it is in the main loop); a partner declining
+// while another child hard-fails is an operational failure and must page. A
+// timed-out child never yields a verdict, so it always falls back to operational
+// (this is what keeps #64 fixed).
+export function classifyParallelFailure(children: ParallelChildResult[]): ParallelFailureCause | null {
+  if (children.some((c) => c.status === 'timeout')) return null
+
+  const rejected = children.filter((c) => c.status === 'rejected')
+  if (rejected.length === 0) return null
+
+  const [first, ...rest] = rejected
+  if (first.errorType === undefined) return null
+  if (!rest.every((c) => c.errorType === first.errorType)) return null
+
+  return {
+    errorType: first.errorType,
+    suppressAlert: rejected.every((c) => c.suppressAlert === true),
+  }
 }
 
 export type ParallelOutput = ParallelChildResult[]
@@ -76,7 +115,8 @@ export async function executeParallelNode(
         const reason = named.status === 'timeout'
           ? `slot "${named.namespace}" did not complete in time`
           : `slot "${named.namespace}" failed: ${named.error ?? 'unknown error'}`
-        throw new Error(`Parallel failed — ${reason}`)
+        // Only the named slot decides this group's fate, so only it is consulted.
+        throw withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure([named]))
       }
       return { output }
     }
@@ -93,7 +133,9 @@ export async function executeParallelNode(
         const reason = failed.status === 'timeout'
           ? `child "${failed.namespace}" did not complete in time`
           : `child "${failed.namespace}" failed: ${failed.error ?? 'unknown error'}`
-        throw new Error(`Parallel failed — ${reason}`)
+        // Every child ran, so every failure is consulted: the group is only a
+        // business rejection if all of them were.
+        throw withFailureCause(new Error(`Parallel failed: ${reason}`), classifyParallelFailure(output))
       }
     }
 
@@ -219,7 +261,23 @@ async function runFirst(
     if (err instanceof Error && (err as { isParallelTimeout?: boolean }).isParallelTimeout) {
       throw new Error(`Parallel node timed out — no child succeeded within ${timeoutMs}ms`)
     }
-    // AggregateError from Promise.any — all children rejected
-    throw new Error('All parallel children failed — no successful result')
+    // AggregateError from Promise.any: all children rejected. Each rejection
+    // carries the child result it came from (attached above), so the group can
+    // still inherit a unanimous verdict from them (#486).
+    const rejectedChildren = (err instanceof AggregateError ? err.errors : [])
+      .map((e: unknown) => (e as { childResult?: ParallelChildResult }).childResult)
+      .filter((c): c is ParallelChildResult => c !== undefined)
+    throw withFailureCause(
+      new Error('All parallel children failed: no successful result'),
+      classifyParallelFailure(rejectedChildren)
+    )
   }
+}
+
+// Tag a group failure with the verdict its children reached, so the engine can
+// record the real error type and honor suppressAlert instead of re-deriving
+// 'transient' from this wrapper Error. A null cause leaves the error untagged,
+// which the engine reads as "operational, classify it yourself".
+function withFailureCause(err: Error, cause: ParallelFailureCause | null): Error {
+  return cause ? Object.assign(err, { parallelFailureCause: cause }) : err
 }
