@@ -200,4 +200,37 @@ describe('invalidateEnvCache: a superseded secret does not linger (#491)', () =>
     const r = await loadEnvVars('org1', kv, down, KEY)
     expect(r).toEqual({ EQUIFAX_PASSWORD: NEW })
   })
+
+  // Failure path of the re-warm itself. The invalidate happens right after the
+  // route's DB write commits, so its read should succeed, but it can still lose a
+  // race with a connection-pool blip. When it does, the org must be left with
+  // SOMETHING to fall back on rather than nothing: a stale last-good beats blank
+  // creds (#391), and the next successful load purges it anyway.
+  it('keeps the previous last-good when the re-warm read itself fails, rather than blanking it', async () => {
+    const kv = fakeKv()
+    await loadEnvVars('org1', kv, await sbWith(OLD)(), KEY)
+
+    // The rotation committed, but the re-warm's read hits a blip.
+    const down = fakeSupabase({ data: null, error: { message: 'pool exhausted' } })
+    await invalidateEnvCache('org1', kv, down, KEY)
+
+    // Short key is gone, so a later healthy load will repopulate from the DB.
+    expect(kv.store.has('env-vars-org1')).toBe(false)
+
+    // Last-good survived, so creds do not go blank while the DB is still down.
+    expect(kv.store.has('env-vars-org1-lastgood')).toBe(true)
+    expect(await loadEnvVars('org1', kv, down, KEY)).toEqual({ EQUIFAX_PASSWORD: OLD })
+
+    // And once the DB recovers, the superseded value is purged after all.
+    expect(await loadEnvVars('org1', kv, await sbWith(NEW)(), KEY)).toEqual({ EQUIFAX_PASSWORD: NEW })
+    expect(kvContents(kv)).not.toContain(OLD)
+  })
+
+  it('does not throw out of the mutation route when the re-warm read fails', async () => {
+    // invalidateEnvCache is awaited inside the route's Promise.all. If a failed
+    // re-warm threw, a successful env-var edit would report as a 500.
+    const kv = fakeKv()
+    const down = fakeSupabase({ data: null, error: { message: 'pool exhausted' } })
+    await expect(invalidateEnvCache('org1', kv, down, KEY)).resolves.toBeUndefined()
+  })
 })
