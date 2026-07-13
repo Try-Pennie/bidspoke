@@ -3677,6 +3677,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             width={sidePanelWidth}
             onResize={setSidePanelWidth}
             refreshToken={versionsRefreshToken}
+            isDirty={isDirty}
           />
         )}
       </div>
