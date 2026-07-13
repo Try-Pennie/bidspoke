@@ -88,9 +88,10 @@ const CORRECTABLE_COL: Record<string, { col: string; correctedTo: unknown }> = {
 
 interface StampGroup {
   ids: string[]
-  // The value this group asserts for the correctable column. Absent for a table
-  // with no correctable column, where the stamp is unconditional as before.
-  pred?: { col: string; value: unknown }
+  // The column values this group's stamp asserts, as a PostgREST .match() object.
+  // Empty for a table with no correctable column, where .match({}) adds no filters
+  // and the stamp is the unconditional write it always was.
+  assert: Record<string, unknown>
   // True when every row in the group could be corrected out from under the stamp,
   // so matching zero rows is a legitimate outcome rather than a broken write.
   mayMissAll: boolean
@@ -103,7 +104,7 @@ interface StampGroup {
 export function stampGroups(rows: Array<Record<string, unknown>>, tableName: string): StampGroup[] {
   const correctable = CORRECTABLE_COL[tableName]
   if (!correctable) {
-    return [{ ids: rows.map((r) => r.id as string), mayMissAll: false }]
+    return [{ ids: rows.map((r) => r.id as string), assert: {}, mayMissAll: false }]
   }
 
   const { col, correctedTo } = correctable
@@ -129,7 +130,7 @@ export function stampGroups(rows: Array<Record<string, unknown>>, tableName: str
 
   return [...byValue.values()].map((g) => ({
     ids: g.ids,
-    pred: { col, value: g.value },
+    assert: { [col]: g.value },
     // A row already holding the corrected value cannot change again, so its stamp
     // keeps the #583 hard guard. Only the pre-correction group can lose every row
     // to a concurrent correction.
@@ -471,18 +472,22 @@ export async function exportTable(
         // exported_at null, and re-exports next run with the corrected value.
         let markedTotal = 0
         for (const group of stampGroups(rows, tableName)) {
-          const label = group.pred ? ` where ${group.pred.col}=${String(group.pred.value)}` : ''
+          const asserted = Object.entries(group.assert)
+            .map(([c, v]) => ` where ${c}=${String(v)}`)
+            .join('')
           const { rows: marked, error: updErr } = await requireRowsAffected(
-            `${tableName}.exported_at (${group.ids.length} rows${label}; the batch would re-export forever)`,
-            () => {
-              const q = supabase
+            `${tableName}.exported_at (${group.ids.length} rows${asserted}; the batch would re-export forever)`,
+            () =>
+              supabase
                 .from(tableName)
                 .update({ exported_at: stampedAt })
                 .in('id', group.ids)
                 .gte(partitionKey, min)
                 .lte(partitionKey, max)
-              return (group.pred ? q.eq(group.pred.col, group.pred.value) : q).select('id')
-            },
+                // The values we shipped to Snowflake. Empty for a table with no
+                // correctable column, where this adds no filters (#483).
+                .match(group.assert)
+                .select('id'),
             // A pre-correction group CAN legitimately match zero rows: every row in
             // it was corrected under us. Those rows keep exported_at null, so they
             // re-export and converge on the next run rather than being lost, and

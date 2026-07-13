@@ -102,9 +102,9 @@ function fakeSupabase(
             },
             gte: () => q,
             lte: () => q,
-            // The stamp asserts the correctable column's shipped value (#483). These
-            // rows carry no such column, so the predicate is a no-op here.
-            eq: () => q,
+            // The stamp asserts the correctable column's shipped values (#483) via
+            // .match(). These rows carry no such column, so it is a no-op here.
+            match: () => q,
             ids: [] as string[],
             select: () =>
               Promise.resolve({
@@ -640,11 +640,13 @@ describe('exportTable: a winner flip during the export window is not clobbered (
             return q
           },
           update(patch: Record<string, unknown>) {
-            const preds: Record<string, unknown> = {}
+            let preds: Record<string, unknown> = {}
             let ids: string[] = []
             const q = {
               in: (_c: string, v: string[]) => { ids = v; return q },
-              eq: (c: string, v: unknown) => { preds[c] = v; return q },
+              // .match({}) adds no filters, which is how a table with no correctable
+              // column keeps its unconditional stamp.
+              match: (m: Record<string, unknown>) => { preds = m; return q },
               gte: () => q,
               lte: () => q,
               select: () => {
@@ -784,6 +786,7 @@ describe('partition pruning on writes', () => {
                 recorder.lteVal = v
                 return q
               },
+              match: () => q,
               select: () =>
                 Promise.resolve({
                   data: (recorder.ids as string[]).map((id) => ({ id })),
@@ -904,7 +907,7 @@ describe('partition pruning on writes', () => {
               in: (_c: string, ids: string[]) => { recorder.ids = ids; return q },
               gte: (c: string) => { recorder.gteCol = c; return q },
               lte: (c: string) => { recorder.lteCol = c; return q },
-              eq: () => q,
+              match: () => q,
               select: () => Promise.resolve({ data: [{ id: 'b0' }], error: null }),
             }
             return q
