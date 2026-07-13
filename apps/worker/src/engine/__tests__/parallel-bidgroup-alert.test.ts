@@ -36,7 +36,8 @@ import { PartnerApiError } from '../partner-bid-error'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 import { executeBidGroupNode } from '../nodes/bid-group'
-import { updateExecutionRecord } from '../step-logger'
+import { updateExecutionRecord, flushStepLogs } from '../step-logger'
+import type { StepLogEntry } from '../step-logger'
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -152,6 +153,16 @@ function lastUpdate() {
   return calls[calls.length - 1][3] as Record<string, unknown>
 }
 
+// The step row the engine actually flushed for a given namespace. flushStepLogs
+// receives the accumulated queue as its second argument.
+function childStepRow(namespace: string): StepLogEntry {
+  const calls = vi.mocked(flushStepLogs).mock.calls
+  const queue = calls[calls.length - 1][1]
+  const row = queue.find((r) => r.step_namespace === namespace)
+  if (!row) throw new Error(`no step row logged for "${namespace}"`)
+  return row
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
 })
@@ -191,6 +202,61 @@ describe('parallel-node failure fires the failure alert (#64)', () => {
     expect(alert.alertType).toBe('failure')
     expect(alert.failedStep).toBe('bid_parallel')
     expect(alert.errorType).not.toBeNull()
+  })
+})
+
+describe('a parallel child keeps its partner classification (#486)', () => {
+  // The child catch used to re-derive the type with a Response-or-transport
+  // ternary that never checked PartnerApiError, so a partner's authoritative
+  // classification (and its suppressAlert flag) was replaced with 'transient'.
+  // The same partner failure in the main loop is classified correctly, so the
+  // two paths disagreed purely on where the node happened to sit.
+
+  it('records the partner error type on the child step row, not transient', async () => {
+    loadDef(parallelDefinition)
+    vi.mocked(executeNode).mockRejectedValue(
+      new PartnerApiError('Partner 400: malformed lead', 'permanent', false)
+    )
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    expect(childStepRow('partner_a').error_type).toBe('permanent')
+  })
+
+  it('stays silent for a partner business rejection, exactly as the main loop does', async () => {
+    // errorType null is the engine's business rejection: the partner looked at
+    // the lead and declined it. Not an incident, so it must not page.
+    loadDef(parallelDefinition)
+    vi.mocked(executeNode).mockRejectedValue(
+      new PartnerApiError('Partner declined: outside buy box', null, false)
+    )
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    expect(lastUpdate().status).toBe('failed')
+    expect(childStepRow('partner_a').error_type).toBeNull()
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
+  })
+
+  it('honors suppressAlert on a partner error that is otherwise a real failure', async () => {
+    // A classified failure the partner config asked us not to page on. The type
+    // still records as permanent, but the alert stays suppressed.
+    loadDef(parallelDefinition)
+    vi.mocked(executeNode).mockRejectedValue(
+      new PartnerApiError('Partner 403: not enabled for this vertical', 'permanent', true)
+    )
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    expect(lastUpdate().status).toBe('failed')
+    expect(childStepRow('partner_a').error_type).toBe('permanent')
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
   })
 })
 
