@@ -186,7 +186,12 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
       'achieve_evaluations',
       ACHIEVE_COLS,
       (q) => {
-        const base = q.eq('is_test', false).is('exported_at', null)
+        // is_sandbox: the request carried Achieve's seeded showroom identity, so the offers
+        // and the accept/decline on that row describe a FAKE person. Exporting them would put
+        // fabricated offer amounts and APRs alongside real ones in Snowflake with nothing to
+        // tell them apart. The lead volume in those rows is real, but it stays queryable in
+        // Supabase; only the fake offer signal is withheld.
+        const base = q.eq('is_test', false).eq('is_sandbox', false).is('exported_at', null)
         // When the backfill failed this run, a trades-null row is ambiguous: it
         // could be legitimately trades-less, or a row we simply failed to
         // enrich. Exporting it stamps exported_at, which permanently hides it

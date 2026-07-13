@@ -179,7 +179,7 @@ export async function executeAchieveOffersNode(
 
   if (!ctx.env.ACHIEVE_USERNAME || !ctx.env.ACHIEVE_PASSWORD) {
     return {
-      output: result(false, 0, 'error', 'Missing ACHIEVE_USERNAME/ACHIEVE_PASSWORD env vars', request, null),
+      output: result(false, 0, 'error', 'Missing ACHIEVE_USERNAME/ACHIEVE_PASSWORD env vars', request, null, !production),
       resolvedInput,
     }
   }
@@ -187,7 +187,7 @@ export async function executeAchieveOffersNode(
   const missing = missingRequiredFields(request)
   if (missing.length > 0) {
     return {
-      output: result(false, 0, 'error', `Missing required fields: ${missing.join(', ')}`, request, null),
+      output: result(false, 0, 'error', `Missing required fields: ${missing.join(', ')}`, request, null, !production),
       resolvedInput,
     }
   }
@@ -217,7 +217,10 @@ export async function executeAchieveOffersNode(
     if (!res.ok) {
       const reason =
         responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
-      return { output: result(false, res.status, 'error', reason, request, responseBody), resolvedInput }
+      return {
+        output: result(false, res.status, 'error', reason, request, responseBody, !production),
+        resolvedInput,
+      }
     }
 
     const responseStatus =
@@ -231,7 +234,8 @@ export async function executeAchieveOffersNode(
         responseStatus,
         responseBody?.response_reason ?? null,
         request,
-        responseBody
+        responseBody,
+        !production
       ),
       resolvedInput,
     }
@@ -241,7 +245,7 @@ export async function executeAchieveOffersNode(
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
       ? `Achieve API timed out after ${FETCH_TIMEOUT_MS}ms`
       : message
-    return { output: result(false, 0, 'error', reason, request, null), resolvedInput }
+    return { output: result(false, 0, 'error', reason, request, null, !production), resolvedInput }
   } finally {
     clearTimeout(timer)
   }
@@ -395,12 +399,18 @@ function result(
   responseStatus: string,
   reason: string | null,
   request: Record<string, unknown>,
-  response: unknown
+  response: unknown,
+  // Off production the request carried Achieve's seeded showroom identity, so the offers and
+  // the accept/decline describe a FAKE person. The achieve-log hook persists this as
+  // achieve_evaluations.is_sandbox so the analysis can exclude the fake offer signal while
+  // keeping the real volume signal.
+  sandbox: boolean
 ) {
   const offers = (response as { offers?: unknown[] } | null)?.offers
   const offersArray = Array.isArray(offers) ? offers : null
   return {
     _achieve_evaluation: true as const,
+    sandbox,
     ok,
     status,
     response_status: responseStatus,

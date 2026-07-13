@@ -24,10 +24,12 @@ export interface AchieveEvaluationInsert {
   response_body: unknown
   offers: unknown
   is_test: boolean
+  is_sandbox: boolean
 }
 
 interface AchieveStepOutput {
   _achieve_evaluation: true
+  sandbox?: boolean
   status?: number
   response_status?: string
   response_reason?: string
@@ -100,6 +102,10 @@ export function extractAchieveEvaluations(
       response_body: output.response ?? null,
       offers: output.offers ?? null,
       is_test: meta.is_test,
+      // Defaults to sandbox when the flag is absent: an unflagged row is far more likely an
+      // old sandbox row than real production data, and a false negative here silently poisons
+      // the analysis with offers made to Achieve's seeded fake identity.
+      is_sandbox: output.sandbox !== false,
     })
   }
   return rows

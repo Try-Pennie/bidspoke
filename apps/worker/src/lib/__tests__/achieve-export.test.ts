@@ -101,6 +101,21 @@ describe('runAchieveExport trades-backfill failure', () => {
     applyFilter(b)
     expect(calls.some((c) => c.method === 'not')).toBe(false)
   })
+
+  // A sandbox row's offers and accept/decline describe Achieve's seeded FAKE identity, not
+  // our lead. Shipping those to Snowflake puts fabricated offer amounts and APRs next to real
+  // ones with nothing to tell them apart, so the export must never send them.
+  it('excludes sandbox rows from the Snowflake export', async () => {
+    const supabase = {
+      from: vi.fn(() => makeThenableBuilder({ data: [], error: null })),
+    }
+    await runAchieveExport(supabase as never, {} as never)
+
+    const applyFilter = mocks.exportTable.mock.calls[0][4] as (q: unknown) => unknown
+    const { b, calls } = makeRecordingBuilder()
+    applyFilter(b)
+    expect(calls).toContainEqual({ method: 'eq', args: ['is_sandbox', false] })
+  })
 })
 
 describe('variant column merge SQL', () => {

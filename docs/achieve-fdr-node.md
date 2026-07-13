@@ -93,20 +93,35 @@ so it lives in env vars and is gated per-lead on the payload booleans. See
 
 ## Analysis
 
+> **`is_sandbox` matters more than `is_test` here.** Off production the node sends Achieve's
+> seeded showroom identity (their sandbox only returns offers for its own seeded profiles), so
+> on a sandbox row the **offers and the accept/decline describe a fake person**. The **lead
+> volume and the debt we sent are real**, which is why the rows are flagged rather than hidden.
+>
+> Any offer-quality question (what would Achieve pay, what APR, what accept rate) MUST filter
+> `NOT is_sandbox`. A pure volume question (how many leads reach each Engine path) may include
+> them. Sandbox rows are never exported to Snowflake.
+
 ```sql
--- volume + acceptance by day
+-- volume + acceptance by day (real offers only)
 SELECT date_trunc('day', requested_at_utc) AS day, response_status, count(*),
        sum(offer_count) AS offers
 FROM achieve_evaluations
-WHERE NOT is_test
+WHERE NOT is_test AND NOT is_sandbox
 GROUP BY 1, 2 ORDER BY 1;
+
+-- lead volume reaching Achieve, by Engine path (sandbox rows are fine here: volume is real)
+SELECT node_namespace, count(*) AS leads
+FROM achieve_evaluations
+WHERE NOT is_test
+GROUP BY 1 ORDER BY 2 DESC;
 
 -- offer detail, joinable to lead_sightings / execution_steps on trace_id
 SELECT a.trace_id, a.submission_id, a.request_payload->>'unsecured_debt' AS debt_sent,
        o.value->>'amount' AS offer_amount, o.value->>'monthly_payment' AS monthly,
        o.value->>'terms' AS terms
 FROM achieve_evaluations a, jsonb_array_elements(a.offers) o
-WHERE a.response_status = 'accepted' AND NOT a.is_test;
+WHERE a.response_status = 'accepted' AND NOT a.is_test AND NOT a.is_sandbox;
 ```
 
 Trades-data join (Geoff, later): `trace_id` -> `execution_steps` rows for the

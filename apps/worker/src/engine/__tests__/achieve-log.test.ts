@@ -164,6 +164,42 @@ describe('extractAchieveEvaluations', () => {
     expect(rows.map((r) => r.node_namespace)).toEqual(['achieve_fdr'])
   })
 
+  // Off production the node sends Achieve's seeded showroom identity, so the offers and the
+  // accept/decline are for a FAKE person: they say nothing about our real leads. The lead
+  // VOLUME and the real debt figure in the row are still real, though, so the row must be
+  // flagged rather than hidden (is_test would hide it from the export and every documented
+  // analysis query). Analysts filter on is_sandbox deliberately.
+  it('flags a sandbox evaluation with is_sandbox', () => {
+    const queue = [
+      makeEntry({
+        step_type: 'achieve_offers',
+        output: { ...achieveOutput, sandbox: true },
+      }),
+    ]
+    const [row] = extractAchieveEvaluations(queue, meta)
+    expect(row.is_sandbox).toBe(true)
+  })
+
+  it('marks a production evaluation as not sandbox', () => {
+    const queue = [
+      makeEntry({
+        step_type: 'achieve_offers',
+        output: { ...achieveOutput, sandbox: false },
+      }),
+    ]
+    const [row] = extractAchieveEvaluations(queue, meta)
+    expect(row.is_sandbox).toBe(false)
+  })
+
+  // Defaults to sandbox when the marker is absent: an unflagged row is more likely an old
+  // sandbox row than real production data, and a false negative here silently poisons the
+  // analysis.
+  it('defaults is_sandbox to true when the output carries no flag', () => {
+    const queue = [makeEntry({ step_type: 'achieve_offers', output: achieveOutput })]
+    const [row] = extractAchieveEvaluations(queue, meta)
+    expect(row.is_sandbox).toBe(true)
+  })
+
   it('logs both Achieve nodes when two of them genuinely fire', () => {
     const queue = [
       makeEntry({ step_namespace: 'achieve_no_bids', step_type: 'achieve_offers', output: achieveOutput }),
