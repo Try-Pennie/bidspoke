@@ -1144,6 +1144,23 @@ export function layoutWorkflow(nodes: Node[], edges: Edge[]): Node[] {
     }
   }
 
+  // Re-pin every end to its branch's column. An end's x is DERIVED (= its branch's
+  // x), not independent, so it has to be recomputed after every pass that can move
+  // the branch. The pin above runs before the chain-straightening pass, which
+  // shifts a chain's exclusive subtree while childrenOf() deliberately excludes end
+  // nodes (an end takes an arm from every branch slot, so one arm must not drag it).
+  // The chain moves; the end is left behind. Main Flow's Engine OK Branch End ended
+  // up ~4000px right of its branch that way, and since layout re-pins on every pass,
+  // the user could not drag it back.
+  for (const node of endNodes) {
+    const branchId = (node.data as { _pairId?: string })._pairId
+    if (!branchId) continue
+    const branchPos = pos.get(branchId)
+    const ownPos = pos.get(node.id)
+    if (!branchPos || !ownPos) continue
+    ownPos.x = branchPos.x
+  }
+
   // De-overlap pass. dagre separates nodes within a rank, but the post-dagre
   // overrides (multi-output children snapped to handle-x, convergence nodes
   // aligned to their branch-x) move nodes without collision checks — so two
