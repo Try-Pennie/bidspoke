@@ -1488,12 +1488,6 @@ function LatencyGateConfig({
   )
 }
 
-const ACHIEVE_PRODUCTS = [
-  { id: 'fdr', label: 'FDR', hint: 'Freedom Debt Relief (debt settlement)' },
-  { id: 'fplus', label: 'FreedomPlus', hint: 'Personal loans' },
-  { id: 'lendage', label: 'Lendage', hint: 'Home equity' },
-] as const
-
 function AchieveOffersConfig({
   config,
   onChange,
@@ -1501,34 +1495,17 @@ function AchieveOffersConfig({
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
 }) {
-  const products = (config.targeted_products as string[] | undefined) ?? ['fdr']
   const waitForOffers = config.wait_for_offers !== false
   const utmSource = (config.utm_source as string | undefined) ?? ''
   const debtRef = (config.unsecured_debt_ref as string | undefined) ?? ''
 
-  const toggleProduct = (id: string) => {
-    const next = products.includes(id) ? products.filter((p) => p !== id) : [...products, id]
-    onChange({ targeted_products: next })
-  }
-
   return (
     <section className="space-y-4">
-      <Field label="Targeted products" hint="Which Achieve products to request offers for. FDR only for the data-collection effort.">
-        <div className="space-y-1.5">
-          {ACHIEVE_PRODUCTS.map((p) => (
-            <label key={p.id} className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={products.includes(p.id)}
-                onChange={() => toggleProduct(p.id)}
-                className="h-4 w-4 rounded border-gray-300"
-              />
-              <span className="font-medium">{p.label}</span>
-              <span className="text-xs text-slate-400">{p.hint}</span>
-            </label>
-          ))}
-        </div>
-      </Field>
+      <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+        Achieve chooses which products to evaluate on their side. There is nothing to select
+        here: they currently evaluate our leads for personal loan (their responses come back as
+        <span className="font-medium"> fplus</span>, which is Personal Loan + Pagaya).
+      </p>
 
       <Field label="Wait for offers" hint="Achieve holds the request up to 10 seconds and returns offers inline. Off = they reply accepted/rejected immediately and prequalify asynchronously (no offers logged).">
         <label className="flex items-center gap-2 text-sm text-gray-700">

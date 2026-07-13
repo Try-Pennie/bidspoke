@@ -637,7 +637,7 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     // wait_for_offers holds the request up to 10s, so the timeout needs
     // headroom; retries 0 because retrying a transport failure risks
     // double-submitting the lead to Achieve.
-    return { ...base, targeted_products: ['fdr'], wait_for_offers: true, timeout_ms: 15000, retries: 0 }
+    return { ...base, wait_for_offers: true, timeout_ms: 15000, retries: 0 }
   }
   if (type === 'bid_group') {
     return {

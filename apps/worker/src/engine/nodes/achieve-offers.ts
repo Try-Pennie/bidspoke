@@ -10,9 +10,13 @@
  * engine's achieve-log hook to persist it to the achieve_evaluations table.
  *
  * Config:
- *   targeted_products:  array of 'fdr' | 'fplus' | 'lendage' (default ['fdr'])
- *   wait_for_offers:    boolean (default true) — Achieve holds the request up
+ *   wait_for_offers:    boolean (default true) - Achieve holds the request up
  *                       to 10s and returns offers inline
+ *
+ * We do NOT send targeted_products: Achieve drives product selection on their side
+ * ("we evaluate your leads for APL", Olivier Pariselle 2026-07-13) and asked us to
+ * drop the field. Their `fplus` responses are Personal Loan + Pagaya, which is what
+ * Pennie wants; FDR (debt resolution) is explicitly not wanted.
  *   utm_source:         tracking.utm_source (default env ACHIEVE_UTM_SOURCE,
  *                       then 'pennie')
  *   unsecured_debt_ref: optional {{...}} template overriding the built-in
@@ -38,7 +42,6 @@ import { isShadowDryRun, shadowAchieveStub } from '../shadow'
 import { parseJsonSafe } from '../../lib/json'
 
 export interface AchieveOffersConfig {
-  targeted_products?: string[]
   wait_for_offers?: boolean
   utm_source?: string
   unsecured_debt_ref?: string
@@ -47,7 +50,6 @@ export interface AchieveOffersConfig {
 const FETCH_TIMEOUT_MS = 12_000
 const DEFAULT_BASE_URL = 'https://api-stg.freedomfinancialnet.com'
 const PROD_BASE_URL = 'https://api.freedomfinancialnet.com'
-const VALID_PRODUCTS = new Set(['fdr', 'fplus', 'lendage'])
 
 // Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
 // every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
@@ -153,7 +155,6 @@ export async function executeAchieveOffersNode(
   if (isShadowDryRun(ctx)) return shadowAchieveStub()
 
   const config = node.config as unknown as AchieveOffersConfig
-  const products = (config.targeted_products ?? ['fdr']).filter((p) => VALID_PRODUCTS.has(p))
   const waitForOffers = config.wait_for_offers !== false
 
   // Needed BEFORE the request is built: off production we swap the lead's identity for
@@ -161,17 +162,10 @@ export async function executeAchieveOffersNode(
   const baseUrl = ctx.env.ACHIEVE_API_URL || DEFAULT_BASE_URL
   const production = isProduction(baseUrl)
 
-  const request = buildRequest(
-    ctx,
-    config,
-    products.length > 0 ? products : ['fdr'],
-    waitForOffers,
-    production
-  )
+  const request = buildRequest(ctx, config, waitForOffers, production)
   const resolvedInput = {
     template: { ...config },
     resolved: {
-      targeted_products: products,
       wait_for_offers: waitForOffers,
       sandbox_profile: !production,
     },
@@ -254,7 +248,6 @@ export async function executeAchieveOffersNode(
 function buildRequest(
   ctx: ExecutionContext,
   config: AchieveOffersConfig,
-  products: string[],
   waitForOffers: boolean,
   production: boolean
 ): Record<string, unknown> {
@@ -305,9 +298,10 @@ function buildRequest(
       user_agent: si.userAgent || undefined,
       trusted_form_cert: ctx.env.ACHIEVE_TRUSTED_FORM_CERT || undefined,
     },
+    // No targeted_products: Achieve drives product selection server-side and asked us to
+    // drop the field. Sending it is ignored at best, and misleading at worst.
     partner_config: {
       wait_for_offers: waitForOffers,
-      targeted_products: products,
     },
     partner_lead_id: leadId,
   }

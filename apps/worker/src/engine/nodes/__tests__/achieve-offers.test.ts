@@ -121,7 +121,7 @@ describe('executeAchieveOffersNode', () => {
     expect(url).toBe('https://api.freedomfinancialnet.com/evaluations')
     expect((init.headers as Record<string, string>).Authorization).toMatch(/^Basic /)
     const body = JSON.parse(init.body as string)
-    expect(body.partner_config).toEqual({ wait_for_offers: true, targeted_products: ['fdr'] })
+    expect(body.partner_config).toEqual({ wait_for_offers: true })
     expect(body.phone).toBe('+16467706541')
     expect(body.employment_status).toBe('full_time')
     expect(body.credit_rating).toBe('poor')
@@ -137,17 +137,29 @@ describe('executeAchieveOffersNode', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
   })
 
-  it('respects targeted_products and wait_for_offers config', async () => {
+  it('respects wait_for_offers config', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(0))
+    await executeAchieveOffersNode(makeNode({ wait_for_offers: false }), makeCtx())
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.partner_config).toEqual({ wait_for_offers: false })
+  })
+
+  // Achieve drives product selection server-side ("We drive this for our side, and right now,
+  // we evaluate your leads for APL" -- Olivier Pariselle, 2026-07-13) and told us to drop the
+  // field. Sending it is at best ignored and at worst misleading: we ask for one product and
+  // they evaluate for another. `fplus` in their responses is Personal Loan + Pagaya, which is
+  // what Pennie actually wants; FDR (debt resolution) is explicitly NOT wanted.
+  //
+  // Never send it, even if a stale node config still carries it.
+  it('never sends targeted_products, even when a stale config still sets it', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
-      makeNode({ targeted_products: ['fdr', 'fplus', 'bogus'], wait_for_offers: false }),
+      makeNode({ targeted_products: ['fdr'] } as Record<string, unknown>),
       makeCtx()
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
-    expect(body.partner_config).toEqual({
-      wait_for_offers: false,
-      targeted_products: ['fdr', 'fplus'],
-    })
+    expect(body.partner_config).not.toHaveProperty('targeted_products')
+    expect(JSON.stringify(body)).not.toContain('fdr')
   })
 
   it('uses verified debt from pennie_or_eligibility when present', async () => {

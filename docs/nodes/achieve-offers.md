@@ -1,6 +1,14 @@
 # Achieve Offers node
 
-Sends the current lead to Achieve's Partners API (Freedom Debt Relief and related products) and collects the offers Achieve returns, without feeding them into routing. Built for data collection: every call is logged to the `achieve_evaluations` table so the team can analyze potential volume and lead quality.
+Sends the current lead to Achieve's Partners API and collects the offers Achieve returns, without feeding them into routing. Built for data collection: every call is logged to the `achieve_evaluations` table so the team can analyze potential volume and lead quality.
+
+> **Achieve chooses the product, not us.** There is no product-targeting field to set. Achieve
+> drives selection on their side and currently evaluates Pennie's leads for personal loan:
+> *"We drive this for our side, and right now, we evaluate your leads for APL"* (Olivier
+> Pariselle, 2026-07-13). Their responses come back as `provider: "fplus"`, which is **Personal
+> Loan + Pagaya** ("the fplus product is actually PL + Pagaya"). That is what Pennie wants; FDR
+> (debt resolution) is explicitly not wanted. The `targeted_products` field in their API doc is
+> an example only, and Achieve asked us to drop it, so the node does not send it.
 
 ## Purpose
 
@@ -14,7 +22,6 @@ The output carries an `_achieve_evaluation` marker. After the run completes, the
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `targeted_products` | string[] | No | `["fdr"]` | Achieve products to request offers for. Valid values: `fdr` (Freedom Debt Relief), `fplus` (FreedomPlus personal loans), `lendage` (home equity). |
 | `wait_for_offers` | boolean | No | `true` | When true, Achieve holds the request up to 10s and returns offers inline. When false, Achieve replies accepted/rejected immediately and prequalifies asynchronously (no offers are logged). |
 | `utm_source` | string | No | env `ACHIEVE_UTM_SOURCE`, then `pennie` | `tracking.utm_source` sent to Achieve. Confirm the value with Achieve BizDev. |
 | `unsecured_debt_ref` | string | No | built-in extraction | Template overriding where the verified unsecured debt is read from, for workflows whose payload shape differs from the Main Flow. Example: `{{steps.my_step.output.debt}}`. |
@@ -120,7 +127,7 @@ Achieve requires email, phone, first and last name, mailing state, and either `u
   "response_status": "accepted",
   "response_reason": null,
   "offer_count": 2,
-  "offers": [{ "provider": "fdr", "amount": 32787, "monthly_payment": 640, "terms": 36 }],
+  "offers": [{ "provider": "fplus", "amount": 10000, "apr": 16.52, "monthly_payment": 464, "terms": 24 }],
   "request": { "...": "the payload sent to Achieve" },
   "response": { "...": "the full Achieve response" }
 }
