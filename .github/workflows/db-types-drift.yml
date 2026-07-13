@@ -25,7 +25,7 @@ jobs:
       # Pinned (#323): `latest` installs whatever CLI shipped that night, a
       # non-reproducible source of spurious drift failures if the generator's
       # formatting changes. Bump deliberately and keep gen-db-types.sh in sync.
-      - uses: supabase/setup-cli@v2
+      - uses: supabase/setup-cli@v3
         with:
           version: 2.107.0
 
