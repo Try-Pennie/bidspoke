@@ -248,3 +248,113 @@ describe('executeAchieveOffersNode', () => {
     expect(body).not.toHaveProperty('employment_status')
   })
 })
+
+// Achieve rejects every lead with `{"response":"rejected","response_reason":"Missing
+// consents"}` unless the request carries a `consents` object. Their spec wants the
+// VERBATIM legal text shown to the user, not booleans. The text is identical for every
+// lead (it is whatever the Pennie form displays), so it lives in env vars; the payload
+// only tells us WHICH consents this lead actually granted.
+//
+// The gating is the point: we send a consent's text only when that lead's boolean is
+// true, so we never assert to a lender that a consumer agreed to something they did not.
+describe('executeAchieveOffersNode consents', () => {
+  const TCPA = 'By clicking "Next Step" above, you are agreeing to our TCPA consent...'
+  const FCRA = 'I authorize Pennie Mgmt LLC to obtain my consumer report information...'
+  const ESIGN = 'Electronic Consent Agreement text...'
+  const POLICY = 'Privacy Policy text...'
+  const TERM = 'Terms of Service text...'
+
+  const consentEnv = {
+    ACHIEVE_USERNAME: 'user',
+    ACHIEVE_PASSWORD: 'pass',
+    ACHIEVE_CONSENT_TCPA: TCPA,
+    ACHIEVE_CONSENT_FCRA: FCRA,
+    ACHIEVE_CONSENT_ESIGN: ESIGN,
+    ACHIEVE_CONSENT_POLICY: POLICY,
+    ACHIEVE_CONSENT_TERM: TERM,
+  }
+
+  function payloadWithConsents(legalInformation: unknown) {
+    return { ...fullPayload(), legalInformation }
+  }
+
+  function sentBody(fetchMock: ReturnType<typeof mockFetchOnce>) {
+    return JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+  }
+
+  it('sends the verbatim consent text for every consent the lead granted', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: true }),
+        env: consentEnv,
+      })
+    )
+    // e_sign / policy / term ride on the same "Agree & View Offers" click that grants FCRA.
+    expect(sentBody(fetchMock).consents).toEqual({
+      tcpa: TCPA,
+      fcra: FCRA,
+      e_sign: ESIGN,
+      policy: POLICY,
+      term: TERM,
+    })
+  })
+
+  it('omits TCPA when the lead did not grant it, keeping the FCRA-click consents', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: false }),
+        env: consentEnv,
+      })
+    )
+    const consents = sentBody(fetchMock).consents
+    expect(consents).not.toHaveProperty('tcpa')
+    expect(consents.fcra).toBe(FCRA)
+  })
+
+  it('omits the FCRA-click consents when the lead did not grant FCRA', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        payload: payloadWithConsents({ consentsToFcra: false, consentsToTcpa: true }),
+        env: consentEnv,
+      })
+    )
+    const consents = sentBody(fetchMock).consents
+    expect(consents).toEqual({ tcpa: TCPA })
+  })
+
+  it('omits a consent whose text is not configured, even when granted', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: true }),
+        env: { ACHIEVE_USERNAME: 'u', ACHIEVE_PASSWORD: 'p', ACHIEVE_CONSENT_FCRA: FCRA },
+      })
+    )
+    expect(sentBody(fetchMock).consents).toEqual({ fcra: FCRA })
+  })
+
+  it('omits consents entirely when the lead granted none', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        payload: payloadWithConsents({ consentsToFcra: false, consentsToTcpa: false }),
+        env: consentEnv,
+      })
+    )
+    expect(sentBody(fetchMock)).not.toHaveProperty('consents')
+  })
+
+  it('omits consents entirely when the payload has no legalInformation', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: consentEnv }))
+    expect(sentBody(fetchMock)).not.toHaveProperty('consents')
+  })
+})
