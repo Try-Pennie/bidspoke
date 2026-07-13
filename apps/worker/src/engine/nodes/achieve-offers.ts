@@ -51,14 +51,15 @@ const VALID_PRODUCTS = new Set(['fdr', 'fplus', 'lendage'])
 
 // Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
 // every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
-// gave us exactly ONE seeded profile to use off production: this name and this address.
+// gave us exactly ONE seeded profile to use off production: this name, address and SSN.
 //
-// We substitute ONLY those two fields (the ones Achieve handed us). Everything else on the
-// request stays the real lead's, unchanged. Do NOT drop or synthesize other fields: Achieve
-// told us to use this profile, not to reshape the payload.
+// We substitute ONLY the fields Achieve handed us. Everything else on the request stays the
+// real lead's, unchanged. Do NOT drop or synthesize other fields: Achieve told us to use
+// this profile, not to reshape the payload. The SSN must go in their NNN-NN-NNNN format.
 const SHOWROOM_PROFILE = {
   first_name: 'Mark',
   last_name: 'Mayerberger',
+  social_security_number: '666-16-4094',
   mailing_address: {
     street: '19538 CREEKSIDE CT',
     city: 'Salinas',
@@ -281,6 +282,7 @@ function buildRequest(
     : {
         first_name: SHOWROOM_PROFILE.first_name,
         last_name: SHOWROOM_PROFILE.last_name,
+        social_security_number: SHOWROOM_PROFILE.social_security_number,
         mailing_address: { ...SHOWROOM_PROFILE.mailing_address },
       }
 

@@ -53,11 +53,12 @@ unchanged.**
 |-------|---------|------------|
 | `first_name` / `last_name` | Mark Mayerberger | the real lead |
 | `mailing_address` | 19538 CREEKSIDE CT, Salinas, CA 93908 | the real lead |
-| `email`, `phone`, `social_security_number`, `date_of_birth` | **the real lead** | the real lead |
+| `social_security_number` | 666-16-4094 (seeded) | the real lead |
+| `email`, `phone`, `date_of_birth` | **the real lead** | the real lead |
 | debt, income, credit rating, loan purpose | **the real lead** | the real lead |
 
-Only the name and address are swapped, because that is exactly what Achieve handed us as the
-seeded profile. The node does not otherwise reshape the payload.
+Only the name, address and SSN are swapped, because that is exactly what Achieve handed us as
+the seeded profile. The node does not otherwise reshape the payload.
 
 **This fails safe.** The check is "is this exactly production", so a blank, misconfigured or
 typo'd `ACHIEVE_API_URL` sends the fake profile rather than a real person. Point it at

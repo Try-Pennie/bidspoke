@@ -308,15 +308,25 @@ describe('executeAchieveOffersNode sandbox profile', () => {
     expect(JSON.stringify(body)).not.toContain('Staten Island')
   })
 
-  it('keeps every non-name/address field as the real lead in the sandbox', async () => {
+  it('overlays the seeded SSN in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
     const body = sentBody(fetchMock)
 
-    // Exactly what Achieve gave us is overlaid; nothing else is dropped or synthesized.
+    // Achieve gave us the seeded profile's SSN; it must be sent in their NNN-NN-NNNN format,
+    // and the real lead's SSN must not leak through.
+    expect(body.social_security_number).toBe('666-16-4094')
+    expect(JSON.stringify(body)).not.toContain('113-52-2922')
+  })
+
+  it('keeps every non-seeded field as the real lead in the sandbox', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    const body = sentBody(fetchMock)
+
+    // Only name, address and SSN are seeded; everything else stays the real lead's.
     expect(body.email).toBe('lead@example.com')
     expect(body.phone).toBe('+16467706541')
-    expect(body.social_security_number).toBe('113-52-2922')
     expect(body.date_of_birth).toBe('1959-12-29')
     expect(body.loan_amount).toBe(7500)
     expect(body.annual_income).toBe(122000)
