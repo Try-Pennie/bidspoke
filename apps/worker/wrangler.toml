@@ -51,6 +51,12 @@ class_name = "CircuitBreakerObject"
 name = "SALESFORCE_BULKHEAD"
 class_name = "BulkheadObject"
 
+# Latency Gate bid marks (#488). Strongly consistent, unlike KV, so a confirmation
+# landing in another colo still sees the mark.
+[[durable_objects.bindings]]
+name = "LATENCY_MARK"
+class_name = "LatencyMarkObject"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["DailyCapObject", "CircuitBreakerObject"]
@@ -58,6 +64,10 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 [[migrations]]
 tag = "v2"
 new_classes = ["BulkheadObject"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["LatencyMarkObject"]
 
 # Dynamic Workers — code node sandboxing via Workers for Platforms
 [[dispatch_namespaces]]
