@@ -69,9 +69,20 @@ offers-out so we can analyze potential volume and lead types, then join trades d
 | `tracking.unique_identifier`, `partner_lead_id` | `Submission__c` (falls back to trace_id) |
 | `tracking.ip_address` / `user_agent` | `sessionInformation` |
 
-Not sent: `credit_score` (we generate Vantage, Achieve expects fico_8/9/11 or
-self_stated), `consents` (Achieve wants the legal text shown to the user, we only have
-booleans - see open questions).
+| `consents.tcpa` | env `ACHIEVE_CONSENT_TCPA`, sent only when `legalInformation.consentsToTcpa` is true |
+| `consents.fcra` / `e_sign` / `policy` / `term` | env `ACHIEVE_CONSENT_*`, sent only when `legalInformation.consentsToFcra` is true |
+
+Not sent: `credit_score`. Achieve's spec accepts `fico_8` / `fico_9` / `fico_11` /
+`self_stated` and we generate a Vantage score, which is none of those. The field is
+optional and they do not complain, but it means their offers may not reflect what they
+would do with a scored lead. Open with Achieve.
+
+**Consents are required, not optional.** A 2026-07-13 sandbox call returned
+`{"response":"rejected","response_reason":"Missing consents"}` with every other field
+accepted, even though their doc marks `consents` optional. Trust the API, not the doc.
+Achieve wants the verbatim legal text the user saw; that text is the same for every lead,
+so it lives in env vars and is gated per-lead on the payload booleans. See
+[docs/nodes/achieve-offers.md](./nodes/achieve-offers.md#consents).
 
 ## Analysis
 
@@ -105,10 +116,19 @@ fields to this table).
    server-to-server partners (sandbox will tell us quickly via a 422).
 2. **`utm_source` / tracking values** - doc says "work with Achieve BizDev to determine
    appropriate values". Currently `pennie`.
-3. **Consents** - we have TCPA/FCRA booleans, Achieve optionally wants the legal text
-   shown to the user. Confirm whether Geoff wants the actual disclosure text passed.
-4. **Which leads** - tail placement sends every lead that reaches the bid stage.
-   Over-20k leads (often the best FDR fits) exit earlier; add the second node if wanted.
+3. ~~**Consents**~~ - RESOLVED 2026-07-13. Required (not optional, whatever the doc says);
+   Achieve wants the verbatim legal text. Text sourced from the Pennie form and wired via
+   `ACHIEVE_CONSENT_*` env vars. Still open: whether Achieve wants the full linked
+   agreements (Credit Authorization Agreement, Electronic Consent Agreement, ToS, Privacy
+   Policy - bodies live in Prismic) rather than the summary block actually displayed.
+4. **Marketplace partner list** - the FCRA consent authorizes sharing consumer-report data
+   with ML Enterprise's "marketplace partners". Confirm Achieve/Freedom Debt Relief is on
+   that list (it is Prismic content, linked from the form's consent block). If they are
+   not, the consent does not cover pinging them and no code change fixes that.
+5. **Which leads** - Dan scoped this to Engine-bound leads only (2026-07-13). Note the
+   tail convergence `branch_end` also catches Tripoint/AmOne bid winners, so it is NOT
+   Engine-only; use a per-path node. Over-20k leads (often the best FDR fits) never reach
+   Engine and are excluded by that scope.
 
 ## Validation plan
 

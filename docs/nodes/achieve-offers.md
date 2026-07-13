@@ -32,8 +32,36 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_API_URL` | No | `https://api-stg.freedomfinancialnet.com` (sandbox, the default) or `https://api.freedomfinancialnet.com` (production). |
 | `ACHIEVE_UTM_SOURCE` | No | Fallback for `tracking.utm_source`. |
 | `ACHIEVE_TRUSTED_FORM_CERT` | No | Sent as `tracking.trusted_form_cert` when set. |
+| `ACHIEVE_CONSENT_TCPA` | Yes | Verbatim TCPA text shown on the form. Sent as `consents.tcpa`. |
+| `ACHIEVE_CONSENT_FCRA` | Yes | Verbatim credit-authorization text shown on the form. Sent as `consents.fcra`. |
+| `ACHIEVE_CONSENT_ESIGN` | No | Verbatim Electronic Consent Agreement text. Sent as `consents.e_sign`. |
+| `ACHIEVE_CONSENT_POLICY` | No | Verbatim Privacy Policy text. Sent as `consents.policy`. |
+| `ACHIEVE_CONSENT_TERM` | No | Verbatim Terms of Service text. Sent as `consents.term`. |
 
 When credentials are missing the node skips the API call and logs an error-shaped evaluation; the flow continues.
+
+### Consents
+
+Achieve **rejects every lead** (`"response_reason": "Missing consents"`) unless the request
+carries a `consents` object, despite their API doc marking it optional. Each field holds the
+**verbatim legal text shown to the user**, not a boolean.
+
+That text is identical for every lead (it is whatever the form displays), so it lives in the
+env vars above rather than the payload. The payload's booleans say only *which* consents this
+lead granted, and the node sends a consent's text **only when its boolean is true**, so we
+never assert to a lender that a consumer agreed to something they did not:
+
+| Consent | Gated on |
+|---------|----------|
+| `tcpa` | `legalInformation.consentsToTcpa` |
+| `fcra`, `e_sign`, `policy`, `term` | `legalInformation.consentsToFcra` (the form grants all four on the same "Agree & View Offers" click) |
+
+If the lead granted nothing, or no text is configured, the `consents` key is omitted entirely
+rather than sent empty.
+
+> **Keep these in sync with the form.** The stored text must be the text that was actually
+> displayed when the lead submitted. If the form copy is rewritten and these env vars are not
+> updated, we would be telling Achieve the consumer agreed to language they never saw.
 
 ## Field mapping
 
