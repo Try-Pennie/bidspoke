@@ -97,9 +97,18 @@ describe('executeAchieveOffersNode', () => {
     expect((init.signal as AbortSignal).aborted).toBe(true)
   })
 
+  // Pinned to production: off production the lead's identity is deliberately swapped for
+  // Achieve's showroom profile (see the sandbox-profile suite below), so a real-lead
+  // assertion is only meaningful against the prod endpoint.
+  const PROD_ENV = {
+    ACHIEVE_USERNAME: 'user',
+    ACHIEVE_PASSWORD: 'pass',
+    ACHIEVE_API_URL: 'https://api.freedomfinancialnet.com',
+  }
+
   it('sends an accepted lead and returns marked output with offers', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(2))
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: PROD_ENV }))
     const out = output as Record<string, unknown>
 
     expect(out._achieve_evaluation).toBe(true)
@@ -109,7 +118,7 @@ describe('executeAchieveOffersNode', () => {
     expect(out.offer_count).toBe(2)
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
+    expect(url).toBe('https://api.freedomfinancialnet.com/evaluations')
     expect((init.headers as Record<string, string>).Authorization).toMatch(/^Basic /)
     const body = JSON.parse(init.body as string)
     expect(body.partner_config).toEqual({ wait_for_offers: true, targeted_products: ['fdr'] })
@@ -120,6 +129,12 @@ describe('executeAchieveOffersNode', () => {
     expect(body.loan_amount).toBe(7500)
     expect(body.tracking.unique_identifier).toBe('a04Ui00000I6lTKIAZ')
     expect(body.partner_lead_id).toBe('a04Ui00000I6lTKIAZ')
+  })
+
+  it('defaults to the sandbox endpoint when ACHIEVE_API_URL is unset', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx())
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
   })
 
   it('respects targeted_products and wait_for_offers config', async () => {
@@ -205,12 +220,14 @@ describe('executeAchieveOffersNode', () => {
     expect(out.response_reason).toContain('ACHIEVE_USERNAME')
   })
 
+  // Production only: off production the showroom profile always supplies email, phone,
+  // name and address, so an incomplete lead can no longer be missing them.
   it('skips the API call and lists missing required fields', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ payload: { personalInformation: { firstName: 'Joe' } } })
+      makeCtx({ payload: { personalInformation: { firstName: 'Joe' } }, env: PROD_ENV })
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -246,6 +263,116 @@ describe('executeAchieveOffersNode', () => {
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body).not.toHaveProperty('annual_income')
     expect(body).not.toHaveProperty('employment_status')
+  })
+})
+
+// Achieve's SANDBOX only returns offers for its own seeded showroom profiles; it declines
+// every real lead regardless of debt (28/28 rejections on 2026-07-13, including two with
+// ~$18k verified debt and poor credit). Achieve told us directly: "if you want to see a
+// response with offers, please use this profile (a new valid email every time)".
+//
+// So sending a real consumer to the sandbox leaks their SSN, DOB, name and address to a
+// system that throws it away and tells us nothing. When we are NOT pointed at production
+// we substitute Achieve's showroom identity and DROP the SSN and DOB entirely (their spec
+// marks both optional; only email/phone/name/address are Required).
+//
+// The lead's FINANCIAL profile (debt, income, credit rating, loan purpose) is kept: it
+// carries no identity, and it is what FDR actually evaluates.
+//
+// Fails safe: substitution is keyed off "is NOT production", so a blank or misconfigured
+// ACHIEVE_API_URL sends the fake profile rather than a real person.
+describe('executeAchieveOffersNode sandbox profile', () => {
+  const PROD = 'https://api.freedomfinancialnet.com'
+  const STG = 'https://api-stg.freedomfinancialnet.com'
+
+  function sentBody(fetchMock: ReturnType<typeof mockFetchOnce>) {
+    return JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+  }
+  const envWith = (url?: string) => ({
+    ACHIEVE_USERNAME: 'u',
+    ACHIEVE_PASSWORD: 'p',
+    ...(url ? { ACHIEVE_API_URL: url } : {}),
+  })
+
+  it('substitutes the showroom identity when pointed at the sandbox', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    const body = sentBody(fetchMock)
+
+    expect(body.first_name).toBe('Mark')
+    expect(body.last_name).toBe('Mayerberger')
+    expect(body.mailing_address).toEqual({
+      street: '19538 CREEKSIDE CT',
+      city: 'Salinas',
+      state: 'CA',
+      zip: '93908',
+    })
+    // The real lead's identity must not appear anywhere.
+    expect(JSON.stringify(body)).not.toContain('Guerrera')
+    expect(JSON.stringify(body)).not.toContain('Staten Island')
+  })
+
+  it('drops SSN and date of birth in the sandbox', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    const body = sentBody(fetchMock)
+
+    expect(body).not.toHaveProperty('social_security_number')
+    expect(body).not.toHaveProperty('date_of_birth')
+    expect(JSON.stringify(body)).not.toContain('113-52-2922')
+    expect(JSON.stringify(body)).not.toContain('1959-12-29')
+  })
+
+  it('gives the sandbox a fresh email per execution', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    const first = sentBody(fetchMock).email as string
+
+    vi.unstubAllGlobals()
+    vi.stubGlobal('btoa', (s: string) => `b64(${s})`)
+    const fetch2 = mockFetchOnce(200, acceptedResponse(1))
+    const ctx2 = makeCtx({ env: envWith(STG) })
+    ;(ctx2.trigger as { trace_id: string }).trace_id = 'trace-DIFFERENT'
+    await executeAchieveOffersNode(makeNode(), ctx2)
+    const second = sentBody(fetch2).email as string
+
+    expect(first).toMatch(/@/)
+    expect(second).toMatch(/@/)
+    expect(first).not.toBe(second)
+    expect(first).not.toContain('lead@example.com')
+  })
+
+  it('keeps the real lead financials in the sandbox', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    const body = sentBody(fetchMock)
+
+    expect(body.loan_amount).toBe(7500)
+    expect(body.annual_income).toBe(122000)
+    expect(body.credit_rating).toBe('poor')
+    expect(body.loan_purpose).toBe('debt_consolidation')
+  })
+
+  it('sends the real lead untouched when pointed at production', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }))
+    const body = sentBody(fetchMock)
+
+    expect(body.first_name).toBe('Joseph')
+    expect(body.last_name).toBe('Guerrera')
+    expect(body.email).toBe('lead@example.com')
+    expect(body.social_security_number).toBe('113-52-2922')
+    expect(body.date_of_birth).toBe('1959-12-29')
+    expect(body.mailing_address.city).toBe('Staten Island')
+  })
+
+  it('fails safe: substitutes when ACHIEVE_API_URL is unset', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(undefined) }))
+    const body = sentBody(fetchMock)
+
+    expect(body.last_name).toBe('Mayerberger')
+    expect(body).not.toHaveProperty('social_security_number')
   })
 })
 
