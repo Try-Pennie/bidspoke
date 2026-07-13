@@ -104,13 +104,26 @@ interface Props {
 
 type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed' | 'degraded'
 
-const FILTER_TABS: { key: OutcomeFilter; label: string }[] = [
-  { key: 'all',        label: 'All'        },
-  { key: 'successful', label: 'Successful' },
-  { key: 'completed',  label: 'Completed'  },
-  { key: 'degraded',   label: 'Degraded'   },
-  { key: 'failed',     label: 'Failed'     },
+// Labels are abbreviated to fit all five tabs inside the fixed 288px (w-72)
+// panel. The full status names overflowed the row and clipped the last tab.
+export const FILTER_TABS: { key: OutcomeFilter; label: string }[] = [
+  { key: 'all',        label: 'All'      },
+  { key: 'successful', label: 'Success'  },
+  { key: 'completed',  label: 'Done'     },
+  { key: 'degraded',   label: 'Degraded' },
+  { key: 'failed',     label: 'Failed'   },
 ]
+
+// Every tab reserves the 2px bottom border, transparent when inactive. Without
+// it, only the active tab was 2px taller, and the flex row's stretch pushed the
+// inactive labels a pixel below the active one.
+export function tabClass(active: boolean): string {
+  return `border-b-2 px-2 py-1.5 text-xs transition-colors ${
+    active
+      ? 'border-p-blue-dark font-semibold text-p-blue-dark'
+      : 'border-transparent text-gray-500 hover:text-gray-600'
+  }`
+}
 
 // Map a filter tab to the api.executions.list query params. 'degraded' is a
 // status (the lead was served but a post-response writeback failed), not an
@@ -368,11 +381,7 @@ export default function ExecutionListPanel({ workflowId, selectedId, onSelect, r
           <button
             key={tab.key}
             onClick={() => setFilter(tab.key)}
-            className={`px-2 py-1.5 text-xs transition-colors ${
-              filter === tab.key
-                ? 'border-b-2 border-p-blue-dark font-semibold text-p-blue-dark'
-                : 'text-gray-500 hover:text-gray-600'
-            }`}
+            className={tabClass(filter === tab.key)}
           >
             {tab.label}
           </button>
