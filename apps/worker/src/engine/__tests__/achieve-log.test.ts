@@ -133,6 +133,47 @@ describe('extractAchieveEvaluations', () => {
     expect(row.submission_id).toBeNull()
     expect(row.is_test).toBe(true)
   })
+
+  // The achieve_offers node is a PASS-THROUGH: its marked output becomes the input of
+  // everything downstream, and a branch_end re-emits what it received. Keying purely off
+  // the marker therefore logged one row per node the output travelled through, not one
+  // per Achieve call.
+  //
+  // Observed in prod 2026-07-13: a single call wrote 6 identical rows (the real node at
+  // 552ms, plus branch_end_2 / branch_end_4 / state_condition_check_end /
+  // eligibility_success_end / adv_bes_leg_screening_end at 0ms each), inflating the table
+  // 6x and polluting node_namespace, which is the column the analysis slices by.
+  //
+  // Only a node type that can actually PRODUCE an evaluation may be logged. Node NAME
+  // stays free-form (the docs promise that); it is the type that is constrained.
+  it('logs one row per Achieve call, not per node the output passes through', () => {
+    const queue = [
+      makeEntry({ step_namespace: 'achieve_under_10k', step_type: 'achieve_offers', output: achieveOutput }),
+      makeEntry({ step_namespace: 'branch_end_4', step_type: 'branch_end', output: achieveOutput, duration_ms: 0 }),
+      makeEntry({ step_namespace: 'state_condition_check_end', step_type: 'branch_end', output: achieveOutput, duration_ms: 0 }),
+      makeEntry({ step_namespace: 'eligibility_success_end', step_type: 'branch_end', output: achieveOutput, duration_ms: 0 }),
+      makeEntry({ step_namespace: 'parallel_end_1', step_type: 'parallel_end', output: achieveOutput, duration_ms: 0 }),
+    ]
+    const rows = extractAchieveEvaluations(queue, meta)
+    expect(rows.map((r) => r.node_namespace)).toEqual(['achieve_under_10k'])
+  })
+
+  it('still logs a code node that emits the marker itself', () => {
+    const queue = [makeEntry({ step_namespace: 'achieve_fdr', step_type: 'code', output: achieveOutput })]
+    const rows = extractAchieveEvaluations(queue, meta)
+    expect(rows.map((r) => r.node_namespace)).toEqual(['achieve_fdr'])
+  })
+
+  it('logs both Achieve nodes when two of them genuinely fire', () => {
+    const queue = [
+      makeEntry({ step_namespace: 'achieve_no_bids', step_type: 'achieve_offers', output: achieveOutput }),
+      makeEntry({ step_namespace: 'branch_end_3', step_type: 'branch_end', output: achieveOutput, duration_ms: 0 }),
+      makeEntry({ step_namespace: 'achieve_under_10k', step_type: 'achieve_offers', output: achieveOutput }),
+      makeEntry({ step_namespace: 'branch_end_4', step_type: 'branch_end', output: achieveOutput, duration_ms: 0 }),
+    ]
+    const rows = extractAchieveEvaluations(queue, meta)
+    expect(rows.map((r) => r.node_namespace)).toEqual(['achieve_no_bids', 'achieve_under_10k'])
+  })
 })
 
 describe('insertAchieveEvaluations', () => {

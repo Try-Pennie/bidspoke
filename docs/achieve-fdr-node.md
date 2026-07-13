@@ -17,10 +17,17 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    rollover for `lead_sightings` / `lead_sighting_bids` (their seeded partitions ended
    2026-09-30 with no cron extending them).
 
-2. **Engine hook** (`apps/worker/src/engine/achieve-log.ts`) - after each walk, any step
+2. **Engine hook** (`apps/worker/src/engine/achieve-log.ts`) - after each walk, a step
    output carrying `_achieve_evaluation: true` is written to `achieve_evaluations` via
-   `waitUntil`. Works from any workflow and any node name; multiple Achieve nodes per
+   `waitUntil`. Works from any workflow and any node NAME; multiple Achieve nodes per
    flow each get their own row. Test runs are recorded with `is_test = true`.
+
+   Only node **types** that can produce an evaluation (`achieve_offers`, or a `code` node
+   emitting the marker itself) are logged. The Achieve node is a pass-through, so its
+   marked output becomes the input of everything downstream and a `branch_end` re-emits
+   what it received: keying purely off the marker logged one row per node the output
+   travelled through. A single call was writing 6 identical rows in prod before this was
+   caught (2026-07-13), inflating the table and polluting `node_namespace`.
 
 3. **`achieve_offers` first-class node** (`apps/worker/src/engine/nodes/achieve-offers.ts`,
    palette entry "Achieve Offers") - POSTs to `/evaluations` with Basic auth. Config:

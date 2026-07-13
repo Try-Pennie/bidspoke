@@ -45,6 +45,17 @@ function isAchieveOutput(output: unknown): output is AchieveStepOutput {
   )
 }
 
+// The achieve_offers node is a PASS-THROUGH: its marked output becomes the input of
+// everything downstream, and a branch_end/parallel_end re-emits what it received. So the
+// marker alone does not identify an Achieve CALL, only an output that has travelled
+// through one. Restrict logging to the node types that can actually produce an
+// evaluation. Node NAME stays free-form (the docs promise any name works); it is the
+// TYPE that is constrained.
+//
+// `code` stays in the set because the original integration predates the first-class node
+// and a Code node can still emit the marker itself.
+const EVALUATION_PRODUCER_TYPES = new Set(['achieve_offers', 'code'])
+
 // Strip direct identifiers from the stored request copy. The live API call
 // keeps them; the analysis table joins on trace_id / submission_id instead.
 const REDACTED_REQUEST_KEYS = ['social_security_number', 'date_of_birth']
@@ -70,6 +81,7 @@ export function extractAchieveEvaluations(
 ): AchieveEvaluationInsert[] {
   const rows: AchieveEvaluationInsert[] = []
   for (const entry of stepLogQueue) {
+    if (!EVALUATION_PRODUCER_TYPES.has(entry.step_type)) continue
     if (!isAchieveOutput(entry.output)) continue
     const output = entry.output
     rows.push({
