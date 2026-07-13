@@ -76,8 +76,9 @@ const bidGroupDefinition = {
 // #485: trigger → validate → (edge carrying an operator the evaluator doesn't
 // know) → route. Edge evaluation runs OUTSIDE the per-node try/catch that wraps
 // executor errors in a classified StepFailureError, so this surfaces as a raw
-// Error thrown straight out of the walk — the class of failure a bad workflow
-// edit produces, and the one the alert gate used to read as a business rejection.
+// Error thrown straight out of the walk. That is the class of failure a bad
+// workflow edit produces, and the one the alert gate used to read as a clean
+// business rejection.
 const unknownOperatorDefinition = {
   trigger: { id: 'trigger', type: 'trigger', config: {} },
   nodes: [
@@ -241,7 +242,7 @@ describe('raw walk exceptions fire the failure alert (#485)', () => {
     expect(String(update.error_message)).toContain('Unknown condition operator')
 
     // A raw (non-StepFailureError) walk exception is an operational failure, not
-    // a business rejection — it must carry a type so the alert gate opens.
+    // a business rejection, so it must carry a type for the alert gate to open.
     expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
     const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
     expect(alert.alertType).toBe('failure')

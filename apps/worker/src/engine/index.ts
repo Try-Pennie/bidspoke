@@ -392,12 +392,12 @@ export async function executeWorkflow(
       failedSuppressAlert = err.suppressAlert
     } else {
       // #485: anything that escapes the walk WITHOUT being a StepFailureError is
-      // a defect in the graph or the engine, not a lead we chose to reject — an
+      // a defect in the graph or the engine, not a lead we chose to reject: an
       // unknown condition operator, a missing fallback node, a stray TypeError.
       // The alert gate reads a null type as a clean business rejection and stays
       // silent, so leaving it null let a bad workflow edit fail every lead with
       // no page. Classify it 'permanent' (retrying won't help) so the gate opens.
-      // Only StepFailureError may carry null — that IS the business rejection.
+      // Only StepFailureError may carry null, because that IS the rejection path.
       failedErrorType = 'permanent'
     }
     response = { error: errorMessage, trace_id: traceId }
