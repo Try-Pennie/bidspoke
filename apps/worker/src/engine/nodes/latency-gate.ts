@@ -9,18 +9,26 @@
  * due to latency).
  *
  * Operations:
- *   mark   stores the current time in KV keyed by a correlation id (the id the
- *          network echoes back on the confirmation), with a TTL. Single output.
+ *   mark   stores the current time in the LATENCY_MARK Durable Object, keyed by a
+ *          correlation id (the id the network echoes back on the confirmation),
+ *          with a TTL. Single output.
  *   check  reads the mark, computes latency_ms = now - marked_at, compares against
  *          the threshold (node threshold_ms override, else the partner's
  *          confirmation_window_ms), and routes 'within' | 'exceeded'. Two outputs.
  *          A missing/expired mark routes 'exceeded' (fail safe to reject).
  *
+ * Marks are in a Durable Object rather than KV (#488). KV is eventually consistent
+ * across colos (~60s), and the mark and the confirmation routinely land in different
+ * ones, so a missing mark could just mean "not replicated yet". Since a missing mark
+ * rejects, the confirmations that came back FASTEST were the ones most likely to be
+ * rejected as latency failures, which inverts the whole point of the gate. A DO read
+ * is strongly consistent, so a miss now genuinely means never marked or expired.
+ *
  * Config:
  *   operation:       'mark' | 'check'
  *   correlation_key: string, supports {{trigger.*}} / {{steps.*.output.*}} / {{env.*}}
  *   scope:           optional key namespace (template), e.g. partner slug
- *   ttl_seconds:     mark only — KV expirationTtl (min 60s, default 24h)
+ *   ttl_seconds:     mark only. How long the mark survives (min 60s, default 24h)
  *   threshold_ms:    check only — explicit threshold, overrides partner config
  *   partner_id:      check only — resolves confirmation_window_ms when no override
  *
@@ -62,7 +70,11 @@ export async function executeLatencyGateNode(
   if (!config.correlation_key) throw new Error('Latency Gate node missing required config: correlation_key')
 
   const key = buildKey(config, ctx)
-  const kv = env.SUBMISSIONS
+  // #488: marks live in a Durable Object, not KV. KV is eventually consistent across
+  // colos, and a missing mark rejects, so a confirmation quick enough to beat
+  // propagation was rejected as a latency failure. Exactly backwards.
+  const marks = env.LATENCY_MARK
+  const stub = marks.get(marks.idFromName(key))
   const template = {
     operation,
     correlation_key: config.correlation_key,
@@ -80,10 +92,13 @@ export async function executeLatencyGateNode(
         : KV_DEFAULT_TTL_SECONDS,
       KV_MIN_TTL_SECONDS
     )
-    // Shadow dry-run: don't write the mark to KV (a real side effect); still
-    // return the same output shape so downstream logic is unchanged.
+    // Shadow dry-run: don't write the mark (a real side effect); still return the
+    // same output shape so downstream logic is unchanged.
     if (!isShadowDryRun(ctx)) {
-      await kv.put(key, JSON.stringify({ marked_at: markedAt }), { expirationTtl: ttlSeconds })
+      await stub.fetch('http://do/mark', {
+        method: 'POST',
+        body: JSON.stringify({ marked_at: markedAt, ttl_seconds: ttlSeconds }),
+      })
     }
     return {
       output: { operation: 'mark', key, marked_at: markedAt, ttl_seconds: ttlSeconds },
@@ -93,8 +108,8 @@ export async function executeLatencyGateNode(
 
   if (operation === 'check') {
     const thresholdMs = await resolveThreshold(config, supabase)
-    const raw = await kv.get(key)
-    const markedAt = raw === null ? null : parseMarkedAt(raw)
+    const res = await stub.fetch('http://do/check', { method: 'POST' })
+    const { marked_at: markedAt } = await res.json<{ marked_at: number | null }>()
 
     const resolvedInput: ResolvedStepInput = { template, resolved: { operation: 'check', key, threshold_ms: thresholdMs } }
 
@@ -175,15 +190,3 @@ async function resolveThreshold(
   return window
 }
 
-function parseMarkedAt(raw: string): number | null {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === 'number') return parsed
-    if (parsed && typeof (parsed as { marked_at?: unknown }).marked_at === 'number') {
-      return (parsed as { marked_at: number }).marked_at
-    }
-    return null
-  } catch {
-    return null
-  }
-}

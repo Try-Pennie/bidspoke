@@ -32,6 +32,7 @@ import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endp
 export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
 export { BulkheadObject } from './durable-objects/bulkhead'
+export { LatencyMarkObject } from './durable-objects/latency-mark'
 
 export interface Env {
   // KV namespaces
@@ -44,6 +45,10 @@ export interface Env {
   CIRCUIT_BREAKER: DurableObjectNamespace
   // Inflight-concurrency limiter for Salesforce (ADR 0005 / #312)
   SALESFORCE_BULKHEAD: DurableObjectNamespace
+  // Latency Gate bid marks (#488). A DO, not KV: the mark and the confirmation land
+  // in different colos, and KV's propagation delay made a fast confirmation look
+  // like a missing mark, which the gate rejects.
+  LATENCY_MARK: DurableObjectNamespace
 
   // Max simultaneous in-flight Salesforce calls (string env var; default 20,
   // kept below SF's ~25-slot concurrency governor). Optional.

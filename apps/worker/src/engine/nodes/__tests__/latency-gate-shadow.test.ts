@@ -6,17 +6,31 @@ function ctx(shadow_mode?: 'off' | 'dry_run'): ExecutionContext {
   return { trigger: { payload: {}, source: 's', workflow_id: 'w', trace_id: 't', org_id: 'o' }, steps: {}, env: {}, shadow_mode }
 }
 
-function envWithKv(put: ReturnType<typeof vi.fn>) {
-  return { SUBMISSIONS: { put, get: vi.fn().mockResolvedValue(null), delete: vi.fn() } } as never
+// Marks live in a Durable Object now, not KV (#488), so the side effect a dry run
+// must NOT perform is the DO fetch.
+function envWithMarkStore(fetch: ReturnType<typeof vi.fn>) {
+  return {
+    LATENCY_MARK: {
+      idFromName: (name: string) => ({ name }),
+      get: () => ({ fetch }),
+    },
+  } as never
 }
 
 const markNode = { type: 'latency_gate', namespace: 'lg', config: { operation: 'mark', correlation_key: 'cid-1', ttl_seconds: 120 } } as unknown as NodeDefinition
 
 describe('executeLatencyGateNode — shadow dry_run', () => {
-  it('does not write KV on mark, but returns the mark output shape', async () => {
-    const put = vi.fn()
-    const res = await executeLatencyGateNode(markNode, ctx('dry_run'), envWithKv(put))
-    expect(put).not.toHaveBeenCalled()
+  it('does not write the mark, but returns the mark output shape', async () => {
+    const fetch = vi.fn()
+    const res = await executeLatencyGateNode(markNode, ctx('dry_run'), envWithMarkStore(fetch))
+    expect(fetch).not.toHaveBeenCalled()
     expect(res.output).toMatchObject({ operation: 'mark', key: 'latency:cid-1' })
+  })
+
+  it('does write the mark when shadow mode is off', async () => {
+    // Guards the other side: the dry-run skip must be conditional, not a dead write.
+    const fetch = vi.fn().mockResolvedValue(new Response('{"ok":true}'))
+    await executeLatencyGateNode(markNode, ctx('off'), envWithMarkStore(fetch))
+    expect(fetch).toHaveBeenCalledOnce()
   })
 })

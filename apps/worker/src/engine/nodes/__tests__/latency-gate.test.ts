@@ -6,28 +6,54 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 // ── Test fakes ────────────────────────────────────────────────────────────────
 
-interface KVRow {
-  value: string
-  ttl: number | undefined
+interface MarkRow {
+  marked_at: number
+  ttl_seconds: number
 }
 
-function makeFakeKv() {
-  const store = new Map<string, KVRow>()
-  const put = vi.fn(async (key: string, value: string, opts?: { expirationTtl?: number }) => {
-    store.set(key, { value, ttl: opts?.expirationTtl })
-  })
-  const get = vi.fn(async (key: string) => store.get(key)?.value ?? null)
-  const del = vi.fn(async (key: string) => {
-    store.delete(key)
-  })
+// Stand-in for the LATENCY_MARK Durable Object namespace. A DO is one instance per
+// name, globally, so a read always sees the latest write no matter which colo asks.
+// That strong consistency is the entire point of #488, so the fake models it: the
+// store is shared and a write is immediately visible.
+function makeFakeMarkStore() {
+  const store = new Map<string, MarkRow>()
+  const ns = {
+    idFromName: (name: string) => ({ name }),
+    get: (id: { name: string }) => ({
+      fetch: async (url: string, init?: { body?: string }) => {
+        const path = new URL(url).pathname
+        if (path === '/mark') {
+          const body = JSON.parse(init?.body ?? '{}') as MarkRow
+          store.set(id.name, { marked_at: body.marked_at, ttl_seconds: body.ttl_seconds })
+          return new Response(JSON.stringify({ ok: true }), { status: 200 })
+        }
+        if (path === '/check') {
+          const row = store.get(id.name)
+          return new Response(JSON.stringify({ marked_at: row?.marked_at ?? null }), { status: 200 })
+        }
+        return new Response('Not found', { status: 404 })
+      },
+    }),
+  }
+  return { store, ns: ns as unknown as DurableObjectNamespace }
+}
+
+// KV as it actually behaves across colos: a write is NOT visible to a read in
+// another colo for up to 60s. Any implementation that correlates the mark to the
+// check through this will reject a confirmation that comes back quickly, which is
+// exactly backwards (#488).
+function makeEventuallyConsistentKv() {
+  const store = new Map<string, string>()
   return {
-    put,
-    get,
-    delete: del,
+    put: vi.fn(async () => {
+      // The write is accepted, and is invisible to this test's reads. That is the
+      // window a fast confirmation lands in.
+    }),
+    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    delete: vi.fn(async () => {}),
     list: vi.fn(),
     getWithMetadata: vi.fn(),
-    _store: store,
-  } as unknown as KVNamespace & { _store: Map<string, KVRow> }
+  } as unknown as KVNamespace
 }
 
 // Minimal supabase stub for the partner-threshold lookup path.
@@ -63,12 +89,16 @@ function node(config: NodeDefinition['config']): NodeDefinition {
 const NOW = 1_700_000_000_000
 
 describe('executeLatencyGateNode', () => {
-  let kv: KVNamespace & { _store: Map<string, KVRow> }
+  let marks: Map<string, MarkRow>
   let env: Env
 
   beforeEach(() => {
-    kv = makeFakeKv()
-    env = { SUBMISSIONS: kv } as unknown as Env
+    const store = makeFakeMarkStore()
+    marks = store.store
+    // SUBMISSIONS is still bound, and is deliberately the eventually-consistent fake:
+    // if the node ever correlates marks through KV again, the cross-colo test below
+    // fails rather than quietly passing.
+    env = { LATENCY_MARK: store.ns, SUBMISSIONS: makeEventuallyConsistentKv() } as unknown as Env
     vi.spyOn(Date, 'now').mockReturnValue(NOW)
   })
 
@@ -83,10 +113,7 @@ describe('executeLatencyGateNode', () => {
         makeCtx(),
         env
       )
-      expect(kv._store.get('latency:lead-abc')).toEqual({
-        value: JSON.stringify({ marked_at: NOW }),
-        ttl: 86400,
-      })
+      expect(marks.get('latency:lead-abc')).toEqual({ marked_at: NOW, ttl_seconds: 86400 })
       expect(result.output).toEqual({
         operation: 'mark',
         key: 'latency:lead-abc',
@@ -105,7 +132,7 @@ describe('executeLatencyGateNode', () => {
         makeCtx(),
         env
       )
-      expect(kv._store.has('latency:lead_economy:lead-abc')).toBe(true)
+      expect(marks.has('latency:lead_economy:lead-abc')).toBe(true)
     })
 
     it('clamps TTL up to the KV minimum (60s)', async () => {
@@ -114,13 +141,65 @@ describe('executeLatencyGateNode', () => {
         makeCtx(),
         env
       )
-      expect(kv._store.get('latency:lead-abc')?.ttl).toBe(60)
+      expect(marks.get('latency:lead-abc')?.ttl_seconds).toBe(60)
+    })
+  })
+
+  // #488. The mark is written by whichever colo served the bid; the confirmation can
+  // land in a different one. KV takes up to 60s to propagate, and a missing mark is
+  // rejected, so correlating through KV rejects exactly the confirmations that came
+  // back FASTEST, since those are the ones that beat propagation. The gate is meant
+  // to reject SLOW confirmations, so it was inverted for the leads that mattered most.
+  //
+  // Nothing about a retry or a longer TTL fixes that: inside the propagation window a
+  // not-yet-replicated mark and a never-written mark are the same empty read. The mark
+  // has to live somewhere strongly consistent, which is what the Durable Object is.
+  describe('cross-colo correlation (#488)', () => {
+    it('accepts a confirmation that comes back before KV could have propagated the mark', async () => {
+      // Bid: marked in colo A.
+      await executeLatencyGateNode(
+        node({ operation: 'mark', correlation_key: 'lead-abc' }),
+        makeCtx(),
+        env
+      )
+
+      // Confirmation arrives 2s later in colo B, well inside the threshold, and well
+      // inside KV's propagation window.
+      vi.spyOn(Date, 'now').mockReturnValue(NOW + 2000)
+      const result = await executeLatencyGateNode(
+        node({ operation: 'check', correlation_key: 'lead-abc', threshold_ms: 5000 }),
+        makeCtx(),
+        env
+      )
+
+      expect(result.output).toMatchObject({
+        hit: true,
+        latency_ms: 2000,
+        within_threshold: true,
+        _route: 'within',
+      })
+    })
+
+    it('still rejects a genuinely absent mark, so the gate stays fail-safe', async () => {
+      // Strong consistency means "not found" now really does mean never marked (or
+      // expired), rather than "maybe not replicated yet". So the fail-safe reject is
+      // finally trustworthy instead of firing on healthy traffic.
+      const result = await executeLatencyGateNode(
+        node({ operation: 'check', correlation_key: 'never-bid-on', threshold_ms: 5000 }),
+        makeCtx(),
+        env
+      )
+      expect(result.output).toMatchObject({
+        hit: false,
+        _route: 'exceeded',
+        reason: 'mark_not_found',
+      })
     })
   })
 
   describe('check', () => {
     function seedMark(key: string, markedAt: number) {
-      kv._store.set(key, { value: JSON.stringify({ marked_at: markedAt }), ttl: 86400 })
+      marks.set(key, { marked_at: markedAt, ttl_seconds: 86400 })
     }
 
     it('routes within when latency is at or under the threshold (override)', async () => {
