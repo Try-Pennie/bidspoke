@@ -355,6 +355,46 @@ describe('executeAchieveOffersNode sandbox profile', () => {
     expect(body.last_name).toBe('Mayerberger')
     expect(body.mailing_address.city).toBe('Salinas')
   })
+
+  // The output's `sandbox` flag is what the achieve-log hook persists as
+  // achieve_evaluations.is_sandbox. Get it wrong and offers made to Achieve's seeded FAKE
+  // identity are indistinguishable from real ones in the analysis and in Snowflake. It must
+  // be set on EVERY exit path, not just the happy one.
+  it('marks the output sandbox off production, on every exit path', async () => {
+    const sandboxEnv = envWith(STG)
+
+    mockFetchOnce(200, acceptedResponse(1))
+    const ok = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    expect((ok.output as Record<string, unknown>).sandbox).toBe(true)
+
+    mockFetchOnce(401, { message: 'Invalid credentials' })
+    const authFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    expect((authFail.output as Record<string, unknown>).sandbox).toBe(true)
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
+    const netFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    expect((netFail.output as Record<string, unknown>).sandbox).toBe(true)
+
+    // Incomplete lead: skipped before the API call, still a sandbox-shaped row.
+    const incomplete = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ payload: { personalInformation: {} }, env: sandboxEnv })
+    )
+    expect((incomplete.output as Record<string, unknown>).sandbox).toBe(true)
+
+    // Missing credentials: skipped before the API call.
+    const noCreds = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: { ACHIEVE_API_URL: STG } })
+    )
+    expect((noCreds.output as Record<string, unknown>).sandbox).toBe(true)
+  })
+
+  it('marks the output NOT sandbox on production', async () => {
+    mockFetchOnce(200, acceptedResponse(1))
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }))
+    expect((output as Record<string, unknown>).sandbox).toBe(false)
+  })
 })
 
 // Achieve rejects every lead with `{"response":"rejected","response_reason":"Missing
