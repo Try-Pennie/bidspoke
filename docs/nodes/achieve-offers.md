@@ -37,32 +37,27 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_CONSENT_ESIGN` | No | Verbatim Electronic Consent Agreement text. Sent as `consents.e_sign`. |
 | `ACHIEVE_CONSENT_POLICY` | No | Verbatim Privacy Policy text. Sent as `consents.policy`. |
 | `ACHIEVE_CONSENT_TERM` | No | Verbatim Terms of Service text. Sent as `consents.term`. |
-| `ACHIEVE_SANDBOX_EMAIL_DOMAIN` | No | Domain for the sandbox's per-execution email (default `trypennie.com`). |
 
 ### Sandbox mode: the showroom profile
 
 Achieve's sandbox **only returns offers for its own seeded showroom profiles**. It declines
 every real lead regardless of debt (28 out of 28 on 2026-07-13, including two with ~$18k of
-verified debt and poor credit). Achieve told us directly: *"if you want to see a response
-with offers, please use this profile (a new valid email every time)"*.
-
-So sending a real consumer to the sandbox leaks their SSN, date of birth, name and address
-to a system that discards them and tells us nothing.
+verified debt and poor credit). Achieve gave us one seeded profile to use off production: a
+specific name and address.
 
 **Whenever `ACHIEVE_API_URL` is not exactly `https://api.freedomfinancialnet.com`, the node
-substitutes Achieve's showroom identity:**
+overlays ONLY the two fields Achieve gave us. Every other field stays the real lead's,
+unchanged.**
 
 | Field | Sandbox | Production |
 |-------|---------|------------|
 | `first_name` / `last_name` | Mark Mayerberger | the real lead |
 | `mailing_address` | 19538 CREEKSIDE CT, Salinas, CA 93908 | the real lead |
-| `email` | fresh per execution, derived from `trace_id` | the real lead |
-| `phone` | `+18005551212` | the real lead |
-| `social_security_number`, `date_of_birth` | **omitted entirely** | the real lead |
-| debt, income, credit rating, loan purpose | **the real lead** (no identity, and it is what FDR evaluates) | the real lead |
+| `email`, `phone`, `social_security_number`, `date_of_birth` | **the real lead** | the real lead |
+| debt, income, credit rating, loan purpose | **the real lead** | the real lead |
 
-The email must be new on every submission or Achieve will not re-evaluate the profile, so it
-is derived from the execution's `trace_id`.
+Only the name and address are swapped, because that is exactly what Achieve handed us as the
+seeded profile. The node does not otherwise reshape the payload.
 
 **This fails safe.** The check is "is this exactly production", so a blank, misconfigured or
 typo'd `ACHIEVE_API_URL` sends the fake profile rather than a real person. Point it at

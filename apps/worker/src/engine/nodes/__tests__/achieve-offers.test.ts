@@ -268,19 +268,15 @@ describe('executeAchieveOffersNode', () => {
 
 // Achieve's SANDBOX only returns offers for its own seeded showroom profiles; it declines
 // every real lead regardless of debt (28/28 rejections on 2026-07-13, including two with
-// ~$18k verified debt and poor credit). Achieve told us directly: "if you want to see a
-// response with offers, please use this profile (a new valid email every time)".
+// ~$18k verified debt and poor credit). Achieve gave us exactly one seeded profile to use:
+// a specific name and address.
 //
-// So sending a real consumer to the sandbox leaks their SSN, DOB, name and address to a
-// system that throws it away and tells us nothing. When we are NOT pointed at production
-// we substitute Achieve's showroom identity and DROP the SSN and DOB entirely (their spec
-// marks both optional; only email/phone/name/address are Required).
+// Off production we overlay ONLY those two fields Achieve handed us. Every other field
+// (email, phone, SSN, DOB, financials) stays the real lead's, unchanged. Achieve gave us a
+// profile to use, not a payload to reshape.
 //
-// The lead's FINANCIAL profile (debt, income, credit rating, loan purpose) is kept: it
-// carries no identity, and it is what FDR actually evaluates.
-//
-// Fails safe: substitution is keyed off "is NOT production", so a blank or misconfigured
-// ACHIEVE_API_URL sends the fake profile rather than a real person.
+// Keyed off "is NOT production", so a blank or misconfigured ACHIEVE_API_URL still uses the
+// seeded name rather than a real person's.
 describe('executeAchieveOffersNode sandbox profile', () => {
   const PROD = 'https://api.freedomfinancialnet.com'
   const STG = 'https://api-stg.freedomfinancialnet.com'
@@ -294,7 +290,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
     ...(url ? { ACHIEVE_API_URL: url } : {}),
   })
 
-  it('substitutes the showroom identity when pointed at the sandbox', async () => {
+  it('overlays only the seeded name and address in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
     const body = sentBody(fetchMock)
@@ -307,46 +303,21 @@ describe('executeAchieveOffersNode sandbox profile', () => {
       state: 'CA',
       zip: '93908',
     })
-    // The real lead's identity must not appear anywhere.
+    // The real lead's name and address must not leak through.
     expect(JSON.stringify(body)).not.toContain('Guerrera')
     expect(JSON.stringify(body)).not.toContain('Staten Island')
   })
 
-  it('drops SSN and date of birth in the sandbox', async () => {
+  it('keeps every non-name/address field as the real lead in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
     const body = sentBody(fetchMock)
 
-    expect(body).not.toHaveProperty('social_security_number')
-    expect(body).not.toHaveProperty('date_of_birth')
-    expect(JSON.stringify(body)).not.toContain('113-52-2922')
-    expect(JSON.stringify(body)).not.toContain('1959-12-29')
-  })
-
-  it('gives the sandbox a fresh email per execution', async () => {
-    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
-    const first = sentBody(fetchMock).email as string
-
-    vi.unstubAllGlobals()
-    vi.stubGlobal('btoa', (s: string) => `b64(${s})`)
-    const fetch2 = mockFetchOnce(200, acceptedResponse(1))
-    const ctx2 = makeCtx({ env: envWith(STG) })
-    ;(ctx2.trigger as { trace_id: string }).trace_id = 'trace-DIFFERENT'
-    await executeAchieveOffersNode(makeNode(), ctx2)
-    const second = sentBody(fetch2).email as string
-
-    expect(first).toMatch(/@/)
-    expect(second).toMatch(/@/)
-    expect(first).not.toBe(second)
-    expect(first).not.toContain('lead@example.com')
-  })
-
-  it('keeps the real lead financials in the sandbox', async () => {
-    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
-    const body = sentBody(fetchMock)
-
+    // Exactly what Achieve gave us is overlaid; nothing else is dropped or synthesized.
+    expect(body.email).toBe('lead@example.com')
+    expect(body.phone).toBe('+16467706541')
+    expect(body.social_security_number).toBe('113-52-2922')
+    expect(body.date_of_birth).toBe('1959-12-29')
     expect(body.loan_amount).toBe(7500)
     expect(body.annual_income).toBe(122000)
     expect(body.credit_rating).toBe('poor')
@@ -366,13 +337,13 @@ describe('executeAchieveOffersNode sandbox profile', () => {
     expect(body.mailing_address.city).toBe('Staten Island')
   })
 
-  it('fails safe: substitutes when ACHIEVE_API_URL is unset', async () => {
+  it('fails safe: overlays the seeded name when ACHIEVE_API_URL is unset', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(undefined) }))
     const body = sentBody(fetchMock)
 
     expect(body.last_name).toBe('Mayerberger')
-    expect(body).not.toHaveProperty('social_security_number')
+    expect(body.mailing_address.city).toBe('Salinas')
   })
 })
 

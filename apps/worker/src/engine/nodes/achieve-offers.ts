@@ -49,16 +49,13 @@ const DEFAULT_BASE_URL = 'https://api-stg.freedomfinancialnet.com'
 const PROD_BASE_URL = 'https://api.freedomfinancialnet.com'
 const VALID_PRODUCTS = new Set(['fdr', 'fplus', 'lendage'])
 
-// Achieve's sandbox only returns offers for its own seeded showroom profiles. It declines
-// every real lead no matter the debt (28/28 on 2026-07-13, including two at ~$18k with poor
-// credit). Achieve told us directly: "if you want to see a response with offers, please use
-// this profile (a new valid email every time)".
+// Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
+// every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
+// gave us exactly ONE seeded profile to use off production: this name and this address.
 //
-// So a real consumer sent to the sandbox leaks their SSN, DOB, name and address to a system
-// that discards them and tells us nothing. Off production we substitute the showroom
-// identity and OMIT the SSN and DOB (their spec marks both optional; only email, phone,
-// name and address are Required). The lead's financial profile is kept: it carries no
-// identity and it is what FDR actually evaluates.
+// We substitute ONLY those two fields (the ones Achieve handed us). Everything else on the
+// request stays the real lead's, unchanged. Do NOT drop or synthesize other fields: Achieve
+// told us to use this profile, not to reshape the payload.
 const SHOWROOM_PROFILE = {
   first_name: 'Mark',
   last_name: 'Mayerberger',
@@ -68,20 +65,10 @@ const SHOWROOM_PROFILE = {
     state: 'CA',
     zip: '93908',
   },
-  phone: '+18005551212', // E.164 placeholder; the real lead's number is never sent off prod
 } as const
 
-// Achieve requires a NEW email on every sandbox submission or it will not re-evaluate the
-// profile. trace_id is unique per execution. Domain is overridable without a deploy in case
-// Achieve rejects it.
-function sandboxEmail(ctx: ExecutionContext): string {
-  const domain = ctx.env.ACHIEVE_SANDBOX_EMAIL_DOMAIN || 'trypennie.com'
-  const unique = String(ctx.trigger.trace_id || Date.now()).toLowerCase().replace(/[^a-z0-9]/g, '')
-  return `achieve.sandbox.${unique}@${domain}`
-}
-
 // Fails safe: anything that is not explicitly production counts as sandbox, so a blank or
-// misconfigured ACHIEVE_API_URL sends the fake profile rather than a real person.
+// misconfigured ACHIEVE_API_URL uses the seeded profile rather than a real person's name.
 function isProduction(baseUrl: string): boolean {
   return baseUrl.replace(/\/+$/, '') === PROD_BASE_URL
 }
@@ -276,16 +263,13 @@ function buildRequest(
   const submissionId = typeof payload.Submission__c === 'string' ? payload.Submission__c : undefined
   const leadId = submissionId ?? ctx.trigger.trace_id
 
-  // Identity: the real consumer ONLY on production. Off production, Achieve's showroom
-  // profile with a fresh email, and no SSN or DOB at all.
+  // The real lead's identity is always the base. Off production we overlay ONLY the two
+  // fields Achieve seeded (name + address); everything else stays the real lead's. Achieve
+  // gave us a profile to use, not a payload to reshape.
   const identity: Record<string, unknown> = production
     ? {
-        email: pi.email,
-        phone: toE164(pi.primaryPhone),
         first_name: pi.firstName,
         last_name: pi.lastName,
-        date_of_birth: pi.dateOfBirth || undefined,
-        social_security_number: pi.ssn || undefined,
         mailing_address: {
           street: pi.address1,
           street2: pi.address2 || undefined,
@@ -295,14 +279,16 @@ function buildRequest(
         },
       }
     : {
-        email: sandboxEmail(ctx),
-        phone: SHOWROOM_PROFILE.phone,
         first_name: SHOWROOM_PROFILE.first_name,
         last_name: SHOWROOM_PROFILE.last_name,
         mailing_address: { ...SHOWROOM_PROFILE.mailing_address },
       }
 
   const body: Record<string, unknown> = {
+    email: pi.email,
+    phone: toE164(pi.primaryPhone),
+    date_of_birth: pi.dateOfBirth || undefined,
+    social_security_number: pi.ssn || undefined,
     ...identity,
     tracking: {
       unique_identifier: leadId,
