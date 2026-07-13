@@ -18,6 +18,8 @@ import {
 } from '../../engine/lead-sightings'
 import { formatSsn } from '../../engine/persons-crypto'
 import { runSightingsExport } from '../../lib/sightings-export'
+import { runAchieveExport } from '../../lib/achieve-export'
+import { formatErr } from '../../lib/format-error'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -315,15 +317,53 @@ admin.post('/backfill-sightings', async (c) => {
   })
 })
 
+const EXPORT_TARGETS = ['all', 'achieve', 'sightings'] as const
+type ExportTarget = (typeof EXPORT_TARGETS)[number]
+
 /**
- * Manually trigger the nightly Snowflake export. Same code path as the
- * scheduled cron at 09:00 UTC, but callable on demand. Use cases: backfill
- * verification, demos, or recovery from a failed cron run.
+ * Manually trigger a nightly Snowflake export. Same code paths as the scheduled
+ * crons (sightings every 2h at :37, Achieve at 09:00 UTC), but callable on demand.
+ * Use cases: backfill verification, demos, or recovery from a failed cron run.
+ *
+ * Optional body `{ target: 'all' | 'achieve' | 'sightings' }`, default 'all'.
+ * Achieve runs first: it is small (one row per evaluation) while the sightings
+ * drain is capped at ~50K rows against a time budget, so running it second risks
+ * leaving no budget for it at all.
  */
 admin.post('/run-export-now', async (c) => {
+  const body = await c.req.json<{ target?: string }>().catch(() => ({}) as { target?: string })
+  const target = (body.target ?? 'all') as ExportTarget
+  if (!EXPORT_TARGETS.includes(target)) {
+    return c.json({ error: `target must be one of: ${EXPORT_TARGETS.join(', ')}` }, 400)
+  }
+
   const supabase = createSupabaseClient(c.env)
-  const summary = await runSightingsExport(supabase, c.env)
-  return c.json(summary)
+  const result: {
+    achieve?: Awaited<ReturnType<typeof runAchieveExport>>
+    sightings?: Awaited<ReturnType<typeof runSightingsExport>>
+    errors: string[]
+  } = { errors: [] }
+
+  // Each export is independent, so one blowing up must not cancel the other. But a
+  // thrown export is a real failure: record it and fail the response, never return
+  // an empty summary that reads as "ran fine, nothing to export".
+  if (target === 'all' || target === 'achieve') {
+    try {
+      result.achieve = await runAchieveExport(supabase, c.env)
+    } catch (e) {
+      result.errors.push(`achieve export: ${formatErr(e)}`)
+    }
+  }
+
+  if (target === 'all' || target === 'sightings') {
+    try {
+      result.sightings = await runSightingsExport(supabase, c.env)
+    } catch (e) {
+      result.errors.push(`sightings export: ${formatErr(e)}`)
+    }
+  }
+
+  return c.json(result, result.errors.length > 0 ? 500 : 200)
 })
 
 export default admin
