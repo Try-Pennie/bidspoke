@@ -17,9 +17,19 @@ interface Props {
   // Bumped by the canvas on every successful save so the open panel refetches
   // and shows the just-created version instead of a stale list (#241).
   refreshToken?: number
+  // #494: restore overwrites the canvas outright, so unsaved edits are simply gone
+  // and there is no undo across it. When the canvas is dirty the confirm has to say
+  // so, instead of looking identical to a restore that costs nothing.
+  isDirty?: boolean
 }
 
-export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize, refreshToken }: Props) {
+// Longer than the clean 4s window: there is now a consequence to read before the
+// destructive click, and letting it time out under someone mid-sentence just makes
+// them click Restore twice (#494).
+const CONFIRM_WINDOW_MS = 4000
+const CONFIRM_WINDOW_DIRTY_MS = 8000
+
+export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize, refreshToken, isDirty = false }: Props) {
   const effectiveWidth = width ?? 320
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -47,7 +57,10 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
   function requestRestore(versionId: string) {
     if (timerRef.current) clearTimeout(timerRef.current)
     setConfirmingRestore(versionId)
-    timerRef.current = setTimeout(() => setConfirmingRestore(null), 4000)
+    timerRef.current = setTimeout(
+      () => setConfirmingRestore(null),
+      isDirty ? CONFIRM_WINDOW_DIRTY_MS : CONFIRM_WINDOW_MS
+    )
   }
 
   function cancelRestore() {
@@ -154,6 +167,15 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
                     </button>
                   )}
                 </div>
+
+                {/* The consequence, stated only when there IS one (#494). A warning
+                    shown on every restore would be wallpaper, and the one time it
+                    mattered nobody would read it. */}
+                {confirmingRestore === v.id && isDirty && (
+                  <p role="alert" className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                    Restoring replaces the canvas. Your unsaved changes will be lost.
+                  </p>
+                )}
               </li>
             ))}
           </ul>
