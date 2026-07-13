@@ -28,10 +28,10 @@ describe('ExecutionStatusBadge (#477)', () => {
     expect(screen.queryByText('Running')).not.toBeInTheDocument()
   })
 
-  it('renders a completed run as a static Completed badge with no elapsed', () => {
+  it('renders a completed run as a static Done badge with no elapsed', () => {
     const startedAt = new Date(Date.now() - 3 * 60_000).toISOString()
     render(<ExecutionStatusBadge status="completed" startedAt={startedAt} />)
-    expect(screen.getByText('Completed')).toBeInTheDocument()
+    expect(screen.getByText('Done')).toBeInTheDocument()
     expect(screen.queryByText(/· \d/)).not.toBeInTheDocument()
   })
 

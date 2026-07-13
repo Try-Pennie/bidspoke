@@ -8,6 +8,7 @@ import type { ExecutionStep, SavedTestPayload, WorkflowDef } from '@/types/workf
 import RailResizeHandle from './RailResizeHandle'
 import { findParallelSuggestions } from '@/lib/parallel-suggestions'
 import { useElapsed } from '@/hooks/useElapsed'
+import { OUTCOME_LABELS } from '@/lib/execution-status'
 
 type TestStep = {
   step_namespace: string
@@ -363,7 +364,7 @@ export default function TestRunPanel({
                 <XCircle className="h-3.5 w-3.5 text-red-600" />
               )}
               <span className={`text-xs font-medium ${result.ok ? 'text-green-700' : 'text-red-700'}`}>
-                {result.ok ? 'Completed' : 'Failed'}
+                {result.ok ? OUTCOME_LABELS.completed : OUTCOME_LABELS.failed}
               </span>
               <button
                 onClick={() => copy('result', typeof result.body === 'string' ? result.body : JSON.stringify(result.body, null, 2))}

@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle, XCircle, Clock, SkipForward, RefreshCw, AlertTriangle, HelpCircle } from 'lucide-react'
-import { resolveExecutionStatus } from '@/lib/execution-status'
+import { resolveExecutionStatus, OUTCOME_LABELS } from '@/lib/execution-status'
 
 export const STATUS_STYLES: Record<string, { icon: React.ReactNode; label: string; bg: string; text: string }> = {
-  completed:            { icon: <CheckCircle className="h-4 w-4" />, label: 'Completed',   bg: 'bg-green-50',  text: 'text-green-700' },
+  completed:            { icon: <CheckCircle className="h-4 w-4" />, label: OUTCOME_LABELS.completed, bg: 'bg-green-50',  text: 'text-green-700' },
   // Served, but a post-response writeback failed (#310). Amber, not red — the
   // lead got a correct response; only a side-effect didn't land.
-  degraded:             { icon: <AlertTriangle className="h-4 w-4" />, label: 'Degraded',  bg: 'bg-amber-50',  text: 'text-amber-700' },
-  failed:               { icon: <XCircle className="h-4 w-4" />,    label: 'Failed',       bg: 'bg-red-50',    text: 'text-red-700'   },
+  degraded:             { icon: <AlertTriangle className="h-4 w-4" />, label: OUTCOME_LABELS.degraded, bg: 'bg-amber-50',  text: 'text-amber-700' },
+  failed:               { icon: <XCircle className="h-4 w-4" />,    label: OUTCOME_LABELS.failed,    bg: 'bg-red-50',    text: 'text-red-700'   },
   skipped:              { icon: <SkipForward className="h-4 w-4" />, label: 'Skipped',      bg: 'bg-gray-50',   text: 'text-gray-500'  },
   running:              { icon: <Clock className="h-4 w-4" />,       label: 'Running',      bg: 'bg-p-blue-light', text: 'text-p-blue-dark' },
   failed_with_fallback: { icon: <RefreshCw className="h-4 w-4" />,   label: 'Fallback',     bg: 'bg-yellow-50', text: 'text-yellow-700'},

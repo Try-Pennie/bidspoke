@@ -27,6 +27,7 @@ function mergeExecs(a: ExecRow[], b: ExecRow[], cap: number): ExecRow[] {
     .slice(0, cap)
 }
 import { getDateLabel, formatTime } from '@/lib/dates'
+import { OUTCOME_LABELS } from '@/lib/execution-status'
 import { Skeleton } from '@/components/ui/Skeleton'
 import type { WorkflowVersion } from '@/types/workflow'
 
@@ -104,14 +105,16 @@ interface Props {
 
 type OutcomeFilter = 'all' | 'successful' | 'completed' | 'failed' | 'degraded'
 
-// Labels are abbreviated to fit all five tabs inside the fixed 288px (w-72)
-// panel. The full status names overflowed the row and clipped the last tab.
+// Labels come from the shared outcome vocabulary so a tab and the badge on the
+// rows it filters never disagree. They are abbreviated because all five tabs
+// have to fit the fixed 288px (w-72) panel; the spelled-out status names
+// overflowed the row and clipped the last tab.
 export const FILTER_TABS: { key: OutcomeFilter; label: string }[] = [
-  { key: 'all',        label: 'All'      },
-  { key: 'successful', label: 'Success'  },
-  { key: 'completed',  label: 'Done'     },
-  { key: 'degraded',   label: 'Degraded' },
-  { key: 'failed',     label: 'Failed'   },
+  { key: 'all',        label: 'All'                     },
+  { key: 'successful', label: OUTCOME_LABELS.successful },
+  { key: 'completed',  label: OUTCOME_LABELS.completed  },
+  { key: 'degraded',   label: OUTCOME_LABELS.degraded   },
+  { key: 'failed',     label: OUTCOME_LABELS.failed     },
 ]
 
 // Every tab reserves the 2px bottom border, transparent when inactive. Without
