@@ -7,13 +7,40 @@
 // 2026-06-26 lead outage (a brief connection-pool blip cascaded into ~5 min of
 // failures). So: only cache a SUCCESSFUL load, and keep a long-lived "last-good"
 // copy to serve during a blip so creds don't go blank at all.
+//
+// #491: the cached map holds DECRYPTED secrets, so it is now encrypted at rest in
+// KV. Secrets are encrypted in Postgres precisely so they are not lying around in
+// the clear, and decrypting them into a plaintext cache undid that: anyone able to
+// read the KV namespace (a leaked Cloudflare token) could read every live
+// credential. The last-good copy has no TTL, so a rotated or deleted credential's
+// plaintext sat there indefinitely. Both keys now hold ciphertext, and invalidation
+// re-warms last-good so a superseded credential does not survive its own rotation.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { decryptSecret } from './secret-crypto'
+import { decryptSecret, encryptSecret } from './secret-crypto'
 
 const TTL = 300
 const cacheKey = (orgId: string) => `env-vars-${orgId}`
 const lastGoodKey = (orgId: string) => `env-vars-${orgId}-lastgood`
+
+// Read an encrypted env map out of KV. A blob we cannot decrypt is treated as a
+// MISS, never as an error: that is what a SECRET_ENCRYPTION_KEY rotation (a
+// documented operation) leaves behind, and also what the pre-#491 plaintext entries
+// look like on the first deploy after this ships. In both cases the right move is
+// the same, fall through to the DB and rewrite the entry, which self-heals them.
+async function readEncrypted(
+  kv: KVNamespace,
+  key: string,
+  secretEncryptionKey: string
+): Promise<Record<string, string> | null> {
+  const blob = await kv.get(key)
+  if (!blob) return null
+  try {
+    return JSON.parse(await decryptSecret(blob, secretEncryptionKey)) as Record<string, string>
+  } catch {
+    return null
+  }
+}
 
 export async function loadEnvVars(
   orgId: string,
@@ -21,7 +48,7 @@ export async function loadEnvVars(
   supabase: SupabaseClient,
   secretEncryptionKey: string
 ): Promise<Record<string, string>> {
-  const cached = await kv.get<Record<string, string>>(cacheKey(orgId), 'json')
+  const cached = await readEncrypted(kv, cacheKey(orgId), secretEncryptionKey)
   if (cached) return cached
 
   // Load ALL user env vars, including is_secret ones, so nodes (code-node `env`
@@ -44,7 +71,7 @@ export async function loadEnvVars(
     // copy (the config vars rarely change) so a transient blip degrades
     // gracefully instead of blanking creds; empty only if we never had a good load.
     console.error(`[env-loader] load failed for org ${orgId}, not caching: ${error.message}`)
-    const lastGood = await kv.get<Record<string, string>>(lastGoodKey(orgId), 'json')
+    const lastGood = await readEncrypted(kv, lastGoodKey(orgId), secretEncryptionKey)
     return lastGood ?? {}
   }
 
@@ -64,16 +91,37 @@ export async function loadEnvVars(
     }
   }
 
-  const serialized = JSON.stringify(vars)
+  // Encrypted at rest (#491): this map carries the decrypted secrets.
+  const serialized = await encryptSecret(JSON.stringify(vars), secretEncryptionKey)
   // Short cache for the hot path; long-lived last-good (no TTL) for blip resilience.
   await kv.put(cacheKey(orgId), serialized, { expirationTtl: TTL })
   await kv.put(lastGoodKey(orgId), serialized)
   return vars
 }
 
-export async function invalidateEnvCache(orgId: string, kv: KVNamespace): Promise<void> {
-  // Only drop the short cache. The last-good copy is intentionally kept: the next
-  // successful load overwrites it, and keeping it preserves blip resilience even
-  // right after an edit.
+export async function invalidateEnvCache(
+  orgId: string,
+  kv: KVNamespace,
+  supabase: SupabaseClient,
+  secretEncryptionKey: string
+): Promise<void> {
   await kv.delete(cacheKey(orgId))
+
+  // Re-warm, rather than only dropping the short key (#491). Last-good has no TTL,
+  // so a rotated or deleted credential used to sit in it forever. Loading fresh here
+  // overwrites it with only the current values, so the superseded one leaves KV.
+  //
+  // Overwrite, never delete: last-good is what keeps creds from going blank during a
+  // DB blip (#391), and deleting it would reopen that outage for the window after
+  // every edit. If this re-warm's read fails, last-good keeps its previous contents
+  // (stale, but encrypted at rest, and purged by the next successful load) rather
+  // than leaving the org with nothing to fall back on. The caller has just committed
+  // a DB write, so the read is overwhelmingly likely to succeed.
+  try {
+    await loadEnvVars(orgId, kv, supabase, secretEncryptionKey)
+  } catch (e) {
+    console.error(
+      `[env-loader] cache re-warm after mutation failed for org ${orgId}: ${e instanceof Error ? e.message : String(e)}`
+    )
+  }
 }

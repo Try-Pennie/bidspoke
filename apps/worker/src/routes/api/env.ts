@@ -91,7 +91,7 @@ env.post('/', async (c) => {
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', data.id, body.is_secret ? 'secret_rotated' : 'created', userId, { key: body.key }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
 
   return c.json({ ...data, value: data.is_secret ? null : data.value }, 201)
@@ -207,7 +207,7 @@ env.put('/:id', async (c) => {
       key: existing.key,
       ...(newKey !== existing.key ? { renamed_to: newKey } : {}),
     }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
 
   return c.json({ ...data, value: existing.is_secret ? null : data.value })
@@ -319,7 +319,7 @@ env.delete('/:id', async (c) => {
 
   await Promise.all([
     writeAuditLog(supabase, orgId, 'environment_variable', id, 'deleted', userId, { key: existing.key }),
-    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE),
+    invalidateEnvCache(orgId, c.env.WORKFLOW_CACHE, supabase, c.env.SECRET_ENCRYPTION_KEY),
   ])
 
   return c.json({ ok: true })
