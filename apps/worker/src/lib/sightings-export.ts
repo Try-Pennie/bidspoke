@@ -62,6 +62,81 @@ export interface ColSpec {
 // Re-exported so existing importers of partitionKeyFor from this module still work.
 export { partitionKeyFor }
 
+// A column a concurrent writer can still CORRECT after the row became exportable,
+// together with the value it corrects to (#483).
+//
+// lead_sighting_bids.is_winner is the only one. A bid row is exportable the moment
+// it is inserted, which is mid-run, and finalize only decides the winner at the end
+// of the run. Finalize's correction is `is_winner = true, exported_at = null`, and
+// that exported_at=null is the repair path: it re-queues an already-exported bid so
+// the corrected flag reaches Snowflake next run.
+//
+// Which means an unconditional `exported_at` stamp is unsafe. Export SELECTs the bid
+// (is_winner false), MERGEs that stale false into Snowflake, and only then stamps. If
+// the correction commits inside that window (a Snowflake round trip wide, ~1.7s
+// measured) the stamp overwrites the exported_at=null the correction just wrote. The
+// row then looks exported, is never re-selected, and is purged 24h later: Snowflake
+// records the winner as a loser, permanently. So the stamp asserts the value we
+// actually shipped, and a row corrected under us stays unstamped and re-exports.
+//
+// lead_sightings needs no entry: its filter requires outcome_state='finalized', which
+// finalize sets in the same statement as the fields it corrects, so a sighting only
+// becomes exportable once it is already final.
+const CORRECTABLE_COL: Record<string, { col: string; correctedTo: unknown }> = {
+  lead_sighting_bids: { col: 'is_winner', correctedTo: true },
+}
+
+interface StampGroup {
+  ids: string[]
+  // The value this group asserts for the correctable column. Absent for a table
+  // with no correctable column, where the stamp is unconditional as before.
+  pred?: { col: string; value: unknown }
+  // True when every row in the group could be corrected out from under the stamp,
+  // so matching zero rows is a legitimate outcome rather than a broken write.
+  mayMissAll: boolean
+}
+
+// Split a merged batch into the stamps it needs: one per distinct value of the
+// correctable column, so each stamp can assert the value it shipped. Without a
+// correctable column this is a single unconditional group, byte-for-byte the
+// write that existed before.
+export function stampGroups(rows: Array<Record<string, unknown>>, tableName: string): StampGroup[] {
+  const correctable = CORRECTABLE_COL[tableName]
+  if (!correctable) {
+    return [{ ids: rows.map((r) => r.id as string), mayMissAll: false }]
+  }
+
+  const { col, correctedTo } = correctable
+
+  // The stamp asserts this column, so it must actually be in the SELECT list. If a
+  // future edit drops it from the table's ColSpec, every row's value reads
+  // undefined, every stamp asserts undefined, nothing is ever marked exported, and
+  // the table re-exports forever while the purge starves. Fail loudly here instead.
+  if (rows.length > 0 && !(col in rows[0])) {
+    throw new Error(
+      `${tableName}: correctable column "${col}" is not in the exported columns, so the exported_at stamp cannot assert it`
+    )
+  }
+
+  const byValue = new Map<string, { value: unknown; ids: string[] }>()
+  for (const r of rows) {
+    const value = r[col]
+    const key = JSON.stringify(value ?? null)
+    const group = byValue.get(key) ?? { value, ids: [] }
+    group.ids.push(r.id as string)
+    byValue.set(key, group)
+  }
+
+  return [...byValue.values()].map((g) => ({
+    ids: g.ids,
+    pred: { col, value: g.value },
+    // A row already holding the corrected value cannot change again, so its stamp
+    // keeps the #583 hard guard. Only the pre-correction group can lose every row
+    // to a concurrent correction.
+    mayMissAll: g.value !== correctedTo,
+  }))
+}
+
 // Lowest and highest partition-key value in a page of rows. Values are kept as
 // the strings PostgREST returned (never reformatted) so they round-trip exactly;
 // only the comparison parses them, which keeps a mixed-precision fractional
@@ -382,29 +457,47 @@ export async function exportTable(
 
         const ids = rows.map((r) => r.id as string)
         const { min, max } = partitionBounds(rows, partitionKey)
+        const stampedAt = new Date().toISOString()
+
         // .select('id') because PostgREST reports an UPDATE that matched nothing
         // as a plain success. The exported_at stamp is what makes a row purgeable
         // and stops it being re-selected, so a silent no-op means this batch
         // re-exports every run and the table never drains (#583). A PARTIAL match
-        // is benign (those rows vanished, so they cannot be re-selected); zero
-        // matched with rows in hand is a real failure.
-        // onMiss 'throw': a batch whose exported_at never lands re-exports forever.
-        const { rows: marked, error: updErr } = await requireRowsAffected(
-          `${tableName}.exported_at (${ids.length} rows; the batch would re-export forever)`,
-          () =>
-            supabase
-              .from(tableName)
-              .update({ exported_at: new Date().toISOString() })
-              .in('id', ids)
-              .gte(partitionKey, min)
-              .lte(partitionKey, max)
-              .select('id'),
-          { onMiss: 'throw' },
-        )
-        if (updErr) throw toThrowable(updErr)
-        if (marked.length < ids.length) {
+        // is benign (those rows vanished, or were corrected under us and now owe a
+        // re-export); zero matched with rows in hand is a real failure.
+        //
+        // Each group asserts the correctable value it actually shipped (#483), so a
+        // row corrected between the SELECT and this stamp matches nothing, keeps
+        // exported_at null, and re-exports next run with the corrected value.
+        let markedTotal = 0
+        for (const group of stampGroups(rows, tableName)) {
+          const label = group.pred ? ` where ${group.pred.col}=${String(group.pred.value)}` : ''
+          const { rows: marked, error: updErr } = await requireRowsAffected(
+            `${tableName}.exported_at (${group.ids.length} rows${label}; the batch would re-export forever)`,
+            () => {
+              const q = supabase
+                .from(tableName)
+                .update({ exported_at: stampedAt })
+                .in('id', group.ids)
+                .gte(partitionKey, min)
+                .lte(partitionKey, max)
+              return (group.pred ? q.eq(group.pred.col, group.pred.value) : q).select('id')
+            },
+            // A pre-correction group CAN legitimately match zero rows: every row in
+            // it was corrected under us. Those rows keep exported_at null, so they
+            // re-export and converge on the next run rather than being lost, and
+            // sustained non-convergence is exactly what the #613 purge-backlog alarm
+            // watches for. Every other group keeps the #583 hard guard, where a zero
+            // match means the write itself is broken.
+            { onMiss: group.mayMissAll ? 'warn' : 'throw' },
+          )
+          if (updErr && !group.mayMissAll) throw toThrowable(updErr)
+          markedTotal += marked.length
+        }
+
+        if (markedTotal < ids.length) {
           console.warn(
-            `[sightings-export] ${tableName}: marked ${marked.length}/${ids.length} exported rows; the rest vanished between select and update`
+            `[sightings-export] ${tableName}: marked ${markedTotal}/${ids.length} exported rows; the rest vanished or were corrected between select and update`
           )
         }
 

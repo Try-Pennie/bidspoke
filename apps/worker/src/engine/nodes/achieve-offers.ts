@@ -72,8 +72,32 @@ const LOAN_PURPOSES = new Set([
   'business', 'auto', 'medical', 'moving', 'other',
 ])
 
+// Achieve requires a `consents` object and rejects the lead outright without it
+// ("Missing consents"), despite their doc marking it optional. Each field holds the
+// VERBATIM legal text shown to the user, not a boolean.
+//
+// The text is identical for every lead (it is whatever the Pennie form displays), so it
+// lives in env vars rather than the payload. The payload's booleans say only WHICH
+// consents this lead granted, and we send a consent's text only when its boolean is true
+// so we never assert to a lender that a consumer agreed to something they did not.
+//
+// e_sign / policy / term have no boolean of their own: the form grants all three on the
+// same "Agree & View Offers" click that sets consentsToFcra, so they ride on that flag.
+const CONSENT_ENV: Record<string, string> = {
+  tcpa: 'ACHIEVE_CONSENT_TCPA',
+  fcra: 'ACHIEVE_CONSENT_FCRA',
+  e_sign: 'ACHIEVE_CONSENT_ESIGN',
+  policy: 'ACHIEVE_CONSENT_POLICY',
+  term: 'ACHIEVE_CONSENT_TERM',
+}
+const FCRA_CLICK_CONSENTS = ['fcra', 'e_sign', 'policy', 'term']
+
 interface LeadPayload {
   Submission__c?: string
+  legalInformation?: {
+    consentsToFcra?: boolean
+    consentsToTcpa?: boolean
+  }
   personalInformation?: {
     ssn?: string
     email?: string
@@ -230,6 +254,9 @@ function buildRequest(
     partner_lead_id: leadId,
   }
 
+  const consents = buildConsents(ctx, payload)
+  if (consents) body.consents = consents
+
   const unsecuredDebt = extractUnsecuredDebt(ctx, config)
   if (unsecuredDebt != null && unsecuredDebt >= 0) body.unsecured_debt = unsecuredDebt
 
@@ -249,6 +276,26 @@ function buildRequest(
   if (li.purpose && LOAN_PURPOSES.has(li.purpose)) body.loan_purpose = li.purpose
 
   return body
+}
+
+// Returns the consents Achieve requires, or undefined when the lead granted none (or no
+// text is configured) so the key is omitted rather than sent empty.
+function buildConsents(
+  ctx: ExecutionContext,
+  payload: LeadPayload
+): Record<string, string> | undefined {
+  const legal = payload.legalInformation
+  if (!legal) return undefined
+
+  const granted = (key: string): boolean =>
+    key === 'tcpa' ? legal.consentsToTcpa === true : FCRA_CLICK_CONSENTS.includes(key) && legal.consentsToFcra === true
+
+  const consents: Record<string, string> = {}
+  for (const [key, envVar] of Object.entries(CONSENT_ENV)) {
+    const text = ctx.env[envVar]
+    if (granted(key) && text) consents[key] = text
+  }
+  return Object.keys(consents).length > 0 ? consents : undefined
 }
 
 // Verified debt from the Main Flow eligibility step, overridable via template

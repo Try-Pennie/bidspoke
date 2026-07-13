@@ -76,6 +76,9 @@ function fakeSupabase(
               const data = Array.from({ length: size }, (_, i) => ({
                 id: `r${thisCall}_${i}`,
                 [pk]: new Date(Date.UTC(2026, 6, 10, 0, i)).toISOString(),
+                // Bid rows carry is_winner in the real BID_COLS, and the exported_at
+                // stamp asserts it (#483), so the fake must supply it too.
+                ...(table === 'lead_sighting_bids' ? { is_winner: false } : {}),
               }))
               return {
                 eq() {
@@ -99,6 +102,9 @@ function fakeSupabase(
             },
             gte: () => q,
             lte: () => q,
+            // The stamp asserts the correctable column's shipped value (#483). These
+            // rows carry no such column, so the predicate is a no-op here.
+            eq: () => q,
             ids: [] as string[],
             select: () =>
               Promise.resolve({
@@ -586,6 +592,141 @@ describe('exportTable: exported_at mark matched zero rows (#583)', () => {
   })
 })
 
+// #483. A bid row is exportable the moment it is inserted, which is DURING the
+// run, well before finalize knows who won. Finalize later flips the winner with
+// `is_winner = true, exported_at = null`, and that exported_at=null is the repair
+// path: it re-queues an already-exported bid so the corrected flag reaches
+// Snowflake on the next run.
+//
+// The race is that the repair lands in the middle of an export. Export SELECTs
+// the bid (is_winner false), MERGEs that stale false into Snowflake, and only
+// THEN stamps exported_at by id. If the flip commits inside that window (which is
+// a Snowflake network round trip wide, ~1.7s measured), the stamp overwrites the
+// exported_at=null the repair just wrote. The row now looks exported, so it is
+// never re-selected, and it is purged 24h later. Snowflake records the winner as
+// a loser, permanently, and the win rate is understated with nothing left to
+// reconstruct it from.
+//
+// The fix: stamp conditionally on the is_winner we actually merged. A row that
+// flipped in the window matches no stamp predicate, stays unstamped, and
+// re-exports next run with the corrected flag (the MERGE is idempotent on id).
+describe('exportTable: a winner flip during the export window is not clobbered (#483)', () => {
+  interface BidRow {
+    id: string
+    is_winner: boolean
+    exported_at: string | null
+    attempted_at_utc: string
+  }
+
+  // Store-backed fake: the UPDATE actually evaluates its predicates against the
+  // rows, so a flip is visible to it the way it is in Postgres.
+  function fakeBidStore(rows: BidRow[]) {
+    const supabase = {
+      from() {
+        return {
+          select() {
+            const q = {
+              limit: () => q,
+              eq: () => q,
+              is: () => q,
+              then(resolve: (v: { data: unknown; error: null }) => void) {
+                // Mirrors the real filter: un-exported, non-test. Rows are COPIES:
+                // PostgREST hands back JSON, so the export holds a snapshot taken at
+                // SELECT time while the real row keeps mutating underneath it. That
+                // divergence is the whole bug.
+                resolve({ data: rows.filter((r) => r.exported_at === null).map((r) => ({ ...r })), error: null })
+              },
+            }
+            return q
+          },
+          update(patch: Record<string, unknown>) {
+            const preds: Record<string, unknown> = {}
+            let ids: string[] = []
+            const q = {
+              in: (_c: string, v: string[]) => { ids = v; return q },
+              eq: (c: string, v: unknown) => { preds[c] = v; return q },
+              gte: () => q,
+              lte: () => q,
+              select: () => {
+                const matched = rows.filter(
+                  (r) => ids.includes(r.id) && Object.entries(preds).every(([c, v]) => r[c as keyof BidRow] === v)
+                )
+                for (const r of matched) Object.assign(r, patch)
+                return Promise.resolve({ data: matched.map((r) => ({ id: r.id })), error: null })
+              },
+            }
+            return q
+          },
+        }
+      },
+    } as unknown as SupabaseClient
+    return supabase
+  }
+
+  const BID_FILTER = (q: never) => q
+
+  beforeEach(() => {
+    vi.mocked(executeStatement).mockReset().mockResolvedValue(undefined as never)
+  })
+
+  it('leaves the flipped bid unstamped so it re-exports with the corrected flag', async () => {
+    const rows: BidRow[] = [
+      { id: 'b1', is_winner: false, exported_at: null, attempted_at_utc: '2026-07-10T00:00:00.000Z' },
+    ]
+    const supabase = fakeBidStore(rows)
+
+    // The concurrent finalize commits its winner flip while we are inside the
+    // Snowflake round trip: after the SELECT, before the stamp. This is the race.
+    vi.mocked(executeStatement).mockImplementation(async () => {
+      rows[0].is_winner = true
+      rows[0].exported_at = null
+      return undefined as never
+    })
+
+    await exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, BID_FILTER as never, 1)
+
+    // The stamp must NOT have landed: the value we shipped to Snowflake (false)
+    // is now stale, so this row still owes an export.
+    expect(rows[0].exported_at).toBeNull()
+    expect(rows[0].is_winner).toBe(true)
+  })
+
+  it('stamps normally when nothing flips', async () => {
+    const rows: BidRow[] = [
+      { id: 'b1', is_winner: false, exported_at: null, attempted_at_utc: '2026-07-10T00:00:00.000Z' },
+    ]
+    const supabase = fakeBidStore(rows)
+
+    await exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, BID_FILTER as never, 1)
+
+    expect(rows[0].exported_at).not.toBeNull()
+  })
+
+  it('stamps a row already marked as the winner (nothing can flip it back)', async () => {
+    const rows: BidRow[] = [
+      { id: 'b1', is_winner: true, exported_at: null, attempted_at_utc: '2026-07-10T00:00:00.000Z' },
+    ]
+    const supabase = fakeBidStore(rows)
+
+    await exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, BID_FILTER as never, 1)
+
+    expect(rows[0].exported_at).not.toBeNull()
+  })
+
+  it('refuses to stamp at all if is_winner was dropped from the exported columns', async () => {
+    // The stamp asserts is_winner, so is_winner must be SELECTed. If a future edit
+    // drops it from BID_COLS, every stamp would assert undefined, nothing would ever
+    // be marked exported, and the table would re-export forever while the purge
+    // starved. That must fail loudly, not silently.
+    const rows = [{ id: 'b1', exported_at: null, attempted_at_utc: '2026-07-10T00:00:00.000Z' }]
+    const supabase = fakeBidStore(rows as unknown as BidRow[])
+
+    await expect(
+      exportTable(supabase, CONFIG, 'lead_sighting_bids', COLS, BID_FILTER as never, 1)
+    ).rejects.toThrow(/is_winner/)
+  })
+})
+
 // Both tables are partitioned on a timestamp (execution_started_at_utc /
 // attempted_at_utc), and `id` is not the partition key. A write keyed on id
 // alone therefore cannot be pruned: Postgres fans it out to every monthly
@@ -744,7 +885,7 @@ describe('partition pruning on writes', () => {
               limit(n: number) {
                 const rows =
                   selectCall++ === 0
-                    ? [{ id: 'b0', [BID_PK]: '2026-07-10T03:00:00.000Z' }].slice(0, n)
+                    ? [{ id: 'b0', [BID_PK]: '2026-07-10T03:00:00.000Z', is_winner: false }].slice(0, n)
                     : []
                 const inner = {
                   eq() { return inner },
@@ -763,6 +904,7 @@ describe('partition pruning on writes', () => {
               in: (_c: string, ids: string[]) => { recorder.ids = ids; return q },
               gte: (c: string) => { recorder.gteCol = c; return q },
               lte: (c: string) => { recorder.lteCol = c; return q },
+              eq: () => q,
               select: () => Promise.resolve({ data: [{ id: 'b0' }], error: null }),
             }
             return q
@@ -771,9 +913,12 @@ describe('partition pruning on writes', () => {
       },
     } as unknown as Parameters<typeof exportTable>[0]
 
+    // is_winner is in the real BID_COLS and the exported_at stamp asserts it (#483),
+    // so the fixture carries it too.
     const BID_COLS_MIN = [
       { name: 'id', type: 'varchar' as const },
       { name: BID_PK, type: 'timestamp_ntz' as const },
+      { name: 'is_winner', type: 'boolean' as const },
     ]
     await exportTable(supabase, CONFIG, 'lead_sighting_bids', BID_COLS_MIN, (q) => q.is('exported_at', null))
 
