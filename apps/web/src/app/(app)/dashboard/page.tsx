@@ -11,6 +11,7 @@ import NavLayout from '@/components/NavLayout'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { DegradedBanner } from '@/components/dashboard/DegradedBanner'
 import { formatDatetime } from '@/lib/dates'
+import { OUTCOME_LABELS } from '@/lib/execution-status'
 import { AlertCircle, CheckCircle2, ArrowRight, AlertTriangle, TrendingDown } from 'lucide-react'
 
 type Window = 7 | 14 | 30
@@ -383,8 +384,8 @@ export default function DashboardPage() {
           <div className="mb-4 flex items-center justify-between">
             <p className="text-base font-semibold text-graphite">Execution volume</p>
             <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-p-blue-dark" />Completed</span>
-              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-400" />Degraded</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-p-blue-dark" />{OUTCOME_LABELS.completed}</span>
+              <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-400" />{OUTCOME_LABELS.degraded}</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-slate-400" />Exited</span>
               <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-400" />Failed</span>
             </div>
@@ -430,10 +431,10 @@ export default function DashboardPage() {
                   <tr>
                     <th className="px-5 py-2.5 text-left text-xs font-semibold text-gray-500">Workflow</th>
                     <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Runs</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Completed</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Successful</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Degraded</th>
-                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">Failed</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">{OUTCOME_LABELS.completed}</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">{OUTCOME_LABELS.successful}</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">{OUTCOME_LABELS.degraded}</th>
+                    <th className="px-3 py-2.5 text-right text-xs font-semibold text-gray-500">{OUTCOME_LABELS.failed}</th>
                     <th className="px-5 py-2.5 text-right text-xs font-semibold text-gray-500">Est. cost</th>
                   </tr>
                 </thead>

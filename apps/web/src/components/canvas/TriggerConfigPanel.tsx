@@ -8,6 +8,7 @@ import type { WebhookEndpoint } from '@/lib/api'
 import EndpointCreateForm from '@/components/forms/EndpointCreateForm'
 import SourceCreateForm from '@/components/forms/SourceCreateForm'
 import RailResizeHandle from './RailResizeHandle'
+import { OUTCOME_LABELS } from '@/lib/execution-status'
 
 interface Source {
   name: string
@@ -300,7 +301,7 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
             <div className="group pointer-events-auto relative">
               <HelpCircle className="h-3.5 w-3.5 text-gray-300 hover:text-gray-500 cursor-help" />
               <div className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-2 w-64 -translate-x-1/2 rounded-lg border border-gray-200 bg-white p-2.5 text-xs text-gray-600 opacity-0 shadow-md transition-opacity group-hover:opacity-100">
-                Runs that end on one of these nodes are marked <span className="font-medium">Successful</span>. Clean runs that end elsewhere are marked <span className="font-medium">Completed</span>. Leave empty and no runs get the Successful label.
+                Runs that end on one of these nodes are marked <span className="font-medium">{OUTCOME_LABELS.successful}</span>. Clean runs that end elsewhere are marked <span className="font-medium">{OUTCOME_LABELS.completed}</span>. Leave empty and no runs get the {OUTCOME_LABELS.successful} label.
               </div>
             </div>
           </div>

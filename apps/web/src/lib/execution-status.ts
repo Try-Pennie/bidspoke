@@ -28,6 +28,19 @@ export type ExecutionDisplayStatus =
 
 export const STALL_THRESHOLD_MS = 60_000
 
+/**
+ * User-facing labels for the execution outcome taxonomy, in one place so every
+ * surface says the same word for the same state. The executions filter row is a
+ * fixed 288px panel and all five tabs must fit on one line, which is what forces
+ * the short forms ('Success', 'Done') over the spelled-out status names.
+ */
+export const OUTCOME_LABELS = {
+  successful: 'Success',
+  completed: 'Done',
+  degraded: 'Degraded',
+  failed: 'Failed',
+} as const
+
 const KNOWN_STATUSES = new Set<string>([
   'completed',
   'degraded',
