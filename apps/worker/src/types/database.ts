@@ -24,6 +24,7 @@ export type Database = {
           exported_at: string | null
           http_status: number | null
           id: string
+          is_sandbox: boolean
           is_test: boolean
           node_namespace: string
           offer_count: number
@@ -45,6 +46,7 @@ export type Database = {
           exported_at?: string | null
           http_status?: number | null
           id?: string
+          is_sandbox?: boolean
           is_test?: boolean
           node_namespace: string
           offer_count?: number
@@ -66,6 +68,7 @@ export type Database = {
           exported_at?: string | null
           http_status?: number | null
           id?: string
+          is_sandbox?: boolean
           is_test?: boolean
           node_namespace?: string
           offer_count?: number
