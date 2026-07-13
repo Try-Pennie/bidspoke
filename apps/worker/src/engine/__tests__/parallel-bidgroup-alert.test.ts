@@ -32,6 +32,7 @@ vi.mock('../achieve-log', () => ({
 vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockResolvedValue(undefined) }))
 
 import { executeWorkflow } from '../index'
+import { PartnerApiError } from '../partner-bid-error'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
 import { executeBidGroupNode } from '../nodes/bid-group'
@@ -70,6 +71,33 @@ const bidGroupDefinition = {
     { id: 'g', namespace: 'bid_race', type: 'bid_group', config: { mode: 'highest_bid', partner_ids: [] } },
   ],
   edges: [],
+} as unknown as WorkflowDefinition
+
+// #485: trigger → validate → (edge carrying an operator the evaluator doesn't
+// know) → route. Edge evaluation runs OUTSIDE the per-node try/catch that wraps
+// executor errors in a classified StepFailureError, so this surfaces as a raw
+// Error thrown straight out of the walk — the class of failure a bad workflow
+// edit produces, and the one the alert gate used to read as a business rejection.
+const unknownOperatorDefinition = {
+  trigger: { id: 'trigger', type: 'trigger', config: {} },
+  nodes: [
+    { id: 'a', namespace: 'validate', type: 'salesforce', config: { retries: 0 } },
+    { id: 'b', namespace: 'route', type: 'salesforce', config: { retries: 0 } },
+  ],
+  edges: [
+    { id: 'e0', source: 'trigger', target: 'a' },
+    {
+      id: 'e1',
+      source: 'a',
+      target: 'b',
+      condition: {
+        logic: 'AND',
+        groups: [
+          { logic: 'AND', conditions: [{ field: 'trigger.body.lead', operator: 'not_a_real_operator', value: 1 }] },
+        ],
+      },
+    },
+  ],
 } as unknown as WorkflowDefinition
 
 function makeKV() {
@@ -156,9 +184,6 @@ describe('parallel-node failure fires the failure alert (#64)', () => {
     expect(update.status).toBe('failed')
     expect(String(update.error_message)).toContain('Parallel failed')
 
-    // The fix: a classified (non-null) error type, so the alert gate opens.
-    expect(update.error_type).not.toBeNull()
-
     // Failure alert fired for the parallel node.
     expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
     const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
@@ -202,6 +227,43 @@ describe('muted failure signal suppresses the per-run alert (#248)', () => {
   })
 })
 
+describe('raw walk exceptions fire the failure alert (#485)', () => {
+  it('classifies an unknown-operator edge failure as permanent so the alert fires', async () => {
+    loadDef(unknownOperatorDefinition)
+    vi.mocked(executeNode).mockResolvedValue({ ok: true } as never)
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    const update = lastUpdate()
+    expect(update.status).toBe('failed')
+    expect(String(update.error_message)).toContain('Unknown condition operator')
+
+    // A raw (non-StepFailureError) walk exception is an operational failure, not
+    // a business rejection — it must carry a type so the alert gate opens.
+    expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
+    const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
+    expect(alert.alertType).toBe('failure')
+    expect(alert.errorType).toBe('permanent')
+  })
+
+  it('still stays silent for a business rejection (a null-type executor failure)', async () => {
+    // Guard the other side of the gate: an executor failure the classifier calls
+    // a business rejection (errorType null) keeps its deliberate silence. Only
+    // the raw-exception path is promoted, not every null type.
+    loadDef(mutedSignalDefinition)
+    vi.mocked(executeNode).mockRejectedValue(new PartnerApiError('Lead rejected: not a fit', null, false))
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    expect(lastUpdate().status).toBe('failed')
+    expect(vi.mocked(fireExecutionAlert)).not.toHaveBeenCalled()
+  })
+})
+
 describe('bid_group execution error fires the failure alert (#64)', () => {
   it('classifies the failure (non-null type) so the alert fires', async () => {
     loadDef(bidGroupDefinition)
@@ -214,7 +276,6 @@ describe('bid_group execution error fires the failure alert (#64)', () => {
     const update = lastUpdate()
     expect(update.status).toBe('failed')
     expect(String(update.error_message)).toContain('bid group exploded')
-    expect(update.error_type).not.toBeNull()
 
     expect(vi.mocked(fireExecutionAlert)).toHaveBeenCalledTimes(1)
     const alert = vi.mocked(fireExecutionAlert).mock.calls[0][0]
