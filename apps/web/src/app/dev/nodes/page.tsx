@@ -9,7 +9,7 @@
 
 import { ReactFlow, ReactFlowProvider, Background, Panel } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { nodeTypes } from '@/components/canvas/WorkflowCanvas'
+import { nodeTypes } from '@/components/canvas/nodes/registry'
 import { buildPreviewNodes, PREVIEW_STATES } from '@/lib/preview-nodes'
 
 export default function NodePreviewPage() {

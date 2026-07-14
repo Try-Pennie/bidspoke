@@ -67,7 +67,8 @@ const CASES: { type: string; marker: RegExp | null }[] = [
   { type: 'exit', marker: /Response body/ },
   { type: 'transform', marker: /Field mappings/ },
   { type: 'webhook', marker: /^URL$/ },
-  { type: 'partner_bid', marker: /Select a partner/ },
+  // No partner_bid: the node type is retired (#645), so it has no config form.
+  // It still renders on the canvas as a generic card, covered by nodes/registry.test.ts.
   { type: 'bid_group', marker: null },
   { type: 'constants', marker: /Workflow constants/ },
   { type: 'salesforce', marker: /SObject API name/ },

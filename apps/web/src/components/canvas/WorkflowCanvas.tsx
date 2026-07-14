@@ -24,28 +24,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
-import { FilterNode } from './nodes/FilterNode'
-import { BranchNode } from './nodes/BranchNode'
-import { BranchEndNode } from './nodes/BranchEndNode'
-import { CodeNode } from './nodes/CodeNode'
-import { ResponseNode } from './nodes/ResponseNode'
-import { ExitNode } from './nodes/ExitNode'
-import { TriggerNode } from './nodes/TriggerNode'
-import { GenericNode } from './nodes/GenericNode'
-import { BidGroupNode } from './nodes/BidGroupNode'
-import { TransformNode } from './nodes/TransformNode'
-import { IntegrationNode } from './nodes/IntegrationNode'
-import { PartnerBidNode } from './nodes/PartnerBidNode'
-import { ParallelNode } from './nodes/ParallelNode'
-import { ParallelEndNode } from './nodes/ParallelEndNode'
-import { ConstantsNode } from './nodes/ConstantsNode'
-import { SalesforceNode } from './nodes/SalesforceNode'
-import { DataStoreNode } from './nodes/DataStoreNode'
-import { LatencyGateNode } from './nodes/LatencyGateNode'
-import { AchieveOffersNode } from './nodes/AchieveOffersNode'
-import { RegionNode } from './nodes/RegionNode'
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
-import { PartnersProvider } from './nodes/partners-context'
 import { computeWarningNodeIds } from '@/lib/minimap-warnings'
 import { applyValidationToNodes, validationSignature } from '@/lib/node-warning'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
@@ -68,7 +47,7 @@ import { migrateParallelEdges, migrateDefinition } from './migrate'
 import ExecutionListPanel from './ExecutionListPanel'
 import TestRunPanel from './TestRunPanel'
 import TriggerConfigPanel from './TriggerConfigPanel'
-import { withNodeBadges } from './nodes/withNodeBadges'
+import { nodeTypes } from './nodes/registry'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
@@ -87,39 +66,6 @@ import {
 } from '@/lib/rename-step-references'
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
 
-// Defined outside component to prevent re-render on each render
-// Source registry. Every node type a workflow can render MUST be listed here, so
-// this is the single chokepoint where the timeout-warning badge is attached —
-// withNodeBadges wraps each entry below, meaning a newly added node type gets
-// the corner badges (timeout warning, success, note) automatically with no
-// per-card wiring.
-const baseNodeTypes = {
-  trigger: TriggerNode,
-  filter: FilterNode,
-  branch: BranchNode,
-  branch_end: BranchEndNode,
-  code: CodeNode,
-  response: ResponseNode,
-  exit: ExitNode,
-  webhook: IntegrationNode,
-  partner_bid: PartnerBidNode,
-  transform: TransformNode,
-  parallel: ParallelNode,
-  parallel_end: ParallelEndNode,
-  bid_group: BidGroupNode,
-  constants: ConstantsNode,
-  salesforce: SalesforceNode,
-  data_store: DataStoreNode,
-  latency_gate: LatencyGateNode,
-  achieve_offers: AchieveOffersNode,
-  region: RegionNode,
-}
-
-// Exported so the dev node-state preview page (/dev/nodes) renders nodes through
-// the exact same registry + badge HOC the canvas uses (#227).
-export const nodeTypes: NodeTypes = Object.fromEntries(
-  Object.entries(baseNodeTypes).map(([type, Component]) => [type, withNodeBadges(Component)]),
-)
 
 const edgeTypes = {
   converge: ConvergeEdge,
@@ -3890,7 +3836,6 @@ export default function WorkflowCanvas({
   return (
     <ReactFlowProvider>
       <TimeoutSuggestionsProvider workflowId={workflow.id}>
-      <PartnersProvider>
       <CanvasInner
         workflow={workflow}
         mode={mode}
@@ -3908,7 +3853,6 @@ export default function WorkflowCanvas({
         onSelectExecution={onSelectExecution}
         focusNodeId={focusNodeId}
       />
-      </PartnersProvider>
       </TimeoutSuggestionsProvider>
     </ReactFlowProvider>
   )

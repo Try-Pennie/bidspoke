@@ -4,8 +4,9 @@ import type { Node } from '@xyflow/react'
 // visual states so canvas styling (warning glow, corner badges, execution rings)
 // can be checked in a browser / Playwright without auth or live data.
 
+// partner_bid is omitted: retired, and it now renders as the generic card (#645).
 export const PREVIEW_TYPES = [
-  'trigger', 'filter', 'branch', 'code', 'webhook', 'partner_bid', 'transform',
+  'trigger', 'filter', 'branch', 'code', 'webhook', 'transform',
   'parallel', 'bid_group', 'constants', 'salesforce', 'data_store', 'latency_gate',
   'achieve_offers', 'response', 'exit', 'branch_end', 'parallel_end',
 ] as const
