@@ -160,6 +160,14 @@ export interface ExecutionContext {
    * engine/shadow.ts and docs/engine-cutover-scope.md section 3.3.
    */
   shadow_mode?: 'off' | 'dry_run' | 'stand_in'
+  /**
+   * True when this run came from the in-app Test Runner. Alerts must stay silent for
+   * these: a test run against a live partner can genuinely trip a circuit breaker, and
+   * paging ops for it is a false alarm (#547). The engine's own failure/duration/
+   * dead-letter alerts already gate on the same flag via `options.isTest`; this carries
+   * it to node executors, which only ever see the context.
+   */
+  isTest?: boolean
 }
 
 export interface StepOutput {

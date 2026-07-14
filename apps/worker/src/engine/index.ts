@@ -302,6 +302,9 @@ export async function executeWorkflow(
   const ctx = buildContext(payload, source, workflowId, traceId, envVars, org_id, executionId, env.APP_URL, sightingId)
   if (options.codeBundleName) ctx.codeBundleName = options.codeBundleName
   if (options.shadowMode) ctx.shadow_mode = options.shadowMode
+  // Node executors only ever see the context, so the test flag has to ride along on it.
+  // The circuit-breaker trip alert needs it to stay silent on Test Runner runs (#547).
+  if (options.isTest) ctx.isTest = true
 
   // Resume re-runs the workflow from the entry node — no completed steps are
   // pre-loaded and nothing is skipped (it behaves like a fresh run, same as
