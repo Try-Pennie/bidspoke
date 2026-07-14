@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Database } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 type DataStoreOp = 'set' | 'get' | 'delete'
 
@@ -24,7 +25,7 @@ export function DataStoreNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-cyan-50 border-b border-cyan-100 px-3 py-2">
-        <Database className="h-4 w-4 text-cyan-500" />
+        <Database className={`h-4 w-4 ${NODE_TYPE_COLOR.data_store.icon}`} />
         <span className="font-mono text-xs font-bold tracking-wide text-cyan-700">DATA STORE</span>
         <span className="ml-auto rounded bg-cyan-100 px-1.5 py-0.5 text-xs text-cyan-700">{operation}</span>
       </div>

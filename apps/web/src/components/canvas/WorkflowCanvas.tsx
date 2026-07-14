@@ -25,8 +25,14 @@ import {
 import '@xyflow/react/dist/style.css'
 
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
-import { computeWarningNodeIds } from '@/lib/minimap-warnings'
-import { applyValidationToNodes, validationSignature } from '@/lib/node-warning'
+import { computeWarningVariants } from '@/lib/minimap-warnings'
+import { minimapNodeColor } from './nodes/node-colors'
+import {
+  NODE_WARNING_COLOR,
+  NODE_WARNING_RING,
+  applyValidationToNodes,
+  validationSignature,
+} from '@/lib/node-warning'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
@@ -1043,17 +1049,18 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     [validationErrors, wiringErrors]
   )
 
-  // Node ids to highlight on the minimap — unconfigured (validation) plus
-  // timeout-warning nodes — mirroring the on-canvas glow so the overview map
-  // lights up exactly the nodes that need attention, findable when zoomed out (#224).
+  // Nodes to highlight on the minimap and WHY — unconfigured (validation) or
+  // timeout-warning — mirroring the on-canvas glow so the overview map lights up
+  // exactly the nodes that need attention, findable when zoomed out (#224), in the
+  // same hue the glow uses for that condition (#656).
   const timeoutSuggestions = useAllTimeoutSuggestions()
-  const warningNodeIds = useMemo(
-    () => computeWarningNodeIds(nodes, new Set(flaggedNodes.keys()), timeoutSuggestions),
+  const warningVariants = useMemo(
+    () => computeWarningVariants(nodes, new Set(flaggedNodes.keys()), timeoutSuggestions),
     [nodes, flaggedNodes, timeoutSuggestions]
   )
   // When many nodes warn at once, drop the glow's pulse (keep a static glow) so a
   // busy workflow isn't a wall of competing motion (#228).
-  const calmWarnings = shouldCalmWarnings(warningNodeIds.size)
+  const calmWarnings = shouldCalmWarnings(warningVariants.size)
 
   // Translucent backdrops behind each branch / parallel cluster. Recomputed
   // whenever nodes or edges change so they track positions / membership in
@@ -3410,28 +3417,27 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             )}
             <MiniMap
               nodeColor={(n) => {
-                // Nodes that need attention (unconfigured or timeout-warning) get a
-                // distinct red so they're findable on the overview map even when
-                // zoomed out — wins over the type color and the unreachable gray (#224).
-                if (warningNodeIds.has(n.id)) return '#dc2626' // red-600
+                // Nodes that need attention get the warning hue so they're findable
+                // when zoomed out (#224), and the hue says WHICH warning (#656):
+                // amber = unconfigured, violet = timeout too low, same as the glow.
+                // Wins over the type color and the unreachable gray.
+                const variant = warningVariants.get(n.id)
+                if (variant) return NODE_WARNING_COLOR[variant]
                 const data = n.data as unknown as CanvasNodeData | undefined
                 if (data?.isReachable === false) return '#d1d5db' // gray-300
-                const colorMap: Record<string, string> = {
-                  trigger:        '#439FE1', // indigo
-                  filter:         '#3b82f6', // blue
-                  branch:         '#a855f7', // purple
-                  code:           '#f59e0b', // amber
-                  response:       '#10b981', // green
-                  exit:           '#ef4444', // red
-                  transform:      '#f97316', // orange
-                  webhook:        '#14b8a6', // teal
-                  partner_bid:    '#0ea5e9', // sky
-                  parallel:       '#64748b', // slate
-                  parallel_end:   '#64748b', // slate
-                  salesforce:     '#3b82f6', // blue
-                }
-                return colorMap[n.type ?? ''] ?? '#9ca3af'
+                return minimapNodeColor(n.type ?? '')
               }}
+              // The fill alone can't carry the warning: the type palette already
+              // owns both warning hues (code IS amber, achieve_offers IS violet),
+              // so an unconfigured code node would look exactly like a healthy one
+              // — the common case, since an empty code node is the canonical
+              // unconfigured node. The ring is what separates them. Healthy nodes
+              // get a transparent stroke, so only warnings are ringed.
+              nodeStrokeColor={(n) => {
+                const variant = warningVariants.get(n.id)
+                return variant ? NODE_WARNING_RING[variant] : 'transparent'
+              }}
+              nodeStrokeWidth={4}
               maskColor="rgba(243,244,246,0.7)"
             />
           </ReactFlow>

@@ -4,6 +4,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { ArrowRight } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function ResponseNode({ id, data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -36,7 +37,7 @@ export function ResponseNode({ id, data, selected }: NodeProps) {
       {continueAfter && <Handle type="source" position={Position.Bottom} id="output" />}
 
       <div className="flex items-center gap-2 rounded-t-lg bg-green-100 border-b border-green-200 px-3 py-2">
-        <ArrowRight className="h-4 w-4 text-green-600" />
+        <ArrowRight className={`h-4 w-4 ${NODE_TYPE_COLOR.response.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-green-700">Response</span>
       </div>
       <div className="px-3 py-2">

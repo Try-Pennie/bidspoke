@@ -6,6 +6,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { GitMerge } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 interface ParallelChildResult {
   namespace: string
@@ -56,7 +57,7 @@ export function ParallelEndNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-beige border-b border-gray-100 px-3 py-2">
-        <GitMerge className="h-4 w-4 text-slate-500" />
+        <GitMerge className={`h-4 w-4 ${NODE_TYPE_COLOR.parallel_end.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Parallel End</span>
       </div>
 
