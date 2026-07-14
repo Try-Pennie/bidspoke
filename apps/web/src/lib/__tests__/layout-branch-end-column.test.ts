@@ -105,3 +105,54 @@ describe('branch_end column pinning (real Main Flow)', () => {
     expect(find(out, 'branch_end_3').position.x).toBe(find(out, 'engine_ok_branch').position.x)
   })
 })
+
+// #639 asked whether parallel_end suffers the stranding 96d54f5 fixed for branch_end.
+// Verified answer: NO, it does not reproduce, and these two tests are honest about the
+// fact that they do not prove otherwise.
+//
+// The stranding needs the paired START node to be moved by the chain-straightening pass
+// AFTER the end's x was pinned to it (`ownPos.x = branchPos.x`), because childrenOf()
+// excludes end nodes, so the chain moves and the end is left behind. That happens to
+// `engine_ok_branch` in the real Main Flow (branch_end_3 lands 3,814px away without the
+// fix). Nothing moves `parallel_1` after its pin, so its end never strands.
+//
+// Mutation-checked three ways, all of which leave parallel_end_1 correctly placed:
+// deleting the post-straightening re-pin, deleting BOTH pins, and a faithful synthetic
+// parallel block (child-N handles + config.children, asymmetric child chains).
+// The same mutations DO strand branch_end_3, which is what the tests above catch.
+//
+// So these two assertions are currently VACUOUS with respect to the pinning code: they
+// pass with it deleted. They are kept as a forward-looking invariant guard (an end's x
+// is derived, so it must track its start's column) and to hold the line if a future
+// layout change starts moving parallel nodes late. They are NOT evidence the fix was
+// needed here. The re-pin does already cover parallel_end by construction: `endNodes`
+// filters on both types.
+describe('parallel_end column pinning (real Main Flow)', () => {
+  it('places every parallel_end in its own parallel column', () => {
+    const { nodes, edges } = buildCanvas()
+    const out = layoutWorkflow(nodes, edges)
+
+    const stranded: string[] = []
+    let checked = 0
+    for (const n of out) {
+      const pairId = (n.data as { _pairId?: string })._pairId
+      if (n.type !== 'parallel_end' || !pairId) continue
+      const parallel = out.find((p) => p.id === pairId)
+      if (!parallel) continue
+      checked++
+      if (n.position.x !== parallel.position.x) {
+        const ns = (n.data as { namespace?: string }).namespace
+        stranded.push(`${ns}: end x=${n.position.x} but parallel x=${parallel.position.x}`)
+      }
+    }
+    // Guard against the assertion going vacuous if the fixture ever loses its parallel.
+    expect(checked).toBeGreaterThan(0)
+    expect(stranded).toEqual([])
+  })
+
+  it('puts parallel_end_1 in the parallel_1 column', () => {
+    const { nodes, edges } = buildCanvas()
+    const out = layoutWorkflow(nodes, edges)
+    expect(find(out, 'parallel_end_1').position.x).toBe(find(out, 'parallel_1').position.x)
+  })
+})
