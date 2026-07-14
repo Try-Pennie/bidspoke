@@ -45,6 +45,7 @@ import { LatencyGateNode } from './nodes/LatencyGateNode'
 import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
+import { PartnersProvider } from './nodes/partners-context'
 import { computeWarningNodeIds } from '@/lib/minimap-warnings'
 import { applyValidationToNodes, validationSignature } from '@/lib/node-warning'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
@@ -3889,6 +3890,7 @@ export default function WorkflowCanvas({
   return (
     <ReactFlowProvider>
       <TimeoutSuggestionsProvider workflowId={workflow.id}>
+      <PartnersProvider>
       <CanvasInner
         workflow={workflow}
         mode={mode}
@@ -3906,6 +3908,7 @@ export default function WorkflowCanvas({
         onSelectExecution={onSelectExecution}
         focusNodeId={focusNodeId}
       />
+      </PartnersProvider>
       </TimeoutSuggestionsProvider>
     </ReactFlowProvider>
   )

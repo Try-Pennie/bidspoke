@@ -16,6 +16,10 @@ export function IntegrationNode({ data, selected }: NodeProps) {
   const service = (config.service as string | undefined) ?? 'custom'
   const method = ((config.method as string | undefined) ?? 'POST').toUpperCase()
   const url = (config.url as string | undefined) ?? ''
+  // service_label is the name the USER gave this integration (the "Service name"
+  // field, editable for custom services). It is a name, not a claim about what
+  // the node sends, so the engine has no reason to read it. See the display-only
+  // allowlist in node-card-config-guard.ts (#645).
   const serviceLabel = (config.service_label as string | undefined) || SERVICE_LABELS[service] || service
 
   let statusBadge: string | null = null

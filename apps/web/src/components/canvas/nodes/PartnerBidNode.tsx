@@ -5,6 +5,8 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { DollarSign } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { partnerCardName } from '@/lib/partner-card-name'
+import { useCanvasPartners } from './partners-context'
 
 interface PartnerBidOutput {
   partner: string
@@ -17,7 +19,14 @@ interface PartnerBidOutput {
 export function PartnerBidNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
 
-  const partnerName = (config.partner_name as string | undefined) ?? (config.partner_id ? '…' : null)
+  // Resolved live from the partner list by id, the same way the engine resolves
+  // it. Never from a name copied into config, which goes stale on rename (#645).
+  const { byId, loaded } = useCanvasPartners()
+  const partner = partnerCardName({
+    partnerId: config.partner_id as string | undefined,
+    partners: byId,
+    loaded,
+  })
 
   let resultLine: { text: string; tone: 'green' | 'gray' | 'red' } | null = null
   if (executionStep?.output && typeof executionStep.output === 'object') {
@@ -56,10 +65,14 @@ export function PartnerBidNode({ data, selected }: NodeProps) {
           }`}>
             {resultLine.text}
           </p>
-        ) : partnerName ? (
-          <p className="mt-0.5 truncate text-xs text-slate-400">{partnerName}</p>
         ) : (
-          <p className="mt-0.5 truncate text-xs text-amber-500">No partner selected</p>
+          <p
+            className={`mt-0.5 truncate text-xs ${
+              partner.tone === 'error' ? 'text-amber-500' : 'text-slate-400'
+            }`}
+          >
+            {partner.text}
+          </p>
         )}
       </div>
 
