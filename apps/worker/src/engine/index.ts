@@ -693,7 +693,7 @@ export async function executeWorkflow(
             execution_id: executionId,
             attempted_at_utc: startedAtDate,
             is_test: false,
-          })) {
+          }, definition.nodes)) {
             ctx.pendingBidWrites ??= []
             ctx.pendingBidWrites.push(recordBidAttempt(supabase, bid, outcomeDeps))
           }
