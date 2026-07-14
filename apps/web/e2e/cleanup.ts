@@ -37,3 +37,36 @@ export function isDeletableTestWorkflow(wf: WorkflowRow, e2eEmail: string): bool
   if (!wf.updated_by_email || wf.updated_by_email !== e2eEmail) return false
   return TEST_NAME.test(wf.name ?? '')
 }
+
+/** The workflows API, narrowed to what the sweep needs, so it can be tested without a network. */
+export interface WorkflowApi {
+  list: () => Promise<WorkflowRow[]>
+  /** Resolves true when the workflow is gone. */
+  remove: (id: string) => Promise<boolean>
+}
+
+/**
+ * Delete every test workflow the API can see, and NOTHING else.
+ *
+ * Throws if the list fails or if any delete fails. That is the point: the cleanup
+ * this replaces swallowed its errors, so runs went green while leaving rows in the
+ * production org and nobody found out. A teardown that cannot clean up must say so.
+ */
+export async function sweepTestWorkflows(
+  api: WorkflowApi,
+  e2eEmail: string,
+): Promise<{ deleted: number }> {
+  const all = await api.list()
+  const doomed = all.filter((w) => isDeletableTestWorkflow(w, e2eEmail))
+
+  const failed: string[] = []
+  for (const w of doomed) {
+    const ok = await api.remove(w.id!)
+    if (!ok) failed.push(w.name ?? w.id!)
+  }
+
+  if (failed.length > 0) {
+    throw new Error(`E2E teardown could not delete ${failed.length} test workflow(s): ${failed.join(', ')}`)
+  }
+  return { deleted: doomed.length }
+}

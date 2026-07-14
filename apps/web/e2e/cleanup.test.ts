@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isDeletableTestWorkflow, TEST_WORKFLOW_NAME } from './cleanup'
+import { isDeletableTestWorkflow, sweepTestWorkflows, TEST_WORKFLOW_NAME, type WorkflowRow } from './cleanup'
 
 /**
  * The e2e test user shares an organization with Main Flow, Engine Bidding and
@@ -62,5 +62,60 @@ describe('isDeletableTestWorkflow', () => {
   it('REFUSES a row with no id, so a malformed response cannot widen a delete', () => {
     expect(isDeletableTestWorkflow(wf({ id: undefined }), E2E)).toBe(false)
     expect(isDeletableTestWorkflow(wf({ id: '' }), E2E)).toBe(false)
+  })
+})
+
+describe('sweepTestWorkflows', () => {
+  const rows: WorkflowRow[] = [
+    { id: 'w1', name: 'Main Flow', updated_by_email: 'dwright@trypennie.com' },
+    { id: 'w2', name: 'E2E-123', updated_by_email: E2E },
+    { id: 'w3', name: 'Untitled Workflow', updated_by_email: E2E },
+  ]
+
+  it('deletes only the test workflows, never a production one', async () => {
+    const removed: string[] = []
+    const res = await sweepTestWorkflows(
+      { list: async () => rows, remove: async (id) => { removed.push(id); return true } },
+      E2E,
+    )
+    expect(removed).toEqual(['w2', 'w3'])
+    expect(removed).not.toContain('w1')
+    expect(res.deleted).toBe(2)
+  })
+
+  it('does nothing when there is nothing to clean', async () => {
+    const removed: string[] = []
+    const res = await sweepTestWorkflows(
+      { list: async () => [rows[0]], remove: async (id) => { removed.push(id); return true } },
+      E2E,
+    )
+    expect(removed).toEqual([])
+    expect(res.deleted).toBe(0)
+  })
+
+  it('THROWS when a delete fails, instead of leaking the row silently', async () => {
+    // The old cleanup swallowed failures, so a run went green while leaving rows
+    // in the production org. Silence is the bug; this must be loud.
+    await expect(
+      sweepTestWorkflows({ list: async () => rows, remove: async () => false }, E2E),
+    ).rejects.toThrow(/could not delete/i)
+  })
+
+  it('THROWS when listing fails, rather than reporting a clean sweep', async () => {
+    await expect(
+      sweepTestWorkflows(
+        { list: async () => { throw new Error('worker down') }, remove: async () => true },
+        E2E,
+      ),
+    ).rejects.toThrow(/worker down/)
+  })
+
+  it('still reports the rows it could not delete', async () => {
+    await expect(
+      sweepTestWorkflows(
+        { list: async () => rows, remove: async (id) => id !== 'w3' },
+        E2E,
+      ),
+    ).rejects.toThrow(/Untitled Workflow/)
   })
 })

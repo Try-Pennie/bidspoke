@@ -2,21 +2,18 @@
  * Playwright global teardown: removes the workflows the suite created.
  *
  * Runs once after ALL specs, whatever they did and whichever of them failed, so a
- * crashed or interrupted run cannot leak rows the way the old per-file cleanup
- * did. It talks to the API and deletes by id, rather than clicking Delete on
- * whatever the workflows list happens to be showing.
+ * crashed or interrupted run cannot leak rows the way the old per-file cleanup did.
+ * It talks to the API and deletes by id, rather than clicking Delete on whatever
+ * the workflows list happens to be showing.
  *
- * Every candidate must clear isDeletableTestWorkflow (see cleanup.ts): the e2e user
- * shares an organization with Main Flow and friends, so RLS will not save us if
- * this widens by accident.
- *
- * It fails LOUDLY. A cleanup that swallows its errors is how these rows ended up in
- * production in the first place: the run went green and nobody knew.
+ * The decision about what may be deleted, and the loud failure when it cannot, both
+ * live in cleanup.ts, where they are unit tested. This file is only the wiring: real
+ * auth, real fetch.
  */
 import { createClient } from '@supabase/supabase-js'
 import * as dotenv from 'dotenv'
 import * as path from 'path'
-import { isDeletableTestWorkflow, type WorkflowRow } from './cleanup'
+import { sweepTestWorkflows, type WorkflowRow } from './cleanup'
 
 dotenv.config({ path: path.resolve(__dirname, '../.env.test') })
 
@@ -35,27 +32,20 @@ export default async function globalTeardown() {
 
   const auth = { Authorization: `Bearer ${data.session.access_token}` }
 
-  const listRes = await fetch(`${WORKER_URL}/api/workflows`, { headers: auth })
-  if (!listRes.ok) throw new Error(`E2E teardown: listing workflows failed (${listRes.status})`)
-  const all = (await listRes.json()) as WorkflowRow[]
+  const { deleted } = await sweepTestWorkflows(
+    {
+      list: async () => {
+        const res = await fetch(`${WORKER_URL}/api/workflows`, { headers: auth })
+        if (!res.ok) throw new Error(`E2E teardown: listing workflows failed (${res.status})`)
+        return (await res.json()) as WorkflowRow[]
+      },
+      remove: async (id) => {
+        const res = await fetch(`${WORKER_URL}/api/workflows/${id}`, { method: 'DELETE', headers: auth })
+        return res.ok
+      },
+    },
+    email,
+  )
 
-  const doomed = all.filter((w) => isDeletableTestWorkflow(w, email))
-  if (doomed.length === 0) {
-    console.log('  [ok] E2E teardown: nothing to clean up')
-    return
-  }
-
-  const failed: string[] = []
-  for (const w of doomed) {
-    const res = await fetch(`${WORKER_URL}/api/workflows/${w.id}`, { method: 'DELETE', headers: auth })
-    if (!res.ok) failed.push(`${w.name ?? w.id} (${res.status})`)
-  }
-
-  const deleted = doomed.length - failed.length
-  console.log(`  [ok] E2E teardown: deleted ${deleted}/${doomed.length} test workflow(s)`)
-
-  if (failed.length > 0) {
-    // Loud on purpose: a silent failure here leaks rows into the production org.
-    throw new Error(`E2E teardown could not delete ${failed.length} test workflow(s): ${failed.join(', ')}`)
-  }
+  console.log(`  [ok] E2E teardown: deleted ${deleted} test workflow(s)`)
 }
