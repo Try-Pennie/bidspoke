@@ -219,6 +219,10 @@ export interface CanvasNodeData {
   executionStep?: ExecutionStep | null
   // true = node is attached and missing required config; shown as amber ring in edit mode
   hasError?: boolean
+  // Why the node is flagged, e.g. 'No script written'. Surfaced as the
+  // ConfigWarningBadge tooltip so the reason is readable without opening the
+  // node (#563). Set alongside hasError from the validation pass.
+  errorMessage?: string
   // false = not reachable from the trigger via edges; dimmed on the canvas.
   // undefined/true = part of the live flow. Canvas-only bookkeeping.
   isReachable?: boolean

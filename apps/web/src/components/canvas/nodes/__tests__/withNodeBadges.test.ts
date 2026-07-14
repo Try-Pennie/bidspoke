@@ -5,6 +5,7 @@ import { TimeoutWarningBadge } from '../TimeoutWarningBadge'
 import { NodeWarningGlow } from '../NodeWarningGlow'
 import { SuccessBadge } from '../SuccessBadge'
 import { NoteBadge } from '../NoteBadge'
+import { ConfigWarningBadge } from '../ConfigWarningBadge'
 
 // The web test suite runs in a node environment with no DOM, but a function
 // component is just a function returning React element objects — so we can call
@@ -12,8 +13,8 @@ import { NoteBadge } from '../NoteBadge'
 // node element plus the conditional badges) without rendering.
 //
 // Children order from the HOC: [node, timeoutBadge, successBadge, noteBadge,
-// warningGlow]. Each badge slot is `false` when that badge is skipped for the
-// type.
+// configBadge, warningGlow]. Each badge slot is `false` when that badge is
+// skipped for the type.
 
 const FakeNode = () => null
 
@@ -31,7 +32,8 @@ function callWrapped(
     timeoutBadge: children[1],
     successBadge: children[2],
     noteBadge: children[3],
-    warningGlow: children[4],
+    configBadge: children[4],
+    warningGlow: children[5],
   }
 }
 
@@ -106,6 +108,22 @@ describe('withNodeBadges', () => {
     (type) => {
       const { warningGlow } = callWrapped(type, {}, 'x', { hasError: true })
       expect(warningGlow).toBe(false)
+    },
+  )
+
+  it('appends the config warning badge carrying the validation reason (#563)', () => {
+    const { configBadge } = callWrapped('code', {}, 'cn', { hasError: true, errorMessage: 'No script written' })
+    const el = configBadge as ReactElement
+    expect(el.type).toBe(ConfigWarningBadge)
+    expect((el.props as { hasError: boolean }).hasError).toBe(true)
+    expect((el.props as { message?: string }).message).toBe('No script written')
+  })
+
+  it.each(['branch_end', 'region'])(
+    'skips the config warning badge for non-card type %s',
+    (type) => {
+      const { configBadge } = callWrapped(type, {}, 'x', { hasError: true, errorMessage: 'No script written' })
+      expect(configBadge).toBe(false)
     },
   )
 
