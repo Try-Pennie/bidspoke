@@ -26,6 +26,7 @@ import '@xyflow/react/dist/style.css'
 
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
 import { computeWarningVariants } from '@/lib/minimap-warnings'
+import { isDuplicateConnection } from '@/lib/connect-rules'
 import { minimapNodeColor } from './nodes/node-colors'
 import {
   NODE_WARNING_COLOR,
@@ -1771,15 +1772,14 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         reconnectingEdgeIdRef.current = null
       }
 
-      // Reject a connection that duplicates an existing source→target pair —
-      // even if the sourceHandle differs (e.g. a legacy null-handle edge from
-      // an unstyled node + a new properly-handled edge after the renderer was
-      // added). The duplicate breaks applyLinearChain alignment and offers no
-      // engine value (the second edge fires the same downstream).
-      const isDuplicate = next.some(
-        (e) => e.source === connection.source && e.target === connection.target,
-      )
-      if (isDuplicate) {
+      // Reject a connection the canvas already has: the SAME output wired to the
+      // same target twice. It breaks applyLinearChain alignment and offers no
+      // engine value (the second edge fires the same downstream). See
+      // connect-rules.ts for why the key is (source, output, target) and not
+      // (source, target): the latter silently swallowed a branch arm dropped on
+      // its own branch_end, because the hidden layout backbone already owned that
+      // pair on every branch (#566).
+      if (isDuplicateConnection(next, connection)) {
         console.log('[canvas] onConnect: dropping duplicate edge', connection.source, '->', connection.target)
         return
       }
