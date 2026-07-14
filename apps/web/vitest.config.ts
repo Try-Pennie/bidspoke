@@ -24,7 +24,10 @@ export default defineConfig({
           name: 'lib',
           // Pure-logic tests (src/lib + render-free component helpers called as
           // plain functions). Stay in node for speed.
-          include: ['src/**/*.test.ts'],
+          // e2e/ holds Playwright specs (*.spec.ts, ignored here) plus the pure
+          // guard logic for the teardown, which must be unit tested: it is what
+          // stops a cleanup bug from deleting a production workflow.
+          include: ['src/**/*.test.ts', 'e2e/**/*.test.ts'],
           environment: 'node',
         },
       },
