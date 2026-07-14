@@ -20,6 +20,10 @@ export function buildPreviewNodes(): Node[] {
   PREVIEW_TYPES.forEach((type, row) => {
     PREVIEW_STATES.forEach((state, col) => {
       const hasError = state === 'unconfigured'
+      // Drives the ConfigWarningBadge tooltip (#563). Type-specific in the real
+      // canvas ('No script written'); a stand-in here, where every type shares
+      // one preview row.
+      const errorMessage = hasError ? 'Required fields are empty' : undefined
       // A sub-floor timeout (below every node-type floor) fires the timeout
       // warning badge + glow locally, no history/suggestions fetch needed.
       const config: Record<string, unknown> = state === 'timeout' ? { timeout_ms: 10 } : {}
@@ -38,6 +42,7 @@ export function buildPreviewNodes(): Node[] {
           label: '',
           config,
           hasError,
+          errorMessage,
           executionStep,
           isReachable: true,
           variables: {},

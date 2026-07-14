@@ -46,6 +46,7 @@ import { AchieveOffersNode } from './nodes/AchieveOffersNode'
 import { RegionNode } from './nodes/RegionNode'
 import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/timeout-suggestions'
 import { computeWarningNodeIds } from '@/lib/minimap-warnings'
+import { applyValidationToNodes, validationSignature } from '@/lib/node-warning'
 import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
@@ -1154,21 +1155,16 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Guard with a ref so setNodes is only called when the error set actually changes —
+  // Guard with a ref so setNodes is only called when validation actually changes:
   // otherwise the useMemo above creates a new Map reference on every render, causing
-  // setNodes → new nodes → new Map → setNodes → infinite loop.
+  // setNodes → new nodes → new Map → setNodes → infinite loop. The signature covers
+  // the messages, not just the ids, so a node that stays flagged for a NEW reason
+  // still refreshes its badge tooltip.
   useEffect(() => {
-    const errorIds = [...flaggedNodes.keys()].sort().join(',')
-    if (errorIds === prevErrorIdsRef.current) return
-    prevErrorIdsRef.current = errorIds
-    setNodes((ns) =>
-      ns.map((n) => {
-        const hasError = flaggedNodes.has(n.id)
-        const current = (n.data as unknown as CanvasNodeData).hasError
-        if (current === hasError) return n
-        return { ...n, data: { ...(n.data as object), hasError } }
-      })
-    )
+    const signature = validationSignature(flaggedNodes)
+    if (signature === prevErrorIdsRef.current) return
+    prevErrorIdsRef.current = signature
+    setNodes((ns) => applyValidationToNodes(ns, flaggedNodes))
   }, [flaggedNodes, setNodes])
 
   useEffect(() => {

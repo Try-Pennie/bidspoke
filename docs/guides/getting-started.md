@@ -26,7 +26,9 @@ Connect the trigger to the first node, then each node to the next. The Filter no
 
 Select a node to open its configuration panel on the right. Each node type has its own form. To reference data from the incoming request or an earlier step, use a data reference like `trigger.payload.email` or `steps.validate.output.score`. Most fields accept templates, so you can write things like `Hello {{ trigger.payload.first_name }}`. See [Data references](../concepts/data-references.md) for the full syntax.
 
-A node with required fields left unconfigured shows an amber ring on the canvas. You cannot enable a live workflow that has unconfigured nodes.
+A node with required fields left unconfigured shows an amber ring on the canvas, with a badge in its bottom-right corner. Hover the badge to see exactly what is missing. You cannot enable a live workflow that has unconfigured nodes.
+
+A violet ring means something different: the node is configured, but its timeout is set below what the step reliably needs. Hover the warning badge in the bottom-left corner for the suggested value.
 
 ## 5. Save
 

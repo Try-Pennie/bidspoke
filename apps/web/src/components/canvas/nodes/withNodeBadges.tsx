@@ -6,6 +6,7 @@ import { TimeoutWarningBadge } from './TimeoutWarningBadge'
 import { NodeWarningGlow } from './NodeWarningGlow'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
+import { ConfigWarningBadge } from './ConfigWarningBadge'
 
 // Types that opt out of the wrapper-level corner badges because they aren't a
 // single card filling the React Flow wrapper:
@@ -22,9 +23,9 @@ const NO_CORNER_BADGE_TYPES = new Set(['branch_end', 'region'])
 /**
  * Wraps a canvas node component so its card automatically renders the corner
  * badges — the timeout warning (sub-floor / below-suggested), the success-node
- * trophy, and the note marker. Applied once over the whole nodeTypes registry in
- * WorkflowCanvas so every current and future node type gets them without
- * touching the individual card components.
+ * trophy, the note marker, and the unconfigured-node warning. Applied once over
+ * the whole nodeTypes registry in WorkflowCanvas so every current and future
+ * node type gets them without touching the individual card components.
  *
  * Each badge renders as a sibling of the card rather than inside it, so it
  * anchors to React Flow's own node wrapper — which tightly wraps the card and is
@@ -33,7 +34,8 @@ const NO_CORNER_BADGE_TYPES = new Set(['branch_end', 'region'])
  */
 export function withNodeBadges(Node: ComponentType<NodeProps>): ComponentType<NodeProps> {
   function NodeWithBadges(props: NodeProps) {
-    const { config, namespace, isSuccessNode, note, hasError } = props.data as unknown as CanvasNodeData
+    const { config, namespace, isSuccessNode, note, hasError, errorMessage } =
+      props.data as unknown as CanvasNodeData
     const cornerBadges = !NO_CORNER_BADGE_TYPES.has(props.type)
     return (
       <>
@@ -43,6 +45,7 @@ export function withNodeBadges(Node: ComponentType<NodeProps>): ComponentType<No
         )}
         {cornerBadges && <SuccessBadge visible={isSuccessNode} />}
         {cornerBadges && <NoteBadge note={note} />}
+        {cornerBadges && <ConfigWarningBadge hasError={hasError} message={errorMessage} />}
         {cornerBadges && (
           <NodeWarningGlow type={props.type} config={config} namespace={namespace} hasError={hasError} />
         )}
