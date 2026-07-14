@@ -29,8 +29,14 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
       dependencies: ['setup'],
+      // Specs only. Playwright's default testMatch also grabs *.test.ts, which
+      // would pull in the vitest unit tests that live alongside them in e2e/.
+      testMatch: /.*\.spec\.ts$/,
     },
   ],
 
   globalSetup: './e2e/global-setup.ts',
+  // Deletes the workflows the suite created, once, after everything. Replaces a
+  // per-file afterAll that clicked Delete in the UI and swallowed its failures.
+  globalTeardown: './e2e/global-teardown.ts',
 })
