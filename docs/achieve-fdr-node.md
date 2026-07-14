@@ -111,6 +111,12 @@ them back is what keeps fabricated APRs out of Snowflake. If you do query Supaba
 filter `is_test = false AND is_sandbox = false` yourself, because there nothing has filtered
 them for you.
 
+Sandbox rows are purged after **7 days** (`purgeSandboxEvaluations`, on the same nightly job).
+They never export, so the normal purge, which only deletes rows already shipped to Snowflake,
+could never reach them and they would grow without bound (#644). Their deletion is permanent,
+since Snowflake has no copy, which is why the window is a week rather than the 24 hours an
+exported row gets.
+
 Three things will quietly skew a first pass at this data. The counts below are a snapshot from
 2026-07-14 (527 real rows, the first day the node ran in production) purely to show the shape of
 the problem; they move daily, so re-derive them, do not cite them.
