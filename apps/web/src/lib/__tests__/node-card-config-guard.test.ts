@@ -119,8 +119,8 @@ describe('every node card only displays config the engine actually reads', () =>
   })
 
   it('actually reads real source (guard is not passing vacuously)', () => {
-    const src = readFileSync(path.join(WEB_NODES, 'PartnerBidNode.tsx'), 'utf8')
+    const src = readFileSync(path.join(WEB_NODES, 'SalesforceNode.tsx'), 'utf8')
     expect(src.length).toBeGreaterThan(200)
-    expect(extractDisplayedConfigFields(src)).toContain('partner_id')
+    expect(extractDisplayedConfigFields(src)).toContain('operation')
   })
 })

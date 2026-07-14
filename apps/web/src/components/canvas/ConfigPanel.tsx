@@ -378,7 +378,6 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'exit' && <ExitConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'transform' && <TransformConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'webhook' && <IntegrationConfig config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} />}
-        {type === 'partner_bid' && <PartnerBidConfig config={data.config} onChange={updateConfig} />}
         {type === 'bid_group' && <BidGroupConfig config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'constants' && <ConstantsConfig config={data.config} onChange={updateConfig} reportValidity={onKeyEditorValidityChange} />}
         {type === 'salesforce' && <SalesforceConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} reportValidity={onKeyEditorValidityChange} readOnly={readOnly} />}
@@ -2001,51 +2000,6 @@ function IntegrationConfig({
 }
 
 // ── Partner Bid ───────────────────────────────────────────────────────────────
-
-function PartnerBidConfig({
-  config,
-  onChange,
-}: {
-  config: Record<string, unknown>
-  onChange: (patch: Record<string, unknown>) => void
-}) {
-  const [partners, setPartners] = useState<Partner[]>([])
-
-  useEffect(() => {
-    api.partners.list().then(setPartners).catch(() => {})
-  }, [])
-
-  const selectedId = (config.partner_id as string | undefined) ?? ''
-
-  function handleSelect(id: string) {
-    // Store the id only. A copied partner_name goes stale the moment the partner
-    // is renamed, and nothing in the engine reads it: the card resolves the name
-    // live from the partner list instead (#645).
-    onChange({ partner_id: id })
-  }
-
-  return (
-    <section className="space-y-4">
-      <Field label="Partner" hint="Which partner to request a bid from.">
-        <div className="relative">
-          <select
-            value={selectedId}
-            onChange={(e) => handleSelect(e.target.value)}
-            className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
-          >
-            <option value="">Select a partner...</option>
-            {partners.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}{!p.is_active ? ' (inactive)' : ''}
-              </option>
-            ))}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
-        </div>
-      </Field>
-    </section>
-  )
-}
 
 // ── Bid Group ─────────────────────────────────────────────────────────────────
 

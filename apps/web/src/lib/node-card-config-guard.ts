@@ -27,7 +27,8 @@ export const CARD_EXECUTORS: Record<string, { type: string; sources: string[] }>
   'IntegrationNode.tsx': { type: 'webhook', sources: ['engine/nodes/integration.ts'] },
   'LatencyGateNode.tsx': { type: 'latency_gate', sources: ['engine/nodes/latency-gate.ts'] },
   'ParallelNode.tsx': { type: 'parallel', sources: ['engine/nodes/parallel.ts'] },
-  'PartnerBidNode.tsx': { type: 'partner_bid', sources: ['engine/nodes/partner-bid.ts'] },
+  // No PartnerBidNode: the type is retired and now renders as the generic card
+  // (see nodes/registry.tsx), so there is no bespoke card left to make a claim.
   'ResponseNode.tsx': { type: 'response', sources: ['engine/nodes/response.ts'] },
   'SalesforceNode.tsx': { type: 'salesforce', sources: ['engine/nodes/salesforce.ts'] },
   'TransformNode.tsx': { type: 'transform', sources: ['engine/nodes/transform.ts'] },
