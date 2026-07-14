@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { HandCoins } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function AchieveOffersNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -20,7 +21,7 @@ export function AchieveOffersNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-violet-50 border-b border-violet-100 px-3 py-2">
-        <HandCoins className="h-4 w-4 text-violet-500" />
+        <HandCoins className={`h-4 w-4 ${NODE_TYPE_COLOR.achieve_offers.icon}`} />
         <span className="font-mono text-xs font-bold tracking-wide text-violet-700">ACHIEVE OFFERS</span>
       </div>
       <div className="px-3 py-2">

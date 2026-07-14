@@ -2,8 +2,12 @@ import { describe, it, expect } from 'vitest'
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import type { ValidationError } from '../workflow-validation'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   NODE_WARNING_CLASS,
+  NODE_WARNING_COLOR,
+  NODE_WARNING_RING,
   applyValidationToNodes,
   nodeWarningVariant,
   validationSignature,
@@ -107,5 +111,62 @@ describe('validationSignature', () => {
       ]),
     )
     expect(a).toBe(b)
+  })
+})
+
+describe('NODE_WARNING_COLOR', () => {
+  // CSS can't import TS, so the minimap's hexes and the glow's box-shadow colors
+  // are two independent copies of the same two colors. That's the one seam where
+  // the surfaces #563/#656 unified can still silently drift apart, so pin them.
+  const css = readFileSync(join(__dirname, '../../app/globals.css'), 'utf8')
+
+  /**
+   * Every CSS rule that paints the glow class. Matches the class EXACTLY:
+   * `\.node-warning\b` would also match `.node-warning-timeout` (the `\b` sits
+   * happily between the "g" and the "-"), which would let the amber variant pass
+   * by reading the violet variant's rules.
+   */
+  function glowRules(className: string): string {
+    const selector = new RegExp(`\\.${className}(?![\\w-])[^{]*\\{[\\s\\S]*?\\n\\}`, 'g')
+    const blocks = [...css.matchAll(selector)].map((b) => b[0])
+    expect(
+      blocks.length,
+      `no rule for .${className} in globals.css. Was the glow class renamed or deleted?`,
+    ).toBeGreaterThan(0)
+    return blocks.join('\n')
+  }
+
+  /**
+   * The animation the class runs. Kept separate from the class rules on purpose:
+   * an earlier version of this guard OR'd the two together, so renaming the class
+   * still passed by matching the (untouched) keyframes, a guard that could not
+   * fail. Both must be found independently.
+   */
+  function glowKeyframes(className: string): string {
+    const rules = glowRules(className)
+    const name = rules.match(/animation:\s*([\w-]+)/)?.[1]
+    expect(name, `.${className} runs no animation. The pulsing glow is gone`).toBeDefined()
+    const block = css.match(new RegExp(`@keyframes ${name}\\b[^{]*\\{[\\s\\S]*?\\n\\}`))
+    expect(block, `.${className} animates "${name}" but no such @keyframes exists`).not.toBeNull()
+    return block![0]
+  }
+
+  it.each(['unconfigured', 'timeout'] as const)('uses the same hex as the %s glow in globals.css', (variant) => {
+    const hex = NODE_WARNING_COLOR[variant].toLowerCase()
+    const className = NODE_WARNING_CLASS[variant]
+    const css2 = (glowRules(className) + glowKeyframes(className)).toLowerCase()
+    expect(
+      css2.includes(hex),
+      `${variant}: the minimap paints ${hex} but the .${className} glow never mentions it`,
+    ).toBe(true)
+  })
+
+  it('rings each variant in a color distinct from its fill, or the ring is invisible', () => {
+    expect(NODE_WARNING_RING.unconfigured).not.toBe(NODE_WARNING_COLOR.unconfigured)
+    expect(NODE_WARNING_RING.timeout).not.toBe(NODE_WARNING_COLOR.timeout)
+  })
+
+  it('gives the two conditions distinct minimap fills, the whole point of #656', () => {
+    expect(NODE_WARNING_COLOR.unconfigured).not.toBe(NODE_WARNING_COLOR.timeout)
   })
 })

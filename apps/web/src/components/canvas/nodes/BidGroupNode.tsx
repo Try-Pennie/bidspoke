@@ -5,6 +5,7 @@ import { Layers } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { bidGroupPartnerSummary } from '@/lib/bid-group-partners'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
 
@@ -56,7 +57,7 @@ export function BidGroupNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-rose-50 border-b border-rose-100 px-3 py-2">
-        <Layers className="h-4 w-4 text-rose-500" />
+        <Layers className={`h-4 w-4 ${NODE_TYPE_COLOR.bid_group.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-rose-700">Bid Group</span>
         <span className="ml-auto rounded bg-rose-100 px-1.5 py-0.5 text-xs text-rose-600">
           {modeLabel(mode)}

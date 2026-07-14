@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { LogOut } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function ExitNode({ data, selected }: NodeProps) {
   const { namespace, label, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -19,7 +20,7 @@ export function ExitNode({ data, selected }: NodeProps) {
       {/* Terminal node — no source handle */}
 
       <div className="flex items-center gap-2 rounded-t-lg bg-red-100 border-b border-red-200 px-3 py-2">
-        <LogOut className="h-4 w-4 text-red-600" />
+        <LogOut className={`h-4 w-4 ${NODE_TYPE_COLOR.exit.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-red-700">Exit</span>
       </div>
       <div className="px-3 py-2">

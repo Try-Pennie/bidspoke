@@ -5,6 +5,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Cloud } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 const OPERATION_LABELS: Record<string, string> = {
   create: 'Create',
@@ -38,7 +39,7 @@ export function SalesforceNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-blue-50 border-b border-blue-100 px-3 py-2">
-        <Cloud className="h-4 w-4 text-blue-500" />
+        <Cloud className={`h-4 w-4 ${NODE_TYPE_COLOR.salesforce.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-blue-600">Salesforce</span>
         {(object || operation === 'apex') && (
           <span className="ml-auto rounded bg-blue-100 px-1.5 py-0.5 text-xs text-blue-600">

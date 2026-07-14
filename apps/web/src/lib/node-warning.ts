@@ -24,6 +24,31 @@ export const NODE_WARNING_CLASS: Record<NodeWarningVariant, string> = {
 }
 
 /**
+ * The same two hues as a hex, for the minimap, whose nodes are SVG rects and so
+ * cannot take a class (#656). These MUST equal the box-shadow colors of the
+ * matching glow keyframes in globals.css. CSS can't import TS, so that pairing
+ * is the one seam where the two surfaces can still drift. node-warning.test.ts
+ * reads globals.css and pins them together.
+ */
+export const NODE_WARNING_COLOR: Record<NodeWarningVariant, string> = {
+  unconfigured: '#f59e0b', // amber-500
+  timeout: '#8b5cf6', // violet-500
+}
+
+/**
+ * Ring drawn around a warning node on the minimap. The fill alone can't carry the
+ * warning there: the node-type palette already owns both warning hues (a code node
+ * IS amber, an achieve_offers node IS violet), so an unconfigured code node (the
+ * canonical unconfigured node, since a freshly dropped code node has no script)
+ * would be painted the exact color it already was. The ring is what makes it read
+ * as flagged, and it's the honest translation of the glow, which is itself a ring.
+ */
+export const NODE_WARNING_RING: Record<NodeWarningVariant, string> = {
+  unconfigured: '#7c2d12', // amber-950: dark enough to read against the amber fill
+  timeout: '#2e1065', // violet-950
+}
+
+/**
  * Unconfigured wins when both apply: it's the one that blocks the save, and a
  * timeout value on a node that isn't set up yet is the lesser problem. The
  * corner badges still show both, so nothing is hidden.

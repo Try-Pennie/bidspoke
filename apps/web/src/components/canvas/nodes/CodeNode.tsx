@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Code } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function CodeNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -26,7 +27,7 @@ export function CodeNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-amber-50 border-b border-amber-100 px-3 py-2">
-        <Code className="h-4 w-4 text-amber-500" />
+        <Code className={`h-4 w-4 ${NODE_TYPE_COLOR.code.icon}`} />
         <span className="font-mono text-xs font-bold tracking-wide text-amber-700">CODE</span>
       </div>
       <div className="px-3 py-2">

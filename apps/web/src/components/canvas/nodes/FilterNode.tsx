@@ -5,6 +5,7 @@ import { Filter } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
 import { filterConditionSummary } from '@/lib/filter-condition'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function FilterNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -34,7 +35,7 @@ export function FilterNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-p-blue-light border-b border-p-blue-light px-3 py-2">
-        <Filter className="h-4 w-4 text-p-blue-dark" />
+        <Filter className={`h-4 w-4 ${NODE_TYPE_COLOR.filter.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-p-blue-dark">Filter</span>
         <span className="ml-auto rounded bg-p-blue-light px-1.5 py-0.5 text-xs text-p-blue-dark">
           {operation === 'continue_if' ? 'continue if' : 'end if'}

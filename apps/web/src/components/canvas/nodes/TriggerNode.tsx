@@ -4,6 +4,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { Zap } from 'lucide-react'
 import type { WorkflowDef } from '@/types/workflow'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function TriggerNode({ data, selected }: NodeProps) {
   const trigger = (data as unknown as { trigger?: WorkflowDef['trigger'] }).trigger
@@ -18,7 +19,7 @@ export function TriggerNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-p-blue-light border-b border-p-blue-light px-3 py-2">
-        <Zap className="h-4 w-4 text-p-blue-dark" />
+        <Zap className={`h-4 w-4 ${NODE_TYPE_COLOR.trigger.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-p-blue-dark">Trigger</span>
       </div>
       <div className="px-3 py-2">

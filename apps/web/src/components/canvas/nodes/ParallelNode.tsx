@@ -7,6 +7,7 @@ import type { CanvasNodeData, ParallelChildSlot } from '@/types/workflow'
 import { GitFork } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 interface ParallelChildResult {
   namespace: string
@@ -66,7 +67,7 @@ export function ParallelNode({ id, data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-beige border-b border-gray-100 px-3 py-2">
-        <GitFork className="h-4 w-4 text-slate-500" />
+        <GitFork className={`h-4 w-4 ${NODE_TYPE_COLOR.parallel.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Parallel</span>
         <span className="ml-auto rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
           wait {waitFor}

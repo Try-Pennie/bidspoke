@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Plug } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 // Fallback labels for nodes saved before service_label was stored in config
 const SERVICE_LABELS: Record<string, string> = {
@@ -44,7 +45,7 @@ export function IntegrationNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-teal-50 border-b border-teal-100 px-3 py-2">
-        <Plug className="h-4 w-4 text-teal-500" />
+        <Plug className={`h-4 w-4 ${NODE_TYPE_COLOR.webhook.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-teal-700">
           {serviceLabel}
         </span>

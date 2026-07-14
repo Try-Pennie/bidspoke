@@ -9,6 +9,7 @@ import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { SuccessBadge } from './SuccessBadge'
 import { NoteBadge } from './NoteBadge'
 import { nodeWidth } from '@/lib/layout'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function BranchEndNode({ id, data, selected }: NodeProps) {
   const { executionStep, hasError, isReachable, isSuccessNode, note } = data as unknown as CanvasNodeData
@@ -86,7 +87,7 @@ export function BranchEndNode({ id, data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-purple-50 border-b border-purple-100 px-3 py-2">
-        <GitMerge className="h-4 w-4 text-purple-500" />
+        <GitMerge className={`h-4 w-4 ${NODE_TYPE_COLOR.branch_end.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-purple-700">Branch End</span>
       </div>
 

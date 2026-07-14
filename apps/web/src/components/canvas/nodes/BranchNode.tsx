@@ -5,6 +5,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { GitBranch } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 interface BranchEntry { label: string }
 
@@ -64,7 +65,7 @@ export function BranchNode({ id, data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} id="input" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-purple-50 border-b border-purple-100 px-3 py-2">
-        <GitBranch className="h-4 w-4 text-purple-500" />
+        <GitBranch className={`h-4 w-4 ${NODE_TYPE_COLOR.branch.icon}`} />
         <span className="text-xs font-semibold uppercase tracking-wide text-purple-700">Branch</span>
       </div>
       <div className="px-3 py-2">

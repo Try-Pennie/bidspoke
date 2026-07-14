@@ -3,6 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import type { CanvasNodeData } from '@/types/workflow'
 import { Package } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
+import { NODE_TYPE_COLOR } from './node-colors'
 
 export function ConstantsNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
@@ -30,7 +31,7 @@ export function ConstantsNode({ data, selected }: NodeProps) {
       <Handle type="source" position={Position.Bottom} id="output" />
 
       <div className="flex items-center gap-2 rounded-t-lg bg-indigo-50 border-b border-indigo-100 px-3 py-2">
-        <Package className="h-4 w-4 text-indigo-500" />
+        <Package className={`h-4 w-4 ${NODE_TYPE_COLOR.constants.icon}`} />
         <span className="font-mono text-xs font-bold tracking-wide text-indigo-700">CONSTANTS</span>
       </div>
       <div className="px-3 py-2">
