@@ -1049,8 +1049,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     [validationErrors, wiringErrors]
   )
 
-  // Nodes to highlight on the minimap and WHY — unconfigured (validation) or
-  // timeout-warning — mirroring the on-canvas glow so the overview map lights up
+  // Nodes to highlight on the minimap and WHY (unconfigured, from validation, or
+  // timeout-warning), mirroring the on-canvas glow so the overview map lights up
   // exactly the nodes that need attention, findable when zoomed out (#224), in the
   // same hue the glow uses for that condition (#656).
   const timeoutSuggestions = useAllTimeoutSuggestions()
@@ -3429,10 +3429,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               }}
               // The fill alone can't carry the warning: the type palette already
               // owns both warning hues (code IS amber, achieve_offers IS violet),
-              // so an unconfigured code node would look exactly like a healthy one
-              // — the common case, since an empty code node is the canonical
-              // unconfigured node. The ring is what separates them. Healthy nodes
-              // get a transparent stroke, so only warnings are ringed.
+              // so an unconfigured code node would look exactly like a healthy one.
+              // That's the common case, too, since an empty code node is the
+              // canonical unconfigured node. The ring is what separates them.
+              // Healthy nodes get a transparent stroke, so only warnings are ringed.
               nodeStrokeColor={(n) => {
                 const variant = warningVariants.get(n.id)
                 return variant ? NODE_WARNING_RING[variant] : 'transparent'

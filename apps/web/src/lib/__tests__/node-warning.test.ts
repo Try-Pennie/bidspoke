@@ -131,7 +131,7 @@ describe('NODE_WARNING_COLOR', () => {
     const blocks = [...css.matchAll(selector)].map((b) => b[0])
     expect(
       blocks.length,
-      `no rule for .${className} in globals.css — was the glow class renamed or deleted?`,
+      `no rule for .${className} in globals.css. Was the glow class renamed or deleted?`,
     ).toBeGreaterThan(0)
     return blocks.join('\n')
   }
@@ -139,13 +139,13 @@ describe('NODE_WARNING_COLOR', () => {
   /**
    * The animation the class runs. Kept separate from the class rules on purpose:
    * an earlier version of this guard OR'd the two together, so renaming the class
-   * still passed by matching the (untouched) keyframes — a guard that could not
+   * still passed by matching the (untouched) keyframes, a guard that could not
    * fail. Both must be found independently.
    */
   function glowKeyframes(className: string): string {
     const rules = glowRules(className)
     const name = rules.match(/animation:\s*([\w-]+)/)?.[1]
-    expect(name, `.${className} runs no animation — the pulsing glow is gone`).toBeDefined()
+    expect(name, `.${className} runs no animation. The pulsing glow is gone`).toBeDefined()
     const block = css.match(new RegExp(`@keyframes ${name}\\b[^{]*\\{[\\s\\S]*?\\n\\}`))
     expect(block, `.${className} animates "${name}" but no such @keyframes exists`).not.toBeNull()
     return block![0]

@@ -26,7 +26,7 @@ export const NODE_WARNING_CLASS: Record<NodeWarningVariant, string> = {
 /**
  * The same two hues as a hex, for the minimap, whose nodes are SVG rects and so
  * cannot take a class (#656). These MUST equal the box-shadow colors of the
- * matching glow keyframes in globals.css — CSS can't import TS, so that pairing
+ * matching glow keyframes in globals.css. CSS can't import TS, so that pairing
  * is the one seam where the two surfaces can still drift. node-warning.test.ts
  * reads globals.css and pins them together.
  */
@@ -38,8 +38,8 @@ export const NODE_WARNING_COLOR: Record<NodeWarningVariant, string> = {
 /**
  * Ring drawn around a warning node on the minimap. The fill alone can't carry the
  * warning there: the node-type palette already owns both warning hues (a code node
- * IS amber, an achieve_offers node IS violet), so an unconfigured code node — the
- * canonical unconfigured node, since a freshly dropped code node has no script —
+ * IS amber, an achieve_offers node IS violet), so an unconfigured code node (the
+ * canonical unconfigured node, since a freshly dropped code node has no script)
  * would be painted the exact color it already was. The ring is what makes it read
  * as flagged, and it's the honest translation of the glow, which is itself a ring.
  */

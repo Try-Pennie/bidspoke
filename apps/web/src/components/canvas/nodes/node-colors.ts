@@ -9,7 +9,7 @@
  * take a hex. node-colors.test.ts pins the halves to each other, so a card and
  * its minimap dot cannot drift into different colors.
  *
- * NOTE: this file must stay under src/components — Tailwind's `content` globs
+ * NOTE: this file must stay under src/components, because Tailwind's `content` globs
  * (tailwind.config.ts) cover src/app and src/components only. Moved to src/lib
  * and the class literals below stop being scanned, get purged from the CSS
  * bundle, and every node icon silently renders colorless. Nothing in the type
