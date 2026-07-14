@@ -100,6 +100,13 @@ const LOAN_PURPOSES = new Set([
   'business', 'auto', 'medical', 'moving', 'other',
 ])
 
+// The Pennie form emits `credit_card_refi`, but Achieve's API only accepts the full word
+// `credit_card_refinance` and 422s on the short form. Normalize inbound values Achieve does
+// not recognize before the whitelist check, so the purpose is translated rather than dropped.
+const LOAN_PURPOSE_ALIASES: Record<string, string> = {
+  credit_card_refi: 'credit_card_refinance',
+}
+
 // Achieve requires a `consents` object and rejects the lead outright without it
 // ("Missing consents"), despite their doc marking it optional. Each field holds the
 // VERBATIM legal text shown to the user, not a boolean.
@@ -325,7 +332,8 @@ function buildRequest(
   const rating = String(ci.providedCreditRating ?? '').toLowerCase()
   if (CREDIT_RATINGS.has(rating)) body.credit_rating = rating
 
-  if (li.purpose && LOAN_PURPOSES.has(li.purpose)) body.loan_purpose = li.purpose
+  const purpose = li.purpose ? (LOAN_PURPOSE_ALIASES[li.purpose] ?? li.purpose) : undefined
+  if (purpose && LOAN_PURPOSES.has(purpose)) body.loan_purpose = purpose
 
   return body
 }

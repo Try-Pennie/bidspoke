@@ -144,6 +144,18 @@ describe('executeAchieveOffersNode', () => {
     expect(body.partner_config).toEqual({ wait_for_offers: false })
   })
 
+  // The Pennie form emits `credit_card_refi`, but Achieve's API only accepts the full word
+  // `credit_card_refinance` and 422s on the short form. ~20% of Main Flow leads carry the short
+  // form, so without translation the field is silently dropped and Achieve never sees the purpose.
+  it('translates credit_card_refi to Achieve\'s credit_card_refinance', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    const payload = fullPayload()
+    payload.loanInformation.purpose = 'credit_card_refi'
+    await executeAchieveOffersNode(makeNode(), makeCtx({ payload, env: PROD_ENV }))
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.loan_purpose).toBe('credit_card_refinance')
+  })
+
   // Achieve drives product selection server-side ("We drive this for our side, and right now,
   // we evaluate your leads for APL" -- Olivier Pariselle, 2026-07-13) and told us to drop the
   // field. Sending it is at best ignored and at worst misleading: we ask for one product and
