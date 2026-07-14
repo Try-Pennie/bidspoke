@@ -1,5 +1,6 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
+import { normalizeHandle } from './auto-connect'
 
 export interface ValidationError {
   nodeId: string
@@ -136,6 +137,46 @@ export function findWorkflowCycle(nodes: Node[], edges: Edge[]): string[] | null
     if (state.get(n.id) === undefined && visit(n.id)) return cycle
   }
   return null
+}
+
+// Two outgoing edges on the SAME handle is always corrupt (#567). The engine
+// routes by source_handle and follows the first matching edge it finds, so the
+// other target is silently skipped at run time while the canvas still draws
+// both. A legacy null handle counts as the default 'output' handle, which is
+// how the fork arises: a stale handle-less edge survives and a fresh 'output'
+// edge gets appended beside it.
+//
+// Legitimate fan-out (branch arms, parallel child slots, filter pass/exit, a
+// branch's hidden backbone edge) always uses DISTINCT handles, so it never trips
+// this.
+export function findDuplicateOutEdges(nodes: Node[], edges: Edge[]): Map<string, ValidationError> {
+  // source + handle → the distinct targets it points at. Two edges on one handle
+  // that share a target are mere redundancy (dedupeEdges normalizes those away);
+  // only DIFFERENT targets constitute a fork where one silently never runs.
+  const targetsByOutput = new Map<string, Set<string>>()
+  const offenders = new Set<string>()
+
+  for (const e of edges) {
+    const key = `${e.source} ${normalizeHandle(e.sourceHandle)}`
+    const targets = targetsByOutput.get(key) ?? new Set<string>()
+    targets.add(e.target)
+    targetsByOutput.set(key, targets)
+    if (targets.size > 1) offenders.add(e.source)
+  }
+
+  const errors = new Map<string, ValidationError>()
+  for (const id of offenders) {
+    const node = nodes.find((n) => n.id === id)
+    if (!node) continue
+    const data = node.data as unknown as CanvasNodeData
+    errors.set(id, {
+      nodeId: id,
+      namespace: data?.namespace ?? id,
+      label: data?.label,
+      message: 'Has two outgoing edges on one output. Only one will run. Delete the stale edge.',
+    })
+  }
+  return errors
 }
 
 /** Same logic but works on the raw definition types (no React Flow dependency). */

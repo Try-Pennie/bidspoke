@@ -56,7 +56,8 @@ import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
-import { validateWorkflow, findWorkflowCycle, type ValidationError } from '@/lib/workflow-validation'
+import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, type ValidationError } from '@/lib/workflow-validation'
+import { outEdgeForHandle, normalizeHandle, dedupeEdges } from '@/lib/auto-connect'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import TriggerExecutionPanel from './TriggerExecutionPanel'
@@ -533,14 +534,18 @@ function defToNodes(nodes: NodeDef[], edges: EdgeDef[], trigger?: WorkflowDef['t
 }
 
 function defToEdges(edges: EdgeDef[]): Edge[] {
-  return edges.map((e) => ({
+  return dedupeEdges(edges.map((e) => ({
     id: e.id,
     source: e.source,
     target: e.target,
-    sourceHandle: e.source_handle ?? null,
+    // A legacy edge persisted without a source_handle means "the default output".
+    // Every single-output node renders its source handle as id="output", so map it
+    // to 'output' rather than null: otherwise a handle comparison downstream misses
+    // it and silently appends a second out-edge beside the stale one (#567).
+    sourceHandle: normalizeHandle(e.source_handle),
     data: { condition: e.condition },
     ...(e.hidden ? { hidden: true } : {}),
-  }))
+  })))
 }
 
 // Build React Flow nodes + edges from a raw definition, running the legacy-shape
@@ -1075,13 +1080,28 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     [mode, nodes, edges]
   )
 
+  // Mis-wired nodes: two outgoing edges on one handle (#567). The engine follows
+  // only the first, so the other target silently never runs. Kept separate from
+  // validationErrors because the cause and the fix are different (a stale edge,
+  // not a missing config), though both flag the node on the canvas.
+  const wiringErrors: Map<string, ValidationError> = useMemo(
+    () => (mode === 'edit' ? findDuplicateOutEdges(nodes, edges) : new Map()),
+    [mode, nodes, edges]
+  )
+
+  // Every node that gets the warning ring: unconfigured or mis-wired.
+  const flaggedNodes: Map<string, ValidationError> = useMemo(
+    () => new Map([...validationErrors, ...wiringErrors]),
+    [validationErrors, wiringErrors]
+  )
+
   // Node ids to highlight on the minimap — unconfigured (validation) plus
   // timeout-warning nodes — mirroring the on-canvas glow so the overview map
   // lights up exactly the nodes that need attention, findable when zoomed out (#224).
   const timeoutSuggestions = useAllTimeoutSuggestions()
   const warningNodeIds = useMemo(
-    () => computeWarningNodeIds(nodes, new Set(validationErrors.keys()), timeoutSuggestions),
-    [nodes, validationErrors, timeoutSuggestions]
+    () => computeWarningNodeIds(nodes, new Set(flaggedNodes.keys()), timeoutSuggestions),
+    [nodes, flaggedNodes, timeoutSuggestions]
   )
   // When many nodes warn at once, drop the glow's pulse (keep a static glow) so a
   // busy workflow isn't a wall of competing motion (#228).
@@ -1138,18 +1158,18 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // otherwise the useMemo above creates a new Map reference on every render, causing
   // setNodes → new nodes → new Map → setNodes → infinite loop.
   useEffect(() => {
-    const errorIds = [...validationErrors.keys()].sort().join(',')
+    const errorIds = [...flaggedNodes.keys()].sort().join(',')
     if (errorIds === prevErrorIdsRef.current) return
     prevErrorIdsRef.current = errorIds
     setNodes((ns) =>
       ns.map((n) => {
-        const hasError = validationErrors.has(n.id)
+        const hasError = flaggedNodes.has(n.id)
         const current = (n.data as unknown as CanvasNodeData).hasError
         if (current === hasError) return n
         return { ...n, data: { ...(n.data as object), hasError } }
       })
     )
-  }, [validationErrors, setNodes])
+  }, [flaggedNodes, setNodes])
 
   useEffect(() => {
     api.env.list().then((vars) => setEnvKeys(vars.map((v) => v.key))).catch(() => {})
@@ -1939,7 +1959,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       const sourceNode = findDropSource(nodes, edges, dropPos)
       const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, dropPos.x) : null
       const existingOutEdge = (sourceNode && sourceHandle)
-        ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+        ? outEdgeForHandle(edges, sourceNode.id, sourceHandle)
         : null
       // True when we can simply append after sourceNode (handle is free)
       const autoConnected = !!(sourceNode && sourceHandle && !existingOutEdge)
@@ -2620,13 +2640,30 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
   // ── Save ────────────────────────────────────────────────────────────────────
 
-  async function openSaveMenu() {
-    if (!isDirty || saving) return
-    if (workflow.is_active && validationErrors.size > 0) {
-      const names = Array.from(validationErrors.values())
+  // What (if anything) blocks a save of a LIVE workflow. Draft workflows can
+  // always save so an edit is never trapped half-finished.
+  function liveSaveBlocker(): string | null {
+    if (!workflow.is_active) return null
+    const names = (errors: Map<string, ValidationError>) =>
+      Array.from(errors.values())
         .map((e) => e.label || e.namespace)
         .join(', ')
-      setSaveError(`Can't save a live workflow with unconfigured nodes: ${names}. Fix them or disable the workflow first.`)
+    // #567 first: a mis-wired node still LOOKS configured, so it's the easier
+    // one to miss and the more dangerous one to ship.
+    if (wiringErrors.size > 0) {
+      return `Can't save a live workflow with mis-wired nodes: ${names(wiringErrors)}. Each has two outgoing edges on one output, so only one would run. Delete the stale edge first.`
+    }
+    if (validationErrors.size > 0) {
+      return `Can't save a live workflow with unconfigured nodes: ${names(validationErrors)}. Fix them or disable the workflow first.`
+    }
+    return null
+  }
+
+  async function openSaveMenu() {
+    if (!isDirty || saving) return
+    const blocked = liveSaveBlocker()
+    if (blocked) {
+      setSaveError(blocked)
       return
     }
     setSaveError(null)
@@ -2702,12 +2739,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       setSaveError(`Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.`)
       return
     }
-    // Block saving a live workflow that has unconfigured nodes
-    if (workflow.is_active && validationErrors.size > 0) {
-      const names = Array.from(validationErrors.values())
-        .map((e) => e.label || e.namespace)
-        .join(', ')
-      setSaveError(`Can't save a live workflow with unconfigured nodes: ${names}. Fix them or disable the workflow first.`)
+    // Block saving a live workflow that has unconfigured or mis-wired nodes
+    const blocked = liveSaveBlocker()
+    if (blocked) {
+      setSaveError(blocked)
       return
     }
     setSaving(true)
@@ -2947,6 +2982,21 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
           </button>
 
           {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
+
+          {/* Mis-wiring warning (#567). Red, not amber: an unconfigured node is an
+              unfinished edit, but a node with two outgoing edges on one output is a
+              live correctness bug that the canvas would otherwise never surface. */}
+          {mode === 'edit' && wiringErrors.size > 0 && (
+            <div
+              className="flex items-center gap-1.5 rounded-md bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-700"
+              title={Array.from(wiringErrors.values())
+                .map((e) => `${e.label || e.namespace}: ${e.message}`)
+                .join('\n')}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+              {wiringErrors.size} node{wiringErrors.size !== 1 ? 's' : ''} mis-wired
+            </div>
+          )}
 
           {/* Validation warning */}
           {mode === 'edit' && validationErrors.size > 0 && (
@@ -3248,7 +3298,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   const sourceNode = findDropSource(otherNodes, edges, finalPos)
                   const sourceHandle = sourceNode ? chooseSourceHandle(sourceNode, finalPos.x) : null
                   const existingOutEdge = (sourceNode && sourceHandle)
-                    ? edges.find((e) => e.source === sourceNode.id && e.sourceHandle === sourceHandle)
+                    ? outEdgeForHandle(edges, sourceNode.id, sourceHandle)
                     : null
 
                   if (sourceNode && sourceHandle && !existingOutEdge) {
@@ -3288,9 +3338,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   }
 
                   // The edge that newSource currently uses to connect to its successor
-                  const newSourceOutEdge = edges.find(
-                    (e) => e.source === newSource.id && e.sourceHandle === newSourceHandle
-                  )
+                  const newSourceOutEdge = outEdgeForHandle(edges, newSource.id, newSourceHandle)
                   // newSource already connects to this node — nothing to do
                   if (newSourceOutEdge?.target === change.id) {
                     setNodes((ns) => layoutWorkflow(ns, edges))
@@ -3298,9 +3346,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                   }
 
                   // N's primary output edge (non-filter/branch nodes have a single 'output' handle)
-                  const primaryOut = edges.find(
-                    (e) => e.source === change.id && e.sourceHandle === 'output'
-                  )
+                  const primaryOut = outEdgeForHandle(edges, change.id, 'output')
 
                   // Remove: N's in-edges, N's primary out-edge, newSource's out-edge
                   const toRemove = new Set([
