@@ -12,8 +12,35 @@
 // this only records the attempt.
 
 import type { BidAttemptInsert } from './lead-sightings'
-import type { StepOutput } from '../types'
+import type { NodeDefinition, StepOutput } from '../types'
 import { classifyTripointResultCode } from './bid-resolver'
+
+// A pass-through node's output becomes the input of everything downstream, and a
+// branch_end re-emits the very object it received (executeBranchEndNode). Every node's
+// output lands in ctx.steps, so a derivation keyed purely on output SHAPE fires once per
+// node the output travelled through, not once per bid: a ping followed by a convergence
+// yields two attempts for one call. Worse, the RML slug comes from the NAMESPACE, so the
+// phantom row would be attributed to a partner named after the branch_end.
+//
+// Same invariant, same fix as achieve-log.ts (#640, after 6c55259): gate on the node TYPE,
+// which is what can genuinely produce a bid. Only a `code` node bids in these flows (every
+// live producer is one: tripoint_ping, ping_lendswift, ping_gigfi). partner_bid/bid_group
+// nodes record natively via recordBidAttempt, so deriving them here would double-count.
+// The node NAME stays free-form.
+const BID_PRODUCER_TYPES = new Set(['code'])
+
+// The steps a bid may be derived from: only those whose node is a producer type. A
+// namespace absent from the definition (a bid_group's synthesized per-partner child) is
+// excluded for the same reason: it already records itself.
+function bidProducerSteps(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+): Array<[string, StepOutput]> {
+  const typeByNamespace = new Map(nodes.map((n) => [n.namespace, n.type as string]))
+  return Object.entries(steps).filter(([namespace]) =>
+    BID_PRODUCER_TYPES.has(typeByNamespace.get(namespace) ?? '')
+  )
+}
 
 export interface DerivedBidMeta {
   sighting_id: string
@@ -90,10 +117,13 @@ export interface ProjectedBidAttempt {
 // Reuses deriveCodeNodeBidAttempts (capture-on flows bid via code nodes), so the
 // projected set matches what recordBidAttempt writes for non-stranded runs.
 const PROJECTION_EPOCH = new Date(0)
-export function bidAttemptsForProjection(steps: Record<string, StepOutput>): ProjectedBidAttempt[] {
+export function bidAttemptsForProjection(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+): ProjectedBidAttempt[] {
   return deriveCodeNodeBidAttempts(steps, {
     sighting_id: '', trace_id: '', execution_id: '', attempted_at_utc: PROJECTION_EPOCH, is_test: false,
-  }).map((a) => ({
+  }, nodes).map((a) => ({
     partner_slug: a.partner_slug,
     classification: a.classification ?? null,
     decline_reason: a.decline_reason ?? null,
@@ -107,9 +137,10 @@ export function bidAttemptsForProjection(steps: Record<string, StepOutput>): Pro
 export function deriveCodeNodeBidAttempts(
   steps: Record<string, StepOutput>,
   meta: DerivedBidMeta,
+  nodes: NodeDefinition[],
 ): BidAttemptInsert[] {
   const rows: BidAttemptInsert[] = []
-  for (const [namespace, step] of Object.entries(steps)) {
+  for (const [namespace, step] of bidProducerSteps(steps, nodes)) {
     const output = step?.output
 
     const baseRow = (partner_slug: string, bid_cents: number | null) => ({
@@ -186,12 +217,15 @@ export function pickBidSummary(bidGroup: BidSummary, codeNode: BidSummary): BidS
 // ping makes tripoint the winner; the bid amount is not in Tripoint's response so
 // winner_bid_cents stays null. Same shape as extractBidGroupSummary so the engine
 // can fall back to it when no bid_group winner is present (#349).
-export function deriveCodeNodeBidSummary(steps: Record<string, StepOutput>): BidSummary {
+export function deriveCodeNodeBidSummary(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+): BidSummary {
   let attempted = 0
   let responded = 0
   let winner: string | null = null
   let winnerBidCents: number | null = null
-  for (const [namespace, step] of Object.entries(steps)) {
+  for (const [namespace, step] of bidProducerSteps(steps, nodes)) {
     const output = step?.output
     if (isTripointBidOutput(output)) {
       if (output.skipped === true) continue

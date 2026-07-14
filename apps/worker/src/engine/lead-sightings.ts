@@ -727,7 +727,7 @@ export function computeSightingFinalize(
 
   // Prefer the bid_group summary; fall back to the code-node (Tripoint) summary
   // so the winner/bid counts work for code-node bidding flows too (#349).
-  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), deriveCodeNodeBidSummary(steps))
+  const bidSummary = pickBidSummary(extractBidGroupSummary(steps), deriveCodeNodeBidSummary(steps, nodes))
   const enrichment = extractEnrichment(steps)
   const responseStatusCode = opts.walkStatus
 
@@ -811,6 +811,6 @@ export function buildSightingFinalizeProjection(
   if (!gate.sightingId || gate.isTest) return undefined
   return {
     ...computeSightingFinalize(steps, nodes, opts),
-    bid_attempts: bidAttemptsForProjection(steps),
+    bid_attempts: bidAttemptsForProjection(steps, nodes),
   }
 }
