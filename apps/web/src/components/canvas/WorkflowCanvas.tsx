@@ -3437,7 +3437,10 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 const variant = warningVariants.get(n.id)
                 return variant ? NODE_WARNING_RING[variant] : 'transparent'
               }}
-              nodeStrokeWidth={4}
+              // In FLOW units, not screen pixels: a node rect is ~208x89 there, so
+              // the React Flow default of 2 (and even 4) renders as a hairline that
+              // reads as an edge artifact rather than a ring. 16 is ~8% of a node.
+              nodeStrokeWidth={16}
               maskColor="rgba(243,244,246,0.7)"
             />
           </ReactFlow>
