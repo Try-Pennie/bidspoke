@@ -20,7 +20,7 @@ import { coerceString } from './coerce'
 import { partitionKeyFor } from './partitioned-tables'
 import type { Env } from '../index'
 import { executeStatement, escapeSqlLiteral, type SnowflakeConfig } from './snowflake'
-import { requireRowsAffected, toThrowable } from './db-retry'
+import { requireRowsAffected, toThrowable, toDbError } from './db-retry'
 import { formatErr } from './format-error'
 
 const BATCH_SIZE = 200            // rows per Snowflake MERGE
@@ -409,6 +409,17 @@ type FilterFn = <
 >(
   q: T,
 ) => T
+// The predicate that decides which rows a purge may delete. Structural rather than
+// generic (as FilterFn is): the generic form makes TS chase the postgrest builder's
+// recursive type through the extra range operators and blow the instantiation depth.
+interface PurgeQuery {
+  eq(k: string, v: unknown): PurgeQuery
+  is(k: string, v: unknown): PurgeQuery
+  not(k: string, op: string, v: unknown): PurgeQuery
+  lt(k: string, v: unknown): PurgeQuery
+  limit(n: number): PromiseLike<{ data: unknown; error: unknown }>
+}
+type PurgeFilter = (q: PurgeQuery) => PurgeQuery
 type Sleep = (ms: number) => Promise<void>
 
 const DEFAULT_SLEEP: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -693,6 +704,37 @@ export async function purgeOldExported(
   now: () => number = Date.now,
 ): Promise<number> {
   const cutoff = purgeCutoff()
+  // Only rows already shipped to Snowflake, and only once past the grace window.
+  return purgeBatched(
+    supabase,
+    tableName,
+    (q) => q.not('exported_at', 'is', null).lt('exported_at', cutoff),
+    maxRows,
+    sleep,
+    deadline,
+    now,
+  )
+}
+
+/**
+ * The batched drain shared by every purge: page rows out under a filter, DELETE each
+ * page bounded by the partition key, and stop cleanly on the wall-time budget, the
+ * platform subrequest ceiling, or a permanently-timing-out batch.
+ *
+ * The filter is the ONLY thing that varies, and it is the whole safety contract: it
+ * decides which rows are deletable. Everything else (batching, partition bounding,
+ * statement-timeout retry, clean stops) is identical and must not be re-implemented
+ * per caller.
+ */
+export async function purgeBatched(
+  supabase: SupabaseClient,
+  tableName: string,
+  applyFilter: PurgeFilter,
+  maxRows: number = MAX_ROWS_PER_RUN,
+  sleep: Sleep = DEFAULT_SLEEP,
+  deadline?: number,
+  now: () => number = Date.now,
+): Promise<number> {
   const partitionKey = partitionKeyFor(tableName)
   let purged = 0
 
@@ -709,13 +751,14 @@ export async function purgeOldExported(
       const purgedCount = await withStatementTimeoutRetry(async () => {
         // The partition key comes back with the page so the DELETE can be bounded
         // by it; selecting `id` alone leaves nothing to prune on.
-        const { data, error } = await supabase
+        const baseQuery = supabase
           .from(tableName)
-          .select(`id, ${partitionKey}`)
-          .not('exported_at', 'is', null)
-          .lt('exported_at', cutoff)
-          .limit(batch)
-        if (error) throw error
+          .select(`id, ${partitionKey}`) as unknown as PurgeQuery
+        const { data, error } = await applyFilter(baseQuery).limit(batch)
+        // PurgeQuery types `error` as unknown (it is structural, not the postgrest
+        // type), so rethrow it as a real Error. toThrowable keeps `code`, which is what
+        // the statement-timeout and subrequest-ceiling checks below read.
+        if (error) throw toThrowable(toDbError(error))
         const page = (data ?? []) as unknown as Array<Record<string, unknown>>
         const ids = page.map((r) => r.id as string)
         if (ids.length === 0) return { count: 0, drained: true }

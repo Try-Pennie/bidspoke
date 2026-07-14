@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { matchTradesToEvaluations, ACHIEVE_COLS, runAchieveExport } from '../achieve-export'
+import { matchTradesToEvaluations, ACHIEVE_COLS, runAchieveExport, purgeSandboxEvaluations } from '../achieve-export'
 import { buildMergeSql, formatValue } from '../sightings-export'
 
 const mocks = vi.hoisted(() => ({
@@ -24,9 +24,12 @@ vi.mock('../snowflake', async (importOriginal) => {
 })
 
 // Thenable query builder: awaiting it anywhere in the chain resolves to `result`.
+// `lt`/`lte`/`delete` are here because the real builder has them and the sandbox purge
+// (#644) uses them; without them it would throw inside these fixtures and every test
+// asserting a clean `errors: []` would fail for a reason that has nothing to do with it.
 function makeThenableBuilder(result: { data: unknown; error: unknown }) {
   const b: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'update', 'not']) {
+  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'update', 'not', 'lt', 'lte', 'delete']) {
     b[m] = vi.fn(() => b)
   }
   b.then = (resolve: (r: unknown) => unknown) => resolve(result)
@@ -37,7 +40,7 @@ function makeThenableBuilder(result: { data: unknown; error: unknown }) {
 function makeRecordingBuilder() {
   const calls: Array<{ method: string; args: unknown[] }> = []
   const b: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) {
+  for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) {
     b[m] = (...args: unknown[]) => {
       calls.push({ method: m, args })
       return b
@@ -186,7 +189,7 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
     return {
       from: vi.fn((table: string) => {
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) b[m] = vi.fn(() => b)
+        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
         if (table === 'achieve_evaluations') {
           b.update = vi.fn(() => {
             const u: Record<string, unknown> = {
@@ -236,7 +239,7 @@ describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
     const supabase = {
       from: vi.fn((table: string) => {
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not']) b[m] = vi.fn(() => b)
+        for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'not', 'lt', 'lte', 'delete']) b[m] = vi.fn(() => b)
         if (table === 'achieve_evaluations') {
           b.update = vi.fn(() => {
             const u: Record<string, unknown> = {
@@ -266,5 +269,113 @@ describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
 
     expect(updateFilters).toContainEqual({ col: 'id', val: 'e-1' })
     expect(updateFilters).toContainEqual({ col: 'requested_at_utc', val: '2026-07-01T00:00:00Z' })
+  })
+})
+
+// ── Sandbox purge (#644) ──────────────────────────────────────────────────────
+// Sandbox rows are deliberately never exported to Snowflake (their offers describe
+// Achieve's seeded showroom person, not a real lead). But the only purge in the system
+// deletes rows whose `exported_at` is set, and a row that never exports never gets
+// stamped, so sandbox rows could never be reclaimed and grew without bound. This
+// project has already hit Supabase disk pressure from unbounded log tables.
+//
+// The safety contract is the filter. An unexported PRODUCTION row looks superficially
+// similar (exported_at IS NULL) but is pending export: deleting one would lose the row
+// permanently, since Snowflake never got a copy. The purge must key on is_sandbox.
+describe('purgeSandboxEvaluations (#644)', () => {
+  // Records every filter applied to the SELECT so the safety contract can be asserted
+  // directly, rather than inferred from a row count.
+  function recordingSupabase(rows: Array<Record<string, unknown>> = []) {
+    const filters: Array<{ op: string; col: string; val: unknown }> = []
+    const deleteFilters: Array<{ op: string; col: string; val: unknown }> = []
+    const supabase = {
+      from: () => ({
+        select: () => {
+          const q: Record<string, unknown> = {}
+          for (const op of ['eq', 'lt', 'not', 'is', 'gte', 'lte']) {
+            q[op] = (col: string, a: unknown, b?: unknown) => {
+              filters.push({ op, col, val: op === 'not' ? b : a })
+              return q
+            }
+          }
+          q.limit = () => Promise.resolve({ data: rows, error: null })
+          return q
+        },
+        delete: () => {
+          const d: Record<string, unknown> = {}
+          for (const op of ['in', 'gte', 'lte']) {
+            d[op] = (col: string, val: unknown) => {
+              deleteFilters.push({ op, col, val })
+              return d
+            }
+          }
+          d.then = (resolve: (r: unknown) => unknown) => resolve({ error: null, count: rows.length })
+          return d
+        },
+      }),
+    }
+    return { supabase, filters, deleteFilters }
+  }
+
+  const sandboxRow = { id: 'sb-1', requested_at_utc: '2026-07-01T00:00:00Z' }
+
+  it('only ever deletes rows flagged is_sandbox, never an unexported production row', async () => {
+    const { supabase, filters } = recordingSupabase([sandboxRow])
+    await purgeSandboxEvaluations(supabase as never)
+    expect(filters).toContainEqual({ op: 'eq', col: 'is_sandbox', val: true })
+  })
+
+  it('only deletes rows past the retention window', async () => {
+    const { supabase, filters } = recordingSupabase([sandboxRow])
+    const now = () => Date.UTC(2026, 6, 14, 0, 0, 0)
+    await purgeSandboxEvaluations(supabase as never, undefined, undefined, undefined, now)
+    const cutoff = filters.find((f) => f.op === 'lt' && f.col === 'requested_at_utc')
+    expect(cutoff).toBeDefined()
+    // 7 days back from the injected now.
+    expect(cutoff!.val).toBe(new Date(Date.UTC(2026, 6, 7, 0, 0, 0)).toISOString())
+  })
+
+  it('bounds the DELETE by the partition key so it cannot fan out across every partition', async () => {
+    const { supabase, deleteFilters } = recordingSupabase([sandboxRow])
+    await purgeSandboxEvaluations(supabase as never)
+    expect(deleteFilters.some((f) => f.col === 'requested_at_utc' && f.op === 'gte')).toBe(true)
+    expect(deleteFilters.some((f) => f.col === 'requested_at_utc' && f.op === 'lte')).toBe(true)
+  })
+
+  it('deletes nothing when there are no sandbox rows', async () => {
+    const { supabase, deleteFilters } = recordingSupabase([])
+    const purged = await purgeSandboxEvaluations(supabase as never)
+    expect(purged).toBe(0)
+    expect(deleteFilters).toEqual([])
+  })
+})
+
+describe('runAchieveExport sandbox purge wiring (#644)', () => {
+  beforeEach(() => {
+    mocks.exportTable.mockReset().mockResolvedValue(0)
+    mocks.purgeOldExported.mockReset().mockResolvedValue(0)
+    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+  })
+
+  it('reports how many sandbox rows it reclaimed', async () => {
+    const supabase = { from: vi.fn(() => makeThenableBuilder({ data: [], error: null })) }
+    const summary = await runAchieveExport(supabase as never, {} as never)
+    expect(summary).toHaveProperty('sandbox_purged')
+  })
+
+  // Fail loud: a purge that cannot delete must surface, not report a clean run.
+  it('surfaces a failing sandbox purge in errors instead of reporting success', async () => {
+    const supabase = {
+      from: () => ({
+        select: () => {
+          const q: Record<string, unknown> = {}
+          for (const op of ['eq', 'lt', 'not', 'is']) q[op] = () => q
+          q.limit = () => Promise.resolve({ data: null, error: { message: 'permission denied', code: '42501' } })
+          return q
+        },
+      }),
+    }
+    const summary = await runAchieveExport(supabase as never, {} as never)
+    expect(summary.errors.some((e) => e.includes('sandbox purge'))).toBe(true)
   })
 })

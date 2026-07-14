@@ -16,7 +16,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
-import { exportTable, purgeOldExported, readSnowflakeConfig, type ColSpec } from './sightings-export'
+import { exportTable, purgeOldExported, purgeBatched, readSnowflakeConfig, type ColSpec } from './sightings-export'
 import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
 import { formatErr } from './format-error'
 
@@ -72,7 +72,46 @@ export interface AchieveExportSummary {
   trades_backfilled: number
   evaluations_exported: number
   evaluations_purged: number
+  sandbox_purged: number
   errors: string[]
+}
+
+// Sandbox rows are never exported (see the export filter below), so the normal purge,
+// which only deletes rows whose exported_at is set, can never reach them: they would
+// accumulate forever (#644). They get their own retention instead.
+//
+// A week, not the 24h grace the exported rows get, because purging a sandbox row is
+// PERMANENT: Snowflake never received a copy. A week is long enough to debug a sandbox
+// validation session and short enough to bound the table if the node sits pointed at
+// Achieve's sandbox for weeks waiting on production credentials.
+const SANDBOX_RETENTION_HOURS = 7 * 24
+
+/**
+ * Reclaim sandbox evaluations past their retention window.
+ *
+ * The filter is the safety contract. An unexported PRODUCTION row looks superficially
+ * similar (exported_at IS NULL) but is merely pending export, and deleting one would
+ * lose it for good. So this keys on `is_sandbox`, never on the absence of an export
+ * stamp. The cutoff is on `requested_at_utc`, which is also the partition key, so the
+ * scan prunes to the partitions it actually touches.
+ */
+export async function purgeSandboxEvaluations(
+  supabase: SupabaseClient,
+  maxRows?: number,
+  sleep?: (ms: number) => Promise<void>,
+  deadline?: number,
+  now: () => number = Date.now,
+): Promise<number> {
+  const cutoff = new Date(now() - SANDBOX_RETENTION_HOURS * 60 * 60 * 1000).toISOString()
+  return purgeBatched(
+    supabase,
+    'achieve_evaluations',
+    (q) => q.eq('is_sandbox', true).lt('requested_at_utc', cutoff),
+    maxRows,
+    sleep,
+    deadline,
+    now,
+  )
 }
 
 /**
@@ -164,6 +203,7 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     trades_backfilled: 0,
     evaluations_exported: 0,
     evaluations_purged: 0,
+    sandbox_purged: 0,
     errors: [],
   }
 
@@ -211,6 +251,13 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     summary.evaluations_purged = await purgeOldExported(supabase, 'achieve_evaluations')
   } catch (e) {
     summary.errors.push(`evaluations purge: ${formatErr(e)}`)
+  }
+
+  // Sandbox rows never export, so the purge above can never reach them (#644).
+  try {
+    summary.sandbox_purged = await purgeSandboxEvaluations(supabase)
+  } catch (e) {
+    summary.errors.push(`sandbox purge: ${formatErr(e)}`)
   }
 
   return summary
