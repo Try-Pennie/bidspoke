@@ -93,42 +93,112 @@ so it lives in env vars and is gated per-lead on the payload booleans. See
 
 ## Analysis
 
-> **`is_sandbox` matters more than `is_test` here.** Off production the node sends Achieve's
-> seeded showroom identity (their sandbox only returns offers for its own seeded profiles), so
-> on a sandbox row the **offers and the accept/decline describe a fake person**. The **lead
-> volume and the debt we sent are real**, which is why the rows are flagged rather than hidden.
->
-> Any offer-quality question (what would Achieve pay, what APR, what accept rate) MUST filter
-> `NOT is_sandbox`. A pure volume question (how many leads reach each Engine path) may include
-> them. Sandbox rows are never exported to Snowflake.
+**Query this in Snowflake, not Supabase.** The nightly 09:00 UTC export
+(`apps/worker/src/lib/achieve-export.ts`) MERGEs rows into an `achieve_evaluations` table in
+the same database and schema as `lead_sightings` (`SNOWFLAKE_DATABASE` / `SNOWFLAKE_SCHEMA`),
+then purges the Supabase source about 24 hours later. Supabase therefore holds roughly a day
+of real rows; Snowflake holds all of them.
+
+**Every row in Snowflake is already real and non-test**, so none of the queries below filter
+for that. The export only ever ships rows with `is_test = false AND is_sandbox = false`, and
+neither column is in the exported column list at all. Writing `WHERE NOT is_sandbox` against
+Snowflake does not narrow the result, it errors on an unknown column.
+
+Sandbox rows still exist, but only in Supabase, and they never leave it. Off production the
+node sends Achieve's seeded showroom identity (their sandbox only returns offers for its own
+seeded profiles), so a sandbox row's offers and accept/decline describe a fake person. Holding
+them back is what keeps fabricated APRs out of Snowflake. If you do query Supabase directly,
+filter `is_test = false AND is_sandbox = false` yourself, because there nothing has filtered
+them for you.
+
+Three things will quietly skew a first pass at this data. The counts below are a snapshot from
+2026-07-14 (527 real rows, the first day the node ran in production) purely to show the shape of
+the problem; they move daily, so re-derive them, do not cite them.
+
+1. **`DuplicateLead` is not a decline, and it is a large minority.** Achieve cannot make an
+   offer on a lead it has already seen, so those rows can never produce offers: 87 of the 527.
+   Leave them in the denominator and the offer rate is diluted by leads that were never eligible
+   for an offer in the first place. Every offer-rate query below excludes them.
+2. **`response_reason` embeds the Achieve lead ID** ("Lead 187740532 didn't qualify for
+   offers"), so a plain `GROUP BY response_reason` returns one group per lead (429 of them),
+   not one group per reason. Normalize it first, the way the reason query below does.
+3. **`offers` is a term ladder, not a set of competing loans.** An accepted lead comes back with
+   the same `amount` at several `terms` (24/36/48/60 is typical), which is how 11 accepted leads
+   produced 44 offers. Averaging `amount` over flattened offers therefore counts one loan four
+   times. Collapse to one offer per lead first, as the best-offer query does with `QUALIFY`.
 
 ```sql
--- volume + acceptance by day (real offers only)
-SELECT date_trunc('day', requested_at_utc) AS day, response_status, count(*),
-       sum(offer_count) AS offers
+-- Volume and outcome by day.
+SELECT DATE_TRUNC('day', requested_at_utc)             AS day,
+       COUNT(*)                                        AS leads,
+       COUNT_IF(response_reason = 'DuplicateLead')     AS duplicates,
+       COUNT_IF(response_status = 'accepted')          AS accepted,
+       COUNT_IF(response_status = 'error')             AS errors,
+       SUM(offer_count)                                AS offers
 FROM achieve_evaluations
-WHERE NOT is_test AND NOT is_sandbox
-GROUP BY 1, 2 ORDER BY 1;
+GROUP BY 1
+ORDER BY 1;
 
--- lead volume reaching Achieve, by Engine path (sandbox rows are fine here: volume is real)
-SELECT node_namespace, count(*) AS leads
+-- Offer rate. Duplicates are out of the denominator: Achieve never scores them.
+SELECT COUNT(*)                                                        AS scored_leads,
+       COUNT_IF(response_status = 'accepted')                          AS leads_with_offers,
+       ROUND(100 * COUNT_IF(response_status = 'accepted')
+                 / NULLIF(COUNT(*), 0), 1)                             AS offer_rate_pct
 FROM achieve_evaluations
-WHERE NOT is_test
-GROUP BY 1 ORDER BY 2 DESC;
+WHERE COALESCE(response_reason, '') <> 'DuplicateLead';
 
--- offer detail, joinable to lead_sightings / execution_steps on trace_id
-SELECT a.trace_id, a.submission_id, a.request_payload->>'unsecured_debt' AS debt_sent,
-       o.value->>'amount' AS offer_amount, o.value->>'monthly_payment' AS monthly,
-       o.value->>'terms' AS terms
-FROM achieve_evaluations a, jsonb_array_elements(a.offers) o
-WHERE a.response_status = 'accepted' AND NOT a.is_test AND NOT a.is_sandbox;
+-- Why leads come back without offers, with the per-lead ID normalized out of the reason.
+SELECT CASE
+         WHEN response_reason ILIKE 'Lead % didn''t qualify%' THEN 'Did not qualify'
+         ELSE COALESCE(response_reason, '(accepted)')
+       END               AS reason,
+       COUNT(*)          AS leads
+FROM achieve_evaluations
+GROUP BY 1
+ORDER BY leads DESC;
+
+-- Lead volume reaching Achieve, by Engine path.
+SELECT node_namespace, COUNT(*) AS leads
+FROM achieve_evaluations
+GROUP BY 1
+ORDER BY leads DESC;
+
+-- Every offer, one row per rung of the term ladder.
+SELECT a.trace_id,
+       a.submission_id,
+       a.request_payload:unsecured_debt::NUMBER  AS debt_sent,
+       a.request_payload:credit_rating::STRING   AS credit_rating,
+       o.value:provider::STRING                  AS provider,
+       o.value:amount::NUMBER                    AS offer_amount,
+       o.value:apr::FLOAT                        AS apr,
+       o.value:terms::NUMBER                     AS terms,
+       o.value:monthly_payment::NUMBER           AS monthly_payment
+FROM achieve_evaluations a,
+     LATERAL FLATTEN(input => a.offers) o
+WHERE a.response_status = 'accepted'
+ORDER BY a.requested_at_utc DESC;
+
+-- Best offer per lead (lowest APR rung), so per-lead averages are not counted once per term.
+SELECT a.trace_id,
+       a.submission_id,
+       a.request_payload:unsecured_debt::NUMBER  AS debt_sent,
+       o.value:amount::NUMBER                    AS offer_amount,
+       o.value:apr::FLOAT                        AS apr,
+       o.value:terms::NUMBER                     AS terms,
+       o.value:monthly_payment::NUMBER           AS monthly_payment
+FROM achieve_evaluations a,
+     LATERAL FLATTEN(input => a.offers) o
+WHERE a.response_status = 'accepted'
+QUALIFY ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY o.value:apr::FLOAT) = 1;
 ```
 
-Trades-data join (Geoff, later): `trace_id` -> `execution_steps` rows for the
-`trades_request` step, or `submission_id` -> Salesforce. Note `execution_steps` payloads
-compact after 14 days; `achieve_evaluations` rows persist, so anything needed from
-trades long-term should be exported or joined within that window (or we add trades
-fields to this table).
+**Trades data is already on the row.** It does not need a join (issue #28 shipped this): the
+export backfills each evaluation's `trades_request` step output into the `trades` VARIANT while
+the execution is at most a day old, precisely because `execution_steps` ages out well before
+anyone gets around to the analysis. The shape is `{status, body}`, so read it as
+`trades:body`, and expect it to be null on some rows (383 of the 527 carried trades), since not
+every execution reaches the trades step. `submission_id` still joins out to Salesforce, and
+`trace_id` to `lead_sightings`.
 
 ## Open questions (for Geoff / Achieve)
 
