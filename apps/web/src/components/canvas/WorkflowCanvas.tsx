@@ -538,10 +538,10 @@ function defToEdges(edges: EdgeDef[]): Edge[] {
     id: e.id,
     source: e.source,
     target: e.target,
-    // A legacy edge persisted without a source_handle means "the default output"
-    // — every single-output node renders its source handle as id="output". Map it
-    // to 'output' rather than null so handle comparisons downstream can't miss it
-    // and silently append a second out-edge beside the stale one (#567).
+    // A legacy edge persisted without a source_handle means "the default output".
+    // Every single-output node renders its source handle as id="output", so map it
+    // to 'output' rather than null: otherwise a handle comparison downstream misses
+    // it and silently appends a second out-edge beside the stale one (#567).
     sourceHandle: normalizeHandle(e.source_handle),
     data: { condition: e.condition },
     ...(e.hidden ? { hidden: true } : {}),
@@ -1083,7 +1083,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // Mis-wired nodes: two outgoing edges on one handle (#567). The engine follows
   // only the first, so the other target silently never runs. Kept separate from
   // validationErrors because the cause and the fix are different (a stale edge,
-  // not a missing config) — but both flag the node on the canvas.
+  // not a missing config), though both flag the node on the canvas.
   const wiringErrors: Map<string, ValidationError> = useMemo(
     () => (mode === 'edit' ? findDuplicateOutEdges(nodes, edges) : new Map()),
     [mode, nodes, edges]
@@ -2983,7 +2983,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
           {mode === 'edit' && <div className="h-5 w-px bg-gray-200" />}
 
-          {/* Mis-wiring warning (#567) — red, not amber: an unconfigured node is an
+          {/* Mis-wiring warning (#567). Red, not amber: an unconfigured node is an
               unfinished edit, but a node with two outgoing edges on one output is a
               live correctness bug that the canvas would otherwise never surface. */}
           {mode === 'edit' && wiringErrors.size > 0 && (

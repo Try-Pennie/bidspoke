@@ -173,7 +173,7 @@ export function findDuplicateOutEdges(nodes: Node[], edges: Edge[]): Map<string,
       nodeId: id,
       namespace: data?.namespace ?? id,
       label: data?.label,
-      message: 'Has two outgoing edges on one output. Only one will run — delete the stale edge.',
+      message: 'Has two outgoing edges on one output. Only one will run. Delete the stale edge.',
     })
   }
   return errors

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import type { Edge, Node } from '@xyflow/react'
 import { findDuplicateOutEdges } from '../workflow-validation'
 
-// #567: two outgoing edges on the SAME logical handle is always corrupt — the
+// #567: two outgoing edges on the SAME logical handle is always corrupt. The
 // engine follows whichever it finds first and silently skips the other branch of
 // the fork. This is the state the null-handle drop bug produced twice on real
 // workflows, caught only by querying workflows.definition after the fact.
@@ -75,7 +75,7 @@ describe('findDuplicateOutEdges (#567)', () => {
   it('does not flag two edges on one handle that point at the SAME target', () => {
     // Found on live Main Flow: a stale null-handle edge and a fresh 'output' edge
     // that happen to land on the same node. Behaviorally identical to a single
-    // edge — the engine goes to the same place either way — so it is redundancy,
+    // edge (the engine goes to the same place either way), so it is redundancy,
     // not a fork. dedupeEdges() normalizes it away on load; blocking the save of
     // a live workflow over it would strand the editor on a non-problem.
     const nodes = [node('data_store', 'data_store'), node('response', 'response')]

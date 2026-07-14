@@ -72,7 +72,7 @@ describe('dedupeEdges (#567)', () => {
     ]
     const result = dedupeEdges(edges)
     expect(result).toHaveLength(1)
-    expect(result[0].id).toBe('stale') // first occurrence wins — ids stay stable
+    expect(result[0].id).toBe('stale') // first occurrence wins, so ids stay stable
   })
 
   it('keeps two edges on one handle that point at DIFFERENT targets', () => {
