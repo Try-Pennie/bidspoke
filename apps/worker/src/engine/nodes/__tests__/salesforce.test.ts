@@ -4,7 +4,7 @@
  * merge, 401 evicts cache, non-2xx throws Response, 204 No Content handling.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeSalesforceNode } from '../salesforce'
+import { executeSalesforceNode, SF_QUERY_PAGE_CAP } from '../salesforce'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -307,6 +307,100 @@ describe('executeSalesforceNode', () => {
     expect(url).toContain(encodeURIComponent('SELECT Id'))
     expect(fetchMock.mock.calls[0][1].method).toBe('GET')
     expect(fetchMock.mock.calls[0][1].body).toBeUndefined()
+  })
+
+  it('query: follows nextRecordsUrl and merges every page (#509)', async () => {
+    // Salesforce caps a query at ~2000 records and hands back done:false plus a
+    // nextRecordsUrl. We used to return page 1 and call it the whole result set:
+    // silent truncation, so "no matching record" could just mean "page 2".
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock
+      .mockResolvedValueOnce(mockResponse(200, JSON.stringify({
+        totalSize: 3, done: false, nextRecordsUrl: '/services/data/v60.0/query/01g-2000',
+        records: [{ Id: 'SF-1' }],
+      })))
+      .mockResolvedValueOnce(mockResponse(200, JSON.stringify({
+        totalSize: 3, done: false, nextRecordsUrl: '/services/data/v60.0/query/01g-4000',
+        records: [{ Id: 'SF-2' }],
+      })))
+      .mockResolvedValueOnce(mockResponse(200, JSON.stringify({
+        totalSize: 3, done: true, records: [{ Id: 'SF-3' }],
+      })))
+
+    const res = await executeSalesforceNode(
+      makeNode({ operation: 'query', soql: 'SELECT Id FROM Prospect__c' }),
+      makeCtx(),
+      env
+    )
+
+    const body = (res.output as { body: { records: unknown[]; done: boolean; totalSize: number } }).body
+    expect(body.records).toEqual([{ Id: 'SF-1' }, { Id: 'SF-2' }, { Id: 'SF-3' }])
+    expect(body.done).toBe(true)
+    expect(body.totalSize).toBe(3)
+    // Follow-up pages are absolute-ised against the instance URL.
+    expect(fetchMock.mock.calls[1][0]).toBe(`${INSTANCE}/services/data/v60.0/query/01g-2000`)
+    expect(fetchMock.mock.calls[2][0]).toBe(`${INSTANCE}/services/data/v60.0/query/01g-4000`)
+  })
+
+  it('query: does not fetch again when the first page is already done', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(200, JSON.stringify({
+      totalSize: 1, done: true, records: [{ Id: 'SF-1' }],
+    })))
+
+    await executeSalesforceNode(
+      makeNode({ operation: 'query', soql: 'SELECT Id FROM Prospect__c' }),
+      makeCtx(),
+      env
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('query: stops at the page cap and says so LOUDLY rather than truncating in silence', async () => {
+    // The failure this whole fix exists to prevent is a partial result that looks
+    // complete. If we bail at the cap we must not pretend the set is whole.
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    // Never-ending pagination: every page says there is another.
+    fetchMock.mockResolvedValue(mockResponse(200, JSON.stringify({
+      totalSize: 99999, done: false, nextRecordsUrl: '/services/data/v60.0/query/01g-more',
+      records: [{ Id: 'SF-x' }],
+    })))
+
+    const res = await executeSalesforceNode(
+      makeNode({ operation: 'query', soql: 'SELECT Id FROM Prospect__c' }),
+      makeCtx(),
+      env
+    )
+
+    expect(fetchMock.mock.calls.length).toBe(SF_QUERY_PAGE_CAP)
+    const body = (res.output as { body: { done: boolean; truncated?: boolean } }).body
+    expect(body.done).toBe(false)
+    expect(body.truncated).toBe(true)
+    // and it must be visible in the step log, not just a console line
+    expect(res.logs?.some((l) => l.level === 'warn' && /truncat/i.test(l.message))).toBe(true)
+  })
+
+  it('query: a failing follow-up page fails the step instead of returning a partial set', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock
+      .mockResolvedValueOnce(mockResponse(200, JSON.stringify({
+        totalSize: 2, done: false, nextRecordsUrl: '/services/data/v60.0/query/01g-2000',
+        records: [{ Id: 'SF-1' }],
+      })))
+      .mockResolvedValueOnce(mockResponse(500, '{"message":"boom"}'))
+
+    await expect(
+      executeSalesforceNode(
+        makeNode({ operation: 'query', soql: 'SELECT Id FROM Prospect__c' }),
+        makeCtx(),
+        env
+      )
+    ).rejects.toThrow(/Salesforce/)
   })
 
   // ── apex ────────────────────────────────────────────────────────────────────

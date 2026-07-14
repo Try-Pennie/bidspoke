@@ -357,7 +357,168 @@ export async function executeSalesforceNode(
     throw err
   }
 
+  // Salesforce returns at most ~2000 records per page and signals more with
+  // done:false + nextRecordsUrl (#509). We used to hand back page 1 as if it were
+  // the whole result set, so a record sitting on page 2 read as "not found" and a
+  // count read low, with nothing in the output to say so. Follow the pages.
+  if (operation === 'query') {
+    const paged = await followQueryPages(parsedBody, {
+      instanceUrl,
+      headers,
+      signal,
+      traceId: ctx.trigger.trace_id,
+      bulkhead,
+      waitMs,
+      resolvedInput,
+    })
+    parsedBody = paged.body
+    if (paged.warn) warnLogs.push(paged.warn)
+  }
+
   return { output: { status: res.status, body: parsedBody }, resolvedInput, ...(warnLogs.length > 0 ? { logs: warnLogs } : {}) }
+}
+
+/**
+ * Most pages we will walk for a single query, INCLUDING the first. At Salesforce's
+ * ~2000 records per page that is ~20k records, far above anything a workflow step
+ * should be pulling inline, and it bounds a pathological query (or a server that
+ * keeps claiming there is more) instead of looping until the step times out.
+ */
+export const SF_QUERY_PAGE_CAP = 10
+
+interface SfQueryBody {
+  done?: boolean
+  nextRecordsUrl?: string
+  records?: unknown[]
+  totalSize?: number
+  truncated?: boolean
+}
+
+function isPagedQueryBody(body: unknown): body is SfQueryBody {
+  if (typeof body !== 'object' || body === null) return false
+  const b = body as SfQueryBody
+  return b.done === false && typeof b.nextRecordsUrl === 'string' && Array.isArray(b.records)
+}
+
+/**
+ * Walk nextRecordsUrl until Salesforce says done, or until the page cap.
+ *
+ * Two things this must never do. It must not return a partial set that looks
+ * complete: hitting the cap leaves `done:false` and adds `truncated:true` plus a
+ * warn entry on the step, so the partiality is visible in the UI and not just in a
+ * console line nobody reads. And it must not sneak around the bulkhead (ADR 0005):
+ * every page is another Salesforce call, so every page takes a slot, exactly like
+ * the first one did.
+ */
+async function followQueryPages(
+  first: unknown,
+  opts: {
+    instanceUrl: string
+    headers: Record<string, string>
+    signal: AbortSignal | undefined
+    traceId: string
+    bulkhead: BulkheadClient | null
+    waitMs: number
+    resolvedInput: ResolvedStepInput
+  },
+): Promise<{ body: unknown; warn?: StepLogEntry }> {
+  if (!isPagedQueryBody(first)) return { body: first }
+
+  const records: unknown[] = [...(first.records ?? [])]
+  let page = first
+  let pages = 1
+
+  while (page.done === false && page.nextRecordsUrl) {
+    if (pages >= SF_QUERY_PAGE_CAP) {
+      console.log(
+        `[salesforce] event=salesforce_query_truncated pages=${pages} records=${records.length} total=${page.totalSize ?? 'unknown'} trace=${opts.traceId}`,
+      )
+      return {
+        body: { ...page, records, done: false, truncated: true },
+        warn: {
+          level: 'warn',
+          message: `Salesforce query truncated: stopped after ${pages} pages (${records.length} of ${page.totalSize ?? 'unknown'} records). Narrow the SOQL: this result set is INCOMPLETE.`,
+          ts: new Date().toISOString(),
+        },
+      }
+    }
+
+    const next: unknown = await fetchQueryPage(page.nextRecordsUrl, opts)
+    if (!isQueryBody(next)) {
+      throw Object.assign(new Error('Salesforce query page returned an unexpected body'), {
+        permanent: true,
+        resolvedInput: opts.resolvedInput,
+      })
+    }
+    records.push(...(next.records ?? []))
+    page = next
+    pages++
+  }
+
+  return { body: { ...page, records, done: true } }
+}
+
+function isQueryBody(body: unknown): body is SfQueryBody {
+  return typeof body === 'object' && body !== null
+}
+
+/** One follow-up page: bulkhead slot, own timeout, loud on a non-2xx. */
+async function fetchQueryPage(
+  nextRecordsUrl: string,
+  opts: {
+    instanceUrl: string
+    headers: Record<string, string>
+    signal: AbortSignal | undefined
+    traceId: string
+    bulkhead: BulkheadClient | null
+    waitMs: number
+    resolvedInput: ResolvedStepInput
+  },
+): Promise<unknown> {
+  // nextRecordsUrl is a path (/services/data/vXX.0/query/01g...-2000), not absolute.
+  const url = nextRecordsUrl.startsWith('http') ? nextRecordsUrl : `${opts.instanceUrl}${nextRecordsUrl}`
+
+  const lease = opts.bulkhead
+    ? await opts.bulkhead
+        .acquireWithWait(opts.waitMs, { signal: opts.signal })
+        .catch(() => ({ allowed: true } as AcquireResult))
+    : ({ allowed: true } as AcquireResult)
+  if (!lease.allowed) {
+    throw Object.assign(
+      new Error(`Salesforce bulkhead: at capacity while paging a query (${lease.inflight}/${lease.limit} inflight)`),
+      { permanent: true, resolvedInput: opts.resolvedInput },
+    )
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  linkAbort(controller, opts.signal)
+
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'GET', headers: opts.headers, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+    if (opts.bulkhead && lease.token) await opts.bulkhead.release(lease.token).catch(() => {})
+  }
+
+  const text = await res.text()
+  if (!res.ok) {
+    // A failed page means we do not know the full result set. Returning what we
+    // have would be the exact silent-truncation bug this function exists to kill.
+    const err = new Error(`Salesforce API error (${res.status}) while paging a query: ${text}`) as Error & {
+      permanent?: boolean
+      resolvedInput?: ResolvedStepInput
+    }
+    err.resolvedInput = opts.resolvedInput
+    if (!(res.status === 429 || res.status >= 500)) err.permanent = true
+    throw err
+  }
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
 }
 
 function applyInjectedFields(
