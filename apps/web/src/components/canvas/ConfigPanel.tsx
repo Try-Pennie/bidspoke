@@ -2018,8 +2018,10 @@ function PartnerBidConfig({
   const selectedId = (config.partner_id as string | undefined) ?? ''
 
   function handleSelect(id: string) {
-    const partner = partners.find((p) => p.id === id)
-    onChange({ partner_id: id, partner_name: partner?.name ?? '' })
+    // Store the id only. A copied partner_name goes stale the moment the partner
+    // is renamed, and nothing in the engine reads it: the card resolves the name
+    // live from the partner list instead (#645).
+    onChange({ partner_id: id })
   }
 
   return (

@@ -1,31 +1,19 @@
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import type { CanvasNodeData, EdgeCondition } from '@/types/workflow'
+import type { CanvasNodeData } from '@/types/workflow'
 import { Filter } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle, getOutputPreview } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
-
-const OP_LABELS: Partial<Record<EdgeCondition['operator'], string>> = {
-  eq: 'equals', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤',
-  contains: 'contains', not_contains: "doesn't contain",
-  exists: 'exists', not_exists: "doesn't exist",
-}
+import { filterConditionSummary } from '@/lib/filter-condition'
 
 export function FilterNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const operation = (config.operation as 'continue_if' | 'end_if' | undefined) ?? 'continue_if'
-  const condition = config.condition as { field?: string; operator?: EdgeCondition['operator']; value?: unknown } | undefined
   const outputPreview = getOutputPreview(executionStep)
 
-  const conditionSummary = condition?.field
-    ? [
-        condition.field,
-        OP_LABELS[condition.operator ?? 'eq'],
-        condition.value !== undefined && condition.value !== '' ? String(condition.value) : undefined,
-      ]
-        .filter(Boolean)
-        .join(' ')
-    : null
+  // Understands BOTH shapes the engine evaluates. Reading only config.condition
+  // made a rule-builder filter render "No condition set" while it gated traffic (#645).
+  const conditionSummary = filterConditionSummary(config)
 
   const width = nodeWidth('filter', data)
   const handleOffsets = (data as { _handleOffsets?: number[] } | undefined)?._handleOffsets

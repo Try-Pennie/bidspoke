@@ -4,6 +4,7 @@ import type { CanvasNodeData } from '@/types/workflow'
 import { Layers } from 'lucide-react'
 import { getNodeClasses, getExecutionStyle } from './execution-status'
 import { nodeWidth } from '@/lib/layout'
+import { bidGroupPartnerSummary } from '@/lib/bid-group-partners'
 
 type BidGroupMode = 'cascade' | 'highest_bid' | 'tiered'
 
@@ -17,11 +18,9 @@ interface BidGroupOutput {
 export function BidGroupNode({ data, selected }: NodeProps) {
   const { namespace, label, config, executionStep, hasError, isReachable } = data as unknown as CanvasNodeData
   const mode = (config.mode as BidGroupMode | undefined) ?? 'highest_bid'
-  const partnerIds = (config.partner_ids as string[] | undefined) ?? []
-  const tiers = (config.tiers as Array<{ partner_ids?: string[] }> | undefined) ?? []
-  const partnerCount = mode === 'tiered'
-    ? tiers.reduce((sum, t) => sum + (t.partner_ids?.length ?? 0), 0)
-    : partnerIds.length
+  // Counts the fallback partner too: the engine calls it when nobody wins, so
+  // leaving it out advertised fewer partners than the group can hit (#645).
+  const partnerSummary = bidGroupPartnerSummary(config)
 
   let winnerPreview: string | null = null
   let routeLabel: string | null = null
@@ -74,11 +73,7 @@ export function BidGroupNode({ data, selected }: NodeProps) {
             {winnerPreview}
           </p>
         ) : (
-          <p className="mt-0.5 truncate text-xs text-slate-400">
-            {partnerCount > 0
-              ? `${partnerCount} partner${partnerCount === 1 ? '' : 's'}`
-              : 'No partners configured'}
-          </p>
+          <p className="mt-0.5 truncate text-xs text-slate-400">{partnerSummary}</p>
         )}
       </div>
 

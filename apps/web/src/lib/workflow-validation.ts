@@ -1,6 +1,7 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { CanvasNodeData, NodeDef, EdgeDef } from '@/types/workflow'
 import { normalizeHandle } from './auto-connect'
+import { filterHasCondition } from './filter-condition'
 
 export interface ValidationError {
   nodeId: string
@@ -12,8 +13,10 @@ export interface ValidationError {
 function validateNodeConfig(type: string, config: Record<string, unknown>): string | null {
   switch (type) {
     case 'filter': {
-      const condition = config.condition as { field?: string } | undefined
-      if (!condition?.field?.trim()) return 'No condition field set'
+      // Both shapes the engine evaluates count as configured. Checking only
+      // config.condition flagged a live rule-builder filter as unconfigured,
+      // which also blocked saving the workflow (#645).
+      if (!filterHasCondition(config)) return 'No condition field set'
       return null
     }
     case 'branch': {
