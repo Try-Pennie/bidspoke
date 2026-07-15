@@ -45,6 +45,9 @@ export interface AchieveOffersConfig {
   wait_for_offers?: boolean
   utm_source?: string
   unsecured_debt_ref?: string
+  // Optional per-node override for where the pulled Vantage score lives. Defaults to the
+  // Main Flow's `gen_vantage_score` step. Only consulted when ACHIEVE_MIN_VANTAGE_SCORE > 0.
+  vantage_score_ref?: string
 }
 
 const FETCH_TIMEOUT_MS = 12_000
@@ -163,6 +166,30 @@ export async function executeAchieveOffersNode(
 
   const config = node.config as unknown as AchieveOffersConfig
   const waitForOffers = config.wait_for_offers !== false
+
+  // Vantage floor screen. Ships OFF: the env var is absent or 0 until someone sets it, so this
+  // is a no-op by default. When a positive floor is set, skip the call BEFORE building the PII
+  // payload for any lead whose pulled Vantage is below it, or who has no score at all. A skip is
+  // a pass-through with no _achieve_evaluation marker, so it writes no DB row and never fails the
+  // flow (same contract as the shadow stub).
+  const vantageFloor = parseVantageFloor(ctx.env.ACHIEVE_MIN_VANTAGE_SCORE)
+  if (vantageFloor > 0) {
+    const score = extractVantageScore(ctx, config)
+    if (score == null || score < vantageFloor) {
+      return {
+        output: {
+          _achieve_skipped: true as const,
+          reason: 'below_vantage_floor',
+          vantage_floor: vantageFloor,
+          vantage_score: score,
+          ok: false,
+          response_status: 'skipped',
+          offer_count: 0,
+          offers: [],
+        },
+      }
+    }
+  }
 
   // Needed BEFORE the request is built: off production we swap the lead's identity for
   // Achieve's showroom profile rather than leaking it to a sandbox that discards it.
@@ -371,6 +398,24 @@ function extractUnsecuredDebt(ctx: ExecutionContext, config: AchieveOffersConfig
     | undefined
   const debt = elig?.eligibilityData?.estimated_total_debt ?? elig?.final ?? null
   return debt != null && Number.isFinite(Number(debt)) ? Math.round(Number(debt)) : null
+}
+
+// The env var ships absent/blank and may be set to 0 to disable. Only a finite value > 0 is an
+// active floor; everything else (unset, blank, 0, non-numeric) means "send everyone".
+function parseVantageFloor(raw: string | undefined): number {
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+// The pulled Vantage score, from the Main Flow `gen_vantage_score` step by default, overridable
+// per-node for workflows with a different shape. Returns null when absent or non-numeric, which
+// the caller treats as below any floor (no score = do not send).
+function extractVantageScore(ctx: ExecutionContext, config: AchieveOffersConfig): number | null {
+  const raw = config.vantage_score_ref
+    ? resolveValue(config.vantage_score_ref, ctx)
+    : ctx.steps.gen_vantage_score?.output
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : null
 }
 
 function toE164(phone: string | undefined): string | undefined {

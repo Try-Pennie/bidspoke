@@ -25,6 +25,7 @@ The output carries an `_achieve_evaluation` marker. After the run completes, the
 | `wait_for_offers` | boolean | No | `true` | When true, Achieve holds the request up to 10s and returns offers inline. When false, Achieve replies accepted/rejected immediately and prequalifies asynchronously (no offers are logged). |
 | `utm_source` | string | No | env `ACHIEVE_UTM_SOURCE`, then `pennie` | `tracking.utm_source` sent to Achieve. Confirm the value with Achieve BizDev. |
 | `unsecured_debt_ref` | string | No | built-in extraction | Template overriding where the verified unsecured debt is read from, for workflows whose payload shape differs from the Main Flow. Example: `{{steps.my_step.output.debt}}`. |
+| `vantage_score_ref` | string | No | `gen_vantage_score` step | Template overriding where the pulled Vantage score is read from, used only when the `ACHIEVE_MIN_VANTAGE_SCORE` floor is active. Example: `{{steps.my_step.output.score}}`. |
 
 Standard node-config fields (`timeout_ms`, `retries`, etc.) also apply. Recommended: timeout `15000` ms (the default when dropped from the palette) and retries `0`, because retrying a transport failure risks double-submitting the lead to Achieve. The node aborts its own fetch at 12 seconds so a hung Achieve API never trips the engine-level step timeout.
 
@@ -44,6 +45,16 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_CONSENT_ESIGN` | No | Verbatim Electronic Consent Agreement text. Sent as `consents.e_sign`. |
 | `ACHIEVE_CONSENT_POLICY` | No | Verbatim Privacy Policy text. Sent as `consents.policy`. |
 | `ACHIEVE_CONSENT_TERM` | No | Verbatim Terms of Service text. Sent as `consents.term`. |
+| `ACHIEVE_MIN_VANTAGE_SCORE` | No | Minimum pulled Vantage score required to send a lead to Achieve. Ships off: absent, blank, or `0` sends every lead (current behavior). Set a positive number (for example `700`) to skip the call for any lead scoring below it. |
+
+### Vantage floor screen
+
+`ACHIEVE_MIN_VANTAGE_SCORE` gates the call on the lead's pulled Vantage score. It is a single switch that applies to every Achieve node in the workflow, so it is changed once on the Environment Variables page rather than per node.
+
+- Off by default: unset, blank, or `0` means send every lead, exactly as before. Add the variable set to `0` to stage it with no behavior change, then raise it when ready.
+- When set to a positive floor, a lead whose Vantage is below the floor is skipped before any payload is built: no API call, no PII sent, no `achieve_evaluations` row, and the flow continues normally.
+- A lead with no Vantage score is treated as below the floor and skipped (no score, do not send).
+- The score is read from the `gen_vantage_score` step by default; override with `vantage_score_ref` for other workflows.
 
 ### Sandbox mode: the showroom profile
 

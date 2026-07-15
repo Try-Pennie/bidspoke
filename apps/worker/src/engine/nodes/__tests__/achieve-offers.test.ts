@@ -244,6 +244,66 @@ describe('executeAchieveOffersNode', () => {
     expect(out.response_reason).toContain('ACHIEVE_USERNAME')
   })
 
+  // Vantage floor screen (ACHIEVE_MIN_VANTAGE_SCORE). Ships OFF: 0/blank/unset send everyone,
+  // exactly as before. A positive floor skips the call (no PII sent, no DB row) for leads whose
+  // pulled Vantage is below it, or who have no score at all.
+  const VANTAGE_ENV = { ...PROD_ENV, ACHIEVE_MIN_VANTAGE_SCORE: '700' }
+  const withVantage = (score: unknown) => ({
+    gen_vantage_score: { status: 'completed', output: score },
+  })
+
+  it('skips the call when Vantage is below the floor', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { output } = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
+    )
+    const out = output as Record<string, unknown>
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(out._achieve_skipped).toBe(true)
+    expect(out).not.toHaveProperty('_achieve_evaluation')
+  })
+
+  it('skips the call when there is no Vantage score and a floor is set', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { output } = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(null) })
+    )
+    const out = output as Record<string, unknown>
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(out._achieve_skipped).toBe(true)
+  })
+
+  it('sends when Vantage is at or above the floor', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(720) })
+    )
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('sends everyone when the floor is 0 (disabled), regardless of score', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_VANTAGE_SCORE: '0' }, steps: withVantage(400) })
+    )
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('sends when the floor env var is unset (feature off by default)', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: PROD_ENV, steps: withVantage(400) })
+    )
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
   // Production only: off production the showroom profile always supplies email, phone,
   // name and address, so an incomplete lead can no longer be missing them.
   it('skips the API call and lists missing required fields', async () => {
