@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.110.1"
+    "@supabase/supabase-js": "^2.110.2"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240524.0",
@@ -17,6 +17,6 @@
     "@typescript-eslint/eslint-plugin": "^8.63.0",
     "@typescript-eslint/parser": "^8.63.0",
     "eslint": "^10.6.0",
-    "wrangler": "^4.107.0"
+    "wrangler": "^4.110.0"
   }
 }
