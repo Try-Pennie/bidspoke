@@ -122,23 +122,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '22'
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install
-
-      # Dependency vulnerabilities (#263). Fails on any NEW high/critical advisory.
-      # Pre-existing highs are patched via pnpm.overrides or baselined via
-      # pnpm.auditConfig.ignoreGhsas — see docs/security/dependency-audit-baseline.md.
-      - name: pnpm audit (high+)
-        run: pnpm audit --audit-level=high
+      # Dependency vulnerabilities (#263). Fails on any NEW high/critical advisory
+      # in a PRODUCTION dependency. Pre-existing highs are patched via
+      # pnpm.overrides (real fixes) or baselined per-advisory in .trivyignore.
+      # See docs/security/dependency-audit-baseline.md.
+      #
+      # Replaces `pnpm audit`, which broke permanently once npm retired the legacy
+      # audit endpoint (410 Gone). Trivy reads pnpm-lock.yaml directly against its
+      # own maintained DB (no npm endpoint) and excludes dev/test tooling by
+      # default. Binary invocation matches the gitleaks pattern below.
+      - name: Dependency audit (Trivy)
+        run: |
+          set -euo pipefail
+          VER=0.72.0
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin "v${VER}"
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
+            --ignorefile .trivyignore --no-progress pnpm-lock.yaml
 
       # Secret scanning (#264). Scans the working tree for committed secrets.
       # Binary invocation avoids the org-license requirement of the v2 action.
