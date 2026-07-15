@@ -1,0 +1,23 @@
+# Trivy dependency-audit baseline (#263).
+#
+# CI runs `trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1` on
+# pnpm-lock.yaml and fails the build on any NEW high/critical advisory in a
+# PRODUCTION dependency. Trivy excludes dev/test tooling by default, so the old
+# undici/vite exceptions are no longer needed (they never shipped).
+#
+# This file is per-advisory, NOT blanket: a brand-new high in `next` (or anywhere)
+# still trips the gate. Each entry is an accepted pre-existing high, documented in
+# docs/security/dependency-audit-baseline.md. Remove entries as they are remediated.
+#
+# --- next: fixed only in Next 15.x; app is on Next 14. Remediation is the tracked
+#     Next 14->15 upgrade (#443), not an indefinite ignore. The frontend is an
+#     internal, authenticated ops tool (small known user set), lowering practical
+#     exposure of the SSRF / cache / DoS classes here. Remove all five the moment
+#     Next is upgraded. Two are reported by their CVE alias:
+#       CVE-2026-44573 = GHSA-36qx-fr4f-26g5
+#       CVE-2026-44578 = GHSA-c4j6-fc7j-m34r
+CVE-2026-44573
+CVE-2026-44578
+GHSA-8h8q-6873-q5fj
+GHSA-h25m-26qc-wcjf
+GHSA-q4gf-8mx6-v5v3

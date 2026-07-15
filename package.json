@@ -23,21 +23,6 @@
     "overrides": {
       "ws": ">=8.21.0",
       "glob@>=10.2.0 <10.5.0": ">=10.5.0"
-    },
-    "auditConfig": {
-      "ignoreGhsas": [
-        "GHSA-vrm6-8vpv-qv8q",
-        "GHSA-v9p9-hfj2-hcw8",
-        "GHSA-vxpw-j846-p89q",
-        "GHSA-vmh5-mc38-953g",
-        "GHSA-hm92-r4w5-c3mj",
-        "GHSA-fx2h-pf6j-xcff",
-        "GHSA-h25m-26qc-wcjf",
-        "GHSA-q4gf-8mx6-v5v3",
-        "GHSA-8h8q-6873-q5fj",
-        "GHSA-c4j6-fc7j-m34r",
-        "GHSA-36qx-fr4f-26g5"
-      ]
     }
   }
 }
