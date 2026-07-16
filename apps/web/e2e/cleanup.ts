@@ -39,6 +39,22 @@ export function isDeletableTestWorkflow(wf: WorkflowRow, e2eEmail: string): bool
   return TEST_NAME.test(wf.name ?? '')
 }
 
+/**
+ * Whether this run should skip the sweep entirely.
+ *
+ * The CI accessibility job (#673) runs only a11y.spec.ts, which creates nothing. A sweep
+ * there would issue a DELETE against the production Worker on every PR and would make
+ * Worker downtime fail an accessibility gate, so it opts out with E2E_SKIP_TEARDOWN.
+ *
+ * Only a deliberate opt-in counts. A suite that DOES create rows must never stop cleaning
+ * up because a CI expression resolved to '0', 'false' or an empty string: silently leaking
+ * rows into production is the exact failure the sweep exists to prevent.
+ */
+export function shouldSkipTeardown(env: Record<string, string | undefined>): boolean {
+  const flag = env.E2E_SKIP_TEARDOWN?.toLowerCase()
+  return flag === '1' || flag === 'true'
+}
+
 /** The workflows API, narrowed to what the sweep needs, so it can be tested without a network. */
 export interface WorkflowApi {
   list: () => Promise<WorkflowRow[]>
