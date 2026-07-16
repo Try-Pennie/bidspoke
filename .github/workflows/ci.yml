@@ -152,13 +152,25 @@ jobs:
       # (bidspoke -> deployment_configs.production). If they are changed there, change
       # them here too, or this gate quietly stops scanning what production runs.
       #
-      # Run from apps/web. From apps/worker, wrangler picks up that package's
-      # wrangler.toml and serves the wrong thing entirely.
+      # Two constraints pull against each other here, so read before simplifying:
+      #
+      #   1. wrangler is a dependency of apps/worker, NOT apps/web (Deploy likewise runs
+      #      it via --filter=worker). So the binary only exists under apps/worker.
+      #   2. wrangler must nonetheless RUN from apps/web. From apps/worker it picks up
+      #      that package's wrangler.toml and serves the worker instead of the site.
+      #
+      # Hence the explicit path to the worker's binary with working-directory: apps/web.
+      # That also means this gate uses the exact wrangler the real deploy uses.
+      #
+      # Do NOT reach for `npx wrangler`: apps/web does not declare wrangler, so npx
+      # resolves it from wherever it likes (locally it silently fetched an older 4.65.0
+      # instead of the pinned 4.110.0) and on CI it fails outright with
+      # "sh: 1: wrangler: not found".
       - name: Start the app (wrangler pages dev)
         if: steps.creds.outputs.have == 'true'
         working-directory: apps/web
         run: |
-          npx wrangler pages dev .vercel/output/static \
+          "${GITHUB_WORKSPACE}/apps/worker/node_modules/.bin/wrangler" pages dev .vercel/output/static \
             --port 3000 \
             --compatibility-date=2026-04-06 \
             --compatibility-flags=nodejs_compat \
