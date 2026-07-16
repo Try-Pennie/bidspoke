@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { isDeletableTestWorkflow, sweepTestWorkflows, TEST_WORKFLOW_NAME, type WorkflowRow } from './cleanup'
+import {
+  isDeletableTestWorkflow,
+  shouldSkipTeardown,
+  sweepTestWorkflows,
+  TEST_WORKFLOW_NAME,
+  type WorkflowRow,
+} from './cleanup'
 
 /**
  * Since #664 the e2e user has its own organization, so RLS keeps the suite away
@@ -117,5 +123,34 @@ describe('sweepTestWorkflows', () => {
         E2E,
       ),
     ).rejects.toThrow(/Untitled Workflow/)
+  })
+})
+
+describe('shouldSkipTeardown', () => {
+  /**
+   * The a11y job in CI (#673) runs only a11y.spec.ts, which creates nothing. Sweeping
+   * afterwards would make every PR issue a DELETE against the production Worker and
+   * would turn Worker downtime into a red accessibility gate, so that run opts out.
+   *
+   * Opting out must be explicit. A teardown that silently declines to clean up is the
+   * failure mode #664 was about, so anything other than a deliberate opt-in still sweeps.
+   */
+  it('skips only when explicitly opted in', () => {
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: '1' })).toBe(true)
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: 'true' })).toBe(true)
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: 'TRUE' })).toBe(true)
+  })
+
+  it('sweeps when the flag is absent, so a normal run always cleans up', () => {
+    expect(shouldSkipTeardown({})).toBe(false)
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: undefined })).toBe(false)
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: '' })).toBe(false)
+  })
+
+  it('sweeps on a value that means "no", rather than treating any string as truthy', () => {
+    // An unset var arriving as the literal '0'/'false' (a CI expression that resolved
+    // to nothing useful) must not silently disable cleanup for a suite that creates rows.
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: '0' })).toBe(false)
+    expect(shouldSkipTeardown({ E2E_SKIP_TEARDOWN: 'false' })).toBe(false)
   })
 })

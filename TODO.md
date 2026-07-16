@@ -327,6 +327,7 @@
 - [x] **Env var routes** — tests in `routes/api/__tests__/env.test.ts` (CRUD, secret masking on read)
 - [x] **Integrations routes** — tests in `routes/api/__tests__/integrations.test.ts` (Slack OAuth connect, list connections, delete)
 - [x] **Playwright E2E** — setup complete. Auth via e2e-test@trypennie.com (hidden from access UI). Tests: auth redirects, dashboard, workflows CRUD, env vars CRUD, sources CRUD, integrations. Run with `pnpm run test:e2e` (requires `pnpm dev:web` + `pnpm dev:worker`, or set `BASE_URL` to prod URL).
+  - **In CI (#673):** only `a11y.spec.ts` runs automatically, on every PR and push to main (the `Accessibility (axe)` job), against a dev server on the runner. The rest of the suite is still run by hand, so it can still drift. Note `next start` cannot serve this app (16 pages are `runtime = 'edge'`); scanning the next-on-pages artifact, which is what prod actually runs, is the open follow-up (dev CSS is not prod CSS, so a prod-only contrast regression can slip past today).
 
 ---
 
