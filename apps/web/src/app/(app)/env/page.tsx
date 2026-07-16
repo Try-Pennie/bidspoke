@@ -942,7 +942,7 @@ export default function EnvPage() {
         <div className="mb-6 flex items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-bold text-graphite">Environment Variables</h1>
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-1 text-sm text-gray-600">
               Available in workflows as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>
             </p>
           </div>
@@ -1031,7 +1031,7 @@ export default function EnvPage() {
         ) : vars.length === 0 && folders.length === 0 ? (
           <div className="rounded-xl border-2 border-dashed border-gray-200 py-12 text-center">
             <p className="text-base font-semibold text-graphite">No variables yet</p>
-            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-500">
+            <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-600">
               Environment variables let workflows reference API keys and config values without hardcoding them. Reference them in any step as <code className="rounded bg-gray-100 px-1 text-xs">{'{{env.KEY}}'}</code>.
             </p>
             <button
@@ -1054,14 +1054,14 @@ export default function EnvPage() {
                     <th className="w-8 px-2 py-3" />
                     <th className="px-4 py-3 text-left">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-500">Key</span>
+                        <span className="text-xs font-semibold text-gray-600">Key</span>
                         {folders.length > 0 && (
                           <button
                             onClick={() => setFolderSort((s) => (s === 'mru' ? 'name' : 'mru'))}
                             title={folderSort === 'mru' ? 'Folders sorted by most recently used. Click to sort by name.' : 'Folders sorted by name. Click to sort by most recently used.'}
                             className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
                               folderSort === 'name'
-                                ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-600'
+                                ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-700'
                                 : 'bg-p-blue-light text-p-blue-dark'
                             }`}
                           >
@@ -1071,9 +1071,9 @@ export default function EnvPage() {
                         )}
                       </div>
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Value</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Type</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500">Last updated</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Value</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Type</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Last updated</th>
                     <th className="w-16 px-4 py-3" />
                   </tr>
                 </thead>

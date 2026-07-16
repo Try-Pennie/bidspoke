@@ -177,7 +177,7 @@ export default function SourcesPage() {
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-graphite">API Sources</h1>
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-1 text-sm text-gray-600">
               Each source gets a unique API key passed in the <code className="rounded bg-gray-100 px-1 font-mono text-xs">X-API-Key</code> header.
               The source name is available as <code className="rounded bg-gray-100 px-1 font-mono text-xs">trigger.source</code> in workflows.
             </p>
@@ -239,7 +239,7 @@ export default function SourcesPage() {
               <div className="rounded-xl border border-dashed border-gray-200 p-8 text-center">
                 <Key className="mx-auto mb-3 h-6 w-6 text-gray-300" />
                 <p className="text-base font-semibold text-graphite">No API sources yet</p>
-                <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-500">
+                <p className="mx-auto mt-1.5 max-w-sm text-sm text-gray-600">
                   Each source gets a unique API key. Pass it in the <code className="rounded bg-gray-100 px-1 text-xs">X-API-Key</code> header when triggering a workflow. It shows up as <code className="rounded bg-gray-100 px-1 text-xs">trigger.source</code> in your steps.
                 </p>
                 <button
@@ -400,7 +400,7 @@ export default function SourcesPage() {
               {/* Code block */}
               <div className="relative bg-gray-950 px-4 py-4">
                 <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-gray-300 whitespace-pre-wrap break-words">
-                  <span className="text-gray-500">{'# source: '}</span>
+                  <span className="text-gray-400">{'# source: '}</span>
                   <span className="text-amber-400">{exampleSource}</span>
                   {'\n'}
                   {curlExample.split('\n').map((line, i) => {
@@ -412,7 +412,7 @@ export default function SourcesPage() {
                     if (line.includes('workflow_id')) {
                       return <span key={i}>{line.replace('{workflow_id}', '')}<span className="text-sky-400">{'{'+'workflow_id}'}</span>{'\n'}</span>
                     }
-                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-500' : ''}>{line}{'\n'}</span>
+                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-400' : ''}>{line}{'\n'}</span>
                   })}
                 </pre>
                 <button
@@ -425,10 +425,10 @@ export default function SourcesPage() {
               </div>
 
               {/* Notes */}
-              <div className="space-y-2.5 px-4 py-3 text-xs text-gray-500">
+              <div className="space-y-2.5 px-4 py-3 text-xs text-gray-600">
                 <p>
                   Find <code className="rounded bg-gray-100 px-1 font-mono">workflow_id</code> in the URL when you open a workflow:{' '}
-                  <span className="font-mono text-gray-500">/workflows/&#123;id&#125;</span>
+                  <span className="font-mono text-gray-600">/workflows/&#123;id&#125;</span>
                 </p>
                 <p>
                   <code className="rounded bg-gray-100 px-1 font-mono">X-Idempotency-Key</code> is optional but recommended. Generate a unique ID (any UUID) for each trigger attempt. If your caller retries with the same key within 5 minutes, the workflow won&apos;t run twice. <code className="rounded bg-gray-100 px-1 font-mono">$(uuidgen)</code> generates one on Mac/Linux.
