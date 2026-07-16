@@ -17,6 +17,7 @@
  * Output: ParallelOutput — array of child results consumed downstream.
  */
 import type { ErrorType, NodeDefinition, StepExecutionResult } from '../../types'
+import { formatErr } from '../../lib/format-error'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -204,7 +205,7 @@ async function runSpecific(
       settled[i] = result
       if (i === targetIdx) resolveTarget(result)
     }).catch((err) => {
-      const result: ParallelChildResult = { namespace: child.namespace, status: 'rejected', error: err instanceof Error ? err.message : String(err) }
+      const result: ParallelChildResult = { namespace: child.namespace, status: 'rejected', error: formatErr(err) }
       settled[i] = result
       if (i === targetIdx) resolveTarget(result)
     })

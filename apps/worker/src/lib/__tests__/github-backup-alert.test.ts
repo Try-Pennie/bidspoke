@@ -74,6 +74,19 @@ describe('recordBackupFailure', () => {
     expect(kv.store.has('github-backup-alert-cooldown:org-1')).toBe(true)
   })
 
+  // #628: a Supabase/PostgREST failure is a plain object, not an Error instance,
+  // so the old `String(err)` fallback rendered it as "[object Object]" and the
+  // alert named no cause. formatErr folds message/details/code into readable text.
+  it('renders an object-shaped (non-Error) failure readably, not "[object Object]"', async () => {
+    const kv = makeKv({ 'github-backup-failures:org-1': String(BACKUP_FAILURE_THRESHOLD - 1) })
+    const objectError = { message: 'permission denied for table workflows', code: '42501', details: null, hint: null }
+    await recordBackupFailure(baseInput(kv, objectError))
+    const [, payload] = vi.mocked(sendBackupFailureAlert).mock.calls[0]
+    expect(payload.error_message).not.toContain('[object Object]')
+    expect(payload.error_message).toContain('permission denied for table workflows')
+    expect(payload.error_message).toContain('42501')
+  })
+
   it('suppresses a repeat alert while the cooldown is active', async () => {
     const kv = makeKv({
       'github-backup-failures:org-1': '5',

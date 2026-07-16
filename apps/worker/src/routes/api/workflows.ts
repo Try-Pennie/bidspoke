@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -953,7 +954,7 @@ workflows.post('/:id/test-node', async (c) => {
       // the response, both are "ok, new code is live" from the caller's POV.
       deployResult = { deployed: results.length > 0, skipped: false }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatErr(e)
       console.error('[code-nodes] test-node deploy threw:', e)
       return c.json({ output: null, status: 'failed', error_message: `Code deploy threw: ${msg}`, duration_ms: 0, deploy: { deployed: false, skipped: false, error: msg } }, 500)
     }
@@ -981,7 +982,7 @@ workflows.post('/:id/test-node', async (c) => {
     }
     return c.json({ output: result.output, status: 'completed', error_message: null, duration_ms: Date.now() - started, deploy: deployResult })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = formatErr(e)
     return c.json({ output: null, status: 'failed', error_message: msg, duration_ms: Date.now() - started, deploy: deployResult })
   }
 })

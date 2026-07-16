@@ -1,5 +1,4 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { coerceString } from '../lib/coerce'
 import { formatErr } from '../lib/format-error'
 import { resolveFailedStepType } from '../lib/upstream-outage'
 import { parseJson } from '../lib/json'
@@ -388,7 +387,7 @@ export async function executeWorkflow(
   } else {
     const err = raceResult.err
     executionStatus = 'failed'
-    errorMessage = err instanceof Error ? err.message : String(err)
+    errorMessage = formatErr(err)
     if (err instanceof StepFailureError) {
       failedStep = err.stepNamespace
       failedErrorType = err.errorType
@@ -435,7 +434,7 @@ export async function executeWorkflow(
     .then(() => flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: options.isTest ?? false }))
     .catch((e) => {
       console.error('[step-logger] flush failed:', e)
-      return e instanceof Error ? e.message : String(e)
+      return formatErr(e)
     })
 
   if (options.isTest) {
@@ -508,7 +507,7 @@ export async function executeWorkflow(
           } else {
             failedErrorType = failedErrorType ?? 'permanent'
           }
-          finalErrorMessage = continuationError instanceof Error ? continuationError.message : coerceString(continuationError)
+          finalErrorMessage = formatErr(continuationError)
           // Tier-3 (external SF writeback) dead-letter: the node's own withRetry
           // already provided at-least-once, so this only surfaces exhaustion via
           // the rate-aggregated alert — no per-run page. Gated like the failure
@@ -637,7 +636,7 @@ export async function executeWorkflow(
               .catch((e) =>
                 console.error('[step-logger] step-log recovery re-flush threw', {
                   executionId,
-                  error: e instanceof Error ? e.message : String(e),
+                  error: formatErr(e),
                 }),
               ),
           )
@@ -990,7 +989,7 @@ export async function walkGraph(
         }
       } catch (err) {
         stepStatus = 'failed'
-        errorMessage = err instanceof Error ? err.message : String(err)
+        errorMessage = formatErr(err)
         // A parallel failure the children didn't reach a verdict on (a timeout, a
         // structural error, a mix of outcomes) is operational, never a clean
         // business rejection, so give it a real type and let the failure alert
@@ -1111,7 +1110,7 @@ export async function walkGraph(
           attemptResolvedInput = result.resolvedInput ?? null
         } catch (err) {
           attemptStatus = 'failed'
-          attemptError = err instanceof Error ? err.message : String(err)
+          attemptError = formatErr(err)
           attemptErrorType = classifyStepError(err)
           attemptResolvedInput = extractResolvedInput(err)
         }
@@ -1168,7 +1167,7 @@ export async function walkGraph(
         groupOutput = await executeBidGroupNode(node, ctx, env, supabase, runAttempt, (id) => slugByPartnerId.get(id))
       } catch (err) {
         groupStatus = 'failed'
-        groupErrorMessage = err instanceof Error ? err.message : String(err)
+        groupErrorMessage = formatErr(err)
         // A bid_group execution error is operational, not a business rejection
         // (a no-winner routes via _route, it doesn't throw) — give it a real type
         // so the failure alert fires (#64).
@@ -1442,7 +1441,7 @@ export async function walkGraph(
       errorType = classifyStepError(err)
       suppressAlert = err instanceof PartnerApiError ? err.suppressAlert : false
 
-      errorMessage = err instanceof Error ? err.message : String(err)
+      errorMessage = formatErr(err)
       const onError = node.config.on_error ?? 'fail'
       const seqDurationMs = Date.now() - new Date(stepStartedAt).getTime()
 
@@ -1715,7 +1714,7 @@ export async function runParallelChild(
       }
     } catch (err) {
       stepStatus = 'failed'
-      errorMessage = err instanceof Error ? err.message : String(err)
+      errorMessage = formatErr(err)
       // #486: classifyStepError honors a PartnerApiError's own errorType. The
       // hand-rolled Response-or-transport ternary this replaces never checked for
       // one, so a partner's authoritative verdict (from its
@@ -1964,7 +1963,7 @@ export async function executeCodeChain(
         if (sentinel) break
       } catch (err) {
         const durationMs = Date.now() - startMs
-        results.push({ namespace: node.namespace, status: 'failed', error: err instanceof Error ? err.message : String(err), durationMs })
+        results.push({ namespace: node.namespace, status: 'failed', error: formatErr(err), durationMs })
         break
       }
     }

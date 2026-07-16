@@ -36,6 +36,7 @@
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import { formatErr } from '../../lib/format-error'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowAchieveStub } from '../shadow'
@@ -269,7 +270,7 @@ export async function executeAchieveOffersNode(
     }
   } catch (err) {
     const name = (err as { name?: string })?.name
-    const message = err instanceof Error ? err.message : String(err)
+    const message = formatErr(err)
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
       ? `Achieve API timed out after ${FETCH_TIMEOUT_MS}ms`
       : message

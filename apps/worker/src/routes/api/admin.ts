@@ -59,7 +59,7 @@ admin.post('/migrate-code-workers', async (c) => {
         }
         return { id: w.id, name: w.name, status: 'migrated', node_count: deployResults.length }
       } catch (e) {
-        return { id: w.id, name: w.name, status: 'error', error: e instanceof Error ? e.message : String(e) }
+        return { id: w.id, name: w.name, status: 'error', error: formatErr(e) }
       }
     })
   )

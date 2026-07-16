@@ -5,6 +5,7 @@
  * exactly one is_default. Rows live in bid_matrix_rows.
  */
 import { Hono } from 'hono'
+import { formatErr } from '../../lib/format-error'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -221,7 +222,7 @@ route.post('/:id/sync', async (c) => {
     const result = await syncBidConfig(id, c.env, supabase)
     return c.json(result)
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = formatErr(err)
     return c.json({ error: message }, 500)
   }
 })
