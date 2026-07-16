@@ -243,7 +243,7 @@ export default function PartnersPage() {
                   <CircleOff className="h-5 w-5 text-gray-300" />
                 </div>
                 <p className="text-sm font-medium text-gray-700">Select a partner to configure</p>
-                <p className="mt-1 text-xs text-gray-500">Or create a new one with the button above.</p>
+                <p className="mt-1 text-xs text-gray-600">Or create a new one with the button above.</p>
               </div>
             </div>
           )}

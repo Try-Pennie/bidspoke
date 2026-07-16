@@ -29,7 +29,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                 className={`flex items-center gap-2 border-b-2 px-3 pb-2.5 pt-1 text-sm font-medium transition-colors ${
                   active
                     ? 'border-p-blue-dark text-graphite'
-                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                    : 'border-transparent text-gray-600 hover:text-gray-800'
                 }`}
               >
                 <Icon className="h-4 w-4" />
