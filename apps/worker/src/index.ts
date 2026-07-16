@@ -127,6 +127,13 @@ export interface Env {
   // local testing (e.g. the GitHub-backup-failure Slack alert).
   LOCAL_DEV?: string
 
+  // Set to 'true' ONLY in apps/worker/.dev.vars, alongside LOCAL_DEV, to opt a
+  // local session into writing to the remote (production) Supabase project.
+  // Without it, local dev is read-only against a remote database: the Worker
+  // connects as service_role and bypasses RLS, so an unguarded local write can
+  // land anywhere in production (#669). See lib/supabase.ts.
+  ALLOW_PROD_WRITES?: string
+
 }
 
 const app = new Hono<{ Bindings: Env }>()

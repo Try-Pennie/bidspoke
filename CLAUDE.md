@@ -54,6 +54,15 @@ pnpm lint          # lint all packages
 
 > **pnpm gotcha:** Always use `pnpm run <script>`, never `pnpm <script>` — `pnpm deploy` hits the pnpm built-in, not the project script.
 
+### Local dev is read-only against production (#669)
+There is no separate local backend: `wrangler dev` and production share one Supabase project, and the Worker connects as `service_role`, which bypasses RLS. So an unguarded local run can write anywhere in production.
+
+`apps/worker/src/lib/supabase.ts` therefore blocks writes (`insert`, `update`, `upsert`, `delete`) when `LOCAL_DEV` is set and `SUPABASE_URL` is not localhost. Reads and `rpc` stay allowed, so local dev works normally until it tries to mutate.
+
+To write to prod deliberately from local, set `ALLOW_PROD_WRITES=true` in `apps/worker/.dev.vars` (gitignored). Unset it again afterwards; leaving it on permanently defeats the guard. This also means write-heavy e2e specs need the opt-in, or a database that is not prod.
+
+The guard keys on the hostname, not a hardcoded project ref, so any database it cannot prove is local is treated as production. It is inert in production, where `LOCAL_DEV` is never set.
+
 ## GitHub
 - Repo: https://github.com/Try-Pennie/bidspoke
 - Commit and push after each meaningful chunk of work
