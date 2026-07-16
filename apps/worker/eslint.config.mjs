@@ -46,17 +46,21 @@ export default [
       // place this bug appears: a caught error. This name-based guard closes that
       // gap (#606). It bans a bare `String(err)` and a `${err}` template
       // interpolation on an identifier named err/error/e, pointing at the shared
-      // renderer. It deliberately exempts the established
-      // `err instanceof Error ? err.message : String(err)` idiom (String() as a
-      // ternary branch) so only the unguarded shape is flagged. Crude by name, but
-      // unlike the type-aware rule it does not care whether the type was narrowed.
+      // renderer. Crude by name, but unlike the type-aware rule it does not care
+      // whether the type was narrowed.
+      //
+      // The `err instanceof Error ? err.message : String(err)` idiom was exempt
+      // until #687. It isn't safe: the false branch is precisely where a
+      // non-Error lands, so it renders the "[object Object]" this guard exists to
+      // stop. `instanceof Error` itself stays legal (a `.name` read, a static
+      // user-facing fallback); only the String()/coerceString() branch is banned.
       'no-restricted-syntax': [
         'error',
         {
           selector:
-            "CallExpression[callee.name='String']:not(ConditionalExpression > .consequent):not(ConditionalExpression > .alternate) > Identifier[name=/^(err|error|e)$/]",
+            "CallExpression[callee.name=/^(String|coerceString)$/] > Identifier[name=/^(err|error|e)$/]",
           message:
-            'Do not String() a caught error: a plain Supabase/PostgREST error renders as "[object Object]" and blanks the alert. Use formatErr() from lib/format-error.ts.',
+            'Do not stringify a caught error with String()/coerceString(): a plain Supabase/PostgREST error renders as "[object Object]" (coerceString gives "{}") and blanks the alert. Use formatErr() from lib/format-error.ts.',
         },
         {
           selector: "TemplateLiteral > Identifier[name=/^(err|error|e)$/]",
