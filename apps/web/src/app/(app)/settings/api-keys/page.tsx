@@ -73,7 +73,7 @@ export default function ApiKeysPage() {
 
   return (
     <div className="max-w-2xl">
-      <p className="mb-6 text-sm text-gray-500">
+      <p className="mb-6 text-sm text-gray-600">
         API keys for third-party services Bidspoke calls on your behalf. Stored encrypted; never displayed after save.
       </p>
 
@@ -103,7 +103,7 @@ export default function ApiKeysPage() {
               Connected
             </span>
           ) : (
-            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500">
+            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
               Not set
             </span>
           )}

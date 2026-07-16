@@ -294,7 +294,7 @@ export default function IntegrationsPage() {
       <div className="p-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-graphite">Integrations</h1>
-          <p className="mt-1 text-sm text-gray-500">Connect external services for alerts and notifications.</p>
+          <p className="mt-1 text-sm text-gray-600">Connect external services for alerts and notifications.</p>
         </div>
 
         {error && (
@@ -327,7 +327,7 @@ export default function IntegrationsPage() {
                 Connected
               </span>
             ) : (
-              <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-500">
+              <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
                 Not connected
               </span>
             )}
@@ -641,7 +641,7 @@ export default function IntegrationsPage() {
                     <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-500" />
                   )}
                 </div>
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-1 text-xs text-gray-600">
                   Slack App → OAuth & Permissions → Bot User OAuth Token.
                   Requires <code className="rounded bg-gray-100 px-1">chat:write</code>, <code className="rounded bg-gray-100 px-1">channels:read</code>, and <code className="rounded bg-gray-100 px-1">groups:read</code> scopes.
                 </p>
@@ -696,7 +696,7 @@ export default function IntegrationsPage() {
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-semibold text-graphite">HTTP Services</h2>
-              <p className="mt-0.5 text-sm text-gray-500">
+              <p className="mt-0.5 text-sm text-gray-600">
                 Define reusable services that appear in the Webhook node dropdown. Each preset pre-fills the auth type and optionally the base URL.
               </p>
             </div>
@@ -813,7 +813,7 @@ export default function IntegrationsPage() {
           ) : presets.length === 0 && !addingPreset ? (
             <div className="rounded-xl border-2 border-dashed border-gray-200 py-10 text-center">
               <p className="text-sm font-semibold text-graphite">No services yet</p>
-              <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-500">
+              <p className="mx-auto mt-1.5 max-w-sm text-xs text-gray-600">
                 Add a service to make it available in the Webhook node dropdown with pre-filled auth settings.
               </p>
               <button
