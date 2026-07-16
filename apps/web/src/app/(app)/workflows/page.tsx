@@ -1100,7 +1100,7 @@ export default function WorkflowsPage() {
             </svg>
 
             <h2 className="text-xl font-bold text-graphite">Build your first workflow</h2>
-            <p className="mx-auto mt-2 max-w-sm text-sm text-gray-500">
+            <p className="mx-auto mt-2 max-w-sm text-sm text-gray-600">
               Connect a trigger to filters, decisions, and API calls. Automate what happens when a lead comes in.
             </p>
             <button

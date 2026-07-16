@@ -273,7 +273,7 @@ export default function DashboardPage() {
             </div>
           <div className="flex items-center gap-3">
             {lastUpdated && (
-              <span className="text-xs text-gray-500">
+              <span className="text-xs text-gray-600">
                 Updated {lastUpdated.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
               </span>
             )}
