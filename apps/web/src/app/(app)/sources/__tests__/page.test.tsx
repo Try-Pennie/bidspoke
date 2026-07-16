@@ -22,7 +22,9 @@ vi.mock('@/lib/api', () => ({
 import SourcesPage from '../page'
 import { api } from '@/lib/api'
 
-const source = (name: string) => ({ name, api_key: 'abc12345def67890', created_at: '2026-01-01T00:00:00Z' })
+// Deliberately low-entropy and hyphenated: the page slices the first 8 chars for
+// the curl example, and a random-looking literal trips the gitleaks secret scan.
+const source = (name: string) => ({ name, api_key: 'not-a-real-key', created_at: '2026-01-01T00:00:00Z' })
 
 beforeEach(() => {
   vi.clearAllMocks()
