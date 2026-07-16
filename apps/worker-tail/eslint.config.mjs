@@ -47,17 +47,19 @@ export default [
 
       // no-base-to-string is blind to a value still typed `unknown` (a caught
       // error), so a name-based guard bans a bare String(err) / `${err}` on an
-      // identifier named err/error/e, exempting the established
-      // `err instanceof Error ? err.message : String(err)` idiom (#606). Held in
-      // both Worker packages so the invariant can't drift; render a caught error
-      // safely (never a bare String()).
+      // identifier named err/error/e (#606). The
+      // `err instanceof Error ? err.message : String(err)` idiom was exempt until
+      // #687: its false branch is exactly where a non-Error lands, so it renders
+      // the "[object Object]" this guard exists to stop. Held in both Worker
+      // packages so the invariant can't drift; render a caught error safely
+      // (never a bare String()).
       'no-restricted-syntax': [
         'error',
         {
           selector:
-            "CallExpression[callee.name='String']:not(ConditionalExpression > .consequent):not(ConditionalExpression > .alternate) > Identifier[name=/^(err|error|e)$/]",
+            "CallExpression[callee.name=/^(String|coerceString)$/] > Identifier[name=/^(err|error|e)$/]",
           message:
-            'Do not String() a caught error: a plain object renders as "[object Object]" and blanks the alert. Render it safely (never a bare String()).',
+            'Do not stringify a caught error with String()/coerceString(): a plain object renders as "[object Object]" ("{}" via coerceString) and blanks the alert. Render it safely (never a bare String()).',
         },
         {
           selector: "TemplateLiteral > Identifier[name=/^(err|error|e)$/]",

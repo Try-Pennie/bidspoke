@@ -10,6 +10,7 @@
 // This module is the single source of truth for the transient-vs-permanent
 // classification (shared with step-logger) and a PostgREST-only retry helper for
 // the writes that don't go through the Hyperdrive path.
+import { formatErr } from './format-error'
 
 export interface DbError {
   code?: string
@@ -66,7 +67,7 @@ export function toDbError(e: unknown): DbError {
   const err = e as { code?: unknown; message?: unknown }
   return {
     code: typeof err?.code === 'string' ? err.code : undefined,
-    message: typeof err?.message === 'string' ? err.message : String(e),
+    message: typeof err?.message === 'string' ? err.message : formatErr(e),
   }
 }
 

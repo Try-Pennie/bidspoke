@@ -152,10 +152,19 @@ describe('worker engine ratchet', () => {
 // closes that gap. This is a real mutation check (the issue's requirement): it
 // runs ESLint against the SHIPPED selector, so it goes red if the guard is
 // removed or a String(err) shape is reintroduced, and stays green for the
-// established `instanceof`-guarded idiom and the formatErr() fix.
-describe('worker caught-error stringification guard (#606)', () => {
+// the formatErr() fix.
+//
+// #687: the guard originally exempted `err instanceof Error ? err.message :
+// String(err)`, on the theory that the instanceof arm made it safe. It doesn't:
+// the false branch is exactly where a non-Error (a plain Supabase/PostgREST
+// object) lands, so that arm renders the "[object Object]" the guard exists to
+// prevent. #628 removed the last of those from source, so the exemption now
+// only lets the pattern grow back. The false branch is what's banned, not
+// `instanceof Error` itself, which stays legitimate for a `.name` read or a
+// static user-facing fallback.
+describe.each(PACKAGES)('$name caught-error stringification guard (#606, #687)', ({ name }) => {
   function lint(code: string): Linter.LintMessage[] {
-    const rule = baseRules(configs.worker)['no-restricted-syntax']
+    const rule = baseRules(configs[name])['no-restricted-syntax']
     const linter = new Linter()
     return linter.verify(code, { rules: { 'no-restricted-syntax': rule as Linter.RuleEntry } })
   }
@@ -179,12 +188,41 @@ describe('worker caught-error stringification guard (#606)', () => {
     expect(guardHits('const x = e instanceof Error ? e : new Error(String(e))')).toBeGreaterThan(0)
   })
 
-  it('does NOT fire on the established instanceof-guarded ternary', () => {
-    expect(guardHits('const m = err instanceof Error ? err.message : String(err)')).toBe(0)
+  it('fires on the String() false branch of an instanceof ternary (#687)', () => {
+    expect(guardHits('const m = err instanceof Error ? err.message : String(err)')).toBeGreaterThan(
+      0
+    )
+  })
+
+  it('fires on the coerceString() false branch too: an Error serializes to "{}" (#687)', () => {
+    expect(
+      guardHits('const m = err instanceof Error ? err.message : coerceString(err)')
+    ).toBeGreaterThan(0)
+  })
+
+  it('does NOT fire on an instanceof ternary with an empty-string fallback', () => {
+    // engine/error-classifier.ts:58,297. Deliberate, so a non-Error cannot be
+    // misclassified by matching markers against its stringified form.
+    expect(guardHits("const message = err instanceof Error ? err.message : ''")).toBe(0)
+  })
+
+  it('does NOT fire on an instanceof ternary reading .name', () => {
+    // lib/volume-cliff.ts:219
+    expect(guardHits("const errName = e instanceof Error ? e.name : 'unknown'")).toBe(0)
+  })
+
+  it('does NOT fire on an instanceof ternary with a static user-facing fallback', () => {
+    // routes/api/{sources.ts:131, connections.ts:169, env.ts:278}
+    expect(guardHits("const m = err instanceof Error ? err.message : 'Schema fetch failed'")).toBe(0)
   })
 
   it('does NOT fire on the formatErr() fix', () => {
     expect(guardHits('const m = formatErr(err)')).toBe(0)
+    expect(guardHits('const x = e instanceof Error ? e : new Error(formatErr(e))')).toBe(0)
+  })
+
+  it('does NOT fire on coerceString() of a non-error identifier', () => {
+    expect(guardHits('const m = coerceString(v)')).toBe(0)
   })
 
   it('does NOT fire on String() of a non-error identifier', () => {

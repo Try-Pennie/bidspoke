@@ -8,6 +8,7 @@ import {
   NO_ROW_MATCHED_CODE,
   type DbError,
   toThrowable,
+  toDbError,
 } from '../db-retry'
 
 describe('withDbRetry', () => {
@@ -236,5 +237,25 @@ describe('toThrowable', () => {
     const err = toThrowable({ message: 'db down' })
     expect(err).toBeInstanceOf(Error)
     expect((err as Error & { code?: string }).code).toBeUndefined()
+  })
+})
+
+// #687: toDbError's message feeds Slack alerts (lib/slack.ts) and toThrowable's
+// thrown Error. A Supabase/PostgREST failure without a string `message` is still
+// a plain object, so the old String(e) fallback rendered it "[object Object]" and
+// named no failure. formatErr is the shared renderer for exactly this.
+describe('toDbError', () => {
+  it('keeps a string message as-is', () => {
+    expect(toDbError({ code: '23505', message: 'duplicate key' }).message).toBe('duplicate key')
+  })
+
+  it('renders an object with no string message without losing the cause', () => {
+    const message = toDbError({ code: 500, hint: 'connection refused' }).message
+    expect(message).not.toBe('[object Object]')
+    expect(message).toContain('connection refused')
+  })
+
+  it('still renders a primitive throw', () => {
+    expect(toDbError('db down').message).toBe('db down')
   })
 })
