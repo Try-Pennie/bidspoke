@@ -49,6 +49,7 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   SALESFORCE_BULKHEAD_WAIT_MS: 'expose', // non-secret: at-capacity wait budget
   FIELD_PRESENCE_CAPTURE: 'expose', // non-secret: field-presence capture flag (#419)
   LOCAL_DEV: 'expose', // non-secret: set only in .dev.vars to flag local wrangler dev
+  ALLOW_PROD_WRITES: 'expose', // non-secret: set only in .dev.vars to opt local dev into prod writes (#669)
 }
 
 export const SANDBOX_BLOCKED_ENV_KEYS: ReadonlySet<string> = new Set(

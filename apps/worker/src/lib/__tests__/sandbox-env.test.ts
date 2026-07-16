@@ -20,6 +20,7 @@ const env = {
   // non-secret config — exposed
   SUPABASE_URL: 'https://proj.supabase.co',
   APP_URL: 'https://app.test',
+  ALLOW_PROD_WRITES: 'true',
   // partner credentials (dynamic worker secrets — not in the typed Env) — exposed
   EQUIFAX_USERNAME: 'equ-user',
   EQUIFAX_PASSWORD: 'equ-pass',
@@ -37,6 +38,14 @@ describe('sandboxEnvBindings (#108)', () => {
     for (const k of ['SUPABASE_SECRET_KEY', 'SECRET_ENCRYPTION_KEY', 'SSN_HASH_PEPPER', 'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'API_KEY_MAP', 'SNOWFLAKE_PRIVATE_KEY', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY']) {
       expect(out[k], `${k} must be withheld`).toBeUndefined()
     }
+  })
+
+  // ALLOW_PROD_WRITES (#669) is a local-dev-only flag, not a credential. It is
+  // classified 'expose' like LOCAL_DEV, so a code node can tell it is running
+  // against a database it must not write to.
+  it('passes the ALLOW_PROD_WRITES local-dev flag through as non-secret config', () => {
+    expect(SANDBOX_BLOCKED_ENV_KEYS.has('ALLOW_PROD_WRITES')).toBe(false)
+    expect(out.ALLOW_PROD_WRITES).toBe('true')
   })
 
   it('passes partner credentials and non-secret config through', () => {
