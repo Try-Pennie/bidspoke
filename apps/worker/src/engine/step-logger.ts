@@ -311,7 +311,13 @@ export async function updateExecutionRecord(
   // dead-lettering a served lead that would otherwise leave no audit record. When
   // omitted, a missing row still returns NO_ROW_MATCHED for the caller to
   // dead-letter (the pre-#584 behavior, kept for direct callers).
-  createFields?: ExecutionCreateFields
+  createFields?: ExecutionCreateFields,
+  // #629: fired once after a missing base row is successfully reconstructed (or
+  // a concurrent writer landed it), i.e. the FK parent now exists. The engine
+  // uses this to re-flush the step logs whose insert was blocked while the row
+  // was missing, so the recovered run keeps its step-by-step trace. Not called
+  // on a normal update or when the reconstruction insert itself fails.
+  onReconstructed?: () => void
 ): Promise<DbError | null> {
   // The finalize update lands in the same partition-purge window as the insert,
   // so it gets the same transient-retry ladder. Failure is returned, not thrown:
@@ -330,7 +336,11 @@ export async function updateExecutionRecord(
       // the create fields. The row carries the FINAL status from `update` (not
       // 'running'), so it is a complete terminal record on the first write.
       if (createFields) {
-        return reconstructExecutionRecord(supabase, id, started_at, update, createFields)
+        const reconError = await reconstructExecutionRecord(supabase, id, started_at, update, createFields)
+        // Row now exists (reconstructed, or a concurrent writer's duplicate).
+        // Signal the caller so it can re-flush the FK-blocked step logs (#629).
+        if (reconError === null) onReconstructed?.()
+        return reconError
       }
       console.error('[step-logger] workflow_executions update matched zero rows, execution record lost', {
         id,

@@ -41,7 +41,7 @@ vi.mock('../durability', () => ({ recordOutcomeDeadLetter: vi.fn().mockResolvedV
 import { executeWorkflow } from '../index'
 import { loadWorkflowDefinition } from '../definition-loader'
 import { executeNode } from '../nodes/index'
-import { updateExecutionRecord } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from '../step-logger'
 import { recordOutcomeDeadLetter } from '../durability'
 
 const WF_ID = 'wf-finalize'
@@ -179,6 +179,44 @@ describe('finalize update failure (#487)', () => {
       trigger_payload: { lead: 1 },
       is_test: false,
     })
+  })
+
+  // #629: after finalize reconstructs the missing base row, the step logs whose
+  // flush was FK-blocked (it was chained on the createExecutionRecord insert,
+  // which failed) must be re-flushed so the recovered run keeps its trace.
+  it('re-flushes the lost step logs after the missing base row is reconstructed (#629)', async () => {
+    // Permanent create failure => executionRecordPromise rejects => the original
+    // flush is skipped entirely. The only flush that runs is the recovery one.
+    vi.mocked(createExecutionRecord).mockRejectedValueOnce(
+      new Error('workflow_executions insert failed: null value in column "workflow_id"')
+    )
+    vi.mocked(flushStepLogs).mockResolvedValue(null)
+    vi.mocked(updateExecutionRecord).mockImplementation(async (_s, _id, _sa, _u, _cf, onReconstructed) => {
+      onReconstructed?.()
+      return null
+    })
+
+    const { harness, result } = run()
+    const r = await result
+    // The caller was still served; recovery happens after the response.
+    expect(r.status).toBe(200)
+    await harness.flush()
+
+    expect(vi.mocked(flushStepLogs)).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not re-flush when finalize did not reconstruct the row (#629)', async () => {
+    // Clean finalize (row was present all along): the callback is never fired,
+    // so no extra recovery flush runs on top of the normal one.
+    vi.mocked(updateExecutionRecord).mockResolvedValue(null)
+    vi.mocked(flushStepLogs).mockResolvedValue(null)
+
+    const { harness, result } = run()
+    await result
+    await harness.flush()
+
+    // Only the normal end-of-execution flush; no recovery re-flush.
+    expect(vi.mocked(flushStepLogs)).toHaveBeenCalledTimes(1)
   })
 
   it('does not dead-letter a test run', async () => {

@@ -340,6 +340,40 @@ describe('updateExecutionRecord: reconstruction on missing base row (#584)', () 
   })
 })
 
+// Issue #629: after the base row is reconstructed the FK-blocked step rows can
+// finally land, so the caller re-flushes them. updateExecutionRecord signals a
+// successful reconstruction through the onReconstructed callback (row now
+// exists), and stays silent on a normal update or a failed reconstruction.
+describe('updateExecutionRecord: reconstruction signal for step recovery (#629)', () => {
+  it('invokes onReconstructed after a successful reconstruction', async () => {
+    const { client } = reconClientWith({ error: null })
+    const onReconstructed = vi.fn()
+    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
+    expect(onReconstructed).toHaveBeenCalledTimes(1)
+  })
+
+  it('invokes onReconstructed when reconstruction hits a duplicate (the row exists now)', async () => {
+    const { client } = reconClientWith({ error: { code: '23505', message: 'duplicate key' } })
+    const onReconstructed = vi.fn()
+    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
+    expect(onReconstructed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not invoke onReconstructed when the reconstruction insert fails', async () => {
+    const { client } = reconClientWith({ error: { code: '42703', message: 'column does not exist' } })
+    const onReconstructed = vi.fn()
+    await updateExecutionRecord(client, 'exec-gone', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
+    expect(onReconstructed).not.toHaveBeenCalled()
+  })
+
+  it('does not invoke onReconstructed on a clean update that matched a row', async () => {
+    const { client } = updateClientWith({ data: [{ id: 'exec-1' }] }, { data: [] })
+    const onReconstructed = vi.fn()
+    await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize, createFields, onReconstructed)
+    expect(onReconstructed).not.toHaveBeenCalled()
+  })
+})
+
 describe('flushStepLogs stamping', () => {
   it('stamps workflow_id and is_test on every row (issue #32: per-namespace percentile sampling)', async () => {
     const insert = vi.fn().mockResolvedValue({ error: null })
