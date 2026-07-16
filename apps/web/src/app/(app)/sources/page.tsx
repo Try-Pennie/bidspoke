@@ -400,7 +400,7 @@ export default function SourcesPage() {
               {/* Code block */}
               <div className="relative bg-gray-950 px-4 py-4">
                 <pre className="overflow-x-auto font-mono text-xs leading-relaxed text-gray-300 whitespace-pre-wrap break-words">
-                  <span className="text-gray-400">{'# source: '}</span>
+                  <span className="text-gray-400">{'# source: '}</span>{/* contrast-ok: sits on the bg-gray-950 block above, measured 7.7:1 */}
                   <span className="text-amber-400">{exampleSource}</span>
                   {'\n'}
                   {curlExample.split('\n').map((line, i) => {
@@ -412,7 +412,7 @@ export default function SourcesPage() {
                     if (line.includes('workflow_id')) {
                       return <span key={i}>{line.replace('{workflow_id}', '')}<span className="text-sky-400">{'{'+'workflow_id}'}</span>{'\n'}</span>
                     }
-                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-400' : ''}>{line}{'\n'}</span>
+                    return <span key={i} className={line.startsWith('  -d') ? 'text-gray-400' : ''}>{line}{'\n'}</span> // contrast-ok: sits on the bg-gray-950 block, measured 7.7:1
                   })}
                 </pre>
                 <button
