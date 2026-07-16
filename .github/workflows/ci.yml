@@ -125,33 +125,69 @@ jobs:
         if: steps.creds.outputs.have == 'true'
         run: pnpm --filter web exec playwright install --with-deps chromium
 
-      # The dev server, not a built artifact: `next start` cannot serve this app at all.
-      # 16 pages are `runtime = 'edge'` for Cloudflare Pages, and a Node server 500s on
-      # every one of them, so only /login would be scannable. The next-on-pages artifact
-      # under `wrangler pages dev` is the other candidate and is worth revisiting (it is
-      # what production actually runs), but it needs its own verification before it can be
-      # trusted as a gate.
+      # Build what production actually runs (#678). This gate is mostly about colour
+      # contrast, which is a function of rendered CSS, so scanning the dev server meant
+      # scanning a close cousin of the real thing: a contrast regression appearing only in
+      # a production build could pass. #674 made that concrete, finding 16 real contrast
+      # failures on the deployed app.
       #
-      # Known limit either way: the dev server's CSS is not the production CSS, so a
-      # contrast regression that only appears in a production build can still slip past.
-      - name: Start the app
+      # `next build && next start` is not an option: 16 pages are `runtime = 'edge'` for
+      # Cloudflare Pages and a Node server 500s on every one, leaving only /login
+      # scannable. The next-on-pages artifact under `wrangler pages dev` is the real
+      # artifact, and is what Deploy uploads to Pages.
+      #
+      # NEXT_PUBLIC_* must be present at BUILD time (they are compiled into the bundle,
+      # not read at runtime). A wrong NEXT_PUBLIC_WORKER_URL leaves authenticated pages
+      # retrying a dead endpoint until every spec times out on networkidle.
+      - name: Build the production artifact (next-on-pages)
         if: steps.creds.outputs.have == 'true'
+        run: pnpm --filter=web pages:build
+
+      # Serve the built artifact exactly as Pages runs it. The compatibility date MUST be
+      # pinned: `wrangler pages dev` otherwise defaults it to TODAY, and the installed
+      # workerd refuses a date it does not support yet, so an unpinned job breaks on a
+      # random future day for no reason anyone would connect to their change.
+      #
+      # These two values mirror the Pages project's production deployment config
+      # (bidspoke -> deployment_configs.production). If they are changed there, change
+      # them here too, or this gate quietly stops scanning what production runs.
+      #
+      # Two constraints pull against each other here, so read before simplifying:
+      #
+      #   1. wrangler is a dependency of apps/worker, NOT apps/web (Deploy likewise runs
+      #      it via --filter=worker). So the binary only exists under apps/worker.
+      #   2. wrangler must nonetheless RUN from apps/web. From apps/worker it picks up
+      #      that package's wrangler.toml and serves the worker instead of the site.
+      #
+      # Hence the explicit path to the worker's binary with working-directory: apps/web.
+      # That also means this gate uses the exact wrangler the real deploy uses.
+      #
+      # Do NOT reach for `npx wrangler`: apps/web does not declare wrangler, so npx
+      # resolves it from wherever it likes (locally it silently fetched an older 4.65.0
+      # instead of the pinned 4.110.0) and on CI it fails outright with
+      # "sh: 1: wrangler: not found".
+      - name: Start the app (wrangler pages dev)
+        if: steps.creds.outputs.have == 'true'
+        working-directory: apps/web
         run: |
-          pnpm --filter web run dev > "${RUNNER_TEMP}/next-dev.log" 2>&1 &
+          "${GITHUB_WORKSPACE}/apps/worker/node_modules/.bin/wrangler" pages dev .vercel/output/static \
+            --port 3000 \
+            --compatibility-date=2026-04-06 \
+            --compatibility-flags=nodejs_compat \
+            > "${RUNNER_TEMP}/pages-dev.log" 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf -o /dev/null http://localhost:3000/login; then
-              echo "Dev server up after ${i}s."
+              echo "Pages dev server up after ${i}s."
               exit 0
             fi
             sleep 1
           done
-          echo "::error::Dev server did not come up within 60s."
-          cat "${RUNNER_TEMP}/next-dev.log"
+          echo "::error::Pages dev server did not come up within 60s."
+          cat "${RUNNER_TEMP}/pages-dev.log"
           exit 1
 
-      # No warm-up step: the dev server compiles each route on first request, and the specs
-      # were verified green against a cold .next (the slowest page compiled and scanned in
-      # 3.6s, well inside the 30s test timeout, with a retry behind it).
+      # No warm-up step: unlike the dev server, the artifact is prebuilt and serves every
+      # route immediately, so there is no first-request compile to absorb.
       - name: Run accessibility specs
         if: steps.creds.outputs.have == 'true'
         run: pnpm --filter web exec playwright test e2e/a11y.spec.ts
