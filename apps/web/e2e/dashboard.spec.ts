@@ -7,8 +7,9 @@ test.describe('Dashboard', () => {
   })
 
   test('page loads and shows KPI cards', async ({ page }) => {
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-    await expect(page.getByText('Total executions', { exact: true })).toBeVisible()
+    // The dashboard h1 is the active time window ("Last 7 days"), not "Dashboard".
+    await expect(page.getByRole('heading', { name: /Last \d+ days/ })).toBeVisible()
+    await expect(page.getByText('Total runs', { exact: true })).toBeVisible()
     await expect(page.getByText('Success rate', { exact: true })).toBeVisible()
     await expect(page.getByText('Avg duration', { exact: true })).toBeVisible()
   })
