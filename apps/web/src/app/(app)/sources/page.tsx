@@ -254,39 +254,47 @@ export default function SourcesPage() {
                 {sources.map((source) => (
                   <div
                     key={source.name}
-                    role="button"
-                    tabIndex={0}
-                    className={`cursor-pointer rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark ${
+                    data-testid="source-card"
+                    className={`relative rounded-xl border bg-white p-4 transition-[colors,opacity] duration-150 ${
                       selectedSourceName === source.name
                         ? 'border-p-blue-light ring-2 ring-p-blue-dark/20'
                         : 'border-gray-200 hover:border-gray-300'
                     } ${removingName === source.name ? 'opacity-0' : ''}`}
-                    onClick={() => setSelectedSourceName(source.name)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setSelectedSourceName(source.name)
-                      }
-                    }}
                   >
                     <div className="mb-3 flex items-center justify-between">
-                      <p className="font-mono text-sm font-semibold text-graphite">{source.name}</p>
+                      {/*
+                        Selection lives on the name, not the card. The card used to be a
+                        role=button/tabIndex=0 wrapper around these controls (#515), which
+                        axe flags as nested-interactive and which broke keyboard activation:
+                        the card's Enter/Space handler preventDefault()'d a keydown bubbling
+                        up from the inner buttons. The ::after overlay keeps the whole card
+                        clickable by mouse; sibling controls sit above it via `relative`.
+                      */}
+                      <button
+                        type="button"
+                        aria-pressed={selectedSourceName === source.name}
+                        aria-label={`Use ${source.name} in the example request`}
+                        onClick={() => setSelectedSourceName(source.name)}
+                        className="cursor-pointer rounded font-mono text-sm font-semibold text-graphite after:absolute after:inset-0 after:rounded-xl after:content-[''] focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-p-blue-dark"
+                      >
+                        {source.name}
+                      </button>
                       {confirmingRevoke === source.name ? (
-                        <div className="flex items-center gap-1.5">
+                        <div className="relative flex items-center gap-1.5">
                           <button
-                            onClick={(e) => { e.stopPropagation(); handleDelete(source.name) }}
+                            onClick={() => handleDelete(source.name)}
                             className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
                           >
                             Revoke
                           </button>
-                          <button onClick={(e) => { e.stopPropagation(); cancelRevoke() }} className="text-xs text-gray-500 hover:text-gray-600">
+                          <button onClick={cancelRevoke} className="text-xs text-gray-500 hover:text-gray-600">
                             Cancel
                           </button>
                         </div>
                       ) : (
                         <button
-                          onClick={(e) => { e.stopPropagation(); requestRevoke(source.name) }}
-                          className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                          onClick={() => requestRevoke(source.name)}
+                          className="relative flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
                         >
                           <KeyRound className="h-3.5 w-3.5" />
                           Revoke
@@ -294,22 +302,22 @@ export default function SourcesPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <code className="flex-1 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                      <code className="relative flex-1 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
                         {revealedKeys.has(source.api_key)
                           ? source.api_key
                           : `${source.api_key.slice(0, 8)}${'•'.repeat(24)}`}
                       </code>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setRevealedKeys((prev) => { const next = new Set(prev); next.has(source.api_key) ? next.delete(source.api_key) : next.add(source.api_key); return next }) }}
-                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
+                        onClick={() => setRevealedKeys((prev) => { const next = new Set(prev); next.has(source.api_key) ? next.delete(source.api_key) : next.add(source.api_key); return next })}
+                        className="relative flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
                         title={revealedKeys.has(source.api_key) ? 'Hide' : 'Reveal'}
                         aria-label={revealedKeys.has(source.api_key) ? 'Hide API key' : 'Reveal API key'}
                       >
                         {revealedKeys.has(source.api_key) ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleCopy(source.api_key) }}
-                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
+                        onClick={() => handleCopy(source.api_key)}
+                        className="relative flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-beige"
                       >
                         {copiedKey === source.api_key ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                         {copiedKey === source.api_key ? 'Copied!' : 'Copy'}
@@ -322,8 +330,7 @@ export default function SourcesPage() {
                       const assignedIds = new Set(assigned.map((a) => a.workflow_id))
                       const unassigned = workflows.filter((w) => !assignedIds.has(w.id))
                       return (
-                        // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- propagation guard only (stops the parent card's click); not itself interactive
-                        <div className="mt-3 border-t border-gray-100 pt-3" onClick={(e) => e.stopPropagation()}>
+                        <div className="relative mt-3 border-t border-gray-100 pt-3">
                           <div className="mb-1.5 flex items-center justify-between">
                             <span className="text-xs font-medium text-gray-500">
                               {assigned.length === 0 ? 'Works on any workflow' : 'Locked to these workflows'}
