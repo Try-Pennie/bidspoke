@@ -15,8 +15,9 @@ test.describe('Environment Variables', () => {
         const e2eRow = page.locator('tr').filter({ hasText: /^E2E_/ }).first()
         found = await e2eRow.isVisible().catch(() => false)
         if (!found) break
-        await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
-        await page.getByRole('button', { name: 'Delete', exact: true }).click()
+        await e2eRow.getByRole('button', { name: 'More options' }).click()
+        await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
+        await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
         await page.waitForTimeout(300)
       }
     } finally {
@@ -41,15 +42,17 @@ test.describe('Environment Variables', () => {
     await page.getByRole('button', { name: 'Add Variable' }).click()
     await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
     await page.locator('input[placeholder="value"]').fill(value)
-    await page.getByRole('button', { name: 'Save' }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
 
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value).first()).toBeVisible()
 
     // cleanup
     const e2eRow = page.locator('tr').filter({ hasText: key }).first()
-    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
-    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    // Delete lives behind the row's More options menu, then a red confirm.
+    await e2eRow.getByRole('button', { name: 'More options' }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })
 
@@ -61,15 +64,17 @@ test.describe('Environment Variables', () => {
     await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
     await page.locator('#is_secret').check()
     await page.locator('input[placeholder="value"]').fill(value)
-    await page.getByRole('button', { name: 'Save' }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
 
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
     await expect(page.getByText(value)).not.toBeVisible()
 
     // cleanup
     const e2eRow = page.locator('tr').filter({ hasText: key }).first()
-    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
-    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    // Delete lives behind the row's More options menu, then a red confirm.
+    await e2eRow.getByRole('button', { name: 'More options' }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })
 
@@ -80,12 +85,14 @@ test.describe('Environment Variables', () => {
     await page.getByRole('button', { name: 'Add Variable' }).click()
     await page.locator('input[placeholder="MY_API_KEY"]').fill(key)
     await page.locator('input[placeholder="value"]').fill('del-me')
-    await page.getByRole('button', { name: 'Save' }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText(key)).toBeVisible({ timeout: 8000 })
 
     const e2eRow = page.locator('tr').filter({ hasText: key }).first()
-    await e2eRow.getByRole('button', { name: 'Delete variable' }).click()
-    await page.getByRole('button', { name: 'Delete', exact: true }).click()
+    // Delete lives behind the row's More options menu, then a red confirm.
+    await e2eRow.getByRole('button', { name: 'More options' }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
+    await e2eRow.getByRole('button', { name: 'Delete', exact: true }).click()
 
     await expect(page.getByText(key)).not.toBeVisible({ timeout: 5000 })
   })

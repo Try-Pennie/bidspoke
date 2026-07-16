@@ -24,7 +24,9 @@ test.describe('API Sources', () => {
     const sourceCard = page.getByText(name).first().locator('..').locator('..')
     await sourceCard.getByRole('button', { name: 'Revoke' }).click()
     await sourceCard.getByRole('button', { name: 'Revoke' }).click()
-    await expect(page.getByRole('paragraph').filter({ hasText: name })).not.toBeVisible({ timeout: 5000 })
+    // Target the source card (a role=button whose text includes the name), not the
+    // help paragraph that also echoes the name as trigger.source example copy.
+    await expect(page.getByRole('button', { name: new RegExp(name) })).not.toBeVisible({ timeout: 5000 })
   })
 
   test('revoke source → row removed', async ({ page }) => {
@@ -41,6 +43,8 @@ test.describe('API Sources', () => {
     await sourceCard.getByRole('button', { name: 'Revoke' }).click()
     await sourceCard.getByRole('button', { name: 'Revoke' }).click()
 
-    await expect(page.getByRole('paragraph').filter({ hasText: name })).not.toBeVisible({ timeout: 5000 })
+    // Target the source card (a role=button whose text includes the name), not the
+    // help paragraph that also echoes the name as trigger.source example copy.
+    await expect(page.getByRole('button', { name: new RegExp(name) })).not.toBeVisible({ timeout: 5000 })
   })
 })
