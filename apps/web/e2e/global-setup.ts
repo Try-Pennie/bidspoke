@@ -12,6 +12,7 @@ import { createClient } from '@supabase/supabase-js'
 import * as dotenv from 'dotenv'
 import * as path from 'path'
 import * as fs from 'fs'
+import { assertIsolatedOrg } from './org-isolation'
 
 dotenv.config({ path: path.resolve(__dirname, '../.env.test') })
 
@@ -58,6 +59,16 @@ export default async function globalSetup() {
   })
   const { data, error } = await supabase.auth.signInWithPassword({ email, password })
   if (error || !data.session) throw new Error(`E2E auth failed: ${error?.message ?? 'no session'}`)
+
+  // Refuse to run if the test user is back in the production org (#664). RLS
+  // returns only the caller's own org here, so this read confirms which tenant
+  // the suite is about to drive before it creates or deletes anything.
+  const { data: org, error: orgError } = await supabase
+    .from('organizations')
+    .select('id')
+    .maybeSingle()
+  if (orgError) throw new Error(`E2E org isolation check failed: ${orgError.message}`)
+  assertIsolatedOrg(org?.id)
 
   fs.mkdirSync(path.dirname(STORAGE_FILE), { recursive: true })
 

@@ -1,11 +1,12 @@
 /**
  * Deciding what the e2e teardown is allowed to delete.
  *
- * This is load-bearing safety code, not a helper. The e2e user shares an
- * organization with Main Flow, Engine Bidding Workflow and Lead Economy Bidding,
- * so row-level security does NOT prevent the suite from deleting a workflow that
- * moves real money. Until the test user gets its own org, this predicate is the
- * thing standing between a teardown bug and a deleted production workflow.
+ * Since #664 the test user has its own organization, so the tenant model already
+ * keeps the suite away from Main Flow, Engine Bidding and Lead Economy: it cannot
+ * even see a production workflow to delete it. This predicate stays as
+ * defense-in-depth, so a config regression that puts the user back in a shared org
+ * (caught loudly by the isolation guard in global-setup) still cannot turn a
+ * teardown bug into a deleted production workflow.
  *
  * It replaces a UI loop that clicked Delete on any row whose visible TEXT matched
  * /E2E-|e2e-test/. That was dangerous (one renamed column or changed selector from

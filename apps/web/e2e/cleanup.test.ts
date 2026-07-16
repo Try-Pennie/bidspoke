@@ -2,10 +2,10 @@ import { describe, it, expect } from 'vitest'
 import { isDeletableTestWorkflow, sweepTestWorkflows, TEST_WORKFLOW_NAME, type WorkflowRow } from './cleanup'
 
 /**
- * The e2e test user shares an organization with Main Flow, Engine Bidding and
- * Lead Economy Bidding, so RLS does NOT stop the suite from deleting a workflow
- * that moves real money. Until that changes, this predicate is the only thing
- * standing between a teardown bug and a deleted production workflow.
+ * Since #664 the e2e user has its own organization, so RLS keeps the suite away
+ * from Main Flow, Engine Bidding and Lead Economy on its own. This predicate is
+ * retained as defense-in-depth against a config regression that shares the org
+ * again, so a teardown bug still cannot delete a workflow that moves real money.
  *
  * It is deliberately paranoid: BOTH the owner and the name must look like a test
  * artifact. The old cleanup was a UI loop that clicked Delete on any row whose
