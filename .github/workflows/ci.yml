@@ -83,17 +83,28 @@ jobs:
       - uses: actions/checkout@v7
 
       # Dependabot PRs and forks are not given secrets, so the sign-in in global-setup
-      # cannot run there. Skip loudly rather than fail a PR for a credential it was never
-      # going to have. Every other PR has the secret and is gated for real.
+      # cannot run there. Those skip rather than fail for a credential they were never
+      # going to have.
+      #
+      # Anything else MUST fail instead of skipping. A deleted or emptied secret would
+      # otherwise skip every run, each reporting a green check, and nobody would be told:
+      # a gate that quietly switches itself off is the exact rot this job exists to stop.
       - name: Check for e2e credentials
         id: creds
+        env:
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         run: |
-          if [ -z "${E2E_PASSWORD}" ]; then
-            echo "have=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No E2E_PASSWORD available (fork or Dependabot PR), so the accessibility scan is skipped."
-          else
+          if [ -n "${E2E_PASSWORD}" ]; then
             echo "have=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [ "${IS_FORK}" = "true" ] || [ "${GITHUB_ACTOR}" = "dependabot[bot]" ]; then
+            echo "have=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No E2E_PASSWORD on a fork or Dependabot PR, so the accessibility scan is skipped."
+            exit 0
+          fi
+          echo "::error::E2E_PASSWORD is not set on a trusted run, so the accessibility scan cannot sign in. Restore the secret rather than letting this gate skip silently."
+          exit 1
 
       - uses: pnpm/action-setup@v6
         if: steps.creds.outputs.have == 'true'

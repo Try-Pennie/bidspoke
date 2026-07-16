@@ -57,4 +57,18 @@ describe('CI accessibility gate', () => {
     // continue-on-error would turn the gate into decoration.
     expect(a11yJob(readCi())).not.toMatch(/continue-on-error:\s*true/)
   })
+
+  it('refuses to skip silently when the credential is missing on a trusted run', () => {
+    // The job skips without E2E_PASSWORD so Dependabot and forks, which are never given
+    // secrets, do not fail for a credential they could not have. The hazard is that a
+    // deleted or emptied secret would then skip EVERY run, each reporting a green check,
+    // and nobody would be told: the gate switching itself off is the exact rot #673 is
+    // about. A push to main has no legitimate reason to lack it, so that must be an error.
+    const job = a11yJob(readCi())
+    expect(job, 'the credential check no longer fails when the secret is missing').toMatch(
+      /::error::[^\n]*E2E_PASSWORD/,
+    )
+    // The skip must be conditional on being a fork or Dependabot, not unconditional.
+    expect(job).toMatch(/fork|dependabot/i)
+  })
 })
