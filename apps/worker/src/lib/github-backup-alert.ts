@@ -16,6 +16,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, sendBackupFailureAlert } from './slack'
+import { formatErr } from './format-error'
 
 // Alert after this many consecutive failed saves (org-wide). Saves are infrequent
 // and the usual cause (bad token / wrong repo) fails every save, so a low bar both
@@ -75,7 +76,7 @@ export async function recordBackupFailure(input: BackupFailureInput): Promise<bo
       workflow_id: input.workflowId,
       workflow_name: input.workflowName,
       consecutive_failures: streak,
-      error_message: input.error instanceof Error ? input.error.message : String(input.error),
+      error_message: formatErr(input.error),
     },
     input.appUrl
   )

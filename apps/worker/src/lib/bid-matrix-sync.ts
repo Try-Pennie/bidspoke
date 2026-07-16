@@ -13,6 +13,7 @@
  * resolver can pick which set to use per lead.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { parseJson } from './json'
@@ -166,7 +167,7 @@ export async function syncBidConfig(
       skipped_empty_delete: skippedEmptyDelete,
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = formatErr(err)
     await markConfigSynced(supabase, configId, { last_synced_at: startedAt, last_sync_error: message })
     throw err
   }
@@ -580,7 +581,7 @@ export async function syncAllSalesforceConfigs(
         config_id: c.id,
         organization_id: c.organization_id,
         config_slug: c.slug,
-        error: err instanceof Error ? err.message : String(err),
+        error: formatErr(err),
       })
     }
   }

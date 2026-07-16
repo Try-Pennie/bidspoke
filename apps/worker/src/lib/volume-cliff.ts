@@ -15,6 +15,7 @@
  * Cooldown: 30 min per workflow via KV (prevents repeat alerts during a sustained outage).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
 import { getSlackConnection, postMessage } from './slack'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
@@ -216,7 +217,7 @@ async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
   } catch (e) {
     const latency = Date.now() - start
     const errName = e instanceof Error ? e.name : 'unknown'
-    const errMsg = e instanceof Error ? e.message : String(e)
+    const errMsg = formatErr(e)
     console.error(`[volume-cliff] self-check FAILED type=${errName} message=${errMsg} latency=${latency}ms url=${selfCheckUrl}`)
     return { ok: false, status: null, latency_ms: latency, error: `${errName}: ${errMsg}` }
   }

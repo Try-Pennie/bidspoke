@@ -22,6 +22,7 @@ import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { sendCircuitAlert } from '../../lib/slack'
 import { parseJson } from '../../lib/json'
+import { formatErr } from '../../lib/format-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
 import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
@@ -150,7 +151,7 @@ export async function recordBreakerOutcome<T>(
           workflow_id: ctx.trigger.workflow_id,
           partner_id: slug,
           kind,
-          error_message: err instanceof Error ? err.message : String(err),
+          error_message: formatErr(err),
         })
         return undefined
       }
@@ -553,7 +554,7 @@ export async function executePartnerBidNode(
     })
 
     const suppress = shouldSuppressAlert(p.alert_config, errorType)
-    const message = err instanceof Error ? err.message : String(err)
+    const message = formatErr(err)
     const wrapped = new PartnerApiError(message, errorType, suppress) as PartnerApiError & { resolvedInput?: ResolvedStepInput }
     wrapped.resolvedInput = errResolvedInput
     throw wrapped
@@ -664,7 +665,7 @@ async function checkDedup(
       workflow_id: ctx.trigger.workflow_id,
       partner_id: slug,
       reason: aborted ? 'timeout' : 'error',
-      error_message: err instanceof Error ? err.message : String(err),
+      error_message: formatErr(err),
     })
     return false
   } finally {

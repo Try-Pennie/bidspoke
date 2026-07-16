@@ -17,6 +17,7 @@
 // re-warms last-good so a superseded credential does not survive its own rotation.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
 import { decryptSecret, encryptSecret } from './secret-crypto'
 
 const TTL = 300
@@ -121,7 +122,7 @@ export async function invalidateEnvCache(
     await loadEnvVars(orgId, kv, supabase, secretEncryptionKey)
   } catch (e) {
     console.error(
-      `[env-loader] cache re-warm after mutation failed for org ${orgId}: ${e instanceof Error ? e.message : String(e)}`
+      `[env-loader] cache re-warm after mutation failed for org ${orgId}: ${formatErr(e)}`
     )
   }
 }

@@ -17,6 +17,7 @@
  */
 
 import type { NodeDefinition, ExecutionContext, ConditionGroup } from '../../types'
+import { formatErr } from '../../lib/format-error'
 import type { PartnerBidOutput } from './partner-bid'
 import { executePartnerBidNode } from './partner-bid'
 import { PartnerApiError } from '../partner-bid-error'
@@ -264,7 +265,7 @@ async function runHighestBid(
         partner_slug: slugLookup?.(id),
         output: null,
         status: 'failed' as const,
-        error: err instanceof Error ? err.message : String(err),
+        error: formatErr(err),
         started_at: new Date().toISOString(),
         duration_ms: 0,
       } satisfies BidGroupAttempt))
