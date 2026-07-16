@@ -574,6 +574,11 @@ export async function executeWorkflow(
             present: Object.values(fieldPresence).filter(Boolean).length,
           })
         }
+        // #629: set when finalize had to reconstruct a missing base row. The
+        // step-log flush for this run was chained on the createExecutionRecord
+        // insert, which failed, so it never ran and left no trace. Once the
+        // parent row exists again we re-flush the queue below.
+        let reconstructed = false
         const finalizeError = await updateExecutionRecord(supabase, executionId, startedAt, {
           status: finalStatus,
           outcome,
@@ -606,7 +611,37 @@ export async function executeWorkflow(
           is_test: options.isTest ?? false,
           parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
           resumed_from_execution_id: options.resumeFromExecutionId,
-        })
+        }, () => { reconstructed = true })
+
+        // #629: the base row was missing and has now been reconstructed, so the
+        // FK that blocked the step-log inserts is satisfied. The original flush
+        // (chained on the failed createExecutionRecord insert) never ran, so a
+        // fresh flush of the queue cannot duplicate rows. Recover the trace so
+        // the served lead's run is debuggable step by step. Best-effort: a
+        // failure here is logged, not surfaced (the top-level row already
+        // survived via reconstruction).
+        if (reconstructed && stepLogQueue.length > 0) {
+          executionCtx.waitUntil(
+            flushStepLogs(supabase, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
+              workflowId,
+              isTest: options.isTest ?? false,
+            })
+              .then((flushErr) => {
+                if (flushErr) {
+                  console.error('[step-logger] step-log recovery re-flush reported errors', {
+                    executionId,
+                    error: flushErr,
+                  })
+                }
+              })
+              .catch((e) =>
+                console.error('[step-logger] step-log recovery re-flush threw', {
+                  executionId,
+                  error: e instanceof Error ? e.message : String(e),
+                }),
+              ),
+          )
+        }
 
         // The finalize UPDATE is the only durable record that this lead was
         // served. If it matched zero rows the execution row is gone entirely
