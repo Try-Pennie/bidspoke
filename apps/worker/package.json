@@ -11,16 +11,16 @@
     "db:types": "bash scripts/gen-db-types.sh"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.110.2",
-    "hono": "^4.12.30"
+    "@supabase/supabase-js": "^2.110.7",
+    "hono": "^4.12.31"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260715.1",
+    "@cloudflare/workers-types": "^5.20260719.1",
     "@eslint/js": "^10.0.1",
-    "@typescript-eslint/eslint-plugin": "^8.63.0",
-    "@typescript-eslint/parser": "^8.63.0",
+    "@typescript-eslint/eslint-plugin": "^8.64.0",
+    "@typescript-eslint/parser": "^8.64.0",
     "eslint": "^10.6.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.112.0"
   }
 }
