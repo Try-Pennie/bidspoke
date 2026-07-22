@@ -217,8 +217,11 @@ export async function executeSalesforceNode(
     },
   }
 
-  // Salesforce bulkhead (ADR 0005 / #312): bound inflight SF calls below the org's
-  // ~25-slot concurrency governor. At capacity, wait briefly for a freed slot —
+  // Salesforce bulkhead (ADR 0005 / #312): a self-imposed inflight cap on SF calls.
+  // SF only limits requests running 20s+ (max 25 concurrent); sub-second calls are
+  // unlimited, so this cap chiefly protects a struggling SF during a slowdown, when
+  // slow calls cross the 20s line and start counting against that real governor.
+  // At capacity, wait for a freed slot:
   // observed bursts clear in seconds, and a waiting request adds zero Salesforce
   // load (it was refused at our own gate, it never reached SF). Only if the wait
   // budget expires does the lead shed with a permanent error (routes to the

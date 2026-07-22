@@ -8,7 +8,7 @@
  * slot frees, the wait budget runs out, or the step's abort signal fires.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { BulkheadClient } from '../bulkhead-client'
+import { BulkheadClient, salesforceBulkheadWaitMs } from '../bulkhead-client'
 import type { Env } from '../../index'
 
 // Fake DO namespace whose acquire responses come from a queue; refusals repeat
@@ -103,5 +103,28 @@ describe('BulkheadClient.acquireWithWait', () => {
     })
     expect(result.allowed).toBe(false)
     expect(acquireCalls.length).toBe(1) // no re-poll after abort
+  })
+})
+
+describe('salesforceBulkheadWaitMs', () => {
+  // A transient Salesforce slowdown holds the shared 20-slot pool for several
+  // seconds; the 2026-07-22 incident dropped 17 leads that gave up after 5s even
+  // though the blip cleared inside a minute. The default budget is 15s so a lead
+  // rides out a short slowdown instead of shedding. A waiting request never
+  // touches Salesforce, and the 30s step timeout still bounds it.
+  it('defaults to 15000ms when unset', () => {
+    expect(salesforceBulkheadWaitMs({} as Env)).toBe(15_000)
+  })
+
+  it('honors a numeric env override', () => {
+    expect(salesforceBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '8000' } as unknown as Env)).toBe(8000)
+  })
+
+  it('allows 0 to shed instantly', () => {
+    expect(salesforceBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: '0' } as unknown as Env)).toBe(0)
+  })
+
+  it('falls back to the default on a non-numeric value', () => {
+    expect(salesforceBulkheadWaitMs({ SALESFORCE_BULKHEAD_WAIT_MS: 'nope' } as unknown as Env)).toBe(15_000)
   })
 })

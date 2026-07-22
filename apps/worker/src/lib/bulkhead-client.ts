@@ -10,11 +10,13 @@ export type { AcquireResult }
 
 const DEFAULT_LIMIT = 20
 // How long a caller will wait for a slot before shedding. Bursts observed in
-// prod (2026-07-01..07-03: 16 live leads shed) cleared within seconds, so a
-// short wait converts an instant lead kill into a slightly slower lead. A
-// waiting request never touches the protected dependency, so waiting is safe
-// for Salesforce; it only defers our own call.
-const DEFAULT_WAIT_MS = 5_000
+// prod cleared within seconds to a minute (2026-07-01..07-03: 16 leads shed;
+// 2026-07-22: a ~1-min Salesforce latency spike dropped 17 leads that gave up
+// after 5s even though slots kept freeing throughout). Raised to 15s so a lead
+// rides out a short slowdown instead of shedding. A waiting request never
+// touches the protected dependency, so waiting is safe for Salesforce; it only
+// defers our own call, and the 30s step timeout still bounds the total wait.
+const DEFAULT_WAIT_MS = 15_000
 const POLL_MS = 250
 
 /** Resolve the configured Salesforce inflight cap (env override, sane default). */

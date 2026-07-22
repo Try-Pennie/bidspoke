@@ -1,6 +1,16 @@
 // Inflight-concurrency limiter (bulkhead) for a shared non-scaling dependency —
-// chiefly Salesforce, which has a ~25-slot concurrency governor while the engine
-// runs on auto-scaling Workers. ADR 0005 / #312.
+// chiefly Salesforce, while the engine runs on auto-scaling Workers. ADR 0005 / #312.
+//
+// NOTE on Salesforce's real limit: SF caps concurrent requests at 25, but ONLY
+// counts requests running 20 seconds or longer ("there isn't a limit on the
+// number of concurrent requests shorter than 20 seconds"). Our calls are
+// normally sub-second, so SF imposes no concurrency ceiling on healthy traffic.
+// Our limit (default 20) is a deliberate self-imposed cap. Its real value shows
+// during a Salesforce slowdown: when calls balloon past 20s they start counting
+// against the true 25-long-running limit, so the cap keeps us from flooding a
+// struggling SF and tripping that governor. Don't raise it so high that a
+// slowdown lets a flood of calls cross the 20s line.
+// Ref: developer.salesforce.com Platform API limits cheatsheet.
 //
 // A single DO instance (e.g. id "salesforce") holds the inflight budget. Callers
 // `/acquire` a lease before the dependency call and `/release` it after. Leases
