@@ -443,4 +443,22 @@ describe('isSaturationError', () => {
     expect(isSaturationError(null)).toBe(false)
     expect(isSaturationError('REQUEST_LIMIT_EXCEEDED')).toBe(false)
   })
+
+  // A bulkhead shed is NOT a saturation error even though the pool is saturated:
+  // a shed request never reached Salesforce (it was refused at our own gate), so
+  // retrying it re-enters the gate and adds zero SF load. That is the opposite of
+  // a REQUEST_LIMIT_EXCEEDED, whose retry hits SF. It must stay retryable.
+  it('does not treat a Salesforce bulkhead shed as saturation (its retry adds no SF load)', () => {
+    expect(isSaturationError(new Error('Salesforce bulkhead: at capacity (20/20 inflight, waited 20262ms)'))).toBe(false)
+    expect(isSaturationError(new Error('Salesforce bulkhead: at capacity while paging a query (20/20 inflight)'))).toBe(false)
+  })
+})
+
+// A bulkhead shed rides out a brief SF slowdown by retrying (each retry re-enters
+// the wait-for-a-slot gate). For withRetry to retry it, it must classify transient.
+// It used to be marked permanent, which dropped the lead on the first shed.
+describe('classifyStepError: Salesforce bulkhead shed is retryable', () => {
+  it('classifies an unmarked shed error as transient', () => {
+    expect(classifyStepError(new Error('Salesforce bulkhead: at capacity (20/20 inflight, waited 20262ms)'))).toBe('transient')
+  })
 })

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeSalesforceNode, SF_QUERY_PAGE_CAP } from '../salesforce'
+import { classifyStepError } from '../../error-classifier'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -124,11 +125,15 @@ describe('executeSalesforceNode', () => {
   })
 
   // #312: when the Salesforce bulkhead stays at capacity past the wait budget,
-  // the node sheds — throwing a permanent error (routes to on_error/fallback, no
-  // retry) WITHOUT calling the Salesforce operation. Only the token fetch
+  // the node sheds WITHOUT calling the Salesforce operation. Only the token fetch
   // happens; the write is shed. WAIT_MS=0 gives the old one-shot behavior so
   // this test exercises the shed path without real sleeps.
-  it('sheds with a permanent error when the bulkhead is at capacity (#312)', async () => {
+  //
+  // The shed is retryable, NOT permanent: a shed request never touched Salesforce
+  // (it was refused at our own gate), so withRetry re-entering the gate on a
+  // later attempt adds zero SF load and rides out a brief slowdown instead of
+  // dropping the lead. It must classify transient and must not look permanent.
+  it('sheds with a RETRYABLE (transient, not permanent) error when the bulkhead is at capacity (#312)', async () => {
     fetchMock.mockResolvedValueOnce(mockTokenResponse())
     const acquire = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ allowed: false, inflight: 20, limit: 20 })),
@@ -146,7 +151,8 @@ describe('executeSalesforceNode', () => {
     ).catch((e: Error & { permanent?: boolean }) => { caught = e })
 
     expect(caught?.message).toMatch(/bulkhead: at capacity/)
-    expect(caught?.permanent).toBe(true)
+    expect(caught?.permanent).toBeUndefined()
+    expect(classifyStepError(caught)).toBe('transient')
     expect(acquire).toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1) // token fetch only — the write was shed
   })

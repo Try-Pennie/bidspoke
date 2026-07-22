@@ -289,6 +289,12 @@ export function shouldSuppressAlert(
 // (alerting and circuit breakers should see it), but withRetry skips further
 // in-execution attempts instead of amplifying. Executors can also mark an
 // error explicitly via `err.saturated = true` for partner-specific signals.
+//
+// Deliberately NOT here: the Salesforce bulkhead shed ("Salesforce bulkhead: at
+// capacity ..."). It is our OWN gate refusing before any SF call, so retrying it
+// re-enters the gate and adds zero SF load, the opposite of REQUEST_LIMIT_EXCEEDED
+// (whose retry hits SF). It must stay retryable so a lead rides out a brief SF
+// slowdown; do not add it as a saturation marker.
 const SATURATION_MARKERS = ['REQUEST_LIMIT_EXCEEDED']
 
 export function isSaturationError(err: unknown): boolean {
