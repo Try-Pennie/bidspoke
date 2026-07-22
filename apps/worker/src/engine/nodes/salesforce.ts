@@ -224,10 +224,14 @@ export async function executeSalesforceNode(
   // At capacity, wait for a freed slot:
   // observed bursts clear in seconds, and a waiting request adds zero Salesforce
   // load (it was refused at our own gate, it never reached SF). Only if the wait
-  // budget expires does the lead shed with a permanent error (routes to the
-  // step's on_error/fallback, no SF retry) — that now genuinely means sustained
-  // saturation. Fail OPEN if the limiter itself errors — a bulkhead-DO outage
-  // must not block all SF traffic.
+  // budget expires does the lead shed. The shed is a RETRYABLE (transient) error,
+  // NOT permanent: because a shed request never touched SF, withRetry re-entering
+  // this gate on a later attempt still adds zero SF load and lets a lead ride out
+  // a ~1-min slowdown across attempts (bounded by the per-attempt step timeout)
+  // instead of being dropped after one wait. Do NOT mark it saturated / permanent,
+  // which would lump it with REQUEST_LIMIT_EXCEEDED (whose retry DOES hit SF and
+  // must not retry); see isSaturationError in error-classifier.ts. Fail OPEN if the
+  // limiter itself errors, so a bulkhead-DO outage cannot block all SF traffic.
   const bulkhead = env.SALESFORCE_BULKHEAD
     ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env))
     : null
@@ -243,8 +247,9 @@ export async function executeSalesforceNode(
     console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} waited_ms=${waitedMs} trace=${ctx.trigger.trace_id}`)
     const shedErr = new Error(
       `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight, waited ${waitedMs}ms)`,
-    ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput }
-    shedErr.permanent = true
+    ) as Error & { resolvedInput?: ResolvedStepInput }
+    // Not marked permanent/saturated on purpose: classifyStepError defaults an
+    // unmarked error to transient, so withRetry retries the shed (see comment above).
     shedErr.resolvedInput = resolvedInput
     throw shedErr
   }
@@ -487,9 +492,13 @@ async function fetchQueryPage(
         .catch(() => ({ allowed: true } as AcquireResult))
     : ({ allowed: true } as AcquireResult)
   if (!lease.allowed) {
+    // Retryable (transient), NOT permanent, same rationale as the main shed
+    // above: a shed request never reached SF, so retrying re-enters this gate
+    // without adding SF load. Leaving it unmarked lets classifyStepError default
+    // it to transient so withRetry rides out a brief slowdown.
     throw Object.assign(
       new Error(`Salesforce bulkhead: at capacity while paging a query (${lease.inflight}/${lease.limit} inflight)`),
-      { permanent: true, resolvedInput: opts.resolvedInput },
+      { resolvedInput: opts.resolvedInput },
     )
   }
 
