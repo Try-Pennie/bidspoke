@@ -35,6 +35,12 @@ jobs:
       github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      # Checks out the DEFAULT branch (main), not the PR head, because this job
+      # is triggered by workflow_run. That is exactly what we want: the
+      # merge-decision script runs from trusted main, never from the untrusted
+      # PR branch, and it gives the script below a stable local path.
+      - uses: actions/checkout@v5
+
       - name: Find the PR for this CI run
         id: pr
         env:
@@ -48,32 +54,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
-        # This job has no checkout step, so every gh command below needs --repo
-        # explicitly -- without it gh falls back to reading the local git remote
-        # to infer the repository, which fails ("not a git repository") since
-        # nothing has been cloned here. Every run of this job failed on this
-        # exact line from the workflow's creation until this fix (2026-07-08).
+          REPO: ${{ github.repository }}
+        # The author + branch allowlist lives in a unit-tested script
+        # (.github/scripts/dependabot-automerge-decision.sh) so a gh CLI change
+        # can't silently break it again: the author login flipped from
+        # "dependabot[bot]" to "app/dependabot" and this guard skipped every
+        # routine PR until 2026-07-24. gh needs --repo explicitly even with a
+        # checkout, since the checked-out ref is main, not the PR.
         run: |
-          AUTHOR=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json author --jq .author.login)
-          BRANCH=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefName --jq .headRefName)
+          AUTHOR=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json author --jq .author.login)
+          BRANCH=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq .headRefName)
 
-          if [ "$AUTHOR" != "dependabot[bot]" ]; then
-            echo "PR #$PR_NUMBER was not opened by Dependabot, skipping."
-            exit 0
-          fi
+          DECISION=$(bash .github/scripts/dependabot-automerge-decision.sh "$AUTHOR" "$BRANCH")
 
-          case "$BRANCH" in
-            dependabot/npm_and_yarn/minor-and-patch-*)
-              SAFE=true ;;
-            dependabot/github_actions/*)
-              SAFE=true ;;
-            *)
-              SAFE=false ;;
-          esac
-
-          if [ "$SAFE" = "true" ]; then
+          if [ "$DECISION" = "merge" ]; then
             echo "Merging routine Dependabot PR #$PR_NUMBER ($BRANCH)"
-            gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch
+            gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch
           else
-            echo "PR #$PR_NUMBER ($BRANCH) is not in the auto-merge allowlist (likely a major-version bump), leaving for manual review."
+            echo "PR #$PR_NUMBER (author=$AUTHOR, branch=$BRANCH) is not in the auto-merge allowlist, leaving for manual review."
           fi
