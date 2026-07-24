@@ -10,10 +10,11 @@
 # docs/security/dependency-audit-baseline.md. Remove entries as they are remediated.
 #
 # --- next: fixed only in Next 15.x; app is on Next 14. Remediation is the tracked
-#     Next 14->15 upgrade (#443), not an indefinite ignore. The frontend is an
-#     internal, authenticated ops tool (small known user set), lowering practical
-#     exposure of the SSRF / cache / DoS classes here. Remove all five the moment
-#     Next is upgraded. Two are reported by their CVE alias:
+#     Next 14->15 upgrade (#558, which supersedes the closed #443), not an
+#     indefinite ignore. The frontend is an internal, authenticated ops tool
+#     (small known user set), lowering practical exposure of the SSRF / cache /
+#     DoS classes here. Remove all of these the moment Next is upgraded. Two are
+#     reported by their CVE alias:
 #       CVE-2026-44573 = GHSA-36qx-fr4f-26g5
 #       CVE-2026-44578 = GHSA-c4j6-fc7j-m34r
 CVE-2026-44573
@@ -21,3 +22,11 @@ CVE-2026-44578
 GHSA-8h8q-6873-q5fj
 GHSA-h25m-26qc-wcjf
 GHSA-q4gf-8mx6-v5v3
+# --- next, published 2026-07-2x, same situation (fixed only in 15.5.21/16.2.11):
+#     CVE-2026-64641 (DoS in App Router Server Actions) and CVE-2026-64649 (SSRF
+#     in Server Actions on custom servers): apps/web has zero Server Actions (no
+#     'use server' anywhere) and runs on Cloudflare Pages, not a custom server.
+#     CVE-2026-64645 (SSRF in rewrites): next.config.js defines no rewrites.
+CVE-2026-64641
+CVE-2026-64645
+CVE-2026-64649
