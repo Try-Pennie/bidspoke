@@ -15,6 +15,7 @@
 export type ExportErrorClass =
   | 'db_congestion'
   | 'transient_snowflake'
+  | 'transient_connectivity'
   | 'snowflake_auth'
   | 'snowflake_permission'
   | 'snowflake_schema'
@@ -30,6 +31,8 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
     'Database congestion, not Snowflake. There is no action to take: the rows retry on the next run and usually clear on their own. If it persists across runs, look for a pg_cron job colliding with the export window.',
   transient_snowflake:
     'A transient Snowflake connection failure. There is no action to take: these are retried automatically, and any rows left behind export on the next run. If it repeats across several runs, check the Snowflake status page.',
+  transient_connectivity:
+    'A brief connection timeout at the network edge (a Cloudflare error page, most often on the way to Supabase). There is no action to take: the rows are picked up automatically on the next run. If it repeats across consecutive runs, check the Supabase status page.',
   snowflake_auth:
     'Check the Snowflake credentials. The key pair JWT for the service user has most likely expired or been rotated.',
   snowflake_permission:
@@ -55,6 +58,11 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
     cls: 'transient_snowflake',
     test: /Snowflake (?:429|502|503|504)\b|upstream connect error|connection termination|network connection lost/i,
   },
+  // Cloudflare serves its error pages as a bare "error code: NNN" body (the
+  // 2026-07-24 purge failure was "error code: 522", a connection timeout between
+  // Cloudflare's edge and the Supabase origin). Snowflake statuses are matched
+  // above, so anything left in this shape is edge connectivity, not a service.
+  { cls: 'transient_connectivity', test: /\berror code: 5\d\d\b/i },
   { cls: 'snowflake_auth', test: /Snowflake (?:401|403)\b|\b390144\b|JWT token is invalid/i },
   { cls: 'snowflake_permission', test: /\b003001\b|SQL access control error|insufficient privileges/i },
   { cls: 'snowflake_schema', test: /\b100072\b|non-nullable column|invalid identifier/i },
@@ -66,6 +74,20 @@ export function classifyExportError(message: string): ExportErrorClass {
     if (test.test(message)) return cls
   }
   return 'unknown'
+}
+
+// Classes a retry can genuinely fix. Everything else (auth, permissions, schema
+// drift) needs a human, and 'unknown' deliberately counts as NOT transient so an
+// error we cannot explain always fails loud instead of being held back.
+const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
+  'db_congestion',
+  'transient_snowflake',
+  'transient_connectivity',
+  'platform_limit',
+])
+
+export function isTransientExportError(message: string): boolean {
+  return TRANSIENT_CLASSES.has(classifyExportError(message))
 }
 
 /**

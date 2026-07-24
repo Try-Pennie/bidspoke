@@ -506,7 +506,7 @@ describe('sendExportFailureAlert (#412)', () => {
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('Lead sightings export')
     expect(text).toContain('Snowflake 503')
-    expect(text).toContain('not purged')
+    expect(text).toContain('not exported')
   })
 
   it('does not call the export nightly (lead sightings runs every 2 hours)', async () => {
@@ -518,8 +518,42 @@ describe('sendExportFailureAlert (#412)', () => {
     })
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     const header = body.blocks[0].text.text
-    expect(header).toBe('Snowflake export failed')
+    expect(header).toBe('Lead sightings export failed')
     expect(JSON.stringify(body.blocks).toLowerCase()).not.toContain('nightly')
+  })
+
+  it('names the failing job in the header instead of blaming Snowflake for everything', async () => {
+    // 2026-07-24: a purge blip (Cloudflare 522 reaching Supabase, Snowflake never
+    // involved) was headlined "Snowflake export failed", which read as a relapse
+    // of the July export incidents. The header must name the job that failed.
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.blocks[0].text.text).toBe('Lead sightings purge failed')
+  })
+
+  it('does not claim stale Snowflake analytics for a purge failure', async () => {
+    // A failed purge means the rows are ALREADY in Snowflake and only the
+    // Supabase cleanup is behind. Saying analytics are stale is false alarm copy.
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
+    })
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).not.toContain('stale')
+    expect(text).toContain('already')
+  })
+
+  it('says when the failures started on a second-consecutive-failure alert', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings purge',
+      errors: ['sightings purge: error code: 522'],
+      failingSince: '2026-07-24T11:48:00.000Z',
+    })
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).toContain('second consecutive')
+    // Rendered in ET like every other alert timestamp (11:48 UTC = 7:48 AM EDT).
+    expect(text).toContain('7:48')
   })
 
   it('renders a caller-supplied fix hint instead of the canned Snowflake line (#542)', async () => {

@@ -1162,32 +1162,51 @@ export async function sendExportFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: { jobName: string; errors: string[]; fixHint?: string },
+  payload: { jobName: string; errors: string[]; fixHint?: string; failingSince?: string },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection || !connection.config_alerts_enabled) return false
 
   const lines = payload.errors.slice(0, 20).map((line) => `• ${line}`).join('\n')
+  // A failed purge means the rows are ALREADY in Snowflake and only the Supabase
+  // cleanup is behind; claiming stale analytics for it is false-alarm copy
+  // (2026-07-24). Only an export failure actually leaves analytics behind.
+  const isPurge = payload.jobName.toLowerCase().includes('purge')
+  const consequence = isPurge
+    ? 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists:'
+    : 'The affected rows were not exported and will retry on the next run, but analytics in Snowflake are missing them until it succeeds:'
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: 'Snowflake export failed', emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `${payload.jobName} failed`, emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${payload.jobName}* reported ${payload.errors.length} error${payload.errors.length === 1 ? '' : 's'}. The affected rows were not purged from Supabase and will retry on the next run, but analytics in Snowflake are stale until it succeeds:\n${lines}`,
-      },
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        // The hint is derived from the actual error class by the caller (#542).
-        // Falls back to the generic line for callers that don't classify.
-        text: `*How to fix:* ${payload.fixHint ?? GENERIC_FIX_HINT}`,
+        text: `*${payload.jobName}* reported ${payload.errors.length} error${payload.errors.length === 1 ? '' : 's'}. ${consequence}\n${lines}`,
       },
     },
   ]
+  if (payload.failingSince) {
+    const since = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.failingSince))
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        // Present only when the transient grace held back an earlier failure:
+        // this is the second consecutive failed run, no longer a lone blip.
+        text: `*Failing since:* ${since}. This is the second consecutive failed run; the first was held back as a likely one-off blip.`,
+      },
+    })
+  }
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      // The hint is derived from the actual error class by the caller (#542).
+      // Falls back to the generic line for callers that don't classify.
+      text: `*How to fix:* ${payload.fixHint ?? GENERIC_FIX_HINT}`,
+    },
+  })
   const channel = channelOverride || connection.default_channel
   return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName} failed: ${payload.errors.length} error(s)`)) !== null
 }

@@ -16,7 +16,7 @@
  *     a similar-looking number.
  */
 import { describe, it, expect } from 'vitest'
-import { classifyExportError, buildFixHint, GENERIC_FIX_HINT } from '../export-error-hints'
+import { classifyExportError, buildFixHint, isTransientExportError, GENERIC_FIX_HINT } from '../export-error-hints'
 
 describe('classifyExportError', () => {
   it('classifies a Postgres statement timeout as database congestion', () => {
@@ -60,6 +60,14 @@ describe('classifyExportError', () => {
 
   it('classifies the Cloudflare subrequest ceiling as a platform limit', () => {
     expect(classifyExportError('sightings export: Too many subrequests.')).toBe('platform_limit')
+  })
+
+  it('classifies a Cloudflare error page body as transient connectivity', () => {
+    // The real 2026-07-24 alert: the purge DELETE got Cloudflare's 522
+    // connection-timeout page instead of reaching the Supabase origin. The
+    // classifier had no rule for it, so the alert blamed Snowflake credentials.
+    expect(classifyExportError('sightings purge: error code: 522')).toBe('transient_connectivity')
+    expect(classifyExportError('bids export: error code: 520')).toBe('transient_connectivity')
   })
 
   it('falls back to unknown for anything it does not recognise', () => {
@@ -120,5 +128,34 @@ describe('buildFixHint', () => {
 
   it('returns the generic line for an empty error list rather than an empty string', () => {
     expect(buildFixHint([])).toBe(GENERIC_FIX_HINT)
+  })
+
+  it('says a Cloudflare connectivity blip needs no action and retries on the next run', () => {
+    const hint = buildFixHint(['sightings purge: error code: 522'])
+    expect(hint.toLowerCase()).toContain('no action')
+    expect(hint).toContain('next run')
+    expect(hint).not.toContain('credential')
+    expect(hint).not.toContain('Snowflake availability')
+  })
+})
+
+describe('isTransientExportError', () => {
+  it.each([
+    ['sightings purge: error code: 522'],
+    ['bids export: Snowflake 503: connection termination'],
+    ['sightings export: canceling statement due to statement timeout (57014)'],
+    ['sightings export: Too many subrequests.'],
+  ])('treats %s as transient (a retry can fix it)', (msg) => {
+    expect(isTransientExportError(msg)).toBe(true)
+  })
+
+  it.each([
+    ['sightings purge: permission denied for table lead_sightings (42501)'],
+    ['Snowflake 401: JWT token is invalid'],
+    ['achieve export: Snowflake 400: {"code":"003001","message":"SQL access control error"}'],
+    ['Snowflake 422: invalid identifier LEAD_UUID'],
+    ['bids export: something nobody has seen before'],
+  ])('treats %s as NOT transient (a retry cannot fix it, or we cannot tell)', (msg) => {
+    expect(isTransientExportError(msg)).toBe(false)
   })
 })
