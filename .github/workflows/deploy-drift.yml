@@ -32,8 +32,13 @@ jobs:
           echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
 
           if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ]; then
-            echo "::warning::Live worker has no DEPLOYED_SHA stamp yet (pre-#327 deploy); skipping."
-            exit 0
+            # Was `exit 0`, excused as a pre-#327 deploy. The stamp had in fact never
+            # landed (pnpm swallowed the flag, see deploy.yml), so this branch was taken
+            # on every run and the job reported success hourly while comparing nothing.
+            # An unstamped worker is now the signal that stamping itself has broken,
+            # which is exactly what this job exists to report, so it must fail.
+            echo "::error::Live worker reports no deployed commit (version=${LIVE_SHA:-empty}), so stranding cannot be detected. The deploy is not stamping DEPLOYED_SHA."
+            exit 1
           fi
           if ! git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
             echo "::warning::Live worker commit $LIVE_SHA is not in this repo's history; skipping."
