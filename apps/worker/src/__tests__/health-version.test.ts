@@ -3,6 +3,13 @@
  * (DEPLOYED_SHA, stamped by the deploy workflow). A scheduled check compares
  * this against the latest worker-touching commit on main to catch a "committed
  * but never deployed" stranded worker.
+ *
+ * This covers only the runtime half, and it does so by handing DEPLOYED_SHA
+ * straight to the handler. It is therefore structurally incapable of noticing
+ * that no deploy supplies one, and for a long time none did (#726: pnpm
+ * swallowed the `--var` flag, so the live worker answered "unknown" while these
+ * assertions stayed green). Delivery is guarded separately by
+ * apps/web/src/lib/__tests__/deploy-sha-wiring.test.ts. Keep both.
  */
 import { describe, it, expect } from 'vitest'
 import worker from '../index'
