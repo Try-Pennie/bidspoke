@@ -39,7 +39,7 @@ jobs:
       # is triggered by workflow_run. That is exactly what we want: the
       # merge-decision script runs from trusted main, never from the untrusted
       # PR branch, and it gives the script below a stable local path.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Find the PR for this CI run
         id: pr
