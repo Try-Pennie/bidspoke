@@ -147,7 +147,14 @@ jobs:
       - name: Deploy Worker
         # Stamp the deployed commit so GET / can report it and the Deploy Drift
         # check (#327) can detect a committed-but-never-deployed worker.
-        run: pnpm --filter=worker run deploy -- --var DEPLOYED_SHA:${{ github.sha }}
+        #
+        # `exec wrangler` rather than `run deploy -- ...`: pnpm forwards a bare `--`
+        # verbatim, so the script form reached wrangler as `deploy -- --var K:V`,
+        # where `--` ends option parsing and the flag became ignored positional
+        # junk. wrangler still exited 0, so every deploy since #327 reported
+        # success while leaving the worker unstamped and GET / answering
+        # "unknown". Guarded by deploy-sha-wiring.test.ts.
+        run: pnpm --filter=worker exec wrangler deploy --var DEPLOYED_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
