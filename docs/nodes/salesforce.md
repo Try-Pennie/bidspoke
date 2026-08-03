@@ -69,6 +69,18 @@ When an SF error matches, the step is marked completed (not failed) and the work
 
 By default the engine retries only `429` and `5xx`. `transient_errors` opts specific SF `errorCode`s back into retry even on a 4xx. Each entry is `{ code, message_contains? }`, matched the same way as `expected_errors`. New Salesforce nodes are pre-populated with one entry, `{ code: "REQUEST_LIMIT_EXCEEDED", message_contains: "Concurrent" }`, because SF concurrency limits return a 403 but clear within seconds. Clearing the list (saving an empty array) keeps it empty.
 
+### Malformed email handling (always on, no config)
+
+A lead email carrying a stray character makes Salesforce answer `INVALID_EMAIL_ADDRESS` with a 400, which is permanent, which used to kill the whole run before any bidding. Three leads were lost that way in the 30 days to 2026-08-01 (#723). The node now handles it in two stages, with nothing to configure:
+
+1. **Before the call.** Every address-shaped value in the body is repaired for unambiguous typographic damage: curly apostrophes to ASCII, full-width characters to ASCII, and invisible characters (zero-width, control) stripped. A value is only touched when the result is a valid ASCII address, so a note field containing an `@` is never rewritten. Accents are never folded, because `fernan549@` is a different real person from `fernán549@`. A repair adds a warning to the step.
+
+2. **On an `INVALID_EMAIL_ADDRESS` rejection.** The fields Salesforce names in `fields[]` are blanked and the write is retried once, so the record still lands with the phone number intact. A warning on the step names the field and the dropped value. The retry takes its own Salesforce bulkhead slot, is limited to `create` / `update` / `upsert` (never `apex`, whose side effects may already have fired), and happens only for `INVALID_EMAIL_ADDRESS`. If the retry also fails, the original Salesforce error is what surfaces.
+
+An `expected_errors` entry for `INVALID_EMAIL_ADDRESS` takes precedence, so a workflow that wants to exit on it still does.
+
+**When nothing reachable survives:** if blanking would leave a record with no phone number of at least 10 digits, there is no retry. The step fails with an explicit reason ("no usable contact method") naming the rejected value, rather than an opaque Salesforce 400.
+
 ## Output shape
 
 On success:
