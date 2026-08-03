@@ -71,15 +71,19 @@ By default the engine retries only `429` and `5xx`. `transient_errors` opts spec
 
 ### Malformed email handling (always on, no config)
 
-A lead email carrying a stray character makes Salesforce answer `INVALID_EMAIL_ADDRESS` with a 400, which is permanent, which used to kill the whole run before any bidding. Three leads were lost that way in the 30 days to 2026-08-01 (#723). The node now handles it in two stages, with nothing to configure:
+A lead email carrying a stray character (a curly apostrophe, an accent) makes Salesforce answer `INVALID_EMAIL_ADDRESS` with a 400, which is permanent, which used to kill the whole run before any bidding. Three leads were lost that way in the 30 days to 2026-08-01 (#723).
 
-1. **Before the call.** Every address-shaped value in the body is repaired for unambiguous typographic damage: curly apostrophes to ASCII, full-width characters to ASCII, and invisible characters (zero-width, control) stripped. A value is only touched when the result is a valid ASCII address, so a note field containing an `@` is never rewritten. Accents are never folded, because `fernan549@` is a different real person from `fernán549@`. A repair adds a warning to the step.
+**A malformed email is dropped, never rewritten** (#742). The body goes out byte-identical: no quote rewriting, no trimming, no character folding, so the address the lead actually sent is what Salesforce judges. When Salesforce answers `INVALID_EMAIL_ADDRESS`, the fields it names in `fields[]` are blanked and the write is retried once, so the record still lands with the phone number intact. A warning on the step names the field and the dropped value, so it shows in the execution detail rather than being swallowed.
 
-2. **On an `INVALID_EMAIL_ADDRESS` rejection.** The fields Salesforce names in `fields[]` are blanked and the write is retried once, so the record still lands with the phone number intact. A warning on the step names the field and the dropped value. The retry takes its own Salesforce bulkhead slot, is limited to `create` / `update` / `upsert` (never `apex`, whose side effects may already have fired), and happens only for `INVALID_EMAIL_ADDRESS`. If the retry also fails, the original Salesforce error is what surfaces.
+The blanking happens on the error path on purpose: that is the only point at which the field is known to be an email, because Salesforce named it. A value like `Referrer__c: "some@thing"` is address-shaped and invalid too, so acting on shape alone before the call would destroy real data in a field the node merely guessed about.
+
+The retry is narrow by design. It takes its own Salesforce bulkhead slot, runs once, is limited to `create` / `update` / `upsert` (never `apex`, whose side effects may already have fired), and fires only for `INVALID_EMAIL_ADDRESS`, so any other field-level rejection (a validation rule, for instance) surfaces its own message unchanged. If the retry also fails, the original Salesforce error is what surfaces, so diagnostics never degrade.
 
 An `expected_errors` entry for `INVALID_EMAIL_ADDRESS` takes precedence, so a workflow that wants to exit on it still does.
 
 **When nothing reachable survives:** if blanking would leave a record with no phone number of at least 10 digits, there is no retry. The step fails with an explicit reason ("no usable contact method") naming the rejected value, rather than an opaque Salesforce 400.
+
+**Accepted tradeoff:** every malformed address now costs one extra Salesforce call (the rejection, then the retry), and those leads reach Salesforce with a phone but no email, so no email outreach is possible on them.
 
 ## Output shape
 

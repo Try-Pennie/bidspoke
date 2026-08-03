@@ -104,9 +104,19 @@ describe('Salesforce node malformed-email recovery (#723)', () => {
     vi.restoreAllMocks()
   })
 
-  it('repairs a curly apostrophe before the call, so Salesforce never sees it', async () => {
+  // Dan's call, 2026-08-03 (#742): a damaged email is DROPPED, never rewritten.
+  // Nothing is repaired on the way out, so the address the lead actually sent is
+  // what Salesforce judges, and blanking happens only where Salesforce itself
+  // names the field. That is the only point at which we know a field IS an email:
+  // a value like Referrer__c "some@thing" is address-shaped and invalid too, and
+  // blanking it on shape alone would destroy real data in a field we guessed at.
+  it('sends a curly-apostrophe email exactly as it arrived, then drops it when Salesforce rejects it', async () => {
+    const curlyRejection = JSON.stringify([
+      { message: `Email: invalid email address: ${CURLY_EMAIL}`, errorCode: 'INVALID_EMAIL_ADDRESS', fields: ['Email__c'] },
+    ])
     fetchMock
       .mockResolvedValueOnce(mockTokenResponse())
+      .mockResolvedValueOnce(mockResponse(400, curlyRejection))
       .mockResolvedValueOnce(mockResponse(201, '{"id":"SF-001"}'))
 
     const result = await executeSalesforceNode(
@@ -119,13 +129,36 @@ describe('Salesforce node malformed-email recovery (#723)', () => {
       makeEnv(),
     )
 
-    expect(sentBody(fetchMock, 1).Email__c).toBe("tre'nae.ci@gmail.com")
-    expect(fetchMock).toHaveBeenCalledTimes(2) // token + one write, no retry needed
+    // Byte-identical on the wire: no quote rewriting, no trimming, no folding.
+    expect(sentBody(fetchMock, 1).Email__c).toBe(CURLY_EMAIL)
+    expect(sentBody(fetchMock, 2)).toEqual({ Email__c: '', Phone__c: GOOD_PHONE })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
     expect((result.output as { status: number }).status).toBe(201)
-    expect(result.logs?.some((l) => l.message.includes('Repaired'))).toBe(true)
+    expect(result.logs?.some((l) => l.message.includes(CURLY_EMAIL))).toBe(true)
   })
 
-  it('blanks an unrepairable email Salesforce named, retries once, and keeps the lead', async () => {
+  it('leaves a valid email untouched and makes exactly one call', async () => {
+    fetchMock
+      .mockResolvedValueOnce(mockTokenResponse())
+      .mockResolvedValueOnce(mockResponse(201, '{"id":"SF-004"}'))
+
+    const result = await executeSalesforceNode(
+      makeNode({
+        operation: 'create',
+        object: 'Prospect__c',
+        body: { Email__c: 'john@gmail.com', Phone__c: GOOD_PHONE },
+      }),
+      makeCtx(),
+      makeEnv(),
+    )
+
+    expect(sentBody(fetchMock, 1).Email__c).toBe('john@gmail.com')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(result.logs ?? []).toEqual([])
+    expect((result.output as { status: number }).status).toBe(201)
+  })
+
+  it('blanks an email Salesforce named, retries once, and keeps the lead', async () => {
     fetchMock
       .mockResolvedValueOnce(mockTokenResponse())
       .mockResolvedValueOnce(mockResponse(400, INVALID_EMAIL_400))
