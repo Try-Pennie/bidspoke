@@ -1,9 +1,9 @@
 /**
  * Usable-contact detection (#723, point 4)
  *
- * A lead is sellable because we can reach the person. When Salesforce rejects an
- * unrepairable email and we blank it (see email-repair.ts), a surviving phone
- * number still makes the lead worth creating. If NOTHING reachable survives,
+ * A lead is sellable because we can reach the person. When Salesforce rejects a
+ * malformed email and we blank it, a surviving phone number still makes the lead
+ * worth creating. If NOTHING reachable survives,
  * the run should fail saying exactly that, rather than surfacing an opaque
  * Salesforce 400 that reads like an outage.
  *

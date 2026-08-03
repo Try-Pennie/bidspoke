@@ -24,7 +24,6 @@ import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
-import { repairEmailFieldsInBody } from '../../lib/email-repair'
 import { hasUsablePhone } from '../../lib/contact-fields'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
@@ -181,41 +180,24 @@ export async function executeSalesforceNode(
     throw new Error(`Unknown Salesforce operation: ${operation}`)
   }
 
-  // Repair unambiguous typographic damage in address-shaped body values before
-  // the call goes out (#723). A curly apostrophe in a lead email used to make
-  // Salesforce answer INVALID_EMAIL_ADDRESS, which is a permanent error, which
-  // killed the whole bidding run. Repair is applied to every body-carrying
-  // operation, and only ever produces a valid address or leaves the value alone.
-  const emailRepairLogs: StepLogEntry[] = []
-  if (resolvedBodyForInput !== undefined) {
-    const { body: repairedBody, repairs } = repairEmailFieldsInBody(resolvedBodyForInput)
-    if (repairs.length > 0) {
-      resolvedBodyForInput = repairedBody
-      bodyStr = JSON.stringify(repairedBody)
-      const detail = repairs.map((r) => `${r.path}: "${r.from}" to "${r.to}"`).join(', ')
-      console.log(
-        `[salesforce] event=salesforce_email_repaired fields=${repairs.length} trace=${ctx.trigger.trace_id}`,
-      )
-      emailRepairLogs.push({
-        level: 'warn',
-        message: `Repaired ${repairs.length} malformed email value(s) before sending to Salesforce: ${detail}`,
-        ts: new Date().toISOString(),
-      })
-    }
-  }
+  // Nothing rewrites the body on the way out. A malformed lead email is DROPPED,
+  // never repaired (#742): the value the lead actually sent is what Salesforce
+  // judges, and blanking happens only in recoverFromRejectedField, where
+  // Salesforce has NAMED the offending field. That is the only place we know a
+  // field is an email at all. A value like Referrer__c "some@thing" is
+  // address-shaped and invalid too, so acting on shape alone before the call
+  // would destroy real data in a field we merely guessed about.
 
   // Warn if any body field resolved to undefined (would be silently dropped on
   // serialization). Relevant to create/update/upsert/apex; query/GET has no body.
-  const warnLogs: StepLogEntry[] = [
-    ...emailRepairLogs,
-    ...(resolvedBodyForInput !== undefined
+  const warnLogs: StepLogEntry[] =
+    resolvedBodyForInput !== undefined
       ? warnDroppedBodyFields(resolvedBodyForInput, {
           nodeNamespace: node.namespace,
           nodeLabel: node.label,
           traceId: ctx.trigger.trace_id,
         })
-      : []),
-  ]
+      : []
 
   // Built after URL/method so we can include the actual outbound URL the
   // request went to (helpful for upsert / update which embed the record id).
