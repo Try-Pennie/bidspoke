@@ -24,6 +24,8 @@ import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
+import { repairEmailFieldsInBody } from '../../lib/email-repair'
+import { hasUsablePhone } from '../../lib/contact-fields'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -179,16 +181,41 @@ export async function executeSalesforceNode(
     throw new Error(`Unknown Salesforce operation: ${operation}`)
   }
 
+  // Repair unambiguous typographic damage in address-shaped body values before
+  // the call goes out (#723). A curly apostrophe in a lead email used to make
+  // Salesforce answer INVALID_EMAIL_ADDRESS, which is a permanent error, which
+  // killed the whole bidding run. Repair is applied to every body-carrying
+  // operation, and only ever produces a valid address or leaves the value alone.
+  const emailRepairLogs: StepLogEntry[] = []
+  if (resolvedBodyForInput !== undefined) {
+    const { body: repairedBody, repairs } = repairEmailFieldsInBody(resolvedBodyForInput)
+    if (repairs.length > 0) {
+      resolvedBodyForInput = repairedBody
+      bodyStr = JSON.stringify(repairedBody)
+      const detail = repairs.map((r) => `${r.path}: "${r.from}" to "${r.to}"`).join(', ')
+      console.log(
+        `[salesforce] event=salesforce_email_repaired fields=${repairs.length} trace=${ctx.trigger.trace_id}`,
+      )
+      emailRepairLogs.push({
+        level: 'warn',
+        message: `Repaired ${repairs.length} malformed email value(s) before sending to Salesforce: ${detail}`,
+        ts: new Date().toISOString(),
+      })
+    }
+  }
+
   // Warn if any body field resolved to undefined (would be silently dropped on
   // serialization). Relevant to create/update/upsert/apex; query/GET has no body.
-  const warnLogs: StepLogEntry[] =
-    resolvedBodyForInput !== undefined
+  const warnLogs: StepLogEntry[] = [
+    ...emailRepairLogs,
+    ...(resolvedBodyForInput !== undefined
       ? warnDroppedBodyFields(resolvedBodyForInput, {
           nodeNamespace: node.namespace,
           nodeLabel: node.label,
           traceId: ctx.trigger.trace_id,
         })
-      : []
+      : []),
+  ]
 
   // Built after URL/method so we can include the actual outbound URL the
   // request went to (helpful for upsert / update which embed the record id).
@@ -236,72 +263,24 @@ export async function executeSalesforceNode(
     ? new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env))
     : null
   const waitMs = salesforceBulkheadWaitMs(env)
-  const acquireStart = Date.now()
-  const lease = bulkhead
-    ? await bulkhead.acquireWithWait(waitMs, { signal }).catch(() => ({ allowed: true } as AcquireResult))
-    : ({ allowed: true } as AcquireResult)
-  const waitedMs = Date.now() - acquireStart
-  if (!lease.allowed) {
-    // Distinctive message so an unhandled shed flows through the existing failure
-    // + failure-rate Slack alerts without new alert infra.
-    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} waited_ms=${waitedMs} trace=${ctx.trigger.trace_id}`)
-    const shedErr = new Error(
-      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight, waited ${waitedMs}ms)`,
-    ) as Error & { resolvedInput?: ResolvedStepInput }
-    // Not marked permanent/saturated on purpose: classifyStepError defaults an
-    // unmarked error to transient, so withRetry retries the shed (see comment above).
-    shedErr.resolvedInput = resolvedInput
-    throw shedErr
-  }
-  if (waitedMs > 1000) {
-    // Slot obtained but only after real waiting — saturation is close. Visible in
-    // logs so a creeping-toward-capacity trend can be spotted before sheds start.
-    console.log(`[salesforce] event=salesforce_bulkhead_waited waited_ms=${waitedMs} inflight=${lease.inflight} limit=${lease.limit} trace=${ctx.trigger.trace_id}`)
-  }
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15000)
-  linkAbort(controller, signal)  // also cancel on the step-level timeout (#66)
-
-  const fetchStart = Date.now()
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method,
-      headers,
-      ...(bodyStr !== undefined ? { body: bodyStr } : {}),
-      signal: controller.signal,
-    })
-  } finally {
-    clearTimeout(timer)
-    // Release the slot whether the call succeeded, failed, or timed out.
-    if (bulkhead && lease.token) await bulkhead.release(lease.token).catch(() => {})
-  }
-  const fetchMs = Date.now() - fetchStart
-
-  // Salesforce returns 204 No Content for successful updates — body is empty
-  const responseText = await res.text()
   const targetLabel = object || (config.apex_path ?? '')
-  console.log(`[salesforce] ${operation} ${targetLabel} — token ${tokenMs}ms, fetch ${fetchMs}ms, status ${res.status}, trace=${ctx.trigger.trace_id}`)
-  if (res.status >= 500) {
-    // 5xx (esp. a 520 Cloudflare-edge timeout) — capture the cf-ray and server
-    // headers + a body snippet so a recurrence is diagnosable: cf-ray identifies
-    // the Cloudflare colo/request (and confirms a CF-edge response), server tells
-    // us whether Cloudflare or Salesforce served it (#331). String detail (not a
-    // 2nd console arg) so CF observability indexes it.
-    const cfRay = res.headers.get('cf-ray') ?? 'none'
-    const server = res.headers.get('server') ?? 'none'
-    const bodySnippet = responseText.slice(0, 200).replace(/\s+/g, ' ').trim()
-    console.log(`[salesforce] ${operation} ${targetLabel} 5xx detail — cf-ray=${cfRay}, server=${server}, body=${bodySnippet}, trace=${ctx.trigger.trace_id}`)
+
+  const callOpts: SalesforceCallOptions = {
+    url,
+    method,
+    headers,
+    bulkhead,
+    waitMs,
+    signal,
+    resolvedInput,
+    traceId: ctx.trigger.trace_id,
+    operation,
+    targetLabel,
+    tokenMs,
   }
-  let parsedBody: unknown = null
-  if (responseText) {
-    try {
-      parsedBody = JSON.parse(responseText)
-    } catch {
-      parsedBody = responseText
-    }
-  }
+
+  const { res, responseText, parsedBody: firstParsedBody } = await performSalesforceCall(bodyStr, callOpts)
+  let parsedBody = firstParsedBody
 
   if (!res.ok) {
     // If token expired (401), evict cache so next attempt re-fetches
@@ -362,6 +341,20 @@ export async function executeSalesforceNode(
     }
     const isTransient = res.status === 429 || res.status >= 500 || matchesTransient
     if (!isTransient) err.permanent = true
+
+    // Last chance before the lead is lost (#723). A field-level rejection on a
+    // cosmetically broken email must not cost us a lead we can still phone.
+    // Throws its own explicit error when nothing reachable would survive.
+    const recovered = await recoverFromRejectedField({
+      parsedBody,
+      operation,
+      body: resolvedBodyForInput,
+      callOpts,
+      warnLogs,
+      resolvedInput,
+    })
+    if (recovered) return recovered
+
     throw err
   }
 
@@ -384,6 +377,195 @@ export async function executeSalesforceNode(
   }
 
   return { output: { status: res.status, body: parsedBody }, resolvedInput, ...(warnLogs.length > 0 ? { logs: warnLogs } : {}) }
+}
+
+interface SalesforceCallOptions {
+  url: string
+  method: string
+  headers: Record<string, string>
+  bulkhead: BulkheadClient | null
+  waitMs: number
+  signal: AbortSignal | undefined
+  resolvedInput: ResolvedStepInput
+  traceId: string
+  operation: SalesforceOperation
+  targetLabel: string
+  tokenMs: number
+}
+
+/**
+ * One Salesforce call: bulkhead slot, own timeout, response read and parsed.
+ *
+ * Extracted so the malformed-field recovery (#723) reruns the request through
+ * exactly this path. A retry that skipped the bulkhead would sneak past the
+ * inflight cap (ADR 0005) precisely when Salesforce is already struggling.
+ */
+async function performSalesforceCall(
+  bodyStr: string | undefined,
+  opts: SalesforceCallOptions,
+): Promise<{ res: Response; responseText: string; parsedBody: unknown }> {
+  const acquireStart = Date.now()
+  const lease = opts.bulkhead
+    ? await opts.bulkhead.acquireWithWait(opts.waitMs, { signal: opts.signal }).catch(() => ({ allowed: true } as AcquireResult))
+    : ({ allowed: true } as AcquireResult)
+  const waitedMs = Date.now() - acquireStart
+  if (!lease.allowed) {
+    // Distinctive message so an unhandled shed flows through the existing failure
+    // + failure-rate Slack alerts without new alert infra.
+    console.log(`[salesforce] event=salesforce_bulkhead_shed inflight=${lease.inflight} limit=${lease.limit} waited_ms=${waitedMs} trace=${opts.traceId}`)
+    const shedErr = new Error(
+      `Salesforce bulkhead: at capacity (${lease.inflight}/${lease.limit} inflight, waited ${waitedMs}ms)`,
+    ) as Error & { resolvedInput?: ResolvedStepInput }
+    // Not marked permanent/saturated on purpose: classifyStepError defaults an
+    // unmarked error to transient, so withRetry retries the shed (see comment above).
+    shedErr.resolvedInput = opts.resolvedInput
+    throw shedErr
+  }
+  if (waitedMs > 1000) {
+    // Slot obtained but only after real waiting: saturation is close. Visible in
+    // logs so a creeping-toward-capacity trend can be spotted before sheds start.
+    console.log(`[salesforce] event=salesforce_bulkhead_waited waited_ms=${waitedMs} inflight=${lease.inflight} limit=${lease.limit} trace=${opts.traceId}`)
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15000)
+  linkAbort(controller, opts.signal)  // also cancel on the step-level timeout (#66)
+
+  const fetchStart = Date.now()
+  let res: Response
+  try {
+    res = await fetch(opts.url, {
+      method: opts.method,
+      headers: opts.headers,
+      ...(bodyStr !== undefined ? { body: bodyStr } : {}),
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+    // Release the slot whether the call succeeded, failed, or timed out.
+    if (opts.bulkhead && lease.token) await opts.bulkhead.release(lease.token).catch(() => {})
+  }
+  const fetchMs = Date.now() - fetchStart
+
+  // Salesforce returns 204 No Content for successful updates, so the body is empty
+  const responseText = await res.text()
+  console.log(`[salesforce] ${opts.operation} ${opts.targetLabel} token ${opts.tokenMs}ms, fetch ${fetchMs}ms, status ${res.status}, trace=${opts.traceId}`)
+  if (res.status >= 500) {
+    // 5xx (esp. a 520 Cloudflare-edge timeout): capture the cf-ray and server
+    // headers + a body snippet so a recurrence is diagnosable. cf-ray identifies
+    // the Cloudflare colo/request (and confirms a CF-edge response), server tells
+    // us whether Cloudflare or Salesforce served it (#331). String detail (not a
+    // 2nd console arg) so CF observability indexes it.
+    const cfRay = res.headers.get('cf-ray') ?? 'none'
+    const server = res.headers.get('server') ?? 'none'
+    const bodySnippet = responseText.slice(0, 200).replace(/\s+/g, ' ').trim()
+    console.log(`[salesforce] ${opts.operation} ${opts.targetLabel} 5xx detail cf-ray=${cfRay}, server=${server}, body=${bodySnippet}, trace=${opts.traceId}`)
+  }
+
+  let parsedBody: unknown = null
+  if (responseText) {
+    try {
+      parsedBody = JSON.parse(responseText)
+    } catch {
+      parsedBody = responseText
+    }
+  }
+  return { res, responseText, parsedBody }
+}
+
+/**
+ * Salesforce error codes that mean "this one field's VALUE is malformed", where
+ * dropping that field is strictly better than losing the record.
+ *
+ * Kept deliberately narrow. A code that means something else (a missing required
+ * field, a failed validation rule) must not land here: blanking the field
+ * Salesforce named would turn a clear error into a confusing one.
+ */
+const RECOVERABLE_FIELD_ERRORS = new Set(['INVALID_EMAIL_ADDRESS'])
+
+/** Operations we may safely repeat. Apex is excluded: its side effects may already have fired. */
+const RETRYABLE_OPERATIONS = new Set<SalesforceOperation>(['create', 'update', 'upsert'])
+
+/**
+ * Blank a field Salesforce rejected as malformed and retry the write once (#723).
+ *
+ * Returns the successful result, or null when recovery does not apply and the
+ * caller should throw the original error. Throws its own explicit error in one
+ * case only: when blanking would leave a record with no way to reach the person,
+ * which is a lead we genuinely cannot use and deserves to say so rather than
+ * surfacing a Salesforce 400 that reads like an outage.
+ */
+async function recoverFromRejectedField(args: {
+  parsedBody: unknown
+  operation: SalesforceOperation
+  body: unknown
+  callOpts: SalesforceCallOptions
+  warnLogs: StepLogEntry[]
+  resolvedInput: ResolvedStepInput
+}): Promise<StepExecutionResult | null> {
+  const { parsedBody, operation, body, callOpts, warnLogs, resolvedInput } = args
+
+  if (!RETRYABLE_OPERATIONS.has(operation)) return null
+  const errorCode = extractSalesforceErrorCode(parsedBody)
+  if (!errorCode || !RECOVERABLE_FIELD_ERRORS.has(errorCode)) return null
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null
+
+  // Salesforce names the offending fields, so we never have to guess which ones
+  // to drop, and this works for any object or field naming convention.
+  const named = extractSalesforceErrorFields(parsedBody)
+  const record = body as Record<string, unknown>
+  const droppable = named.filter((f) => {
+    const current = record[f]
+    return typeof current === 'string' && current !== ''
+  })
+  if (droppable.length === 0) return null
+
+  const blanked: Record<string, unknown> = { ...record }
+  const dropped = droppable.map((f) => `${f}="${String(record[f])}"`).join(', ')
+  for (const f of droppable) blanked[f] = ''
+
+  // Point 4 of #723: a phone number is what makes a lead sellable. With the
+  // email gone and no phone left, there is nothing to reach the person by, so
+  // there is no point spending a second Salesforce call on it.
+  if (!hasUsablePhone(blanked)) {
+    console.log(`[salesforce] event=salesforce_lead_unreachable code=${errorCode} trace=${callOpts.traceId}`)
+    const err = new Error(
+      `Lead rejected: no usable contact method. Salesforce rejected ${dropped} (${errorCode}) and the record has no phone number with at least 10 digits, so there is no way to reach this person.`,
+    ) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    err.permanent = true
+    err.resolvedInput = resolvedInput
+    if (warnLogs.length > 0) err.logs = warnLogs
+    throw err
+  }
+
+  console.log(
+    `[salesforce] event=salesforce_field_blanked_retry code=${errorCode} fields=${droppable.join(',')} trace=${callOpts.traceId}`,
+  )
+  const logs: StepLogEntry[] = [
+    ...warnLogs,
+    {
+      level: 'warn',
+      message: `Salesforce rejected ${dropped} as invalid (${errorCode}). Dropped it and retried, so the record was created without it. Repairing the value was not possible without guessing a different address.`,
+      ts: new Date().toISOString(),
+    },
+  ]
+
+  // Show the body Salesforce actually accepted, so the Results panel does not
+  // claim we sent an address we deliberately dropped. `resolved` is typed
+  // unknown, but executeSalesforceNode always builds it as a record.
+  const retryInput: ResolvedStepInput = {
+    template: resolvedInput.template,
+    resolved: { ...(resolvedInput.resolved as Record<string, unknown>), body: blanked },
+  }
+  const retry = await performSalesforceCall(JSON.stringify(blanked), { ...callOpts, resolvedInput: retryInput })
+  if (!retry.res.ok) {
+    // The retry failed too. Say nothing new: the caller throws the ORIGINAL
+    // error, so diagnostics never get worse than before this recovery existed.
+    console.log(`[salesforce] event=salesforce_field_blanked_retry_failed status=${retry.res.status} trace=${callOpts.traceId}`)
+    return null
+  }
+
+  return { output: { status: retry.res.status, body: retry.parsedBody }, resolvedInput: retryInput, logs }
 }
 
 /**
@@ -562,6 +744,16 @@ function extractSalesforceErrorCode(body: unknown): string | null {
     if (typeof code === 'string') return code
   }
   return null
+}
+
+/** The field API names Salesforce blamed, e.g. ["Email__c"]. */
+function extractSalesforceErrorFields(body: unknown): string[] {
+  const entries = Array.isArray(body) ? (body as unknown[]) : null
+  const first = entries && entries.length > 0 ? entries[0] : body
+  if (!first || typeof first !== 'object') return []
+  const fields = (first as { fields?: unknown }).fields
+  if (!Array.isArray(fields)) return []
+  return fields.filter((f): f is string => typeof f === 'string' && f !== '')
 }
 
 function extractSalesforceErrorMessage(body: unknown): string | null {
