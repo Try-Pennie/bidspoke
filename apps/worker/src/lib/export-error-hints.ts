@@ -56,7 +56,10 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
   { cls: 'platform_limit', test: /too many subrequests|subrequest limit/i },
   {
     cls: 'transient_snowflake',
-    test: /Snowflake (?:429|502|503|504)\b|upstream connect error|connection termination|network connection lost/i,
+    // "idle timeout expired" is Snowflake's own 30s server-side timeout, served
+    // as a 500 (2026-08-11). It is a stall, not a failed statement, so it is
+    // transient even though its status is not in the retryable set above.
+    test: /Snowflake (?:429|502|503|504)\b|upstream connect error|connection termination|network connection lost|idle timeout expired/i,
   },
   // Cloudflare serves its error pages as a bare "error code: NNN" body (the
   // 2026-07-24 purge failure was "error code: 522", a connection timeout between
