@@ -150,6 +150,13 @@ export async function postStatementWithRetry(
     }
 
     if (!retryable || attempt >= maxAttempts) throw error
+    // A silent retry makes one benign stall and a systemic Snowflake
+    // degradation indistinguishable: a run where most batches retried looked
+    // exactly like a clean run, so the first visible signal was a whole run
+    // dying. Log every resubmit so the rate is countable before that.
+    console.warn(
+      `[snowflake] retrying statement ${requestId} (attempt ${attempt} of ${maxAttempts}): ${error.message}`,
+    )
     await doSleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)])
   }
 }

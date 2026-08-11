@@ -172,6 +172,34 @@ describe('postStatementWithRetry', () => {
     expect(spy).toHaveBeenCalledTimes(1)
   })
 
+  /**
+   * L77: a retry that fires silently makes one benign stall and a systemic
+   * Snowflake degradation indistinguishable. A run where most batches needed a
+   * retry looked exactly like a clean run, so the only visible signal was a
+   * whole run dying. Log every retry so the RATE is countable in the logs
+   * before it becomes an outage.
+   */
+  it('logs each retry so a rising retry rate is visible before a run dies', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockFetchSequence([
+      { status: 503, body: 'connection termination' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = warn.mock.calls[0].join(' ')
+    expect(line).toContain('503')          // which failure
+    expect(line).toContain('req-1')        // which statement
+  })
+
+  it('does not log when the statement succeeds first time', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+    await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('does not retry a permanent 400 and throws immediately', async () => {
     const spy = mockFetchSequence([{ status: 400, body: 'SQL compilation error' }])
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(
