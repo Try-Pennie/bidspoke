@@ -79,8 +79,23 @@ export async function executeStatement(
 // failed server-side, and retrying would just hide a real error behind a delay.
 const TRANSIENT_STATUSES = new Set([429, 502, 503, 504])
 
-export function isTransientSnowflakeError(status: number): boolean {
-  return TRANSIENT_STATUSES.has(status)
+// The one 500 that is not a statement failure. On 2026-08-11 the 16:37 UTC
+// sightings export died on its first MERGE with HTTP 500 and body
+// `{"code":"ErrorCode{messageCode=370001}","message":"Idle timeout expired:
+// 30001/30000 ms"}`. That is Snowflake timing out on its own side after 30s,
+// which the blanket 500 rule above treated as fatal.
+//
+// Matched on the timeout WORDS, not on 370001: Snowflake uses 370001 as a
+// generic internal-error code that also fires for genuinely broken SQL, so
+// keying on the code would start silently retrying real failures. Resubmitting
+// is safe for the same reason it is for a dropped connection: the requestId
+// contract below means Snowflake will not re-run a statement that already
+// succeeded, which is exactly the ambiguity a timeout leaves us with.
+const TRANSIENT_500_BODY = /idle timeout expired/i
+
+export function isTransientSnowflakeError(status: number, body?: string): boolean {
+  if (TRANSIENT_STATUSES.has(status)) return true
+  return status === 500 && body !== undefined && TRANSIENT_500_BODY.test(body)
 }
 
 export interface RetryOptions {
@@ -125,7 +140,7 @@ export async function postStatementWithRetry(
       const res = await fetch(target, { method: 'POST', headers, body })
       const text = await res.text()
       if (res.ok) return { status: res.status, text }
-      retryable = isTransientSnowflakeError(res.status)
+      retryable = isTransientSnowflakeError(res.status, text)
       error = new Error(`Snowflake ${res.status}: ${text}`)
     } catch (e) {
       // fetch rejected, so no response ever arrived. Always retryable: the
@@ -135,6 +150,13 @@ export async function postStatementWithRetry(
     }
 
     if (!retryable || attempt >= maxAttempts) throw error
+    // A silent retry makes one benign stall and a systemic Snowflake
+    // degradation indistinguishable: a run where most batches retried looked
+    // exactly like a clean run, so the first visible signal was a whole run
+    // dying. Log every resubmit so the rate is countable before that.
+    console.warn(
+      `[snowflake] retrying statement ${requestId} (attempt ${attempt} of ${maxAttempts}): ${error.message}`,
+    )
     await doSleep(delaysMs[Math.min(attempt - 1, delaysMs.length - 1)])
   }
 }

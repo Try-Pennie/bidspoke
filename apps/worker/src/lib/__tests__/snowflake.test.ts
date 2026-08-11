@@ -77,6 +77,31 @@ describe('isTransientSnowflakeError', () => {
   it('treats 500 as permanent so a real statement failure is not retried', () => {
     expect(isTransientSnowflakeError(500)).toBe(false)
   })
+
+  /**
+   * 2026-08-11: the 16:37 UTC sightings export died on its first MERGE with
+   * HTTP 500 and body `{"code":"ErrorCode{messageCode=370001}","message":"Idle
+   * timeout expired: 30001/30000 ms"}`. That is Snowflake timing out on its own
+   * side, not the statement failing, so the blanket 500 rule above gave up on a
+   * stall a single resubmit would have cleared.
+   *
+   * The rule keys on the timeout WORDS, not on 370001: Snowflake uses 370001 as
+   * a generic internal-error code that also fires for genuinely broken SQL, so
+   * matching the code would start silently retrying real failures.
+   */
+  it('treats a 500 carrying an idle timeout as transient', () => {
+    const body = '{"code":"ErrorCode{messageCode=370001}","message":"Idle timeout expired: 30001/30000 ms"}'
+    expect(isTransientSnowflakeError(500, body)).toBe(true)
+  })
+
+  it('still treats a 500 carrying 370001 WITHOUT an idle timeout as permanent', () => {
+    const body = 'SQL execution internal error: Processing aborted due to error 370001:2044717777'
+    expect(isTransientSnowflakeError(500, body)).toBe(false)
+  })
+
+  it('treats a 500 with an unrelated body as permanent', () => {
+    expect(isTransientSnowflakeError(500, 'SQL compilation error: invalid identifier')).toBe(false)
+  })
 })
 
 describe('postStatementWithRetry', () => {
@@ -123,6 +148,56 @@ describe('postStatementWithRetry', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue({ message: 'pool exhausted', code: 'CONN' })
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(/pool exhausted/)
     await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.not.toThrow(/\[object Object\]/)
+  })
+
+  it('retries a 500 idle timeout and resubmits with the same requestId plus retry=true', async () => {
+    const spy = mockFetchSequence([
+      { status: 500, body: '{"code":"ErrorCode{messageCode=370001}","message":"Idle timeout expired: 30001/30000 ms"}' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    const result = await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(result.status).toBe(200)
+    expect(spy).toHaveBeenCalledTimes(2)
+    const retryUrl = spy.mock.calls[1][0] as string
+    expect(retryUrl).toContain('requestId=req-1') // same id => Snowflake won't re-execute
+    expect(retryUrl).toContain('retry=true')
+  })
+
+  it('does not retry a 500 whose body is a real statement failure', async () => {
+    const spy = mockFetchSequence([{ status: 500, body: 'SQL execution internal error: Processing aborted' }])
+    await expect(postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)).rejects.toThrow(
+      /Snowflake 500: SQL execution internal error/,
+    )
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * L77: a retry that fires silently makes one benign stall and a systemic
+   * Snowflake degradation indistinguishable. A run where most batches needed a
+   * retry looked exactly like a clean run, so the only visible signal was a
+   * whole run dying. Log every retry so the RATE is countable in the logs
+   * before it becomes an outage.
+   */
+  it('logs each retry so a rising retry rate is visible before a run dies', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockFetchSequence([
+      { status: 503, body: 'connection termination' },
+      { status: 200, body: { code: '090001' } },
+    ])
+    await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = warn.mock.calls[0].join(' ')
+    expect(line).toContain('503')          // which failure
+    expect(line).toContain('req-1')        // which statement
+  })
+
+  it('does not log when the statement succeeds first time', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockFetchSequence([{ status: 200, body: { code: '090001' } }])
+    await postStatementWithRetry(url, headers, '{}', 'req-1', retryOpts)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('does not retry a permanent 400 and throws immediately', async () => {

@@ -35,6 +35,19 @@ describe('classifyExportError', () => {
     expect(classifyExportError(msg)).toBe('transient_snowflake')
   })
 
+  it('classifies a Snowflake idle timeout as transient, not unknown', () => {
+    // The verbatim 2026-08-11 16:37 UTC failure. It matched no rule, so it fell
+    // to 'unknown', which pages on the FIRST failure and prints the generic
+    // "check Snowflake availability and the export credentials" advice. Both
+    // were fine: Snowflake stalled 30s on one statement and the next run
+    // drained the backlog.
+    const msg =
+      'sightings export: Snowflake 500: {\n "code" : "ErrorCode{messageCode=370001}",\n "message" : "Idle timeout expired: 30001/30000 ms"\n}'
+    expect(classifyExportError(msg)).toBe('transient_snowflake')
+    expect(isTransientExportError(msg)).toBe(true)
+    expect(buildFixHint([msg])).not.toContain(GENERIC_FIX_HINT)
+  })
+
   it('classifies a Snowflake auth failure as a credential problem', () => {
     expect(classifyExportError('Snowflake 401: JWT token is invalid')).toBe('snowflake_auth')
     expect(classifyExportError('Snowflake 403: forbidden')).toBe('snowflake_auth')
