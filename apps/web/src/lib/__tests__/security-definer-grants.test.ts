@@ -22,27 +22,30 @@ import { REPO_ROOT } from './_scan-utils'
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 
 /**
- * Functions that predate this guard and are still reachable by anon. Tracked in
- * #762, which must close by emptying this list. An entry here is a KNOWN hole,
- * not an exemption: a deliberately inactive guard with no issue attached is
- * indistinguishable from no guard (LESSONS L65).
+ * Functions that are callable on purpose, each with the reason it is safe.
+ * This is NOT the same as a known hole: #762 emptied that list, and anything
+ * added here has to justify itself, because an exemption with no stated reason
+ * is how a guard quietly stops guarding (LESSONS L65).
  */
-const KNOWN_UNREVOKED_SEE_762 = new Set([
-  // Writers, REST-callable, bypass RLS. The reason #762 is p0.
-  'finalize_unrecoverable_stranded',
-  'reduce_finalize_stranded',
-  // Read-only, REST-callable. Careful: likely referenced by RLS policies, so it
-  // must keep EXECUTE for `authenticated` when it is locked down.
-  'user_org_id',
-  // Trigger functions. Not REST-callable, so lower risk.
-  'handle_new_auth_user',
-  'handle_auth_user_updated',
-  // NOTE: `rls_auto_enable` is also unrevoked in the live database but no
-  // migration in this repo creates it, so this guard is structurally unable to
-  // see it. It is recorded in #762 from the live privilege query instead. That
-  // asymmetry is the point of LESSONS L96: a guard driven by what the repo
-  // happens to list is blind to whatever is missing from the repo.
+const DELIBERATELY_CALLABLE = new Map([
+  [
+    'user_org_id',
+    // Revoking this would break the app, not harden it: 28 RLS policies call it,
+    // and a policy whose function the querying role cannot execute ERRORS rather
+    // than denying. It also leaks nothing. It returns the caller's own
+    // organization from their own JWT, and measured against prod an anonymous
+    // caller gets `null`.
+    'backs 28 RLS policies; returns only the callers own org, null for anon',
+  ],
 ])
+
+/**
+ * NOTE: `rls_auto_enable` is revoked by the #762 migration but no migration in
+ * this repo CREATES it, so this guard cannot see it as a security-definer
+ * function. That asymmetry is LESSONS L96: a guard driven by what the repo
+ * happens to list is blind to whatever is missing from the repo. The live
+ * privilege query in #762 is what covers it.
+ */
 
 /** Blank SQL comments, preserving offsets so nothing shifts. */
 function stripSqlComments(sql: string): string {
@@ -137,16 +140,22 @@ describe('security-definer functions are not left callable by anon (#762)', () =
     const live = liveSecurityDefinerFunctions(sql)
     const revoked = revokedFunctions(sql)
     const unprotected = [...live].filter(
-      (n) => !revoked.has(n) && !KNOWN_UNREVOKED_SEE_762.has(n),
+      (n) => !revoked.has(n) && !DELIBERATELY_CALLABLE.has(n),
     )
     expect(unprotected).toEqual([])
   })
 
-  it('keeps the known-hole list honest: every name on it is still a live function', () => {
-    // An entry that no longer names a live function is stale and hides the
-    // list's shrinking, so #762's completion stays measurable.
+  it('keeps the exemption list honest: every name on it is still a live function', () => {
+    // An entry that no longer names a live function is stale, and a stale
+    // exemption silently widens the guard's blind spot.
     const live = liveSecurityDefinerFunctions(sql)
-    const stale = [...KNOWN_UNREVOKED_SEE_762].filter((n) => !live.has(n))
+    const stale = [...DELIBERATELY_CALLABLE.keys()].filter((n) => !live.has(n))
     expect(stale).toEqual([])
+  })
+
+  it('makes every exemption state its reason, so none can be added silently', () => {
+    for (const [name, reason] of DELIBERATELY_CALLABLE) {
+      expect(reason.length, `${name} needs a stated reason`).toBeGreaterThan(20)
+    }
   })
 })
