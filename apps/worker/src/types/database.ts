@@ -1854,6 +1854,7 @@ export type Database = {
         Args: { p_min_age_hours?: number }
         Returns: number
       }
+      is_allowlisted: { Args: never; Returns: boolean }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number
