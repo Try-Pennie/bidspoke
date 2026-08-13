@@ -32,6 +32,8 @@ function renderPanel(trigger: TriggerDef = baseTrigger) {
       trigger={trigger}
       onChange={onChange}
       onClose={vi.fn()}
+      width={320}
+      onResize={vi.fn()}
     />,
   )
   return { onChange }

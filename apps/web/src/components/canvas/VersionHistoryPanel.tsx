@@ -12,8 +12,8 @@ interface Props {
   workflowId: string
   onClose: () => void
   onRestore: (versionId: string) => Promise<void>
-  width?: number
-  onResize?: (width: number) => void
+  width: number
+  onResize: (width: number) => void
   // Bumped by the canvas on every successful save so the open panel refetches
   // and shows the just-created version instead of a stale list (#241).
   refreshToken?: number
@@ -30,7 +30,6 @@ const CONFIRM_WINDOW_MS = 4000
 const CONFIRM_WINDOW_DIRTY_MS = 8000
 
 export default function VersionHistoryPanel({ workflowId, onClose, onRestore, width, onResize, refreshToken, isDirty = false }: Props) {
-  const effectiveWidth = width ?? 320
   const [versions, setVersions] = useState<WorkflowVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -84,9 +83,9 @@ export default function VersionHistoryPanel({ workflowId, onClose, onRestore, wi
   return (
     <aside
       className="relative flex h-full flex-shrink-0 flex-col border-l border-gray-200 bg-white"
-      style={{ width: effectiveWidth }}
+      style={{ width: width }}
     >
-      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
+      <RailResizeHandle width={width} onResize={onResize} />
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <p className="text-sm font-semibold text-graphite">Version history</p>
         <button onClick={onClose} aria-label="Close" className="rounded p-1 text-gray-500 hover:bg-gray-100">

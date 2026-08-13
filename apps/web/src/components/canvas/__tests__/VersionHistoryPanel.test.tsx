@@ -20,7 +20,7 @@ const version = (n: number) => ({
 beforeEach(() => listMock.mockReset())
 
 describe('VersionHistoryPanel', () => {
-  const baseProps = { workflowId: 'wf-1', onClose: () => {}, onRestore: async () => {} }
+  const baseProps = { workflowId: 'wf-1', onClose: () => {}, onRestore: async () => {}, width: 340, onResize: () => {} }
 
   it('refetches and shows the new version when refreshToken changes (#241)', async () => {
     listMock.mockResolvedValueOnce([version(1)])
@@ -51,7 +51,7 @@ describe('VersionHistoryPanel', () => {
 // non-technical user mid-edit that is silent data loss, and the canvas has no undo
 // across a restore.
 describe('VersionHistoryPanel: restoring over unsaved work (#494)', () => {
-  const baseProps = { workflowId: 'wf-1', onClose: () => {}, onRestore: async () => {} }
+  const baseProps = { workflowId: 'wf-1', onClose: () => {}, onRestore: async () => {}, width: 340, onResize: () => {} }
 
   async function armRestore() {
     const user = userEvent.setup()

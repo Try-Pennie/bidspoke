@@ -28,15 +28,14 @@ interface Props {
   onChange: (trigger: TriggerDef) => void
   onClose: () => void
   readOnly?: boolean
-  width?: number
-  onResize?: (width: number) => void
+  width: number
+  onResize: (width: number) => void
   /** Workflow-level Slack channel override. Empty string falls back to the org default. */
   slackChannel?: string
   onSlackChannelChange?: (value: string) => void
 }
 
 export default function TriggerConfigPanel({ workflowId, workflowName, trigger, nodeNamespaces = [], onChange, onClose, readOnly = false, width, onResize, slackChannel, onSlackChannelChange }: Props) {
-  const effectiveWidth = width ?? 320
   const cfg = trigger.config
   const idempotency = cfg.idempotency ?? { enabled: false, derive_from_fields: [], ttl_seconds: 86400 }
 
@@ -174,9 +173,9 @@ export default function TriggerConfigPanel({ workflowId, workflowName, trigger, 
   return (
     <aside
       className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
-      style={{ width: effectiveWidth }}
+      style={{ width: width }}
     >
-      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
+      <RailResizeHandle width={width} onResize={onResize} />
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Trigger</p>

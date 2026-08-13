@@ -12,11 +12,12 @@ import ConfigPanel from '../ConfigPanel'
 // `options` it received — lets us assert the read-only wiring (#view-mode-scroll).
 vi.mock('next/dynamic', () => ({
   default: () =>
-    function MockMonaco(props: { options?: { readOnly?: boolean } }) {
+    function MockMonaco(props: { options?: { readOnly?: boolean; wordWrap?: string } }) {
       return (
         <div
           data-testid="monaco-editor"
           data-readonly={String(Boolean(props.options?.readOnly))}
+          data-wordwrap={props.options?.wordWrap ?? 'unset'}
         />
       )
     },
@@ -52,7 +53,7 @@ function nodeOf(type: string, config: Record<string, unknown> = {}): CanvasNode 
 function renderPanel(node: CanvasNode, extra: Partial<PanelProps> = {}) {
   const onUpdate = vi.fn()
   render(
-    <ConfigPanel node={node} onClose={vi.fn()} nodeNamespaces={[]} onUpdate={onUpdate} {...extra} />,
+    <ConfigPanel node={node} onClose={vi.fn()} nodeNamespaces={[]} onUpdate={onUpdate} width={320} onResize={vi.fn()} {...extra} />,
   )
   return { onUpdate }
 }
@@ -271,5 +272,47 @@ describe('ConfigPanel: Salesforce apex GET support (#563-followup)', () => {
   it('non-apex operations show no method toggle', () => {
     renderPanel(nodeOf('salesforce', { operation: 'create', object: 'Prospect__c' }))
     expect(screen.queryByRole('button', { name: 'GET' })).not.toBeInTheDocument()
+  })
+})
+
+// Issues #718 and #720: the panel used to carry its own `width ?? (isCode ? 540 : 320)`
+// fallback while every call site passed a width, so the wider code branch was dead
+// and a script opened at the narrow form width. The width now comes from one place
+// and the panel must render exactly what it is handed.
+describe('ConfigPanel width (#718, #720)', () => {
+  function panelWidth(): string {
+    const panel = document.querySelector('aside, [style*="width"]') as HTMLElement | null
+    return panel?.style.width ?? ''
+  }
+
+  it('renders at the width it is given, for a code node', () => {
+    renderPanel(nodeOf('code'), { width: 540 })
+    expect(panelWidth()).toBe('540px')
+  })
+
+  it('renders at the width it is given, for a form node', () => {
+    renderPanel(nodeOf('salesforce'), { width: 320 })
+    expect(panelWidth()).toBe('320px')
+  })
+
+  // The same component instance must not substitute a per-type width of its own:
+  // a code node handed 700 shows 700, not the 540 the dead fallback used to hold.
+  it('does not override the given width with a type-specific default', () => {
+    renderPanel(nodeOf('code'), { width: 700 })
+    expect(panelWidth()).toBe('700px')
+  })
+
+  it('reports the current width on the resize separator', () => {
+    renderPanel(nodeOf('code'), { width: 640 })
+    expect(screen.getByRole('separator', { name: 'Resize panel' })).toHaveAttribute('aria-valuenow', '640')
+  })
+})
+
+// Issue #718: with no wrapping, a long line (the Engine URL in the reported case)
+// ran off the right edge and was reachable only by scrolling one line at a time.
+describe('ConfigPanel code editor wrapping (#718)', () => {
+  it('wraps long lines in the code editor', () => {
+    renderPanel(nodeOf('code'))
+    expect(screen.getByTestId('monaco-editor')).toHaveAttribute('data-wordwrap', 'on')
   })
 })
