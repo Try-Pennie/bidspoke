@@ -25,6 +25,7 @@ import { isShadowDryRun, shadowSalesforceStub } from '../shadow'
 import { BulkheadClient, salesforceBulkheadLimit, salesforceBulkheadWaitMs, type AcquireResult } from '../../lib/bulkhead-client'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
 import { hasUsablePhone } from '../../lib/contact-fields'
+import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-error-summary'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -306,7 +307,7 @@ export async function executeSalesforceNode(
     // 429 + 5xx are retried, everything else (400/401/403/404/422/etc) is permanent.
     // Per-node `transient_errors` opts specific errorCodes back in (e.g. SF
     // concurrency limits return 403 REQUEST_LIMIT_EXCEEDED but clear in seconds).
-    const err = new Error(`Salesforce API error (${res.status}): ${responseText}`) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
+    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}): ${responseText}`)) as Error & { permanent?: boolean; resolvedInput?: ResolvedStepInput; logs?: StepLogEntry[] }
     err.resolvedInput = resolvedInput
     if (warnLogs.length > 0) err.logs = warnLogs
     const transientErrors = config.transient_errors ?? []
@@ -321,7 +322,19 @@ export async function executeSalesforceNode(
         return message.includes(needle)
       })
     }
-    const isTransient = res.status === 429 || res.status >= 500 || matchesTransient
+    // An HTML document instead of an API response means the request died at the
+    // edge and was never processed as a business call, whatever status came with
+    // it (#694). Salesforce Edge reports a connection hiccup as HTTP 400 with a
+    // branded error page, and the status rule below read that 400 as a business
+    // rejection: permanent, retries_used=0, lead dropped to a blip one retry
+    // would have absorbed. If such a page ever does wrap a genuinely permanent
+    // fault, the cost is the retries before it fails anyway, not a wrong answer.
+    // The log line makes the frequency measurable rather than assumed.
+    const isEdgeErrorPage = containsHtmlDocument(responseText)
+    if (isEdgeErrorPage) {
+      console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=${operation} target=${targetLabel} trace=${ctx.trigger.trace_id}`)
+    }
+    const isTransient = res.status === 429 || res.status >= 500 || matchesTransient || isEdgeErrorPage
     if (!isTransient) err.permanent = true
 
     // Last chance before the lead is lost (#723). A field-level rejection on a
@@ -682,12 +695,18 @@ async function fetchQueryPage(
   if (!res.ok) {
     // A failed page means we do not know the full result set. Returning what we
     // have would be the exact silent-truncation bug this function exists to kill.
-    const err = new Error(`Salesforce API error (${res.status}) while paging a query: ${text}`) as Error & {
+    const err = new Error(summarizeHtmlErrorBody(`Salesforce API error (${res.status}) while paging a query: ${text}`)) as Error & {
       permanent?: boolean
       resolvedInput?: ResolvedStepInput
     }
     err.resolvedInput = opts.resolvedInput
-    if (!(res.status === 429 || res.status >= 500)) err.permanent = true
+    // Same edge-page rule as the main call path (#694): an HTML document means
+    // the page request never reached the API, so it is retryable at any status.
+    const isEdgeErrorPage = containsHtmlDocument(text)
+    if (isEdgeErrorPage) {
+      console.log(`[salesforce] event=html_error_page_transient status=${res.status} operation=query_page trace=${opts.traceId}`)
+    }
+    if (!(res.status === 429 || res.status >= 500 || isEdgeErrorPage)) err.permanent = true
     throw err
   }
   try {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { formatErr, truncateErrorForAlert } from '../format-error'
+import { SALESFORCE_EDGE_ERROR_MESSAGE } from './fixtures/salesforce-edge-error-page'
 
 describe('formatErr', () => {
   it('uses the message of an Error instance', () => {
@@ -110,5 +111,40 @@ describe('truncateErrorForAlert', () => {
     const out = truncateErrorForAlert(full, 300)
     expect(out).toContain('(BIDSPOKE_NO_ROW_MATCHED)')
     expect(out.endsWith('(BIDSPOKE_NO_ROW_MATCHED)')).toBe(true)
+  })
+})
+
+// Every persisted error_message and every Slack alert cause renders through
+// formatErr, so collapsing an HTML error page here covers all of them at once,
+// including a wrapper message that embedded a child's page (#695).
+describe('formatErr collapses an upstream HTML error page (#695)', () => {
+  it('summarizes an Error whose message is a Salesforce Edge page', () => {
+    const out = formatErr(new Error(SALESFORCE_EDGE_ERROR_MESSAGE))
+    expect(out).toContain('Salesforce API error (400)')
+    expect(out).toContain('An unexpected connection error occurred.')
+    expect(out).not.toContain('<style>')
+    expect(out.length).toBeLessThan(700)
+  })
+
+  it('summarizes the page embedded in a parallel wrapper message', () => {
+    const wrapped = new Error(`Parallel failed: child "trades_body" failed: ${SALESFORCE_EDGE_ERROR_MESSAGE}`)
+    const out = formatErr(wrapped)
+    expect(out.startsWith('Parallel failed: child "trades_body" failed:')).toBe(true)
+    expect(out).toContain('70aebd63701c0777f9ba663c488e2044')
+    expect(out).not.toContain('viewBox')
+  })
+
+  it('summarizes a page arriving on a plain object error', () => {
+    const out = formatErr({ message: SALESFORCE_EDGE_ERROR_MESSAGE, code: 'SF_EDGE' })
+    expect(out).toContain('An unexpected connection error occurred.')
+    expect(out).toContain('(SF_EDGE)')
+    expect(out).not.toContain('normalize.css')
+  })
+
+  it('leaves ordinary error messages exactly as they were', () => {
+    expect(formatErr(new Error('Salesforce bulkhead: at capacity'))).toBe('Salesforce bulkhead: at capacity')
+    expect(formatErr(new Error('Expected <number>, got "abc"'))).toBe('Expected <number>, got "abc"')
+    expect(formatErr({ message: 'duplicate key', details: 'Key (id)=(1) exists', code: '23505' }))
+      .toBe('duplicate key: Key (id)=(1) exists (23505)')
   })
 })
