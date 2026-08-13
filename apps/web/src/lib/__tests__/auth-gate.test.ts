@@ -10,7 +10,7 @@
  * what lets a probe tell "the gate ran and allowed" from "the gate never ran".
  */
 import { describe, it, expect } from 'vitest'
-import { decideGate, GATE_HEADER, type AllowlistLookup } from '../auth-gate'
+import { classifyAllowlistRpc, decideGate, GATE_HEADER, type AllowlistLookup } from '../auth-gate'
 
 const FOUND: AllowlistLookup = { status: 'found' }
 const ABSENT: AllowlistLookup = { status: 'absent' }
@@ -129,5 +129,45 @@ describe('decideGate: degenerate identities', () => {
   it('accepts the company domain case-insensitively', () => {
     const d = decideGate({ pathname: '/workflows', email: 'DWright@TryPennie.com', allowlist: FOUND })
     expect(d.action).toBe('allow')
+  })
+})
+
+/**
+ * Issue #729. The allowlist read moves off a direct table SELECT (governed by an
+ * RLS policy of `USING (true)`, which let any authenticated Google account
+ * enumerate every internal email) onto `is_allowlisted()`, a security-definer
+ * function returning only a boolean.
+ *
+ * The classifier is the risky half of that move. Collapsing "the function said
+ * no" into "the function did not answer" would reintroduce the swallowed-error
+ * bug #728 exists to prevent, so the three states stay distinct here.
+ */
+describe('classifyAllowlistRpc (#729)', () => {
+  it('reads a true answer as on the list', () => {
+    expect(classifyAllowlistRpc({ data: true, error: null })).toEqual({ status: 'found' })
+  })
+
+  it('reads a false answer as a genuine refusal', () => {
+    expect(classifyAllowlistRpc({ data: false, error: null })).toEqual({ status: 'absent' })
+  })
+
+  it('keeps a lookup failure distinct from a refusal', () => {
+    const r = classifyAllowlistRpc({ data: null, error: { message: 'schema cache reload' } })
+    expect(r.status).toBe('error')
+    expect(r).toMatchObject({ message: 'schema cache reload' })
+  })
+
+  it('treats a missing answer as a failure, never as a refusal', () => {
+    // `data: null` with no error means the function did not answer: a revoked
+    // EXECUTE grant, a dropped function, a schema reload. Scoring that as
+    // `absent` would send a real employee to /access-denied with nothing saying
+    // why, which is precisely the indistinguishability #728 removed.
+    expect(classifyAllowlistRpc({ data: null, error: null }).status).toBe('error')
+  })
+
+  it('refuses a non-boolean answer rather than guessing at its truthiness', () => {
+    // PostgREST returns whatever the function returns. A shape change must not
+    // be coerced into an allow.
+    expect(classifyAllowlistRpc({ data: 'true', error: null }).status).toBe('error')
   })
 })

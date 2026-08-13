@@ -26,6 +26,23 @@ export type AllowlistLookup =
   | { status: 'absent' }
   | { status: 'error'; message: string }
 
+/**
+ * Classifies the answer from `is_allowlisted()` (#729).
+ *
+ * Only a literal `true` or `false` counts as an answer. Anything else, a null
+ * with no error, a non-boolean, an error, means the lookup did not resolve, and
+ * that is `error` rather than `absent`: a revoked EXECUTE grant and a genuine
+ * refusal must never render as the same screen.
+ */
+export function classifyAllowlistRpc(
+  result: { data: unknown; error: { message: string } | null },
+): AllowlistLookup {
+  if (result.error) return { status: 'error', message: result.error.message }
+  if (result.data === true) return { status: 'found' }
+  if (result.data === false) return { status: 'absent' }
+  return { status: 'error', message: `is_allowlisted returned ${JSON.stringify(result.data)}` }
+}
+
 export type GateValue =
   | 'allow'
   | 'redirect-login'

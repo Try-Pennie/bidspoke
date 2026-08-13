@@ -1,6 +1,6 @@
 import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
-import { decideGate, GATE_HEADER, type AllowlistLookup } from './lib/auth-gate'
+import { classifyAllowlistRpc, decideGate, GATE_HEADER, type AllowlistLookup } from './lib/auth-gate'
 import { isPermittedDomain } from './lib/auth-allowlist'
 import { isPublicPath } from './lib/public-paths'
 
@@ -48,10 +48,10 @@ export async function middleware(request: NextRequest) {
   // than a dropped error that looked like a denial.
   let allowlist: AllowlistLookup = { status: 'absent' }
   if (email !== null && !isPublicPath(pathname) && isPermittedDomain(email)) {
-    const address = email.toLowerCase()
-    allowlist = await lookupAllowlist(() =>
-      supabase.from('user_allowlist').select('email').eq('email', address).maybeSingle()
-    )
+    // Asks `is_allowlisted()` rather than reading the table (#729). The address
+    // is not passed in: the function takes it from the caller's own verified
+    // JWT, so this cannot be used to ask about anybody else.
+    allowlist = await lookupAllowlist(() => supabase.rpc('is_allowlisted'))
   }
 
   const decision = decideGate({ pathname, email, allowlist })
@@ -70,19 +70,19 @@ export async function middleware(request: NextRequest) {
 }
 
 /**
- * Runs the allowlist read and classifies its outcome. Takes the query as a thunk
- * rather than the client, so this stays a plain three-state classifier and does
- * not have to name Supabase's generic query types.
+ * Runs the allowlist lookup and classifies its outcome. Takes the call as a
+ * thunk rather than the client, so this stays a plain three-state classifier and
+ * does not have to name Supabase's generic query types.
+ *
+ * The classification itself lives in auth-gate.ts next to the decision it feeds,
+ * where it is unit tested per branch. All this adds is the thrown-error case: a
+ * network failure never reaches the classifier at all.
  */
 async function lookupAllowlist(
-  read: () => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+  call: () => PromiseLike<{ data: unknown; error: { message: string } | null }>,
 ): Promise<AllowlistLookup> {
   try {
-    const { data, error } = await read()
-    // An error here means we do not KNOW whether this person is allowed. That is
-    // not the same as knowing they are not, and the two used to be identical.
-    if (error) return { status: 'error', message: error.message }
-    return data ? { status: 'found' } : { status: 'absent' }
+    return classifyAllowlistRpc(await call())
   } catch (err) {
     return { status: 'error', message: err instanceof Error ? err.message : 'allowlist lookup threw' }
   }
