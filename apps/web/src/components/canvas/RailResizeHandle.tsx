@@ -1,9 +1,7 @@
 'use client'
 
 import { useCallback } from 'react'
-
-const MIN_WIDTH = 280
-const MAX_WIDTH = 800
+import { PANEL_MAX_WIDTH as MAX_WIDTH, PANEL_MIN_WIDTH as MIN_WIDTH } from '@/lib/panel-widths'
 
 interface Props {
   width: number

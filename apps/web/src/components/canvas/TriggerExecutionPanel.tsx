@@ -11,8 +11,8 @@ interface Props {
   traceId?: string | null
   startedAt?: string | null
   onClose: () => void
-  width?: number
-  onResize?: (width: number) => void
+  width: number
+  onResize: (width: number) => void
 }
 
 export default function TriggerExecutionPanel({
@@ -25,7 +25,6 @@ export default function TriggerExecutionPanel({
   width,
   onResize,
 }: Props) {
-  const effectiveWidth = width ?? 320
 
   // Shape mirrors ctx.trigger in the engine so copyable paths line up with
   // what code/transform nodes actually see at runtime.
@@ -40,9 +39,9 @@ export default function TriggerExecutionPanel({
   return (
     <aside
       className="relative flex h-full flex-shrink-0 flex-col border-l border-gray-200 bg-white"
-      style={{ width: effectiveWidth }}
+      style={{ width: width }}
     >
-      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
+      <RailResizeHandle width={width} onResize={onResize} />
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Trigger</p>

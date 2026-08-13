@@ -38,8 +38,8 @@ interface Props {
   onLiveStep?: (namespace: string, step: ExecutionStep) => void
   onTestEnd?: () => void
   onTestStepsLoaded?: (steps: Record<string, ExecutionStep>, execId: string) => void
-  width?: number
-  onResize?: (width: number) => void
+  width: number
+  onResize: (width: number) => void
 }
 
 const DEFAULT_PAYLOAD = '{\n  \n}'
@@ -67,7 +67,6 @@ export default function TestRunPanel({
   width,
   onResize,
 }: Props) {
-  const effectiveWidth = width ?? 384
   const [payload, setPayload] = useState(initialPayload ?? DEFAULT_PAYLOAD)
   const [running, setRunning] = useState(false)
   const elapsed = useElapsed(running)
@@ -244,9 +243,9 @@ export default function TestRunPanel({
   return (
     <aside
       className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
-      style={{ width: effectiveWidth }}
+      style={{ width: width }}
     >
-      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
+      <RailResizeHandle width={width} onResize={onResize} />
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
           <p className="text-sm font-semibold text-graphite">Test run</p>

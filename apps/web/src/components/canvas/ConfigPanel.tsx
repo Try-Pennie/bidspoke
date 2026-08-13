@@ -52,8 +52,8 @@ interface Props {
   onNodeTest?: (namespace: string, opts: { triggerPayload: unknown; useLastRun: boolean }) => Promise<void>
   canBuildFromRun?: boolean
   defaultTestPayload?: unknown
-  width?: number
-  onResize?: (width: number) => void
+  width: number
+  onResize: (width: number) => void
   workflowId?: string
   // Returns true if the rename was committed (refs rewritten / no refs to rewrite),
   // false if the user cancelled the prompt. ConfigPanel reverts the local Step ID
@@ -79,7 +79,6 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const type = node.type as NodeType
   const exec = data.executionStep
   const isCode = type === 'code'
-  const effectiveWidth = width ?? (isCode ? 540 : 320)
 
   const [showAdvanced, setShowAdvanced] = useState(true)
   const [showMeta, setShowMeta] = useState(true)
@@ -154,9 +153,9 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   return (
     <aside
       className="relative flex flex-shrink-0 flex-col border-l border-gray-200 bg-white"
-      style={{ width: effectiveWidth }}
+      style={{ width: width }}
     >
-      {onResize && <RailResizeHandle width={effectiveWidth} onResize={onResize} />}
+      <RailResizeHandle width={width} onResize={onResize} />
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
         <div>
@@ -1028,7 +1027,9 @@ function CodeConfig({
             lineHeight: 18,
             lineNumbers: 'on',
             scrollBeyondLastLine: false,
-            wordWrap: 'off',
+            // A long line (the Engine URL in #718) was reachable only by
+            // scrolling one line at a time. Wrap into the panel's width instead.
+            wordWrap: 'on',
             tabSize: 2,
             folding: false,
             overviewRulerLanes: 0,
@@ -2795,7 +2796,9 @@ function SalesforceConfig({
                 lineDecorationsWidth: 0,
                 glyphMargin: false,
                 scrollBeyondLastLine: false,
-                wordWrap: 'off',
+                // Same as the script editor (#718): a long JSON string value
+                // wraps rather than running off the right edge.
+                wordWrap: 'on',
                 tabSize: 2,
                 folding: false,
                 overviewRulerLanes: 0,

@@ -28,6 +28,8 @@ import { TimeoutSuggestionsProvider, useAllTimeoutSuggestions } from './nodes/ti
 import { computeWarningVariants } from '@/lib/minimap-warnings'
 import { isDuplicateConnection } from '@/lib/connect-rules'
 import { minimapNodeColor } from './nodes/node-colors'
+import { usePanelWidths } from '@/hooks/usePanelWidths'
+import { configPanelKind } from '@/lib/panel-widths'
 import {
   NODE_WARNING_COLOR,
   NODE_WARNING_RING,
@@ -936,16 +938,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
       edgeHoverHideTimerRef.current = null
     }, 150)
   }, [cancelEdgeHoverHide])
-  const [sidePanelWidth, setSidePanelWidth] = useState<number>(() => {
-    if (typeof window === 'undefined') return 320
-    const saved = Number.parseInt(window.localStorage.getItem('bidspoke.sidePanelWidth') ?? '', 10)
-    if (Number.isFinite(saved) && saved >= 280 && saved <= 800) return saved
-    return 320
-  })
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem('bidspoke.sidePanelWidth', String(sidePanelWidth))
-  }, [sidePanelWidth])
+  // One remembered width per panel kind (#719). A single shared width meant a
+  // width that suits reading a script was forced onto the short forms too, and
+  // resizing either silently re-sized the other. This hook is the only place a
+  // panel width is decided, so no panel carries a default of its own (#720).
+  const panelWidths = usePanelWidths()
   const sidePanelRef = useRef<HTMLDivElement>(null)
   const nameRef = useRef<HTMLInputElement>(null)
   // Undo/redo
@@ -962,6 +959,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   const prevErrorIdsRef = useRef<string>('')
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null
+  // A code node opens wider than a form (#718); decided here, in the one place
+  // that owns panel width, rather than as a default inside ConfigPanel.
+  const configPanelWidthKind = configPanelKind(selectedNode?.type)
 
   // Whether the selected node's namespace is referenced by any OTHER node's
   // config / variables / fallback. Drives ConfigPanel's auto-derive guard so
@@ -3560,8 +3560,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
                 onLiveStep={handleLiveStep}
                 onTestEnd={handleTestEnd}
                 onTestStepsLoaded={handleTestStepsLoaded}
-                width={sidePanelWidth}
-                onResize={setSidePanelWidth}
+                width={panelWidths.widthFor('test')}
+                onResize={panelWidths.setWidthFor('test')}
               />
             </div>
           )}
@@ -3573,8 +3573,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               nodeNamespaces={orderedNamespaces}
               onChange={(t) => { triggerRef.current = t; setTriggerVersion(v => v + 1) }}
               onClose={() => setSelectedNodeId(null)}
-              width={sidePanelWidth}
-              onResize={setSidePanelWidth}
+              width={panelWidths.widthFor('form')}
+              onResize={panelWidths.setWidthFor('form')}
               slackChannel={slackChannel}
               onSlackChannelChange={(value) => setSlackChannel(value)}
             />
@@ -3597,8 +3597,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               onNodeTest={handleNodeTest}
               canBuildFromRun={!!(lastTestExecId || executionId)}
               defaultTestPayload={(workflow as { test_payloads?: Array<{ name: string; payload: unknown }> }).test_payloads?.[0]?.payload}
-              width={sidePanelWidth}
-              onResize={setSidePanelWidth}
+              width={panelWidths.widthFor(configPanelWidthKind)}
+              onResize={panelWidths.setWidthFor(configPanelWidthKind)}
               workflowId={workflow.id}
               onRenameRequest={handleRenameRequest}
               onKeyEditorValidityChange={handleKeyEditorValidity}
@@ -3613,8 +3613,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             traceId={executionTraceId}
             startedAt={executionStartedAt}
             onClose={() => setSelectedNodeId(null)}
-            width={sidePanelWidth}
-            onResize={setSidePanelWidth}
+            width={panelWidths.widthFor('execution')}
+            onResize={panelWidths.setWidthFor('execution')}
           />
         )}
         {selectedNode && mode === 'view' && executionId && selectedNode.id !== 'trigger' && (
@@ -3626,8 +3626,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nodeOptions={nodeOptions}
             refs={refs}
             edges={edges}
-            width={sidePanelWidth}
-            onResize={setSidePanelWidth}
+            width={panelWidths.widthFor(configPanelWidthKind)}
+            onResize={panelWidths.setWidthFor(configPanelWidthKind)}
             onRetryFromFailure={async () => {
               setReplayError(null)
               try {
@@ -3649,8 +3649,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nodeNamespaces={nodeNamespaces.filter((n): n is string => typeof n === 'string' && n.length > 0 && n !== 'trigger')}
             onChange={() => {}}
             onClose={() => setSelectedNodeId(null)}
-            width={sidePanelWidth}
-            onResize={setSidePanelWidth}
+            width={panelWidths.widthFor('form')}
+            onResize={panelWidths.setWidthFor('form')}
             slackChannel={slackChannel}
           />
         )}
@@ -3663,8 +3663,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             nodeOptions={nodeOptions}
             refs={refs}
             edges={edges}
-            width={sidePanelWidth}
-            onResize={setSidePanelWidth}
+            width={panelWidths.widthFor(configPanelWidthKind)}
+            onResize={panelWidths.setWidthFor(configPanelWidthKind)}
           />
         )}
         {showVersions && (
@@ -3672,8 +3672,8 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             workflowId={workflow.id}
             onClose={() => setShowVersions(false)}
             onRestore={handleVersionRestore}
-            width={sidePanelWidth}
-            onResize={setSidePanelWidth}
+            width={panelWidths.widthFor('versions')}
+            onResize={panelWidths.setWidthFor('versions')}
             refreshToken={versionsRefreshToken}
             isDirty={isDirty}
           />
