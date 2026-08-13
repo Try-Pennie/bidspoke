@@ -185,3 +185,77 @@ describe('executeCodeChain binding-throw fallback discrimination (#475)', () => 
     expect(results[0].output).toEqual({ ok: true })
   })
 })
+
+/**
+ * Issue #460: the per-node fallback JSON-parsed the response without checking
+ * `r.ok`, so a code node that threw (HTTP 500 carrying the {__bsv:1, error, name}
+ * envelope) was recorded as `completed` with the error envelope as its output.
+ * A real failure looked green and fed the envelope to downstream nodes.
+ */
+describe('executeCodeChain per-node fallback error handling (#460)', () => {
+  const chainCtx = () => ({
+    trigger: { payload: {}, source: 't', workflow_id: 'wf', org_id: '', trace_id: 'tr' },
+    steps: {}, env: {},
+  }) as ExecutionContext
+
+  function makeEnv(perNodeFetch: ReturnType<typeof vi.fn>): Env {
+    const bundle = codeBundleName('wf')
+    // Bundle binding throws "Worker not found" so the fallback path runs.
+    const bundleFetch = vi.fn().mockRejectedValue(new Error('Worker not found: ' + bundle))
+    return {
+      DYNAMIC_WORKER_LOADER: {
+        get: (name: string) => ({ fetch: name === bundle ? bundleFetch : perNodeFetch }),
+      },
+    } as unknown as Env
+  }
+
+  it('records a script error (500 envelope) as failed, not completed', async () => {
+    const perNodeFetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ __bsv: 1, error: "Cannot read properties of undefined (reading 'output')", name: 'TypeError' }),
+        { status: 500 },
+      ),
+    )
+    const ctx = chainCtx()
+    const { results } = await executeCodeChain([code('a'), code('b')], ctx, makeEnv(perNodeFetch))
+
+    expect(results).toHaveLength(1)
+    expect(results[0].status).toBe('failed')
+    expect(results[0].error).toMatch(/Cannot read properties of undefined/)
+    // The constructor name must survive so the classifier can fail fast (#458)
+    // instead of retrying a deterministic bug.
+    expect(results[0].errorName).toBe('TypeError')
+    // The error envelope must NOT be published as this step's output.
+    expect(ctx.steps.a).toBeUndefined()
+  })
+
+  it('stops the chain at the failing node instead of running the rest', async () => {
+    const perNodeFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ __bsv: 1, error: 'boom', name: 'Error' }), { status: 500 }),
+    )
+    const { results } = await executeCodeChain([code('a'), code('b'), code('c')], chainCtx(), makeEnv(perNodeFetch))
+
+    expect(perNodeFetch).toHaveBeenCalledTimes(1)
+    expect(results.map((r) => r.status)).toEqual(['failed'])
+  })
+
+  it('surfaces a legacy (non-envelope) error body rather than the raw page', async () => {
+    const perNodeFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'legacy script blew up' }), { status: 500 }),
+    )
+    const { results } = await executeCodeChain([code('a')], chainCtx(), makeEnv(perNodeFetch))
+
+    expect(results[0].status).toBe('failed')
+    expect(results[0].error).toMatch(/legacy script blew up/)
+  })
+
+  it('still records a genuine 200 as completed and publishes its output', async () => {
+    const perNodeFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ score: 720 }), { status: 200 }))
+    const ctx = chainCtx()
+    const { results } = await executeCodeChain([code('a')], ctx, makeEnv(perNodeFetch))
+
+    expect(results[0].status).toBe('completed')
+    expect(results[0].output).toEqual({ score: 720 })
+    expect(ctx.steps.a).toEqual({ output: { score: 720 }, status: 'completed' })
+  })
+})
