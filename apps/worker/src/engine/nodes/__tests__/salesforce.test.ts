@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeSalesforceNode, SF_QUERY_PAGE_CAP } from '../salesforce'
 import { classifyStepError } from '../../error-classifier'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
+import { SALESFORCE_EDGE_ERROR_PAGE } from '../../../lib/__tests__/fixtures/salesforce-edge-error-page'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 
@@ -614,6 +615,64 @@ describe('executeSalesforceNode', () => {
     ).catch((e) => e)
 
     expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
+  })
+
+  // ── Salesforce Edge HTML error pages (#694) ─────────────────────────────────
+  //
+  // Salesforce Edge answers an infrastructure hiccup with HTTP 400 and a full
+  // branded HTML error page. 400 normally means bad request or business
+  // rejection, so the status-based rule marked it permanent and the lead was
+  // dropped with retries_used=0. An HTML page means the request never reached
+  // the API as a business call, so it is transient.
+
+  it('treats a 400 carrying an HTML error page as transient so the lead is retried (#694)', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(400, SALESFORCE_EDGE_ERROR_PAGE))
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'apex', apex_path: '/services/apexrest/trades', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e: unknown) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBeUndefined()
+    expect(classifyStepError(err)).toBe('transient')
+  })
+
+  it('summarizes the HTML page in the thrown message instead of carrying the whole thing (#695)', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(mockResponse(400, SALESFORCE_EDGE_ERROR_PAGE))
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'apex', apex_path: '/services/apexrest/trades', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e: unknown) => e)
+
+    const message = (err as Error).message
+    expect(message).toContain('An unexpected connection error occurred.')
+    expect(message).toContain('70aebd63701c0777f9ba663c488e2044')
+    expect(message).not.toContain('<style>')
+    expect(message.length).toBeLessThan(700)
+  })
+
+  it('still marks a 400 with a normal JSON error body as permanent (#694 control)', async () => {
+    const env = makeEnv()
+    vi.mocked(env.WORKFLOW_CACHE.get as ReturnType<typeof vi.fn>).mockResolvedValue('tok')
+    fetchMock.mockResolvedValue(
+      mockResponse(400, JSON.stringify([{ errorCode: 'REQUIRED_FIELD_MISSING', message: 'Required fields are missing' }]))
+    )
+
+    const err = await executeSalesforceNode(
+      makeNode({ operation: 'create', object: 'Prospect__c', body: {} }),
+      makeCtx(),
+      env
+    ).catch((e: unknown) => e)
+
+    expect((err as Error & { permanent?: boolean }).permanent).toBe(true)
+    expect(classifyStepError(err)).toBe('permanent')
   })
 
   // ── transient_errors: per-node opt-in retry for matching 4xx errors ────────

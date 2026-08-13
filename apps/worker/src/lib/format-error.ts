@@ -1,3 +1,6 @@
+import { summarizeHtmlErrorBody } from './html-error-summary'
+import { truncateKeepingTail } from './truncate-text'
+
 // Single source of truth for rendering an unknown thrown/returned value as
 // human-readable alert text.
 //
@@ -23,16 +26,13 @@ function nonEmptyString(v: unknown): string | undefined {
 // pushed long constraint errors past the limit (#605). Keep both ends: the head
 // preserves reading order, the tail preserves the code.
 const ALERT_TAIL_CHARS = 96
-const ALERT_ELLIPSIS = ' … '
 
 export function truncateErrorForAlert(text: string, max = 300): string {
-  if (text.length <= max) return text
-  const headLen = Math.max(0, max - ALERT_TAIL_CHARS - ALERT_ELLIPSIS.length)
-  return text.slice(0, headLen) + ALERT_ELLIPSIS + text.slice(text.length - ALERT_TAIL_CHARS)
+  return truncateKeepingTail(text, max, ALERT_TAIL_CHARS)
 }
 
 export function formatErr(e: unknown): string {
-  if (e instanceof Error) return e.message
+  if (e instanceof Error) return summarizeHtmlErrorBody(e.message)
   if (e && typeof e === 'object') {
     const obj = e as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown }
     const message = nonEmptyString(obj.message)
@@ -42,7 +42,8 @@ export function formatErr(e: unknown): string {
     if (message) {
       const extra = nonEmptyString(obj.details) ?? nonEmptyString(obj.hint)
       const text = extra && extra !== message ? `${message}: ${extra}` : message
-      return code ? `${text} (${code})` : text
+      const summarized = summarizeHtmlErrorBody(text)
+      return code ? `${summarized} (${code})` : summarized
     }
 
     try {
