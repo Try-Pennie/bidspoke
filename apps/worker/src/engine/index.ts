@@ -1789,6 +1789,7 @@ type ExecutionContext_CF = {
 // ── Code-node chain execution helpers ───────────────────────────────────────
 
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../lib/code-node-deployer'
+import { parseCodeSandboxResponse } from './code-response'
 
 interface ChainStepResult {
   namespace: string
@@ -1955,11 +1956,27 @@ export async function executeCodeChain(
           body: singleBody,
         })
         const text = await r.text()
-        const output: unknown = text === '' || text === 'undefined' ? null : JSON.parse(text)
         const durationMs = Date.now() - startMs
+        // Same parser as the single-node path. A script error arrives as a
+        // non-2xx carrying the {__bsv:1, error, name} envelope, and used to be
+        // JSON-parsed straight into a `completed` step whose output was the
+        // error itself (#460). It must fail the chain here instead.
+        const parsedRes = parseCodeSandboxResponse(r.ok, text)
+        if (!parsedRes.ok) {
+          results.push({
+            namespace: node.namespace,
+            status: 'failed',
+            error: parsedRes.error,
+            errorName: parsedRes.errorName,
+            durationMs,
+            logs: parsedRes.logs,
+          })
+          break
+        }
+        const output = parsedRes.output
         const sentinel = detectSentinel(output)
         recordStepOutput(ctx, node.namespace, { output, status: 'completed' })
-        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined })
+        results.push({ namespace: node.namespace, status: 'completed', output, durationMs, sentinel: sentinel ?? undefined, logs: parsedRes.logs })
         if (sentinel) break
       } catch (err) {
         const durationMs = Date.now() - startMs

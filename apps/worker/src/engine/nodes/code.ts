@@ -9,6 +9,7 @@ import type { NodeDefinition, ExecutionContext, StepExecutionResult, StepOutput,
 import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { formatErr } from '../../lib/format-error'
+import { parseCodeSandboxResponse } from '../code-response'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
@@ -172,37 +173,27 @@ export async function executeCodeNode(
   const res = await dispatchWithFallback(env, ctx.trigger.workflow_id, node.namespace, body, ctx.codeBundleName, signal)
   const text = await res.text()
 
-  // Parse the response, then unwrap the {__bsv: 1, output, logs} envelope if
-  // present. Older bundles deployed before envelope support return bare output;
-  // the envelope flag lets us tell them apart unambiguously without any
-  // collision risk against user-returned objects shaped like {output, logs}.
-  let parsed: unknown = null
-  if (text !== '' && text !== 'undefined') {
-    try { parsed = JSON.parse(text) } catch { parsed = text }
-  }
-  const envelope = isEnvelope(parsed) ? parsed : null
+  // One shared parser for both dispatch paths (see engine/code-response.ts):
+  // it unwraps the {__bsv: 1, output, logs} envelope and decides output-vs-error
+  // from res.ok alone, so an error body can never be read as output (#460).
+  const parsedRes = parseCodeSandboxResponse(res.ok, text)
 
-  if (!res.ok) {
-    const detail = envelope
-      ? (envelope.error ?? text)
-      : extractLegacyError(text)
-    const err = new Error(detail) as Error & {
+  if (!parsedRes.ok) {
+    const err = new Error(parsedRes.error) as Error & {
       logs?: import('../../types').StepLogEntry[]
       resolvedInput?: ResolvedStepInput
       codeErrorName?: string
     }
-    if (envelope && Array.isArray(envelope.logs)) err.logs = envelope.logs as import('../../types').StepLogEntry[]
+    if (parsedRes.logs) err.logs = parsedRes.logs
     // Carry the thrown error's constructor name so the classifier can fail a
     // deterministic programming error fast instead of retrying it (#458).
-    if (envelope && typeof envelope.name === 'string') err.codeErrorName = envelope.name
+    if (parsedRes.errorName !== undefined) err.codeErrorName = parsedRes.errorName
     err.resolvedInput = resolvedInput
     throw err
   }
 
-  const output: unknown = envelope ? (envelope.output ?? null) : parsed
-  const logs = envelope && Array.isArray(envelope.logs)
-    ? (envelope.logs as import('../../types').StepLogEntry[])
-    : undefined
+  const output: unknown = parsedRes.output
+  const logs = parsedRes.logs
 
   // Detect early-exit sentinels emitted by translated Pipedream code:
   //   $.respond({...})  → return { response: { status, body, headers? } }
@@ -248,18 +239,6 @@ export function buildCodeSandboxBody(
     props: resolvedProps,
     shadow_mode: ctx.shadow_mode ?? 'off',
   })
-}
-
-function isEnvelope(v: unknown): v is { __bsv: 1; output?: unknown; logs?: unknown; error?: string; name?: string } {
-  return v !== null && typeof v === 'object' && (v as { __bsv?: unknown }).__bsv === 1
-}
-
-function extractLegacyError(text: string): string {
-  try {
-    const p = JSON.parse(text) as { error?: string }
-    if (p?.error) return p.error
-  } catch { /* keep raw text */ }
-  return text
 }
 
 /**
