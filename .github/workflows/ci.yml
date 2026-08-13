@@ -200,6 +200,87 @@ jobs:
           path: apps/web/playwright-report/
           retention-days: 7
 
+  auth-gate:
+    name: Auth gate fails closed
+    runs-on: ubuntu-latest
+    # Issue #728. The login protection was untested while looking tested: the browser
+    # spec asserted /workflows "ends at /login", which still passes with middleware.ts
+    # deleted, because the API client redirects to /login on any 401. This job asks the
+    # question over raw HTTP against the artifact production serves, and requires the
+    # x-bidspoke-gate header, so "the gate redirected" is distinguishable from "the gate
+    # never ran and something else did".
+    #
+    # It runs on every PR including Dependabot and forks: it never signs in, so unlike
+    # the a11y job it needs no secret and has no reason to skip. It DOES need the
+    # NEXT_PUBLIC_* repo variables at build time, and the probe refuses a
+    # 'gate-unavailable' verdict so a build without them fails loudly instead of passing
+    # vacuously on a redirect the catch-deny produced.
+    #
+    # Deliberately its own job rather than a step inside a11y: the a11y guard test reads
+    # `playwright test (\S+)` out of that job and checks the captured path exists, so a
+    # second playwright invocation there would break it for an unrelated reason.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+      BASE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v7
+
+      # The build bakes these in at compile time. Missing values make createServerClient
+      # throw on every request, which the catch-deny converts into a /login redirect: the
+      # gate would look like it was working while never having evaluated anything. Fail
+      # here, where the cause is legible, rather than letting the probe infer it.
+      - name: Check the build-time public config is present
+        run: |
+          missing=""
+          [ -n "${NEXT_PUBLIC_SUPABASE_URL}" ] || missing="${missing} NEXT_PUBLIC_SUPABASE_URL"
+          [ -n "${NEXT_PUBLIC_SUPABASE_ANON_KEY}" ] || missing="${missing} NEXT_PUBLIC_SUPABASE_ANON_KEY"
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing build-time config:${missing}. Without it the gate cannot run and this probe would pass vacuously."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # Build and serve exactly what Pages runs, for the same reasons the a11y job does:
+      # the middleware is compiled into the next-on-pages worker, and whether it runs
+      # BEFORE static assets is a property of that artifact, not of the dev server.
+      - name: Build the production artifact (next-on-pages)
+        run: pnpm --filter=web pages:build
+
+      - name: Start the app (wrangler pages dev)
+        working-directory: apps/web
+        run: |
+          "${GITHUB_WORKSPACE}/apps/worker/node_modules/.bin/wrangler" pages dev .vercel/output/static \
+            --port 3000 \
+            --compatibility-date=2026-04-06 \
+            --compatibility-flags=nodejs_compat \
+            > "${RUNNER_TEMP}/pages-dev-gate.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://localhost:3000/login; then
+              echo "Pages dev server up after ${i}s."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Pages dev server did not come up within 60s."
+          cat "${RUNNER_TEMP}/pages-dev-gate.log"
+          exit 1
+
+      - name: Probe the auth gate
+        run: pnpm --filter web exec playwright test --config=playwright.gate.config.ts
+
   db-types-fresh:
     name: DB types regenerated with schema migrations
     runs-on: ubuntu-latest
