@@ -11,8 +11,24 @@ Confirmed in the 2026-06-26 restore drill (#270 — see [restore-drill.md](./dr-
 - **RPO (how much data we can lose):** **up to ~24h** for the general database. Supabase is on the **Pro** plan with **daily** managed backups (7-day retention); PITR is **not** enabled (deliberate — the ~$100/mo add-on would cut this to ~2 min, revisit if 24h becomes unacceptable). Two highest-value data sets have a tighter effective RPO via independent backups: **workflow definitions** (~0, pushed to the `bidspoke-workflows` GitHub repo on every save) and **lead-sighting / bid outcomes** (<24h, nightly Snowflake export). PITR is also the only thing that recovers a *destructive migration* to the moment-before — without it, Scenario B loses up to a day.
 - **RTO (how fast we must be back):**
   - **Resume bidding (config + schema restored): ~8 min proven** in the drill (laptop-driven logical restore), plus the Cloudflare Worker/Pages redeploy and worker-secret re-provisioning to actually serve traffic. A co-located runner or Supabase's native managed restore would be faster.
-  - **Full system (all execution-log history + raw-SSN tables): hours**, dominated by the 25 GB physical restore (Supabase-side). Not on the critical path for getting money moving again.
+  - **Full system (all execution-log history + raw-SSN tables): hours**, dominated by the physical restore of a **27 GB** database (measured 2026-08-13, Supabase-side). Not on the critical path for getting money moving again.
   - Fastest mitigation while restoring: reroute the engine to the warm Pipedream flow (Scenario E).
+
+### Per data class
+
+Sizes measured 2026-08-13. Re-measure rather than copy these forward: the total grew from 25 GB to 27 GB in seven weeks, and the largest single contributor is data nothing reads.
+
+| Data class | RPO | RTO | Why |
+|---|---|---|---|
+| Workflow definitions | ~0 | minutes | Pushed to the `bidspoke-workflows` GitHub repo on every save, so they survive a total Supabase loss and are re-importable without a restore. |
+| Partner config, schema, org and auth records | up to ~24h | **~8 min proven** | The `scripts/dr-restore-drill.sh` subset. This is the set that has to come back for money to move. |
+| Lead sightings and bid outcomes | <24h | hours | Nightly Snowflake export at 09:00 UTC is an independent copy that outlives the Postgres retention window. |
+| Execution and audit logs | up to ~24h | hours | Largest live class: `execution_steps` daily partitions run around 2.5 GB each. Recovery is not time critical, since bidding resumes without log history. |
+| Person PII (`persons`, raw SSN) | up to ~24h | hours | **4,184 MB, the single largest table, and write-only.** Tracked in #765: nothing reads it, so today it buys no recovery value while inflating this row. |
+
+Two items are pure dead weight in the figures above and removing them shortens the full-system RTO directly: `persons` (4,184 MB, #765) and the drained `lead_sightings_2026_06` partition (2,044 MB, zero live rows). Together roughly a quarter of the database.
+
+**[OWNER-TODO]** The backup tier above was confirmed on 2026-06-26 and has not been re-checked since. Re-confirm the plan and whether PITR is still disabled at each quarterly restore drill, because every RPO figure here depends on it and nothing in CI can detect a change.
 
 ## What must be recovered (system inventory)
 
