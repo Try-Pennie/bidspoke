@@ -386,3 +386,62 @@ jobs:
           semgrep scan --error --severity ERROR \
             --config p/security-audit --config p/secrets --config p/nodejs \
             --metrics off --exclude 'graphify-out' --exclude '*.test.ts'
+
+  direct-push-guard:
+    name: Main has no unreviewed direct push
+    runs-on: ubuntu-latest
+    # Push to main only. On a pull request the head commit legitimately has no
+    # merged PR yet, so running there would fail every single PR, and a guard
+    # that is always red is a guard nobody reads.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read
+    # Server-side branch protection is unavailable here: both
+    # repos/Try-Pennie/bidspoke/rulesets and .../branches/main/protection return
+    # 403 "Upgrade to GitHub Pro or make this repository public" (#266 stays open
+    # on that billing decision). Merges to main deploy the production bidding
+    # engine, and the husky hooks that partially cover the gap are bypassable
+    # with --no-verify / SKIP_TEST_CHECK. So this reports a direct push after the
+    # fact rather than preventing it.
+    #
+    # Two independent sources, because of LESSONS L119: GitHub's commit-to-PR
+    # association index can return empty for a genuinely reviewed, merged PR and
+    # can stay permanently incomplete rather than catch up. It did exactly that
+    # on another repo during an API incident and paged "review bypassed" about a
+    # squash merge of a green, reviewed PR. So an empty index is confirmed
+    # against the PR record before anything is reported.
+    #
+    # Calibrated against real history on 2026-08-14, both directions: of the last
+    # 20 commits on main, the 3 PR merges each resolved to a PR by
+    # mergeCommit.oid, and the 6 with no association also had no PR recording
+    # them, so those are true direct pushes rather than an index gap.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the head commit came in through a pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          LOOKUPS_OK=true
+
+          ASSOC=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq 'length' 2>/dev/null) \
+            || { ASSOC=""; LOOKUPS_OK=false; }
+
+          # The confirmation against the primary record. Asked even when ASSOC is
+          # non-zero so a lookup failure here is still visible in the log.
+          MERGE_SHA_PRS=$(gh pr list --state merged --limit 100 \
+            --json mergeCommit --jq "[.[] | select(.mergeCommit.oid == \"${SHA}\")] | length" 2>/dev/null) \
+            || { MERGE_SHA_PRS=""; LOOKUPS_OK=false; }
+
+          echo "sha=${SHA} assoc=${ASSOC:-<failed>} prs_recording_merge=${MERGE_SHA_PRS:-<failed>} lookups_ok=${LOOKUPS_OK}"
+
+          DECISION=$(bash .github/scripts/main-push-decision.sh "$SHA" "$ASSOC" "$MERGE_SHA_PRS" "$LOOKUPS_OK")
+
+          if [ "$DECISION" = "violation" ]; then
+            echo "::error::Commit ${SHA} was pushed directly to main, so it skipped CI gating and review. Open a pull request instead; server-side enforcement is tracked in #266."
+            exit 1
+          fi
+          echo "OK: this commit reached main through a pull request."
