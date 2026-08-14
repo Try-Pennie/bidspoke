@@ -944,43 +944,6 @@ export async function sendBackupFailureAlert(
 }
 
 /**
- * Alert that the execution-log writer has been repeatedly falling back from
- * Hyperdrive (direct Postgres) to PostgREST — i.e. the direct path is degraded
- * and the schema-cache-503 protection Hyperdrive provides is currently off (#134).
- */
-export async function sendHyperdriveFallbackAlert(
-  supabase: SupabaseClient,
-  orgId: string,
-  count: number,
-): Promise<boolean> {
-  const connection = await getSlackConnection(supabase, orgId)
-  if (!connection) return false
-  const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Execution-log DB path degraded', emoji: false } },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `Execution-log writes fell back from Hyperdrive (direct Postgres) to PostgREST *${count}+ times* in the last 5 minutes, outside the nightly partition-purge window. The direct path is likely degraded: a Supabase pooler outage, an expired/rotated DB password, or origin connection-limit exhaustion. While it is down, those writes are back on PostgREST and re-exposed to the schema-cache 503s Hyperdrive was provisioned to eliminate.`,
-      },
-    },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: 'Check the Hyperdrive config and the Supabase pooler / DB credentials. Worker log line: `[step-logger] Hyperdrive insert failed, falling back to PostgREST`. (The nightly 03:30 UTC partition purge causes the same fallback by design. That cluster is auto-suppressed, so this alert means the cause is something else.)',
-      },
-    },
-  ]
-  return (await postMessage(
-    connection.bot_token,
-    connection.default_channel,
-    blocks,
-    `Hyperdrive degraded: ${count}+ execution-log writes reverted to PostgREST in 5 min`,
-  )) !== null
-}
-
-/**
  * Alert that the daily lead-sighting strand drain has stalled: in_flight
  * sightings older than the drain's cutoff are piling up, which means they will
  * be exported to Snowflake mislabeled (the #343 regression). #350
