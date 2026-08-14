@@ -124,11 +124,137 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-  deploy-worker:
-    name: Deploy Worker
+  worker_artifact:
+    name: Worker artifact changed
     runs-on: ubuntu-latest
     needs: [verify, changes]
     if: needs.changes.outputs.worker == 'true'
+    outputs:
+      changed: ${{ steps.decide.outputs.changed }}
+    env:
+      WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+    # The paths filter above lists pnpm-lock.yaml and package.json under `worker`,
+    # so a web-only dependency bump reaches Deploy Worker with no worker source
+    # change (confirmed live on 2026-07-30 merging #706, a test-only
+    # devDependency: 15 of the 21 commits touching pnpm-lock.yaml in the last 90
+    # days did not touch apps/worker/src at all).
+    #
+    # Narrowing the filter would only be a heuristic, because pnpm can genuinely
+    # re-resolve a shared transitive dependency and move the worker bundle, and a
+    # filter cannot tell. So compare the ARTIFACT: build at the live worker's
+    # reported commit and at HEAD, and deploy only when the bytes differ
+    # (LESSONS L40). #725 measured on ubuntu-latest that two clean builds of one
+    # commit are byte identical AND that a reachable source change moves the hash.
+    #
+    # This job must never be the reason a real change fails to ship, so every
+    # step tolerates failure and the decision falls through to `deploy`.
+    steps:
+      # Two SEPARATE checkouts, each with its own node_modules. #725 proved
+      # same-input determinism on one machine but explicitly did NOT cover
+      # installing two different dependency sets one after another, which is what
+      # this job does. Separate working directories remove the question. The pnpm
+      # store is content-addressed, so sharing it is safe; the node_modules trees
+      # are what must not be reused.
+      - name: Check out HEAD
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          path: head
+
+      - name: Read the live worker's deployed commit
+        id: live
+        run: |
+          set -uo pipefail
+          LIVE_SHA=$(curl -fsS --max-time 20 "$WORKER_URL/" | jq -r '.version // "unknown"') || LIVE_SHA=""
+          echo "sha=$LIVE_SHA" >> "$GITHUB_OUTPUT"
+          if [ -n "$LIVE_SHA" ] && [ "$LIVE_SHA" != "unknown" ] \
+             && git -C head cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
+            echo "in_history=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Live commit '${LIVE_SHA}' is unusable for comparison, so the deploy will go ahead."
+            echo "in_history=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the live commit
+        if: steps.live.outputs.in_history == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.live.outputs.sha }}
+          path: live
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      # Deliberately no `cache: 'pnpm'`: a cache shared between the two installs
+      # is the contamination route #725 flagged as unproven, and correctness here
+      # is worth more than the cache.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Build at HEAD
+        id: head_build
+        working-directory: head
+        run: |
+          set -uo pipefail
+          if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
+            echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::HEAD build failed inside the artifact gate, so the deploy will go ahead unconditionally."
+          fi
+
+      - name: Build at the live commit
+        id: live_build
+        if: steps.live.outputs.in_history == 'true'
+        working-directory: live
+        run: |
+          set -uo pipefail
+          if pnpm install --frozen-lockfile && pnpm --filter=worker run build; then
+            echo "hash=$(sha256sum apps/worker/dist/index.js | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Build at the live commit failed inside the artifact gate, so the deploy will go ahead unconditionally."
+          fi
+
+      # Hashes dist/index.js only, never the whole outdir: the sibling sourcemap
+      # embeds sourceRoot, which equals the --outdir path, so hashing the
+      # directory would measure the harness rather than the artifact (#725).
+      - name: Decide whether the artifact moved
+        id: decide
+        run: |
+          set -uo pipefail
+          DECISION=$(bash head/.github/scripts/worker-artifact-decision.sh \
+            "${{ steps.live.outputs.sha }}" \
+            "${{ steps.live.outputs.in_history }}" \
+            "${{ steps.head_build.outputs.hash }}" \
+            "${{ steps.live_build.outputs.hash }}")
+          if [ "$DECISION" = "skip" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-worker:
+    name: Deploy Worker
+    runs-on: ubuntu-latest
+    needs: [verify, changes, worker_artifact]
+    # Skips ONLY on an explicit `false`, meaning the gate positively decided the
+    # built artifact is byte identical to what is already live. Any other state,
+    # including the gate job crashing outright, deploys.
+    #
+    # The naive `changed == 'true'` is wrong in the direction that hurts: a failed
+    # gate job leaves that output empty, which would silently skip the deploy and
+    # strand the engine behind a green pipeline, exactly the defect the Deploy
+    # Drift check (#327) exists to catch.
+    #
+    # always() is what allows that fall-through, but it also discards the implicit
+    # "all needs succeeded" rule, so Verify is re-asserted by hand. Without that,
+    # a red test suite would deploy.
+    if: |
+      always()
+      && needs.verify.result == 'success'
+      && needs.changes.outputs.worker == 'true'
+      && needs.worker_artifact.outputs.changed != 'false'
     steps:
       - uses: actions/checkout@v7
 
