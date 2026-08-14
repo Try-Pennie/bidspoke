@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
@@ -216,5 +217,50 @@ describe('deploy.yml runs the live assertion after deploying (#764)', () => {
 
   it('reads the manifest rather than an inline list', () => {
     expect(jobBlock('assert-db-objects')).toContain('required-live-objects.json')
+  })
+})
+
+describe('the assertion refuses a manifest it cannot read (#764)', () => {
+  const assertScript = path.join(REPO_ROOT, '.github/scripts/assert-live-db-objects.sh')
+
+  function runAgainst(contents: string): number {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'dbobj-'))
+    const file = path.join(dir, 'manifest.json')
+    writeFileSync(file, contents)
+    try {
+      execFileSync('bash', [assertScript, file], {
+        stdio: 'pipe',
+        env: { ...process.env, SUPABASE_URL: 'http://127.0.0.1:9', SUPABASE_ANON_KEY: 'x' },
+      })
+      return 0
+    } catch (e) {
+      return (e as { status?: number }).status ?? -1
+    }
+  }
+
+  it.each([
+    ['null', 'null'],
+    ['an empty array', '[]'],
+    ['an object rather than an array', '{}'],
+    ['not JSON at all', 'not json at all'],
+  ])('exits non-zero for %s rather than reporting success', (_label, contents) => {
+    // A manifest that parses to nothing, or does not parse, must never read as a
+    // clean pass. `jq length` prints `null` for some of these, and `[ "null" -lt 1 ]`
+    // is a bash arithmetic ERROR rather than a false, which without this guard let
+    // the loop run zero times and the script report success (LESSONS L50, L98).
+    expect(runAgainst(contents)).not.toBe(0)
+  })
+
+  it('exits non-zero for a missing manifest file', () => {
+    let code = 0
+    try {
+      execFileSync('bash', [assertScript, '/nonexistent/manifest.json'], {
+        stdio: 'pipe',
+        env: { ...process.env, SUPABASE_URL: 'http://127.0.0.1:9', SUPABASE_ANON_KEY: 'x' },
+      })
+    } catch (e) {
+      code = (e as { status?: number }).status ?? -1
+    }
+    expect(code).not.toBe(0)
   })
 })

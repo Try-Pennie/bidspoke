@@ -47,11 +47,24 @@ if [ ! -f "$MANIFEST" ]; then
   exit 1
 fi
 
-COUNT=$(jq 'length' "$MANIFEST")
+COUNT=$(jq 'length' "$MANIFEST" 2>/dev/null) || COUNT=""
 # Zero objects checked must never read as a pass (LESSONS L98): an empty or
 # mis-parsed manifest is exactly how this job would go green while asserting
 # nothing at all.
-if [ -z "$COUNT" ] || [ "$COUNT" -lt 1 ]; then
+#
+# The count is validated as a POSITIVE INTEGER before it is compared, not just
+# tested for emptiness (LESSONS L50). jq prints `null` for a manifest that parses
+# but is not an array, and `[ "null" -lt 1 ]` is a bash arithmetic ERROR, not a
+# false: with `set -uo pipefail` and no `-e` that error prints to stderr, the
+# condition evaluates false, `seq 0 -1` yields nothing, the loop never runs, and
+# the script reports success having checked nothing.
+case "$COUNT" in
+  ''|*[!0-9]*)
+    echo "::error::could not read an object count from $MANIFEST (got '${COUNT:-empty}'). Refusing to report success on a manifest this script cannot parse."
+    exit 1
+    ;;
+esac
+if [ "$COUNT" -lt 1 ]; then
   echo "::error::manifest lists no objects, so this check asserted nothing. Refusing to report success."
   exit 1
 fi
