@@ -1344,6 +1344,76 @@ export async function sendCircuitAlert(
   await postMessage(connection.bot_token, channel, blocks, fallback)
 }
 
+/**
+ * The all-clear for a rate-aggregated alert (#253).
+ *
+ * The three rate checks paged when a rate started spiking and said nothing when
+ * it recovered, so silence in Slack meant both "still broken, suppressed by the
+ * cooldown" and "fine again". Those are the two states a reader most needs to
+ * tell apart during an incident, so recovery is now announced explicitly and
+ * says how long the condition lasted.
+ *
+ * Returns whether it actually reached Slack. The caller only clears its
+ * recovery marker on true, so a kicked bot retries rather than leaving the page
+ * as the last word.
+ */
+export async function sendRecoveryAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { signal: string; subject: string; alertedAt: string; url?: string },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const started = Date.parse(payload.alertedAt)
+  // An unparseable marker must not render "NaN minutes"; say nothing about the
+  // duration rather than something wrong (LESSONS L11, L50).
+  const lasted = Number.isFinite(started) ? describeDuration(now - started) : null
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `*${payload.subject}* is back within normal range. The ${payload.signal} alert fired at ` +
+          `${etTime(started)}` +
+          (lasted ? ` and lasted ${lasted}.` : '.'),
+      },
+    },
+  ]
+  if (payload.url) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.url}|Open workflow >` } })
+  }
+
+  return (await postMessage(slack.bot_token, channel, blocks, `Recovered: ${payload.subject}`)) !== null
+}
+
+/** A duration in plain words. Rounded, because nobody acts on the seconds. */
+export function describeDuration(ms: number): string | null {
+  if (!Number.isFinite(ms) || ms < 0) return null
+  const minutes = Math.round(ms / 60000)
+  if (minutes < 1) return 'under a minute'
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`
+  const hours = Math.floor(minutes / 60)
+  const rem = minutes % 60
+  const h = `${hours} hour${hours === 1 ? '' : 's'}`
+  return rem === 0 ? h : `${h} ${rem} minute${rem === 1 ? '' : 's'}`
+}
+
+/** One ET timestamp format, so a new alert does not add another copy of it. */
+export function etTime(at: number | string | Date): string {
+  const d = at instanceof Date ? at : new Date(at)
+  if (Number.isNaN(d.getTime())) return 'an unknown time'
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(d)
+}
+
 // ── Internal ──────────────────────────────────────────────────────────────────
 
 // Post a Slack message. Returns the message ts on success, or null on any

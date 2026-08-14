@@ -18,6 +18,8 @@
 // Config (trigger.config.muted_failure_signals, alongside duration_alert_ms) is
 // the domain type MutedFailureSignal in ../types; re-exported so callers can
 // import it from here.
+import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal, WorkflowDefinition } from '../types'
 import { sendFailureSpikeAlert } from './slack'
@@ -59,10 +61,8 @@ interface FailedRow {
   completed_at: string | null
 }
 
-interface KvLike {
-  get(key: string): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
-}
+// Shared with the other rate checks; needs delete() for the recovery marker (#253).
+type KvLike = RecoveryKv
 
 /** Count failed rows for one workflow that match `signal` and completed on/after
  *  windowStartMs. Pure — the windowed core of the aggregated check. */
@@ -153,9 +153,29 @@ export async function runFailureRateCheck(
     for (const signal of signals) {
       const windowStartMs = now - signal.window_minutes * 60 * 1000
       const count = countWindowMatches(failed, wfId, signal, windowStartMs)
-      if (!detectFailureSpike(count, signal.count)) continue
-
       const cooldownKey = `failure-rate-cooldown:${wfId}:${signal.match}`
+      // Keyed per SIGNAL, not per workflow: one signal recovering must not clear
+      // another that is still spiking on the same workflow (LESSONS L53).
+      const recoveryId = `${wfId}:${signal.match}`
+
+      if (!detectFailureSpike(count, signal.count)) {
+        await announceRecovery(kv, 'failure-rate', recoveryId, cooldownKey, async (alertedAt) => {
+          const slack = await getSlackConnection(supabase, wf.organization_id as string)
+          if (!slack) return false
+          return sendRecoveryAlert(
+            slack,
+            (wf.slack_channel as string | null) ?? slack.default_channel,
+            {
+              signal: `"${signal.match}" failure rate`,
+              subject: wf.name as string,
+              alertedAt,
+              url: `${appUrl}/workflows/${wfId}`,
+            },
+          )
+        })
+        continue
+      }
+
       if (await kv.get(cooldownKey)) continue
 
       console.log(`[failure-spike] workflow=${wf.name} workflow_id=${wfId} signal="${signal.match}" count=${count}/${signal.count} window=${signal.window_minutes}m`)
@@ -178,6 +198,7 @@ export async function runFailureRateCheck(
       if (sent) {
         const ttl = (signal.cooldown_minutes ?? DEFAULT_COOLDOWN_MINUTES) * 60
         await kv.put(cooldownKey, '1', { expirationTtl: ttl })
+        await markAlerted(kv, 'failure-rate', recoveryId)
       }
     }
   }
