@@ -3,7 +3,8 @@
 export const runtime = 'edge'
 
 import { useEffect, useState } from 'react'
-import { useParams, useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { useParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { ArrowLeft, LayoutTemplate, CheckCircle, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
@@ -523,7 +524,6 @@ function StepInputBlock({ value }: { value: unknown }) {
 
 export default function ExecutionDetailPage() {
   const params = useParams()
-  const router = useRouter()
   const workflowId = params.id as string
   const executionId = params.executionId as string
 
@@ -560,13 +560,13 @@ export default function ExecutionDetailPage() {
     <NavLayout>
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
-          <button
-            onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
+          <Link
+            href={`/workflows/${workflowId}?execution=${executionId}`}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-graphite"
           >
             <ArrowLeft className="h-4 w-4" />
             Back to workflow
-          </button>
+          </Link>
           <div className="flex items-center gap-2">
             <button
               onClick={copyReport}
@@ -576,13 +576,13 @@ export default function ExecutionDetailPage() {
               {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? 'Copied' : 'Copy report'}
             </button>
-            <button
-              onClick={() => router.push(`/workflows/${workflowId}?execution=${executionId}`)}
+            <Link
+              href={`/workflows/${workflowId}?execution=${executionId}`}
               className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
             >
               <LayoutTemplate className="h-3.5 w-3.5" />
               View on canvas
-            </button>
+            </Link>
           </div>
         </div>
 
@@ -630,12 +630,15 @@ export default function ExecutionDetailPage() {
           <ExecutionNotFoundNotice
             executionId={executionId}
             action={
-              <button
-                onClick={() => router.push(`/workflows/${workflowId}`)}
-                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
+              // inline-block is load-bearing: this is a bordered pill with vertical
+              // padding sitting in a plain block div, and an anchor is inline by
+              // default, so without it the padding would stop expanding the box.
+              <Link
+                href={`/workflows/${workflowId}`}
+                className="inline-block rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
               >
                 Back to the workflow
-              </button>
+              </Link>
             }
           />
         ) : (
@@ -686,12 +689,12 @@ export default function ExecutionDetailPage() {
                   <span className="flex items-center gap-1.5">
                     <RefreshCw className="h-3.5 w-3.5 text-gray-500" />
                     <span>Replay of</span>
-                    <button
-                      onClick={() => router.push(`/workflows/${workflowId}/executions/${execution.parent_execution_id}`)}
+                    <Link
+                      href={`/workflows/${workflowId}/executions/${execution.parent_execution_id}`}
                       className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
                     >
                       {execution.parent_execution_id.slice(0, 8)}…
-                    </button>
+                    </Link>
                   </span>
                 )}
                 {(execution.child_executions?.length ?? 0) > 0 && (
@@ -700,13 +703,13 @@ export default function ExecutionDetailPage() {
                     <span>{execution.child_executions.length === 1 ? 'Replayed once:' : `Replayed ${execution.child_executions.length} times:`}</span>
                     <span className="flex flex-wrap items-center gap-1.5">
                       {execution.child_executions.map((c) => (
-                        <button
+                        <Link
                           key={c.id}
-                          onClick={() => router.push(`/workflows/${workflowId}/executions/${c.id}`)}
+                          href={`/workflows/${workflowId}/executions/${c.id}`}
                           className="font-mono text-p-blue-dark underline-offset-2 hover:underline"
                         >
                           {c.id.slice(0, 8)}…
-                        </button>
+                        </Link>
                       ))}
                     </span>
                   </span>
