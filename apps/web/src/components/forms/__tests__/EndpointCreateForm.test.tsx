@@ -58,3 +58,44 @@ describe('EndpointCreateForm (#550)', () => {
     expect(screen.queryByText('Partner slug is required.')).not.toBeInTheDocument()
   })
 })
+
+/**
+ * Issue #556. Create and edit now share one form, so these pin the things create
+ * does DIFFERENTLY, which is what a consolidation can quietly flatten away.
+ */
+const workflows = [{ id: 'wf-1', name: 'Lead Economy Bidding Workflow' }] as never[]
+
+describe('EndpointCreateForm keeps what create does differently (#556)', () => {
+  it('mirrors the slug into the source name', () => {
+    render(<EndpointCreateForm workflows={workflows} onCreated={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('partner-name'), { target: { value: 'acme' } })
+    expect(screen.getByPlaceholderText('acme')).toHaveValue('acme')
+  })
+
+  it('stops mirroring once the source name is edited', () => {
+    render(<EndpointCreateForm workflows={workflows} onCreated={vi.fn()} onCancel={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('partner-name'), { target: { value: 'acme' } })
+    fireEvent.change(screen.getByPlaceholderText('acme'), { target: { value: 'chosen' } })
+    fireEvent.change(screen.getByPlaceholderText('partner-name'), { target: { value: 'acme-two' } })
+    expect(screen.getByPlaceholderText('acme-two')).toHaveValue('chosen')
+  })
+
+  it('hides the workflow picker when the workflow is locked', () => {
+    render(
+      <EndpointCreateForm
+        lockWorkflow
+        workflowId="wf-1"
+        workflowName="Main Flow"
+        onCreated={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    )
+    expect(screen.queryByRole('combobox')).toBeNull()
+    expect(screen.getByText('Main Flow')).toBeInTheDocument()
+  })
+
+  it('shows the picker when the workflow is not locked', () => {
+    render(<EndpointCreateForm workflows={workflows} onCreated={vi.fn()} onCancel={vi.fn()} />)
+    expect(screen.getByRole('combobox')).toBeInTheDocument()
+  })
+})
