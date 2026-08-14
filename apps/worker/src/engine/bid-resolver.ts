@@ -20,7 +20,7 @@ import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
 import { applyOutboundMapping } from '../lib/field-mapper'
-import { parseJsonSafe } from '../lib/json'
+import { containsHtmlDocument } from '../lib/html-error-summary'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -244,7 +244,18 @@ async function callBidApi(
     clearTimeout(timeout)
   }
 
-  const raw = await parseJsonSafe(res)
+  // Read the body as text once, then parse. Was parseJsonSafe(res), which is
+  // equivalent for the parsed value (both yield null on an unparseable or empty
+  // body) but discarded the text, and the text is what the HTML-error-page rule
+  // needs (#756): an HTML document means the request died at an edge and was
+  // never processed, so it is transient whatever status came back.
+  const responseText = await res.text().catch(() => '')
+  let raw: unknown = null
+  try {
+    raw = responseText.length > 0 ? JSON.parse(responseText) : null
+  } catch {
+    raw = null
+  }
 
   const resHeaders: Record<string, string> = {}
   res.headers.forEach((v, k) => { resHeaders[k] = v })
@@ -290,10 +301,16 @@ async function callBidApi(
   }
 
   if (!res.ok) {
-    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown>; status?: number; response_headers?: Record<string, string> }
+    const httpErr = new Error(`Partner API returned ${res.status}`) as Error & { resolved_input?: Record<string, unknown>; status?: number; response_headers?: Record<string, string>; bodyText?: string }
     httpErr.resolved_input = resolvedInputForCaller
     httpErr.status = httpStatus
     httpErr.response_headers = safeHeaders
+    // Carried so partner-bid can apply the HTML-error-page rule (#756). The rule
+    // itself lives in classifyHttpErrorWithBody, not here.
+    httpErr.bodyText = responseText
+    if (containsHtmlDocument(responseText)) {
+      console.log(`[bid-resolver] event=html_error_page_transient status=${httpStatus} partner=${partner.slug} trace=${ctx.trigger.trace_id}`)
+    }
     throw httpErr
   }
 
