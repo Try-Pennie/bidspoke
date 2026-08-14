@@ -25,29 +25,54 @@ jobs:
           fetch-depth: 0 # full history so merge-base can compare commits
 
       - name: Compare live worker commit to the latest worker-touching commit
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           LIVE_SHA=$(curl -fsS "$WORKER_URL/" | jq -r '.version // "unknown"')
           LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker)
           echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
 
+          # FIRST, before anything that could exit 0. An unstamped worker is the
+          # signal that stamping itself has broken, which is exactly what this job
+          # exists to report. Ordering matters: `git cat-file -e unknown^{commit}`
+          # fails, so leaving this until later would route an unstamped worker into
+          # the "not in this repo's history" skip and silence it.
           if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ]; then
-            # Was `exit 0`, excused as a pre-#327 deploy. The stamp had in fact never
-            # landed (pnpm swallowed the flag, see deploy.yml), so this branch was taken
-            # on every run and the job reported success hourly while comparing nothing.
-            # An unstamped worker is now the signal that stamping itself has broken,
-            # which is exactly what this job exists to report, so it must fail.
             echo "::error::Live worker reports no deployed commit (version=${LIVE_SHA:-empty}), so stranding cannot be detected. The deploy is not stamping DEPLOYED_SHA."
             exit 1
           fi
+
           if ! git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
             echo "::warning::Live worker commit $LIVE_SHA is not in this repo's history; skipping."
             exit 0
           fi
-          # OK when the latest worker-touching commit is already part of what's
-          # live (ancestor-or-equal of the deployed commit).
-          if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then
+
+          # Ancestor-or-equal of the deployed commit means the latest worker
+          # change is already live.
+          UP_TO_DATE=no
+          if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then UP_TO_DATE=yes; fi
+
+          # Age of the oldest Deploy run still queued or running on main, in
+          # seconds. Empty when none is in flight (#790). `|| true` so a GitHub API
+          # blip cannot abort the check under `set -e`: an unreadable answer must
+          # reach the gate as "no deploy running", which is its LOUD side.
+          # jq does the clock arithmetic so this does not depend on GNU date.
+          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
+            --json status,createdAt --jq \
+            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          echo "up_to_date=$UP_TO_DATE inflight_age=${INFLIGHT_AGE:-none}"
+
+          DECISION=$(.github/scripts/deploy-drift-decision.sh "$LIVE_SHA" "$UP_TO_DATE" "$INFLIGHT_AGE")
+
+          if [ "$DECISION" = "ok" ]; then
             echo "Worker is up to date."
+            exit 0
+          fi
+          if [ "$DECISION" = "deploy-in-flight" ]; then
+            # Not a strand: a deploy is mid-flight and the worker is expected to be
+            # behind until it lands. The next hourly run judges the settled state.
+            echo "::notice::A deploy is still running (${INFLIGHT_AGE}s). Not paging; the next run will re-check."
             exit 0
           fi
 
