@@ -151,48 +151,6 @@ describe('GET /executions', () => {
 describe('GET /executions?shadow=1', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
-  // Records every chained filter call per table so we can assert the is_test /
-  // source scoping the route applied.
-  function makeRecordingSupabase(
-    tables: Record<string, { single?: Record<string, unknown> | null; list?: Record<string, unknown>[] }>,
-    calls: Record<string, [string, unknown[]][]>,
-  ) {
-    return {
-      // jwtAuth's one-round-trip auth lookup (#329): return the configured
-      // users row joined to an `allowed` flag (defaults to allowlisted).
-      rpc: (name: string, _args: unknown) => {
-        if (name !== 'auth_user_with_allowlist') return Promise.resolve({ data: null, error: null })
-        const userRow = tables['users']?.single ?? null
-        if (!userRow) return Promise.resolve({ data: [], error: null })
-        return Promise.resolve({ data: [{ ...userRow, allowed: true }], error: null })
-      },
-      from: (table: string) => {
-        const cfg = tables[table] ?? {}
-        const rec = (calls[table] ??= [])
-        const chain: unknown = new Proxy({}, {
-          get(_t, prop) {
-            if (typeof prop === 'symbol') return undefined
-            if (prop === 'single') {
-              return () =>
-                cfg.single
-                  ? Promise.resolve({ data: cfg.single, error: null })
-                  : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-            }
-            if (prop === 'then') {
-              return (resolve: (v: unknown) => unknown) =>
-                Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-            }
-            return (...args: unknown[]) => {
-              rec.push([prop, args])
-              return chain
-            }
-          },
-        })
-        return chain
-      },
-    }
-  }
-
   beforeEach(async () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
@@ -200,40 +158,34 @@ describe('GET /executions?shadow=1', () => {
   })
 
   it('scopes to test rows with the __shadow source suffix', async () => {
-    const calls: Record<string, [string, unknown[]][]> = {}
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeRecordingSupabase(
-        {
-          users: { single: testUser },
-          workflows: { single: testWorkflow },
-          workflow_executions: { list: [testExecution] },
-        },
-        calls,
-      ) as unknown as ReturnType<typeof createSupabaseClient>
-    )
+    // The shared mock records every chained builder call per table, so the
+    // filter scoping a route applied can be asserted directly (#347).
+    const client = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: testWorkflow },
+      workflow_executions: { list: [testExecution] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'GET', '/executions?workflow_id=wf-1&shadow=1')
     expect(res.status).toBe(200)
-    const execCalls = calls.workflow_executions ?? []
+    const execCalls = client.calls.workflow_executions ?? []
     expect(execCalls).toContainEqual(['eq', ['is_test', true]])
     expect(execCalls).toContainEqual(['like', ['source', '%__shadow']])
     expect(execCalls).not.toContainEqual(['eq', ['is_test', false]])
   })
 
   it('defaults to non-test rows when shadow is not set', async () => {
-    const calls: Record<string, [string, unknown[]][]> = {}
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeRecordingSupabase(
-        {
-          users: { single: testUser },
-          workflows: { single: testWorkflow },
-          workflow_executions: { list: [testExecution] },
-        },
-        calls,
-      ) as unknown as ReturnType<typeof createSupabaseClient>
-    )
+    // The shared mock records every chained builder call per table, so the
+    // filter scoping a route applied can be asserted directly (#347).
+    const client = makeSupabase({
+      users: { single: testUser },
+      workflows: { single: testWorkflow },
+      workflow_executions: { list: [testExecution] },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'GET', '/executions?workflow_id=wf-1')
     expect(res.status).toBe(200)
-    const execCalls = calls.workflow_executions ?? []
+    const execCalls = client.calls.workflow_executions ?? []
     expect(execCalls).toContainEqual(['eq', ['is_test', false]])
     expect(execCalls).not.toContainEqual(['like', ['source', '%__shadow']])
   })

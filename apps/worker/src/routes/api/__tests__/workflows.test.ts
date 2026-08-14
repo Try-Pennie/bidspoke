@@ -5,6 +5,7 @@
  * Auth rejection is covered in workflows-auth.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { makeSupabase as makeSupabaseMock, type TableConfig } from './_supabase-mock'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -27,131 +28,14 @@ import { loadEnvVars } from '../../../lib/env-loader'
 import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 
-// ── Supabase mock ─────────────────────────────────────────────────────────────
-
 /**
- * Flexible multi-call mock.
- * Each table entry can be a single config OR an array of configs consumed in order.
- * The last entry in an array is reused once exhausted.
+ * The shared mock now covers what this file kept a local copy for: a handler for
+ * non-auth rpcs, with jwtAuth's lookup served internally (#347).
  */
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  /** Bare-await result. For a write ending in `.select(...)`, these are the rows
-   *  it touched: `[]` models the zero-row write PostgREST calls a success. */
-  list?: Record<string, unknown>[]
-  insertResult?: Record<string, unknown> | null
-  singleError?: { code: string; message: string }
-  /** A real database failure on an `.update(...)`, as opposed to zero rows. */
-  updateError?: { code: string; message: string }
-}
-
-function makeSupabase(
+const makeSupabase = (
   tables: Record<string, TableConfig | TableConfig[]> = {},
   opts: { rpc?: (name: string, args: unknown) => Promise<{ data: unknown; error: unknown }> } = {},
-) {
-  const callCounts: Record<string, number> = {}
-  // Records the columns each table was filtered by, so tests can assert query
-  // scoping (e.g. that workflow_executions is scoped by workflow_id, not by a
-  // non-existent organization_id column). Keyed by table name.
-  const eqCalls: Record<string, Array<[string, unknown]>> = {}
-
-  return {
-    eqCalls,
-    // jwtAuth's one-round-trip auth lookup (#329): return the configured users
-    // row joined to an `allowed` flag (defaults to allowlisted); a `singleError`
-    // on the users config surfaces as a real lookup error (500).
-    rpc: (name: string, args: unknown) => {
-      if (name !== 'auth_user_with_allowlist') {
-        // Non-auth RPCs (e.g. the timeout-suggestions grouped query) delegate to
-        // a test-supplied handler so jwtAuth's auth lookup stays internal.
-        return opts.rpc ? opts.rpc(name, args) : Promise.resolve({ data: null, error: null })
-      }
-      const usersCfg = (Array.isArray(tables['users']) ? tables['users'][0] : tables['users']) ?? {}
-      if (usersCfg.singleError) return Promise.resolve({ data: null, error: usersCfg.singleError })
-      const userRow = usersCfg.single ?? null
-      if (!userRow) return Promise.resolve({ data: [], error: null })
-      return Promise.resolve({ data: [{ ...userRow, allowed: true }], error: null })
-    },
-    from: (table: string) => {
-      const raw = tables[table]
-      const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
-      const idx = callCounts[table] ?? 0
-      callCounts[table] = idx + 1
-      const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)]
-
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'eq') {
-            return (col: string, val: unknown) => {
-              (eqCalls[table] ??= []).push([col, val])
-              return chain
-            }
-          }
-          if (prop === 'single') {
-            return () => cfg.singleError
-              ? Promise.resolve({ data: null, error: cfg.singleError })
-              : cfg.single !== undefined
-              ? cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          // An update gets its own chain so a configured updateError surfaces as
-          // a real database error, distinct from the zero-row write that `list:
-          // []` models. Conflating the two is exactly the bug under test (#588).
-          if (prop === 'update' && cfg.updateError) {
-            const uc: unknown = new Proxy({}, {
-              get(__, p) {
-                if (typeof p === 'symbol') return undefined
-                if (p === 'then') {
-                  return (resolve: (v: unknown) => unknown) =>
-                    Promise.resolve({ data: null, error: cfg.updateError }).then(resolve)
-                }
-                return () => uc
-              },
-            })
-            return () => uc
-          }
-          if (prop === 'insert') {
-            return () => {
-              const res = cfg.insertResult
-              const ic: unknown = new Proxy({}, {
-                get(__, p) {
-                  if (typeof p === 'symbol') return undefined
-                  // Bare `await insert(...)` resolves to a { data, error } result so
-                  // callers that destructure `error` see null on success (or an
-                  // 'insert failed' error when no insertResult was configured).
-                  if (p === 'then') {
-                    return (resolve: (v: unknown) => unknown) =>
-                      Promise.resolve(
-                        res !== undefined && res !== null
-                          ? { data: res, error: null }
-                          : { data: null, error: { message: 'insert failed' } }
-                      ).then(resolve)
-                  }
-                  if (p === 'select') return () => ic
-                  if (p === 'single') return () =>
-                    res !== undefined && res !== null
-                      ? Promise.resolve({ data: res, error: null })
-                      : Promise.resolve({ data: null, error: { message: 'insert failed' } })
-                  return () => ic
-                },
-              })
-              return ic
-            }
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-  }
-}
+) => makeSupabaseMock(tables, opts)
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

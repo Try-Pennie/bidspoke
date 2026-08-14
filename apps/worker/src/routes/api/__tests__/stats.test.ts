@@ -3,6 +3,7 @@
  * Covers: empty org, execution aggregation (summary, by_day, by_workflow), recent failures.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { makeSupabase as makeSupabaseMock, type TableConfig } from './_supabase-mock'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -11,54 +12,15 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 
-// ── Supabase mock ─────────────────────────────────────────────────────────────
-
-type TableConfig = {
-  single?: Record<string, unknown> | null
-  list?: Record<string, unknown>[]
-}
-
-function makeSupabase(tables: Record<string, TableConfig | TableConfig[]> = {}, rpcs: Record<string, unknown[]> = {}) {
-  const callCounts: Record<string, number> = {}
-
-  return {
-    from: (table: string) => {
-      const raw = tables[table]
-      const cfgArr: TableConfig[] = Array.isArray(raw) ? raw : raw ? [raw] : [{}]
-      const idx = callCounts[table] ?? 0
-      callCounts[table] = idx + 1
-      const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)]
-
-      const chain: unknown = new Proxy({}, {
-        get(_, prop) {
-          if (typeof prop === 'symbol') return undefined
-          if (prop === 'single') {
-            return () => cfg.single !== undefined
-              ? cfg.single
-                ? Promise.resolve({ data: cfg.single, error: null })
-                : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-              : Promise.resolve({ data: null, error: { message: 'not found', code: 'PGRST116' } })
-          }
-          if (prop === 'then') {
-            return (resolve: (v: unknown) => unknown) =>
-              Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
-          }
-          return () => chain
-        },
-      })
-      return chain
-    },
-    rpc: (name: string) => {
-      // jwtAuth's one-round-trip auth lookup (#329): return the configured
-      // users row joined to an `allowed` flag (defaults to allowlisted).
-      if (name === 'auth_user_with_allowlist') {
-        const userRow = (Array.isArray(tables['users']) ? tables['users'][0] : tables['users'])?.single ?? null
-        return Promise.resolve({ data: userRow ? [{ ...userRow, allowed: true }] : [], error: null })
-      }
-      return Promise.resolve({ data: rpcs[name] ?? [], error: null })
-    },
-  }
-}
+/**
+ * The shared mock now covers what this file kept a local copy for: a
+ * results-by-name map for the grouped stats rpcs, with the auth lookup served
+ * internally (#347).
+ */
+const makeSupabase = (
+  tables: Record<string, TableConfig | TableConfig[]> = {},
+  rpcs: Record<string, unknown[]> = {},
+) => makeSupabaseMock(tables, { rpcs })
 
 // Helper: translate a list of workflow_executions rows into the rollup shape
 // returned by the workflow_stats_rollup RPC.
