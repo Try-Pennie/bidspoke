@@ -9,6 +9,7 @@
  * is no single org to target. No-ops on a clean run.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, isTransientExportError } from './export-error-hints'
 
@@ -68,10 +69,11 @@ export async function notifyExportFailure(
   // key is cleared above) or the backstop TTL expires.
   if (kv && (await kv.get(stateKey))) return
 
-  const { data: conns } = await supabase
+  const { data: conns, error: connsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('export-alerts', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   // Classify once, not per org: the same errors produce the same advice.

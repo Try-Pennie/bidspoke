@@ -205,3 +205,40 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
   })
 })
+
+// ── A failed read is visible, not silence (#439) ─────────────────────────────
+//
+// The Slack-connection lookup is the worst shape: on a failed read the org list
+// is empty, the check returns early, and every alert it owns silently does not
+// run for that tick. Driving the real check, because the whole point is that the
+// blind spot was invisible from inside the code.
+describe('runVolumeCliffCheck logs a failed read (#439)', () => {
+  function erroringSupabase() {
+    return {
+      from: () => {
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') {
+              return (res: (v: unknown) => unknown) =>
+                Promise.resolve({ data: null, error: { message: 'connection reset by peer', code: '08006' } }).then(res)
+            }
+            return () => chain
+          },
+        })
+        return chain
+      },
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
+  }
+
+  it('says the read failed rather than returning quietly', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = { get: async () => null, put: async () => {}, delete: async () => {} }
+
+    await runVolumeCliffCheck(erroringSupabase(), kv, 'https://app.example', 'https://self.example')
+
+    const lines = spy.mock.calls.map((c) => String(c[0]))
+    expect(lines.some((l) => l.includes('slack connections') && l.includes('connection reset by peer'))).toBe(true)
+    spy.mockRestore()
+  })
+})

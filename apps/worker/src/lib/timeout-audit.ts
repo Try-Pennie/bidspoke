@@ -17,6 +17,7 @@
  *     history-based suggested value); over-provisioned stays dashboard-only.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
 import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
@@ -174,12 +175,13 @@ export async function getOrgTimeoutWarnings(
   supabase: SupabaseClient,
   orgId: string
 ): Promise<WorkflowTimeoutWarnings[]> {
-  const { data } = await supabase
+  const { data, error: dataError } = await supabase
     .from('workflows')
     .select('id, name, definition')
     .eq('organization_id', orgId)
     .eq('is_active', true)
     .is('deleted_at', null)
+  logReadFailure('timeout-audit', 'step durations', dataError)
   return scanWorkflowDefinitions(
     (data ?? []).map((w) => ({
       id: w.id as string,
@@ -398,12 +400,13 @@ export async function getOrgHistoryWarnings(
   supabase: SupabaseClient,
   orgId: string
 ): Promise<OrgHistoryWarnings> {
-  const { data } = await supabase
+  const { data, error: dataError } = await supabase
     .from('workflows')
     .select('id, name, definition')
     .eq('organization_id', orgId)
     .eq('is_active', true)
     .is('deleted_at', null)
+  logReadFailure('timeout-audit', 'step timeouts', dataError)
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
   // dashboard load doesn't serialize them. Same sampling rule as the canvas
@@ -444,10 +447,11 @@ export async function getOrgHistoryWarnings(
  * the offending set changes. Called from the Worker scheduled handler.
  */
 export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string): Promise<void> {
-  const { data: slackOrgs } = await supabase
+  const { data: slackOrgs, error: slackOrgsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('timeout-audit', 'slack connections', slackOrgsError)
 
   const orgIds = [...new Set((slackOrgs ?? []).map((c) => c.organization_id as string))]
   if (orgIds.length === 0) return

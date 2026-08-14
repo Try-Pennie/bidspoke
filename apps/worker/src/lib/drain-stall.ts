@@ -15,6 +15,7 @@
  * meaningful count means the drain stalled, whatever the cause.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import { sendDrainStallAlert } from './slack'
 
 // Margin past the 26h unrecoverable-drain cutoff, so normal timing never trips it.
@@ -57,10 +58,11 @@ export async function runDrainStallCheck(
   // Dedup: one alert per daily run while broken (global signal, not per-org).
   if (await kv.get(COOLDOWN_KEY)) return { stranded, alerted: false }
 
-  const { data: conns } = await supabase
+  const { data: conns, error: connsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('drain-stall', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   let alerted = false

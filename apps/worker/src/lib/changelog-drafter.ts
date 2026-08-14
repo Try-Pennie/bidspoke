@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import type { WorkflowDefinition, EdgeDefinition } from '../types'
 import { decryptSecret } from './secret-crypto'
@@ -199,12 +200,13 @@ export async function getAnthropicKey(
   orgId: string
 ): Promise<string | null> {
   if (env.SECRET_ENCRYPTION_KEY) {
-    const { data } = await supabase
+    const { data, error: dataError } = await supabase
       .from('app_settings')
       .select('value_encrypted')
       .eq('organization_id', orgId)
       .eq('key', 'anthropic_api_key')
       .maybeSingle()
+    logReadFailure('changelog-drafter', 'workflow versions', dataError)
     if (data?.value_encrypted) {
       try {
         return await decryptSecret(data.value_encrypted as string, env.SECRET_ENCRYPTION_KEY)

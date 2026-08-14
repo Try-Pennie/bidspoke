@@ -13,6 +13,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { sendMatrixChangeAlert } from './slack'
@@ -267,10 +268,11 @@ export async function notifyAllOrgsWithSlack(
   changedAt: string,
   matrixUrl: string | undefined
 ): Promise<boolean> {
-  const { data: orgs } = await supabase
+  const { data: orgs, error: orgsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('sf-matrix-audit', 'organizations', orgsError)
 
   const orgIds = Array.from(new Set(((orgs ?? []) as { organization_id: string }[]).map((r) => r.organization_id)))
   if (orgIds.length === 0) return true

@@ -10,6 +10,7 @@
  * before unbounded reads start truncating.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import { sendBigTableGrowthAlert } from './slack'
 
 // Tables already known to be big and handled (paginated). This is a verbatim
@@ -68,10 +69,11 @@ export async function runBigTableGuard(
   const sig = COOLDOWN_PREFIX + names.join(',')
   if (await kv.get(sig)) return { offenders: names, alerted: false }
 
-  const { data: conns } = await supabase
+  const { data: conns, error: connsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('big-table-guard', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   let alerted = false
