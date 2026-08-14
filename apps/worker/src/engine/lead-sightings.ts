@@ -282,10 +282,25 @@ function normalizeState(v: unknown): string | null {
 // ============================================================
 // deriveRejectReason
 // ============================================================
-// Engine-derived reason for why a lead did not result in a bid.
-// Returns null when winning_partner_slug is set (it's a bid, not a rejection).
+// A reason the engine actually DETERMINED for why a lead did not result in a
+// bid. Null when there is no such reason, which includes the common case of a
+// run that simply ended somewhere without anything rejecting it.
 //
-// Order matters — earlier checks override later ones.
+// It is NOT the terminal node's name (#375). The fallback used to return
+// `terminal_node_label ?? 'unknown'` whenever there was no winner, which wrote
+// the node's own name into a column whose name asserts a rejection. Over 7 days
+// of live data 116,476 of 116,487 values (99.99%) were byte-identical to
+// terminal_node_label; 3,736 read 'patch_prospect', 3,258 read 'tp_bid', and 407
+// read 'patch_prospect_success'. 23,464 leads with outcome='successful' carried
+// one, so counting `reject_reason IS NOT NULL` as rejections was wrong by that
+// much in a single week (LESSONS L11: a message may claim only what its check
+// actually measured).
+//
+// Nothing is lost by returning null instead: terminal_node_label is its own
+// column on lead_sightings and is exported to Snowflake right beside this one,
+// so any consumer wanting the node name already has it.
+//
+// Order matters: earlier checks override later ones.
 export function deriveRejectReason(input: {
   winning_partner_slug?: string | null
   response_status_code?: number | null
@@ -305,14 +320,21 @@ export function deriveRejectReason(input: {
     return 'all_partners_declined'
   }
   if (input.terminal_node_type === 'code') {
-    // Code nodes that throw or return an error sentinel surface their namespace as the reason.
+    // Code nodes that throw or return an error sentinel surface their namespace as
+    // the reason. This one IS determined: the sentinel is the engine observing a
+    // failure, not merely noticing where the run stopped.
     const out = input.terminal_step_output as { _error?: unknown; expected?: unknown } | undefined
     if (out && (out._error || out.expected)) {
       return input.terminal_node_label ?? 'code_error'
     }
   }
 
-  return input.terminal_node_label ?? 'unknown'
+  // No determined reason. Deliberately null rather than the node label or the
+  // string 'unknown': absence is already expressible, every SQL reader here
+  // handles null (they gate on outcome_state / sighting_finalize, never on
+  // reject_reason IS NOT NULL), and 'unknown' is one more value analytics would
+  // have to special-case.
+  return null
 }
 
 // ============================================================
