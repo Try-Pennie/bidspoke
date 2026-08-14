@@ -12,6 +12,7 @@ import { formatDatetime, formatLogTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
 import { ExpandableError } from '@/components/ExpandableError'
+import { BackToTop } from '@/components/BackToTop'
 import { useExecution } from '@/hooks/useExecution'
 import { STATUS_STYLES, ExecutionStatusBadge } from '@/components/ExecutionStatusBadge'
 
@@ -890,6 +891,7 @@ export default function ExecutionDetailPage() {
           </div>
         )}
       </div>
+      <BackToTop />
     </NavLayout>
   )
 }

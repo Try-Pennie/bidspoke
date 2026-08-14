@@ -107,3 +107,15 @@ describe('execution detail replay navigation (#398)', () => {
     expect(screen.getByRole('link', { name: /child-8/i })).toHaveAttribute('href', '/workflows/wf-1/executions/child-8')
   })
 })
+
+describe('execution detail long-page navigation (#441)', () => {
+  it('mounts the back-to-top control inside the page', () => {
+    // The control renders its own button only once scrolled, so what this pins
+    // down is that the page includes it at all, and therefore that it sits inside
+    // NavLayout's scrolling <main> rather than outside it. Its behaviour, and the
+    // fact that it scrolls that container rather than the window, is covered in
+    // BackToTop.test.tsx.
+    const { container } = render(<ExecutionDetailPage />)
+    expect(container.querySelector('span[aria-hidden="true"]')).not.toBeNull()
+  })
+})
