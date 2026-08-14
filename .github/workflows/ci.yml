@@ -23,7 +23,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm typecheck
@@ -47,7 +47,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Test worker
         run: pnpm --filter worker test
@@ -119,7 +119,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.creds.outputs.have == 'true'
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
         if: steps.creds.outputs.have == 'true'
@@ -251,7 +251,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       # Build and serve exactly what Pages runs, for the same reasons the a11y job does:
       # the middleware is compiled into the next-on-pages worker, and whether it runs
