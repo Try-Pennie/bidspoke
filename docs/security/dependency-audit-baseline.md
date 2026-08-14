@@ -4,9 +4,24 @@ CI runs Trivy against `pnpm-lock.yaml` and fails the build on any **new** high o
 critical advisory in a **production** dependency:
 
 ```
-trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
-  --ignorefile .trivyignore --no-progress pnpm-lock.yaml
+trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 \
+  --ignorefile .trivyignore --no-progress \
+  --format json --output "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
+node .github/scripts/scan-coverage.mjs trivy "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
 ```
+
+Trivy's own `--exit-code` is disarmed on purpose (#779). It exits 0 both when the
+lockfile is clean and when it could not parse the lockfile at all, and those are
+not the same result. `scan-coverage.mjs` therefore owns both decisions: it fails
+unless the report carries a result for `pnpm-lock.yaml` with a resolved ecosystem,
+and then fails again if that result holds any advisory. Coverage is judged first,
+because a scan that covered nothing has not earned the right to report clean.
+
+This is not hypothetical: the job was green for the eighteen days from 2026-07-27
+to 2026-08-14 having audited nothing, because a duplicated entry in the lockfile
+made it unparseable. The same reasoning is applied to gitleaks (which is given a
+canary secret it must find, since it emits no coverage signal at all) and to
+semgrep (whose `paths.scanned` must cover every named source tree).
 
 To make that gate green-but-strict against the dependency tree as it stands today,
 a small set of pre-existing highs are either patched via `pnpm.overrides` (real

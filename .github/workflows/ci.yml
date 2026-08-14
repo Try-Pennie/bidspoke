@@ -348,6 +348,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Node runs the coverage checks below. Pinned rather than relying on
+      # whatever the runner image happens to ship. No pnpm install: these scanners
+      # read the tree and the lockfile, not node_modules.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
+      #
+      # This job reported success on every run from 2026-07-27 to 2026-08-14 while
+      # auditing nothing at all: pnpm-lock.yaml carried a duplicated entry, Trivy
+      # could not parse it, so it skipped the file, found zero targets and exited 0.
+      # Its summary read `- | - | -`, where `-` means NOT SCANNED, not clean.
+      # Repairing the lockfile (#778) immediately surfaced a real HIGH that had been
+      # invisible for eighteen days, so the green was never evidence of anything.
+      #
+      # Each scanner therefore writes a machine-readable report and
+      # .github/scripts/scan-coverage.mjs owns both decisions: did you cover your
+      # subject, and did you find anything. Coverage is judged FIRST, because a scan
+      # that covered nothing has not earned the right to report clean (LESSONS L98).
+      # The checks are unit-tested in apps/web/src/lib/__tests__/scan-coverage.test.ts.
+
       # Dependency vulnerabilities (#263). Fails on any NEW high/critical advisory
       # in a PRODUCTION dependency. Pre-existing highs are patched via
       # pnpm.overrides (real fixes) or baselined per-advisory in .trivyignore.
@@ -363,29 +385,53 @@ jobs:
           VER=0.72.0
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin "v${VER}"
-          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 \
-            --ignorefile .trivyignore --no-progress pnpm-lock.yaml
+          # A clean scan still emits a Results entry for the target with zero
+          # vulnerabilities, which is what makes clean distinguishable from
+          # never-scanned. An unparseable lockfile yields `Results: null`.
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 0 \
+            --ignorefile .trivyignore --no-progress \
+            --format json --output "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
+          node .github/scripts/scan-coverage.mjs trivy "$RUNNER_TEMP/trivy-report.json" pnpm-lock.yaml
 
       # Secret scanning (#264). Scans the working tree for committed secrets.
       # Binary invocation avoids the org-license requirement of the v2 action.
+      #
+      # Gitleaks emits NO coverage signal of any kind: an empty report is what a
+      # clean scan produces and also what a scan over nothing produces. So the run
+      # plants a canary secret its ruleset must catch and requires it back (#779).
+      # That proves more than a file count could, because an allowlist broad enough
+      # to suppress every finding would leave a healthy-looking count behind. The
+      # canary is generated here and never committed.
       - name: Secret scan (gitleaks)
         run: |
           set -euo pipefail
           VER=8.21.2
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VER}/gitleaks_${VER}_linux_x64.tar.gz" -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
-          ./gitleaks detect --source . --no-git --redact --no-banner --exit-code 1
+          CANARY=gitleaks-canary.tmp.txt
+          trap 'rm -f "$CANARY"' EXIT
+          printf 'ghp_%s\n' "$(openssl rand -hex 18)" > "$CANARY"
+          ./gitleaks detect --source . --no-git --redact --no-banner --exit-code 0 \
+            --report-format json --report-path "$RUNNER_TEMP/gitleaks-report.json"
+          node .github/scripts/scan-coverage.mjs gitleaks "$RUNNER_TEMP/gitleaks-report.json" "$CANARY"
 
       # SAST (#264). Security-focused rulesets only (not style), ERROR severity, no
       # account/token needed for public rulesets. Prioritizes injection / secret /
       # node-security patterns over the Worker code-node sandbox + proxy paths.
+      #
+      # The required trees are named rather than counted (#779): an --exclude that
+      # grows until a whole tree is unaudited still leaves a healthy-looking file
+      # count behind. Measured 2026-08-14 at 576 files, 139 of them worker source.
       - name: SAST (Semgrep)
         run: |
           set -euo pipefail
           pip install --quiet semgrep
-          semgrep scan --error --severity ERROR \
+          semgrep scan --severity ERROR \
             --config p/security-audit --config p/secrets --config p/nodejs \
-            --metrics off --exclude 'graphify-out' --exclude '*.test.ts'
+            --metrics off --exclude 'graphify-out' --exclude '*.test.ts' \
+            --json --output "$RUNNER_TEMP/semgrep-report.json"
+          node .github/scripts/scan-coverage.mjs semgrep "$RUNNER_TEMP/semgrep-report.json" \
+            apps/worker/src/ apps/web/src/ apps/worker-tail/src/
 
   direct-push-guard:
     name: Main has no unreviewed direct push
