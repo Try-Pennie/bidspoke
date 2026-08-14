@@ -37,9 +37,28 @@ tooling noise.
 | Package | Forced to | Why |
 |---------|-----------|-----|
 | `hono` | `^4.12.27` (direct dep) | The Worker's HTTP framework — the one advisory in real production runtime code. Bumped within the same major; full worker suite passes. |
-| `ws` | `>=8.21.0` | Pulled by `@supabase/supabase-js` (runtime) and `@cloudflare/next-on-pages`. Minor bump, backward compatible. |
-| `glob` | `>=10.5.0` (the 10.x line only) | Pulled by `eslint-config-next` (lint tooling). Range-scoped override so other glob majors in the tree are untouched. |
-| `postcss` | `>=8.5.12` (only versions below it) | CVE-2026-45623 (file read via `sourceMappingURL` during CSS processing). The vulnerable 8.4.31 was `next` 14's own pin; the app's direct dep was already on 8.5.x. Range-scoped so nothing already safe is touched. |
+| `ws` | `>=8.21.0 <9` | Pulled by `@supabase/supabase-js` (runtime) and `@cloudflare/next-on-pages`. Minor bump, backward compatible. |
+| `glob` | `>=10.5.0 <11` | Pulled by `eslint-config-next` (lint tooling). Both ends are load-bearing: the lower bound patches the advisory, the upper keeps the override inside the 10.x line. |
+| `postcss` | `>=8.5.12 <9` (replacing only versions below the floor) | CVE-2026-45623 (file read via `sourceMappingURL` during CSS processing). The vulnerable 8.4.31 was `next` 14's own pin; the app's direct dep was already on 8.5.x. Range-scoped so nothing already safe is touched. |
+| `nanoid` | `>=3.3.18 <4` | CVE-2026-67213 (denial of service via an infinite loop in random ID generation). Reaches production only through `postcss`, which requires CommonJS; nanoid 5+ is ESM-only, hence the upper bound. |
+
+### Every override carries an upper bound
+
+An override exists to force a vulnerable package up to its **patched** version, so
+it is written with both ends of the range pinned. Left as a bare minimum it also
+permits every future major, and pnpm resolves the newest release that satisfies
+it, which is a major upgrade nobody asked for and nothing re-tested.
+
+This is not theoretical. Patching nanoid on 2026-08-14, `">=3.3.18"` resolved to
+nanoid **6.0.1**; nanoid 5+ is ESM-only and its only consumer here (`postcss`)
+requires CommonJS, so the CSS build would have broken. Checking the siblings then
+showed the same thing had already shipped silently: `glob` overridden to
+`">=10.5.0"` had resolved to **13.0.6**, three majors past the 10.x line the table
+above used to claim it pinned.
+
+`apps/web/src/lib/__tests__/pnpm-override-major-drift.test.ts` now fails the suite
+when any override resolves outside the major it patches to. Crossing a major is
+still allowed, but as its own deliberate change with the consumer re-tested.
 
 ## Ignored (.trivyignore): present, but remediation is tracked
 
