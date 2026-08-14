@@ -313,26 +313,16 @@ jobs:
             BASE=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
           fi
           CHANGED=$(git diff --name-only "$BASE" HEAD)
-          # Only migrations whose CONTENT changed count. A pure rename (R100) alters no
-          # schema, so it must not demand a types regen: renaming a migration to match the
-          # version Supabase actually recorded failed this check even though the types were
-          # already correct and committed. --name-status -M reports R100 for a pure rename
-          # (old path in $2, new in $3); a rename WITH edits is R<100 and still counts.
-          MIGS=$(git diff --name-status -M "$BASE" HEAD -- 'supabase/migrations/*.sql' | awk '
-            $1 == "A" || $1 == "M" { print $2 }
-            $1 ~ /^R[0-9]+$/ && $1 != "R100" { print $3 }
-          ')
-          if [ -z "$MIGS" ]; then
-            echo "No migration content changes, nothing to check."
-            exit 0
-          fi
-          # A column DEFAULT is not part of the generated types, so `ALTER COLUMN ... SET/DROP
-          # DEFAULT` must not demand a regen: there would be nothing to regenerate and the
-          # check could never be satisfied. Drop those statements before matching. Every other
-          # ALTER COLUMN (a type change, SET NOT NULL) still counts, as does ADD/DROP COLUMN.
-          if echo "$MIGS" | xargs cat \
-               | grep -ivE 'alter[[:space:]]+column[[:space:]]+[^;]*(set|drop)[[:space:]]+default' \
-               | grep -qiE 'create table|drop table|add column|drop column|alter column|rename column|create type|alter type|create view|drop view|create materialized view'; then
+          # The decision reads the ADDED and REMOVED lines of the migration diff,
+          # not the whole file (#614). Grepping the whole file asked "did this file
+          # change AND does it contain a CREATE TABLE anywhere", which is true of a
+          # pure comment edit in any migration that ever created a table, and then
+          # demanded a regen with nothing to regenerate. A pure rename (R100) moves
+          # no lines, so -M keeps it out of the diff for free.
+          DECISION=$(git diff -U0 -M "$BASE" HEAD -- 'supabase/migrations/*.sql' \
+            | .github/scripts/db-types-regen-decision.sh)
+          echo "Migration DDL decision: $DECISION"
+          if [ "$DECISION" = "regen-required" ]; then
             if ! echo "$CHANGED" | grep -qx 'apps/worker/src/types/database.ts'; then
               echo "::error::A migration changes table/column/type DDL but apps/worker/src/types/database.ts was not regenerated. Run 'pnpm --filter worker db:types' and commit the result."
               exit 1

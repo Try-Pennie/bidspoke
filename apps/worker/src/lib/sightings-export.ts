@@ -254,12 +254,15 @@ export interface PurgeSummary {
 }
 
 // Strand cleanup (formerly the in-Worker sweepStaleInFlightSightings) now runs
-// DB-side via two pg_cron functions BEFORE this 09:00 export: reduce_finalize_
-// stranded (08:00, recoverable strands → real outcome) and finalize_unrecoverable_
-// stranded (08:30, the rest → reject_reason='strand_unrecoverable'). The Worker
-// version timed out on the multi-partition UPDATE at the PostgREST 8s gateway and
-// failed silently (#351); the pg_cron versions have no gateway limit. So by export
-// time every stale in_flight row is already 'finalized' and picked up below.
+// DB-side via pg_cron functions BEFORE this 09:00 export: reduce_finalize_stranded
+// (every 30 minutes, plus a deeper 07:45 pass; recoverable strands → real outcome)
+// and finalize_unrecoverable_stranded (08:30, the rest →
+// reject_reason='strand_unrecoverable'). The Worker version timed out on the
+// multi-partition UPDATE and failed silently (#351). That was service_role's 30s
+// statement_timeout, NOT an 8s gateway (#614): 8s is the authenticator/authenticated
+// limit, and this Worker authenticates with SUPABASE_SECRET_KEY. The pg_cron jobs run
+// as postgres with no role-level override, so they get the 120s cluster default. So by
+// export time every stale in_flight row is already 'finalized' and picked up below.
 export async function runSightingsExport(
   supabase: SupabaseClient,
   env: Env,

@@ -9,9 +9,12 @@
 --
 -- The previous mechanism (sweepStaleInFlightSightings in the Worker export) ran
 -- these as outcome='abandoned'/'never_finalized' through the PostgREST gateway,
--- where the ~72K-row multi-partition UPDATE exceeded the 8s authenticator limit
+-- where the ~72K-row multi-partition UPDATE exceeded the Worker's statement_timeout
 -- and FAILED SILENTLY (#351) — which is a big reason the strand backlog grew to
--- 104K. Moving it DB-side as a pg_cron function (no gateway limit) makes the big
+-- 104K. That ceiling is service_role's 30s, not the 8s originally written here
+-- (#614): 8s is the authenticator/authenticated limit, and the Worker authenticates
+-- with SUPABASE_SECRET_KEY. Moving it DB-side as a pg_cron function (which runs as
+-- postgres, with no role-level override, so the 120s cluster default) makes the big
 -- UPDATE complete, and the honest label reject_reason='strand_unrecoverable' (with
 -- outcome left NULL = unknown) replaces the falsifying 'abandoned' marker (Dan's
 -- 'label honestly' decision). On its first run this also drains the existing
