@@ -37,7 +37,6 @@ vi.mock('../../lib/execution-alerts', () => ({ fireExecutionAlert: vi.fn().mockR
 vi.mock('../bid-log', () => ({ deriveCodeNodeBidAttempts: vi.fn().mockReturnValue([]) }))
 vi.mock('../lead-sightings', () => ({
   insertSighting: vi.fn().mockResolvedValue(undefined),
-  upsertPerson: vi.fn().mockResolvedValue(null),
   extractSightingFields: vi.fn().mockReturnValue({}),
   extractPersonFields: vi.fn().mockReturnValue(null),
   computeSightingFinalize: vi.fn().mockReturnValue({}),

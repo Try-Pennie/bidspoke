@@ -1,10 +1,9 @@
-// Lead sightings + bids + persons writes.
+// Lead sightings + bids writes.
 // All writes are best-effort and run in waitUntil; failures must not block the engine.
 // Snowflake mirror: rows are pushed nightly and deleted from Supabase after export.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
-import { encryptPii, formatSsn, hashSsn } from './persons-crypto'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, type ProjectedBidAttempt } from './bid-log'
@@ -45,8 +44,12 @@ export interface SightingInsert {
   execution_started_at_et: Date
   // Field map extracted from trigger payload (see extractSightingFields)
   payload_fields: SightingPayloadFields
-  // Set when persons upsert succeeds
+  // Raw formatted SSN (XXX-XX-XXXX). This is the value the Snowflake export and
+  // repeat-lead grouping read.
   ssn?: string | null
+  // Always null since #765 removed the persons write. Kept on the row (and
+  // nullable in the schema) so a future reveal-PII store can repopulate it
+  // without a contract migration.
   person_id?: string | null
 }
 
@@ -192,11 +195,13 @@ function nested(p: Record<string, unknown>, key: string): Record<string, unknown
 // ============================================================
 // extractPersonFields
 // ============================================================
-// PII for persons upsert. Field paths verified against the live Engine
-// Bidding Workflow's prospect_body code node.
+// Lead PII pulled off the trigger payload. Field paths verified against the live
+// Engine Bidding Workflow's prospect_body code node.
 //
-// Returns null fields when payload is missing them; upsertPerson will write
-// what's present and leave the rest unencrypted.
+// Since #765 removed the persons write, the only field the engine still consumes
+// from this is `ssn`, which goes onto the lead_sightings row (formatted) for the
+// Snowflake export and repeat-lead grouping. The rest is kept because it is the
+// shape a future reveal-PII surface would need, and extracting it is free.
 export function extractPersonFields(
   payload: unknown,
 ): Omit<PersonsUpsertInput, 'organization_id'> | null {
@@ -308,85 +313,6 @@ export function deriveRejectReason(input: {
   }
 
   return input.terminal_node_label ?? 'unknown'
-}
-
-// ============================================================
-// upsertPerson
-// ============================================================
-// Encrypts PII fields and upserts a row keyed by (organization_id, ssn_hash).
-// On conflict, updates last_seen_at and any newly-populated fields.
-export async function upsertPerson(
-  supabase: SupabaseClient,
-  input: PersonsUpsertInput,
-  encryptionKey: string,
-  pepper: string,
-  deps?: OutcomeAlertDeps,
-): Promise<string | null> {
-  if (!input.ssn) return null
-
-  const ssnDigits = input.ssn.replace(/\D/g, '')
-  if (ssnDigits.length !== 9) return null
-
-  const ssnHash = await hashSsn(ssnDigits, pepper)
-  const ssnEnc = await encryptPii(formatSsn(ssnDigits), encryptionKey)
-
-  // NOTE(#90): encryptPii returns raw iv||ciphertext bytes, but we base64 them
-  // before insert. PostgREST sends that string to the BYTEA columns without a
-  // \x prefix, so Postgres stores the *ASCII bytes of the base64 string*, not
-  // the raw ciphertext. decryptPii expects raw bytes and will NOT round-trip a
-  // row as stored. To read an existing row you must: pg bytea -> hex-decode ->
-  // (ASCII base64) -> atob -> iv||ciphertext -> decryptPii. All ~952K rows are
-  // in this format. This is intentionally left as-is: persons is write-only with
-  // no reader today and is slated for truncation/abandonment (see the
-  // "Stop writing the persons table" item in TODO.md / memory
-  // project_persons_dead_weight_2026_06_01), which resolves #90. If persons is
-  // ever kept as a live readable store, write proper \x-hex bytea here instead.
-  const enc = async (v: string | null | undefined) =>
-    v && v.length > 0 ? bytesToBase64(await encryptPii(v, encryptionKey)) : null
-
-  const row = {
-    organization_id: input.organization_id,
-    ssn_hash: ssnHash,
-    ssn_encrypted: bytesToBase64(ssnEnc),
-    first_name_enc: await enc(input.first_name),
-    middle_name_enc: await enc(input.middle_name),
-    last_name_enc: await enc(input.last_name),
-    dob_enc: await enc(input.dob),
-    email_enc: await enc(input.email),
-    phone_enc: await enc(input.phone),
-    street_enc: await enc(input.street),
-    apt_enc: await enc(input.apt),
-    city: input.city ?? null,
-    state: input.state ?? null,
-    zip_enc: await enc(input.zip),
-    last_seen_at: new Date().toISOString(),
-  }
-
-  // Retry transient failures (schema-cache reload during the nightly purge) so
-  // the person row isn't silently dropped (#237). persons is slated for
-  // deprecation, but retrying is cheap and keeps the writes uniform.
-  let personId: string | null = null
-  const { error } = await runOutcome('persons.upsert', supabase, deps, async () => {
-    const res = await supabase
-      .from('persons')
-      .upsert(row, { onConflict: 'organization_id,ssn_hash' })
-      .select('id')
-      .single()
-    personId = (res.data as { id?: string } | null)?.id ?? null
-    return { error: res.error }
-  })
-
-  if (error) {
-    console.error('[lead-sightings] upsertPerson failed:', error.message)
-    return null
-  }
-  return personId
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let s = ''
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
-  return btoa(s)
 }
 
 // ============================================================

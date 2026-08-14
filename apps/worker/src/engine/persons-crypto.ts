@@ -25,13 +25,14 @@ export async function encryptPii(plaintext: string, keyB64: string): Promise<Uin
   return out
 }
 
-// NOTE(#90): this expects the raw iv||ciphertext bytes encryptPii produced. The
-// persons table does NOT store them that way — upsertPerson base64s the bytes,
-// and PostgREST writes that string into BYTEA without a \x prefix, so the column
-// holds the ASCII bytes of the base64 string. Reading a persons row therefore
-// needs a shim (pg bytea -> hex-decode -> atob) before calling this. See the
-// detailed note in lead-sightings.ts upsertPerson. No reader exists today;
-// persons is slated for truncation, which resolves the mismatch.
+// Expects the raw iv||ciphertext bytes encryptPii produced.
+//
+// RESOLVED(#90) by #765: the writer that produced the mismatched rows is gone. It
+// base64'd the bytes before insert, and PostgREST wrote that string into BYTEA
+// without a \x prefix, so the column held the ASCII bytes of the base64 string
+// and this function could not round-trip a stored row. Nothing writes persons
+// now, so no new rows can be in that format. If persons is ever revived as a
+// readable store, write proper \x-hex bytea at the new write site.
 export async function decryptPii(encrypted: Uint8Array, keyB64: string): Promise<string> {
   const key = await importAesKey(keyB64)
   const iv = encrypted.slice(0, 12)
