@@ -17,6 +17,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage } from './slack'
+import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { sendRecoveryAlert } from './slack'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const ALERT_THRESHOLD_PCT = 25
@@ -81,10 +83,9 @@ export function detectCliff(
   return { recentCount, baselinePerMin: median }
 }
 
-interface KvLike {
-  get(key: string): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
-}
+// KvLike now needs delete(), for clearing the recovery marker (#253). The shared
+// definition lives in alert-recovery so the three rate checks converge on one.
+type KvLike = RecoveryKv
 
 /**
  * Run the volume cliff check across all active workflows in orgs that have Slack connected.
@@ -163,12 +164,27 @@ export async function runVolumeCliffCheck(
     const bucket = perWorkflow.get(wfId)
     if (!bucket) continue
 
+    const cooldownKeyFor = `volume-cliff-cooldown:${wfId}`
+
     const cliff = detectCliff(bucket)
-    if (!cliff) continue
+    if (!cliff) {
+      // Healthy. If we paged for this workflow, say so and stand down (#253);
+      // otherwise this is the ordinary quiet path and costs one KV read.
+      await announceRecovery(kv, 'volume-cliff', wfId, cooldownKeyFor, async (alertedAt) => {
+        const slack = await getSlackConnection(supabase, wf.organization_id as string)
+        if (!slack || !slack.volume_alerts_enabled) return false
+        return sendRecoveryAlert(
+          slack,
+          (wf.slack_channel as string | null) ?? slack.default_channel,
+          { signal: 'volume cliff', subject: wf.name as string, alertedAt, url: `${appUrl}/workflows/${wfId}` },
+        )
+      })
+      continue
+    }
 
     console.log(`[volume-cliff] detected workflow=${wf.name} workflow_id=${wfId} recent=${cliff.recentCount} baseline_per_min=${cliff.baselinePerMin}`)
 
-    const cooldownKey = `volume-cliff-cooldown:${wfId}`
+    const cooldownKey = cooldownKeyFor
     if (await kv.get(cooldownKey)) {
       console.log(`[volume-cliff] suppressed by cooldown workflow_id=${wfId}`)
       continue
@@ -196,7 +212,12 @@ export async function runVolumeCliffCheck(
     // Only start the cooldown once the alert actually delivered — otherwise a
     // kicked bot (Slack ok:false) would suppress retries for 30 min while the
     // outage went unannounced.
-    if (sent) await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    if (sent) {
+      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+      // Separate marker, longer TTL: a cliff lasting past the 30 minute cooldown
+      // would otherwise leave nothing to say it had ever been broken (#253).
+      await markAlerted(kv, 'volume-cliff', wfId)
+    }
   }
 }
 

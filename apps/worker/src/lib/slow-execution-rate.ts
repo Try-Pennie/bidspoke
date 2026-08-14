@@ -22,6 +22,8 @@
  * Cooldown: 30 min per workflow via KV, so a sustained slow period pages once.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
 import { fetchAllPaged } from './paginate'
@@ -70,10 +72,8 @@ export function detectSlowSpike(
   }
 }
 
-interface KvLike {
-  get(key: string): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
-}
+// Shared with the other rate checks; needs delete() for the recovery marker (#253).
+type KvLike = RecoveryKv
 
 /**
  * Pure combine: per-workflow duration lists for detectSlowSpike, mixing runs
@@ -188,12 +188,26 @@ export async function runSlowExecutionCheck(
     const threshold = thresholds.get(wfId)
     if (!threshold) continue
 
+    const cooldownKey = `slow-spike-cooldown:${wfId}`
+
     const spike = detectSlowSpike(perWorkflow.get(wfId) ?? [], threshold)
-    if (!spike) continue
+    if (!spike) {
+      // Healthy again. Announce it if we paged, so silence stops meaning both
+      // "still slow, suppressed" and "fine now" (#253).
+      await announceRecovery(kv, 'slow-spike', wfId, cooldownKey, async (alertedAt) => {
+        const slack = await getSlackConnection(supabase, wf.organization_id as string)
+        if (!slack) return false
+        return sendRecoveryAlert(
+          slack,
+          (wf.slack_channel as string | null) ?? slack.default_channel,
+          { signal: 'slow execution', subject: wf.name as string, alertedAt, url: `${appUrl}/workflows/${wfId}` },
+        )
+      })
+      continue
+    }
 
     console.log(`[slow-spike] detected workflow=${wf.name} workflow_id=${wfId} slow=${spike.slowCount}/${spike.totalCount} threshold_ms=${threshold}`)
 
-    const cooldownKey = `slow-spike-cooldown:${wfId}`
     if (await kv.get(cooldownKey)) {
       console.log(`[slow-spike] suppressed by cooldown workflow_id=${wfId}`)
       continue
@@ -219,6 +233,9 @@ export async function runSlowExecutionCheck(
 
     // Start the cooldown only once the alert delivered — a kicked bot (Slack
     // ok:false) would otherwise suppress retries while the spike kept going.
-    if (sent) await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    if (sent) {
+      await kv.put(cooldownKey, '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+      await markAlerted(kv, 'slow-spike', wfId)
+    }
   }
 }
