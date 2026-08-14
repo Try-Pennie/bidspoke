@@ -148,3 +148,70 @@ describe('formatErr collapses an upstream HTML error page (#695)', () => {
       .toBe('duplicate key: Key (id)=(1) exists (23505)')
   })
 })
+
+// ── Thrown Response objects (#708) ───────────────────────────────────────────
+//
+// The integration/webhook executor signals a non-2xx by throwing the `Response`
+// itself, so the engine can classify the HTTP error. A `Response` has no
+// `.message`, and its status/body live on prototype getters rather than own
+// properties, so JSON.stringify sees neither: the rendered message was the
+// attached `resolvedInput` and `logs` and nothing about the failure.
+//
+// On 2026-07-28 23:19:58 to 23:20:20 UTC, 13 Main Flow executions failed when the
+// send_salesforce_inquiry webhook step got a non-2xx from its Pipedream endpoint.
+// The alert was a wall of resolved input with no reason, and the status is now
+// unrecoverable, so the incident could not be attributed with certainty.
+//
+// LESSONS L11: distinct causes get distinct messages. Every webhook step in every
+// workflow shared one indistinguishable message.
+describe('formatErr on a thrown Response (#708)', () => {
+  const withBody = (res: Response, bodyText: string) => {
+    ;(res as Response & { bodyText?: string }).bodyText = bodyText
+    return res
+  }
+
+  it('renders the status code', () => {
+    expect(formatErr(new Response('', { status: 502 }))).toContain('502')
+  })
+
+  it('renders the status code and the response body together', () => {
+    const err = withBody(new Response('nope', { status: 400 }), '{"error":"missing SSN"}')
+    const out = formatErr(err)
+    expect(out).toContain('400')
+    expect(out).toContain('missing SSN')
+  })
+
+  it('does not bury the failure under the attached resolved input', () => {
+    // The 2026-07-28 alert was almost entirely this payload.
+    const err = withBody(new Response('', { status: 500 }), 'upstream exploded')
+    ;(err as Response & { resolvedInput?: unknown }).resolvedInput = {
+      body: { ssn: '000-00-0000', first_name: 'A'.repeat(200) },
+    }
+    ;(err as Response & { logs?: unknown }).logs = [{ level: 'warn', message: 'x'.repeat(200) }]
+    const out = formatErr(err)
+    expect(out).toContain('500')
+    expect(out).toContain('upstream exploded')
+    expect(out).not.toContain('000-00-0000')
+    expect(out).not.toContain('resolvedInput')
+  })
+
+  it('still reads when the body is empty', () => {
+    const out = formatErr(new Response('', { status: 504 }))
+    expect(out).toContain('504')
+    expect(out).not.toContain('undefined')
+  })
+
+  it('summarizes an HTML error page rather than pasting the document', () => {
+    // Salesforce Edge returns a full HTML page on some 400s; the existing
+    // summarizer must still apply once the body is actually rendered.
+    const html = '<!DOCTYPE html><html><head><title>Bad Request</title></head><body>' + 'x'.repeat(4000) + '</body></html>'
+    const out = formatErr(withBody(new Response(html, { status: 400 }), html))
+    expect(out).toContain('400')
+    expect(out.length).toBeLessThan(1000)
+  })
+
+  it('survives alert truncation with the status still readable', () => {
+    const err = withBody(new Response('', { status: 503 }), 'y'.repeat(5000))
+    expect(truncateErrorForAlert(formatErr(err))).toContain('503')
+  })
+})

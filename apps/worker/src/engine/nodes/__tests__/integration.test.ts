@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeIntegrationNode } from '../integration'
+import { formatErr } from '../../../lib/format-error'
 import { stubFetch, type FetchMock } from '../../../__tests__/helpers/fetch-mock'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
@@ -366,5 +367,72 @@ describe('executeIntegrationNode', () => {
     const node = makeNode({ url: 'https://api.example.com/data' })
     const { output } = await executeIntegrationNode(node, makeCtx(), makeEnv())
     expect((output as { headers: Record<string, string> }).headers['x-request-id']).toBe('req-123')
+  })
+})
+
+// ── The failure actually reaches error_message (#708) ────────────────────────
+//
+// The executor throws the Response so the engine can classify the HTTP error,
+// and the engine renders that thrown value with formatErr into
+// execution_steps.error_message and the Slack alert. Asserting formatErr in
+// isolation would leave the wiring unproven (LESSONS L3), so this drives the
+// real executor and renders whatever it actually threw.
+describe('executeIntegrationNode: a non-2xx names its status and body (#708)', () => {
+  let fetchMock: FetchMock
+
+  beforeEach(() => {
+    fetchMock = stubFetch()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const thrownMessage = async (status: number, body: string): Promise<string> => {
+    fetchMock.mockResolvedValueOnce(mockResponse(status, body) as unknown as Response)
+    const node = makeNode({ url: 'https://partner.example/lead', method: 'POST', body: { ssn: '{{trigger.payload.ssn}}' } })
+    try {
+      await executeIntegrationNode(node, makeCtx(), makeEnv())
+    } catch (err) {
+      return formatErr(err)
+    }
+    throw new Error('expected the executor to throw on a non-2xx')
+  }
+
+  it('carries the status code into the rendered message', async () => {
+    expect(await thrownMessage(502, 'upstream down')).toContain('502')
+  })
+
+  it('carries the response body into the rendered message', async () => {
+    expect(await thrownMessage(400, '{"error":"missing SSN"}')).toContain('missing SSN')
+  })
+
+  it('does not render the resolved input in place of the reason', async () => {
+    // The 2026-07-28 alert was a wall of resolved input naming no cause. The SSN
+    // is in the resolved body, so its absence proves the payload is not what got
+    // rendered.
+    const message = await thrownMessage(500, 'boom')
+    expect(message).toContain('500')
+    expect(message).not.toContain('123-45-6789')
+  })
+
+  it('still names the status when the upstream returns an empty body', async () => {
+    const message = await thrownMessage(504, '')
+    expect(message).toContain('504')
+    expect(message).not.toContain('{}')
+  })
+
+  it('keeps resolvedInput attached to the error for the step record', async () => {
+    // Rendering it out of the MESSAGE must not drop it from the error object:
+    // the engine reads .resolvedInput off the throw into its own column.
+    fetchMock.mockResolvedValueOnce(mockResponse(500, 'boom') as unknown as Response)
+    const node = makeNode({ url: 'https://partner.example/lead', method: 'POST', body: { ssn: '{{trigger.payload.ssn}}' } })
+    let caught: unknown
+    try {
+      await executeIntegrationNode(node, makeCtx(), makeEnv())
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { resolvedInput?: unknown }).resolvedInput).toBeTruthy()
   })
 })

@@ -31,8 +31,30 @@ export function truncateErrorForAlert(text: string, max = 300): string {
   return truncateKeepingTail(text, max, ALERT_TAIL_CHARS)
 }
 
+// A `Response` thrown to signal a non-2xx (the integration/webhook executor does
+// this so the engine can classify the HTTP error) has no `.message`, and its
+// status and body live on PROTOTYPE GETTERS rather than own properties. So
+// JSON.stringify sees neither: a bare 502 rendered as the string "{}", and one
+// with an attached payload rendered as a wall of resolved input naming no cause
+// (#708). The body text is carried on `bodyText` because a Response body can only
+// be read once, and the executor already consumed it.
+//
+// On 2026-07-28 thirteen Main Flow executions failed this way and the status is
+// now unrecoverable, so the incident could not be attributed with certainty.
+function formatResponse(res: Response): string {
+  const body = nonEmptyString((res as Response & { bodyText?: string }).bodyText)
+  const status = nonEmptyString(res.statusText)
+    ? `HTTP ${res.status} ${res.statusText}`
+    : `HTTP ${res.status}`
+  // Status leads so it survives alert truncation, which keeps the head and tail.
+  return summarizeHtmlErrorBody(body ? `${status}: ${body}` : status)
+}
+
 export function formatErr(e: unknown): string {
   if (e instanceof Error) return summarizeHtmlErrorBody(e.message)
+  // Before the generic object branch: a Response IS an object, and falling
+  // through to JSON.stringify is exactly the bug.
+  if (typeof Response !== 'undefined' && e instanceof Response) return formatResponse(e)
   if (e && typeof e === 'object') {
     const obj = e as { message?: unknown; code?: unknown; details?: unknown; hint?: unknown }
     const message = nonEmptyString(obj.message)
