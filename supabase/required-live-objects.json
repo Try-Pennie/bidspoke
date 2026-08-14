@@ -1,0 +1,88 @@
+[
+  {
+    "name": "is_allowlisted",
+    "args": {},
+    "anon": "denied",
+    "note": "Called by apps/web/src/middleware.ts on every protected request. If this is missing or its grant is wrong, every employee hits /access-denied with gate_unavailable. Granted to authenticated only, so anon must be denied."
+  },
+  {
+    "name": "auth_user_with_allowlist",
+    "args": {
+      "p_user_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The Worker's jwtAuth middleware calls this on every authenticated API request. service_role only. Probed with p_user_id because an empty body returns PGRST202, which is indistinguishable from the function being absent."
+  },
+  {
+    "name": "workflow_stats_rollup",
+    "args": {
+      "p_org_id": "00000000-0000-0000-0000-000000000000",
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied"
+  },
+  {
+    "name": "step_duration_percentiles",
+    "args": {
+      "p_workflow_id": "00000000-0000-0000-0000-000000000000",
+      "p_namespace": "x",
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied"
+  },
+  {
+    "name": "step_duration_percentiles_typed",
+    "args": {
+      "p_org_id": "00000000-0000-0000-0000-000000000000",
+      "p_step_type": "code",
+      "p_step_subtype": "x",
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied"
+  },
+  {
+    "name": "step_duration_percentiles_by_workflow",
+    "args": {
+      "p_workflow_id": "00000000-0000-0000-0000-000000000000",
+      "p_since": "2026-01-01T00:00:00Z",
+      "p_namespaces": []
+    },
+    "anon": "denied"
+  },
+  {
+    "name": "execution_counts_per_minute",
+    "args": {
+      "p_workflow_ids": [],
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied"
+  },
+  {
+    "name": "unpaginated_big_tables",
+    "args": {
+      "p_min_rows": 1000
+    },
+    "anon": "denied",
+    "note": "Revoked from anon and authenticated by migration 20260814000002. Called only by the nightly big-table guard in the Worker as service_role. Probed with p_min_rows because an empty body cannot match the signature."
+  },
+  {
+    "name": "user_org_id",
+    "args": {},
+    "anon": "allowed",
+    "reason": "Deliberately left callable, documented in migration 20260813000004. 28 RLS policies call it, and a policy whose function the querying role cannot execute ERRORS rather than denying, so revoking it would break the app instead of hardening it. It returns only the caller's own organization from their own JWT, and measured against prod an anonymous caller gets null."
+  },
+  {
+    "name": "drop_expired_execution_partitions",
+    "args": {
+      "p_retention_days": 99999
+    },
+    "anon": "denied",
+    "note": "Drops partitions, and DROP needs table ownership which anon lacks, so this was reachable over REST but not exploitable. Revoked anyway. A huge retention keeps the probe a no-op. NOTE this is the FUNCTION overload; its _safe PROCEDURE sibling cannot be probed this way, see the limitation recorded in the assertion script."
+  },
+  {
+    "name": "drain_lead_sightings_purge",
+    "args": {},
+    "anon": "denied",
+    "note": "Deletes exported lead_sightings rows. Row level, so RLS constrained it, but there is no reason a browser role should reach it."
+  }
+]

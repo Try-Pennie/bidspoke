@@ -321,3 +321,34 @@ jobs:
   # default Actions failure email already covers them, and the Slack page was
   # redundant noise. DB-types-drift and stranded-deploy still page (they are
   # specific, actionable conditions not surfaced by the run-failed email).
+
+  assert-db-objects:
+    name: Live database has the objects the app needs
+    runs-on: ubuntu-latest
+    # Runs AFTER the deploys, because asserting before them would measure the
+    # previous release. always() so it still reports when a deploy job was
+    # skipped by its paths filter, which is the common case: the objects are
+    # worth checking on every push to main, not only when the worker changed.
+    needs: [verify, deploy-worker, deploy-pages]
+    if: always() && needs.verify.result == 'success'
+    env:
+      SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+    # deploy.yml already checks that migrations are APPLIED, which is a different
+    # question from whether the objects the shipping code calls exist and carry
+    # the permissions it assumes. Both near misses on 2026-08-13 were in that gap:
+    # a migration comment asserted anon was excluded from a security-definer
+    # function while Postgres had granted EXECUTE to PUBLIC anyway, and only a live
+    # privilege query caught it.
+    #
+    # It matters because apps/web/src/middleware.ts calls is_allowlisted() on
+    # every protected request. If that were missing or its grant wrong, every
+    # employee would hit /access-denied while the pipeline reported a clean deploy.
+    #
+    # Needs only the PUBLIC anon key, which is baked into the client bundle
+    # anyway, so no new secret is introduced to check this.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Assert required objects and grants
+        run: bash .github/scripts/assert-live-db-objects.sh supabase/required-live-objects.json
