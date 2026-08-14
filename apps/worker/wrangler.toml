@@ -132,7 +132,13 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
 [triggers]
-crons = ["0 9 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "* * * * *"]
+# "15 8 * * *" is the timeout audit, deliberately off peak (#251). Its grouped
+# percentile queries are the heaviest thing we run against execution_steps, and
+# 08:00 UTC is the quietest hour of the day: 9,541 executions over 7 days to
+# 13:00's 31,617 and 17:00's 50,536. The :15 avoids the hourly job at :00, the
+# every-30-minute pg_cron drain at :00 and :30, and the export/purge crons at
+# :37 and :47.
 
 # R2 bucket (Logpush destination, Phase 3) — configured via CF dashboard/API, NOT via wrangler binding.
 # Logpush writes directly to R2 at the CF infrastructure level; the Worker does not read/write R2.
