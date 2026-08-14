@@ -23,6 +23,7 @@ import { coerceString } from '../../lib/coerce'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowIntegrationStub } from '../shadow'
 import { sandboxEnvBindings } from '../../lib/sandbox-env'
+import { containsHtmlDocument } from '../../lib/html-error-summary'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -211,6 +212,15 @@ export async function executeIntegrationNode(
   // Non-2xx: throw Response so engine classifies the HTTP error
   if (!res.ok) {
     const responseErr = new Response(responseText, { status: res.status, headers: res.headers })
+    // Carry the body text so classifyStepError can apply the HTML-error-page rule
+    // (#756). An HTML document means the request died at an edge and was never
+    // processed, so it is transient whatever status came back; status alone made
+    // an HTML 400 from any partner permanent with retries_used=0 and dropped the
+    // lead. The rule itself lives in classifyHttpErrorWithBody, not here.
+    ;(responseErr as Response & { bodyText?: string }).bodyText = responseText
+    if (containsHtmlDocument(responseText)) {
+      console.log(`[integration] event=html_error_page_transient status=${res.status} namespace=${node.namespace} trace=${ctx.trigger.trace_id}`)
+    }
     ;(responseErr as Response & { resolvedInput?: ResolvedStepInput; logs?: import('../../types').StepLogEntry[] }).resolvedInput = resolvedInput
     if (warnLogs.length > 0) {
       (responseErr as Response & { logs?: import('../../types').StepLogEntry[] }).logs = warnLogs

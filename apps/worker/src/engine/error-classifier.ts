@@ -1,5 +1,6 @@
 import type { ErrorType } from '../types'
 import { PartnerApiError } from './partner-bid-error'
+import { containsHtmlDocument } from '../lib/html-error-summary'
 
 // Unified classification for an error thrown by a step executor. A
 // PartnerApiError already carries an authoritative errorType (set by the
@@ -9,7 +10,12 @@ import { PartnerApiError } from './partner-bid-error'
 // HTTP status (thrown Response) and then the transport heuristic.
 export function classifyStepError(err: unknown): ErrorType {
   if (err instanceof PartnerApiError) return err.errorType
-  if (err instanceof Response) return classifyHttpError(err.status)
+  // A thrower that attached the response text gets the body rule applied (#756);
+  // one that did not keeps the status-only behaviour, so nothing silently
+  // becomes transient just by passing through here.
+  if (err instanceof Response) {
+    return classifyHttpErrorWithBody(err.status, (err as Response & { bodyText?: string }).bodyText)
+  }
   return classifyTransportError(err)
 }
 
@@ -40,6 +46,40 @@ export function classifyHttpError(status: number): ErrorType {
   }
   // Default safe fallback — don't waste retries on unknowns
   return 'permanent'
+}
+
+/**
+ * The single home of the HTML-error-page rule (#694, extended to every outbound
+ * node by #756).
+ *
+ * When an upstream answers with an HTML document instead of data, the request
+ * died at an edge or proxy and was never processed as a business call, so it is
+ * transient whatever status came with it. Observed on Salesforce Edge, which
+ * returns HTTP 400 with a full error page: status alone made that permanent,
+ * retries_used = 0, and the lead was dropped to a blip one retry would have
+ * absorbed.
+ *
+ * Strictly an ADDITION to the status rule. With no body it is exactly
+ * classifyHttpError, which is asserted across every status in the tests, so this
+ * can never quietly reclassify an ordinary failure.
+ *
+ * If such a page ever does wrap a genuinely permanent fault, the cost is the
+ * retries before it fails anyway, not a wrong answer. Callers log
+ * `event=html_error_page_transient` so the frequency stays measurable rather
+ * than assumed.
+ *
+ * Note this does NOT outrank a partner's `response_classification` override:
+ * classifyStepError honours PartnerApiError.errorType first, and the resolver
+ * sets that from the override before any of this is reached.
+ */
+export function classifyHttpErrorWithBody(
+  status: number,
+  bodyText: string | null | undefined,
+): ErrorType {
+  if (typeof bodyText === 'string' && bodyText.length > 0 && containsHtmlDocument(bodyText)) {
+    return 'transient'
+  }
+  return classifyHttpError(status)
 }
 
 export function classifyTransportError(err: unknown): ErrorType {

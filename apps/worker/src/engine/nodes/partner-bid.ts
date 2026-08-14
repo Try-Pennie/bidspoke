@@ -25,7 +25,7 @@ import { parseJson } from '../../lib/json'
 import { formatErr } from '../../lib/format-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
-import { classifyHttpError, shouldSuppressAlert } from '../error-classifier'
+import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid, effectiveResolverType } from '../bid-resolver'
@@ -530,7 +530,7 @@ export async function executePartnerBidNode(
       ;(err as PartnerApiError & { resolvedInput?: ResolvedStepInput }).resolvedInput = errResolvedInput
       throw err
     } else if (err instanceof Response) {
-      errorType = classifyHttpError(err.status)
+      errorType = classifyHttpErrorWithBody(err.status, (err as Response & { bodyText?: string }).bodyText)
       httpStatus = err.status
     } else {
       // callBidApi throws a plain Error with `.status` attached for a non-ok
@@ -538,7 +538,12 @@ export async function executePartnerBidNode(
       // status so a permanent 4xx isn't mislabeled transient (and then retried).
       const status = (err as { status?: number }).status
       if (typeof status === 'number') {
-        errorType = classifyHttpError(status)
+        // classifyHttpErrorWithBody, not classifyHttpError: callBidApi attaches
+        // the response text, and an HTML document means the request died at an
+        // edge and was never processed, so it is transient at any status (#756).
+        // Without this an HTML 400 from any partner was permanent with
+        // retries_used=0 and the lead was dropped.
+        errorType = classifyHttpErrorWithBody(status, (err as { bodyText?: string }).bodyText)
         httpStatus = status
       } else {
         errorType = 'transient'
