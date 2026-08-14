@@ -1541,6 +1541,7 @@ export type Database = {
           cost_usd: number | null
           cpu_ms: number | null
           duration_ms: number | null
+          email_dropped: boolean | null
           error_message: string | null
           failed_step_type: string | null
           field_presence: Json | null
@@ -1571,6 +1572,7 @@ export type Database = {
           cost_usd?: number | null
           cpu_ms?: number | null
           duration_ms?: number | null
+          email_dropped?: boolean | null
           error_message?: string | null
           failed_step_type?: string | null
           field_presence?: Json | null
@@ -1601,6 +1603,7 @@ export type Database = {
           cost_usd?: number | null
           cpu_ms?: number | null
           duration_ms?: number | null
+          email_dropped?: boolean | null
           error_message?: string | null
           failed_step_type?: string | null
           field_presence?: Json | null
@@ -1842,6 +1845,14 @@ export type Database = {
         Args: { p_retention_days?: number }
         Returns: number
       }
+      email_drop_counts_by_source: {
+        Args: { p_org_id: string; p_since: string }
+        Returns: {
+          dropped: number
+          source_name: string
+          total: number
+        }[]
+      }
       execution_counts_per_minute: {
         Args: { p_since: string; p_workflow_ids: string[] }
         Returns: {
@@ -1855,6 +1866,7 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      prune_orphan_auth_users: { Args: never; Returns: number }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number

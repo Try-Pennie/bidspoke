@@ -22,6 +22,7 @@ import { PartnerApiError } from './nodes/partner-bid'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceForCapture, shouldLogCapture } from './field-presence'
+import { detectDroppedEmail } from './dropped-fields'
 import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import {
@@ -555,6 +556,12 @@ export async function executeWorkflow(
         // from in-memory ctx.steps (raw, before PII redaction in flushStepLogs);
         // only booleans persist, so no value leaves the worker.
         const fieldPresence = fieldPresenceForCapture(env.FIELD_PRESENCE_CAPTURE, ctx.steps, definition)
+        // #744: the Salesforce node blanks a rejected email and retries, so the
+        // run SUCCEEDS and there is no failed execution to hang a rate off. This
+        // per-execution boolean is what makes the drop countable per source after
+        // the step logs are purged. Written only when true, so the column stays
+        // null for the overwhelming majority of runs.
+        const emailDropped = detectDroppedEmail(ctx.steps, definition.nodes)
         // Heartbeat log sampled to ~1% (#434): the column is written every run
         // below, but logging every run is ~500K lines/month for a dark feature.
         if (fieldPresence && shouldLogCapture(executionId)) {
@@ -589,6 +596,7 @@ export async function executeWorkflow(
           cost_usd: cost,
           ...(sightingFinalize ? { sighting_finalize: sightingFinalize } : {}),
           ...(fieldPresence ? { field_presence: fieldPresence } : {}),
+          ...(emailDropped ? { email_dropped: true } : {}),
         }, {
           // #584: hand finalize the create fields so a missing base row (a
           // permanent createExecutionRecord insert failure) is reconstructed from

@@ -104,10 +104,18 @@ function droppedFunctions(sql: string): Set<string> {
   return names
 }
 
-/** Names with an explicit REVOKE of PUBLIC (or anon) EXECUTE somewhere. */
+/**
+ * Names with an explicit REVOKE of PUBLIC (or anon) EXECUTE somewhere.
+ *
+ * Accepts `ON ROUTINE` as well as `ON FUNCTION`. ROUTINE is the more general form
+ * and is REQUIRED when the target might be a procedure: `REVOKE ... ON FUNCTION`
+ * errors with 42809 "is not a function" on a PROCEDURE, which is why the
+ * 20260814000002 sweep uses ROUTINE throughout. Matching only ON FUNCTION made
+ * this guard report a correctly-revoked function as unprotected.
+ */
 function revokedFunctions(sql: string): Set<string> {
   const names = new Set<string>()
-  const re = /REVOKE\s+[\s\S]{0,40}?\s+ON\s+FUNCTION\s+(?:public\.)?(\w+)\s*\([^)]*\)\s+FROM\s+(PUBLIC|anon)/gi
+  const re = /REVOKE\s+[\s\S]{0,40}?\s+ON\s+(?:FUNCTION|ROUTINE)\s+(?:public\.)?(\w+)\s*\([^)]*\)\s+FROM\s+(PUBLIC|anon)/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(sql))) names.add(m[1])
   return names
@@ -133,6 +141,15 @@ describe('security-definer functions are not left callable by anon (#762)', () =
     const commentOnly = '-- REVOKE ALL ON FUNCTION public.faker() FROM PUBLIC\n'
     expect(revokedFunctions(stripSqlComments(commentOnly)).has('faker')).toBe(false)
     const real = 'REVOKE ALL ON FUNCTION public.faker() FROM PUBLIC;\n'
+    // ON ROUTINE must count too, because it is the only form that works on a
+    // PROCEDURE (`ON FUNCTION` errors 42809 there). Matching only ON FUNCTION
+    // reported a correctly-revoked function as unprotected.
+    const routine = 'REVOKE ALL ON ROUTINE public.faker() FROM PUBLIC;\n'
+    expect(revokedFunctions(stripSqlComments(routine)).has('faker')).toBe(true)
+    const routineAnon = 'REVOKE ALL ON ROUTINE public.faker(uuid, timestamptz) FROM anon;\n'
+    expect(revokedFunctions(stripSqlComments(routineAnon)).has('faker')).toBe(true)
+    const commentedRoutine = '-- REVOKE ALL ON ROUTINE public.faker() FROM PUBLIC\n'
+    expect(revokedFunctions(stripSqlComments(commentedRoutine)).has('faker')).toBe(false)
     expect(revokedFunctions(stripSqlComments(real)).has('faker')).toBe(true)
   })
 

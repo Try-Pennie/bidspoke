@@ -7,6 +7,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
 import { runSecretDriftCheck } from './lib/secret-drift'
@@ -215,6 +216,13 @@ export default {
       ctx.waitUntil(
         runFieldPresenceDeadCheck(supabase)
           .catch((e) => console.error('[field-presence-dead] failed:', e))
+      )
+      // #744: leads whose email Salesforce rejected are still created, without the
+      // address, and the run succeeds. Nothing counted that, so a source sending
+      // damaged addresses in bulk was invisible.
+      ctx.waitUntil(
+        runEmailDropRateCheck(supabase, env.IDEMPOTENCY)
+          .catch((e) => console.error('[email-drop-rate] check failed:', e))
       )
       ctx.waitUntil(
         runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
