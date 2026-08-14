@@ -304,6 +304,11 @@ export async function updateExecutionRecord(
     // #419: per-execution field-presence booleans (which watched fields carried
     // a value this run). Dark capture behind FIELD_PRESENCE_CAPTURE.
     field_presence?: Record<string, boolean>
+    // #744: this lead reached Salesforce without its email, because Salesforce
+    // rejected the address and the node blanked it and retried. Set only when
+    // true, so the column is null on the overwhelming majority of runs and the
+    // per-source rate is a cheap single-table aggregate.
+    email_dropped?: boolean
   },
   // #584: the NOT NULL create fields the finalize call site can hand over. When
   // the base row is missing (createExecutionRecord failed permanently), these let

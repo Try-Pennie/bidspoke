@@ -560,7 +560,18 @@ async function recoverFromRejectedField(args: {
     return null
   }
 
-  return { output: { status: retry.res.status, body: retry.parsedBody }, resolvedInput: retryInput, logs }
+  // `_dropped_fields` makes the drop countable outside this one execution's log
+  // (#744). The run SUCCEEDS after this recovery, so there is no failed execution
+  // and no alert to hang a rate off; the warning above lives only in
+  // execution_steps, which is purged on a short window. This marker is what
+  // email_drop_counts_by_source aggregates per source, so a partner that starts
+  // sending damaged addresses in bulk surfaces as a rate instead of staying
+  // invisible (LESSONS L77).
+  return {
+    output: { status: retry.res.status, body: retry.parsedBody, _dropped_fields: droppable },
+    resolvedInput: retryInput,
+    logs,
+  }
 }
 
 /**

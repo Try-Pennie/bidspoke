@@ -14,6 +14,15 @@
     "note": "The Worker's jwtAuth middleware calls this on every authenticated API request. service_role only. Probed with p_user_id because an empty body returns PGRST202, which is indistinguishable from the function being absent."
   },
   {
+    "name": "email_drop_counts_by_source",
+    "args": {
+      "p_org_id": "00000000-0000-0000-0000-000000000000",
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Aggregates leads whose email Salesforce rejected, per source (#744). Read by the daily email-drop-rate check in the Worker as service_role. Takes the organization as a parameter and is SECURITY DEFINER, so anon must never reach it."
+  },
+  {
     "name": "workflow_stats_rollup",
     "args": {
       "p_org_id": "00000000-0000-0000-0000-000000000000",
