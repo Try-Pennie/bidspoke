@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 // NavLayout pulls in nav/auth chrome irrelevant to the controls under test.
 vi.mock('@/components/NavLayout', () => ({
@@ -117,5 +118,97 @@ describe('execution detail long-page navigation (#441)', () => {
     // BackToTop.test.tsx.
     const { container } = render(<ExecutionDetailPage />)
     expect(container.querySelector('span[aria-hidden="true"]')).not.toBeNull()
+  })
+})
+
+/**
+ * Issue #497. The bid-attempt rows expanded on a `<tr onClick>` with a purely
+ * decorative chevron: no tabIndex, no key handler, no aria-expanded. So the
+ * "why didn't this lead get a bid?" detail, which is the whole point of the
+ * table, was unreachable by keyboard and invisible to assistive technology,
+ * which announced a plain row with no hint that anything could open.
+ */
+describe('bid attempt rows are keyboard accessible (#497)', () => {
+  const withBids = {
+    id: 'exec-1',
+    workflow_id: 'wf-1',
+    status: 'completed',
+    started_at: '2026-08-14T12:00:00Z',
+    completed_at: '2026-08-14T12:00:01Z',
+    duration_ms: 1000,
+    trace_id: 'trace-1',
+    trigger_payload: {},
+    steps: [
+      {
+        id: 'step-1',
+        step_type: 'bid_group',
+        step_namespace: 'engine_bids',
+        status: 'completed',
+        step_node_id: 'node-1',
+        started_at: '2026-08-14T12:00:00Z',
+        output: {
+          mode: 'highest_bid',
+          reason: 'winner',
+          winner: { partner: 'tripoint', bid: 42 },
+          all_bids: [
+            { partner: 'tripoint', bid: 42, accepted: true, skipped: false, outcome: 'won', status: 200 },
+            { partner: 'm1', bid: null, accepted: false, skipped: true, skip_reason: 'daily cap' },
+          ],
+        },
+      },
+    ],
+  }
+
+  beforeEach(() => {
+    vi.mocked(useExecution).mockReturnValue(state({ execution: withBids }) as never)
+  })
+
+  it('offers each row a real control that says whether it is expanded', () => {
+    render(<ExecutionDetailPage />)
+    const toggles = screen.getAllByRole('button', { name: /details for/i })
+    expect(toggles.length).toBe(2)
+    expect(toggles[0]).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('names the partner in the control, so the buttons are told apart', () => {
+    render(<ExecutionDetailPage />)
+    expect(screen.getByRole('button', { name: /details for tripoint/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /details for m1/i })).toBeInTheDocument()
+  })
+
+  it('expands from the keyboard', async () => {
+    render(<ExecutionDetailPage />)
+    const toggle = screen.getByRole('button', { name: /details for tripoint/i })
+    toggle.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(/HTTP status/i)).toBeInTheDocument()
+  })
+
+  it('collapses again on a second press', async () => {
+    render(<ExecutionDetailPage />)
+    const toggle = screen.getByRole('button', { name: /details for tripoint/i })
+    toggle.focus()
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard('{Enter}')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('points at the detail it controls', async () => {
+    render(<ExecutionDetailPage />)
+    const toggle = screen.getByRole('button', { name: /details for tripoint/i })
+    const controls = toggle.getAttribute('aria-controls')
+    expect(controls).toBeTruthy()
+    await userEvent.click(toggle)
+    expect(document.getElementById(controls as string)).not.toBeNull()
+  })
+
+  it('opens once, not twice, when the control itself is clicked', async () => {
+    // The row keeps its own onClick for mouse users, so a click on the button
+    // that bubbled would toggle twice and appear to do nothing at all.
+    render(<ExecutionDetailPage />)
+    const toggle = screen.getByRole('button', { name: /details for m1/i })
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
   })
 })

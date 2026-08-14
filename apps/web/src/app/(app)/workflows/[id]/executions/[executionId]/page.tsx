@@ -382,7 +382,8 @@ function BidAttemptRow({
   const httpStatus = attempt.status ?? attempt.http_status ?? null
   const headers = attempt.response_headers ?? null
   const rawResponse = attempt.raw_response ?? null
-  void index
+  // The detail row is what the toggle controls, so it needs an id to point at.
+  const detailId = `bid-attempt-${index}-detail`
 
   return (
     <>
@@ -391,7 +392,22 @@ function BidAttemptRow({
         onClick={onToggle}
       >
         <td className="w-6 px-2 py-2 text-gray-500">
-          <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+          {/*
+            A real button, not a decorative chevron (#497). The row keeps its own
+            onClick so a mouse user can still hit anywhere, which is exactly why
+            this one has to stop propagation: without that, a click here would
+            toggle twice and look like nothing happened at all.
+          */}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggle() }}
+            aria-expanded={isOpen}
+            aria-controls={detailId}
+            aria-label={`Details for ${attempt.partner}`}
+            className="flex items-center rounded text-gray-500 hover:text-graphite focus:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark"
+          >
+            <ChevronRight className={`h-3.5 w-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+          </button>
         </td>
         <td className="px-3 py-2 font-mono text-graphite">{attempt.partner}</td>
         <td className="px-3 py-2 text-gray-600">{describeMode(attempt)}</td>
@@ -401,7 +417,7 @@ function BidAttemptRow({
         <td className="px-3 py-2 text-right font-mono text-gray-500">{formatDuration(duration)}</td>
       </tr>
       {isOpen && (
-        <tr className={isWinner ? 'bg-green-50/20' : 'bg-gray-50/60'}>
+        <tr id={detailId} className={isWinner ? 'bg-green-50/20' : 'bg-gray-50/60'}>
           <td colSpan={7} className="px-3 py-3">
             <div className="space-y-3">
               <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
