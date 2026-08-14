@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { InlineDeleteConfirm } from '@/components/InlineDeleteConfirm'
+import { useInlineDeleteConfirm } from '@/hooks/useInlineDeleteConfirm'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { api } from '@/lib/api'
@@ -57,9 +59,8 @@ export default function WorkflowsPage() {
   // Inline rename
   const [renamingId, setRenamingId] = useState<string | null>(null)
 
-  // Inline delete confirm
-  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Inline delete confirm, shared with the env page and the folder rows (#546).
+  const rowDelete = useInlineDeleteConfirm()
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -76,8 +77,7 @@ export default function WorkflowsPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [folderMenuOpen, setFolderMenuOpen] = useState<string | null>(null)
   const folderMenuRef = useRef<HTMLDivElement>(null)
-  const [confirmingFolderDelete, setConfirmingFolderDelete] = useState<string | null>(null)
-  const folderDeleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const folderDelete = useInlineDeleteConfirm()
   const [creatingFolderParent, setCreatingFolderParent] = useState<string | null | undefined>(undefined)
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [movingWorkflowId, setMovingWorkflowId] = useState<string | null>(null)
@@ -375,19 +375,11 @@ export default function WorkflowsPage() {
 
   function requestDeleteFolder(folder: Folder) {
     setFolderMenuOpen(null)
-    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
-    setConfirmingFolderDelete(folder.id)
-    folderDeleteTimerRef.current = setTimeout(() => setConfirmingFolderDelete(null), 4000)
-  }
-
-  function cancelDeleteFolder() {
-    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
-    setConfirmingFolderDelete(null)
+    folderDelete.request(folder.id)
   }
 
   async function handleDeleteFolder(folder: Folder) {
-    if (folderDeleteTimerRef.current) clearTimeout(folderDeleteTimerRef.current)
-    setConfirmingFolderDelete(null)
+    folderDelete.commit()
     try {
       await api.folders.delete(folder.id)
       setFolders((fs) => fs.filter((f) => f.id !== folder.id))
@@ -569,19 +561,11 @@ export default function WorkflowsPage() {
 
   function requestDelete(id: string) {
     setOpenMenuId(null)
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmingDelete(id)
-    deleteTimerRef.current = setTimeout(() => setConfirmingDelete(null), 4000)
-  }
-
-  function cancelDelete() {
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmingDelete(null)
+    rowDelete.request(id)
   }
 
   async function handleDelete(id: string) {
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmingDelete(null)
+    rowDelete.commit()
     const item = workflows.find((w) => w.id === id)
     setRemovingId(id)
     removeTimerRef.current = setTimeout(() => {
@@ -745,25 +729,18 @@ export default function WorkflowsPage() {
             {/* ••• always in DOM to hold cell size; invisible when confirm showing */}
             <button
               onClick={() => setOpenMenuId(openMenuId === wf.id ? null : wf.id)}
-              className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${confirmingDelete === wf.id ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
+              className={`rounded p-1.5 text-gray-500 hover:bg-gray-100 ${rowDelete.isConfirming(wf.id) ? 'invisible pointer-events-none' : ''} ${openMenuId === wf.id ? 'bg-gray-100 text-gray-600' : ''}`}
               title="More options"
               aria-label="More options"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {/* Confirm — floats absolutely, extends left over adjacent column */}
-            {confirmingDelete === wf.id && (
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap">
-                <button
-                  onClick={() => handleDelete(wf.id)}
-                  className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                >
-                  Delete
-                </button>
-                <button onClick={cancelDelete} className="text-xs text-gray-500 hover:text-gray-600">
-                  Cancel
-                </button>
-              </div>
+            {rowDelete.isConfirming(wf.id) && (
+              <InlineDeleteConfirm
+                onDelete={() => handleDelete(wf.id)}
+                onCancel={rowDelete.cancel}
+              />
             )}
             {/* Dropdown menu */}
             {openMenuId === wf.id && (
@@ -881,24 +858,18 @@ export default function WorkflowsPage() {
             <div ref={folderMenuOpen === folder.id || movingFolderId === folder.id ? folderMenuRef : undefined} className="relative">
               <button
                 onClick={() => setFolderMenuOpen(folderMenuOpen === folder.id ? null : folder.id)}
-                className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${confirmingFolderDelete === folder.id ? 'invisible pointer-events-none' : ''} ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
+                className={`rounded p-1.5 text-gray-500 hover:bg-gray-200/60 ${folderDelete.isConfirming(folder.id) ? 'invisible pointer-events-none' : ''} ${folderMenuOpen === folder.id ? 'bg-gray-200/60 text-gray-600' : ''}`}
                 title="Folder options"
                 aria-label="Folder options"
               >
                 <MoreHorizontal className="h-4 w-4" />
               </button>
-              {confirmingFolderDelete === folder.id && (
-                <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-1.5 whitespace-nowrap rounded bg-gray-50/70 pl-1">
-                  <button
-                    onClick={() => handleDeleteFolder(folder)}
-                    className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                  >
-                    Delete
-                  </button>
-                  <button onClick={cancelDeleteFolder} className="text-xs text-gray-500 hover:text-gray-600">
-                    Cancel
-                  </button>
-                </div>
+              {folderDelete.isConfirming(folder.id) && (
+                <InlineDeleteConfirm
+                  className="rounded bg-gray-50/70 pl-1"
+                  onDelete={() => handleDeleteFolder(folder)}
+                  onCancel={folderDelete.cancel}
+                />
               )}
               {folderMenuOpen === folder.id && (
                 <div className="absolute right-0 top-full z-50 mt-1 w-44 rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
