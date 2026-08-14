@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-vi.mock('../slack', () => ({ sendFailureSpikeAlert: vi.fn().mockResolvedValue('ts-1') }))
+vi.mock('../slack', () => ({
+  sendFailureSpikeAlert: vi.fn().mockResolvedValue('ts-1'),
+  getSlackConnection: vi.fn(),
+  sendRecoveryAlert: vi.fn(),
+}))
 import { signalMatches, matchesMutedSignal, detectFailureSpike, countWindowMatches, runFailureRateCheck } from '../failure-rate'
 import type { MutedFailureSignal } from '../failure-rate'
-import { sendFailureSpikeAlert } from '../slack'
+import { getSlackConnection, sendFailureSpikeAlert, sendRecoveryAlert } from '../slack'
 
 const sig = (match: string, count = 10, window_minutes = 5): MutedFailureSignal => ({ match, count, window_minutes })
 
@@ -92,6 +96,7 @@ function makeKv(initial: Record<string, string> = {}) {
     store: m,
     get: vi.fn(async (k: string) => m.get(k) ?? null),
     put: vi.fn(async (k: string, v: string) => { m.set(k, v) }),
+    delete: vi.fn(async (k: string) => { m.delete(k) }),
   }
 }
 
@@ -167,5 +172,74 @@ describe('runFailureRateCheck (#248)', () => {
     })
     await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
     expect(sendFailureSpikeAlert).not.toHaveBeenCalled()
+  })
+})
+
+// ── Recovery all-clear (#253) ────────────────────────────────────────────────
+//
+// Driven through runFailureRateCheck itself: a recovery path that is written but
+// never reached is the failure this change exists to prevent (LESSONS L3).
+describe('runFailureRateCheck recovery (#253)', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C1' }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  const healthy = () =>
+    makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: [failRow('unrelated salesforce error')],
+    })
+
+  it('announces the all-clear once the signal falls back under threshold', async () => {
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({
+      'failure-rate-recovery:wf-1:ACRO_GATEWAY': alertedAt,
+      'failure-rate-cooldown:wf-1:ACRO_GATEWAY': '1',
+    })
+
+    await runFailureRateCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ subject: 'Engine Bidding', alertedAt })
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(false)
+    expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO_GATEWAY')).toBe(false)
+  })
+
+  it('says nothing when the signal was never alerted', async () => {
+    await runFailureRateCheck(healthy() as never, makeKv() as never, 'https://app.example.com')
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('keeps both keys when the all-clear is refused, so it retries', async () => {
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(false)
+    const kv = makeKv({
+      'failure-rate-recovery:wf-1:ACRO_GATEWAY': new Date(Date.now() - 90 * 60_000).toISOString(),
+      'failure-rate-cooldown:wf-1:ACRO_GATEWAY': '1',
+    })
+
+    await runFailureRateCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(true)
+    expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO_GATEWAY')).toBe(true)
+  })
+
+  it('records the marker keyed per signal when it does alert', async () => {
+    // Per signal, not per workflow: one signal recovering must not clear another
+    // still spiking on the same workflow.
+    const kv = makeKv()
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: [failRow('ACRO_GATEWAY a'), failRow('ACRO_GATEWAY b'), failRow('ACRO_GATEWAY c')],
+    })
+
+    await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
+
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(true)
   })
 })

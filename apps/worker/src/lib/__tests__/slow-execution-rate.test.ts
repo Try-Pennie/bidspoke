@@ -3,8 +3,15 @@
  * fraction gate, and their interaction. Supabase + KV + Slack integration lives
  * in `runSlowExecutionCheck`; pure logic is tested here.
  */
-import { describe, it, expect } from 'vitest'
-import { detectSlowSpike, buildSlowDurations, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+vi.mock('../slack', () => ({
+  sendSlowSpikeAlert: vi.fn().mockResolvedValue('ts-1'),
+  getSlackConnection: vi.fn(),
+  sendRecoveryAlert: vi.fn(),
+}))
+import { detectSlowSpike, buildSlowDurations, runSlowExecutionCheck, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
+import { getSlackConnection, sendRecoveryAlert } from '../slack'
 
 const THRESHOLD = 5000 // 5s
 
@@ -142,5 +149,92 @@ describe('buildSlowDurations()', () => {
     const spike = detectSlowSpike(per.get('wf')!, THRESHOLD)
     expect(spike!.slowCount).toBe(5)
     expect(spike!.totalCount).toBe(6)
+  })
+})
+
+// ── Recovery all-clear (#253) ────────────────────────────────────────────────
+//
+// The first tests in this file to drive runSlowExecutionCheck itself. A recovery
+// path that is written but never reached is the failure this change exists to
+// prevent (LESSONS L3: built is not wired).
+describe('runSlowExecutionCheck recovery (#253)', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C1' }
+
+  function makeKv(initial: Record<string, string> = {}) {
+    const m = new Map(Object.entries(initial))
+    return {
+      store: m,
+      get: vi.fn(async (k: string) => m.get(k) ?? null),
+      put: vi.fn(async (k: string, v: string) => { m.set(k, v) }),
+      delete: vi.fn(async (k: string) => { m.delete(k) }),
+    }
+  }
+
+  /** Chainable Supabase double; awaiting any chain resolves the table's rows. */
+  function makeSupabase(tables: Record<string, unknown[]>) {
+    return {
+      from: (table: string) => {
+        const data = tables[table] ?? []
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+    }
+  }
+
+  const wf = {
+    id: 'wf-1',
+    name: 'Engine Bidding',
+    organization_id: 'org-1',
+    slack_channel: null,
+    definition: { trigger: { type: 'http_webhook', config: { duration_alert_ms: THRESHOLD } } },
+  }
+
+  /** No executions at all, so detectSlowSpike finds nothing and the run is healthy. */
+  const healthy = () =>
+    makeSupabase({ service_connections: [{ organization_id: 'org-1' }], workflows: [wf], workflow_executions: [] })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  it('announces the all-clear once the workflow is back under threshold', async () => {
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({ 'slow-spike-recovery:wf-1': alertedAt, 'slow-spike-cooldown:wf-1': '1' })
+
+    await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
+      signal: 'slow execution',
+      subject: 'Engine Bidding',
+      alertedAt,
+    })
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(false)
+    expect(kv.store.has('slow-spike-cooldown:wf-1')).toBe(false)
+  })
+
+  it('says nothing about a workflow that was never alerted', async () => {
+    await runSlowExecutionCheck(healthy() as never, makeKv() as never, 'https://app.example.com')
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+  })
+
+  it('keeps both keys when the all-clear is refused, so it retries', async () => {
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(false)
+    const kv = makeKv({
+      'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString(),
+      'slow-spike-cooldown:wf-1': '1',
+    })
+
+    await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(true)
+    expect(kv.store.has('slow-spike-cooldown:wf-1')).toBe(true)
   })
 })
