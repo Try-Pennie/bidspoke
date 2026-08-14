@@ -17,8 +17,11 @@
  * lookup failure) and defaults to allowlisted; override per-test by configuring
  * the `user_allowlist` table (`{ maybeSingle: null }` to simulate a denied user).
  *
- * NOT used by workflows.test.ts / stats.test.ts — those wire `rpc` with their
- * own bespoke conventions and keep local mocks (#330).
+ * workflows.test.ts, stats.test.ts and executions.test.ts kept their own copies
+ * of this after #330, because each needed something extra: a handler for non-auth
+ * rpcs, a results-by-name map, or a record of every chained filter call. All
+ * three are supported here now and those copies are gone (#347). The cost they
+ * carried was real: the #329 auth change had to be applied in four places.
  */
 
 interface QueryError {
@@ -58,6 +61,19 @@ export interface TableConfig {
 export interface MockSupabaseOptions {
   /** Email returned by the default `user_allowlist.maybeSingle()` allowlist check. */
   allowlistEmail?: string
+  /**
+   * Handler for NON-auth rpcs (the grouped timeout-suggestions query, and so on).
+   * `auth_user_with_allowlist` is always served internally so jwtAuth's lookup
+   * stays out of every test's way. Pass a `vi.fn()` here to assert the arguments
+   * a route sent.
+   */
+  rpc?: (name: string, args: unknown) => Promise<{ data: unknown; error: unknown }>
+  /**
+   * Results for NON-auth rpcs by name, for the common case where a test only
+   * needs to hand back rows. An unlisted name resolves to `[]`, which is what a
+   * grouped aggregate returns when it matches nothing.
+   */
+  rpcs?: Record<string, unknown[]>
 }
 
 const NOT_FOUND: QueryError = { message: 'not found', code: 'PGRST116' }
@@ -120,6 +136,7 @@ export function makeSupabase(
   // scoping (e.g. workflow_executions scoped by workflow_id, not a non-existent
   // organization_id column). Keyed by table name.
   const eqCalls: Record<string, Array<[string, unknown]>> = {}
+  const calls: Record<string, Array<[string, unknown[]]>> = {}
   const allowlistEmail = opts.allowlistEmail ?? 'dan@pennie.com'
 
   const firstCfg = (table: string): TableConfig => {
@@ -129,12 +146,25 @@ export function makeSupabase(
 
   return {
     eqCalls,
+    /**
+     * Every chained builder call per table, as [method, args]. `eqCalls` is the
+     * narrow view of the same thing; this one lets a test assert the whole
+     * filter chain a route applied (which columns it scoped by, in what order),
+     * which is what the is_test / source scoping assertions need.
+     */
+    calls,
     // jwtAuth's one-round-trip auth lookup (#329). Mirrors the old two-query
     // behavior: users.singleError -> a real lookup error (500); no user row ->
     // empty rows (401); otherwise one row carrying `allowed`, which defaults to
     // true unless the `user_allowlist` table is configured to deny.
-    rpc: (name: string, _args: unknown) => {
-      if (name !== 'auth_user_with_allowlist') return Promise.resolve({ data: null, error: null })
+    rpc: (name: string, args: unknown) => {
+      if (name !== 'auth_user_with_allowlist') {
+        // Non-auth rpcs delegate, so jwtAuth's lookup stays internal and a test
+        // never has to reimplement it just to stub one grouped query.
+        if (opts.rpc) return opts.rpc(name, args)
+        if (opts.rpcs) return Promise.resolve({ data: opts.rpcs[name] ?? [], error: null })
+        return Promise.resolve({ data: null, error: null })
+      }
       const usersCfg = firstCfg('users')
       if (usersCfg.singleError) return Promise.resolve({ data: null, error: usersCfg.singleError })
       const userRow = usersCfg.single ?? null
@@ -156,8 +186,8 @@ export function makeSupabase(
       callCounts[table] = idx + 1
       const cfg = cfgArr[Math.min(idx, cfgArr.length - 1)] ?? {}
       const recordEq = (col: string, val: unknown) => {
-        const calls = (eqCalls[table] ??= [])
-        calls.push([col, val])
+        const forTable = (eqCalls[table] ??= [])
+        forTable.push([col, val])
       }
 
       const chain: unknown = new Proxy(
@@ -169,6 +199,7 @@ export function makeSupabase(
             if (prop === 'eq') {
               return (col: string, val: unknown) => {
                 recordEq(col, val)
+                ;(calls[table] ??= []).push(['eq', [col, val]])
                 return chain
               }
             }
@@ -206,7 +237,10 @@ export function makeSupabase(
               return () => writeChain(undefined, cfg.deleteError, readSingle, readList, cfg.writeRows, recordEq)
             }
 
-            return () => chain
+            return (...args: unknown[]) => {
+              ;(calls[table] ??= []).push([prop, args])
+              return chain
+            }
           },
         },
       )
