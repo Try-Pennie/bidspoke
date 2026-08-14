@@ -36,3 +36,14 @@ test-results/
 
 # Logs
 *.log
+
+# Visual-verification scratch output (#657). Playwright MCP writes page snapshots
+# into .playwright-mcp/ and screenshots into the repo ROOT, and both were reachable
+# by a broad `git add`: three snapshots ended up tracked (so tidying the folder
+# deleted tracked files), and degraded-banner-356.png was swept into a commit about
+# code-node error classification, referenced by nothing.
+#
+# The PNG rule is anchored to the root on purpose. Real images live in
+# apps/web/public/ and must stay tracked.
+.playwright-mcp/
+/*.png
