@@ -67,7 +67,7 @@ The guard keys on the hostname, not a hardcoded project ref, so any database it 
 - Repo: https://github.com/Try-Pennie/bidspoke
 - Commit and push after each meaningful chunk of work
 - CI must pass before merging to main
-- Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes — CI uses frozen-lockfile and will break otherwise
+- Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes. Every CI job installs with `--frozen-lockfile`, so a lockfile that does not match `package.json`, or one with a duplicated entry, fails the build. Regenerate with **pnpm 9** (`CI=true npx pnpm@9 install --lockfile-only`), not the pnpm 10 you may have locally: CI pins 9, and a version mismatch resolves differently. `pnpm-lock.yaml` was corrupt on main for 18 days in 2026-07/08 precisely because nothing installed strictly; `apps/web/src/lib/__tests__/lockfile-integrity.test.ts` now guards it.
 
 ## Database migrations
 Migrations must be **backward-compatible (expand/contract)** so schema and code can deploy in either order without a window where prod code and schema disagree. In short: additive-only in a single migration (add nullable/defaulted columns, tables, indexes); never rename or drop in the same release that starts using the change — split renames/drops across two releases (expand + dual-write, then contract later). The deploy pipeline only CHECKS migrations are applied; you apply them by hand with `supabase db push`. Full rules + deployment runbook: [docs/adr/0007-expand-contract-migrations.md](./docs/adr/0007-expand-contract-migrations.md).
