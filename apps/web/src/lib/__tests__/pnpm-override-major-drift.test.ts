@@ -50,13 +50,27 @@ export function rangeFloor(range: string): string | null {
   return m ? m[0] : null
 }
 
-/** -1 / 0 / 1, comparing dotted numeric versions. Prerelease tags are ignored. */
-export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map((n) => parseInt(n, 10))
-  const pb = b.split('.').map((n) => parseInt(n, 10))
+/** A version segment as a number, or null when it is not one. */
+export function parseSegment(raw: string | undefined): number | null {
+  if (raw === undefined) return 0 // `3.3` means `3.3.0`
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 ? n : null
+}
+
+/**
+ * -1 / 0 / 1, comparing dotted numeric versions, or null when either side has a
+ * segment that is not a plain number (a prerelease tag, a git ref, `latest`).
+ *
+ * Null rather than a number on purpose: `parseInt` would hand back NaN here, and
+ * NaN loses every comparison silently, so an unreadable version would slide past
+ * the floor check and be reported as clean. The caller maps null to the loud
+ * side and examines the entry instead.
+ */
+export function compareVersions(a: string, b: string): number | null {
   for (let i = 0; i < 3; i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
+    const x = parseSegment(a.split('.')[i])
+    const y = parseSegment(b.split('.')[i])
+    if (x === null || y === null) return null
     if (x !== y) return x < y ? -1 : 1
   }
   return 0
@@ -96,8 +110,11 @@ export function findOverrideDrift(
     if (!floor) continue
     const floorMajor = floor.split('.')[0]
     for (const resolved of resolvedVersions(lockfile, name)) {
-      if (compareVersions(resolved, floor) < 0) continue
-      if (resolved.split('.')[0] === floorMajor) continue
+      // An unreadable version (null) is NOT skipped: it is reported, so a shape
+      // this guard cannot compare surfaces rather than passing as clean.
+      const cmp = compareVersions(resolved, floor)
+      if (cmp !== null && cmp < 0) continue
+      if (cmp !== null && resolved.split('.')[0] === floorMajor) continue
       drift.push({ name, range, floor, resolved })
     }
   }
@@ -142,6 +159,15 @@ describe('pnpm.overrides major drift', () => {
     // glob 7 coexists with the 10.x override and is not evidence of drift.
     const lockfile = ['packages:', '', '  glob@7.2.3:', '    resolution: {integrity: sha512-x}', ''].join('\n')
     expect(findOverrideDrift({ 'glob@>=10.2.0 <10.5.0': '>=10.5.0' }, lockfile)).toEqual([])
+  })
+
+  it('reports, rather than skips, a version it cannot compare', () => {
+    // parseInt would make this NaN, and NaN < floor is false AND NaN > floor is
+    // false, so an unreadable version would silently land on the clean side.
+    expect(compareVersions('3.3.next', '3.3.18')).toBeNull()
+    const lockfile = ['packages:', '', '  nanoid@3.3.0-beta.1:', '    resolution: {integrity: sha512-x}', ''].join('\n')
+    const drift = findOverrideDrift({ 'nanoid@<3.3.18': '>=3.3.18 <4' }, lockfile)
+    expect(drift.map((d) => d.resolved)).toEqual(['3.3.0-beta.1'])
   })
 
   it('reads a scoped package name without splitting it at its own @', () => {
