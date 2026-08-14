@@ -1,9 +1,12 @@
 -- Daily-bucketed rollup of workflow_executions for the dashboard.
 --
 -- Background: workflow_stats_rollup() aggregated live from workflow_executions,
--- which timed out at Postgres's 8s statement_timeout once the table grew past
+-- which timed out at the statement_timeout once the table grew past
 -- ~200K rows for a 30-day window. Both the dashboard and the workflows list
--- call /api/stats and were getting HTTP 500 (PostgREST 57014).
+-- call /api/stats and were getting HTTP 500 (PostgREST 57014). That ceiling is
+-- service_role's 30s, not the 8s originally written here (#614): /api/stats goes
+-- through the Worker, which authenticates with SUPABASE_SECRET_KEY. 8s is the
+-- authenticator/authenticated limit, which this path never uses.
 --
 -- Strategy: materialize one row per (workflow_id, status, outcome, day,
 -- is_test) bucket. The refresh function re-aggregates a recent lookback window
