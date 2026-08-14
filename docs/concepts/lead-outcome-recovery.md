@@ -76,6 +76,31 @@ The 30-minute drain runs well ahead of the 08:30 relabel, so a recoverable stran
 
 The drain reconstructs the `lead_sightings` outcome columns by reading keys back out of `sighting_finalize` (e.g. `winning_partner_slug`, `winning_bid_cents`, `reject_reason`, `outcome`, the `equifax_*` enrichment), falling back to the scalar `workflow_executions` columns (`outcome`, `final_node_namespace`, `response_status`, `duration_ms`) when the projection is absent. For a recovered winner it also flips `lead_sighting_bids.is_winner` and re-inserts the per-attempt bid rows from `sighting_finalize->'bid_attempts'` (those rows were lost with block 2). The bid re-insert is idempotent via the `(execution_id, partner_slug, attempted_at_utc)` unique key.
 
+## What `reject_reason` is, and what it is not
+
+`reject_reason` holds a reason the engine actually **determined**: a filter rule
+that rejected the lead (`filter:<rule>`), `all_partners_declined`, `engine_error`
+on a 5xx, or the namespace of a code node that surfaced an error sentinel. Plus
+two provenance markers written by the drains, `reduced_finalize` and
+`strand_unrecoverable`.
+
+It is **null whenever the engine determined no reason**, which is the common case:
+a run that simply ended somewhere without anything rejecting it. Null is not a
+gap to be filled. Where the run ended is a different question, answered by
+`terminal_node_label`, which is its own column and is exported to Snowflake right
+beside this one.
+
+**Do not use `reject_reason IS NOT NULL` to count rejections.** It never meant
+that, and until [#375](https://github.com/Try-Pennie/bidspoke/issues/375) it was
+badly misleading: the fallback returned the terminal node's own label, so over one
+week 116,476 of 116,487 values were byte-identical to `terminal_node_label`,
+23,464 of them on leads whose `outcome` was `successful`. Among the labels sitting
+in that column were `patch_prospect`, `tp_bid`, and `patch_prospect_success`.
+
+To classify an outcome, use the raw facts the way `lead_sightings_v` does:
+`winning_partner_slug IS NOT NULL` is a bid, `response_status_code >= 500` is an
+error, and everything else is a no-bid.
+
 ## Keeping the two implementations in sync
 
 The live finalize is TypeScript (`computeSightingFinalize`, `bidAttemptsForProjection`) and the drain is SQL (`reduce_finalize_stranded`). They are coupled only by the JSONB key names. A build-time guard, `apps/web/src/lib/__tests__/worker-strand-drain-contract.test.ts` ([#367](https://github.com/Try-Pennie/bidspoke/issues/367)), fails CI if the SQL stops reading any field the TS shape projects, so the two cannot silently diverge. It follows the drain forward by checking whichever migration most recently redefines the function.
