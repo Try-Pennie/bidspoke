@@ -14,7 +14,6 @@ import {
   extractEnrichment,
   extractBidGroupSummary,
   deriveRejectReason,
-  upsertPerson,
 } from '../../engine/lead-sightings'
 import { formatSsn } from '../../engine/persons-crypto'
 import { runSightingsExport } from '../../lib/sightings-export'
@@ -72,8 +71,8 @@ admin.post('/migrate-code-workers', async (c) => {
 })
 
 /**
- * One-shot backfill of lead_sightings + lead_sighting_bids + persons from
- * historical workflow_executions and execution_steps. Writes through Supabase
+ * One-shot backfill of lead_sightings + lead_sighting_bids from historical
+ * workflow_executions and execution_steps. Writes through Supabase
  * with outcome_state='finalized' and exported_at=null so the next nightly cron
  * picks them up.
  *
@@ -154,16 +153,9 @@ admin.post('/backfill-sightings', async (c) => {
       const sightingFields = extractSightingFields(payload)
       const personFields = extractPersonFields(payload)
 
-      // persons upsert (best-effort — null person_id is fine if it fails)
-      let personId: string | null = null
-      if (personFields) {
-        personId = await upsertPerson(
-          supabase,
-          { organization_id: orgId, ...personFields },
-          c.env.SECRET_ENCRYPTION_KEY,
-          c.env.SSN_HASH_PEPPER,
-        )
-      }
+      // No persons write since #765: the table had no reader, and the raw ssn the
+      // Snowflake export and repeat-lead grouping actually use is written onto the
+      // lead_sightings row below.
 
       // Pull execution_steps for this run to extract terminal info + enrichment + bids.
       // Order by step_order (monotonic, unique per execution); started_at is too coarse
@@ -228,7 +220,7 @@ admin.post('/backfill-sightings', async (c) => {
       const sightingRow = {
         id: crypto.randomUUID(),
         ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
-        person_id: personId,
+        person_id: null,
         trace_id: (exec.trace_id) ?? exec.id,
         execution_id: exec.id,
         workflow_id: body.workflow_id,

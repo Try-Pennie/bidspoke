@@ -26,7 +26,6 @@ import type { StepLogEntry } from './step-logger'
 import { estimateStepBasedCost } from './cost-rates'
 import {
   insertSighting,
-  upsertPerson,
   extractSightingFields,
   extractPersonFields,
   finalizeSighting,
@@ -248,14 +247,14 @@ export async function executeWorkflow(
 
   log({ event: 'execution_start', trace_id: traceId, workflow_id: workflowId, workflow_version_id, execution_id: executionId })
 
-  // Lead sighting trigger boundary: insert in_flight sighting + upsert persons
-  // row before the walk starts. Snowflake mirror is populated nightly. Writes
-  // run in waitUntil; failures don't block the workflow.
+  // Lead sighting trigger boundary: insert the in_flight sighting before the walk
+  // starts. Snowflake mirror is populated nightly. Writes run in waitUntil;
+  // failures don't block the workflow.
   // Skipped for test runs and for workflows with capture_sightings=false.
   const sightingId = (options.isTest || !capture_sightings) ? undefined : crypto.randomUUID()
   // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
-  // lead_sighting_bids / persons writes through writeOutcome so a loss after
-  // retries dead-letters instead of vanishing into a log line.
+  // lead_sighting_bids writes through writeOutcome so a loss after retries
+  // dead-letters instead of vanishing into a log line.
   const outcomeDeps: OutcomeAlertDeps = { kv: env.IDEMPOTENCY, orgId: org_id, appUrl: env.APP_URL }
 
   // Awaited by the finalize block below: finalize UPDATEs the row this promise
@@ -269,16 +268,6 @@ export async function executeWorkflow(
     const personFields = extractPersonFields(payload)
     const startedAtDate = new Date(startedAt)
     sightingWritePromise = (async () => {
-      let personId: string | null = null
-      if (personFields) {
-        personId = await upsertPerson(
-          supabase,
-          { organization_id: org_id, ...personFields },
-          env.SECRET_ENCRYPTION_KEY,
-          env.SSN_HASH_PEPPER,
-          outcomeDeps,
-        )
-      }
       await insertSighting(supabase, {
         id: sightingId,
         trace_id: traceId,
@@ -291,7 +280,10 @@ export async function executeWorkflow(
         execution_started_at_et: startedAtDate,
         payload_fields: sightingPayloadFields,
         ssn: personFields?.ssn ? formatSsn(personFields.ssn) : null,
-        person_id: personId,
+        // Always null since #765 removed the persons write. lead_sightings.ssn
+        // above is the value the Snowflake export and repeat-lead grouping read;
+        // person_id was only ever a pointer into a table nothing read back.
+        person_id: null,
       }, outcomeDeps)
     })().catch((e) => console.error('[lead-sightings] trigger boundary write failed:', e))
     executionCtx.waitUntil(sightingWritePromise)

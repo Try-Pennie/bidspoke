@@ -1,10 +1,10 @@
 /**
  * The sighting insert must land before finalize updates it.
  *
- * insertSighting is fired into waitUntil at the trigger boundary, behind an
- * awaited upsertPerson (an AES-GCM op plus a DB write). Nothing awaited it, so
- * on the fast engine-bidding path finalizeSighting regularly ran first and its
- * UPDATE matched a row that did not exist yet.
+ * insertSighting is fired into waitUntil at the trigger boundary. Nothing awaited
+ * it, so on the fast engine-bidding path finalizeSighting regularly ran first and
+ * its UPDATE matched a row that did not exist yet. (At the time the insert also
+ * sat behind an awaited persons upsert, removed in #765.)
  *
  * Before the zero-row sweep (#583) that UPDATE silently did nothing and the
  * sighting sat at 'in_flight' until the strand drain repaired it. After the
@@ -41,7 +41,6 @@ vi.mock('../lead-sightings', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lead-sightings')>()),
   insertSighting: vi.fn(),
   finalizeSighting: vi.fn().mockResolvedValue(undefined),
-  upsertPerson: vi.fn().mockResolvedValue(null),
 }))
 
 import { executeWorkflow } from '../index'
