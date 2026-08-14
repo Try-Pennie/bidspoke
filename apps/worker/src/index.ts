@@ -203,6 +203,20 @@ export default {
             return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
+    } else if (event.cron === '15 8 * * *') {
+      // Timeout audit, on its own off-peak schedule (#251). Its grouped
+      // percentile queries are the heaviest thing we run against execution_steps,
+      // so they sit in the quietest hour rather than at 9 AM ET. It is a separate
+      // cron rather than a move of the whole 13:00 batch, because that batch also
+      // carries nine other daily alerts whose arrival time nobody asked to change.
+      ctx.waitUntil(
+        writeHeartbeat(env.IDEMPOTENCY, 'timeout-audit')
+          .catch((e) => console.error('[cron-heartbeat] timeout-audit write failed:', e))
+      )
+      ctx.waitUntil(
+        runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[timeout-audit] check failed:', e))
+      )
     } else if (event.cron === '0 13 * * *') {
       // Dead-man's-switch heartbeat: stamp that this batch dispatched (#358).
       ctx.waitUntil(
@@ -223,10 +237,6 @@ export default {
       ctx.waitUntil(
         runEmailDropRateCheck(supabase, env.IDEMPOTENCY)
           .catch((e) => console.error('[email-drop-rate] check failed:', e))
-      )
-      ctx.waitUntil(
-        runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
-          .catch((e) => console.error('[timeout-audit] check failed:', e))
       )
       ctx.waitUntil(
         runSecretDriftCheck(supabase, env)
