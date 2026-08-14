@@ -15,6 +15,7 @@
  * Cooldown: 30 min per workflow via KV (prevents repeat alerts during a sustained outage).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage } from './slack'
 import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
@@ -97,20 +98,22 @@ export async function runVolumeCliffCheck(
   appUrl: string,
   selfCheckUrl: string = DEFAULT_SELF_CHECK_URL
 ): Promise<void> {
-  const { data: slackOrgs } = await supabase
+  const { data: slackOrgs, error: slackOrgsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
 
   const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
   if (slackOrgIds.length === 0) return
 
-  const { data: workflows } = await supabase
+  const { data: workflows, error: workflowsError } = await supabase
     .from('workflows')
     .select('id, name, organization_id, slack_channel')
     .in('organization_id', slackOrgIds)
     .eq('is_active', true)
     .is('deleted_at', null)
+  logReadFailure('volume-cliff', 'workflows', workflowsError)
 
   if (!workflows?.length) return
 

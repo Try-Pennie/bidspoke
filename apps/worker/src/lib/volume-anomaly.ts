@@ -24,6 +24,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import { getSlackConnection, postMessage } from './slack'
 import { fetchAllPaged } from './paginate'
 
@@ -98,21 +99,23 @@ export async function runVolumeAnomalyCheck(
   supabase: SupabaseClient
 ): Promise<void> {
   // 1. Find orgs with Slack connections
-  const { data: slackConnections } = await supabase
+  const { data: slackConnections, error: slackConnectionsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('volume-anomaly', 'slack connections', slackConnectionsError)
 
   const orgIds = (slackConnections ?? []).map((c) => c.organization_id as string)
   if (orgIds.length === 0) return
 
   // 2. Get workflow IDs for those orgs
-  const { data: workflows } = await supabase
+  const { data: workflows, error: workflowsError } = await supabase
     .from('workflows')
     .select('id, organization_id')
     .in('organization_id', orgIds)
     .eq('is_active', true)
     .is('deleted_at', null)
+  logReadFailure('volume-anomaly', 'workflows', workflowsError)
 
   const wfToOrg: Record<string, string> = {}
   const orgWorkflowIds: Record<string, string[]> = {}

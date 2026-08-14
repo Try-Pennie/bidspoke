@@ -90,8 +90,10 @@ async function loadFromKvOrDb(
     throw new Error(`partner_constants load failed for org ${orgId}: ${msg}`)
   }
 
-  const { data: uuidRows } = uuidRes
-  const { data: partnerRows } = partnerRes
+  // read-guard-ok (#439): both errors are checked in the block directly above,
+  // which serves the last-good copy or throws. By here the reads have succeeded.
+  const { data: uuidRows } = uuidRes // read-guard-ok: checked in the block above (#439)
+  const { data: partnerRows } = partnerRes // read-guard-ok: checked in the block above (#439)
 
   const subAccountIdsMap: Record<string, string> = {}
   for (const row of uuidRows ?? []) {

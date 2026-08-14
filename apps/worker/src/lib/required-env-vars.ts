@@ -18,6 +18,7 @@
  * becomes mandatory.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import { sendRequiredEnvVarsAlert } from './slack'
 
@@ -53,10 +54,11 @@ export async function runRequiredEnvVarsCheck(
   supabase: SupabaseClient,
   env: Env,
 ): Promise<RequiredEnvVarsResult> {
-  const { data: conns } = await supabase
+  const { data: conns, error: connsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('required-env-vars', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   const missingAcrossOrgs = new Set<string>()

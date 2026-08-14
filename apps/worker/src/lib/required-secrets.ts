@@ -11,6 +11,7 @@
  * (APP_URL, SUPABASE_JWKS_URL, ...) are intentionally excluded.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import { sendRequiredSecretsAlert } from './slack'
 
@@ -80,10 +81,11 @@ export async function runRequiredSecretsCheck(
   const missing = findMissingRequiredSecrets(env)
   if (missing.length === 0) return { missing: [], alerted: false }
 
-  const { data: conns } = await supabase
+  const { data: conns, error: connsError } = await supabase
     .from('service_connections')
     .select('organization_id')
     .eq('service_type', 'slack')
+  logReadFailure('required-secrets', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
   let alerted = false
