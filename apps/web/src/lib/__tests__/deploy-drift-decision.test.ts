@@ -27,12 +27,38 @@ import { REPO_ROOT } from './_scan-utils'
  * In particular a deploy STUCK in progress must still page (L98: finding a reason
  * to stay quiet must not become the only path), so the stand-down applies only
  * while the in-flight run is younger than one deploy's worth of time.
+ *
+ * Issue #802 added the fourth input. The check decided "behind" from git history
+ * over the apps/worker PATH, while the deploy decides from the built BUNDLE, so a
+ * commit touching only worker TEST files read as a strand that no deploy could
+ * ever clear: Deploy Worker skips it correctly (the bytes are identical), and the
+ * next hourly run sees the same gap again. Live 2026-08-14, #799 merged at 20:55
+ * with Deploy Worker skipped, and the check then failed every hour from 21:40
+ * onward while nothing whatsoever was unshipped. The alert's own advice was a
+ * no-op, since re-running the deploy hits the same artifact gate.
+ *
+ * So an accusation is now confirmed against the artifact before it is made
+ * (LESSONS L119), through the same predicate the deploy uses (L16). A comparison
+ * that could not be completed is its OWN outcome, `alert-unconfirmed`, and never
+ * a quiet pass (L98).
  */
 const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-drift-decision.sh')
 
-/** live sha, latest worker commit, whether they match, in-flight deploy age in seconds ('' = none). */
-function decide(live: string, matches: string, inflightAgeSeconds: string): string {
-  return execFileSync('bash', [SCRIPT, live, matches, inflightAgeSeconds], {
+/**
+ * live sha, whether the latest worker commit is already live, in-flight deploy
+ * age in seconds ('' = none), and how the confirming artifact comparison came
+ * out ('identical' | 'differs' | 'unknown').
+ *
+ * The artifact argument defaults to 'differs', so every case written before #802
+ * keeps meaning what it meant: the worker is genuinely behind on shipping code.
+ */
+function decide(
+  live: string,
+  matches: string,
+  inflightAgeSeconds: string,
+  artifact: string = 'differs',
+): string {
+  return execFileSync('bash', [SCRIPT, live, matches, inflightAgeSeconds, artifact], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
@@ -81,7 +107,49 @@ describe('deploy-drift decision (#790)', () => {
     } catch {
       out = 'threw'
     }
-    expect(out === 'alert' || out === 'threw').toBe(true)
+    expect(out === 'alert-unconfirmed' || out === 'threw').toBe(true)
+  })
+
+  it('is ok when behind only by commits that cannot move the bundle, which is #802 exactly', () => {
+    // #799 changed four worker test files. Deploy Worker skipped because the
+    // built artifact was byte identical, which was correct, and the check then
+    // paged hourly for something no deploy could ever clear.
+    expect(decide(SHA, 'no', '', 'identical')).toBe('ok')
+  })
+
+  it('is ok on an identical artifact even mid-deploy, because there is nothing to ship either way', () => {
+    expect(decide(SHA, 'no', '46', 'identical')).toBe('ok')
+  })
+
+  it('alerts when the artifact genuinely differs and no deploy is running', () => {
+    expect(decide(SHA, 'no', '', 'differs')).toBe('alert')
+  })
+
+  it('reports the confirmation as unreached rather than passing when the comparison failed', () => {
+    // A build that could not run is not evidence of a healthy worker. Finding
+    // nothing must never read as finding everything in order (LESSONS L98).
+    expect(decide(SHA, 'no', '', 'unknown')).toBe('alert-unconfirmed')
+  })
+
+  it('reports an unreached confirmation distinctly from a confirmed strand', () => {
+    // Distinct causes get distinct messages (L11): one says the worker is behind,
+    // the other says the check cannot currently tell.
+    expect(decide(SHA, 'no', '', 'unknown')).not.toBe(decide(SHA, 'no', '', 'differs'))
+  })
+
+  it('treats an unrecognised artifact verdict as unconfirmed, not as a pass', () => {
+    expect(decide(SHA, 'no', '', '')).toBe('alert-unconfirmed')
+    expect(decide(SHA, 'no', '', 'yes')).toBe('alert-unconfirmed')
+  })
+
+  it('still stands down mid-deploy when the confirmation could not be completed', () => {
+    // Building at both commits during a deploy is expected to be inconclusive,
+    // and a young deploy is not a strand yet either way.
+    expect(decide(SHA, 'no', '46', 'unknown')).toBe('deploy-in-flight')
+  })
+
+  it('alerts on a stuck deploy even when the artifact comparison failed', () => {
+    expect(decide(SHA, 'no', '3600', 'unknown')).toBe('alert')
   })
 
   it('still reports ok even with a deploy in flight, when nothing is behind', () => {
