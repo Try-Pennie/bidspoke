@@ -2,10 +2,26 @@ name: Deploy Drift
 
 # Catches a "committed but never deployed" worker (#327): the deploy pipeline
 # path-gates Deploy Worker to commits that touch apps/worker, and a failed
-# Verify skips it entirely — so worker code can sit on main, unshipped, with
+# Verify skips it entirely, so worker code can sit on main, unshipped, with
 # nothing flagging it (hit live 2026-06-23). The live worker reports the commit
 # it was deployed from at GET / (DEPLOYED_SHA); this compares that to the latest
 # commit that touched apps/worker on main and alerts if the worker is behind.
+#
+# That comparison is a PROXY, and #802 is what it cost. Deploy decides whether
+# the worker changed by building the bundle at both commits and comparing the
+# bytes, while this job asked git which commits touched the apps/worker PATH.
+# A commit touching only worker TEST files satisfies the second and not the
+# first, so it read as a strand no deploy could ever clear: Deploy Worker skips
+# it correctly, and the next hourly run sees the same gap again. Live on
+# 2026-08-14, #799 merged at 20:55 with Deploy Worker skipped, and this check
+# failed every hour from 21:40 with nothing whatsoever unshipped.
+#
+# So the cheap history check is now only a PRE-FILTER. It is a superset, meaning
+# it can never miss a real strand, and being behind in history is no longer
+# enough to accuse: the job then builds the worker at the live commit and at HEAD
+# and pages only when the bytes actually differ (LESSONS L119, confirm against
+# the primary record before acting), using the same decision script the deploy
+# uses (L16, one shared predicate).
 
 on:
   schedule:
@@ -23,8 +39,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history so merge-base can compare commits
+          path: head
 
       - name: Compare live worker commit to the latest worker-touching commit
+        id: compare
+        working-directory: head
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -32,6 +51,8 @@ jobs:
           LIVE_SHA=$(curl -fsS "$WORKER_URL/" | jq -r '.version // "unknown"')
           LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker)
           echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
+          echo "live_sha=$LIVE_SHA" >> "$GITHUB_OUTPUT"
+          echo "last_worker_commit=$LAST_WORKER_COMMIT" >> "$GITHUB_OUTPUT"
 
           # FIRST, before anything that could exit 0. An unstamped worker is the
           # signal that stamping itself has broken, which is exactly what this job
@@ -45,6 +66,8 @@ jobs:
 
           if ! git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
             echo "::warning::Live worker commit $LIVE_SHA is not in this repo's history; skipping."
+            echo "verdict=skip" >> "$GITHUB_OUTPUT"
+            echo "confirm=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -52,6 +75,7 @@ jobs:
           # change is already live.
           UP_TO_DATE=no
           if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then UP_TO_DATE=yes; fi
+          echo "up_to_date=$UP_TO_DATE" >> "$GITHUB_OUTPUT"
 
           # Age of the oldest Deploy run still queued or running on main, in
           # seconds. Empty when none is in flight (#790). `|| true` so a GitHub API
@@ -61,25 +85,130 @@ jobs:
           INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
             --json status,createdAt --jq \
             '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
           echo "up_to_date=$UP_TO_DATE inflight_age=${INFLIGHT_AGE:-none}"
 
-          DECISION=$(.github/scripts/deploy-drift-decision.sh "$LIVE_SHA" "$UP_TO_DATE" "$INFLIGHT_AGE")
+          # Pre-pass with the artifact verdict still unknown, purely to decide
+          # whether the confirming build is worth paying for. It is safe as a
+          # pre-filter because the only answers it can reach without that verdict
+          # are the ones the verdict cannot change: already up to date, or a
+          # deploy still in flight. Anything else falls through to the real
+          # comparison below, which is what actually decides.
+          VERDICT=$(bash .github/scripts/deploy-drift-decision.sh "$LIVE_SHA" "$UP_TO_DATE" "$INFLIGHT_AGE" unknown)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          if [ "$VERDICT" = "ok" ] || [ "$VERDICT" = "deploy-in-flight" ]; then
+            echo "confirm=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "confirm=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report the settled state
+        if: steps.compare.outputs.confirm != 'true'
+        run: |
+          case "${{ steps.compare.outputs.verdict }}" in
+            ok) echo "Worker is up to date." ;;
+            skip) echo "Live commit is not in this repository's history; nothing to compare." ;;
+            deploy-in-flight)
+              # Not a strand: a deploy is mid-flight and the worker is expected to
+              # be behind until it lands. The next hourly run judges the settled
+              # state, and a deploy stuck past the ceiling still pages.
+              echo "::notice::A deploy is still running (${{ steps.compare.outputs.inflight_age }}s). Not paging; the next run will re-check." ;;
+          esac
+
+      # Everything below runs only when the cheap check suspects a strand. The
+      # steady state after any worker deploy is `ok`, so no build is paid for.
+      - name: Restore a previous confirmation for this exact pair of commits
+        id: cache
+        if: steps.compare.outputs.confirm == 'true'
+        uses: actions/cache@v4
+        with:
+          path: artifact-verdict.txt
+          # Keyed on both commits exactly, never on a cheaper stand-in for them
+          # (L40). Two commits fully determine the two builds, so a hit is the
+          # same answer a rebuild would produce. Both hashes are also always
+          # produced by the SAME run, so a change to the runner image can never
+          # make a cached hash and a fresh one falsely disagree.
+          key: drift-artifact-${{ steps.compare.outputs.live_sha }}-${{ github.sha }}
+
+      - name: Check out the live commit
+        if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.compare.outputs.live_sha }}
+          path: live
+
+      - uses: pnpm/action-setup@v6
+        if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          version: 9
+
+      # Deliberately no `cache: 'pnpm'`, matching deploy.yml's gate: a cache
+      # shared between the two installs is the contamination route #725 flagged
+      # as unproven, and correctness here is worth more than the cache.
+      - uses: actions/setup-node@v7
+        if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          node-version: '22'
+
+      - name: Build the worker at both commits and compare the artifacts
+        id: artifact
+        if: steps.compare.outputs.confirm == 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -uo pipefail
+          # Hashes dist/index.js only, never the whole outdir: the sibling
+          # sourcemap embeds sourceRoot, which equals the --outdir path, so
+          # hashing the directory would measure the harness rather than the
+          # artifact (#725).
+          build_hash() {
+            ( cd "$1" && pnpm install --frozen-lockfile >/dev/null 2>&1 \
+              && pnpm --filter=worker run build >/dev/null 2>&1 \
+              && sha256sum apps/worker/dist/index.js | cut -d' ' -f1 ) || true
+          }
+          HEAD_HASH=$(build_hash head)
+          LIVE_HASH=$(build_hash live)
+          echo "head_hash=${HEAD_HASH:-none} live_hash=${LIVE_HASH:-none}"
+
+          # An empty hash means a build did not produce an artifact, and two
+          # empty hashes must never read as a match. Kept in a script rather than
+          # here so it is covered by drift-artifact-verdict.test.ts: shell living
+          # in workflow YAML has no test that can reach it.
+          ARTIFACT=$(bash head/.github/scripts/drift-artifact-verdict.sh \
+            "${{ steps.compare.outputs.live_sha }}" "$HEAD_HASH" "$LIVE_HASH")
+          printf '%s\n' "$ARTIFACT" > artifact-verdict.txt
+
+      - name: Decide and alert
+        if: steps.compare.outputs.confirm == 'true'
+        run: |
+          set -uo pipefail
+          ARTIFACT=$(cat artifact-verdict.txt 2>/dev/null || echo unknown)
+          echo "artifact=$ARTIFACT"
+          LIVE_SHA='${{ steps.compare.outputs.live_sha }}'
+          LAST_WORKER_COMMIT='${{ steps.compare.outputs.last_worker_commit }}'
+
+          DECISION=$(bash head/.github/scripts/deploy-drift-decision.sh \
+            "$LIVE_SHA" '${{ steps.compare.outputs.up_to_date }}' \
+            '${{ steps.compare.outputs.inflight_age }}' "$ARTIFACT")
 
           if [ "$DECISION" = "ok" ]; then
-            echo "Worker is up to date."
+            echo "::notice::The worker is behind in history, but the built artifact is byte identical to what is live, so nothing is unshipped."
             exit 0
           fi
           if [ "$DECISION" = "deploy-in-flight" ]; then
-            # Not a strand: a deploy is mid-flight and the worker is expected to be
-            # behind until it lands. The next hourly run judges the settled state.
-            echo "::notice::A deploy is still running (${INFLIGHT_AGE}s). Not paging; the next run will re-check."
+            echo "::notice::A deploy is still running. Not paging; the next run will re-check."
             exit 0
           fi
 
-          echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT but the live worker is $LIVE_SHA."
-          if [ -n "$SLACK_WEBHOOK_URL" ]; then
-            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe latest commit touching `apps/worker` (`%s`) is not in the live worker (running `%s`). This happens when a deploy failed at Verify or a later web-only push left the worker behind.\n\n*How to fix:* re-run the most recent failed Deploy run (apply any pending migration first with `supabase db push`), or push a no-op worker change to trigger a fresh Deploy Worker.\n\n<%s/%s/actions/runs/%s|Open this check>' \
-              "${LAST_WORKER_COMMIT:0:7}" "${LIVE_SHA:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          if [ "$DECISION" = "alert-unconfirmed" ]; then
+            echo "::error::Deploy Drift could not confirm: the worker is behind $LAST_WORKER_COMMIT and the artifact comparison did not complete."
+            TEXT=$(printf '*Deploy Drift could not check the worker*\n\nThe live worker (`%s`) is behind `apps/worker` commit `%s`, and the build that confirms whether that matters did not complete. Until it does, this check cannot tell a genuinely stranded worker from a commit that changes nothing shippable.\n\n*How to fix:* open the run and read the build step. This check stays unable to report a real strand while it keeps failing here.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          else
+            echo "::error::Stranded worker: apps/worker changed in $LAST_WORKER_COMMIT, the built artifact differs from what is live, and the live worker is $LIVE_SHA."
+            TEXT=$(printf '*Worker code is committed but not deployed*\n\nThe live worker is running `%s`, and building `apps/worker` at commit `%s` produces a different bundle, so shipping code is sitting on main unshipped. This happens when a deploy failed at Verify.\n\n*How to fix:* re-run the most recent Deploy run on main (apply any pending migration first with `supabase db push`). Pushing an empty worker change will not help: the deploy compares the built bundle, so a change that does not move it is skipped.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          fi
+
+          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
             curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
               -H 'Content-Type: application/json' \
               --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
