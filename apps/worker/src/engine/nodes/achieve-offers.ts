@@ -23,9 +23,12 @@
  *                       debt extraction (for flows without the Main Flow shape)
  *
  * Env vars (Env Variables page, not Worker secrets):
+ *   ACHIEVE_ENV                          'production' or 'staging'. Picks the host AND the
+ *                                        credential pair together (see achieve-endpoint.ts).
+ *                                        Anything unrecognised resolves to staging.
  *   ACHIEVE_USERNAME / ACHIEVE_PASSWORD  Basic auth (assigned by Achieve)
- *   ACHIEVE_API_URL                      https://api-stg.freedomfinancialnet.com
- *                                        (sandbox) or https://api.freedomfinancialnet.com
+ *   ACHIEVE_STAGING_USERNAME / _PASSWORD Optional staging pair; each falls back to the main one
+ *   ACHIEVE_API_URL                      Legacy explicit host, still honoured. ACHIEVE_ENV wins
  *   ACHIEVE_UTM_SOURCE                   optional utm_source fallback
  *   ACHIEVE_TRUSTED_FORM_CERT            optional tracking.trusted_form_cert
  *
@@ -42,6 +45,7 @@ import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowAchieveStub } from '../shadow'
 import { parseJsonSafe } from '../../lib/json'
 import { screenLead } from './achieve-screen'
+import { resolveAchieveEndpoint } from './achieve-endpoint'
 
 export interface AchieveOffersConfig {
   wait_for_offers?: boolean
@@ -53,8 +57,6 @@ export interface AchieveOffersConfig {
 }
 
 const FETCH_TIMEOUT_MS = 12_000
-const DEFAULT_BASE_URL = 'https://api-stg.freedomfinancialnet.com'
-const PROD_BASE_URL = 'https://api.freedomfinancialnet.com'
 
 // Achieve's sandbox only returns offers for its own seeded showroom profiles; it declines
 // every real lead (28/28 on 2026-07-13, including two at ~$18k with poor credit). Achieve
@@ -74,12 +76,6 @@ const SHOWROOM_PROFILE = {
     zip: '93908',
   },
 } as const
-
-// Fails safe: anything that is not explicitly production counts as sandbox, so a blank or
-// misconfigured ACHIEVE_API_URL uses the seeded profile rather than a real person's name.
-function isProduction(baseUrl: string): boolean {
-  return baseUrl.replace(/\/+$/, '') === PROD_BASE_URL
-}
 
 const EMPLOYMENT_MAP: Record<string, string> = {
   employed_full_time: 'full_time',
@@ -191,9 +187,10 @@ export async function executeAchieveOffersNode(
   }
 
   // Needed BEFORE the request is built: off production we swap the lead's identity for
-  // Achieve's showroom profile rather than leaking it to a sandbox that discards it.
-  const baseUrl = ctx.env.ACHIEVE_API_URL || DEFAULT_BASE_URL
-  const production = isProduction(baseUrl)
+  // Achieve's showroom profile rather than leaking it to a sandbox that discards it. One setting
+  // (ACHIEVE_ENV) picks the host AND the matching credentials, and anything that cannot be proven
+  // to be production resolves to staging.
+  const { baseUrl, production, username, password } = resolveAchieveEndpoint(ctx.env)
 
   const request = buildRequest(ctx, config, waitForOffers, production)
   const resolvedInput = {
@@ -201,12 +198,20 @@ export async function executeAchieveOffersNode(
     resolved: {
       wait_for_offers: waitForOffers,
       sandbox_profile: !production,
+      endpoint: baseUrl,
     },
   }
 
-  if (!ctx.env.ACHIEVE_USERNAME || !ctx.env.ACHIEVE_PASSWORD) {
+  // Names the environment, because a staging test with no staging credential stored and a
+  // production run with none are the same message otherwise, and they need different fixes.
+  if (!username || !password) {
+    const which = production ? 'production' : 'staging'
     return {
-      output: result(false, 0, 'error', 'Missing ACHIEVE_USERNAME/ACHIEVE_PASSWORD env vars', request, null, !production),
+      output: result(
+        false, 0, 'error',
+        `Missing Achieve ${which} username/password env vars`,
+        request, null, !production
+      ),
       resolvedInput,
     }
   }
@@ -229,7 +234,7 @@ export async function executeAchieveOffersNode(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: 'Basic ' + btoa(`${ctx.env.ACHIEVE_USERNAME}:${ctx.env.ACHIEVE_PASSWORD}`),
+        Authorization: 'Basic ' + btoa(`${username}:${password}`),
       },
       body: JSON.stringify(request),
       signal: controller.signal,

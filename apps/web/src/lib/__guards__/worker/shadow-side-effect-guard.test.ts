@@ -121,7 +121,7 @@ describe('every side-effecting node executor is shadow-mode aware (#230)', () =>
   // against the real files, so the exemption cannot quietly become a licence to add a call.
   it('holds the Achieve screening helpers to the pure claim that exempted them', () => {
     const files = listNodeFiles()
-    for (const name of ['achieve-credit-report', 'achieve-screen']) {
+    for (const name of ['achieve-credit-report', 'achieve-screen', 'achieve-endpoint']) {
       const file = files.find((f) => f.name === name)
       expect(file, `${name} is no longer a node file`).toBeDefined()
       expect(SHADOW_EXEMPT_NODES).toContain(name)

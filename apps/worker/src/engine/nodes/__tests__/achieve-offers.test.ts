@@ -241,7 +241,40 @@ describe('executeAchieveOffersNode', () => {
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
     expect(out.response_status).toBe('error')
-    expect(out.response_reason).toContain('ACHIEVE_USERNAME')
+    expect(out.response_reason).toMatch(/username\/password/i)
+  })
+
+  // The message must name WHICH environment's credentials are missing. A staging test with no
+  // staging credential stored and a production run with none need different fixes, and one
+  // shared wording sends whoever reads it to the wrong setting.
+  it('names the environment whose credentials are missing', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const staging = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'staging' } }))
+    expect((staging.output as Record<string, unknown>).response_reason).toMatch(/staging/i)
+
+    const prod = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'production' } }))
+    expect((prod.output as Record<string, unknown>).response_reason).toMatch(/production/i)
+  })
+
+  // The switch has to carry the credentials AND the host together, proven at the node rather than
+  // only in the resolver's own unit tests: staging must not authenticate with the live password.
+  it('sends staging requests to the staging host with the staging credentials', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        env: {
+          ACHIEVE_ENV: 'staging',
+          ACHIEVE_USERNAME: 'live_user',
+          ACHIEVE_PASSWORD: 'live_pass',
+          ACHIEVE_STAGING_USERNAME: 'stg_user',
+          ACHIEVE_STAGING_PASSWORD: 'stg_pass',
+        },
+      })
+    )
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Basic b64(stg_user:stg_pass)')
   })
 
   // Vantage floor screen (ACHIEVE_MIN_VANTAGE_SCORE). Ships OFF: 0/blank/unset send everyone,

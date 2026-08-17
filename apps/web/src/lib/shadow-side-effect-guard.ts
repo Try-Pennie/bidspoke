@@ -26,6 +26,7 @@ export const SHADOW_EXEMPT_NODES = [
   // outbound call, which is what would make a shadow guard necessary.
   'achieve-credit-report',
   'achieve-screen',
+  'achieve-endpoint',
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).
