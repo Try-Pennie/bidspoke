@@ -37,7 +37,9 @@ Credentials live on the Environment Variables page, not in node config:
 |----------|----------|-------------|
 | `ACHIEVE_USERNAME` | Yes | Basic auth username assigned by Achieve. |
 | `ACHIEVE_PASSWORD` | Yes | Basic auth password (mark as secret). |
-| `ACHIEVE_API_URL` | No | `https://api-stg.freedomfinancialnet.com` (sandbox, the default) or `https://api.freedomfinancialnet.com` (production). |
+| `ACHIEVE_ENV` | No | `production` or `staging`. Picks the host **and the matching credential pair together**, so switching environment cannot leave the wrong password behind. Fails safe: unset, blank or any unrecognised value (including `prod`) resolves to **staging**, never production. |
+| `ACHIEVE_STAGING_USERNAME` | No | Staging username. Falls back to `ACHIEVE_USERNAME` when absent, since Achieve confirmed the existing credentials also work against staging. |
+| `ACHIEVE_API_URL` | No | Legacy explicit host, still honoured so nothing broke when `ACHIEVE_ENV` shipped. `ACHIEVE_ENV` wins over it, and only an exact match on the production host counts as production. |
 | `ACHIEVE_UTM_SOURCE` | No | Fallback for `tracking.utm_source`. |
 | `ACHIEVE_TRUSTED_FORM_CERT` | No | Sent as `tracking.trusted_form_cert` when set. |
 | `ACHIEVE_CONSENT_TCPA` | Yes | Verbatim TCPA text shown on the form. Sent as `consents.tcpa`. |
@@ -96,6 +98,22 @@ Equifax outage stops leads instead of sending unscreened ones at the moment we c
 - When set to a positive floor, a lead whose Vantage is below the floor is skipped before any payload is built: no API call, no PII sent, no `achieve_evaluations` row, and the flow continues normally.
 - A lead with no Vantage score is treated as below the floor and skipped (no score, do not send).
 - The score is read from the `gen_vantage_score` step by default; override with `vantage_score_ref` for other workflows.
+
+### Testing against Achieve's staging
+
+Set `ACHIEVE_ENV` to `staging`, and set it back to `production` afterwards. That one value moves
+the host and the credentials together. Nothing else needs touching.
+
+Two things to expect before reading the result:
+
+1. **Every staging request carries the same seeded identity** (see the showroom profile below), so
+   a single request confirms the plumbing and the `utm_source`, while volume against staging is
+   meaningless: Achieve would see one person over and over and dedupe most of it.
+2. **Screening still applies**, judged on the real lead's data. With the full criteria set
+   configured, roughly 7% of leads reach the send, so about one every six minutes.
+
+To send anything at all the score floor must also allow it, since `ACHIEVE_MIN_VANTAGE_SCORE` is
+what holds the feed closed. Open it for as short a window as you need, and put it back.
 
 ### Sandbox mode: the showroom profile
 
