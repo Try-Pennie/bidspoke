@@ -29,7 +29,11 @@
 #
 # Usage:
 #   deploy-drift-decision.sh <live_sha> <up_to_date:yes|no> <inflight_age_seconds|""> \
-#                            <artifact:identical|differs|unknown>
+#                            <artifact:identical|differs|not-gated|unknown>
+#
+# `not-gated` is for a deploy target with no artifact gate, where the paths filter
+# is the deploy's own predicate and history therefore settles the question on its
+# own (#739).
 #
 # Prints exactly one word: `ok`, `deploy-in-flight`, `alert`, or
 # `alert-unconfirmed`. The reason goes to stderr. Always exits 0; the caller acts
@@ -99,6 +103,21 @@ fi
 
 if [ "$ARTIFACT" = "differs" ]; then
   decide alert "worker is behind, the built artifact differs from what is live, and no deploy is running"
+fi
+
+# A target with NO artifact gate (#739). The engine worker's deploy decides from
+# the built bundle, which is why history is only a pre-filter for it and an
+# accusation must be confirmed against the artifact first (#802). The tail worker
+# has no such gate: its deploy fires on its paths filter alone. So there the paths
+# filter IS the deploy's own predicate, this check asks the identical question,
+# and the two cannot disagree.
+#
+# Which makes being behind in history the CONFIRMED condition rather than a
+# suspicion awaiting evidence that will never arrive. Letting it fall through to
+# alert-unconfirmed below would leave that check permanently reporting that it
+# could not confirm, which is a guard unable to ever say the thing it exists for.
+if [ "$ARTIFACT" = "not-gated" ]; then
+  decide alert "the target is behind, it has no artifact gate so history is the deploy's own predicate, and no deploy is running"
 fi
 
 decide alert-unconfirmed "worker is behind and the confirming artifact comparison did not complete (got '${ARTIFACT}'), so this check cannot currently tell a strand from a no-op"

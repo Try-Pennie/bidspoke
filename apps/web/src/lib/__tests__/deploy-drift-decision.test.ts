@@ -158,3 +158,48 @@ describe('deploy-drift decision (#790)', () => {
     expect(decide(SHA, 'yes', '46')).toBe('ok')
   })
 })
+
+/**
+ * A deploy target with NO artifact gate (#739).
+ *
+ * The engine worker's deploy decides from the built bundle, which is why history
+ * is only a pre-filter for it and an accusation has to be confirmed against the
+ * artifact before it is made (#802). The tail worker has no such gate: its deploy
+ * job fires on its paths filter alone. So for that target the paths filter IS the
+ * deploy's own predicate, the history check asks the identical question, and the
+ * two cannot disagree.
+ *
+ * `not-gated` says exactly that, and it must behave like `differs` rather than
+ * like `unknown`: being behind in history is the CONFIRMED condition here, not a
+ * suspicion awaiting evidence that will never arrive. Sending it down the
+ * unknown path would make the tail check permanently report that it could not
+ * confirm, which is a guard that can never say the thing it exists to say.
+ */
+describe('a target with no artifact gate (#739)', () => {
+  it('pages when it is behind and no deploy is running', () => {
+    expect(decide('abc1234', 'no', '', 'not-gated')).toBe('alert')
+  })
+
+  it('is quiet when it is already up to date', () => {
+    expect(decide('abc1234', 'yes', '', 'not-gated')).toBe('ok')
+  })
+
+  it('stands down while a young deploy is in flight', () => {
+    expect(decide('abc1234', 'no', '120', 'not-gated')).toBe('deploy-in-flight')
+  })
+
+  it('still pages when the in-flight deploy is stuck', () => {
+    expect(decide('abc1234', 'no', '99999', 'not-gated')).toBe('alert')
+  })
+
+  it('still pages when the target reports no commit at all', () => {
+    expect(decide('unknown', 'no', '', 'not-gated')).toBe('alert')
+  })
+
+  it('does not let an unrecognised verdict reach the same place', () => {
+    // The guard on the guard. If a typo in the caller produced something this
+    // script does not know, it must land on alert-unconfirmed rather than
+    // quietly behaving like a confirmed comparison.
+    expect(decide('abc1234', 'no', '', 'not-gate')).toBe('alert-unconfirmed')
+  })
+})

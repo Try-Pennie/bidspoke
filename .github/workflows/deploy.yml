@@ -119,8 +119,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `exec`, not `run deploy -- --var`. pnpm forwards a bare `--` verbatim,
+      # wrangler reads it as end of options and silently discards every flag
+      # after it, and the deploy still exits 0. That is #327: the engine worker
+      # answered `version: "unknown"` for months and the drift check it fed
+      # skipped every hour. A test asserts this line never regains that shape.
       - name: Deploy Worker Tail
-        run: pnpm --filter=worker-tail run deploy
+        run: pnpm --filter=worker-tail exec wrangler deploy --var DEPLOYED_SHA:${{ github.sha }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
