@@ -140,3 +140,91 @@ describe('the tail drift check asks the same question the deploy asks (#739)', (
     ).toMatch(/unstamped|::error/)
   })
 })
+
+describe('the tail check tells apart the ways it can fail (#739)', () => {
+  it('reports a worker that did not answer separately from one with no stamp', () => {
+    // A worker that is down and a worker whose deploy forgot the stamp need two
+    // different actions: look at Cloudflare, or look at the deploy step. Folding
+    // them into one message sends the reader to check the wrong thing (L11), and
+    // the reader is being paged precisely because they do not already know which
+    // it is.
+    const yml = readRepoFile('.github/workflows/deploy-drift.yml')
+    const tail = yml.slice(yml.indexOf('LAST_TAIL_COMMIT='))
+    expect(tail, 'the tail job no longer has a distinct unreachable outcome').toContain(
+      'alert-unreachable',
+    )
+    expect(tail).toContain('alert-unstamped')
+
+    // And each must reach its own message rather than sharing one.
+    const unreachable = tail.indexOf('alert-unreachable)')
+    const unstamped = tail.indexOf('alert-unstamped)')
+    expect(unreachable, 'no unreachable branch in the alert step').toBeGreaterThan(-1)
+    expect(unstamped, 'no unstamped branch in the alert step').toBeGreaterThan(-1)
+    expect(unreachable).not.toBe(unstamped)
+  })
+})
+
+/**
+ * No job's alert may talk about a different job's subject (#739).
+ *
+ * This is not hypothetical. Writing the tail job, an anchored text edit matched
+ * the FIRST occurrence of its anchor, which was in the site job, and dropped the
+ * tail worker's "did not answer" message into the site's case statement ahead of
+ * the site's own. Shell `case` takes the first matching arm, so an unreachable
+ * SITE would have paged saying the cost tail worker was unreachable, and both the
+ * alert and the run would have looked entirely healthy.
+ *
+ * That is L75 in a workflow file: when identifying what an outward action is
+ * about fails, it substituted a nearby candidate, which looks exactly like
+ * success. It survived a mutation check, and was found only because that check
+ * failed to fail (L154).
+ */
+describe('each drift job only talks about its own subject (#739)', () => {
+  /** The three jobs, sliced apart by their top-level keys. */
+  const jobBodies = (): Record<string, string> => {
+    const yml = readRepoFile('.github/workflows/deploy-drift.yml')
+    const starts = [...yml.matchAll(/^ {2}([a-z_]+):$/gm)].map((m) => ({ name: m[1], at: m.index! }))
+    expect(starts.length, 'no jobs found in deploy-drift.yml').toBeGreaterThan(2)
+    const out: Record<string, string> = {}
+    starts.forEach((s, i) => {
+      out[s.name] = yml.slice(s.at, i + 1 < starts.length ? starts[i + 1].at : undefined)
+    })
+    return out
+  }
+
+  /** Phrases that name one subject and must not appear in another job. */
+  const SUBJECT_PHRASES: Record<string, RegExp> = {
+    drift: /the live worker|stranded worker|Worker code is committed/i,
+    pages: /the site|Pages|routes/i,
+    worker_tail: /tail worker/i,
+  }
+
+  it('slices the jobs apart, so this cannot pass vacuously', () => {
+    const jobs = jobBodies()
+    for (const name of Object.keys(SUBJECT_PHRASES)) {
+      expect(jobs[name], `job ${name} not found`).toBeDefined()
+      expect(jobs[name].length).toBeGreaterThan(200)
+    }
+  })
+
+  it('keeps the tail worker out of the other jobs alerts', () => {
+    const jobs = jobBodies()
+    for (const other of ['drift', 'pages']) {
+      expect(
+        jobs[other],
+        `the ${other} job's alerts mention the tail worker, so it would page about the wrong thing`,
+      ).not.toMatch(SUBJECT_PHRASES.worker_tail)
+    }
+  })
+
+  it('gives each job exactly one arm per verdict', () => {
+    // A duplicate arm is silent: shell `case` takes the first match and the
+    // second is dead, so the job keeps working while saying the wrong thing.
+    for (const [name, body] of Object.entries(jobBodies())) {
+      const arms = [...body.matchAll(/^\s{12}(alert-[a-z-]+)\)/gm)].map((m) => m[1])
+      const seen = new Set<string>()
+      const dupes = arms.filter((a) => (seen.has(a) ? true : (seen.add(a), false)))
+      expect(dupes, `the ${name} job has more than one arm for the same verdict`).toEqual([])
+    }
+  })
+})
