@@ -12,18 +12,21 @@
  *      record, so the held-back volume can at least be counted and attributed for as long as
  *      executions are retained. A single shared "skipped" reason would make that impossible,
  *      and it cannot be recovered afterwards.
- *   2. Measured against 526 live leads reaching the node, the four payload-only criteria pass
- *      about 20%, and the full set passes about 9% under the default delinquency reading and
- *      about 3% under the strict one. So this gate cuts Achieve's volume by roughly ten to
- *      forty times. That is the intended behaviour, not a defect.
+ *   2. Measured against live leads reaching the node, the four payload-only criteria pass about
+ *      20%, and the full set with a 600 score floor passes about 7%. So this gate cuts Achieve's
+ *      volume from roughly 2,300 leads a day to around 150. That is the intended behaviour, not
+ *      a defect, and it is worth re-reading before anyone concludes Achieve has no appetite for
+ *      our traffic.
  *
  * EVERY threshold lives in an environment variable and EVERY one is inert when unset, so all
  * six Achieve nodes are configured from one page and no node config is ever touched. A deploy
  * with nothing set changes nothing about which leads are sent.
  *
- * Not implementable, and deliberately absent: citizenship or permanent residency, which no
- * form or credit report we hold collects, and Achieve's DTI rule, which describes what they do
- * at their own prequalification stage rather than a screen they expect from us.
+ * Not implementable, and deliberately absent: citizenship or permanent residency, which no form
+ * or credit report we hold collects. That is the ONLY one of Achieve's criteria we cannot apply.
+ * DTI was originally thought impossible too, on the belief that we hold no monthly obligations;
+ * that was wrong, the credit report carries a scheduled monthly payment per account, and Dan
+ * caught it (2026-08-17).
  */
 
 import type { ExecutionContext } from '../../types'
@@ -33,6 +36,7 @@ import {
   countDelinquentTrades,
   countRecentInquiries,
   monthsSinceLatestBankruptcy,
+  monthlyDebtPayments,
   BANKRUPTCY_DATE_UNKNOWN,
   type DelinquencyMode,
 } from './achieve-credit-report'
@@ -53,6 +57,7 @@ export const ACHIEVE_SCREEN_REASONS = [
   'recent_bankruptcy',
   'too_many_inquiries',
   'under_min_age',
+  'dti_too_high',
 ] as const
 
 export type AchieveScreenReason = (typeof ACHIEVE_SCREEN_REASONS)[number]
@@ -150,6 +155,7 @@ export function screenLead(
   const minBankruptcyMonths = threshold(env.ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY)
   const maxInquiries = threshold(env.ACHIEVE_MAX_INQUIRIES_6MO)
   const minAge = threshold(env.ACHIEVE_MIN_AGE)
+  const maxDti = threshold(env.ACHIEVE_MAX_DTI)
 
   const loanAmount = numberFrom(payload.loanInformation?.loanAmount)
   const income = numberFrom(payload.financialInformation?.annualIncome)
@@ -204,7 +210,8 @@ export function screenLead(
     }
   }
 
-  const needsReport = maxDelinquencies != null || minBankruptcyMonths != null || maxInquiries != null
+  const needsReport =
+    maxDelinquencies != null || minBankruptcyMonths != null || maxInquiries != null || maxDti != null
   if (!needsReport) return { pass: true }
 
   // A missing report is NOT a clean report. Refusing here means an Equifax outage stops leads
@@ -238,6 +245,31 @@ export function screenLead(
     const count = countRecentInquiries(report, INQUIRY_WINDOW_DAYS, now)
     if (count > maxInquiries) {
       return fail('too_many_inquiries', { inquiries_6mo: count, max: maxInquiries })
+    }
+  }
+
+  // Debt to income, from the scheduled monthly payments on the report over monthly gross income.
+  // Note this UNDERSTATES a renter's true ratio, because rent never appears on a credit report
+  // while a mortgage does. Understatement pushes a lead under the ceiling rather than over it,
+  // so the error sends leads the partner may decline rather than excluding leads we should send.
+  //
+  // A file with no accounts at all yields null, and passes: a ceiling on how much of an income
+  // goes to debt is not a reason to refuse somebody with no debt. No stated income is different,
+  // and refuses, because the ratio genuinely cannot be computed.
+  if (maxDti != null) {
+    if (income == null) {
+      return fail('dti_too_high', { annual_income: income, max: maxDti })
+    }
+    const monthly = monthlyDebtPayments(report)
+    if (monthly != null) {
+      const dti = monthly / (income / 12)
+      if (dti > maxDti) {
+        return fail('dti_too_high', {
+          dti: Number(dti.toFixed(4)),
+          monthly_debt_payments: monthly,
+          max: maxDti,
+        })
+      }
     }
   }
 
