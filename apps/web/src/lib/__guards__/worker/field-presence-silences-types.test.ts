@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT } from '../../__tests__/_scan-utils'
 
 const EXPECTED_COLUMNS = ['id', 'workflow_id', 'field_path', 'reason', 'created_at', 'created_by'] as const
 const MIGRATION = path.join(REPO_ROOT, 'supabase/migrations/20260629000002_field_presence_silences.sql')

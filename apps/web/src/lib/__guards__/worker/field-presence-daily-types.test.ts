@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT } from '../../__tests__/_scan-utils'
 
 // The hand-authored field_presence_daily type block must match the migration
 // DDL exactly. The CI "DB types regenerated" job only checks database.ts is in

@@ -31,11 +31,11 @@ import {
   DISPLAY_ONLY_FIELDS,
   extractDisplayedConfigFields,
   findCardConfigViolations,
-} from '../node-card-config-guard'
+} from '../../node-card-config-guard'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const WEB_NODES = path.resolve(HERE, '../../components/canvas/nodes')
-const WORKER_SRC = path.resolve(HERE, '../../../../worker/src')
+const WEB_NODES = path.resolve(HERE, '../../../components/canvas/nodes')
+const WORKER_SRC = path.resolve(HERE, '../../../../../worker/src')
 
 describe('extractDisplayedConfigFields', () => {
   it('finds dot-access reads', () => {

@@ -24,7 +24,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT, WORKER_SRC, listFiles } from './_scan-utils'
+import { REPO_ROOT, WORKER_SRC, listFiles } from '../../__tests__/_scan-utils'
 
 const DOC = path.join(REPO_ROOT, 'docs/achieve-fdr-node.md')
 const EXPORTER = path.join(WORKER_SRC, 'lib/achieve-export.ts')

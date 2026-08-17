@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT } from '../../__tests__/_scan-utils'
 
 /**
  * The scheduled-workflow dead-man's-switch (#805) is driven by a hand-written

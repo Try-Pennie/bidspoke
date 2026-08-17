@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
-import { sanitizeSource } from './_scan-utils'
+import { REPO_ROOT } from '../../__tests__/_scan-utils'
+import { sanitizeSource } from '../../__tests__/_scan-utils'
 
 /**
  * Every cron Cloudflare is told to fire must have a handler, and every handler

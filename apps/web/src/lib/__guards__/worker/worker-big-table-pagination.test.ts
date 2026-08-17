@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT, WORKER_SRC, listTsFiles, consumeParens } from './_scan-utils'
+import { REPO_ROOT, WORKER_SRC, listTsFiles, consumeParens } from '../../__tests__/_scan-utils'
 
 const MIGRATIONS_DIR = path.join(REPO_ROOT, 'supabase/migrations')
 // Scheduled/engine code plus the request-scoped API routes (#185). Routes are

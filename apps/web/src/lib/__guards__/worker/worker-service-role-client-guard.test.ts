@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { WORKER_SRC, listTsFiles, sanitizeSource } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-utils'
 
 /**
  * Every Supabase client the Worker builds must authenticate with

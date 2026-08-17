@@ -29,7 +29,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, findSupabaseWrites } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, findSupabaseWrites } from '../../__tests__/_scan-utils'
 
 const SCAN_DIRS = ['routes'].map((d) => path.join(WORKER_SRC, d))
 

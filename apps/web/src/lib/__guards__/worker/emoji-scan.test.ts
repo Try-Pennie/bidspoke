@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { findEmoji } from '../emoji-scan'
-import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
+import { findEmoji } from '../../emoji-scan'
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from '../../__tests__/_scan-utils'
 
 describe('findEmoji', () => {
   it('flags a unicode emoji glyph', () => {
