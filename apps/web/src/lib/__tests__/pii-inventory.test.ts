@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { listFiles, REPO_ROOT } from '../../__tests__/_scan-utils'
+import { listFiles, REPO_ROOT } from './_scan-utils'
 
 /**
  * The data classification document must name every table that holds personal
@@ -17,6 +17,11 @@ import { listFiles, REPO_ROOT } from '../../__tests__/_scan-utils'
  * L41: a list that must mirror a source of truth is derived from it, never
  * maintained by hand beside it). The migrations are the source of truth for what
  * columns exist, they are in git, and they can be read without a database.
+ *
+ * It lives with the general guards rather than in the worker guard directory,
+ * because its subject is the MIGRATIONS and the document, not worker source. The
+ * placement guard from #502 caught it in the wrong place on its first run, which
+ * is the most convincing evidence that guard works that could be asked for.
  *
  * The check is deliberately at TABLE granularity rather than column. The
  * document is prose meant to be read by a person, and demanding it recite every
