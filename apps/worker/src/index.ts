@@ -18,6 +18,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
+import { runPgCronWatch } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -362,6 +363,21 @@ export default {
       // scheduled workflow that stops firing is silent in exactly the same way as
       // one that keeps passing. Hourly rather than on the minute cron because it
       // costs a GitHub API call per watched workflow.
+      // Watches the DATABASE's own scheduled jobs (#770). cron-heartbeat covers
+      // this worker's crons and workflow-schedule-watch covers GitHub's; nothing
+      // read cron.job_run_details, so a pg_cron job could fail every night
+      // unseen. It had: 62 failed runs across four jobs over a month (#833).
+      ctx.waitUntil(
+        runPgCronWatch(supabase, env.IDEMPOTENCY)
+          .then((rs) => {
+            for (const r of rs) {
+              if (r.status !== 'healthy') {
+                console.error(`[pg-cron-watch] ${r.jobname} ${r.status} alerted=${r.alerted} ${r.detail}`)
+              }
+            }
+          })
+          .catch((e) => console.error('[pg-cron-watch] check failed:', e))
+      )
       ctx.waitUntil(
         runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
           .then((rs) => {

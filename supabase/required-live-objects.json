@@ -93,5 +93,13 @@
     "args": {},
     "anon": "denied",
     "note": "Deletes exported lead_sightings rows. Row level, so RLS constrained it, but there is no reason a browser role should reach it."
+  },
+  {
+    "name": "pg_cron_health",
+    "args": {
+      "window_hours": 24
+    },
+    "anon": "denied",
+    "note": "Read hourly by the Worker's pg-cron watch (#770) to see whether the database's own scheduled jobs are failing or have stopped. Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default, which is #762, and without the REVOKE this hands anybody with the publishable key a listing of every scheduled job and its error messages."
   }
 ]

@@ -1058,6 +1058,60 @@ export async function sendCronHeartbeatAlert(
 }
 
 /**
+ * Alert that a DATABASE scheduled job is failing or has stopped (#770).
+ *
+ * Each status gets its own wording. A job erroring every run, a job that has
+ * quietly stopped being scheduled, and a job whose schedule this check cannot
+ * read need three different actions, and saying the wrong one sends the reader
+ * to the wrong place (LESSONS L11).
+ */
+export async function sendPgCronAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  verdict: { jobname: string; status: string; detail: string },
+  schedule: string,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+
+  const headers: Record<string, string> = {
+    failing: `Database job ${verdict.jobname} is failing`,
+    stalled: `Database job ${verdict.jobname} has stopped running`,
+    never_succeeded: `Database job ${verdict.jobname} has never succeeded`,
+    unknown_schedule: `Cannot tell whether database job ${verdict.jobname} is healthy`,
+    inactive: `Database job ${verdict.jobname} is disabled`,
+  }
+  const fixes: Record<string, string> = {
+    failing: `*How to fix:* read the error above. \`cron.job_run_details\` holds the full message and the run history for this job.`,
+    stalled: `*How to fix:* check the job is still present and active in \`cron.job\`. A job removed or disabled by a migration produces no failed runs, so its silence is the only signal there is.`,
+    never_succeeded: `*How to fix:* the job is scheduled and has not completed successfully in the window. Read its most recent run in \`cron.job_run_details\`.`,
+    unknown_schedule: `*How to fix:* the staleness half of this check is not running for this job. Either simplify the schedule or teach \`expectedGapMs\` to read this shape.`,
+    inactive: `*How to fix:* re-enable it, or remove it, so a job nobody meant to keep is not left looking scheduled.`,
+  }
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: headers[verdict.status] ?? `Database job ${verdict.jobname} needs attention`, emoji: false },
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `\`${verdict.jobname}\` (\`${schedule}\`): ${verdict.detail}` },
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: fixes[verdict.status] ?? '*How to fix:* read this job in `cron.job_run_details`.' },
+    },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `${verdict.jobname}: ${verdict.status}`,
+  )) !== null
+}
+
+/**
  * Alert that a SCHEDULED GITHUB WORKFLOW has gone dark, or that we cannot tell
  * (#805).
  *
