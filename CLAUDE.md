@@ -67,6 +67,29 @@ The guard keys on the hostname, not a hardcoded project ref, so any database it 
 - Repo: https://github.com/Try-Pennie/bidspoke
 - Commit and push after each meaningful chunk of work
 - CI must pass before merging to main
+
+### Never push straight to main (#266)
+Every change to main goes through a pull request that CI has passed. This is a
+**rule, not an enforced constraint**, and the difference matters: server-side
+branch protection is unavailable on this repo (both `/rulesets` and
+`/branches/main/protection` answer 403, "Upgrade to GitHub Pro or make this
+repository public"), and Dan decided on 2026-08-17 to keep detection rather than
+pay for prevention. So nothing stops a direct push except this line.
+
+What exists instead is **detection after the fact**. The `Main has no unreviewed
+direct push` job in `ci.yml` (#760) runs on every push to main and reports a
+commit that arrived without a reviewed PR. It is deliberately fail-safe towards
+staying quiet, because it makes an accusation rather than withholding an action,
+and it confirms an empty commit-to-PR association against the PR record before
+saying anything: GitHub's association index can be empty for a genuinely reviewed
+merge, and a false accusation is what teaches everyone to ignore a guard.
+
+The husky pre-push hooks (test gate, style gate) are also rules rather than
+constraints: `--no-verify`, `SKIP_TEST_CHECK` and `SKIP_STYLE_CHECK` each bypass
+them, which is by design for the rare justified case and useless as a barrier.
+
+If the plan is ever upgraded, close this gap properly: require a PR, require the
+CI checks, require one approving review, and disallow force-push and deletion.
 - Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes. Every CI job installs with `--frozen-lockfile`, so a lockfile that does not match `package.json`, or one with a duplicated entry, fails the build. Regenerate with **pnpm 9** (`CI=true npx pnpm@9 install --lockfile-only`), not the pnpm 10 you may have locally: CI pins 9, and a version mismatch resolves differently. `pnpm-lock.yaml` was corrupt on main for 18 days in 2026-07/08 precisely because nothing installed strictly; `apps/web/src/lib/__tests__/lockfile-integrity.test.ts` now guards it.
 
 ## Database migrations
