@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
+import { checkScannedPage } from '../src/lib/scanned-page'
 
 /**
  * Run axe-core against the current page and fail the test on any serious or
@@ -11,7 +12,23 @@ import AxeBuilder from '@axe-core/playwright'
  * `exclude` skips selectors we don't control or that are known third-party
  * (e.g. the React Flow canvas renderer). Pass an array of CSS selectors.
  */
-export async function expectNoSeriousA11yViolations(page: Page, exclude: string[] = []) {
+export async function expectNoSeriousA11yViolations(
+  page: Page,
+  exclude: string[] = [],
+  expectedPath?: string,
+) {
+  // Prove the page under the scanner is the page that was asked for, and that
+  // it rendered, BEFORE measuring it (#797). The rule itself is a pure function
+  // in src/lib/scanned-page.ts with its own unit tests, because a decision that
+  // can only be exercised by driving a browser gets verified once by hand and
+  // then never again.
+  const verdict = checkScannedPage({
+    actualPath: new URL(page.url()).pathname,
+    expectedPath,
+    visibleTextLength: (await page.locator('body').innerText()).trim().length,
+  })
+  expect(verdict.ok, verdict.ok ? '' : verdict.message).toBe(true)
+
   let builder = new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
   for (const sel of exclude) builder = builder.exclude(sel)
 
