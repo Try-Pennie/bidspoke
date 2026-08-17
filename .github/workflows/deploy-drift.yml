@@ -120,7 +120,7 @@ jobs:
       - name: Restore a previous confirmation for this exact pair of commits
         id: cache
         if: steps.compare.outputs.confirm == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: artifact-verdict.txt
           # Keyed on both commits exactly, never on a cheaper stand-in for them
