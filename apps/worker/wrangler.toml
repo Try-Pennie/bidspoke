@@ -93,6 +93,9 @@ SUPABASE_JWKS_URL = "https://xvrmivmpfykwwtriqwpg.supabase.co/auth/v1/.well-know
 PII_REDACTION_FIELDS = ""  # empty = disabled; e.g. "ssn,*.date_of_birth,credit_score" to enable
 APP_URL = "https://bidspoke.trypennie.dev"
 GITHUB_REPO = "Try-Pennie/bidspoke-workflows"  # target repo for workflow definition backups (PRD 3.2)
+# This repository, read hourly to confirm its scheduled workflows are still firing (#805).
+# Deliberately separate from GITHUB_REPO above, which is the workflow-backup repo.
+GITHUB_CODE_REPO = "Try-Pennie/bidspoke"
 # External reachability target for the volume-cliff self-check. Stable bidspoke-owned
 # hostname that routes to this worker (GET returns 200). Keep off personal subdomains.
 SELF_CHECK_URL = "https://hook.trypennie.dev/"
