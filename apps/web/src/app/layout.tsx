@@ -17,6 +17,22 @@ const ppMori = localFont({
   display: 'swap',
 })
 
+/**
+ * The commit this build was made from, rendered into every page so the live site
+ * can say what it is serving (#804).
+ *
+ * NEXT_PUBLIC_* is inlined at compile time, so this is fixed when the Pages build
+ * runs and cannot drift afterwards. A build with no stamp renders `unknown`,
+ * which the drift check reads as unstamped rather than as a commit: that is the
+ * signal that stamping itself has broken, and it must never be compared against
+ * history as if it were a real commit.
+ *
+ * It goes on the ROOT layout, not one endpoint, because a Pages deploy propagates
+ * per route. A single version endpoint would report the new build while other
+ * routes were still serving the old one.
+ */
+const BUILD_COMMIT = process.env.NEXT_PUBLIC_COMMIT_SHA || 'unknown'
+
 export const metadata: Metadata = {
   title: 'Bidspoke',
   description: 'Visual workflow builder and execution engine',
@@ -26,6 +42,8 @@ export const metadata: Metadata = {
       { url: '/icon-dark.png', media: '(prefers-color-scheme: dark)' },
     ],
   },
+  // Renders <meta name="bidspoke-commit" content="..."/> into every page.
+  other: { 'bidspoke-commit': BUILD_COMMIT },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

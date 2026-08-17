@@ -310,6 +310,13 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+          # The site's half of the stranded-deploy stamp (#804). NEXT_PUBLIC_* is
+          # inlined at compile time, so it has to be here, on the BUILD, and not
+          # on the upload step below: setting it there would look wired, stay
+          # green, and ship a site that renders the placeholder forever. That is
+          # the silent half of #327, which is why a test asserts which step owns
+          # this line.
+          NEXT_PUBLIC_COMMIT_SHA: ${{ github.sha }}
 
       - name: Deploy to Cloudflare Pages
         run: pnpm --filter=worker exec wrangler pages deploy ${{ github.workspace }}/apps/web/.vercel/output/static --project-name ${{ vars.CF_PAGES_PROJECT_NAME }} --commit-dirty=true --commit-message="${{ github.sha }}"

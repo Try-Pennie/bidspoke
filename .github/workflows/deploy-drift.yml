@@ -214,3 +214,142 @@ jobs:
               --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
           fi
           exit 1
+
+  pages:
+    name: Live site matches the latest apps/web commit
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SITE_URL: ${{ vars.SITE_URL }}
+    # The site half of the same defect (#804). Deploy Drift watched only the
+    # Worker, so a failed or skipped Pages deploy left the site serving an older
+    # build with nothing flagging it.
+    #
+    # Two differences from the worker job above.
+    #
+    # A Pages deploy propagates PER ROUTE, and a prod scan has genuinely served
+    # the old bundle on some routes and the new one on others, which reads
+    # exactly like a missed fix. One version endpoint cannot answer for the site,
+    # so this samples several routes spanning both propagation paths: the
+    # prerendered static assets and the edge-rendered functions.
+    #
+    # And there is no artifact to confirm against, so the accusation cannot be
+    # confirmed the way #802 taught the worker job to. It does not need to be:
+    # the pages paths filter that gates Deploy Pages is the SAME list this job
+    # asks git about (L144), so a commit that satisfies one satisfies the other
+    # and the #802 shape cannot occur here. A test asserts those two lists stay
+    # identical.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so merge-base can compare commits
+
+      - name: Sample the live site
+        id: sample
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # An unset repository variable arrives as the EMPTY STRING, not as
+          # absent, so this is checked explicitly rather than left to a default
+          # that would silently accept it and scan nothing (LESSONS L138).
+          if [ -z "${SITE_URL:-}" ]; then
+            echo "::error::The SITE_URL repository variable is unset, so there is nothing to scan. Set it to the public site origin."
+            exit 1
+          fi
+
+          # Both prerendered and edge-rendered routes, all public so the gate
+          # does not redirect them to /login and leave us reading a redirect
+          # instead of a page.
+          ROUTES="/login /access-denied /dev/nodes /docs"
+
+          # The same paths that gate Deploy Pages in deploy.yml. Asking a
+          # different question than the deploy asks is exactly what made the
+          # worker check page for a month with nothing unshipped (#802, L144).
+          LAST_WEB_COMMIT=$(git log -1 --format=%H -- apps/web pnpm-lock.yaml package.json)
+          echo "last_web_commit=$LAST_WEB_COMMIT" >> "$GITHUB_OUTPUT"
+
+          OBSERVATIONS=""
+          for ROUTE in $ROUTES; do
+            # --retry so a single blip does not page. The site being genuinely
+            # down is a real finding; one dropped connection is not.
+            if ! BODY=$(curl -fsS --max-time 20 --retry 2 --retry-delay 3 "${SITE_URL}${ROUTE}" 2>/dev/null); then
+              OBSERVATIONS="$OBSERVATIONS ${ROUTE}=unreachable"
+              continue
+            fi
+
+            SERVED=$(printf '%s' "$BODY" | bash .github/scripts/pages-commit-from-html.sh)
+            if [ "$SERVED" = "unstamped" ]; then
+              OBSERVATIONS="$OBSERVATIONS ${ROUTE}=unstamped"
+            elif ! git cat-file -e "${SERVED}^{commit}" 2>/dev/null; then
+              OBSERVATIONS="$OBSERVATIONS ${ROUTE}=unknown"
+            elif git merge-base --is-ancestor "$LAST_WEB_COMMIT" "$SERVED"; then
+              OBSERVATIONS="$OBSERVATIONS ${ROUTE}=current"
+            else
+              OBSERVATIONS="$OBSERVATIONS ${ROUTE}=behind"
+            fi
+          done
+          echo "observations=${OBSERVATIONS# }" >> "$GITHUB_OUTPUT"
+          echo "observations:${OBSERVATIONS}"
+
+          # Age of the oldest Deploy run still queued or running on main, in
+          # seconds. Empty when none is in flight. `|| true` so a GitHub API blip
+          # cannot abort under set -e: an unreadable answer must reach the gate
+          # as "no deploy running", which is its LOUD side.
+          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
+            --json status,createdAt --jq \
+            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Decide and alert
+        run: |
+          set -uo pipefail
+          LAST_WEB_COMMIT='${{ steps.sample.outputs.last_web_commit }}'
+          OBSERVATIONS='${{ steps.sample.outputs.observations }}'
+
+          # Unquoted on purpose: the observations are one space-separated word per
+          # route, and each must arrive as its own argument.
+          # shellcheck disable=SC2086
+          DECISION=$(bash .github/scripts/pages-drift-decision.sh \
+            '${{ steps.sample.outputs.inflight_age }}' $OBSERVATIONS)
+          echo "decision=$DECISION observations=$OBSERVATIONS"
+
+          case "$DECISION" in
+            ok)
+              echo "::notice::Every sampled route is serving the latest apps/web commit."
+              exit 0 ;;
+            deploy-in-flight)
+              echo "::notice::A deploy is still running, so some routes are expected to be behind. The next run judges the settled state."
+              exit 0 ;;
+            alert-behind|alert-stuck-deploy)
+              HEADLINE='*The site is serving an older build*'
+              DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`.\n\n*How to fix:* re-run the most recent Deploy run on main. A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
+            alert-unstamped)
+              HEADLINE='*The site cannot say which build it is serving*'
+              DETAIL=$(printf 'At least one route answered with no usable build stamp (`%s`), so a stranded site can no longer be detected at all. This means `NEXT_PUBLIC_COMMIT_SHA` is not reaching the Pages build.\n\n*How to fix:* check the Build (next-on-pages) step in deploy.yml still sets it. It is inlined at compile time, so it has to be on the build step, not the upload.' "$OBSERVATIONS") ;;
+            alert-unknown-commit)
+              HEADLINE='*The site is serving a commit this repository does not have*'
+              DETAIL=$(printf 'A route named a commit that is not in main history (`%s`), so what is live cannot be placed against the repository. This usually means a deploy went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on the site.' "$OBSERVATIONS") ;;
+            alert-unreachable)
+              HEADLINE='*The site did not answer*'
+              DETAIL=$(printf 'At least one public route could not be fetched after retries (`%s`).\n\n*How to fix:* open the site. If it loads, this was transient and the next hourly run will clear it; if it does not, the site is down.' "$OBSERVATIONS") ;;
+            *)
+              # alert-no-samples and alert-malformed. The check itself is broken,
+              # which is its own outcome and never a quiet pass: a scan that
+              # measured nothing is indistinguishable from one that found
+              # everything healthy (L98).
+              HEADLINE='*The site drift check could not run*'
+              DETAIL=$(printf 'The check returned `%s` for observations `%s`, so it measured nothing usable and cannot report a stranded site while it stays in this state.\n\n*How to fix:* open the run and read the sampling step.' "$DECISION" "$OBSERVATIONS") ;;
+          esac
+
+          echo "::error::$DECISION: $OBSERVATIONS"
+          TEXT=$(printf '%s\n\n%s\n\n<%s/%s/actions/runs/%s|Open this check>' \
+            "$HEADLINE" "$DETAIL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+
+          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
+          fi
+          exit 1
