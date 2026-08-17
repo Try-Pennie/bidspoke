@@ -46,6 +46,46 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_CONSENT_POLICY` | No | Verbatim Privacy Policy text. Sent as `consents.policy`. |
 | `ACHIEVE_CONSENT_TERM` | No | Verbatim Terms of Service text. Sent as `consents.term`. |
 | `ACHIEVE_MIN_VANTAGE_SCORE` | No | Minimum pulled Vantage score required to send a lead to Achieve. Ships off: absent, blank, or `0` sends every lead (current behavior). Set a positive number (for example `700`) to skip the call for any lead scoring below it. |
+| `ACHIEVE_MIN_LOAN_AMOUNT` | No | Smallest requested loan amount Achieve will consider. Achieve asked for `10000`. |
+| `ACHIEVE_MAX_LOAN_AMOUNT` | No | Largest requested loan amount. Achieve asked for `50000`. |
+| `ACHIEVE_ALLOWED_STATES` | No | Comma-separated two-letter states Achieve lends in. **Not the same list Pennie uses**: Achieve accepts MN and OR, which Pennie excludes, and excludes CO, CT, HI, IA, ME, VT, WA, WV, WI and WY, which Pennie allows. |
+| `ACHIEVE_MAX_LOAN_TO_INCOME` | No | Ceiling on requested loan divided by annual gross income. Achieve asked for `0.35`. A lead missing either figure is refused when this is set. |
+| `ACHIEVE_MAX_CURRENT_DELINQUENCIES` | No | How many delinquent accounts a lead may carry. Achieve asked for `0`. Requires a credit report. |
+| `ACHIEVE_DELINQUENCY_MODE` | No | `current` (the default) counts only accounts currently 30 to 120+ days past due. `ever` also counts charge-offs and repossessions. **This one word roughly halves the surviving volume**: measured on 500 live reports, 47% of leads carry no current past-due, and only 26% carry no bad mark ever. Achieve's own wording ("Current delinquencies: 0") does not settle which they meant. |
+| `ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY` | No | Months that must have passed since the most recent bankruptcy filing. Achieve asked for `48`. A bankruptcy on file whose date cannot be read is treated as recent. Requires a credit report. |
+| `ACHIEVE_MAX_INQUIRIES_6MO` | No | Credit inquiries allowed in the last 180 days. Achieve asked for fewer than 6, so set `5`. Note this screens out almost nobody: 94% of leads already pass, and the average lead has 1.5. Requires a credit report. |
+| `ACHIEVE_MIN_AGE` | No | Minimum age in years, from the form's date of birth. Achieve asked for `18`. |
+
+### Pre-send screening
+
+Achieve's APL team gave us criteria they recommend applying before pinging their API (Evan
+Raciti, 2026-07-15). Dan chose on 2026-08-17 to apply them as a **hard gate**: a lead failing
+any configured criterion is not sent at all.
+
+Every threshold is an environment variable and every one is **inert when unset**, so all six
+Achieve nodes in the Main Flow are configured from one page and no node config is ever touched.
+A deploy with nothing set changes nothing about which leads are sent.
+
+A held-back lead carries its **own** reason on the step output (`reason`, plus the measured
+value under `screen`), never a shared "skipped". That matters because a rejected lead never
+reaches Achieve, so counting rejections by cause is the only measurement left. The reasons are
+`no_credit_report`, `below_vantage_floor`, `loan_amount_below_min`, `loan_amount_above_max`,
+`state_not_allowed`, `loan_to_income_too_high`, `has_current_delinquency`, `recent_bankruptcy`,
+`too_many_inquiries` and `under_min_age`.
+
+**What this costs in volume.** Measured against 526 live leads reaching the node on 2026-08-17:
+the four payload-only criteria pass about 20%, the full set passes about 9% under the default
+delinquency reading, and about 3% under `ever`. So the gate cuts Achieve's volume by roughly ten
+to forty times, from around 2,300 leads a day to between 50 and 200. That is intended, not a
+defect, but it is worth re-reading before anyone concludes Achieve has no appetite for our leads.
+
+**Not implementable, deliberately absent.** Citizenship or permanent residency, which neither
+the form nor the credit report collects, and Achieve's DTI rule, which on rereading describes
+what they do at their own prequalification stage rather than a screen they expect from us.
+
+**A missing credit report is not a clean one.** With any credit-based filter switched on, a lead
+whose Equifax pull failed is refused (`no_credit_report`) rather than sent unscreened, so an
+Equifax outage stops leads instead of sending unscreened ones at the moment we cannot screen.
 
 ### Vantage floor screen
 

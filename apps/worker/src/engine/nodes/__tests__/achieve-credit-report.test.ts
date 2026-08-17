@@ -1,0 +1,201 @@
+import { describe, it, expect } from 'vitest'
+import {
+  findEquifaxReport,
+  parseEquifaxDate,
+  countDelinquentTrades,
+  countRecentInquiries,
+  monthsSinceLatestBankruptcy,
+} from '../achieve-credit-report'
+import type { ExecutionContext } from '../../../types'
+
+// Every fixture below is shaped from a REAL report observed in production on 2026-08-17
+// (measured across 500 live Equifax pulls), not invented: the account rating is an object
+// holding a numeric code, dates are eight digits in MMDDYYYY order, and Main Flow nests
+// the report one level deeper than the Engine workflow does. Each of those three returns
+// nothing at all when read wrong, so each has its own test.
+
+function ctxWithStep(output: unknown, namespace = 'equifax_credit_report'): ExecutionContext {
+  return {
+    trigger: { payload: {}, source: 'test', workflow_id: 'w', trace_id: 't', org_id: 'o' },
+    steps: { [namespace]: { status: 'completed', output } },
+    env: {},
+  } as unknown as ExecutionContext
+}
+
+function report(parts: Record<string, unknown> = {}) {
+  return { models: [{ score: '612' }], trades: [], inquiries: [], ...parts }
+}
+
+/** Engine workflow shape: consumers at the top level of the step output. */
+function engineShape(rep: unknown) {
+  return { consumers: { equifaxUSConsumerCreditReport: rep }, status: 'ok' }
+}
+
+/** Main Flow shape: the same report wrapped one level deeper under `data`. */
+function mainFlowShape(rep: unknown) {
+  return { data: { consumers: { equifaxUSConsumerCreditReport: rep }, status: 'ok' }, error: null, statusCode: 200 }
+}
+
+function trade(rateCode: number | null) {
+  return rateCode == null ? { balance: 100 } : { balance: 100, rate: { code: rateCode } }
+}
+
+describe('findEquifaxReport', () => {
+  it('finds the report in the Main Flow shape, nested under data', () => {
+    const found = findEquifaxReport(ctxWithStep(mainFlowShape(report({ trades: [trade(1)] }))))
+    expect(found?.trades).toHaveLength(1)
+  })
+
+  it('finds the report in the Engine shape, at the top level', () => {
+    const found = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(1)] }))))
+    expect(found?.trades).toHaveLength(1)
+  })
+
+  // Equifax returns the report as a single object on some pulls and a one-element array on
+  // others. A reader written for one silently returns nothing for the other.
+  it('accepts the report as a bare object or as an array', () => {
+    const asArray = findEquifaxReport(ctxWithStep(engineShape([report({ trades: [trade(2)] })])))
+    expect(asArray?.trades).toHaveLength(1)
+  })
+
+  it('returns null when the credit-pull step never ran', () => {
+    expect(findEquifaxReport(ctxWithStep(undefined, 'some_other_step'))).toBeNull()
+  })
+
+  // An Equifax failure comes back as a populated envelope with no report inside. That must
+  // read as "no report", never as an empty-but-valid report, because an empty report would
+  // silently pass every credit-based check.
+  it('returns null when the call failed and carries no report', () => {
+    const failed = { data: null, error: 'ACRO_GATEWAY timeout', statusCode: 502 }
+    expect(findEquifaxReport(ctxWithStep(failed))).toBeNull()
+  })
+
+  it('reads sections that are absent as empty rather than throwing', () => {
+    const found = findEquifaxReport(ctxWithStep(engineShape({ models: [{ score: '600' }] })))
+    expect(found).not.toBeNull()
+    expect(found?.trades).toEqual([])
+    expect(found?.bankruptcies).toEqual([])
+  })
+})
+
+describe('parseEquifaxDate', () => {
+  it('parses eight digits as month, day, year', () => {
+    const d = parseEquifaxDate('07092026')
+    expect(d?.toISOString().slice(0, 10)).toBe('2026-07-09')
+  })
+
+  // Read as YYYYMMDD this would be a year 707 date and every recency test would pass.
+  it('does not read the value as year-first', () => {
+    const d = parseEquifaxDate('07092026')
+    expect(d?.getUTCFullYear()).toBe(2026)
+  })
+
+  it('rejects an ISO date, which is a different field format', () => {
+    expect(parseEquifaxDate('2026-07-09')).toBeNull()
+  })
+
+  it('rejects impossible and malformed values instead of inventing a date', () => {
+    expect(parseEquifaxDate('99999999')).toBeNull()
+    expect(parseEquifaxDate('0709202')).toBeNull()
+    expect(parseEquifaxDate('')).toBeNull()
+    expect(parseEquifaxDate(undefined)).toBeNull()
+    expect(parseEquifaxDate(20260709)).toBeNull()
+  })
+})
+
+describe('countDelinquentTrades', () => {
+  // Measured on 500 live reports: files whose ONLY bad-looking code is 6 average a score of
+  // 633, and fully clean files average 632. Code 6 therefore does NOT behave like
+  // delinquency, and counting it would flag 54% of files as delinquent while those people
+  // score as well as clean ones. Codes 2 to 5 average 580, a real 52-point drop.
+  it('ignores code 6, which scores the same as a clean file', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(6), trade(6)] }))))!
+    expect(countDelinquentTrades(rep, 'current')).toBe(0)
+    expect(countDelinquentTrades(rep, 'ever')).toBe(0)
+  })
+
+  it('ignores clean and too-new ratings', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(0), trade(1), trade(null)] }))))!
+    expect(countDelinquentTrades(rep, 'current')).toBe(0)
+  })
+
+  it('counts currently past-due accounts in current mode', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(2), trade(3), trade(1)] }))))!
+    expect(countDelinquentTrades(rep, 'current')).toBe(2)
+  })
+
+  // A charge-off is a historical mark, not a current past-due, so the two modes must
+  // genuinely differ. If they returned the same number the mode setting would be inert.
+  it('excludes charge-offs and repossessions from current but counts them in ever', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(9), trade(8)] }))))!
+    expect(countDelinquentTrades(rep, 'current')).toBe(0)
+    expect(countDelinquentTrades(rep, 'ever')).toBe(2)
+  })
+
+  // Code 7 is a court-supervised repayment plan, concentrated on 8 of 500 live reports.
+  it('ignores code 7 in both modes', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ trades: [trade(7)] }))))!
+    expect(countDelinquentTrades(rep, 'current')).toBe(0)
+    expect(countDelinquentTrades(rep, 'ever')).toBe(0)
+  })
+})
+
+describe('countRecentInquiries', () => {
+  const NOW = new Date('2026-08-17T00:00:00Z')
+
+  it('counts only inquiries inside the window', () => {
+    const rep = findEquifaxReport(
+      ctxWithStep(
+        engineShape(
+          report({
+            inquiries: [
+              { inquiryDate: '08012026', industryCode: { code: 'BC' } },
+              { inquiryDate: '07092026', industryCode: { code: 'BC' } },
+              { inquiryDate: '01052025', industryCode: { code: 'BC' } },
+            ],
+          })
+        )
+      )
+    )!
+    expect(countRecentInquiries(rep, 180, NOW)).toBe(2)
+  })
+
+  // An unparseable date must not be counted as recent: that would reject a lead on
+  // evidence we could not read.
+  it('does not count an inquiry whose date cannot be read', () => {
+    const rep = findEquifaxReport(
+      ctxWithStep(engineShape(report({ inquiries: [{ inquiryDate: 'unknown' }, { inquiryDate: '' }] })))
+    )!
+    expect(countRecentInquiries(rep, 180, NOW)).toBe(0)
+  })
+})
+
+describe('monthsSinceLatestBankruptcy', () => {
+  const NOW = new Date('2026-08-17T00:00:00Z')
+
+  it('returns null when the report carries no bankruptcy section', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report())))!
+    expect(monthsSinceLatestBankruptcy(rep, NOW)).toBeNull()
+  })
+
+  it('measures from the most recent filing when there are several', () => {
+    const rep = findEquifaxReport(
+      ctxWithStep(
+        engineShape(
+          report({
+            bankruptcies: [{ dateFiled: '01152015' }, { dateFiled: '06012024' }],
+          })
+        )
+      )
+    )!
+    // June 2024 to August 2026 is 26 months, not the 139 the older filing would give.
+    expect(monthsSinceLatestBankruptcy(rep, NOW)).toBe(26)
+  })
+
+  // A filing we cannot date is not the same as no filing. Returning null here would let the
+  // lead through as if it had never had a bankruptcy.
+  it('reports an undateable filing as present but unknown, not as absent', () => {
+    const rep = findEquifaxReport(ctxWithStep(engineShape(report({ bankruptcies: [{ dateFiled: 'garbage' }] }))))!
+    expect(monthsSinceLatestBankruptcy(rep, NOW)).toBe(-1)
+  })
+})
