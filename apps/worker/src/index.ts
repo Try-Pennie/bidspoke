@@ -17,6 +17,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -116,6 +117,12 @@ export interface Env {
   // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO
   GITHUB_TOKEN?: string
   GITHUB_REPO?: string
+
+  // This repository, for the scheduled-workflow dead-man's-switch (#805). Distinct
+  // from GITHUB_REPO above, which points at the separate workflow-BACKUP repo.
+  // Set in wrangler.toml [vars]; the token above must be able to read its Actions
+  // history, and the check says so loudly if it cannot.
+  GITHUB_CODE_REPO?: string
 
   // Anthropic API — used to draft changelog summaries on workflow save
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
@@ -349,6 +356,22 @@ export default {
       ctx.waitUntil(
         runFieldPresenceDroughtCheck(supabase)
           .catch((e) => console.error('[field-presence-drought] failed:', e))
+      )
+      // Watches GitHub's own scheduled workflows (#805). cron-heartbeat covers
+      // this worker's crons; nothing covered the ones running in Actions, and a
+      // scheduled workflow that stops firing is silent in exactly the same way as
+      // one that keeps passing. Hourly rather than on the minute cron because it
+      // costs a GitHub API call per watched workflow.
+      ctx.waitUntil(
+        runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
+          .then((rs) => {
+            for (const r of rs) {
+              if (r.status !== 'healthy') {
+                console.error(`[workflow-schedule] ${r.file} ${r.status} alerted=${r.alerted} ${r.detail}`)
+              }
+            }
+          })
+          .catch((e) => console.error('[workflow-schedule] check failed:', e))
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(

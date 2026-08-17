@@ -1058,6 +1058,54 @@ export async function sendCronHeartbeatAlert(
 }
 
 /**
+ * Alert that a SCHEDULED GITHUB WORKFLOW has gone dark, or that we cannot tell
+ * (#805).
+ *
+ * `unreadable` gets its own wording rather than being folded into "it is dark".
+ * A workflow that stopped running and a check that cannot see whether it is
+ * running need two different actions, and saying the first when we only know the
+ * second is an accusation this check cannot support (LESSONS L11, L119).
+ */
+export async function sendWorkflowScheduleAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  workflow: { file: string; label: string; cron: string; dependents: string },
+  verdict: { status: 'stale' | 'never_ran' | 'unreadable'; ageMs: number | null; detail: string },
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+
+  const hours = verdict.ageMs === null ? null : Math.round(verdict.ageMs / 3_600_000)
+  const unreadable = verdict.status === 'unreadable'
+
+  const header = unreadable
+    ? `Cannot tell whether ${workflow.label} is still running`
+    : `${workflow.label} has stopped running`
+
+  const body = unreadable
+    ? `The check that watches the \`${workflow.file}\` schedule could not read GitHub's run history: ${verdict.detail}. Until it can, a workflow that has silently stopped would look exactly like one that is fine, so this is reported rather than passed over.`
+    : verdict.status === 'never_ran'
+      ? `GitHub has no scheduled runs on record for \`${workflow.file}\` (\`${workflow.cron}\`). While it is not running: ${workflow.dependents}.`
+      : `\`${workflow.file}\` (\`${workflow.cron}\`) has not run on its schedule in ~${hours}h. While it is not running: ${workflow.dependents}.`
+
+  const fix = unreadable
+    ? `*How to fix:* the worker needs \`GITHUB_CODE_REPO\` set to this repository and a \`GITHUB_TOKEN\` that can read its Actions history.`
+    : `*How to fix:* open the workflow in GitHub Actions. A workflow disabled by hand, or one GitHub suspended for repository inactivity, both show there and both are re-enabled from that page. If it is enabled, check the \`schedule\` trigger in \`.github/workflows/${workflow.file}\`.`
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: body } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `${workflow.label}: ${verdict.status}`,
+  )) !== null
+}
+
+/**
  * Alert that the hourly bid-matrix sync had problems (#408): one or more partner
  * configs failed to sync (Salesforce down / token expired, so the matrix is going
  * stale) and/or returned empty so the last-known matrix was preserved instead of

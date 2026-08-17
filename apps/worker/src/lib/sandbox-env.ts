@@ -44,6 +44,10 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   APP_URL: 'expose',
   SELF_CHECK_URL: 'expose',
   GITHUB_REPO: 'expose',
+  // Blocked rather than exposed alongside GITHUB_REPO above: no code node has any
+  // reason to know which repository the platform's own scheduled-workflow check
+  // watches, and a name nothing needs is cheaper to withhold than to justify.
+  GITHUB_CODE_REPO: 'block',
   DEPLOYED_SHA: 'expose', // non-secret: the live worker's git commit (#327)
   SALESFORCE_BULKHEAD_LIMIT: 'expose', // non-secret: SF inflight cap (#312)
   SALESFORCE_BULKHEAD_WAIT_MS: 'expose', // non-secret: at-capacity wait budget
