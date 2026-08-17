@@ -190,7 +190,21 @@ jobs:
       # route immediately, so there is no first-request compile to absorb.
       - name: Run accessibility specs
         if: steps.creds.outputs.have == 'true'
-        run: pnpm --filter web exec playwright test e2e/a11y.spec.ts
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/a11y-report.json
+        run: pnpm --filter web exec playwright test e2e/a11y.spec.ts --reporter=json,list
+
+      # A scan over zero pages reports zero violations, which is indistinguishable
+      # from a clean pass (#797, and #779 is what that costs: eighteen days of a
+      # green Security scans job auditing nothing). `playwright test` exits 0 when
+      # its filter matches no files, so the run has to prove what it covered.
+      #
+      # The floor is a minimum, not an equality, so adding a page does not fail
+      # the gate until someone bumps a number. A unit test keeps it in step with
+      # the page list the spec actually declares.
+      - name: Prove the accessibility scan covered its pages
+        if: steps.creds.outputs.have == 'true'
+        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/a11y-report.json" 10
 
       - name: Upload Playwright report
         if: failure() && steps.creds.outputs.have == 'true'
@@ -279,7 +293,15 @@ jobs:
           exit 1
 
       - name: Probe the auth gate
-        run: pnpm --filter web exec playwright test --config=playwright.gate.config.ts
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/gate-report.json
+        run: pnpm --filter web exec playwright test --config=playwright.gate.config.ts --reporter=json,list
+
+      # Same reasoning as the accessibility job (#797). Every assertion in the
+      # probe is strong, and none of them can fire if the config matches no spec
+      # files, which exits 0.
+      - name: Prove the auth gate probe covered its paths
+        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/gate-report.json" 23
 
   db-types-fresh:
     name: DB types regenerated with schema migrations

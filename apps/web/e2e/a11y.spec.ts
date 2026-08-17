@@ -42,14 +42,16 @@ test.describe('Accessibility (axe-core)', () => {
     await page.context().clearCookies()
     await page.goto('/login')
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page)
+    await expectNoSeriousA11yViolations(page, [], '/login')
   })
 
   for (const { name, path, exclude } of PAGES) {
     test(`${name} has no serious a11y violations`, async ({ page }) => {
       await page.goto(path)
       await page.waitForLoadState('networkidle')
-      await expectNoSeriousA11yViolations(page, exclude)
+      // The path is passed so a redirect to /login fails here rather than being
+      // scanned as if it were this page (#797).
+      await expectNoSeriousA11yViolations(page, exclude, path)
     })
   }
 })
