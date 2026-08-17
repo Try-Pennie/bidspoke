@@ -19,6 +19,13 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 interface Env {
   SUPABASE_URL: string
   SUPABASE_SECRET_KEY: string
+  /**
+   * The commit this worker was deployed from, stamped by deploy.yml (#739).
+   * Optional because a local `wrangler dev` has no deploy to stamp it, and the
+   * drift check treats the resulting `unknown` as a broken stamp rather than as
+   * a commit.
+   */
+  DEPLOYED_SHA?: string
 }
 
 // Keep in sync with apps/worker/src/engine/cost-rates.ts.
@@ -88,6 +95,27 @@ async function applyTrace(
 }
 
 export default {
+  /**
+   * Reports the commit this worker is running, and nothing else (#739).
+   *
+   * A tail consumer has no reason to serve traffic, and this exists purely so a
+   * stranded deploy can be detected. It matters more here than for most workers:
+   * this one writes `workflow_executions.cost_usd`, so a stranded copy does not
+   * fail, it under-reports what executions cost while the dashboard goes on
+   * showing numbers nobody has reason to doubt.
+   *
+   * Same shape as the engine worker's `GET /`, so one check can read both, and a
+   * missing stamp answers `unknown` rather than being omitted: an absent field
+   * and a broken stamp would otherwise be indistinguishable to the reader.
+   */
+  fetch(_request: Request, env: Env): Response {
+    return Response.json({
+      status: 'ok',
+      service: 'bidspoke-worker-tail',
+      version: env.DEPLOYED_SHA ?? 'unknown',
+    })
+  },
+
   async tail(events: TraceItem[], env: Env, _ctx: ExecutionContext): Promise<void> {
     const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },

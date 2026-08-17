@@ -353,3 +353,118 @@ jobs:
               --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
           fi
           exit 1
+
+  worker_tail:
+    name: Live tail worker matches the latest tail commit
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      TAIL_URL: ${{ vars.WORKER_TAIL_URL }}
+    # The third deploy target (#739). apps/worker-tail computes per-execution
+    # cost attribution and writes workflow_executions.cost_usd, so a stranded one
+    # does not fail: it under-reports what executions cost while the dashboard
+    # goes on showing numbers nobody has reason to doubt. That is the worst shape
+    # a stranded deploy can take.
+    #
+    # Simpler than the engine job above, for a reason worth stating. The engine
+    # deploy decides from the built BUNDLE, so history is only a pre-filter there
+    # and an accusation has to be confirmed against the artifact (#802). The tail
+    # deploy has no artifact gate: it fires on its paths filter alone. So the
+    # paths filter IS the deploy's own predicate, this job asks git the same
+    # question over the same paths, and the two cannot disagree (L144). A test
+    # asserts the two path lists stay identical.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so merge-base can compare commits
+
+      - name: Compare the live tail worker to the latest tail commit
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # An unset repository variable arrives as the EMPTY STRING, not as
+          # absent, so it is checked rather than allowed to build a URL that
+          # would fail to resolve and read like a dead worker (L138).
+          if [ -z "${TAIL_URL:-}" ]; then
+            echo "::error::The WORKER_TAIL_URL repository variable is unset, so the tail worker cannot be checked."
+            exit 1
+          fi
+
+          TAIL_SHA=$(curl -fsS --max-time 20 --retry 2 --retry-delay 3 "$TAIL_URL" | jq -r '.version // "unknown"') || TAIL_SHA=""
+
+          # The same paths that gate Deploy Worker Tail in deploy.yml.
+          LAST_TAIL_COMMIT=$(git log -1 --format=%H -- apps/worker-tail pnpm-lock.yaml package.json)
+          echo "tail=$TAIL_SHA last_tail_commit=$LAST_TAIL_COMMIT"
+          echo "last_tail_commit=$LAST_TAIL_COMMIT" >> "$GITHUB_OUTPUT"
+
+          # FIRST, before anything that could exit 0, and for the same reason the
+          # engine job checks it first: an unstamped worker is the signal that
+          # stamping itself has broken, which is exactly what this exists to
+          # report. `git cat-file -e unknown^{commit}` fails, so leaving this
+          # until later would route it into the not-in-history skip and silence
+          # the one condition that makes stranding undetectable (#327).
+          if [ -z "$TAIL_SHA" ] || [ "$TAIL_SHA" = "unknown" ] || [ "$TAIL_SHA" = "null" ]; then
+            echo "::error::The live tail worker reports no deployed commit (version=${TAIL_SHA:-unreachable}), so stranding cannot be detected. Either the deploy is not stamping DEPLOYED_SHA, or the worker did not answer."
+            echo "verdict=alert-unstamped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! git cat-file -e "${TAIL_SHA}^{commit}" 2>/dev/null; then
+            echo "::error::The live tail worker reports commit $TAIL_SHA, which is not in this repository's history."
+            echo "verdict=alert-unknown-commit" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          UP_TO_DATE=no
+          if git merge-base --is-ancestor "$LAST_TAIL_COMMIT" "$TAIL_SHA"; then UP_TO_DATE=yes; fi
+
+          # Age of the oldest Deploy run still queued or running on main, in
+          # seconds. Empty when none is in flight. `|| true` so a GitHub API blip
+          # cannot abort under set -e: an unreadable answer must reach the gate as
+          # "no deploy running", which is its LOUD side.
+          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
+            --json status,createdAt --jq \
+            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+
+          # `not-gated` is the artifact verdict for a target with no artifact
+          # gate: history is authoritative here because the paths filter is the
+          # deploy's own predicate, so being behind in history IS the confirmed
+          # condition rather than merely a suspicion.
+          VERDICT=$(bash .github/scripts/deploy-drift-decision.sh "$TAIL_SHA" "$UP_TO_DATE" "$INFLIGHT_AGE" not-gated)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "tail_sha=$TAIL_SHA up_to_date=$UP_TO_DATE inflight=${INFLIGHT_AGE:-none} verdict=$VERDICT"
+
+      - name: Decide and alert
+        run: |
+          set -uo pipefail
+          VERDICT='${{ steps.compare.outputs.verdict }}'
+          LAST='${{ steps.compare.outputs.last_tail_commit }}'
+
+          case "$VERDICT" in
+            ok)
+              echo "::notice::The tail worker is up to date."
+              exit 0 ;;
+            deploy-in-flight)
+              echo "::notice::A deploy is still running, so the tail worker is expected to be behind. The next run judges the settled state."
+              exit 0 ;;
+            alert-unstamped)
+              TEXT=$(printf '*The cost tail worker cannot say which build it is running*\n\nIt answered with no deployed commit, so a stranded tail worker can no longer be detected. While this is true, per-execution cost attribution could be running old code and the dashboard would show numbers that look fine.\n\n*How to fix:* check the Deploy Worker Tail step still passes `--var DEPLOYED_SHA`, and that it uses `exec` rather than `run ... --`, which wrangler silently ignores.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            alert-unknown-commit)
+              TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            *)
+              TEXT=$(printf '*Cost tail worker code is committed but not deployed*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`. It is not failing, which is the problem: it writes per-execution cost, so a stranded copy under-reports what executions cost while the dashboard keeps showing numbers that look fine.\n\n*How to fix:* re-run the most recent Deploy run on main.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "${LAST:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+          esac
+
+          echo "::error::tail worker drift: $VERDICT (latest tail commit $LAST)"
+          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
+          fi
+          exit 1
