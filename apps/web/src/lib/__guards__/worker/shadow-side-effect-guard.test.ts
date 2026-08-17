@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { findShadowGuardViolations, SHADOW_EXEMPT_NODES } from '../shadow-side-effect-guard'
+import { findShadowGuardViolations, SHADOW_EXEMPT_NODES } from '../../shadow-side-effect-guard'
 
 describe('findShadowGuardViolations (classifier)', () => {
   it('flags a non-exempt node that fetches without a shadow guard', () => {
@@ -86,7 +86,7 @@ describe('findShadowGuardViolations (classifier)', () => {
 })
 
 const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
+const REPO_ROOT = path.resolve(dir, '../../../../../..')
 const NODES_DIR = path.join(REPO_ROOT, 'apps/worker/src/engine/nodes')
 
 function listNodeFiles(): { name: string; content: string }[] {

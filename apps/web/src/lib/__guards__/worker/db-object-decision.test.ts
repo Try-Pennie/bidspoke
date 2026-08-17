@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { listFiles, REPO_ROOT } from '../../__tests__/_scan-utils'
 
 /**
  * Issue #764. `deploy.yml` checks that migrations are APPLIED, never that the
@@ -125,24 +125,24 @@ function manifest(): ManifestEntry[] {
   return JSON.parse(readFileSync(MANIFEST, 'utf8')) as ManifestEntry[]
 }
 
-/** Every `.rpc('name')` in shipping source, which is what the app depends on. */
+/**
+ * Every `.rpc('name')` in shipping source, which is what the app depends on.
+ *
+ * The walk goes through the shared `listFiles`, which knows which directories
+ * hold tests. It used to carry its own copy of that list, and the copy went
+ * stale the moment a second test directory existed: it read a fake client out of
+ * a guard's own fixture and reported an RPC called `name` as a live dependency
+ * (#502). One implementation, so there is nothing left to drift.
+ */
 function rpcsCalledByTheApp(): Set<string> {
   const found = new Set<string>()
   const roots = [path.join(REPO_ROOT, 'apps/worker/src'), path.join(REPO_ROOT, 'apps/web/src')]
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name)
-      if (e.isDirectory()) {
-        if (e.name === '__tests__' || e.name === 'node_modules') continue
-        walk(p)
-        continue
-      }
-      if (!/\.tsx?$/.test(e.name)) continue
-      const src = readFileSync(p, 'utf8')
+  for (const root of roots) {
+    for (const file of listFiles(root, { exts: ['.ts', '.tsx'] })) {
+      const src = readFileSync(file, 'utf8')
       for (const m of src.matchAll(/\.rpc\(\s*['"`]([a-z0-9_]+)['"`]/gi)) found.add(m[1])
     }
   }
-  roots.forEach(walk)
   return found
 }
 

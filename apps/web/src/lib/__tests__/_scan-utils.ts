@@ -21,7 +21,17 @@ export const WEB_SRC = path.join(REPO_ROOT, 'apps/web/src')
 export interface ListFilesOptions {
   /** File extensions to collect. Default: ['.ts', '.tsx']. */
   exts?: string[]
-  /** Directory names to skip during recursion. Default: ['__tests__', 'node_modules']. */
+  /**
+   * Directory names to skip during recursion. Default:
+   * ['__tests__', '__guards__', 'node_modules'].
+   *
+   * `__guards__` is in the default for the same reason `__tests__` is: it holds
+   * tests, and a scanner that walks it starts reading its own fixtures as
+   * shipping source. That is not hypothetical, it is how this entry got here
+   * (#502): moving the worker guards into `__guards__` immediately made the
+   * live-database-object guard report an RPC called `name`, which it had read
+   * out of a test's fake client.
+   */
   skipDirs?: string[]
   /** Include `*.test.<ext>` files. Default: false. */
   includeTests?: boolean
@@ -30,7 +40,7 @@ export interface ListFilesOptions {
 /** Recursively collect source files under `root`, in directory order. */
 export function listFiles(root: string, options: ListFilesOptions = {}): string[] {
   const exts = options.exts ?? ['.ts', '.tsx']
-  const skipDirs = options.skipDirs ?? ['__tests__', 'node_modules']
+  const skipDirs = options.skipDirs ?? ['__tests__', '__guards__', 'node_modules']
   const includeTests = options.includeTests ?? false
   const out: string[] = []
   for (const entry of readdirSync(root)) {

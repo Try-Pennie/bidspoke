@@ -36,7 +36,7 @@ import {
   consumeParens,
   findSupabaseWrites,
   type SupabaseWrite,
-} from './_scan-utils'
+} from '../../__tests__/_scan-utils'
 
 const SCAN_DIRS = ['engine', 'lib', 'routes'].map((d) => path.join(WORKER_SRC, d))
 

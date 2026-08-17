@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from '../../__tests__/_scan-utils'
 
 const SCAN_DIRS = ['lib', 'engine', 'routes', 'middleware'].map((d) => path.join(WORKER_SRC, d))
 // The one place the PGRST116 code is allowed to appear (it defines the helpers).

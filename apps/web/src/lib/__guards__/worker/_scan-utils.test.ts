@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync } from 'node:fs'
-import { listFiles, listTsFiles, listTsxFiles, sanitizeSource, consumeParens, REPO_ROOT, WORKER_SRC, WEB_SRC } from './_scan-utils'
+import { listFiles, listTsFiles, listTsxFiles, sanitizeSource, consumeParens, REPO_ROOT, WORKER_SRC, WEB_SRC } from '../../__tests__/_scan-utils'
 
 describe('_scan-utils paths (#321)', () => {
   it('resolves repo roots that exist', () => {

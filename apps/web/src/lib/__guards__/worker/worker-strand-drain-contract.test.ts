@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT, WORKER_SRC } from './_scan-utils'
+import { REPO_ROOT, WORKER_SRC } from '../../__tests__/_scan-utils'
 
 // The bid_attempts array is the one sighting_finalize key that is NOT a
 // SightingFinalizeFields member (it carries ProjectedBidAttempt[]). Its element

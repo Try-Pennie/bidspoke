@@ -11,7 +11,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const dir = fileURLToPath(new URL('.', import.meta.url))
-const REPO_ROOT = path.resolve(dir, '../../../../..')
+const REPO_ROOT = path.resolve(dir, '../../../../../..')
 const DB_TYPES = path.join(REPO_ROOT, 'apps/worker/src/types/database.ts')
 
 // A partition child appears as a table key at the 6-space Tables indent, e.g.

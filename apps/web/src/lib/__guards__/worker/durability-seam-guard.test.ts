@@ -25,7 +25,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, consumeParens } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, consumeParens } from '../../__tests__/_scan-utils'
 
 const ENGINE_DIR = path.join(WORKER_SRC, 'engine')
 

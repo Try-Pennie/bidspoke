@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { WORKER_SRC, listTsFiles, sanitizeSource } from './_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-utils'
 
 /**
  * Every alert `slack.ts` exports must have something in production that calls it.

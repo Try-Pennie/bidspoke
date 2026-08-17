@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { findEmDashes } from '../em-dash-scan'
-import { REPO_ROOT, WEB_SRC, listTsxFiles } from './_scan-utils'
+import { findEmDashes } from '../../em-dash-scan'
+import { REPO_ROOT, WEB_SRC, listTsxFiles } from '../../__tests__/_scan-utils'
 
 describe('findEmDashes — ignores comments, flags everything else', () => {
   it('ignores an em dash in a line comment', () => {
