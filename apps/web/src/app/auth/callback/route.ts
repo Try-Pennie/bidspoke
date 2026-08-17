@@ -8,7 +8,24 @@ import { isPermittedDomain } from '@/lib/auth-allowlist'
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
-  const next = searchParams.get('next') ?? '/workflows'
+
+  // Where sign-in lands is fixed here and is never taken from the request (#730).
+  //
+  // This used to accept a `next` parameter and redirect to `origin + next`.
+  // `origin` carries no trailing slash, which is the whole bug: `@evil.com`
+  // makes `https://bidspoke.trypennie.dev@evil.com`, where everything before the
+  // `@` is userinfo and the browser goes to evil.com, and `.evil.com` makes a
+  // hostname an attacker can simply own. Either one lands the user on an
+  // attacker's page at the exact moment they have just proved they trust us.
+  //
+  // Deleted rather than validated, because nothing in the app ever sent it, so it
+  // was attacker-only surface. A list of forbidden prefixes is always one shape
+  // short of the next report; having no caller-supplied value at all is not.
+  //
+  // The destination is written inline at the redirect rather than held in a
+  // variable, so the guard on this file can assert every redirect target is a
+  // literal path. A named variable would read the same and would let a
+  // caller-supplied value back in under a different name.
 
   if (code) {
     const cookieStore = cookies()
@@ -37,7 +54,7 @@ export async function GET(request: Request) {
       if (!isPermittedDomain(user?.email)) {
         return NextResponse.redirect(`${origin}/access-denied`)
       }
-      return NextResponse.redirect(`${origin}${next}`)
+      return NextResponse.redirect(`${origin}/workflows`)
     }
   }
 
