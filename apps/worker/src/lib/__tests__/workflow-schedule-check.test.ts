@@ -184,3 +184,47 @@ describe('runWorkflowScheduleWatch: no Slack connection', () => {
     expect(results.every((r) => r.alerted === false)).toBe(true)
   })
 })
+
+describe('one workflow failing must not silence the rest (L71)', () => {
+  it('keeps checking the other workflows when an alert throws', async () => {
+    // The watchdog must not share the abort-on-error behaviour of the work it
+    // watches. A Slack outage while reporting the first dark workflow would
+    // otherwise throw out of the loop and leave every workflow after it
+    // unchecked, which looks exactly like a healthy system.
+    vi.mocked(sendWorkflowScheduleAlert).mockRejectedValueOnce(new Error('slack exploded'))
+    const results = await runWorkflowScheduleWatch(
+      fakeSupabase([{ organization_id: 'org-1' }]),
+      fakeKv(),
+      ENV,
+      NOW,
+      fetchAll(iso(NOW - 40 * 3_600_000)),
+    )
+    expect(
+      results.length,
+      'the loop aborted, so the workflows after the failing one were never checked',
+    ).toBe(WATCHED_WORKFLOWS.length)
+    // The one that blew up says so rather than reporting a state it never reached.
+    expect(results.some((r) => r.status === 'unreadable' && r.detail.includes('slack exploded'))).toBe(true)
+    // And the rest still reached their real verdict.
+    expect(results.some((r) => r.status === 'stale')).toBe(true)
+    vi.mocked(sendWorkflowScheduleAlert).mockResolvedValue(true)
+  })
+
+  it('keeps checking when the cooldown store is unreadable', async () => {
+    const kv = {
+      get: vi.fn(async () => {
+        throw new Error('kv down')
+      }),
+      put: vi.fn(async () => undefined),
+    } as unknown as KVNamespace
+    const results = await runWorkflowScheduleWatch(
+      fakeSupabase([{ organization_id: 'org-1' }]),
+      kv,
+      ENV,
+      NOW,
+      fetchAll(iso(NOW - 40 * 3_600_000)),
+    )
+    expect(results.length).toBe(WATCHED_WORKFLOWS.length)
+    expect(results.every((r) => r.status === 'unreadable')).toBe(true)
+  })
+})

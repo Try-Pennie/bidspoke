@@ -229,45 +229,75 @@ export async function runWorkflowScheduleWatch(
 
   const results: ScheduleCheckResult[] = []
   for (const workflow of WATCHED_WORKFLOWS) {
-    const lookup = await lookupLastScheduledRun(env, workflow.file, fetchImpl)
-    const verdict = evaluateSchedule(lookup, nowMs, workflow.staleMs)
-
-    if (verdict.status === 'healthy') {
-      results.push({ file: workflow.file, status: 'healthy', alerted: false, ageMs: verdict.ageMs, detail: '' })
-      continue
-    }
-    const problem = verdict.status
-
-    if (await kv.get(cooldownKey(workflow.file))) {
+    // Each workflow gets its own failure boundary. A watchdog must not share the
+    // abort-on-error behaviour of the work it watches (L71): without this, a
+    // Slack outage or an unreadable KV while reporting the FIRST dark workflow
+    // throws out of the loop and leaves every workflow after it unchecked, which
+    // looks exactly like a healthy system. The one that broke says so; the rest
+    // still reach their real verdict (L73).
+    try {
+      results.push(await checkWorkflow(supabase, kv, env, workflow, nowMs, fetchImpl, orgIds))
+    } catch (e) {
       results.push({
         file: workflow.file,
-        status: problem,
+        status: 'unreadable',
         alerted: false,
+        ageMs: null,
+        detail: `the check for this workflow failed: ${formatErr(e)}`,
+      })
+    }
+  }
+  return results
+}
+
+/**
+ * One workflow's freshness check, alert and cooldown. Split out so the caller can
+ * put a failure boundary around each workflow independently (L71, L73).
+ */
+async function checkWorkflow(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+  env: GithubEnv,
+  workflow: WatchedWorkflow,
+  nowMs: number,
+  fetchImpl: typeof fetch,
+  orgIds: string[],
+): Promise<ScheduleCheckResult> {
+  const lookup = await lookupLastScheduledRun(env, workflow.file, fetchImpl)
+  const verdict = evaluateSchedule(lookup, nowMs, workflow.staleMs)
+
+  if (verdict.status === 'healthy') {
+    return { file: workflow.file, status: 'healthy', alerted: false, ageMs: verdict.ageMs, detail: '' }
+  }
+  const problem = verdict.status
+
+  if (await kv.get(cooldownKey(workflow.file))) {
+    return {
+      file: workflow.file,
+      status: problem,
+      alerted: false,
+      ageMs: verdict.ageMs,
+      detail: verdict.detail,
+    }
+  }
+
+  let alerted = false
+  for (const orgId of orgIds) {
+    if (
+      await sendWorkflowScheduleAlert(supabase, orgId, workflow, {
+        status: problem,
         ageMs: verdict.ageMs,
         detail: verdict.detail,
       })
-      continue
-    }
-
-    let alerted = false
-    for (const orgId of orgIds) {
-      if (
-        await sendWorkflowScheduleAlert(supabase, orgId, workflow, {
-          status: problem,
-          ageMs: verdict.ageMs,
-          detail: verdict.detail,
-        })
-      )
-        alerted = true
-    }
-    if (alerted) await kv.put(cooldownKey(workflow.file), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-    results.push({
-      file: workflow.file,
-      status: problem,
-      alerted,
-      ageMs: verdict.ageMs,
-      detail: verdict.detail,
-    })
+    )
+      alerted = true
   }
-  return results
+  if (alerted) await kv.put(cooldownKey(workflow.file), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  return {
+    file: workflow.file,
+    status: problem,
+    alerted,
+    ageMs: verdict.ageMs,
+    detail: verdict.detail,
+  }
 }
