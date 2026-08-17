@@ -225,6 +225,50 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
   })
 
+  it('stamps the running end on a tick where the spike is live (#814)', async () => {
+    // Written on EVERY spiking tick, not only where it pages, or the incident's
+    // end would be recorded at the cooldown's cadence instead of the runs'.
+    const slowRows = Array.from({ length: 10 }, () => ({
+      workflow_id: 'wf-1',
+      duration_ms: THRESHOLD * 2,
+      started_at: new Date().toISOString(),
+    }))
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: slowRows,
+    })
+    const kv = makeKv({ 'slow-spike-cooldown:wf-1': '1' }) // already paged, still spiking
+
+    await runSlowExecutionCheck(sb as never, kv as never, 'https://app.example.com')
+
+    expect(kv.store.has('slow-spike-active:wf-1')).toBe(true)
+  })
+
+  it('HOLDS the all-clear while the spike was seen inside the re-arm window (#814)', async () => {
+    const kv = makeKv({
+      'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString(),
+      'slow-spike-active:wf-1': new Date(Date.now() - 10 * 60_000).toISOString(),
+    })
+
+    await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(true)
+  })
+
+  it('reports the end as the last slow run, not the announcement time (#814)', async () => {
+    const endedAt = new Date(Date.now() - 40 * 60_000).toISOString()
+    const kv = makeKv({
+      'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString(),
+      'slow-spike-active:wf-1': endedAt,
+    })
+
+    await runSlowExecutionCheck(healthy() as never, kv as never, 'https://app.example.com')
+
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ endedAt })
+  })
+
   it('keeps both keys when the all-clear is refused, so it retries', async () => {
     vi.mocked(sendRecoveryAlert).mockResolvedValue(false)
     const kv = makeKv({

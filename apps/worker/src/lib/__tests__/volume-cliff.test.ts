@@ -194,6 +194,47 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(true)
   })
 
+  it('stamps the running end on a tick where the cliff is live (#814)', async () => {
+    // Written on EVERY cliff tick, not only where it pages, or the incident's
+    // end would be recorded at the cooldown's cadence instead of the failures'.
+    const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
+    const cliffMinutes = Array.from({ length: 60 }, (_, i) => ({
+      minute: new Date(base + i * 60000).toISOString(),
+      cnt: i < BASELINE_WINDOW_MINUTES ? 50 : 0,
+    }))
+    const kv = fakeKv({ 'volume-cliff-cooldown:wf-1': '1' }) // already paged, still spiking
+    await runVolumeCliffCheck(fakeSupabase(cliffMinutes), kv, 'https://app.example', 'https://self.example')
+    expect(kv.store.has('volume-cliff-active:wf-1')).toBe(true)
+  })
+
+  it('HOLDS the all-clear while the cliff was seen inside the re-arm window (#814)', async () => {
+    // One quiet tick is not an ended incident. Before #814 this announced, and a
+    // relapse minutes later was reported as a brand new short outage.
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const kv = fakeKv({
+      'volume-cliff-recovery:wf-1': new Date(Date.now() - 45 * 60000).toISOString(),
+      'volume-cliff-active:wf-1': new Date(Date.now() - 10 * 60000).toISOString(),
+    })
+
+    await run(kv)
+
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+  })
+
+  it('reports the end as the last cliff, not the announcement time (#814)', async () => {
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const endedAt = new Date(Date.now() - 40 * 60000).toISOString()
+    const kv = fakeKv({
+      'volume-cliff-recovery:wf-1': new Date(Date.now() - 90 * 60000).toISOString(),
+      'volume-cliff-active:wf-1': endedAt,
+    })
+
+    await run(kv)
+
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ endedAt })
+  })
+
   it('sends nothing when the org opted out of volume alerts', async () => {
     vi.mocked(getSlackConnection).mockResolvedValue({ ...CONN, volume_alerts_enabled: false } as never)
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  RECOVERY_REARM_MINUTES,
   RECOVERY_TTL_SECONDS,
   announceRecovery,
   markAlerted,
+  markSpikeSeen,
   recoveryKey,
 } from '../alert-recovery'
 
@@ -74,7 +76,7 @@ describe('announceRecovery', () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
     expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(true)
-    expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z')
+    expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z', null)
   })
 
   it('clears the cooldown too, so the next genuine spike pages immediately', async () => {
@@ -119,5 +121,151 @@ describe('announceRecovery', () => {
     const send = vi.fn().mockRejectedValue(new Error('slack exploded'))
     expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', send)).toBe(false)
     expect(kv.store.has('volume-cliff-recovery:wf-1')).toBe(true)
+  })
+})
+
+/**
+ * Issue #814. The all-clear reported the ALERT EPISODE, not the outage. The
+ * marker was cleared on the FIRST healthy tick, so a relapse minutes later
+ * started a brand new incident from zero.
+ *
+ * On Fri 2026-08-14 an Equifax ACRO_GATEWAY outage ran 9:25 to 11:04 PM over
+ * 1,326 failed runs, went quiet for 23 minutes in the middle, and was announced
+ * to the team as an incident lasting 5 minutes. Both messages were correct about
+ * their own episode and neither described the outage (LESSONS L160).
+ *
+ * So the condition is over only once it has stayed healthy for a re-arm window,
+ * and the duration is measured to the LAST OBSERVED FAILURE rather than to the
+ * moment the all-clear is sent.
+ */
+describe('markSpikeSeen (#814)', () => {
+  it('records the tick on which the condition was last true', async () => {
+    const kv = fakeKv()
+    await markSpikeSeen(kv, 'failure-rate', 'wf-1:ACRO', Date.parse('2026-08-14T22:33:00.000Z'))
+    expect(kv.store.get('failure-rate-active:wf-1:ACRO')).toBe('2026-08-14T22:33:00.000Z')
+  })
+
+  it('DOES overwrite, unlike the alert marker, because it tracks the latest failure', async () => {
+    // markAlerted pins the START of the incident; this pins its running END.
+    // Two facts, two keys (LESSONS L53).
+    const kv = fakeKv({ 'failure-rate-active:wf-1:ACRO': '2026-08-14T22:33:00.000Z' })
+    await markSpikeSeen(kv, 'failure-rate', 'wf-1:ACRO', Date.parse('2026-08-15T03:04:00.000Z'))
+    expect(kv.store.get('failure-rate-active:wf-1:ACRO')).toBe('2026-08-15T03:04:00.000Z')
+  })
+
+  it('does not disturb the alert marker', async () => {
+    const kv = fakeKv({ 'failure-rate-recovery:wf-1:ACRO': '2026-08-14T21:32:00.000Z' })
+    await markSpikeSeen(kv, 'failure-rate', 'wf-1:ACRO', Date.parse('2026-08-14T22:33:00.000Z'))
+    expect(kv.store.get('failure-rate-recovery:wf-1:ACRO')).toBe('2026-08-14T21:32:00.000Z')
+  })
+})
+
+describe('announceRecovery re-arm window (#814)', () => {
+  const START = '2026-08-15T01:32:00.000Z' // 9:32 PM EDT, first page
+  const LAST_FAIL = '2026-08-15T02:40:00.000Z' // 10:40 PM EDT, failures stop
+  const seeded = () =>
+    fakeKv({
+      'failure-rate-recovery:wf-1:ACRO': START,
+      'failure-rate-active:wf-1:ACRO': LAST_FAIL,
+      'failure-rate-cooldown:wf-1:ACRO': '1',
+    })
+  const call = (kv: ReturnType<typeof fakeKv>, send: (a: string, e: string | null) => Promise<boolean>, now: string) =>
+    announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', send, {
+      now: Date.parse(now),
+    })
+
+  it('HOLDS the all-clear while inside the re-arm window', async () => {
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    // 10:45 PM EDT: five minutes of quiet is not an ended outage.
+    expect(await call(kv, send, '2026-08-15T02:45:00.000Z')).toBe(false)
+    expect(send).not.toHaveBeenCalled()
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO')).toBe(true)
+  })
+
+  it('does NOT clear the cooldown while holding, so a relapse stays deduped', async () => {
+    const kv = seeded()
+    await call(kv, vi.fn().mockResolvedValue(true), '2026-08-15T02:45:00.000Z')
+    expect(kv.store.has('failure-rate-cooldown:wf-1:ACRO')).toBe(true)
+  })
+
+  it('announces once the re-arm window has elapsed with no relapse', async () => {
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    expect(await call(kv, send, '2026-08-15T03:11:00.000Z')).toBe(true)
+    expect(send).toHaveBeenCalledWith(START, LAST_FAIL)
+  })
+
+  it('reports the end as the last observed failure, not the announcement time', async () => {
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    await call(kv, send, '2026-08-15T05:00:00.000Z') // announced hours later
+    expect(send).toHaveBeenCalledWith(START, LAST_FAIL)
+  })
+
+  it('a relapse inside the window continues the SAME incident', async () => {
+    // The Aug 14 sequence: quiet at 10:40, relapse at 11:04, quiet after.
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    await call(kv, send, '2026-08-15T02:50:00.000Z')
+    expect(send).not.toHaveBeenCalled()
+
+    const relapse = '2026-08-15T03:04:00.000Z'
+    await markSpikeSeen(kv, 'failure-rate', 'wf-1:ACRO', Date.parse(relapse))
+    await call(kv, send, '2026-08-15T03:20:00.000Z') // still inside the window
+    expect(send).not.toHaveBeenCalled()
+
+    expect(await call(kv, send, '2026-08-15T03:35:00.000Z')).toBe(true)
+    // One incident: 9:32 PM to 11:04 PM, not a five minute blip.
+    expect(send).toHaveBeenCalledWith(START, relapse)
+  })
+
+  it('clears the running-end key with the rest once announced', async () => {
+    const kv = seeded()
+    await call(kv, vi.fn().mockResolvedValue(true), '2026-08-15T03:11:00.000Z')
+    expect(kv.store.has('failure-rate-active:wf-1:ACRO')).toBe(false)
+  })
+
+  it('keeps the running-end key when the all-clear failed to deliver', async () => {
+    const kv = seeded()
+    await call(kv, vi.fn().mockResolvedValue(false), '2026-08-15T03:11:00.000Z')
+    expect(kv.store.get('failure-rate-active:wf-1:ACRO')).toBe(LAST_FAIL)
+  })
+
+  it('announces with a null end when no running-end was ever recorded', async () => {
+    // A marker written by the previous deploy has no companion key. It must not
+    // hold silently forever; say nothing about the end rather than invent one.
+    const kv = fakeKv({ 'failure-rate-recovery:wf-1:ACRO': START })
+    const send = vi.fn().mockResolvedValue(true)
+    expect(await call(kv, send, '2026-08-15T02:45:00.000Z')).toBe(true)
+    expect(send).toHaveBeenCalledWith(START, null)
+  })
+
+  it('announces with a null end when the running-end is unparseable', async () => {
+    const kv = fakeKv({
+      'failure-rate-recovery:wf-1:ACRO': START,
+      'failure-rate-active:wf-1:ACRO': 'not-a-date',
+    })
+    const send = vi.fn().mockResolvedValue(true)
+    expect(await call(kv, send, '2026-08-15T02:45:00.000Z')).toBe(true)
+    expect(send).toHaveBeenCalledWith(START, null)
+  })
+
+  it('honours a caller-supplied re-arm window', async () => {
+    // failure-rate signals carry their own cooldown; the incident must not be
+    // declared over while a repeat page for it is still suppressed.
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    const at = (now: string, rearmMinutes: number) =>
+      announceRecovery(kv, 'failure-rate', 'wf-1:ACRO', 'failure-rate-cooldown:wf-1:ACRO', send, {
+        now: Date.parse(now),
+        rearmMinutes,
+      })
+    expect(await at('2026-08-15T03:20:00.000Z', 60)).toBe(false)
+    expect(await at('2026-08-15T03:45:00.000Z', 60)).toBe(true)
+  })
+
+  it('defaults the window to at least the alert cooldown', () => {
+    expect(RECOVERY_REARM_MINUTES).toBeGreaterThanOrEqual(30)
   })
 })

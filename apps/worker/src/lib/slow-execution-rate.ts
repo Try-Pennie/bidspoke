@@ -23,7 +23,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
@@ -197,19 +197,24 @@ export async function runSlowExecutionCheck(
     if (!spike) {
       // Healthy again. Announce it if we paged, so silence stops meaning both
       // "still slow, suppressed" and "fine now" (#253).
-      await announceRecovery(kv, 'slow-spike', wfId, cooldownKey, async (alertedAt) => {
+      await announceRecovery(kv, 'slow-spike', wfId, cooldownKey, async (alertedAt, endedAt) => {
         const slack = await getSlackConnection(supabase, wf.organization_id as string)
         if (!slack) return false
         return sendRecoveryAlert(
           slack,
           (wf.slack_channel as string | null) ?? slack.default_channel,
-          { signal: 'slow execution', subject: wf.name as string, alertedAt, url: `${appUrl}/workflows/${wfId}` },
+          { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, url: `${appUrl}/workflows/${wfId}` },
         )
       })
       continue
     }
 
     console.log(`[slow-spike] detected workflow=${wf.name} workflow_id=${wfId} slow=${spike.slowCount}/${spike.totalCount} threshold_ms=${threshold}`)
+
+    // Stamp the incident's running end on EVERY spiking tick, before the
+    // cooldown gate, so the all-clear reports how long the slowdown lasted
+    // rather than how long ago we last spoke about it (#814).
+    await markSpikeSeen(kv, 'slow-spike', wfId, now)
 
     if (await kv.get(cooldownKey)) {
       console.log(`[slow-spike] suppressed by cooldown workflow_id=${wfId}`)
