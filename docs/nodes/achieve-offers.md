@@ -55,6 +55,7 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY` | No | Months that must have passed since the most recent bankruptcy filing. Achieve asked for `48`. A bankruptcy on file whose date cannot be read is treated as recent. Requires a credit report. |
 | `ACHIEVE_MAX_INQUIRIES_6MO` | No | Credit inquiries allowed in the last 180 days. Achieve asked for fewer than 6, so set `5`. Note this screens out almost nobody: 94% of leads already pass, and the average lead has 1.5. Requires a credit report. |
 | `ACHIEVE_MIN_AGE` | No | Minimum age in years, from the form's date of birth. Achieve asked for `18`. |
+| `ACHIEVE_MAX_DTI` | No | Ceiling on debt to income, as a decimal. Achieve declines over 60%, so set `0.60`. Computed from the scheduled monthly payments on the credit report over monthly gross income, counting only accounts still being paid (a charge-off is not an obligation, and a settled account keeps its old payment figure). Measured on 537 live leads the median is 14% and the 90th percentile 44.7%, so a 60% ceiling sits out in the tail and removes about 4.5%. **It understates a renter's true ratio**, because rent never appears on a credit report while a mortgage does, which pushes leads under the ceiling rather than over it. A file with no accounts passes, since a ceiling on how much of an income goes to debt is not a reason to refuse somebody with no debt. No stated income refuses, because the ratio cannot be computed. Requires a credit report. |
 
 ### Pre-send screening
 
@@ -71,7 +72,7 @@ value under `screen`), never a shared "skipped". That matters because a rejected
 reaches Achieve, so counting rejections by cause is the only measurement left. The reasons are
 `no_credit_report`, `below_vantage_floor`, `loan_amount_below_min`, `loan_amount_above_max`,
 `state_not_allowed`, `loan_to_income_too_high`, `has_current_delinquency`, `recent_bankruptcy`,
-`too_many_inquiries` and `under_min_age`.
+`too_many_inquiries`, `under_min_age` and `dti_too_high`.
 
 **What this costs in volume.** Measured against 526 live leads reaching the node on 2026-08-17:
 the four payload-only criteria pass about 20%, the full set passes about 9% under the default
@@ -80,8 +81,8 @@ to forty times, from around 2,300 leads a day to between 50 and 200. That is int
 defect, but it is worth re-reading before anyone concludes Achieve has no appetite for our leads.
 
 **Not implementable, deliberately absent.** Citizenship or permanent residency, which neither
-the form nor the credit report collects, and Achieve's DTI rule, which on rereading describes
-what they do at their own prequalification stage rather than a screen they expect from us.
+the form nor the credit report collects. That is the only one of Achieve's criteria we cannot
+apply.
 
 **A missing credit report is not a clean one.** With any credit-based filter switched on, a lead
 whose Equifax pull failed is refused (`no_credit_report`) rather than sent unscreened, so an

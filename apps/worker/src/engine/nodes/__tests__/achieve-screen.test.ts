@@ -20,6 +20,7 @@ const ALL_FILTERS_ON = {
   ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY: '48',
   ACHIEVE_MAX_INQUIRIES_6MO: '5',
   ACHIEVE_MIN_AGE: '18',
+  ACHIEVE_MAX_DTI: '0.60',
 }
 
 function payload(over: Record<string, unknown> = {}) {
@@ -191,6 +192,54 @@ describe('screenLead', () => {
   it('counts only inquiries inside the six-month window', () => {
     const inquiries = Array.from({ length: 6 }, () => ({ inquiryDate: '01052024' }))
     expect(screenLead(ctx({ report: cleanReport({ inquiries }) }), {}, NOW).pass).toBe(true)
+  })
+
+  // DTI, computed from the scheduled monthly payments on the credit report over the form's
+  // annual income. The clean fixture earns $120,000, so $6,000 a month of payments is 60%.
+  it('rejects a lead paying more of its income in debt than the ceiling allows', () => {
+    const verdict = screenLead(
+      ctx({
+        report: cleanReport({
+          trades: [{ rate: { code: 1 }, balance: 90000, scheduledPaymentAmount: 6500 }],
+        }),
+      }),
+      {},
+      NOW
+    )
+    expect(verdict.reason).toBe('dti_too_high')
+  })
+
+  it('allows a lead comfortably under the ceiling', () => {
+    const verdict = screenLead(
+      ctx({
+        report: cleanReport({
+          trades: [{ rate: { code: 1 }, balance: 20000, scheduledPaymentAmount: 1142 }],
+        }),
+      }),
+      {},
+      NOW
+    )
+    expect(verdict.pass).toBe(true)
+  })
+
+  // A thin file has no accounts to measure, and a DTI ceiling exists to catch people paying too
+  // much rather than people with no debt at all, so it must not reject here.
+  it('allows a lead whose file carries no accounts to measure', () => {
+    const verdict = screenLead(ctx({ report: cleanReport({ trades: [] }) }), {}, NOW)
+    expect(verdict.pass).toBe(true)
+  })
+
+  it('rejects when the ceiling is set but the lead states no income', () => {
+    const verdict = screenLead(
+      ctx({
+        payload: payload({ financialInformation: { annualIncome: 0 }, loanInformation: { loanAmount: 20000 } }),
+        env: { ACHIEVE_MAX_DTI: '0.60' },
+        report: cleanReport({ trades: [{ rate: { code: 1 }, balance: 5000, scheduledPaymentAmount: 200 }] }),
+      }),
+      {},
+      NOW
+    )
+    expect(verdict.reason).toBe('dti_too_high')
   })
 
   it('rejects a lead under the minimum age', () => {

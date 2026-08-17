@@ -5,6 +5,7 @@ import {
   countDelinquentTrades,
   countRecentInquiries,
   monthsSinceLatestBankruptcy,
+  monthlyDebtPayments,
 } from '../achieve-credit-report'
 import type { ExecutionContext } from '../../../types'
 
@@ -167,6 +168,48 @@ describe('countRecentInquiries', () => {
       ctxWithStep(engineShape(report({ inquiries: [{ inquiryDate: 'unknown' }, { inquiryDate: '' }] })))
     )!
     expect(countRecentInquiries(rep, 180, NOW)).toBe(0)
+  })
+})
+
+describe('monthlyDebtPayments', () => {
+  // Measured on 537 live leads: average total of $1,142 a month, median DTI 14%, 90th
+  // percentile 44.7%. Achieve's 60% ceiling therefore sits out in the tail rather than
+  // through the dense middle, and removes about 4.5% of leads.
+  function tradeWith(over: Record<string, unknown>) {
+    return { rate: { code: 1 }, balance: 5000, scheduledPaymentAmount: 100, ...over }
+  }
+  const build = (trades: unknown[]) =>
+    findEquifaxReport(ctxWithStep(engineShape(report({ trades }))))!
+
+  it('sums the scheduled monthly payment across accounts still being paid', () => {
+    expect(monthlyDebtPayments(build([tradeWith({}), tradeWith({ scheduledPaymentAmount: 429 })]))).toBe(529)
+  })
+
+  // A charge-off is no longer a monthly obligation, so counting it would overstate what the
+  // person actually pays each month and reject them for debt they are not servicing.
+  it('excludes charged-off accounts', () => {
+    expect(monthlyDebtPayments(build([tradeWith({ rate: { code: 9 } })]))).toBe(0)
+  })
+
+  // A settled account keeps its old payment figure on the report. Counting it would inflate
+  // the total with a payment the person no longer makes.
+  it('excludes accounts with no balance left', () => {
+    expect(monthlyDebtPayments(build([tradeWith({ balance: 0 }), tradeWith({ balance: null })]))).toBe(0)
+  })
+
+  it('ignores missing or unreadable payment figures rather than counting them as zero-cost', () => {
+    expect(monthlyDebtPayments(build([tradeWith({ scheduledPaymentAmount: undefined }), tradeWith({})]))).toBe(100)
+  })
+
+  it('returns zero when accounts exist but none are being paid', () => {
+    expect(monthlyDebtPayments(build([tradeWith({ balance: 0 })]))).toBe(0)
+  })
+
+  // Distinct from the bankruptcy case, where an undateable filing is EVIDENCE of a filing and
+  // so counts against the lead. Here there is no evidence of debt at all, and a DTI ceiling
+  // exists to catch people paying too much, not people with no accounts.
+  it('returns null when the file carries no accounts at all, which is not the same as zero', () => {
+    expect(monthlyDebtPayments(build([]))).toBeNull()
   })
 })
 

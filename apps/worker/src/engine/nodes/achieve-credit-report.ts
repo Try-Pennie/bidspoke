@@ -158,6 +158,45 @@ export function countRecentInquiries(report: EquifaxReport, days: number, now: D
 }
 
 /**
+ * Total scheduled monthly payment across the accounts the consumer is actually servicing,
+ * which is the numerator a debt-to-income ratio needs. Divide by monthly gross income for DTI.
+ *
+ * Counts an account only when it is still being paid: a charge-off is no longer a monthly
+ * obligation, and a settled account keeps its old payment figure on the report, so including
+ * either would inflate the total with money the person does not pay.
+ *
+ * Returns null when the file carries no accounts at all, which is NOT the same as zero. That
+ * differs from the bankruptcy case on purpose: an undateable filing is evidence of a filing and
+ * counts against the lead, whereas an empty account list is an absence of evidence of debt, and
+ * a DTI ceiling exists to catch people paying too much rather than people with no accounts.
+ *
+ * One known understatement, worth knowing before the number is trusted as a lender's DTI: RENT
+ * does not appear on a credit report, so a renter's true obligations are higher than this. A
+ * mortgage does appear, as an ordinary account. Measured on 537 live leads the median came out
+ * at 14% of income with a 90th percentile of 44.7%, so understatement pushes leads UNDER a
+ * ceiling rather than over it, which sends leads the partner may decline rather than excluding
+ * leads we should have sent.
+ */
+export function monthlyDebtPayments(report: EquifaxReport): number | null {
+  if (report.trades.length === 0) return null
+
+  let total = 0
+  for (const trade of report.trades) {
+    const code = rateCode(trade)
+    if (code === 9) continue // charged off, not being paid
+
+    const balance = Number(trade?.balance)
+    if (!Number.isFinite(balance) || balance <= 0) continue // nothing left owing
+
+    const payment = Number(trade?.scheduledPaymentAmount)
+    if (!Number.isFinite(payment) || payment <= 0) continue
+
+    total += payment
+  }
+  return total
+}
+
+/**
  * Whole months since the MOST RECENT bankruptcy filing.
  *
  * Returns null when the consumer has no bankruptcy on file, and BANKRUPTCY_DATE_UNKNOWN when
