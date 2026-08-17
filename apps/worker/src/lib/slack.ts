@@ -1360,13 +1360,19 @@ export async function sendCircuitAlert(
 export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { signal: string; subject: string; alertedAt: string; url?: string },
+  payload: { signal: string; subject: string; alertedAt: string; endedAt?: string | null; url?: string },
   now: number = Date.now(),
 ): Promise<boolean> {
   const started = Date.parse(payload.alertedAt)
+  // The all-clear waits out a re-arm window before it is sent (#814), so the
+  // duration is measured to the LAST OBSERVED FAILURE. Measuring to now would
+  // add the whole quiet window to every reported outage. Falls back to now when
+  // no end was recorded, and then claims nothing about when it cleared.
+  const ended = payload.endedAt ? Date.parse(payload.endedAt) : NaN
+  const clearedAt = Number.isFinite(ended) ? ended : null
   // An unparseable marker must not render "NaN minutes"; say nothing about the
   // duration rather than something wrong (LESSONS L11, L50).
-  const lasted = Number.isFinite(started) ? describeDuration(now - started) : null
+  const lasted = Number.isFinite(started) ? describeDuration((clearedAt ?? now) - started) : null
 
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
@@ -1377,7 +1383,8 @@ export async function sendRecoveryAlert(
         text:
           `*${payload.subject}* is back within normal range. The ${payload.signal} alert fired at ` +
           `${etTime(started)}` +
-          (lasted ? ` and lasted ${lasted}.` : '.'),
+          (lasted ? ` and lasted ${lasted}` : '') +
+          (lasted && clearedAt !== null ? `, clearing at ${etTime(clearedAt)}.` : '.'),
       },
     },
   ]

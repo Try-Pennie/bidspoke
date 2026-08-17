@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
+import { sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1073,5 +1073,47 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     const text = JSON.stringify(body.blocks)
     expect(text).not.toContain('/env')
+  })
+})
+
+describe('sendRecoveryAlert (#253, #814)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const slack = { bot_token: 'xoxb-test-token' }
+  // The real Aug 14 incident: paged 9:32 PM EDT, last failure 11:04 PM EDT.
+  const ALERTED = '2026-08-15T01:32:00.000Z'
+  const ENDED = '2026-08-15T03:04:00.000Z'
+  const base = { signal: '"ACRO_GATEWAY" failure rate', subject: 'Engine Bidding Workflow', alertedAt: ALERTED }
+  const sentText = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+
+  it('measures the duration to the LAST FAILURE, not to the announcement', async () => {
+    // Announced 30 minutes after it cleared. The outage lasted 1h 32m, and the
+    // reader must not be told 2 hours because we waited to be sure.
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
+    expect(sentText()).toContain('lasted 1 hour 32 minutes')
+  })
+
+  it('names when it cleared, since the all-clear arrives after a re-arm delay', async () => {
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
+    expect(sentText()).toContain('11:04 PM EDT')
+  })
+
+  it('falls back to the announcement time when no end was recorded', async () => {
+    await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: null }, Date.parse('2026-08-15T02:32:00.000Z'))
+    const text = sentText()
+    expect(text).toContain('lasted 1 hour')
+    expect(text).not.toContain('clearing at')
+  })
+
+  it('says nothing about the duration when the marker is unparseable', async () => {
+    await sendRecoveryAlert(slack, '#alerts', { ...base, alertedAt: 'garbage', endedAt: null })
+    const text = sentText()
+    expect(text).not.toContain('NaN')
+    expect(text).not.toContain('lasted')
   })
 })

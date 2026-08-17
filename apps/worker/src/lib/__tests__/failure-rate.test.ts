@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('../slack', () => ({
   sendFailureSpikeAlert: vi.fn().mockResolvedValue('ts-1'),
   getSlackConnection: vi.fn(),
@@ -241,5 +241,109 @@ describe('runFailureRateCheck recovery (#253)', () => {
     await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
 
     expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(true)
+  })
+})
+
+// ── Re-arm window (#814) ─────────────────────────────────────────────────────
+//
+// Replays the real 2026-08-14 Equifax ACRO_GATEWAY outage minute by minute.
+// Before this change the all-clear went out at 10:45 PM and the 11:03 relapse
+// was announced as a fresh incident "lasting 5 minutes" (LESSONS L160).
+describe('runFailureRateCheck re-arm (#814)', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C1' }
+  const url = 'https://app.example.com'
+  const spiking = () =>
+    makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: [failRow('ACRO_GATEWAY a'), failRow('ACRO_GATEWAY b'), failRow('ACRO_GATEWAY c')],
+    })
+  const quiet = () =>
+    makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [wf],
+      workflow_executions: [failRow('unrelated salesforce error')],
+    })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.useFakeTimers()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  // The clock moves BEFORE the fixture is built: rows stamped at the previous
+  // tick would fall outside this tick's 5 minute window, and the check would
+  // read as healthy for a reason the test never intended (LESSONS L130).
+  const tickAt = async (iso: string, build: () => unknown, kv: unknown) => {
+    vi.setSystemTime(new Date(iso))
+    await runFailureRateCheck(build() as never, kv as never, url)
+  }
+
+  it('records the running end even on a tick the cooldown suppressed', async () => {
+    // The last hour of an outage is invisible if the end is only stamped when we
+    // PAGE, because paging happens at the cooldown's cadence, not the failures'.
+    const kv = makeKv()
+    await tickAt('2026-08-15T01:32:00.000Z', spiking, kv)
+    await tickAt('2026-08-15T02:40:00.000Z', spiking, kv)
+    expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(1) // second was deduped
+    expect(kv.store.get('failure-rate-active:wf-1:ACRO_GATEWAY')).toBe('2026-08-15T02:40:00.000Z')
+  })
+
+  it('holds the all-clear through a quiet stretch shorter than the re-arm window', async () => {
+    const kv = makeKv()
+    await tickAt('2026-08-15T01:32:00.000Z', spiking, kv)
+    await tickAt('2026-08-15T01:50:00.000Z', quiet, kv) // 18 quiet minutes is not an ended outage
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('failure-rate-recovery:wf-1:ACRO_GATEWAY')).toBe(true)
+  })
+
+  it('reports ONE incident across a relapse, ending at the last failure', async () => {
+    const kv = makeKv()
+    await tickAt('2026-08-15T01:32:00.000Z', spiking, kv) // first page, 9:32 PM EDT
+    await tickAt('2026-08-15T02:40:00.000Z', spiking, kv) // last failure of the first stretch
+    await tickAt('2026-08-15T02:45:00.000Z', quiet, kv)
+    await tickAt('2026-08-15T02:55:00.000Z', quiet, kv)
+    await tickAt('2026-08-15T03:04:00.000Z', spiking, kv) // relapse, 11:04 PM EDT
+    await tickAt('2026-08-15T03:20:00.000Z', quiet, kv)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+
+    await tickAt('2026-08-15T03:35:00.000Z', quiet, kv)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
+      alertedAt: '2026-08-15T01:32:00.000Z',
+      endedAt: '2026-08-15T03:04:00.000Z',
+    })
+  })
+
+  it('re-arms with the signal cooldown when it is longer than the default', async () => {
+    // The incident must not be declared over while a repeat page for it is still
+    // suppressed, or the all-clear lands on an outage that is merely muted.
+    const slowSignal = {
+      ...wf,
+      definition: {
+        trigger: {
+          type: 'http_webhook',
+          config: {
+            muted_failure_signals: [
+              { match: 'ACRO_GATEWAY', count: 3, window_minutes: 5, cooldown_minutes: 90 },
+            ],
+          },
+        },
+      },
+    }
+    const withSignal = (rows: unknown[]) =>
+      makeSupabase({
+        service_connections: [{ organization_id: 'org-1' }],
+        workflows: [slowSignal],
+        workflow_executions: rows,
+      })
+    const kv = makeKv()
+    await tickAt('2026-08-15T01:32:00.000Z', () => withSignal([failRow('ACRO_GATEWAY a'), failRow('ACRO_GATEWAY b'), failRow('ACRO_GATEWAY c')]), kv)
+    await tickAt('2026-08-15T02:45:00.000Z', () => withSignal([failRow('unrelated')]), kv)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled() // 73 min quiet, under the 90 min window
+    await tickAt('2026-08-15T03:10:00.000Z', () => withSignal([failRow('unrelated')]), kv)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
   })
 })

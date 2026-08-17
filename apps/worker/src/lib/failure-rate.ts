@@ -19,7 +19,7 @@
 // the domain type MutedFailureSignal in ../types; re-exported so callers can
 // import it from here.
 import { logReadFailure } from './scheduled-read'
-import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal, WorkflowDefinition } from '../types'
@@ -161,23 +161,41 @@ export async function runFailureRateCheck(
       // another that is still spiking on the same workflow (LESSONS L53).
       const recoveryId = `${wfId}:${signal.match}`
 
+      // Re-arm for at least as long as this signal's own page suppression, so an
+      // incident is never declared over while a repeat page for it is still
+      // muted (#814).
+      const cooldownMinutes = signal.cooldown_minutes ?? DEFAULT_COOLDOWN_MINUTES
+
       if (!detectFailureSpike(count, signal.count)) {
-        await announceRecovery(kv, 'failure-rate', recoveryId, cooldownKey, async (alertedAt) => {
-          const slack = await getSlackConnection(supabase, wf.organization_id as string)
-          if (!slack) return false
-          return sendRecoveryAlert(
-            slack,
-            (wf.slack_channel as string | null) ?? slack.default_channel,
-            {
-              signal: `"${signal.match}" failure rate`,
-              subject: wf.name as string,
-              alertedAt,
-              url: `${appUrl}/workflows/${wfId}`,
-            },
-          )
-        })
+        await announceRecovery(
+          kv,
+          'failure-rate',
+          recoveryId,
+          cooldownKey,
+          async (alertedAt, endedAt) => {
+            const slack = await getSlackConnection(supabase, wf.organization_id as string)
+            if (!slack) return false
+            return sendRecoveryAlert(
+              slack,
+              (wf.slack_channel as string | null) ?? slack.default_channel,
+              {
+                signal: `"${signal.match}" failure rate`,
+                subject: wf.name as string,
+                alertedAt,
+                endedAt,
+                url: `${appUrl}/workflows/${wfId}`,
+              },
+            )
+          },
+          { now, rearmMinutes: cooldownMinutes },
+        )
         continue
       }
+
+      // Stamp the incident's running end on EVERY spiking tick, before the
+      // cooldown gate. Doing it only where we page would stamp at the cooldown's
+      // cadence and lose the tail of every outage longer than one cooldown.
+      await markSpikeSeen(kv, 'failure-rate', recoveryId, now)
 
       if (await kv.get(cooldownKey)) continue
 
@@ -199,7 +217,7 @@ export async function runFailureRateCheck(
       )
 
       if (sent) {
-        const ttl = (signal.cooldown_minutes ?? DEFAULT_COOLDOWN_MINUTES) * 60
+        const ttl = cooldownMinutes * 60
         await kv.put(cooldownKey, '1', { expirationTtl: ttl })
         await markAlerted(kv, 'failure-rate', recoveryId)
       }

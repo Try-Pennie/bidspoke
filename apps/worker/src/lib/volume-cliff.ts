@@ -18,7 +18,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage } from './slack'
-import { announceRecovery, markAlerted, type RecoveryKv } from './alert-recovery'
+import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
@@ -173,19 +173,24 @@ export async function runVolumeCliffCheck(
     if (!cliff) {
       // Healthy. If we paged for this workflow, say so and stand down (#253);
       // otherwise this is the ordinary quiet path and costs one KV read.
-      await announceRecovery(kv, 'volume-cliff', wfId, cooldownKeyFor, async (alertedAt) => {
+      await announceRecovery(kv, 'volume-cliff', wfId, cooldownKeyFor, async (alertedAt, endedAt) => {
         const slack = await getSlackConnection(supabase, wf.organization_id as string)
         if (!slack || !slack.volume_alerts_enabled) return false
         return sendRecoveryAlert(
           slack,
           (wf.slack_channel as string | null) ?? slack.default_channel,
-          { signal: 'volume cliff', subject: wf.name as string, alertedAt, url: `${appUrl}/workflows/${wfId}` },
+          { signal: 'volume cliff', subject: wf.name as string, alertedAt, endedAt, url: `${appUrl}/workflows/${wfId}` },
         )
       })
       continue
     }
 
     console.log(`[volume-cliff] detected workflow=${wf.name} workflow_id=${wfId} recent=${cliff.recentCount} baseline_per_min=${cliff.baselinePerMin}`)
+
+    // Stamp the incident's running end on EVERY cliff tick, before the cooldown
+    // gate, so the all-clear reports how long the cliff lasted rather than how
+    // long ago we last spoke about it (#814).
+    await markSpikeSeen(kv, 'volume-cliff', wfId)
 
     const cooldownKey = cooldownKeyFor
     if (await kv.get(cooldownKey)) {
