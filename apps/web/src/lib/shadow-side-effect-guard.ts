@@ -19,6 +19,13 @@ export const SHADOW_EXEMPT_NODES = [
   'response',
   'parallel',
   'bid-group',
+  // Pure helpers for the achieve_offers node rather than executors of their own. Both only
+  // read from the execution context (the lead payload and the already-pulled credit report)
+  // and reach nothing outside the isolate, so a shadow dry-run may run them freely. The
+  // exemption is still checked both ways: the guard fails if either ever starts performing an
+  // outbound call, which is what would make a shadow guard necessary.
+  'achieve-credit-report',
+  'achieve-screen',
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).

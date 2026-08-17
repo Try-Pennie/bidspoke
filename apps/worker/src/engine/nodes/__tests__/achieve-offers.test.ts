@@ -277,6 +277,37 @@ describe('executeAchieveOffersNode', () => {
     expect(out._achieve_skipped).toBe(true)
   })
 
+  // The screening criteria are unit-tested in achieve-screen.test.ts. These two prove the NODE
+  // is actually wired to them: that a criterion other than the score can stop the call, and
+  // that the specific reason reaches the node's output. Without the second, every held-back
+  // lead would be an unattributable "skipped", and a rejected lead never reaches Achieve, so
+  // counting rejections by cause is the only measurement left.
+  it('does not call Achieve when a non-score criterion rejects the lead', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { output } = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ALLOWED_STATES: 'CA,TX' }, steps: withVantage(720) })
+    )
+    const out = output as Record<string, unknown>
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(out._achieve_skipped).toBe(true)
+    expect(out.reason).toBe('state_not_allowed')
+    expect(out).not.toHaveProperty('_achieve_evaluation')
+  })
+
+  it('carries the rejecting criterion and its measured value onto the output', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const { output } = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_LOAN_AMOUNT: '10000' }, steps: withVantage(720) })
+    )
+    const out = output as Record<string, unknown>
+    expect(out.reason).toBe('loan_amount_below_min')
+    // The default fixture asks for 7500, which is what the gate measured.
+    expect((out.screen as Record<string, unknown>).loan_amount).toBe(7500)
+  })
+
   it('sends when Vantage is at or above the floor', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
