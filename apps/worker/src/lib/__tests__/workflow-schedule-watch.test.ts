@@ -356,3 +356,21 @@ describe('formatScheduleSummary: making a working check visible (#842)', () => {
     expect(line).not.toContain('NaN')
   })
 })
+
+describe('evaluateSchedule: an unreadable timestamp must not pass (L50)', () => {
+  it('refuses a timestamp it cannot parse instead of landing on healthy', () => {
+    // A failed parse yields NaN, and NaN compares false against every threshold,
+    // so `ageMs > staleMs` would silently fall through to healthy: the one answer
+    // this check must never give without having measured it. The lookup validates
+    // the timestamp today, but this function is exported and its type accepts any
+    // lookup, so the fail-safe belongs at the comparison as well.
+    const v = evaluateSchedule(
+      { ok: true, lastRunIso: 'yesterday afternoon', conclusions: ['success'] },
+      NOW,
+      4 * HOUR,
+    )
+    expect(v.status).toBe('unreadable')
+    expect(v.ageMs).toBeNull()
+    expect(v.detail).toContain('yesterday afternoon')
+  })
+})

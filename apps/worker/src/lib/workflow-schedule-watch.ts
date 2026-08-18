@@ -167,7 +167,18 @@ export function evaluateSchedule(
   if (lookup.lastRunIso === null) {
     return { status: 'never_ran', ageMs: null, detail: 'GitHub has no scheduled runs on record for this workflow' }
   }
-  const ageMs = nowMs - Date.parse(lookup.lastRunIso)
+  const lastRunMs = Date.parse(lookup.lastRunIso)
+  if (Number.isNaN(lastRunMs)) {
+    // A failed parse yields NaN, and NaN compares false against every threshold,
+    // so letting it reach the comparison below would silently land on healthy:
+    // the one answer this check must never give without having measured it (L50).
+    return {
+      status: 'unreadable',
+      ageMs: null,
+      detail: `the most recent run's timestamp could not be read: ${lookup.lastRunIso}`,
+    }
+  }
+  const ageMs = nowMs - lastRunMs
   // Staleness is checked before failure on purpose: a workflow that failed twice
   // and then stopped firing altogether is reported as having stopped, which is
   // the bigger news and names the action to take.
