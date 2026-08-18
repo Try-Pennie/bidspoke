@@ -37,7 +37,7 @@ Credentials live on the Environment Variables page, not in node config:
 |----------|----------|-------------|
 | `ACHIEVE_USERNAME` | Yes | Basic auth username assigned by Achieve. |
 | `ACHIEVE_PASSWORD` | Yes | Basic auth password (mark as secret). |
-| `ACHIEVE_ENV` | No | `production` or `staging`. Picks the host **and the matching credential pair together**, so switching environment cannot leave the wrong password behind. Fails safe: unset, blank or any unrecognised value (including `prod`) resolves to **staging**, never production. |
+| `ACHIEVE_ENV` | No | `production` or `staging`. Picks the host **and the matching credential pair together**, so switching environment cannot leave the wrong password behind. Unset or blank means staging, which is the ordinary state of a workflow never pointed anywhere. An **unrecognised** value (say `prod`) is treated as a typo and **refuses to send**, naming the offending value, rather than quietly using staging: a silent fallback looks identical to Achieve declining every lead, which sends whoever reads it after the partner instead of the one setting that is wrong. Either way it never resolves towards production. |
 | `ACHIEVE_STAGING_USERNAME` | No | Staging username. Falls back to `ACHIEVE_USERNAME` when absent, since Achieve confirmed the existing credentials also work against staging. |
 | `ACHIEVE_API_URL` | No | Legacy explicit host, still honoured so nothing broke when `ACHIEVE_ENV` shipped. `ACHIEVE_ENV` wins over it, and only an exact match on the production host counts as production. |
 | `ACHIEVE_UTM_SOURCE` | No | Fallback for `tracking.utm_source`. |
