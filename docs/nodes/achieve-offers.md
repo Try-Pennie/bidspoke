@@ -55,7 +55,7 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_MAX_CURRENT_DELINQUENCIES` | No | How many delinquent accounts a lead may carry. Achieve asked for `0`. Requires a credit report. |
 | `ACHIEVE_DELINQUENCY_MODE` | No | `current` (the default) counts only accounts currently 30 to 120+ days past due. `ever` also counts charge-offs and repossessions. **This one word roughly halves the surviving volume**: measured on 500 live reports, 47% of leads carry no current past-due, and only 26% carry no bad mark ever. Achieve's own wording ("Current delinquencies: 0") does not settle which they meant. |
 | `ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY` | No | Months that must have passed since the most recent bankruptcy filing. Achieve asked for `48`. A bankruptcy on file whose date cannot be read is treated as recent. Requires a credit report. |
-| `ACHIEVE_MAX_INQUIRIES_6MO` | No | Credit inquiries allowed in the last 180 days. Achieve asked for fewer than 6, so set `5`. Note this screens out almost nobody: 94% of leads already pass, and the average lead has 1.5. Requires a credit report. |
+| `ACHIEVE_MAX_INQUIRIES_6MO` | No | Credit inquiries allowed in the last 180 days. **Set to `8`, which is OUR number, not Achieve's.** Their rule is "fewer than 6, after consolidating mortgage and auto inquiries", and we do not consolidate, so counting every inquiry against a limit of 5 is stricter than they asked. A single car purchase generates a dealer inquiry plus several finance-arm inquiries as the dealer shops the loan, which is exactly what their consolidation exists to collapse. `8` is a deliberate stopgap: measured on 800 live reports it holds back 1.9% of leads against 6.6% at a limit of 5, and a lead with nine or more inquiries in six months looks like credit-seeking behaviour regardless of how they are grouped. Replace this with the real rule once Achieve says how they consolidate. Requires a credit report. |
 | `ACHIEVE_MIN_AGE` | No | Minimum age in years, from the form's date of birth. Achieve asked for `18`. |
 | `ACHIEVE_MAX_DTI` | No | Ceiling on debt to income, as a decimal. Achieve declines over 60%, so set `0.60`. Computed from the scheduled monthly payments on the credit report over monthly gross income, counting only accounts still being paid (a charge-off is not an obligation, and a settled account keeps its old payment figure). Measured on 537 live leads the median is 14% and the 90th percentile 44.7%, so a 60% ceiling sits out in the tail and removes about 4.5%. **It understates a renter's true ratio**, because rent never appears on a credit report while a mortgage does, which pushes leads under the ceiling rather than over it. A file with no accounts passes, since a ceiling on how much of an income goes to debt is not a reason to refuse somebody with no debt. No stated income refuses, because the ratio cannot be computed. Requires a credit report. |
 
@@ -84,7 +84,14 @@ defect, but it is worth re-reading before anyone concludes Achieve has no appeti
 
 **Not implementable, deliberately absent.** Citizenship or permanent residency, which neither
 the form nor the credit report collects. That is the only one of Achieve's criteria we cannot
-apply.
+apply at all.
+
+**One criterion is approximated rather than matched.** Their inquiry rule consolidates mortgage
+and auto inquiries before counting, and we do not, because the industry code on each inquiry does
+not cleanly separate them: measured against real lender names, `AN` and `AU` are car dealerships
+while `FA` mixes captive auto finance arms with personal lenders and `BB` mixes banks with bank
+auto arms, and mortgage barely appears. Rather than invent a grouping nobody could audit, the
+threshold is loosened instead. See `ACHIEVE_MAX_INQUIRIES_6MO` above.
 
 **A missing credit report is not a clean one.** With any credit-based filter switched on, a lead
 whose Equifax pull failed is refused (`no_credit_report`) rather than sent unscreened, so an
