@@ -6,6 +6,7 @@ import {
   countRecentInquiries,
   monthsSinceLatestBankruptcy,
   monthlyDebtPayments,
+  countInquiryEpisodes,
 } from '../achieve-credit-report'
 import type { ExecutionContext } from '../../../types'
 
@@ -244,6 +245,59 @@ describe('monthlyDebtPayments', () => {
   // exists to catch people paying too much, not people with no accounts.
   it('returns null when the file carries no accounts at all, which is not the same as zero', () => {
     expect(monthlyDebtPayments(build([]))).toBeNull()
+  })
+})
+
+describe('countInquiryEpisodes', () => {
+  const NOW = new Date('2026-08-17T00:00:00Z')
+  const on = (date: string) => ({ inquiryDate: date })
+  const build = (inquiries: unknown[]) =>
+    findEquifaxReport(ctxWithStep(engineShape(report({ inquiries }))))!
+
+  // Rate shopping: several lenders pulled for ONE purchase. Achieve's rule consolidates these
+  // before counting, and the credit bureaus themselves de-duplicate by TIME rather than by
+  // lender type. Measured on 525 live reports: of the 57 leads with more than 5 raw inquiries,
+  // the median has only 3 episodes and 40% have just one or two, so counting raw inquiries
+  // rejects people who made a single shopping trip.
+  it('counts a burst of inquiries inside the window as one episode', () => {
+    expect(countInquiryEpisodes(build([on('07012026'), on('07032026'), on('07092026')]), 14, 180, NOW)).toBe(1)
+  })
+
+  it('counts inquiries further apart than the window as separate episodes', () => {
+    expect(countInquiryEpisodes(build([on('05012026'), on('06152026'), on('08012026')]), 14, 180, NOW)).toBe(3)
+  })
+
+  // The gap is measured between CONSECUTIVE inquiries, so a long steady run of visits every ten
+  // days is one continuing episode rather than many. Asserted because measuring each inquiry
+  // against the first one instead would split it, and both readings look reasonable in prose.
+  it('treats a continuous run of close inquiries as a single episode', () => {
+    expect(countInquiryEpisodes(build([on('07012026'), on('07102026'), on('07192026'), on('07282026')]), 14, 180, NOW)).toBe(1)
+  })
+
+  it('ignores inquiries outside the lookback period', () => {
+    expect(countInquiryEpisodes(build([on('01012025'), on('07012026')]), 14, 180, NOW)).toBe(1)
+  })
+
+  it('reports no episodes when there are no readable inquiries', () => {
+    expect(countInquiryEpisodes(build([]), 14, 180, NOW)).toBe(0)
+    expect(countInquiryEpisodes(build([{ inquiryDate: 'nonsense' }]), 14, 180, NOW)).toBe(0)
+  })
+
+  // Order is not guaranteed in the report. This fixture interleaves two distant bursts, which is
+  // the shape that actually diverges: read in the given order it counts three episodes, and
+  // sorted it counts the two that are really there. A first version of this test used three
+  // dates within one window, where both readings agree, so it passed while proving nothing.
+  it('does not depend on the order the inquiries arrive in', () => {
+    const interleaved = build([on('03012026'), on('08012026'), on('03052026'), on('08052026')])
+    expect(countInquiryEpisodes(interleaved, 14, 180, NOW)).toBe(2)
+  })
+
+  // A wider window merges more, so the window genuinely changes the answer. If it did not, the
+  // parameter would be inert and its value would never matter.
+  it('merges more when the window widens', () => {
+    const spread = build([on('07012026'), on('07202026')])
+    expect(countInquiryEpisodes(spread, 14, 180, NOW)).toBe(2)
+    expect(countInquiryEpisodes(spread, 30, 180, NOW)).toBe(1)
   })
 })
 
