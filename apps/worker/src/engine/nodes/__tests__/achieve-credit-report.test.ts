@@ -141,6 +141,40 @@ describe('countDelinquentTrades', () => {
   })
 })
 
+describe('inquiry industry code shape', () => {
+  // Pins the REAL shape, because the two neighbouring fields disagree and nothing else catches
+  // it: an inquiry's industryCode is a plain string ('AN'), while a trade's rate is an OBJECT
+  // with a numeric code. Reading either as the other yields undefined rather than an error, so a
+  // first attempt at grouping inquiries by industry silently matched nothing and produced a
+  // confident but meaningless number. Codes here are real values observed in production.
+  it('carries the industry code as a plain string, not an object', () => {
+    const rep = findEquifaxReport(
+      ctxWithStep(
+        engineShape(
+          report({
+            inquiries: [
+              { inquiryDate: '07092026', industryCode: 'AN' },
+              { inquiryDate: '07092026', industryCode: 'FA' },
+            ],
+          })
+        )
+      )
+    )!
+    expect(rep.inquiries.map((i) => i.industryCode)).toEqual(['AN', 'FA'])
+    // The nested read that looks plausible and is wrong. Asserted so the difference is explicit
+    // rather than something the next reader has to rediscover.
+    expect((rep.inquiries[0].industryCode as unknown as { code?: string }).code).toBeUndefined()
+  })
+
+  it('keeps a trade rate as an object, so the two shapes cannot be conflated', () => {
+    const rep = findEquifaxReport(
+      ctxWithStep(engineShape(report({ trades: [{ rate: { code: 2 }, balance: 100 }] })))
+    )!
+    expect(rep.trades[0].rate).toEqual({ code: 2 })
+    expect(countDelinquentTrades(rep, 'current')).toBe(1)
+  })
+})
+
 describe('countRecentInquiries', () => {
   const NOW = new Date('2026-08-17T00:00:00Z')
 

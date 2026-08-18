@@ -39,7 +39,19 @@ export interface EquifaxTrade {
 
 export interface EquifaxInquiry {
   inquiryDate?: unknown
-  industryCode?: { code?: string }
+  /**
+   * A PLAIN CODE STRING such as 'AN' or 'FA', not an object. Deliberately noted because the
+   * neighbouring `rate` on a trade IS an object with a numeric `code`, so the two disagree and
+   * assuming either shape applies to the other reads as an absent value rather than failing.
+   *
+   * Measured against real dealer and lender names on 2026-08-18: 'AN' and 'AU' are car
+   * dealerships, and 'FA' mixes captive auto finance arms (Ford Motor Credit, GM Financial,
+   * Ally) with personal lenders (Upstart), while 'BB' mixes banks and credit cards with bank
+   * auto arms. So the codes do NOT cleanly separate auto from anything else, and mortgage
+   * barely appears at all. Nothing consolidates on this field yet for exactly that reason: see
+   * ACHIEVE_MAX_INQUIRIES_6MO in docs/nodes/achieve-offers.md.
+   */
+  industryCode?: string
 }
 
 export interface EquifaxBankruptcy {
