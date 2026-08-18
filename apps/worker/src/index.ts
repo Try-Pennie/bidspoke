@@ -17,7 +17,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
-import { runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
+import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
@@ -121,9 +121,16 @@ export interface Env {
 
   // This repository, for the scheduled-workflow dead-man's-switch (#805). Distinct
   // from GITHUB_REPO above, which points at the separate workflow-BACKUP repo.
-  // Set in wrangler.toml [vars]; the token above must be able to read its Actions
-  // history, and the check says so loudly if it cannot.
+  // Set in wrangler.toml [vars].
   GITHUB_CODE_REPO?: string
+
+  // Read-only credential for GITHUB_CODE_REPO's Actions history (#842). Separate
+  // from GITHUB_TOKEN because that one is the BACKUP repo's push credential and
+  // cannot see this repository, which is what left the check reporting "cannot
+  // tell" from the day it shipped. GITHUB_TOKEN stays as a fallback so the check
+  // does not go dark before this is set.
+  // Set via `wrangler secret put GITHUB_ACTIONS_TOKEN --name bidspoke-worker`.
+  GITHUB_ACTIONS_TOKEN?: string
 
   // Anthropic API — used to draft changelog summaries on workflow save
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
@@ -381,6 +388,11 @@ export default {
       ctx.waitUntil(
         runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
           .then((rs) => {
+            // Logged on EVERY run, including a clean one. A working check is
+            // silent, and silence is exactly what this check exists to distrust,
+            // so a fresh reading with a real age in it is the only way to tell it
+            // is working from the outside (#842).
+            console.log(`[workflow-schedule] ${formatScheduleSummary(rs)}`)
             for (const r of rs) {
               if (r.status !== 'healthy') {
                 console.error(`[workflow-schedule] ${r.file} ${r.status} alerted=${r.alerted} ${r.detail}`)

@@ -104,7 +104,7 @@ The authoritative live list is `wrangler secret list --name bidspoke-worker`. Wo
 - Salesforce: `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET`, `SALESFORCE_INSTANCE_URL` (External Client App in SF Setup).
 - Partners: Equifax (`EQ_USER`, `EQ_PASS`), Eligibility Scout (`SCOUT_KEY`), Tripoint proxy secret, Achieve (`ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, ...), webhook keys (`API_KEY_MAP`).
 - Data export: `SNOWFLAKE_*` (account/user/private key/role/db/schema/warehouse).
-- Other: `GITHUB_TOKEN` + `GITHUB_REPO` (workflow backup), `ANTHROPIC_API_KEY`, `APP_URL`.
+- Other: `GITHUB_TOKEN` + `GITHUB_REPO` (workflow backup), `GITHUB_ACTIONS_TOKEN` (read-only, reads `GITHUB_CODE_REPO`'s Actions history for the scheduled-workflow watch; re-obtain as a fine-grained GitHub token scoped to this repository with Actions: read and Metadata: read), `ANTHROPIC_API_KEY`, `APP_URL`.
 
 **Escrow status (2026-06-26): NOT YET ESCROWED — open blocker.** There is no shared team secret store today, so a restore operator would have to re-obtain each secret from its origin mid-incident. Two secrets cannot be re-derived and *must* be escrowed or they are lost forever: `SSN_HASH_PEPPER` (changing it breaks person-dedup continuity — treat as immutable) and, for old reveals, `SECRET_ENCRYPTION_KEY`.
 

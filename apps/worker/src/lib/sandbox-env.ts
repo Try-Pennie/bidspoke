@@ -35,6 +35,7 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   SNOWFLAKE_WAREHOUSE: 'block',
   SNOWFLAKE_ROLE: 'block',
   GITHUB_TOKEN: 'block',
+  GITHUB_ACTIONS_TOKEN: 'block',
   ANTHROPIC_API_KEY: 'block',
   // Non-secret config — safe to expose.
   SUPABASE_URL: 'expose',

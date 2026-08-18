@@ -9,6 +9,9 @@ import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-exec
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
 import type { ErrorType } from '../types'
+// Type-only, so this does not create a cycle with the module that calls the
+// alert below: the import is erased at build time.
+import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
 
 export interface SlackConnection {
   bot_token: string
@@ -1112,51 +1115,144 @@ export async function sendPgCronAlert(
 }
 
 /**
- * Alert that a SCHEDULED GITHUB WORKFLOW has gone dark, or that we cannot tell
- * (#805).
+ * Alert about the repo's SCHEDULED GITHUB WORKFLOWS: which have gone dark, which
+ * are firing and failing, and whether the check can see them at all (#805, #843,
+ * #844).
  *
- * `unreadable` gets its own wording rather than being folded into "it is dark".
- * A workflow that stopped running and a check that cannot see whether it is
- * running need two different actions, and saying the first when we only know the
- * second is an accusation this check cannot support (LESSONS L11, L119).
+ * ONE message per run, whatever the registry length. Before #843 each watched
+ * workflow posted its own message with its own timer, so every cause that is
+ * global rather than per-workflow (an unusable credential, a GitHub outage, a
+ * rate limit) arrived as one identical message per entry, four times a day, and
+ * the registry length decided how loud one fact was (L36).
+ *
+ * Each status keeps its own wording. A workflow that stopped firing, one that
+ * fires and fails, one the check cannot read, and a registry entry naming a file
+ * that is gone need four different actions, and saying the wrong one sends the
+ * reader to the wrong place while the real fault continues (L11). In particular a
+ * check that cannot see must never be reported as a workflow that stopped: that
+ * is an accusation this check cannot support (L119).
  */
+export interface WorkflowScheduleAlert {
+  /** Set when the check could not read the repository at all. */
+  config: { reason: string; files: string[] } | null
+  /** The workflows with a real per-workflow verdict. Empty when config is set. */
+  workflows: { workflow: WatchedWorkflow; verdict: ScheduleVerdict }[]
+}
+
+const scheduleHeadline = (label: string, status: ScheduleStatus): string => {
+  switch (status) {
+    case 'stale':
+      return `${label} has stopped running`
+    case 'never_ran':
+      return `${label} has never run on its schedule`
+    case 'failing':
+      return `${label} is failing every run`
+    case 'missing':
+      return `${label} is no longer in the repository`
+    default:
+      return `Cannot tell whether ${label} is still running`
+  }
+}
+
+const scheduleSentence = (
+  { file, cron, dependents }: WatchedWorkflow,
+  { status, ageMs, detail }: ScheduleVerdict,
+): string => {
+  const hours = ageMs === null ? null : Math.round(ageMs / 3_600_000)
+  switch (status) {
+    case 'stale':
+      return `\`${file}\` (\`${cron}\`) has not run on its schedule in ~${hours}h. While it is not running: ${dependents}.`
+    case 'never_ran':
+      return `GitHub has no scheduled runs on record for \`${file}\` (\`${cron}\`). While it is not running: ${dependents}.`
+    case 'failing':
+      return `\`${file}\` (\`${cron}\`) is running on time but ${detail}. It is firing, so nothing needs re-enabling: the runs themselves are going red.`
+    case 'missing':
+      return `\`${file}\` is in the worker's watch list but GitHub does not have it: ${detail}. Either the file was renamed or deleted, or the watch list is out of date.`
+    default:
+      return `The check that watches the \`${file}\` schedule could not read GitHub's run history: ${detail}. Until it can, a workflow that has silently stopped would look exactly like one that is fine, so this is reported rather than passed over.`
+  }
+}
+
+/** The fix hints the statuses present in this alert actually call for. */
+const scheduleFixes = (statuses: Set<ScheduleStatus>): string[] => {
+  const fixes: string[] = []
+  if (statuses.has('stale') || statuses.has('never_ran')) {
+    fixes.push(
+      'For a workflow that has stopped: open it in GitHub Actions. A workflow disabled by hand, or one GitHub suspended for repository inactivity, both show there and both are re-enabled from that page. If it is enabled, check the `schedule` trigger in `.github/workflows`.',
+    )
+  }
+  if (statuses.has('failing')) {
+    fixes.push('For a workflow that is failing: open its most recent run in GitHub Actions and read the failed step.')
+  }
+  if (statuses.has('missing')) {
+    fixes.push(
+      'For a workflow GitHub does not have: either restore the file or remove its entry from `WATCHED_WORKFLOWS` in `apps/worker/src/lib/workflow-schedule-watch.ts`.',
+    )
+  }
+  if (statuses.has('unreadable')) {
+    fixes.push(SCHEDULE_ACCESS_FIX)
+  }
+  return fixes
+}
+
+/**
+ * Named once so the configuration message and a per-workflow unreadable state
+ * cannot drift apart, and so it names the DEDICATED secret. The live #842 failure
+ * was the check borrowing `GITHUB_TOKEN`, which exists to push to the separate
+ * backup repo and cannot see this repository at all.
+ */
+const SCHEDULE_ACCESS_FIX =
+  'The worker needs `GITHUB_ACTIONS_TOKEN` set to a credential that can read this repository\'s Actions history (a fine-grained token scoped to this repository with Actions: read and Metadata: read), and `GITHUB_CODE_REPO` set to this repository. `GITHUB_TOKEN` is only a fallback and belongs to the workflow-backup repo, so it is expected not to work here.'
+
 export async function sendWorkflowScheduleAlert(
   supabase: SupabaseClient,
   orgId: string,
-  workflow: { file: string; label: string; cron: string; dependents: string },
-  verdict: { status: 'stale' | 'never_ran' | 'unreadable'; ageMs: number | null; detail: string },
+  alert: WorkflowScheduleAlert,
 ): Promise<boolean> {
+  if (alert.config === null && alert.workflows.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
 
-  const hours = verdict.ageMs === null ? null : Math.round(verdict.ageMs / 3_600_000)
-  const unreadable = verdict.status === 'unreadable'
+  const blocks: unknown[] = []
+  let summary: string
 
-  const header = unreadable
-    ? `Cannot tell whether ${workflow.label} is still running`
-    : `${workflow.label} has stopped running`
+  if (alert.config !== null) {
+    // One fact about configuration. It still names what is unwatched, or the
+    // reader cannot judge how much it matters, and it deliberately does not
+    // accuse any workflow of having stopped.
+    const files = alert.config.files.map((f) => `\`${f}\``).join(', ')
+    blocks.push({
+      type: 'header',
+      text: { type: 'plain_text', text: 'Cannot tell whether the scheduled checks are still running', emoji: false },
+    })
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `The check that watches this repository's scheduled workflows could not read GitHub's run history: ${alert.config.reason}. Until it can, a workflow that has silently stopped would look exactly like one that is fine, so this is reported rather than passed over. Unwatched meanwhile: ${files}.`,
+      },
+    })
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${SCHEDULE_ACCESS_FIX}` } })
+    summary = 'scheduled workflow check: cannot read GitHub'
+  } else {
+    const many = alert.workflows.length > 1
+    const header = many
+      ? `${alert.workflows.length} scheduled checks need attention`
+      : scheduleHeadline(alert.workflows[0].workflow.label, alert.workflows[0].verdict.status)
+    blocks.push({ type: 'header', text: { type: 'plain_text', text: header, emoji: false } })
+    for (const { workflow, verdict } of alert.workflows) {
+      const lead = many ? `*${scheduleHeadline(workflow.label, verdict.status)}.* ` : ''
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: `${lead}${scheduleSentence(workflow, verdict)}` },
+      })
+    }
+    const fixes = scheduleFixes(new Set(alert.workflows.map((w) => w.verdict.status)))
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${fixes.join(' ')}` } })
+    summary = alert.workflows.map((w) => `${w.workflow.label}: ${w.verdict.status}`).join(', ')
+  }
 
-  const body = unreadable
-    ? `The check that watches the \`${workflow.file}\` schedule could not read GitHub's run history: ${verdict.detail}. Until it can, a workflow that has silently stopped would look exactly like one that is fine, so this is reported rather than passed over.`
-    : verdict.status === 'never_ran'
-      ? `GitHub has no scheduled runs on record for \`${workflow.file}\` (\`${workflow.cron}\`). While it is not running: ${workflow.dependents}.`
-      : `\`${workflow.file}\` (\`${workflow.cron}\`) has not run on its schedule in ~${hours}h. While it is not running: ${workflow.dependents}.`
-
-  const fix = unreadable
-    ? `*How to fix:* the worker needs \`GITHUB_CODE_REPO\` set to this repository and a \`GITHUB_TOKEN\` that can read its Actions history.`
-    : `*How to fix:* open the workflow in GitHub Actions. A workflow disabled by hand, or one GitHub suspended for repository inactivity, both show there and both are re-enabled from that page. If it is enabled, check the \`schedule\` trigger in \`.github/workflows/${workflow.file}\`.`
-
-  const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
-    { type: 'section', text: { type: 'mrkdwn', text: body } },
-    { type: 'section', text: { type: 'mrkdwn', text: fix } },
-  ]
-  return (await postMessage(
-    connection.bot_token,
-    connection.default_channel,
-    blocks,
-    `${workflow.label}: ${verdict.status}`,
-  )) !== null
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary)) !== null
 }
 
 /**

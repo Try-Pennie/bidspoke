@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   WATCHED_WORKFLOWS,
+  checkRepoAccess,
   evaluateSchedule,
   lookupLastScheduledRun,
+  formatScheduleSummary,
+  resolveGithubAccess,
   type ScheduleLookup,
 } from '../workflow-schedule-watch'
 
@@ -21,7 +24,7 @@ import {
  * rather than asking the workflows to report in, so a workflow that is disabled or
  * deleted is caught by the same predicate as one that merely stopped firing.
  *
- * Two traps this is deliberately shaped around:
+ * Three traps this is deliberately shaped around:
  *
  *  - An EMPTY answer from GitHub and a FAILED lookup are indistinguishable if you
  *    only look at the run count, and treating a failure as "it never ran" turns an
@@ -30,12 +33,27 @@ import {
  *  - The lookup counts SCHEDULED runs only. Counting a manual dispatch would let
  *    someone running the workflow by hand mask a cron that has been dead for
  *    weeks, which is the one situation the check exists for.
+ *  - A run that FIRED and FAILED is the same silence wearing a different hat
+ *    (#844). The first version read only the timestamp, so a workflow failing
+ *    every single night reported as healthy.
  */
 
 const HOUR = 3_600_000
 const NOW = Date.parse('2026-08-17T12:00:00Z')
 
-const ok = (lastRunIso: string | null): ScheduleLookup => ({ ok: true, lastRunIso })
+/** A readable answer with no failures behind it. */
+const ok = (lastRunIso: string | null): ScheduleLookup => ({
+  ok: true,
+  lastRunIso,
+  conclusions: lastRunIso === null ? [] : ['success'],
+})
+
+/** A readable answer whose most recent runs concluded as given, newest first. */
+const ranWith = (lastRunIso: string, conclusions: (string | null)[]): ScheduleLookup => ({
+  ok: true,
+  lastRunIso,
+  conclusions,
+})
 
 describe('evaluateSchedule: the settled states', () => {
   it('is healthy when the most recent scheduled run is inside the window', () => {
@@ -85,6 +103,142 @@ describe('evaluateSchedule: telling a failed lookup from a real absence', () => 
     expect(evaluateSchedule(ok(null), NOW, 4 * HOUR).ageMs).toBeNull()
     expect(evaluateSchedule({ ok: false, reason: 'x' }, NOW, 4 * HOUR).ageMs).toBeNull()
   })
+
+  it('separates a workflow GitHub has never heard of from one it cannot read', () => {
+    // Only reachable once the repository itself has been read successfully, so a
+    // 404 on the file means the registry names a workflow that is not there any
+    // more. Calling that "cannot tell" would claim less than the check measured
+    // (L11) and would leave a stale registry entry alerting for ever with no
+    // reason anyone could act on.
+    const v = evaluateSchedule(
+      { ok: false, reason: 'GitHub has no workflow file named gone.yml', missing: true },
+      NOW,
+      4 * HOUR,
+    )
+    expect(v.status).toBe('missing')
+  })
+})
+
+describe('evaluateSchedule: a workflow that fires and fails (#844)', () => {
+  it('reports a run of failures as its own state rather than as healthy', () => {
+    // The whole point of #844. The first version read `created_at` and nothing
+    // else, so a nightly job failing every single night was indistinguishable
+    // from one passing every night.
+    const v = evaluateSchedule(ranWith('2026-08-17T11:17:00Z', ['failure', 'failure']), NOW, 4 * HOUR)
+    expect(v.status).toBe('failing')
+    expect(v.detail).toContain('2')
+  })
+
+  it('counts a timeout and a startup failure as failures', () => {
+    const v = evaluateSchedule(
+      ranWith('2026-08-17T11:17:00Z', ['timed_out', 'startup_failure']),
+      NOW,
+      4 * HOUR,
+    )
+    expect(v.status).toBe('failing')
+  })
+
+  it('stays quiet about a single failure, which is a blip rather than a pattern', () => {
+    // Each watched workflow already alerts on its own failure. This is the slower
+    // backstop for a failure that PERSISTS, and firing on one run would make it
+    // duplicate every ordinary transient (L36).
+    const v = evaluateSchedule(ranWith('2026-08-17T11:17:00Z', ['failure', 'success']), NOW, 4 * HOUR)
+    expect(v.status).toBe('healthy')
+  })
+
+  it('does not read a cancelled or still-running run as a failure', () => {
+    // `null` is a run in flight and `cancelled` is somebody stopping it by hand.
+    // Neither is evidence the workflow is broken, and both still prove the
+    // schedule fired.
+    expect(evaluateSchedule(ranWith('2026-08-17T11:17:00Z', [null, null]), NOW, 4 * HOUR).status).toBe('healthy')
+    expect(
+      evaluateSchedule(ranWith('2026-08-17T11:17:00Z', ['cancelled', 'cancelled']), NOW, 4 * HOUR).status,
+    ).toBe('healthy')
+  })
+
+  it('reports a workflow that stopped running ahead of one that was failing', () => {
+    // If it both failed twice and then stopped firing, "it stopped" is the bigger
+    // news and names the action to take.
+    const v = evaluateSchedule(ranWith('2026-08-15T11:17:00Z', ['failure', 'failure']), NOW, 4 * HOUR)
+    expect(v.status).toBe('stale')
+  })
+})
+
+describe('resolveGithubAccess: which credential the check uses (#842)', () => {
+  it('prefers the dedicated read-only token and says which one it used', () => {
+    // The reason a message can name the right secret. The check shipped borrowing
+    // the backup repo's token, which cannot see this repository at all, so the
+    // variable in use has to be part of what the failure reports.
+    const access = resolveGithubAccess({
+      GITHUB_CODE_REPO: 'Try-Pennie/bidspoke',
+      GITHUB_ACTIONS_TOKEN: 'dedicated',
+      GITHUB_TOKEN: 'backup-repo-token',
+    })
+    expect(access.ok).toBe(true)
+    expect(access.ok === true && access.token).toBe('dedicated')
+    expect(access.ok === true && access.tokenVar).toBe('GITHUB_ACTIONS_TOKEN')
+  })
+
+  it('falls back to the backup token so the check does not go dark before the new secret is set', () => {
+    const access = resolveGithubAccess({
+      GITHUB_CODE_REPO: 'Try-Pennie/bidspoke',
+      GITHUB_TOKEN: 'backup-repo-token',
+    })
+    expect(access.ok === true && access.tokenVar).toBe('GITHUB_TOKEN')
+  })
+
+  it('names both variables when there is no token at all, so the fix is actionable', () => {
+    const access = resolveGithubAccess({ GITHUB_CODE_REPO: 'Try-Pennie/bidspoke' })
+    expect(access.ok).toBe(false)
+    expect(access.ok === false && access.reason).toContain('GITHUB_ACTIONS_TOKEN')
+    expect(access.ok === false && access.reason).toContain('GITHUB_TOKEN')
+  })
+
+  it('treats an empty value as unset rather than as a credential', () => {
+    // An unset worker var arrives as the empty string, so an absence check written
+    // as a null fallback silently accepts it (L138).
+    const access = resolveGithubAccess({ GITHUB_CODE_REPO: 'Try-Pennie/bidspoke', GITHUB_ACTIONS_TOKEN: '  ' })
+    expect(access.ok).toBe(false)
+    const withRepoUnset = resolveGithubAccess({ GITHUB_CODE_REPO: '', GITHUB_ACTIONS_TOKEN: 'tok' })
+    expect(withRepoUnset.ok).toBe(false)
+    expect(withRepoUnset.ok === false && withRepoUnset.reason).toContain('GITHUB_CODE_REPO')
+  })
+})
+
+describe('checkRepoAccess: proving the credential can see this repository (#842)', () => {
+  const access = { ok: true as const, repo: 'Try-Pennie/bidspoke', token: 'tok', tokenVar: 'GITHUB_TOKEN' as const }
+
+  it('reads the repository itself, so a per-workflow 404 means something', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    expect(await checkRepoAccess(access, fetchMock)).toEqual({ ok: true })
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toBe('https://api.github.com/repos/Try-Pennie/bidspoke')
+  })
+
+  it('reports a 404 as the credential not being able to see the repository', async () => {
+    // The live failure. This repository is private, and GitHub answers 404 rather
+    // than 403 for a private repository a token cannot see, so the message has to
+    // say "cannot see it" and not "it is not there".
+    const fetchMock = vi.fn().mockResolvedValue(new Response('nope', { status: 404 }))
+    const verdict = await checkRepoAccess(access, fetchMock)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.ok === false && verdict.reason).toContain('GITHUB_TOKEN')
+    expect(verdict.ok === false && verdict.reason).toContain('Try-Pennie/bidspoke')
+  })
+
+  it('distinguishes a rejected credential from one with no visibility', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('bad creds', { status: 401 }))
+    const verdict = await checkRepoAccess(access, fetchMock)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.ok === false && verdict.reason).toContain('401')
+  })
+
+  it('reports a thrown network error rather than reading it as no access', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('connect ETIMEDOUT'))
+    const verdict = await checkRepoAccess(access, fetchMock)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.ok === false && verdict.reason).toContain('ETIMEDOUT')
+  })
 })
 
 describe('the registry covers every scheduled workflow in the repo', () => {
@@ -104,14 +258,14 @@ describe('the registry covers every scheduled workflow in the repo', () => {
 })
 
 describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
-  const env = { GITHUB_TOKEN: 'tok', GITHUB_CODE_REPO: 'Try-Pennie/bidspoke' }
+  const access = { ok: true as const, repo: 'Try-Pennie/bidspoke', token: 'tok', tokenVar: 'GITHUB_TOKEN' as const }
+
+  const runs = (body: unknown) => vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
 
   it('asks only for scheduled runs, so a manual dispatch cannot mask a dead cron', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ workflow_runs: [{ created_at: '2026-08-17T11:17:00Z' }] }), { status: 200 }),
-    )
-    const result = await lookupLastScheduledRun(env, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z' })
+    const fetchMock = runs({ workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success' }] })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'] })
 
     const url = String(fetchMock.mock.calls[0][0])
     expect(url, 'the lookup counts runs of every kind, so running it by hand hides a dead schedule').toContain(
@@ -120,26 +274,51 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
     expect(url).toContain('deploy-drift.yml')
   })
 
-  it('reports a confirmed empty list as a real absence', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ workflow_runs: [] }), { status: 200 }),
-    )
-    expect(await lookupLastScheduledRun(env, 'deploy-drift.yml', fetchMock)).toEqual({
-      ok: true,
-      lastRunIso: null,
+  it('asks for more than one run, so a run of failures can be seen at all', async () => {
+    // A page size of one cannot distinguish a blip from a workflow failing every
+    // night, which is the whole subject of #844.
+    const fetchMock = runs({ workflow_runs: [] })
+    await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    const perPage = Number(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get('per_page'))
+    expect(perPage).toBeGreaterThan(1)
+  })
+
+  it('carries the conclusions back in order, newest first', async () => {
+    const fetchMock = runs({
+      workflow_runs: [
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'failure' },
+        { created_at: '2026-08-17T10:17:00Z', conclusion: 'success' },
+      ],
     })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result.ok === true && result.conclusions).toEqual(['failure', 'success'])
+    expect(result.ok === true && result.lastRunIso).toBe('2026-08-17T11:17:00Z')
+  })
+
+  it('reports a confirmed empty list as a real absence', async () => {
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', runs({ workflow_runs: [] }))
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
   })
 
   it('reports a non-200 as a failed lookup, naming the status', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('forbidden', { status: 403 }))
-    const result = await lookupLastScheduledRun(env, 'deploy-drift.yml', fetchMock)
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toContain('403')
   })
 
+  it('marks a 404 as a workflow that is not there, not merely unreadable', async () => {
+    // Reached only after the repository itself read cleanly, so this says the
+    // registry names a file GitHub does not have.
+    const fetchMock = vi.fn().mockResolvedValue(new Response('not found', { status: 404 }))
+    const result = await lookupLastScheduledRun(access, 'gone.yml', fetchMock)
+    expect(result.ok).toBe(false)
+    expect(result.ok === false && result.missing).toBe(true)
+  })
+
   it('reports a thrown network error as a failed lookup, not as an absence', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('connect ETIMEDOUT'))
-    const result = await lookupLastScheduledRun(env, 'deploy-drift.yml', fetchMock)
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toContain('ETIMEDOUT')
   })
@@ -148,23 +327,32 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
     // A body that is not the shape expected must not collapse to "no runs", which
     // is an accusation.
     const fetchMock = vi.fn().mockResolvedValue(new Response('<html>nope</html>', { status: 200 }))
-    const result = await lookupLastScheduledRun(env, 'deploy-drift.yml', fetchMock)
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result.ok).toBe(false)
   })
+})
 
-  it('refuses without a token instead of calling GitHub unauthenticated', async () => {
-    const fetchMock = vi.fn()
-    const result = await lookupLastScheduledRun({ GITHUB_CODE_REPO: 'a/b' }, 'x.yml', fetchMock)
-    expect(result.ok).toBe(false)
-    expect(result.ok === false && result.reason).toContain('GITHUB_TOKEN')
-    expect(fetchMock, 'it called GitHub anyway').not.toHaveBeenCalled()
+describe('formatScheduleSummary: making a working check visible (#842)', () => {
+  it('names every workflow and its age even when everything is healthy', () => {
+    // Without this, the only visible result of fixing the credential is that the
+    // alerts stop, and silence is exactly what this check exists to distrust. A
+    // fresh reading with a real age in it is the positive confirmation that the
+    // lookup is working at all (L98, L106).
+    const line = formatScheduleSummary([
+      { file: 'deploy-drift.yml', status: 'healthy', alerted: false, ageMs: 2 * HOUR, detail: '' },
+      { file: 'db-types-drift.yml', status: 'healthy', alerted: false, ageMs: 5 * HOUR, detail: '' },
+    ])
+    expect(line).toContain('deploy-drift.yml')
+    expect(line).toContain('db-types-drift.yml')
+    expect(line).toContain('healthy')
+    expect(line, 'an age is what proves a real reading was taken').toMatch(/2h/)
   })
 
-  it('treats an empty repo name as unset rather than building a broken URL', async () => {
-    const fetchMock = vi.fn()
-    const result = await lookupLastScheduledRun({ GITHUB_TOKEN: 't', GITHUB_CODE_REPO: '' }, 'x.yml', fetchMock)
-    expect(result.ok).toBe(false)
-    expect(result.ok === false && result.reason).toContain('GITHUB_CODE_REPO')
-    expect(fetchMock).not.toHaveBeenCalled()
+  it('says so plainly when there is no age to report', () => {
+    const line = formatScheduleSummary([
+      { file: 'deploy-drift.yml', status: 'unreadable', alerted: true, ageMs: null, detail: 'GitHub returned 404' },
+    ])
+    expect(line).toContain('unreadable')
+    expect(line).not.toContain('NaN')
   })
 })
