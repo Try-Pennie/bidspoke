@@ -1866,6 +1866,18 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      pg_cron_health: {
+        Args: { window_hours?: number }
+        Returns: {
+          active: boolean
+          failures_in_window: number
+          jobname: string
+          last_failure_at: string
+          last_failure_message: string
+          last_success_at: string
+          schedule: string
+        }[]
+      }
       prune_orphan_auth_users: { Args: never; Returns: number }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
