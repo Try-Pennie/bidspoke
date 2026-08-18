@@ -25,7 +25,8 @@
  * Env vars (Env Variables page, not Worker secrets):
  *   ACHIEVE_ENV                          'production' or 'staging'. Picks the host AND the
  *                                        credential pair together (see achieve-endpoint.ts).
- *                                        Anything unrecognised resolves to staging.
+ *                                        Unset means staging; an unrecognised value REFUSES to
+ *                                        send rather than guessing.
  *   ACHIEVE_USERNAME / ACHIEVE_PASSWORD  Basic auth (assigned by Achieve)
  *   ACHIEVE_STAGING_USERNAME / _PASSWORD Optional staging pair; each falls back to the main one
  *   ACHIEVE_API_URL                      Legacy explicit host, still honoured. ACHIEVE_ENV wins
@@ -190,7 +191,7 @@ export async function executeAchieveOffersNode(
   // Achieve's showroom profile rather than leaking it to a sandbox that discards it. One setting
   // (ACHIEVE_ENV) picks the host AND the matching credentials, and anything that cannot be proven
   // to be production resolves to staging.
-  const { baseUrl, production, username, password } = resolveAchieveEndpoint(ctx.env)
+  const { baseUrl, production, username, password, invalidEnv } = resolveAchieveEndpoint(ctx.env)
 
   const request = buildRequest(ctx, config, waitForOffers, production)
   const resolvedInput = {
@@ -204,6 +205,20 @@ export async function executeAchieveOffersNode(
 
   // Names the environment, because a staging test with no staging credential stored and a
   // production run with none are the same message otherwise, and they need different fixes.
+  // A misspelled environment stops the send and names the value. Quietly using staging would look
+  // identical to Achieve declining every lead, sending whoever reads it after the partner rather
+  // than the one setting that is wrong.
+  if (invalidEnv != null) {
+    return {
+      output: result(
+        false, 0, 'error',
+        `Unknown ACHIEVE_ENV '${invalidEnv}'. Expected 'production' or 'staging'.`,
+        request, null, !production
+      ),
+      resolvedInput,
+    }
+  }
+
   if (!username || !password) {
     const which = production ? 'production' : 'staging'
     return {

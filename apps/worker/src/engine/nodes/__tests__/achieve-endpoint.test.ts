@@ -69,12 +69,51 @@ describe('resolveAchieveEndpoint', () => {
     }
   })
 
-  // A typo must not silently reach production. It lands on staging, where the worst case is a
-  // test that goes to a sandbox, rather than real leads going somewhere unintended.
-  it('sends an unrecognised environment name to staging, not production', () => {
+  // A typo announces itself rather than being absorbed. Quietly using staging would look
+  // identical to Achieve declining every lead, and whoever read that would go looking at the
+  // partner instead of at the one setting that is wrong.
+  it('refuses an unrecognised environment name instead of guessing one', () => {
+    const e = resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: 'prod' })
+    expect(e.invalidEnv).toBe('prod')
+  })
+
+  // Refusing still must not resolve towards production, so that every path which does not
+  // consult invalidEnv is safe by construction rather than by remembering to check.
+  it('never resolves an unrecognised name towards production', () => {
     const e = resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: 'prod' })
     expect(e.production).toBe(false)
     expect(e.baseUrl).toBe(STAGING_BASE_URL)
+  })
+
+  // The dangerous combination: a typo in the switch WHILE a production URL is still configured.
+  // The typo must not inherit that host, because a production verdict makes the node build the
+  // request with the real lead's identity instead of the seeded test one, so a misconfiguration
+  // would put real personal details into the recorded request.
+  it('does not let a typo inherit a leftover production URL', () => {
+    const e = resolveAchieveEndpoint({
+      ...PROD_CREDS,
+      ACHIEVE_API_URL: PROD_BASE_URL,
+      ACHIEVE_ENV: 'prod',
+    })
+    expect(e.invalidEnv).toBe('prod')
+    expect(e.production).toBe(false)
+    expect(e.baseUrl).toBe(STAGING_BASE_URL)
+  })
+
+  it('reports the offending value as written, so the fix is obvious from the message', () => {
+    expect(resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: ' Prodction ' }).invalidEnv).toBe('Prodction')
+  })
+
+  // Absent is not a typo: an unset switch is the ordinary state for a workflow that has never
+  // been pointed anywhere, and it stays a silent default to staging rather than a refusal.
+  it('does not treat an absent or blank switch as invalid', () => {
+    expect(resolveAchieveEndpoint({ ...PROD_CREDS }).invalidEnv).toBeUndefined()
+    expect(resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: '  ' }).invalidEnv).toBeUndefined()
+  })
+
+  it('leaves the recognised names valid', () => {
+    expect(resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: 'production' }).invalidEnv).toBeUndefined()
+    expect(resolveAchieveEndpoint({ ...PROD_CREDS, ACHIEVE_ENV: 'staging' }).invalidEnv).toBeUndefined()
   })
 
   // The pre-existing ACHIEVE_API_URL is still honoured so nothing breaks on the day this ships,

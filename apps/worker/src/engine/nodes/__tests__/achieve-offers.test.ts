@@ -256,6 +256,25 @@ describe('executeAchieveOffersNode', () => {
     expect((prod.output as Record<string, unknown>).response_reason).toMatch(/production/i)
   })
 
+  // A misspelled environment must stop the send and say so. Quietly using staging would look
+  // identical to Achieve declining every lead, and whoever read that would go looking at the
+  // partner rather than at the one setting that is wrong.
+  it('does not send at all when the environment setting is not recognised', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const { output } = await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ENV: 'prod' } })
+    )
+    const out = output as Record<string, unknown>
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(out.response_status).toBe('error')
+    expect(out.response_reason).toContain('prod')
+    // Recorded as an evaluation, not a screening skip: the lead was eligible and a
+    // misconfiguration stopped it, which is a different fact from a lead we chose not to send.
+    expect(out._achieve_evaluation).toBe(true)
+  })
+
   // The switch has to carry the credentials AND the host together, proven at the node rather than
   // only in the resolver's own unit tests: staging must not authenticate with the live password.
   it('sends staging requests to the staging host with the staging credentials', async () => {

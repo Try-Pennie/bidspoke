@@ -12,9 +12,19 @@
  * `ACHIEVE_STAGING_URL` and `ACHIEVE_STAGING_PASSWORD` had also been stored since June with
  * nothing in the code reading either of them.
  *
- * Fails safe in every direction: unset, blank, or an unrecognised value all resolve to STAGING,
- * never production. Only an explicit `production` (or the pre-existing `ACHIEVE_API_URL` pointing
- * exactly at the production host) counts. That matters beyond configuration hygiene, because the
+ * Fails safe in every direction, and distinguishes two different situations:
+ *
+ *   unset or blank      the ordinary state of a workflow never pointed anywhere. Resolves to
+ *                       STAGING silently, because it is a default rather than a mistake.
+ *   an unknown value    a typo. Reported through `invalidEnv` so the caller REFUSES to send,
+ *                       rather than being absorbed: quietly using staging looks identical to
+ *                       Achieve declining every lead, and whoever reads that goes looking at
+ *                       the partner instead of at the one setting that is wrong.
+ *
+ * Only an explicit `production` (or the pre-existing `ACHIEVE_API_URL` pointing exactly at the
+ * production host) reaches production. An unknown value still resolves its host towards STAGING
+ * as well as setting `invalidEnv`, so any path that forgets to consult `invalidEnv` is safe by
+ * construction rather than by remembering. That matters beyond configuration hygiene, because the
  * node swaps in Achieve's seeded showroom identity whenever it is not on production, so anything
  * we cannot prove is production also stops a real person's details reaching a sandbox.
  */
@@ -27,6 +37,11 @@ export interface AchieveEndpoint {
   production: boolean
   username: string | undefined
   password: string | undefined
+  /**
+   * Set to the offending value, as written, when ACHIEVE_ENV names an environment that does not
+   * exist. Callers must refuse to send. Absent when the switch is unset, blank, or recognised.
+   */
+  invalidEnv?: string
 }
 
 /** Trimmed value, or undefined when absent or whitespace only. Blank is absent, never an empty credential. */
@@ -39,9 +54,17 @@ function isProductionHost(baseUrl: string): boolean {
   return baseUrl.replace(/\/+$/, '') === PROD_BASE_URL
 }
 
+const KNOWN_ENVS = ['production', 'staging'] as const
+
 export function resolveAchieveEndpoint(env: Record<string, string | undefined>): AchieveEndpoint {
-  const mode = present(env.ACHIEVE_ENV)?.toLowerCase()
+  const raw = present(env.ACHIEVE_ENV)
+  const mode = raw?.toLowerCase()
   const explicitUrl = present(env.ACHIEVE_API_URL)
+
+  // A named-but-unknown environment is a typo, reported so the caller refuses. An ABSENT switch is
+  // not: it is the ordinary state of a workflow nobody has pointed anywhere yet.
+  const invalidEnv =
+    raw != null && !KNOWN_ENVS.includes(mode as (typeof KNOWN_ENVS)[number]) ? raw : undefined
 
   // The switch wins over a leftover URL: it is the clearer control, and without this precedence
   // setting it to staging would appear to work while still reaching production.
@@ -50,6 +73,9 @@ export function resolveAchieveEndpoint(env: Record<string, string | undefined>):
     baseUrl = PROD_BASE_URL
   } else if (mode === 'staging') {
     baseUrl = present(env.ACHIEVE_STAGING_URL) ?? STAGING_BASE_URL
+  } else if (invalidEnv != null) {
+    // Deliberately ignores explicitUrl here: a typo must not inherit a host that could be prod.
+    baseUrl = STAGING_BASE_URL
   } else {
     baseUrl = explicitUrl ?? STAGING_BASE_URL
   }
@@ -65,5 +91,5 @@ export function resolveAchieveEndpoint(env: Record<string, string | undefined>):
     ? present(env.ACHIEVE_PASSWORD)
     : present(env.ACHIEVE_STAGING_PASSWORD) ?? present(env.ACHIEVE_PASSWORD)
 
-  return { baseUrl, production, username, password }
+  return { baseUrl, production, username, password, invalidEnv }
 }
