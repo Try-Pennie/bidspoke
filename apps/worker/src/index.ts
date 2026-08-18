@@ -18,7 +18,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
-import { runPgCronWatch } from './lib/pg-cron-watch'
+import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
 import { runSlowExecutionCheck } from './lib/slow-execution-rate'
 import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
@@ -378,9 +378,11 @@ export default {
         runPgCronWatch(supabase, env.IDEMPOTENCY)
           .then((rs) => {
             for (const r of rs) {
-              if (r.status !== 'healthy') {
-                console.error(`[pg-cron-watch] ${r.jobname} ${r.status} alerted=${r.alerted} ${r.detail}`)
-              }
+              if (r.status === 'healthy') continue
+              // Quiet statuses (recovered, awaiting_first_run) are information,
+              // not faults: visible in the log, never at error level.
+              const log = pgCronQuietStatuses.has(r.status) ? console.log : console.error
+              log(`[pg-cron-watch] ${r.jobname} ${r.status} alerted=${r.alerted} ${r.detail}`)
             }
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
