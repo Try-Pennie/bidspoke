@@ -170,6 +170,48 @@ export function countRecentInquiries(report: EquifaxReport, days: number, now: D
 }
 
 /**
+ * How many separate credit-shopping EPISODES the consumer had in the lookback period.
+ *
+ * Achieve's inquiry rule consolidates mortgage and auto inquiries before counting, because
+ * several lenders pulled for ONE purchase should not count as several applications. Their
+ * consolidation is described by lender type, but the industry code on a real report cannot
+ * support that (see EquifaxInquiry.industryCode): auto spans dealerships and captive finance
+ * arms across at least three codes that also contain personal lenders, and mortgage barely
+ * appears. So this approximates the same intent the way the credit bureaus themselves do it,
+ * by TIME: inquiries closer together than `windowDays` belong to one shopping episode.
+ *
+ * Measured on 525 live reports: of the 57 leads with more than 5 raw inquiries, the median has
+ * only 3 episodes and 40% have just one or two, so counting raw inquiries rejects people who
+ * made a single shopping trip. Only 4 of the 57 had five or more genuinely separate episodes.
+ *
+ * The gap is measured between CONSECUTIVE inquiries, not against the first one, so a steady run
+ * of visits stays one continuing episode. Inquiries are sorted first, because report order is
+ * not guaranteed and an unsorted read would split one burst into several.
+ */
+export function countInquiryEpisodes(
+  report: EquifaxReport,
+  windowDays: number,
+  lookbackDays: number,
+  now: Date
+): number {
+  const cutoff = now.getTime() - lookbackDays * 86_400_000
+  const times = report.inquiries
+    .map((inquiry) => parseEquifaxDate(inquiry?.inquiryDate))
+    .filter((date): date is Date => date != null && date.getTime() >= cutoff)
+    .map((date) => date.getTime())
+    .sort((a, b) => a - b)
+
+  if (times.length === 0) return 0
+
+  const windowMs = windowDays * 86_400_000
+  let episodes = 1
+  for (let i = 1; i < times.length; i++) {
+    if (times[i] - times[i - 1] > windowMs) episodes++
+  }
+  return episodes
+}
+
+/**
  * Total scheduled monthly payment across the accounts the consumer is actually servicing,
  * which is the numerator a debt-to-income ratio needs. Divide by monthly gross income for DTI.
  *

@@ -18,7 +18,7 @@ const ALL_FILTERS_ON = {
   ACHIEVE_MIN_VANTAGE_SCORE: '560',
   ACHIEVE_MAX_CURRENT_DELINQUENCIES: '0',
   ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY: '48',
-  ACHIEVE_MAX_INQUIRIES_6MO: '5',
+  ACHIEVE_MAX_INQUIRY_EPISODES_6MO: '5',
   ACHIEVE_MIN_AGE: '18',
   ACHIEVE_MAX_DTI: '0.60',
 }
@@ -183,8 +183,12 @@ describe('screenLead', () => {
     expect(verdict.reason).toBe('recent_bankruptcy')
   })
 
-  it('rejects too many recent inquiries', () => {
-    const inquiries = Array.from({ length: 6 }, () => ({ inquiryDate: '07092026' }))
+  // Dates all sit inside the 180-day lookback from NOW. An earlier version of this fixture put
+  // the first one just outside it, which quietly left five episodes and passed.
+  it('rejects too many separate shopping episodes', () => {
+    const inquiries = ['03052026', '04102026', '05202026', '06252026', '07152026', '08052026'].map(
+      (inquiryDate) => ({ inquiryDate })
+    )
     const verdict = screenLead(ctx({ report: cleanReport({ inquiries }) }), {}, NOW)
     expect(verdict.reason).toBe('too_many_inquiries')
   })
@@ -192,6 +196,26 @@ describe('screenLead', () => {
   it('counts only inquiries inside the six-month window', () => {
     const inquiries = Array.from({ length: 6 }, () => ({ inquiryDate: '01052024' }))
     expect(screenLead(ctx({ report: cleanReport({ inquiries }) }), {}, NOW).pass).toBe(true)
+  })
+
+  // The point of counting episodes: somebody who pulled six lenders in one week made ONE
+  // shopping trip, which is what Achieve's consolidation exists to allow through. Counting the
+  // raw inquiries instead would reject them, and measured on live reports that is 40% of the
+  // high-inquiry population.
+  it('allows six inquiries made in a single week', () => {
+    const inquiries = ['08012026', '08022026', '08032026', '08042026', '08052026', '08062026'].map(
+      (inquiryDate) => ({ inquiryDate })
+    )
+    expect(screenLead(ctx({ report: cleanReport({ inquiries }) }), {}, NOW).pass).toBe(true)
+  })
+
+  it('rejects a lead who shopped on six separate occasions', () => {
+    const inquiries = ['03012026', '04012026', '05012026', '06012026', '07012026', '08012026'].map(
+      (inquiryDate) => ({ inquiryDate })
+    )
+    const verdict = screenLead(ctx({ report: cleanReport({ inquiries }) }), {}, NOW)
+    expect(verdict.reason).toBe('too_many_inquiries')
+    expect(verdict.detail?.inquiry_episodes).toBe(6)
   })
 
   // DTI, computed from the scheduled monthly payments on the credit report over the form's

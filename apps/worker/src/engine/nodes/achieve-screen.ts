@@ -34,7 +34,7 @@ import { resolveValue } from '../context'
 import {
   findEquifaxReport,
   countDelinquentTrades,
-  countRecentInquiries,
+  countInquiryEpisodes,
   monthsSinceLatestBankruptcy,
   monthlyDebtPayments,
   BANKRUPTCY_DATE_UNKNOWN,
@@ -76,7 +76,13 @@ export interface AchieveScreenVerdict {
   detail?: Record<string, unknown>
 }
 
-const INQUIRY_WINDOW_DAYS = 180
+const INQUIRY_LOOKBACK_DAYS = 180
+
+// Inquiries closer together than this belong to one shopping episode. Approximates Achieve's
+// "after consolidating mortgage and auto inquiries" by TIME, which is how the credit bureaus
+// de-duplicate rate shopping, because the industry code on a real report cannot separate auto
+// and mortgage cleanly. Override with ACHIEVE_INQUIRY_EPISODE_DAYS once Achieve names a window.
+const DEFAULT_EPISODE_WINDOW_DAYS = 14
 
 /** A threshold is active only when it parses to a finite number. Unset, blank and junk are all off. */
 function threshold(raw: string | undefined): number | null {
@@ -153,7 +159,8 @@ export function screenLead(
   const minScore = positiveThreshold(env.ACHIEVE_MIN_VANTAGE_SCORE)
   const maxDelinquencies = threshold(env.ACHIEVE_MAX_CURRENT_DELINQUENCIES)
   const minBankruptcyMonths = threshold(env.ACHIEVE_MIN_MONTHS_SINCE_BANKRUPTCY)
-  const maxInquiries = threshold(env.ACHIEVE_MAX_INQUIRIES_6MO)
+  const maxEpisodes = threshold(env.ACHIEVE_MAX_INQUIRY_EPISODES_6MO)
+  const episodeWindow = threshold(env.ACHIEVE_INQUIRY_EPISODE_DAYS) ?? DEFAULT_EPISODE_WINDOW_DAYS
   const minAge = threshold(env.ACHIEVE_MIN_AGE)
   const maxDti = threshold(env.ACHIEVE_MAX_DTI)
 
@@ -211,7 +218,7 @@ export function screenLead(
   }
 
   const needsReport =
-    maxDelinquencies != null || minBankruptcyMonths != null || maxInquiries != null || maxDti != null
+    maxDelinquencies != null || minBankruptcyMonths != null || maxEpisodes != null || maxDti != null
   if (!needsReport) return { pass: true }
 
   // A missing report is NOT a clean report. Refusing here means an Equifax outage stops leads
@@ -241,10 +248,17 @@ export function screenLead(
     }
   }
 
-  if (maxInquiries != null) {
-    const count = countRecentInquiries(report, INQUIRY_WINDOW_DAYS, now)
-    if (count > maxInquiries) {
-      return fail('too_many_inquiries', { inquiries_6mo: count, max: maxInquiries })
+  // Counts shopping EPISODES rather than raw inquiries. Six lenders pulled in one week is one
+  // trip, which is exactly what Achieve's consolidation exists to let through: measured on 525
+  // live reports, 40% of the leads with more than 5 raw inquiries had only one or two episodes.
+  if (maxEpisodes != null) {
+    const episodes = countInquiryEpisodes(report, episodeWindow, INQUIRY_LOOKBACK_DAYS, now)
+    if (episodes > maxEpisodes) {
+      return fail('too_many_inquiries', {
+        inquiry_episodes: episodes,
+        max: maxEpisodes,
+        episode_window_days: episodeWindow,
+      })
     }
   }
 
