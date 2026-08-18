@@ -52,6 +52,21 @@ describe('every scheduled workflow is watched (#805)', () => {
     }
   })
 
+  it('does not keep watching a workflow the repo no longer has', () => {
+    // The other direction, and the one the code-to-registry check above cannot
+    // see: a deleted or renamed workflow simply stops appearing in the list this
+    // guard scans, so a stale registry entry would sit there for ever. At runtime
+    // that entry now reports `missing` and alerts about itself (#844), which is
+    // honest but is a message nobody can act on except by editing this file.
+    const registry = readFileSync(REGISTRY, 'utf8')
+    const present = new Set(readdirSync(WORKFLOW_DIR))
+    const watched = [...registry.matchAll(/^\s*file: '([^']+)',$/gm)].map((m) => m[1])
+    expect(watched.length, 'no registry entries were found, so this guard is asserting nothing').toBeGreaterThan(0)
+    for (const file of watched) {
+      expect(present.has(file), `WATCHED_WORKFLOWS names ${file}, which is not in .github/workflows`).toBe(true)
+    }
+  })
+
   it('records each watched workflow with the cron it actually declares', () => {
     // A window is chosen against a cadence, so a registry entry carrying a cron
     // the workflow no longer runs on is a window sized for a schedule that does
