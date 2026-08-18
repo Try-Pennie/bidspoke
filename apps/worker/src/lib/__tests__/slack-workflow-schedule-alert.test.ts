@@ -143,6 +143,19 @@ describe('sendWorkflowScheduleAlert: each status says a different thing (L11)', 
     expect(body).not.toContain('stopped running')
   })
 
+  it('claims only the streak it measured, not that every run has failed', async () => {
+    // What the check measured is a run of consecutive failures at the head of the
+    // history. "every run" is a claim about the whole history, which it never
+    // read, and a message may claim only what its check actually measured (L11).
+    // It also matters practically: the reader would go looking for a workflow
+    // that has never once succeeded.
+    await send('failing', 'the last 2 scheduled runs failed', 3_600_000)
+    const body = posts()[0]
+    expect(body).not.toContain('every run')
+    // And it must still convey that this is a pattern rather than one bad run.
+    expect(body).toContain('the last 2 scheduled runs failed')
+  })
+
   it('says a missing workflow is not in the repository, and points at the watch list', async () => {
     await send('missing', 'GitHub has no workflow file named deploy-drift.yml')
     const body = posts()[0]

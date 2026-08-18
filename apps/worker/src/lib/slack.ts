@@ -1146,7 +1146,9 @@ const scheduleHeadline = (label: string, status: ScheduleStatus): string => {
     case 'never_ran':
       return `${label} has never run on its schedule`
     case 'failing':
-      return `${label} is failing every run`
+      // Not "every run": what was measured is a run of consecutive failures at
+      // the head of the history, and the whole history was never read (L11).
+      return `${label} keeps failing`
     case 'missing':
       return `${label} is no longer in the repository`
     default:
