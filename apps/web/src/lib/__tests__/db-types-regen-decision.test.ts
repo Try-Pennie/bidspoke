@@ -1,4 +1,6 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
@@ -84,5 +86,214 @@ describe('db-types regen decision (#614)', () => {
 
   it('is case insensitive, because migrations are written in both cases', () => {
     expect(decide(`${header}+create table foo (id uuid)\n`)).toBe('regen-required')
+  })
+
+  /**
+   * Found while fixing #853. The decision was `printf ... | grep -v ... | grep -q`
+   * under `set -o pipefail`. `grep -q` exits the instant it matches, so on any diff
+   * bigger than the 64KB pipe buffer the upstream producer is killed by SIGPIPE,
+   * the pipeline reports 141, and the `if` reads a MATCH as no match (LESSONS L183).
+   * The gate then answers `not-required` on a migration that plainly creates a
+   * table, which is the fail-unsafe direction: the types drift silently.
+   *
+   * Measured before the fix: a 1.2MB diff whose FIRST content line is
+   * `CREATE TABLE opportunities` answered `not-required`. It needs the DDL near the
+   * top, because that is what makes grep short-circuit while the producer is still
+   * writing; DDL at the end is read after the producer has finished and passes
+   * either way.
+   */
+  it('still asks for a regen when the DDL is at the top of a diff larger than the pipe buffer', () => {
+    const padding = Array.from({ length: 40000 }, (_, i) => `+-- padding comment line ${i}`).join('\n')
+    const big = `${header}+CREATE TABLE opportunities (id uuid)\n${padding}\n`
+    expect(big.length).toBeGreaterThan(64 * 1024)
+    expect(decide(big)).toBe('regen-required')
+  })
+})
+
+/**
+ * Function DDL (#853).
+ *
+ * `supabase gen types` emits a `Functions` block, so adding a function moves the
+ * generated types while matching none of the keywords above. #770 added
+ * `public.pg_cron_health`, this gate passed on that PR, and the nightly drift
+ * check failed the next morning (#845) with the committed types stale.
+ *
+ * The decision CANNOT be made from the migration text alone. Every migration is a
+ * NEW FILE, so git reports the whole thing as added lines: a body-only
+ * `CREATE OR REPLACE FUNCTION` and a signature change are textually identical at
+ * PR time. `public.reduce_finalize_stranded` has been replaced in five separate
+ * migrations, character-for-character the same declaration each time, so a rule
+ * that trips on a declaration appearing in the diff would demand a regen on all
+ * five, each producing no diff, each unmergeable. That is the #614 trap in a new
+ * shape.
+ *
+ * So the diff is compared against the only available statement of the previous
+ * shape: the `Functions` block of the committed types.
+ */
+const MIGRATIONS = 'supabase/migrations'
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+/**
+ * The real `git diff` for a migration arriving as a wholly new file, which is how
+ * every migration reaches this gate. Rendering the diff by hand instead would
+ * lose the property the function cases turn on (L48): the unchanged signature of
+ * a body-only replace still arrives as ADDED lines.
+ */
+function newFileDiff(migration: string): string {
+  const diff = execFileSync('git', ['diff', '-U0', '-M', EMPTY_TREE, 'HEAD', '--', `${MIGRATIONS}/${migration}`], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  })
+  // A fixture that resolved to nothing would make every case below pass on an
+  // empty diff, which answers `not-required` for reasons unrelated to the rule.
+  expect(diff, `fixture ${migration} produced no diff`).toContain('FUNCTION')
+  return diff
+}
+
+function decideWith(diff: string, typesFile: string): { decision: string; stderr: string } {
+  const run = spawnSync('bash', [SCRIPT], {
+    input: diff,
+    encoding: 'utf8',
+    env: { ...process.env, DB_TYPES_FILE: typesFile },
+  })
+  return { decision: (run.stdout ?? '').trim(), stderr: run.stderr ?? '' }
+}
+
+/**
+ * The committed types as they stood when #770 was opened, taken from the commit
+ * before #845 regenerated them. That file is the real pre-drift state: it has a
+ * Functions block and no `pg_cron_health` in it. Reconstructing that by editing
+ * today's file would be shaping a fixture so the rule fires (L48); this is the
+ * artifact the gate actually read on the PR that slipped through.
+ */
+function typesFileAt(commitish: string): string {
+  const content = execFileSync('git', ['show', `${commitish}:apps/worker/src/types/database.ts`], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  })
+  expect(content, 'fixture types file has no Functions block').toMatch(/^ *Functions: \{$/m)
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'db-types-')), 'database.ts')
+  writeFileSync(file, content)
+  return file
+}
+
+// The regen that closed the #845 symptom. Its PARENT is what the gate read on #770.
+const BEFORE_PG_CRON_HEALTH_REGEN = '524d805^'
+
+describe('db-types regen decision, function DDL (#853)', () => {
+  /**
+   * The pair below is the whole point of the rule: ONE diff, the real #770
+   * migration, answered differently depending only on whether the committed types
+   * already record the function. If the decision were made from the migration text
+   * alone, both cases would answer the same and one of the two would be wrong.
+   */
+  it('asks for a regen for a function name the committed types do not record', () => {
+    const { decision, stderr } = decideWith(
+      newFileDiff('20260817000001_pg_cron_health.sql'),
+      typesFileAt(BEFORE_PG_CRON_HEALTH_REGEN),
+    )
+    expect(decision).toBe('regen-required')
+    expect(stderr).toContain('pg_cron_health')
+  })
+
+  it('does not ask for a regen for that same migration once the types record the function', () => {
+    // Today's committed types, which #845 regenerated. Nothing left to regenerate.
+    expect(decide(newFileDiff('20260817000001_pg_cron_health.sql'))).toBe('not-required')
+  })
+
+  it('does not ask for a regen when replacing a function the types already record', () => {
+    // Body-only CREATE OR REPLACE of public.reduce_finalize_stranded. Its
+    // declaration is identical to the four earlier migrations that replaced it and
+    // still arrives as added lines, which is the whole point of the case.
+    expect(decide(newFileDiff('20260627000001_strand_finalize_finish_timestamps.sql'))).toBe('not-required')
+  })
+
+  it('does not ask for a regen for a RETURNS TRIGGER function, which the types never carry', () => {
+    // `supabase gen types` omits trigger functions entirely, so set_updated_at,
+    // handle_new_auth_user, handle_auth_user_updated, folders_prevent_cycle and
+    // env_var_folders_prevent_cycle are all absent from the Functions block today.
+    // Reading their absence as "new" would demand a regen with nothing to
+    // regenerate on every trigger migration, which is the #614 trap again.
+    expect(decide(newFileDiff('20260814000001_refuse_non_allowlisted_signup.sql'))).toBe('not-required')
+  })
+
+  /**
+   * Measured by replaying this gate over all 104 commits that ever touched
+   * supabase/migrations (L147: a rule seen to fire on a fixture you chose has only
+   * been shown to work on the shape you had in mind). Of the 18 commits this change
+   * newly blocks, 11 predate database.ts existing at all, six are the real drift the
+   * gate exists to catch, and ONE is a false block: cb66b3e added
+   * `reduce_finalize_stranded_executions` and dropped it again in the same commit,
+   * three migrations in one diff. The function does not exist once that diff is
+   * applied, so a regen produces no diff and the demanded gate can never be
+   * satisfied. Net effect, not first sighting: the last event for a name in the diff
+   * decides. Migration filenames sort by timestamp and git orders a diff by path, so
+   * diff order is apply order.
+   */
+  it('does not ask for a regen when a function is created and dropped in the same diff', () => {
+    const diff = execFileSync('git', ['diff', '-U0', '-M', 'cb66b3e^', 'cb66b3e', '--', `${MIGRATIONS}/*.sql`], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+    expect(diff).toContain('CREATE OR REPLACE FUNCTION public.reduce_finalize_stranded_executions')
+    expect(diff).toContain('DROP FUNCTION IF EXISTS public.reduce_finalize_stranded_executions')
+    const { decision } = decideWith(diff, typesFileAt('cb66b3e'))
+    expect(decision).toBe('not-required')
+  })
+
+  it('asks for a regen when a recorded function is dropped and re-created in the same diff', () => {
+    // The reverse order, which is how a signature change is done properly. The net
+    // effect is a function the types do not record yet, so the regen has real work.
+    const dropThenCreate = `${header}+DROP FUNCTION IF EXISTS public.some_new_helper(int)\n+CREATE OR REPLACE FUNCTION public.some_new_helper(a int, b int)\n+RETURNS int\n`
+    expect(decide(dropThenCreate)).toBe('regen-required')
+  })
+
+  it('asks for a regen when DROP FUNCTION names a function the types still record', () => {
+    expect(decide(`${header}+DROP FUNCTION IF EXISTS public.prune_orphan_auth_users()\n`)).toBe('regen-required')
+  })
+
+  it('does not ask for a regen when DROP FUNCTION names a function the types never recorded', () => {
+    // Already gone from the types, so the regen it would demand has no diff to make.
+    expect(decide(`${header}+DROP FUNCTION IF EXISTS public.set_updated_at()\n`)).toBe('not-required')
+  })
+
+  it('asks for a regen when a materialized view is dropped', () => {
+    expect(decide(`${header}+DROP MATERIALIZED VIEW workflow_stats_daily\n`)).toBe('regen-required')
+  })
+
+  it('asks for a regen when a table is renamed', () => {
+    expect(decide(`${header}+ALTER TABLE opportunities RENAME TO bid_outcomes\n`)).toBe('regen-required')
+  })
+
+  it('does not ask for a regen when an index is renamed, which the types do not carry', () => {
+    expect(decide(`${header}+ALTER INDEX idx_foo RENAME TO idx_bar\n`)).toBe('not-required')
+  })
+
+  it('asks for a regen, naming the unreadable types file, when the types file is missing', () => {
+    // A path that exists nowhere, rather than a missing name under the real types
+    // directory: what is under test is the script's answer when the file it needs
+    // cannot be read, which has nothing to do with where that file normally lives.
+    const { decision, stderr } = decideWith(
+      newFileDiff('20260817000001_pg_cron_health.sql'),
+      path.join(mkdtempSync(path.join(tmpdir(), 'db-types-')), 'does-not-exist.ts'),
+    )
+    expect(decision).toBe('regen-required')
+    // The specific cause, not merely that something went wrong (L11, L140): a
+    // missing file and an unparseable one are different failures and the message
+    // that answers for both cannot be acted on.
+    expect(stderr).toMatch(/cannot read the generated types file/i)
+    expect(stderr).toContain('does-not-exist.ts')
+  })
+
+  it('asks for a regen, naming the missing Functions block, when the types file has none', () => {
+    const stub = path.join(mkdtempSync(path.join(tmpdir(), 'db-types-')), 'database.ts')
+    writeFileSync(stub, 'export type Database = { public: { Tables: { foo: { Row: { id: string } } } } }\n')
+    const { decision, stderr } = decideWith(newFileDiff('20260817000001_pg_cron_health.sql'), stub)
+    expect(decision).toBe('regen-required')
+    expect(stderr).toMatch(/no Functions block/i)
+    // Distinct from the unreadable-file reason above, so neither answers for the other.
+    expect(stderr).not.toMatch(/cannot read/i)
   })
 })
