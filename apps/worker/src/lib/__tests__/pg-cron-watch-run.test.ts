@@ -101,6 +101,92 @@ describe('runPgCronWatch: a failing job', () => {
   })
 })
 
+describe('runPgCronWatch: a reported failure the job has recovered from', () => {
+  // The 2026-08-18 shape: the last failure the collision bug ever produced sat
+  // inside the 24h window all day while the job succeeded every 5 minutes, and
+  // the watcher re-paged it every cooldown expiry (L36).
+  const recovered: PgCronJob = {
+    ...healthy('refresh-workflow-stats-daily'),
+    schedule: '*/5 * * * *',
+    failures_in_window: 1,
+    last_failure_at: iso(NOW - 16 * HOUR),
+    last_failure_message: 'ERROR: duplicate key value violates unique constraint',
+    last_success_at: iso(NOW - 5 * 60_000),
+  }
+
+  it('remembers which failure it delivered an alert for', async () => {
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([recovered]), kv, NOW)
+    expect(kv.store.get(`pg-cron-watch:${recovered.jobname}:alerted-failure`)).toBe(recovered.last_failure_at)
+  })
+
+  it('does not re-page the same failure after the cooldown once a success followed it', async () => {
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([recovered]), kv, NOW)
+    kv.store.delete(`pg-cron-watch:${recovered.jobname}:alerted`) // the 6h cooldown expiring
+    vi.mocked(sendPgCronAlert).mockClear()
+    // Six hours on, the job has kept succeeding every 5 minutes; only the stale
+    // failure still sits in the 24h window.
+    const later = { ...recovered, last_success_at: iso(NOW + 6 * HOUR - 5 * 60_000) }
+    const results = await runPgCronWatch(fakeSupabase([later]), kv, NOW + 6 * HOUR)
+    expect(sendPgCronAlert).not.toHaveBeenCalled()
+    expect(results[0]?.status).toBe('recovered')
+  })
+
+  it('does not remember a failure whose alert was never delivered', async () => {
+    // Otherwise a Slack outage during the one pass that saw the failure converts
+    // into permanent silence about it (the same reason the cooldown arms only on
+    // delivery).
+    vi.mocked(sendPgCronAlert).mockResolvedValue(false)
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([recovered]), kv, NOW)
+    expect(kv.store.has(`pg-cron-watch:${recovered.jobname}:alerted-failure`)).toBe(false)
+    vi.mocked(sendPgCronAlert).mockResolvedValue(true)
+    const results = await runPgCronWatch(fakeSupabase([recovered]), kv, NOW + HOUR)
+    expect(results[0]?.status).toBe('failing')
+    expect(sendPgCronAlert).toHaveBeenCalled()
+  })
+})
+
+describe('runPgCronWatch: a job with no run history yet', () => {
+  // A migration that moves a pg_cron job unschedules and reschedules it, which
+  // gives it a new jobid and orphans its run history, so the recreated job reads
+  // as never having succeeded until its first slot arrives.
+  const fresh: PgCronJob = { ...healthy('refresh-field-presence-daily-full'), schedule: '52 3 * * *', last_success_at: null }
+
+  it('stamps first-seen and stays quiet while the first slot has not had to come', async () => {
+    const kv = fakeKv()
+    const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
+    expect(results[0]?.status).toBe('awaiting_first_run')
+    expect(sendPgCronAlert).not.toHaveBeenCalled()
+    expect(kv.store.get(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`)).toBe(String(NOW))
+  })
+
+  it('keeps the original first-seen stamp on later passes', async () => {
+    const kv = fakeKv()
+    await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
+    await runPgCronWatch(fakeSupabase([fresh]), kv, NOW + HOUR)
+    expect(kv.store.get(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`)).toBe(String(NOW))
+  })
+
+  it('pages never_succeeded once the job has had a full cadence window and still no success', async () => {
+    const kv = fakeKv()
+    kv.store.set(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`, String(NOW - 72 * HOUR))
+    const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
+    expect(results[0]?.status).toBe('never_succeeded')
+    expect(sendPgCronAlert).toHaveBeenCalled()
+  })
+
+  it('pages rather than trusting a first-seen stamp it cannot read', async () => {
+    // A corrupt stamp must land on the alerting side (L50).
+    const kv = fakeKv()
+    kv.store.set(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`, 'garbage')
+    const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
+    expect(results[0]?.status).toBe('never_succeeded')
+    expect(sendPgCronAlert).toHaveBeenCalled()
+  })
+})
+
 describe('runPgCronWatch: the check itself cannot read', () => {
   it('throws rather than reporting an empty list of problems', async () => {
     // The L98 case, and the one that matters most here: returning [] on a failed

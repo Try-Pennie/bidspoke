@@ -92,10 +92,36 @@ export interface PgCronJob {
 export type PgCronStatus =
   | 'healthy'
   | 'failing'
+  | 'recovered'
   | 'stalled'
   | 'never_succeeded'
+  | 'awaiting_first_run'
   | 'unknown_schedule'
   | 'inactive'
+
+/**
+ * What the watcher remembers between passes, from KV.
+ *
+ * `alertedFailureAt`: the `last_failure_at` of the failure most recently
+ * DELIVERED to Slack for this job, or null when none was. A failure that was
+ * already reported, and that a success has been recorded after, is a recovered
+ * condition and must not re-page every cooldown for as long as it sits in the
+ * failure window (L36, L160). Keying on the exact timestamp rather than a
+ * boolean means a NEW failure always pages: it carries a new time.
+ *
+ * `firstSeenMs`: when the watcher first saw this job with no success on record,
+ * or null when it has no stamp. A rescheduled job gets a new jobid and loses its
+ * whole run history, so it reads as never having succeeded until its first slot
+ * arrives; the grace period exists so a schedule change working as intended is
+ * not paged as a fault.
+ *
+ * Both are required, not defaulted: null means the watcher knows nothing, and
+ * unknown must land on the alerting side (L168).
+ */
+export interface JudgeContext {
+  alertedFailureAt: string | null
+  firstSeenMs: number | null
+}
 
 export interface PgCronVerdict {
   jobname: string
@@ -114,7 +140,7 @@ export interface PgCronVerdict {
  */
 export const staleAfter = (gapMs: number): number => gapMs * 2 + HOUR
 
-export function judgeJob(job: PgCronJob, nowMs: number): PgCronVerdict {
+export function judgeJob(job: PgCronJob, nowMs: number, ctx: JudgeContext): PgCronVerdict {
   // A job somebody deliberately disabled is not a fault, but it is also not
   // healthy, and it must not be silently counted as fine: a job switched off and
   // forgotten is how a check stops covering something.
@@ -125,11 +151,28 @@ export function judgeJob(job: PgCronJob, nowMs: number): PgCronVerdict {
   // Reported before staleness. A job failing every run usually still has a
   // recent successful one behind it, so staleness alone would miss it entirely,
   // and the failure message is the thing worth reading.
+  //
+  // One carve-out: the EXACT failure already delivered to Slack, with a success
+  // recorded after it, is recovered and does not re-page for the rest of its
+  // 24h in the window (L36, L160). It only suppresses the failing verdict, so a
+  // job that recovered and then went dead still falls through to staleness. A
+  // failure never delivered (Slack outage) or a newer failure (new timestamp)
+  // still pages, and an unparseable success timestamp is NaN, which fails the
+  // comparison and lands on the alerting side (L50).
+  let recoveredFrom: string | null = null
   if (job.failures_in_window > 0) {
-    return {
-      jobname: job.jobname,
-      status: 'failing',
-      detail: `${job.failures_in_window} failed run(s) in the window, most recently at ${job.last_failure_at ?? 'an unrecorded time'}: ${(job.last_failure_message ?? 'no message recorded').slice(0, 300)}`,
+    const failureMs = Date.parse(job.last_failure_at ?? '')
+    const successMs = Date.parse(job.last_success_at ?? '')
+    const alreadyDelivered = ctx.alertedFailureAt !== null && ctx.alertedFailureAt === job.last_failure_at
+    const succeededSince = successMs > failureMs // false when either side is NaN
+    if (alreadyDelivered && succeededSince) {
+      recoveredFrom = job.last_failure_at
+    } else {
+      return {
+        jobname: job.jobname,
+        status: 'failing',
+        detail: `${job.failures_in_window} failed run(s) in the window, most recently at ${job.last_failure_at ?? 'an unrecorded time'}: ${(job.last_failure_message ?? 'no message recorded').slice(0, 300)}`,
+      }
     }
   }
 
@@ -145,6 +188,16 @@ export function judgeJob(job: PgCronJob, nowMs: number): PgCronVerdict {
   }
 
   if (job.last_success_at === null) {
+    // A job the watcher only recently started seeing without history gets one
+    // full staleness window before this pages: a rescheduled job's first slot
+    // may simply not have arrived yet. No stamp means no grace.
+    if (ctx.firstSeenMs !== null && nowMs - ctx.firstSeenMs <= staleAfter(gap)) {
+      return {
+        jobname: job.jobname,
+        status: 'awaiting_first_run',
+        detail: `no run on record yet; first seen ${Math.round((nowMs - ctx.firstSeenMs) / MINUTE)}m ago, within what its schedule '${job.schedule}' allows`,
+      }
+    }
     return {
       jobname: job.jobname,
       status: 'never_succeeded',
@@ -168,11 +221,38 @@ export function judgeJob(job: PgCronJob, nowMs: number): PgCronVerdict {
     }
   }
 
+  if (recoveredFrom !== null) {
+    return {
+      jobname: job.jobname,
+      status: 'recovered',
+      detail: `the failure at ${recoveredFrom} was already reported and the job has succeeded since`,
+    }
+  }
+
   return { jobname: job.jobname, status: 'healthy', detail: '' }
 }
 
 const cooldownKey = (jobname: string) => `pg-cron-watch:${jobname}:alerted`
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
+
+// Which failure was actually DELIVERED for this job. 25h TTL: a failure leaves
+// the 24h window at most 24h after the alert about it, so the stamp only needs
+// to outlive the failure it names.
+const alertedFailureKey = (jobname: string) => `pg-cron-watch:${jobname}:alerted-failure`
+const ALERTED_FAILURE_TTL_SECONDS = 25 * 60 * 60
+
+// When the watcher first saw this job with no success on record. Keyed on the
+// schedule too, so a reschedule (which recreates the job and orphans its run
+// history) starts a fresh grace period. The one shape this misses is a job
+// recreated with an IDENTICAL schedule, which pages immediately; jobid would be
+// the true identity, but pg_cron_health does not return it and one spurious
+// page in that corner is not worth widening the function's contract. 90 days
+// outlives the longest grace in use (a monthly schedule's is ~63 days).
+const firstSeenKey = (jobname: string, schedule: string) => `pg-cron-watch:first-seen:${jobname}:${schedule}`
+const FIRST_SEEN_TTL_SECONDS = 90 * 24 * 60 * 60
+
+/** Statuses that are informational: logged, never paged. */
+export const QUIET_STATUSES: ReadonlySet<PgCronStatus> = new Set(['healthy', 'recovered', 'awaiting_first_run'])
 
 export interface PgCronCheckResult extends PgCronVerdict {
   alerted: boolean
@@ -232,8 +312,25 @@ async function checkOne(
   nowMs: number,
   orgIds: string[],
 ): Promise<PgCronCheckResult> {
-  const verdict = judgeJob(row, nowMs)
-  if (verdict.status === 'healthy') return { ...verdict, alerted: false }
+  const ctx: JudgeContext = { alertedFailureAt: null, firstSeenMs: null }
+  if (row.failures_in_window > 0) {
+    ctx.alertedFailureAt = await kv.get(alertedFailureKey(row.jobname))
+  }
+  if (row.active && row.last_success_at === null) {
+    const key = firstSeenKey(row.jobname, row.schedule)
+    const stamp = await kv.get(key)
+    if (stamp === null) {
+      await kv.put(key, String(nowMs), { expirationTtl: FIRST_SEEN_TTL_SECONDS })
+      ctx.firstSeenMs = nowMs
+    } else {
+      // A stamp that does not parse stays null, which pages (L50).
+      const parsed = Number(stamp)
+      ctx.firstSeenMs = Number.isFinite(parsed) ? parsed : null
+    }
+  }
+
+  const verdict = judgeJob(row, nowMs, ctx)
+  if (QUIET_STATUSES.has(verdict.status)) return { ...verdict, alerted: false }
 
   if (await kv.get(cooldownKey(verdict.jobname))) return { ...verdict, alerted: false }
 
@@ -242,7 +339,14 @@ async function checkOne(
     if (await sendPgCronAlert(supabase, orgId, verdict, row.schedule)) alerted = true
   }
   // Armed only on delivery, so a Slack outage during the first bad run does not
-  // buy six hours of silence about something nobody was told.
-  if (alerted) await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+  // buy six hours of silence about something nobody was told. The same rule for
+  // the delivered-failure stamp: remembering an undelivered failure would make
+  // its recovery mute an alert nobody ever received.
+  if (alerted) {
+    await kv.put(cooldownKey(verdict.jobname), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
+    if (verdict.status === 'failing' && row.last_failure_at !== null) {
+      await kv.put(alertedFailureKey(row.jobname), row.last_failure_at, { expirationTtl: ALERTED_FAILURE_TTL_SECONDS })
+    }
+  }
   return { ...verdict, alerted }
 }
