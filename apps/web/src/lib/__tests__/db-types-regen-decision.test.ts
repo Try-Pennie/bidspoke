@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -139,14 +139,16 @@ const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
  * lose the property the function cases turn on (L48): the unchanged signature of
  * a body-only replace still arrives as ADDED lines.
  */
-function newFileDiff(migration: string): string {
-  const diff = execFileSync('git', ['diff', '-U0', '-M', EMPTY_TREE, 'HEAD', '--', `${MIGRATIONS}/${migration}`], {
+function newFileDiff(...migrations: string[]): string {
+  const paths = migrations.map((m) => `${MIGRATIONS}/${m}`)
+  const diff = execFileSync('git', ['diff', '-U0', '-M', EMPTY_TREE, 'HEAD', '--', ...paths], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
   })
   // A fixture that resolved to nothing would make every case below pass on an
   // empty diff, which answers `not-required` for reasons unrelated to the rule.
-  expect(diff, `fixture ${migration} produced no diff`).toContain('FUNCTION')
+  expect(diff, `fixture ${migrations.join(', ')} produced no diff`).toContain('FUNCTION')
   return diff
 }
 
@@ -160,26 +162,25 @@ function decideWith(diff: string, typesFile: string): { decision: string; stderr
 }
 
 /**
- * The committed types as they stood when #770 was opened, taken from the commit
- * before #845 regenerated them. That file is the real pre-drift state: it has a
- * Functions block and no `pg_cron_health` in it. Reconstructing that by editing
- * today's file would be shaping a fixture so the rule fires (L48); this is the
- * artifact the gate actually read on the PR that slipped through.
+ * The committed types as they stood when #770 was opened: the real pre-drift state,
+ * with a Functions block that does not list the function that migration added.
+ * Reconstructing that by editing today's file would be shaping a fixture so the rule
+ * fires (L48), so this is the artifact the gate actually read on the PR that slipped
+ * through, copied verbatim out of 524d805^ and committed.
+ *
+ * COMMITTED, not read out of git history. The first version of these tests ran
+ * `git show 524d805^:...` and passed locally, then died on the CI runner with
+ * "invalid object name": actions/checkout is shallow by default in the Test job, so
+ * no commit but HEAD exists there. A test whose fixture depends on clone depth is a
+ * test that only runs in some of the places it is meant to run.
  */
-function typesFileAt(commitish: string): string {
-  const content = execFileSync('git', ['show', `${commitish}:apps/worker/src/types/database.ts`], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-  })
-  expect(content, 'fixture types file has no Functions block').toMatch(/^ *Functions: \{$/m)
-  const file = path.join(mkdtempSync(path.join(tmpdir(), 'db-types-')), 'database.ts')
-  writeFileSync(file, content)
+const PRE_DRIFT_FUNCTIONS = path.join(REPO_ROOT, 'apps/web/src/lib/__tests__/fixtures/db-types-functions-before-pg-cron-health.txt')
+
+function typesFixture(file: string): string {
+  const content = readFileSync(file, 'utf8')
+  expect(content, `fixture ${path.basename(file)} has no Functions block`).toMatch(/^ *Functions: \{$/m)
   return file
 }
-
-// The regen that closed the #845 symptom. Its PARENT is what the gate read on #770.
-const BEFORE_PG_CRON_HEALTH_REGEN = '524d805^'
 
 describe('db-types regen decision, function DDL (#853)', () => {
   /**
@@ -191,7 +192,7 @@ describe('db-types regen decision, function DDL (#853)', () => {
   it('asks for a regen for a function name the committed types do not record', () => {
     const { decision, stderr } = decideWith(
       newFileDiff('20260817000001_pg_cron_health.sql'),
-      typesFileAt(BEFORE_PG_CRON_HEALTH_REGEN),
+      typesFixture(PRE_DRIFT_FUNCTIONS),
     )
     expect(decision).toBe('regen-required')
     expect(stderr).toContain('pg_cron_health')
@@ -232,15 +233,23 @@ describe('db-types regen decision, function DDL (#853)', () => {
    * diff order is apply order.
    */
   it('does not ask for a regen when a function is created and dropped in the same diff', () => {
-    const diff = execFileSync('git', ['diff', '-U0', '-M', 'cb66b3e^', 'cb66b3e', '--', `${MIGRATIONS}/*.sql`], {
-      cwd: REPO_ROOT,
-      encoding: 'utf8',
-      maxBuffer: 32 * 1024 * 1024,
-    })
+    // The three migrations cb66b3e landed together, still in the tree today, diffed
+    // from the empty tree exactly as a new migration reaches the gate. Built from the
+    // files rather than from that commit, so it does not need git history: the
+    // committed types record no such function either, which is the state under test.
+    const diff = newFileDiff(
+      '20260708000001_reduce_finalize_stranded_executions.sql',
+      '20260708000002_pause_reduce_finalize_stranded_executions.sql',
+      '20260708000003_drop_reduce_finalize_stranded_executions_fn.sql',
+    )
     expect(diff).toContain('CREATE OR REPLACE FUNCTION public.reduce_finalize_stranded_executions')
     expect(diff).toContain('DROP FUNCTION IF EXISTS public.reduce_finalize_stranded_executions')
-    const { decision } = decideWith(diff, typesFileAt('cb66b3e'))
-    expect(decision).toBe('not-required')
+    // Judged against a types file that does not record the function, which is the
+    // state that makes the case meaningful: were it recorded, the drop alone would
+    // ask for a regen and the answer would be right for a different reason.
+    const types = typesFixture(PRE_DRIFT_FUNCTIONS)
+    expect(readFileSync(types, 'utf8')).not.toContain('reduce_finalize_stranded_executions')
+    expect(decideWith(diff, types).decision).toBe('not-required')
   })
 
   it('asks for a regen when a recorded function is dropped and re-created in the same diff', () => {
