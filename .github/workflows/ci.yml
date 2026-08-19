@@ -100,6 +100,47 @@ jobs:
       # Anything else MUST fail instead of skipping. A deleted or emptied secret would
       # otherwise skip every run, each reporting a green check, and nobody would be told:
       # a gate that quietly switches itself off is the exact rot this job exists to stop.
+      # This job is the only one that installs a browser, builds the production
+      # artifact and boots the app, so it costs minutes while the rest cost
+      # seconds. It blocked #885 three times, a branch touching no web code,
+      # without ever examining anything (#887).
+      #
+      # It FAILS CLOSED. The risk of scoping a gate is the rot this job's own
+      # comments name: one that quietly switches itself off. So the skip applies
+      # only when the job can PROVE nothing under apps/web changed. If it cannot
+      # tell, for any reason, it runs. Seven wasted minutes is cheap; an
+      # accessibility regression waved through by a detection bug is not.
+      #
+      # Read from the API rather than `git diff`, because checkout fetches depth
+      # 1 and the base commit is simply not present to diff against.
+      - name: Check whether web code changed
+        id: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "${PR}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not a pull request, so the accessibility scan runs."
+            exit 0
+          fi
+          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Could not determine the changed files, so the accessibility scan runs. Failing closed."
+            exit 0
+          fi
+          if [ -z "${files}" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Could not determine the changed files (empty list), so the accessibility scan runs. Failing closed."
+            exit 0
+          fi
+          if printf '%s\n' "${files}" | grep -q '^apps/web/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No apps/web changes in this pull request, so the accessibility scan is skipped."
+          fi
+
       - name: Check for e2e credentials
         id: creds
         env:
@@ -118,25 +159,25 @@ jobs:
           exit 1
 
       - uses: pnpm/action-setup@v6
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         with:
           version: 9
 
       - uses: actions/setup-node@v7
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         with:
           node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         run: pnpm install --frozen-lockfile
 
       # Without this the browser is re-downloaded on EVERY pull request, so every
       # run depends on Playwright's CDN being healthy. That download is what
       # stalled three times on 2026-08-19 (#885).
       - name: Cache the Playwright browser
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -144,7 +185,7 @@ jobs:
           restore-keys: ms-playwright-${{ runner.os }}-
 
       - name: Install Chromium
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         # --with-deps installs OS packages that the cache cannot hold, so this
         # still runs; on a cache hit it verifies rather than downloads.
         run: pnpm --filter web exec playwright install --with-deps chromium
@@ -164,7 +205,7 @@ jobs:
       # not read at runtime). A wrong NEXT_PUBLIC_WORKER_URL leaves authenticated pages
       # retrying a dead endpoint until every spec times out on networkidle.
       - name: Build the production artifact (next-on-pages)
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         run: pnpm --filter=web pages:build
 
       # Serve the built artifact exactly as Pages runs it. The compatibility date MUST be
@@ -191,7 +232,7 @@ jobs:
       # instead of the pinned 4.110.0) and on CI it fails outright with
       # "sh: 1: wrangler: not found".
       - name: Start the app (wrangler pages dev)
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         working-directory: apps/web
         run: |
           "${GITHUB_WORKSPACE}/apps/worker/node_modules/.bin/wrangler" pages dev .vercel/output/static \
@@ -213,7 +254,7 @@ jobs:
       # No warm-up step: unlike the dev server, the artifact is prebuilt and serves every
       # route immediately, so there is no first-request compile to absorb.
       - name: Run accessibility specs
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/a11y-report.json
         run: pnpm --filter web exec playwright test e2e/a11y.spec.ts --reporter=json,list
@@ -227,7 +268,7 @@ jobs:
       # the gate until someone bumps a number. A unit test keeps it in step with
       # the page list the spec actually declares.
       - name: Prove the accessibility scan covered its pages
-        if: steps.creds.outputs.have == 'true'
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/a11y-report.json" 10
 
       - name: Upload Playwright report
