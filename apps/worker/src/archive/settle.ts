@@ -34,6 +34,14 @@ export function measureSettle(samples: SettleSample[]): SettleResult {
     }
   }
 
+  // A timestamp that failed to parse arrives here as NaN, and NaN compares
+  // false against every threshold, so the row would silently land on the
+  // permissive side and the window would read as healthy (L50).
+  const bad = samples.filter((s) => !Number.isFinite(s.ageMinutes)).length
+  if (bad > 0) {
+    throw new Error(`${bad} of ${samples.length} settle samples had a non-finite age, so the window cannot be measured`)
+  }
+
   const unsettled = samples.filter((s) => !s.hasCost)
   const oldestUnsettledMinutes = unsettled.length === 0
     ? null

@@ -41,6 +41,13 @@ describe('measureSettle', () => {
     expect(result.settledFromMinute).toBe(50)
   })
 
+  it('refuses a sample carrying a non-finite age rather than comparing against NaN', () => {
+    // A timestamp that fails to parse yields NaN, and NaN compares false against
+    // every threshold, so the row silently lands on the permissive side and the
+    // window reads as healthy (L50).
+    expect(() => measureSettle([{ ageMinutes: Number.NaN, hasCost: false }])).toThrow(/finite/i)
+  })
+
   it('reports no settled point when every sampled execution is still missing its cost', () => {
     const result = measureSettle([{ ageMinutes: 5, hasCost: false }])
 

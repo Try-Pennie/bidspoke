@@ -25,6 +25,7 @@ import { createClient } from '@supabase/supabase-js'
 import { encodeBundle } from '../src/archive/bundle'
 import { summarize } from '../src/archive/report'
 import { measureSettle } from '../src/archive/settle'
+import { assessBatch, groupStepsByExecution, POSTGREST_ROW_CAP } from '../src/archive/fetch'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -43,11 +44,21 @@ function loadDevVars(): Record<string, string> {
   return out
 }
 
-const SAMPLE_SIZE = Number(process.argv[2] ?? 200)
-// PostgREST caps a request at 1,000 rows regardless of a higher .limit(), so
-// asking for more silently truncates. Ask for exactly the cap and report when
-// it was reached.
-const SETTLE_SAMPLE = 1000
+// Number('abc') is NaN, and NaN feeds .limit() and every later comparison
+// without ever raising, so the run would silently do something other than what
+// was asked (L50). Parse to a value or refuse.
+function positiveIntArg(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`sample size must be a positive integer, got ${JSON.stringify(raw)}`)
+  }
+  return parsed
+}
+
+const SAMPLE_SIZE = positiveIntArg(process.argv[2], 200)
+// Ask for exactly the cap, since asking for more silently truncates.
+const SETTLE_SAMPLE = POSTGREST_ROW_CAP
 
 async function main() {
   const vars = loadDevVars()
@@ -107,17 +118,13 @@ async function main() {
   // the wrong reason. PostgREST also caps a response at 1,000 rows, which at
   // ~14 steps per execution is reached by about 70 executions, so a batch that
   // silently truncates would look like a spectacular speedup.
-  const batchTruncated = rowsB >= 1000
-  const rowsAgree = rowsA === rowsB
+  const batch = assessBatch({ rowsExpected: rowsA, rowsReturned: rowsB })
 
-  const byExecution = new Map<string, unknown[]>()
-  for (const step of bulkSteps ?? []) {
-    const key = step.execution_id as string
-    const list = byExecution.get(key)
-    if (list) list.push(step)
-    else byExecution.set(key, [step])
-  }
+  const byExecution = groupStepsByExecution((bulkSteps ?? []) as Record<string, unknown>[])
 
+  // Bundles are built from the batched read, so when the batch is short the
+  // size distribution is measured on truncated bundles and understates reality.
+  // Report it either way, but never present it as a clean measurement.
   const measurements = []
   for (const execution of executions) {
     measurements.push(await encodeBundle({ execution, steps: byExecution.get(execution.id as string) ?? [] }))
@@ -165,8 +172,10 @@ async function main() {
       speedup: Number((perExecutionMs / (batchedMs / executions.length)).toFixed(1)),
       rowsPerExecution: rowsA,
       rowsBatched: rowsB,
-      rowsAgree,
-      batchTruncated,
+      agree: batch.agree,
+      truncated: batch.truncated,
+      usable: batch.usable,
+      ...(batch.reason ? { reason: batch.reason } : {}),
     },
     settle: { ...settle, capped: settleCapped },
   }, null, 2))
