@@ -100,4 +100,27 @@ describe('accessibility scan scoping', () => {
     expect(indeterminate.length, 'both indeterminate branches announce themselves').toBe(2)
     for (const line of indeterminate) expect(line).toMatch(/::warning::/)
   })
+
+  it('installs the browser without the operating system package step', () => {
+    // `--with-deps` runs a package-manager install that no cache can hold, and
+    // it is what stalled: five times on 2026-08-19, ~20 minutes each, resolved
+    // only by the job timeout. The runner image already carries the libraries
+    // Chromium needs, so the plain install is a pure download and the cache
+    // above covers it completely.
+    //
+    // If a future runner image drops a library, Playwright fails at browser
+    // LAUNCH naming the missing library, which is a legible failure rather than
+    // a hang. That trade is the point: a clear error beats an indefinite wait.
+    // Read the COMMAND, not the surrounding prose. Scanning the whole step
+    // catches the comment that explains why the flag is absent, which is the
+    // classic text-guard defeat (L103): the remedy must not be to stop
+    // explaining, so the guard gets more precise instead.
+    const section = a11ySection()
+    const install = section.slice(section.indexOf('name: Install Chromium'))
+    const runLine = install.split('\n').find((l) => /^\s*run:/.test(l))
+
+    expect(runLine, 'the install step has a run command').toBeDefined()
+    expect(runLine).toMatch(/playwright install .*chromium/)
+    expect(runLine).not.toMatch(/--with-deps/)
+  })
 })
