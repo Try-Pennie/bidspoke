@@ -59,4 +59,14 @@ describe('summarize', () => {
 
     expect(report.compressionRatio.p50).toBeGreaterThan(1)
   })
+
+  it('reports the verify timing, because the self-check is a real share of the CPU budget', async () => {
+    // encodeBundle decodes its own output to derive stepCount. That cost is what
+    // makes the count trustworthy, and it is paid on every bundle in production,
+    // so a CPU budget that omits it understates the real load.
+    const report = summarize(await sampleMeasurements())
+
+    expect(report.cpuMs.verify.p50).toBeGreaterThanOrEqual(0)
+    expect(typeof report.cpuMs.verify.max).toBe('number')
+  })
 })

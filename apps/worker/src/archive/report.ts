@@ -22,7 +22,7 @@ export interface Report {
   wireBytes: Spread
   compressionRatio: Spread
   steps: { total: number; perExecution: Spread }
-  cpuMs: { stringify: Spread; gzip: Spread; base64: Spread }
+  cpuMs: { stringify: Spread; gzip: Spread; base64: Spread; verify: Spread }
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -56,6 +56,7 @@ export function summarize(measurements: EncodedBundle[]): Report {
       stringify: spread(measurements.map((m) => m.cpuMs.stringify)),
       gzip: spread(measurements.map((m) => m.cpuMs.gzip)),
       base64: spread(measurements.map((m) => m.cpuMs.base64)),
+      verify: spread(measurements.map((m) => m.cpuMs.verify)),
     },
   }
 }
