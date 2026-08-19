@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { encodeBundle } from '../bundle'
-import { summarize } from '../report'
+import { summarize, summarizeIfUsable } from '../report'
 
 // These bundles carry live SSNs, dates of birth, addresses and credit reports.
 // Nothing upstream strips them, so the measurement output is the leak surface.
@@ -68,5 +68,29 @@ describe('summarize', () => {
 
     expect(report.cpuMs.verify.p50).toBeGreaterThanOrEqual(0)
     expect(typeof report.cpuMs.verify.max).toBe('number')
+  })
+})
+
+describe('summarizeIfUsable', () => {
+  it('reports nothing at all when the batch did not reconcile', async () => {
+    // A size distribution computed from truncated bundles looks exactly like a
+    // real one. Reporting it with a warning beside it invites the reader to use
+    // the numbers anyway, so there must be no numbers to use.
+    const result = summarizeIfUsable(await sampleMeasurements(), {
+      usable: false,
+      reason: 'batch hit the 1000 row cap: expected 1690, got 1000. Page the fetch.',
+    })
+
+    expect(result.measured).toBe(false)
+    expect(JSON.stringify(result)).not.toContain('wireBytes')
+    expect(JSON.stringify(result)).not.toContain('compressionRatio')
+    if (result.measured === false) expect(result.reason).toMatch(/1000 row cap/)
+  })
+
+  it('reports the full distribution when the batch reconciled', async () => {
+    const result = summarizeIfUsable(await sampleMeasurements(), { usable: true })
+
+    expect(result.measured).toBe(true)
+    if (result.measured === true) expect(result.count).toBe(3)
   })
 })

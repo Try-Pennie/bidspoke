@@ -60,3 +60,23 @@ export function summarize(measurements: EncodedBundle[]): Report {
     },
   }
 }
+
+/**
+ * A size distribution computed from short bundles is indistinguishable from a
+ * real one, so when the batch did not reconcile there must be no distribution
+ * at all rather than one with a warning next to it (L11).
+ */
+export type BundleReport = { measured: false; reason: string } | ({ measured: true } & Report)
+
+export function summarizeIfUsable(
+  measurements: EncodedBundle[],
+  batch: { usable: boolean; reason?: string },
+): BundleReport {
+  if (!batch.usable) {
+    return {
+      measured: false,
+      reason: batch.reason ?? 'the step batch did not reconcile, so bundle sizes were not measured',
+    }
+  }
+  return { measured: true, ...summarize(measurements) }
+}

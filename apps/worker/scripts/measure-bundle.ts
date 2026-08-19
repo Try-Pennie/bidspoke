@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { createClient } from '@supabase/supabase-js'
 import { encodeBundle } from '../src/archive/bundle'
-import { summarize } from '../src/archive/report'
+import { summarizeIfUsable } from '../src/archive/report'
 import { measureSettle } from '../src/archive/settle'
 import { assessBatch, groupStepsByExecution, POSTGREST_ROW_CAP } from '../src/archive/fetch'
 
@@ -130,7 +130,9 @@ async function main() {
     measurements.push(await encodeBundle({ execution, steps: byExecution.get(execution.id as string) ?? [] }))
   }
 
-  const report = summarize(measurements)
+  // Refuses outright on a batch that did not reconcile: sizes from truncated
+  // bundles look exactly like real ones.
+  const report = summarizeIfUsable(measurements, batch)
 
   // The settle window: how long after an execution completes before the tail
   // consumer writes its cost. Nothing stamps WHEN that write happened, so it
