@@ -194,9 +194,17 @@ jobs:
 
       - name: Install Chromium
         if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
-        # --with-deps installs OS packages that the cache cannot hold, so this
-        # still runs; on a cache hit it verifies rather than downloads.
-        run: pnpm --filter web exec playwright install --with-deps chromium
+        # Deliberately WITHOUT --with-deps. That flag runs a package-manager
+        # install which no cache can hold, and it is what stalled: five times on
+        # 2026-08-19, about twenty minutes each, each ended only by the job
+        # timeout. The runner image already carries the libraries Chromium needs,
+        # so this is now a pure download and the cache above covers it fully.
+        #
+        # If a future runner image drops a library, Playwright fails at browser
+        # LAUNCH naming the missing library. That is a legible failure rather
+        # than a hang, which is the whole trade. Do not add the flag back to
+        # "fix" such a failure without first checking which library is missing.
+        run: pnpm --filter web exec playwright install chromium
 
       # Build what production actually runs (#678). This gate is mostly about colour
       # contrast, which is a function of rendered CSS, so scanning the dev server meant
