@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from '../../__tests__/_scan-utils'
+import { REPO_ROOT } from './_scan-utils'
 
 /**
  * Every CI job must set `timeout-minutes`.

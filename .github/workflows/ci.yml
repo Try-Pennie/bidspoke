@@ -13,7 +13,7 @@ on:
 # times, ~20 minutes each, on a branch touching no frontend code, and never
 # reached an assertion. The values below are the observed durations with
 # headroom, not guesses. A guard test enforces their presence:
-# apps/web/src/lib/__guards__/worker/ci-job-timeouts.test.ts
+# apps/web/src/lib/__tests__/ci-job-timeouts.test.ts
 jobs:
   lint-typecheck:
     name: Lint & Typecheck
