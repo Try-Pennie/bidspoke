@@ -68,20 +68,59 @@ async function main() {
   if (error) throw new Error(`execution fetch failed: ${error.message}`)
   if (!executions || executions.length === 0) throw new Error('no executions in the sampled day')
 
-  const measurements = []
-  let stepFetchMs = 0
+  // Two fetch shapes, measured against each other, because this is what decides
+  // whether an hourly run fits its budget at all.
+  //
+  // A: one step query per execution. Simple, and the shape the archiver would
+  //    reach for first.
+  // B: one step query per BATCH, bounded to the day's partition. This is what
+  //    the archiver must actually use if A does not fit.
+  const ids = executions.map((e) => e.id as string)
+
+  const tA = performance.now()
+  let rowsA = 0
   for (const execution of executions) {
-    const t0 = performance.now()
-    const { data: steps, error: stepError } = await supabase
+    const { data, error: stepError } = await supabase
       .from('execution_steps')
       .select('*')
       // Exact match on the partition key: one partition, not all of them.
       .eq('execution_started_at', execution.started_at as string)
       .eq('execution_id', execution.id as string)
-      .order('step_order', { ascending: true })
-    stepFetchMs += performance.now() - t0
-    if (stepError) throw new Error(`step fetch failed: ${stepError.message}`)
-    measurements.push(await encodeBundle({ execution, steps: steps ?? [] }))
+    if (stepError) throw new Error(`per-execution step fetch failed: ${stepError.message}`)
+    rowsA += (data ?? []).length
+  }
+  const perExecutionMs = (performance.now() - tA) / executions.length
+
+  const tB = performance.now()
+  const { data: bulkSteps, error: bulkError } = await supabase
+    .from('execution_steps')
+    .select('*')
+    .gte('execution_started_at', dayStart.toISOString())
+    .lt('execution_started_at', dayEnd.toISOString())
+    .in('execution_id', ids)
+    .order('step_order', { ascending: true })
+  if (bulkError) throw new Error(`batched step fetch failed: ${bulkError.message}`)
+  const batchedMs = performance.now() - tB
+  const rowsB = (bulkSteps ?? []).length
+
+  // The two shapes must return the same rows, or the faster one is faster for
+  // the wrong reason. PostgREST also caps a response at 1,000 rows, which at
+  // ~14 steps per execution is reached by about 70 executions, so a batch that
+  // silently truncates would look like a spectacular speedup.
+  const batchTruncated = rowsB >= 1000
+  const rowsAgree = rowsA === rowsB
+
+  const byExecution = new Map<string, unknown[]>()
+  for (const step of bulkSteps ?? []) {
+    const key = step.execution_id as string
+    const list = byExecution.get(key)
+    if (list) list.push(step)
+    else byExecution.set(key, [step])
+  }
+
+  const measurements = []
+  for (const execution of executions) {
+    measurements.push(await encodeBundle({ execution, steps: byExecution.get(execution.id as string) ?? [] }))
   }
 
   const report = summarize(measurements)
@@ -120,8 +159,15 @@ async function main() {
   console.log(JSON.stringify({
     sampledDayUtc: dayStart.toISOString().slice(0, 10),
     bundles: report,
-    stepFetchMsTotal: Math.round(stepFetchMs),
-    stepFetchMsPerExecution: Math.round(stepFetchMs / executions.length),
+    stepFetch: {
+      perExecutionMs: Number(perExecutionMs.toFixed(1)),
+      batchedMsPerExecution: Number((batchedMs / executions.length).toFixed(1)),
+      speedup: Number((perExecutionMs / (batchedMs / executions.length)).toFixed(1)),
+      rowsPerExecution: rowsA,
+      rowsBatched: rowsB,
+      rowsAgree,
+      batchTruncated,
+    },
     settle: { ...settle, capped: settleCapped },
   }, null, 2))
 }
