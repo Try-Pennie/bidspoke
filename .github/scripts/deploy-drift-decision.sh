@@ -28,15 +28,20 @@
 # uses (L16), and passes the verdict in as the fourth argument.
 #
 # Usage:
-#   deploy-drift-decision.sh <live_sha> <up_to_date:yes|no> <inflight_age_seconds|""> \
+#   deploy-drift-decision.sh <live_sha> <up_to_date:yes|no> \
+#                            <inflight_age_seconds|""|unavailable> \
 #                            <artifact:identical|differs|not-gated|unknown>
+#
+# `unavailable` for the age means the in-flight query could not be answered at
+# all, which is a different fact from an idle pipeline and gets its own outcome
+# (#899).
 #
 # `not-gated` is for a deploy target with no artifact gate, where the paths filter
 # is the deploy's own predicate and history therefore settles the question on its
 # own (#739).
 #
-# Prints exactly one word: `ok`, `deploy-in-flight`, `alert`, or
-# `alert-unconfirmed`. The reason goes to stderr. Always exits 0; the caller acts
+# Prints exactly one word: `ok`, `deploy-in-flight`, `alert`,
+# `alert-inflight-unknown`, or `alert-unconfirmed`. The reason goes to stderr. Always exits 0; the caller acts
 # on the word.
 #
 # THE FAIL-SAFE DIRECTION IS `alert`. Standing down is the narrow exception, and
@@ -85,6 +90,22 @@ fi
 # the worker is behind only by commits that cannot reach the bundle.
 if [ "$ARTIFACT" = "identical" ]; then
   decide ok "the worker is behind in history, but the built artifact is byte identical to what is live, so nothing is unshipped"
+fi
+
+# Its own word, deliberately neither of its neighbours (#899). This is the state
+# behind the 2026-08-19 false page: the job asked whether a deploy was running,
+# the call was refused for want of `actions: read`, the error went to /dev/null,
+# and the empty answer arrived here as a definite "no deploy is running", which is
+# the loud side. So the gate written to PREVENT a false page caused one. Reported
+# as `deploy-in-flight` a broken query would silence this check forever (L98);
+# reported as plain `alert` it tells the reader to re-run a deploy that was never
+# the problem (L11).
+#
+# After the artifact check above on purpose: an identical bundle means nothing is
+# unshipped whatever the pipeline is doing, so a broken query must not turn the
+# #802 no-op case back into a page.
+if [ "$INFLIGHT_AGE" = "unavailable" ]; then
+  decide alert-inflight-unknown "the target is behind and whether a deploy is running could not be determined, so a healthy mid-deploy reading cannot be told from a strand (the job needs actions: read to ask)"
 fi
 
 if [ -n "$INFLIGHT_AGE" ]; then

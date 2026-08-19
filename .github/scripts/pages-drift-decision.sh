@@ -15,7 +15,10 @@
 # edge-rendered functions, and hands every reading to this script.
 #
 # Usage:
-#   pages-drift-decision.sh <inflight_age_seconds|""> [<path>=<state> ...]
+#   pages-drift-decision.sh <inflight_age_seconds|""|unavailable> [<path>=<state> ...]
+#
+# `unavailable` means the in-flight query could not be answered at all, which is
+# a different fact from an idle pipeline and gets its own outcome (#899).
 #
 #   state is one of:
 #     current      the route served the latest apps/web commit
@@ -25,8 +28,9 @@
 #     unreachable  the route could not be fetched at all
 #
 # Prints exactly one word: `ok`, `deploy-in-flight`, `alert-behind`,
-# `alert-stuck-deploy`, `alert-unstamped`, `alert-unknown-commit`,
-# `alert-unreachable`, `alert-no-samples`, or `alert-malformed`. The reason, naming the route
+# `alert-stuck-deploy`, `alert-inflight-unknown`, `alert-unstamped`,
+# `alert-unknown-commit`, `alert-unreachable`, `alert-no-samples`, or
+# `alert-malformed`. The reason, naming the route
 # responsible, goes to stderr. Always exits 0; the caller acts on the word.
 #
 # THE FAIL-SAFE DIRECTION IS AN ALERT, and each of the ways this can go wrong is
@@ -124,6 +128,18 @@ fi
 # less the healthier the site is.
 if [ -z "$BEHIND" ]; then
   decide ok "every sampled route (${SAMPLES}) is serving the latest apps/web commit"
+fi
+
+# Its own outcome, deliberately neither of its neighbours (#899). This is the
+# state that caused the 2026-08-19 false page: the job asked whether a deploy was
+# running, the call was refused for want of `actions: read`, the error went to
+# /dev/null, and the empty answer arrived here as a definite "no deploy is
+# running", which is the loud side. Reported as `deploy-in-flight` instead it
+# would let a broken query silence this check forever (L98); reported as
+# `alert-behind` it sends the reader to re-run a deploy that was never the
+# problem (L11).
+if [ "$INFLIGHT_AGE" = "unavailable" ]; then
+  decide alert-inflight-unknown "these routes are behind and whether a deploy is running could not be determined, so a healthy mid-deploy state cannot be told from a stranded site (the job needs actions: read to ask): ${BEHIND}"
 fi
 
 if [ -n "$INFLIGHT_AGE" ]; then

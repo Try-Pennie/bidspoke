@@ -263,3 +263,94 @@ describe('the site drift job refuses to scan nothing (#804)', () => {
     expect(body, 'an unset SITE_URL no longer fails the job').toMatch(/exit 1/)
   })
 })
+
+describe('pages-drift-decision: the in-flight answer could not be obtained (#899)', () => {
+  /**
+   * The state that caused the false page. The job asked `gh run list` whether a
+   * Deploy was running, the call was refused for want of `actions: read`, and the
+   * empty answer arrived here as "no deploy is running" and produced
+   * `alert-behind` five minutes into a perfectly healthy deploy.
+   *
+   * `unavailable` is now its own outcome rather than being folded into either
+   * neighbour. Not `deploy-in-flight`, which would let a broken query silence the
+   * check for good, and not `alert-behind`, which sends the reader to re-run a
+   * deploy that was never the problem (L11).
+   */
+  it('is its own outcome when routes are behind and the query failed', () => {
+    expect(decide('unavailable', '/login=behind', '/docs=current')).toBe('alert-inflight-unknown')
+  })
+
+  it('names the permission in the reason, so the fix is in front of the reader', () => {
+    const why = reason('unavailable', '/login=behind')
+    expect(why).toMatch(/actions: read/)
+    expect(why).toMatch(/\/login/)
+  })
+
+  it('is still ok when every route is current, because the answer changes nothing', () => {
+    // A failed query is only worth reporting when it is standing between us and a
+    // verdict. With nothing behind there is nothing for an in-flight deploy to
+    // excuse, so paging here would make the check noisiest when the site is
+    // healthiest.
+    expect(decide('unavailable', '/login=current', '/docs=current')).toBe('ok')
+  })
+
+  it('does not mask a route that will not answer or carries no stamp', () => {
+    // Those are faults in the site itself and need their own actions. A broken
+    // in-flight query must not overwrite the more specific finding.
+    expect(decide('unavailable', '/login=unstamped', '/docs=behind')).toBe('alert-unstamped')
+    expect(decide('unavailable', '/login=unreachable', '/docs=behind')).toBe('alert-unreachable')
+    expect(decide('unavailable', '/login=unknown', '/docs=behind')).toBe('alert-unknown-commit')
+  })
+
+  it('is not confused with a genuinely malformed reading', () => {
+    // Before #899 `unavailable` would have landed on alert-malformed, which says
+    // the check itself is miswired and sends the reader to the sampling step. The
+    // sampling was fine; the permission was not.
+    expect(decide('probably', '/login=behind')).toBe('alert-malformed')
+  })
+})
+
+describe('the drift jobs can actually ask whether a deploy is running (#899)', () => {
+  const drift = () => readRepoText('.github/workflows/deploy-drift.yml')
+
+  it('gives every job the actions: read the query needs', () => {
+    // The whole defect in one line. The repository's default workflow token is
+    // `read`, which grants contents and packages and nothing else, so without
+    // this the query is refused every time and the gate can never fire.
+    //
+    // Scoped to each job's HEADER, meaning the lines between the job key and its
+    // `steps:`, rather than searched over the whole job. Written the loose way
+    // this guard passed with the grant deleted, because every one of these jobs
+    // now carries a Slack message that NAMES `actions: read` while explaining the
+    // failure, and a whole-block match is answered by any occurrence in the block
+    // including copy ABOUT the thing (LESSONS L103, L135). Verified by deleting
+    // the real grant and watching this fail.
+    const text = drift()
+    for (const name of ['drift', 'pages', 'worker_tail']) {
+      const start = text.indexOf(`\n  ${name}:\n`)
+      expect(start, `deploy-drift.yml has no job called ${name}`).toBeGreaterThan(-1)
+      const steps = text.indexOf('\n    steps:\n', start)
+      expect(steps, `job ${name} has no steps:, so the header cannot be bounded`).toBeGreaterThan(start)
+      const header = text.slice(start, steps)
+      expect(header, `job ${name} cannot read Actions, so its in-flight gate can never fire`).toMatch(
+        /^      actions: read$/m,
+      )
+    }
+  })
+
+  it('asks through the one shared script rather than three inline copies', () => {
+    // Three copies is three chances to get the failure handling wrong, and all
+    // three had it wrong the same way (L16).
+    const text = drift()
+    expect(text).not.toMatch(/gh run list --workflow=deploy\.yml/)
+    const uses = text.match(/deploy-inflight-age\.sh/g) ?? []
+    expect(uses.length, 'not every drift job asks through the shared script').toBe(3)
+  })
+
+  it('never swallows the in-flight query the way that caused the false page', () => {
+    // `2>/dev/null || true` is what turned a refused call into "no deploy is
+    // running". The shared script always exits 0 and answers `unavailable`, so no
+    // caller needs to suppress anything.
+    expect(drift()).not.toMatch(/deploy-inflight-age\.sh[^\n]*(2>\/dev\/null|\|\| true)/)
+  })
+})

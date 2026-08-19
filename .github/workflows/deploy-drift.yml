@@ -32,6 +32,15 @@ jobs:
   drift:
     name: Live worker matches the latest worker commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The in-flight gate asks GitHub whether a Deploy is still running, and
+      # this repository's default workflow token is `read`, which grants contents
+      # and packages and nothing else. Without this the query was refused every
+      # time, the error was discarded, and the empty answer read as "no deploy is
+      # running", so the gate that exists to prevent a false page caused one
+      # (#899).
+      actions: read
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
@@ -77,14 +86,14 @@ jobs:
           if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then UP_TO_DATE=yes; fi
           echo "up_to_date=$UP_TO_DATE" >> "$GITHUB_OUTPUT"
 
-          # Age of the oldest Deploy run still queued or running on main, in
-          # seconds. Empty when none is in flight (#790). `|| true` so a GitHub API
-          # blip cannot abort the check under `set -e`: an unreadable answer must
-          # reach the gate as "no deploy running", which is its LOUD side.
-          # jq does the clock arithmetic so this does not depend on GNU date.
-          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
-            --json status,createdAt --jq \
-            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          # Age of the oldest Deploy run still queued or running on main (#790),
+          # through the one shared script so all three jobs handle a failed query
+          # the same way. It answers with the age, or empty for a definite "none",
+          # or `unavailable` when it could not find out, and those last two are
+          # deliberately different words: folding them together is what caused the
+          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
+          # needs to suppress anything.
+          INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
           echo "up_to_date=$UP_TO_DATE inflight_age=${INFLIGHT_AGE:-none}"
 
@@ -198,7 +207,11 @@ jobs:
             exit 0
           fi
 
-          if [ "$DECISION" = "alert-unconfirmed" ]; then
+          if [ "$DECISION" = "alert-inflight-unknown" ]; then
+            echo "::error::Deploy Drift could not tell whether a deploy is running: the worker is behind $LAST_WORKER_COMMIT and the in-flight query failed."
+            TEXT=$(printf '*Deploy Drift cannot tell whether a deploy is running*\n\nThe live worker (`%s`) is behind `apps/worker` commit `%s`, and the query that asks whether a Deploy is still in flight could not be answered. So a worker that is merely mid deploy cannot be told apart from one that is genuinely unshipped, and this check cannot report either while that is true.\n\n*How to fix:* open the run and read the `deploy-inflight` line, which says why the query failed. The job needs `actions: read` to ask GitHub for in-flight runs, and this repository grants the workflow token only contents and packages by default.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          elif [ "$DECISION" = "alert-unconfirmed" ]; then
             echo "::error::Deploy Drift could not confirm: the worker is behind $LAST_WORKER_COMMIT and the artifact comparison did not complete."
             TEXT=$(printf '*Deploy Drift could not check the worker*\n\nThe live worker (`%s`) is behind `apps/worker` commit `%s`, and the build that confirms whether that matters did not complete. Until it does, this check cannot tell a genuinely stranded worker from a commit that changes nothing shippable.\n\n*How to fix:* open the run and read the build step. This check stays unable to report a real strand while it keeps failing here.\n\n<%s/%s/actions/runs/%s|Open this check>' \
               "${LIVE_SHA:0:7}" "${LAST_WORKER_COMMIT:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
@@ -218,6 +231,15 @@ jobs:
   pages:
     name: Live site matches the latest apps/web commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The in-flight gate asks GitHub whether a Deploy is still running, and
+      # this repository's default workflow token is `read`, which grants contents
+      # and packages and nothing else. Without this the query was refused every
+      # time, the error was discarded, and the empty answer read as "no deploy is
+      # running", so the gate that exists to prevent a false page caused one
+      # (#899).
+      actions: read
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       SITE_URL: ${{ vars.SITE_URL }}
@@ -293,13 +315,14 @@ jobs:
           echo "observations=${OBSERVATIONS# }" >> "$GITHUB_OUTPUT"
           echo "observations:${OBSERVATIONS}"
 
-          # Age of the oldest Deploy run still queued or running on main, in
-          # seconds. Empty when none is in flight. `|| true` so a GitHub API blip
-          # cannot abort under set -e: an unreadable answer must reach the gate
-          # as "no deploy running", which is its LOUD side.
-          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
-            --json status,createdAt --jq \
-            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          # Age of the oldest Deploy run still queued or running on main (#790),
+          # through the one shared script so all three jobs handle a failed query
+          # the same way. It answers with the age, or empty for a definite "none",
+          # or `unavailable` when it could not find out, and those last two are
+          # deliberately different words: folding them together is what caused the
+          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
+          # needs to suppress anything.
+          INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
 
       - name: Decide and alert
@@ -325,6 +348,13 @@ jobs:
             alert-behind|alert-stuck-deploy)
               HEADLINE='*The site is serving an older build*'
               DETAIL=$(printf 'These routes are not yet serving `%s`, the latest commit touching the site: `%s`.\n\n*How to fix:* re-run the most recent Deploy run on main. A Pages deploy propagates per route, so a partial state can also settle on its own within a few minutes, which the next hourly run will confirm.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
+            alert-inflight-unknown)
+              # Distinct from alert-behind on purpose. Telling the reader to
+              # re-run a deploy would send them after a deploy that was never
+              # the problem, and it is the reason this check paged on
+              # 2026-08-19 while the site was deploying perfectly normally.
+              HEADLINE='*The site drift check cannot tell whether a deploy is running*'
+              DETAIL=$(printf 'These routes are not yet serving `%s` (`%s`), and the query that asks whether a Deploy is still in flight could not be answered. A site that is simply mid deploy therefore cannot be told apart from one serving a genuinely older build.\n\n*How to fix:* open the run and read the `deploy-inflight` line, which says why the query failed. The job needs `actions: read` to ask GitHub for in-flight runs, and this repository grants the workflow token only contents and packages by default.' "${LAST_WEB_COMMIT:0:7}" "$OBSERVATIONS") ;;
             alert-unstamped)
               HEADLINE='*The site cannot say which build it is serving*'
               DETAIL=$(printf 'At least one route answered with no usable build stamp (`%s`), so a stranded site can no longer be detected at all. This means `NEXT_PUBLIC_COMMIT_SHA` is not reaching the Pages build.\n\n*How to fix:* check the Build (next-on-pages) step in deploy.yml still sets it. It is inlined at compile time, so it has to be on the build step, not the upload.' "$OBSERVATIONS") ;;
@@ -357,6 +387,15 @@ jobs:
   worker_tail:
     name: Live tail worker matches the latest tail commit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The in-flight gate asks GitHub whether a Deploy is still running, and
+      # this repository's default workflow token is `read`, which grants contents
+      # and packages and nothing else. Without this the query was refused every
+      # time, the error was discarded, and the empty answer read as "no deploy is
+      # running", so the gate that exists to prevent a false page caused one
+      # (#899).
+      actions: read
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       TAIL_URL: ${{ vars.WORKER_TAIL_URL }}
@@ -432,13 +471,14 @@ jobs:
           UP_TO_DATE=no
           if git merge-base --is-ancestor "$LAST_TAIL_COMMIT" "$TAIL_SHA"; then UP_TO_DATE=yes; fi
 
-          # Age of the oldest Deploy run still queued or running on main, in
-          # seconds. Empty when none is in flight. `|| true` so a GitHub API blip
-          # cannot abort under set -e: an unreadable answer must reach the gate as
-          # "no deploy running", which is its LOUD side.
-          INFLIGHT_AGE=$(gh run list --workflow=deploy.yml --branch main --limit 20 \
-            --json status,createdAt --jq \
-            '[.[] | select(.status == "in_progress" or .status == "queued")] | sort_by(.createdAt) | (.[0].createdAt // empty) | (now - fromdateiso8601 | floor)' 2>/dev/null || true)
+          # Age of the oldest Deploy run still queued or running on main (#790),
+          # through the one shared script so all three jobs handle a failed query
+          # the same way. It answers with the age, or empty for a definite "none",
+          # or `unavailable` when it could not find out, and those last two are
+          # deliberately different words: folding them together is what caused the
+          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
+          # needs to suppress anything.
+          INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
 
           # `not-gated` is the artifact verdict for a target with no artifact
           # gate: history is authoritative here because the paths filter is the
@@ -461,6 +501,9 @@ jobs:
             deploy-in-flight)
               echo "::notice::A deploy is still running, so the tail worker is expected to be behind. The next run judges the settled state."
               exit 0 ;;
+            alert-inflight-unknown)
+              TEXT=$(printf '*The cost tail worker check cannot tell whether a deploy is running*\n\nThe live tail worker is behind `apps/worker-tail` commit `%s`, and the query that asks whether a Deploy is still in flight could not be answered, so a tail worker that is merely mid deploy cannot be told apart from a stranded one.\n\n*How to fix:* open the run and read the `deploy-inflight` line, which says why the query failed. The job needs `actions: read` to ask GitHub for in-flight runs, and this repository grants the workflow token only contents and packages by default.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "${LAST:0:7}" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unstamped)
               TEXT=$(printf '*The cost tail worker cannot say which build it is running*\n\nIt answered with no deployed commit, so a stranded tail worker can no longer be detected. While this is true, per-execution cost attribution could be running old code and the dashboard would show numbers that look fine.\n\n*How to fix:* check the Deploy Worker Tail step still passes `--var DEPLOYED_SHA`, and that it uses `exec` rather than `run ... --`, which wrangler silently ignores.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;

@@ -66,6 +66,15 @@ function decide(
 
 const SHA = 'a'.repeat(40)
 
+/** Runs the script and returns only what it wrote to stderr, where the reason goes. */
+function reason(live: string, matches: string, inflightAgeSeconds: string, artifact = 'differs'): string {
+  return execFileSync(
+    'bash',
+    ['-c', 'bash "$0" "$@" 2>&1 >/dev/null', SCRIPT, live, matches, inflightAgeSeconds, artifact],
+    { encoding: 'utf8' },
+  )
+}
+
 describe('deploy-drift decision (#790)', () => {
   it('is ok when the live worker already carries the latest worker commit', () => {
     expect(decide(SHA, 'yes', '')).toBe('ok')
@@ -201,5 +210,52 @@ describe('a target with no artifact gate (#739)', () => {
     // script does not know, it must land on alert-unconfirmed rather than
     // quietly behaving like a confirmed comparison.
     expect(decide('abc1234', 'no', '', 'not-gate')).toBe('alert-unconfirmed')
+  })
+})
+
+describe('the in-flight answer could not be obtained (#899)', () => {
+  /**
+   * The state behind the 2026-08-19 false page. `gh run list` was refused for
+   * want of `actions: read`, its error went to /dev/null, and the empty answer
+   * reached this gate as "no deploy is running". So a healthy mid-deploy reading
+   * was reported as a stranded deploy.
+   *
+   * It is its own word rather than plain `alert` because the two need different
+   * actions from whoever reads the Slack message: `alert` says re-run the deploy,
+   * and this says the check cannot currently tell (L11).
+   */
+  it('is its own outcome when the target is behind and the query failed', () => {
+    expect(decide(SHA, 'no', 'unavailable', 'differs')).toBe('alert-inflight-unknown')
+  })
+
+  it('is the same outcome for a target with no artifact gate', () => {
+    expect(decide(SHA, 'no', 'unavailable', 'not-gated')).toBe('alert-inflight-unknown')
+  })
+
+  it('is ok when the artifact is identical, because nothing is unshipped either way', () => {
+    // Checked before the in-flight question on purpose: an identical bundle means
+    // there is nothing to ship whatever the pipeline is doing, so a broken query
+    // must not turn the #802 no-op case back into a page.
+    expect(decide(SHA, 'no', 'unavailable', 'identical')).toBe('ok')
+  })
+
+  it('is ok when the latest commit is already live', () => {
+    expect(decide(SHA, 'yes', 'unavailable', 'unknown')).toBe('ok')
+  })
+
+  it('still reports a broken stamp ahead of it', () => {
+    // An unstamped worker is the condition that makes stranding undetectable at
+    // all, so it must not be overwritten by a lesser fault in the gate itself.
+    expect(decide('unknown', 'no', 'unavailable', 'differs')).toBe('alert')
+  })
+
+  it('names the permission in the reason', () => {
+    expect(reason(SHA, 'no', 'unavailable', 'differs')).toMatch(/actions: read/)
+  })
+
+  it('is not confused with a genuinely unreadable age', () => {
+    // A number that will not parse means the query answered nonsense; this means
+    // it could not answer. Both are loud, and they point at different things.
+    expect(decide(SHA, 'no', 'not-a-number', 'differs')).toBe('alert')
   })
 })
