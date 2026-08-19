@@ -138,7 +138,7 @@ export async function executeWorkflow(
   const loaded = await loadWorkflowDefinition(workflowId, env.WORKFLOW_CACHE, supabase, {
     allowInactive: options.isTest === true,
   })
-  const { workflow_version_id, workflow_name, org_id, slack_channel, capture_sightings } = loaded
+  const { workflow_version_id, workflow_name, org_id, slack_channel } = loaded
   const definition = options.definitionOverride ?? loaded.definition
 
   if (options.enforceSourceAssignment) {
@@ -251,8 +251,19 @@ export async function executeWorkflow(
   // Lead sighting trigger boundary: insert the in_flight sighting before the walk
   // starts. Snowflake mirror is populated nightly. Writes run in waitUntil;
   // failures don't block the workflow.
-  // Skipped for test runs and for workflows with capture_sightings=false.
-  const sightingId = (options.isTest || !capture_sightings) ? undefined : crypto.randomUUID()
+  //
+  // EVERY workflow records. A test run is the only exclusion (#882). The
+  // per-workflow opt-out was removed because it was false on Main Flow, the live
+  // flow carrying the Equifax credit report, so ~3,600 leads a day produced no
+  // sighting, nothing in Snowflake, and an execution that truncates at 7 days:
+  // no durable record anywhere. audit_log has recorded that field since the
+  // feature shipped and holds no change to it, so it was set outside the
+  // application and who, when and why are unrecoverable.
+  //
+  // The workflows capture-sightings column still exists but nothing reads it
+  // (expand now, contract later, ADR 0007), so a stale false in a production row
+  // cannot suppress a sighting. A guard enforces that nothing reads it again.
+  const sightingId = options.isTest ? undefined : crypto.randomUUID()
   // Tier-2 outcome-write alert deps (#309): route the engine's lead_sightings /
   // lead_sighting_bids writes through writeOutcome so a loss after retries
   // dead-letters instead of vanishing into a log line.

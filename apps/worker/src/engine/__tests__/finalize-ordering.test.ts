@@ -91,14 +91,13 @@ const supabase = {
   from: () => ({ select: () => ({ in: () => Promise.resolve({ data: [] }) }) }),
 } as unknown as SupabaseClient
 
-function loadDef(captureSightings: boolean) {
+function loadDef() {
   vi.mocked(loadWorkflowDefinition).mockResolvedValue({
     definition,
     workflow_version_id: 'v1',
     workflow_name: 'Finalize Ordering',
     org_id: 'org-1',
     slack_channel: null,
-    capture_sightings: captureSightings,
   })
 }
 
@@ -135,7 +134,7 @@ beforeEach(() => {
 
 describe('finalize ordering against the real engine (#481)', () => {
   it('waits for a bid write registered during the walk before finalizing', async () => {
-    loadDef(true)
+    loadDef()
     // Stand in for partner-bid.ts: the node registers its insert on ctx during the walk.
     vi.mocked(executeNode).mockImplementation(async (_node, ctx: EngineContext) => {
       const c = ctx as EngineContext & { pendingBidWrites?: Promise<unknown>[] }
@@ -153,7 +152,7 @@ describe('finalize ordering against the real engine (#481)', () => {
   })
 
   it('waits for bid writes derived at finalize time from a code node (#349)', async () => {
-    loadDef(true)
+    loadDef()
     vi.mocked(deriveCodeNodeBidAttempts).mockReturnValue([
       { partner_slug: 'tripoint' },
       { partner_slug: 'm1' },
@@ -166,7 +165,7 @@ describe('finalize ordering against the real engine (#481)', () => {
   })
 
   it('waits for both the walk-registered and the finalize-derived writes together', async () => {
-    loadDef(true)
+    loadDef()
     vi.mocked(executeNode).mockImplementation(async (_node, ctx: EngineContext) => {
       const c = ctx as EngineContext & { pendingBidWrites?: Promise<unknown>[] }
       c.pendingBidWrites ??= []
@@ -183,7 +182,7 @@ describe('finalize ordering against the real engine (#481)', () => {
   })
 
   it('still finalizes exactly once when a bid write rejects (allSettled, not all)', async () => {
-    loadDef(true)
+    loadDef()
     vi.mocked(deriveCodeNodeBidAttempts).mockReturnValue([{ partner_slug: 'tripoint' }] as never)
     vi.mocked(recordBidAttempt).mockRejectedValue(new Error('bids insert failed'))
 
@@ -194,21 +193,16 @@ describe('finalize ordering against the real engine (#481)', () => {
   })
 
   it('finalizes exactly once, never twice, on a clean run', async () => {
-    loadDef(true)
+    loadDef()
     await run()
     expect(finalizeSighting).toHaveBeenCalledTimes(1)
   })
 
   it('does not finalize a test run (no sighting was inserted at the trigger boundary)', async () => {
-    loadDef(true)
+    loadDef()
     await run({ isTest: true })
     expect(finalizeSighting).not.toHaveBeenCalled()
     expect(recordBidAttempt).not.toHaveBeenCalled()
   })
 
-  it('does not finalize when the workflow has sighting capture turned off', async () => {
-    loadDef(false)
-    await run()
-    expect(finalizeSighting).not.toHaveBeenCalled()
-  })
 })

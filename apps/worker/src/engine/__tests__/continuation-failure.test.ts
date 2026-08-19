@@ -105,7 +105,6 @@ beforeEach(() => {
     workflow_name: 'Continuation Test',
     org_id: 'org-1',
     slack_channel: null,
-    capture_sightings: false,
   })
 })
 

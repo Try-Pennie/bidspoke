@@ -455,11 +455,6 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ is_active }),
       }),
-    setCaptureSightings: (id: string, capture_sightings: boolean) =>
-      req<{ id: string; capture_sightings: boolean }>(`/api/workflows/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ capture_sightings }),
-      }),
     setFolder: (id: string, folder_id: string | null) =>
       req<{ id: string; folder_id: string | null }>(`/api/workflows/${id}`, {
         method: 'PATCH',

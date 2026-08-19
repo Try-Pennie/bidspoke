@@ -22,7 +22,6 @@ interface CachedDefinition {
   workflow_name: string
   org_id: string
   slack_channel: string | null
-  capture_sightings: boolean
 }
 
 export async function loadWorkflowDefinition(
@@ -52,7 +51,6 @@ export async function loadWorkflowDefinition(
       slack_channel,
       definition,
       is_active,
-      capture_sightings,
       workflow_versions (id, version_number)
     `)
     .eq('id', workflowId)
@@ -90,7 +88,6 @@ export async function loadWorkflowDefinition(
     workflow_name: data.name as string,
     org_id: data.organization_id as string,
     slack_channel: (data.slack_channel as string | null) ?? null,
-    capture_sightings: (data.capture_sightings as boolean | null) ?? true,
   }
 
   // Cache for 5min — KV is eventually consistent; invalidation fires on save, and

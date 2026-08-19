@@ -102,7 +102,6 @@ beforeEach(() => {
     workflow_name: 'Finalize Test',
     org_id: 'org-1',
     slack_channel: null,
-    capture_sightings: false,
   })
   vi.mocked(executeNode).mockResolvedValue({ output: RESPONSE, earlyResponse: RESPONSE })
 })

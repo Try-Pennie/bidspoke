@@ -32,7 +32,6 @@ const workflow = {
   updated_at: '2026-07-01T00:00:00.000Z',
   updated_by_name: null,
   updated_by_email: null,
-  capture_sightings: true,
 } as never
 
 beforeEach(() => {

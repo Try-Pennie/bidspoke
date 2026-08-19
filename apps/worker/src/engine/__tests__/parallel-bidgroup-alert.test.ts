@@ -174,7 +174,6 @@ function loadDef(definition: WorkflowDefinition) {
     workflow_name: 'Alert Test',
     org_id: 'org-1',
     slack_channel: null,
-    capture_sightings: false,
   })
 }
 
