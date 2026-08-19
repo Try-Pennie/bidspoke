@@ -6,10 +6,19 @@ on:
   pull_request:
     branches: [main]
 
+# Every job sets timeout-minutes. GitHub's default is 360, so without one a
+# stalled step does not fail, it HANGS, and a hang is indistinguishable from
+# slowness: the PR sits at "pending" and nobody has a reason to look (L110).
+# Measured 2026-08-19 (#885): the a11y job stalled on Install Chromium three
+# times, ~20 minutes each, on a branch touching no frontend code, and never
+# reached an assertion. The values below are the observed durations with
+# headroom, not guesses. A guard test enforces their presence:
+# apps/web/src/lib/__tests__/ci-job-timeouts.test.ts
 jobs:
   lint-typecheck:
     name: Lint & Typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -34,6 +43,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -58,6 +68,7 @@ jobs:
   a11y:
     name: Accessibility (axe)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Runs e2e/a11y.spec.ts against THIS commit's UI (#673). Nothing ran the Playwright
     # suite automatically before, which is how six specs drifted from the app unnoticed
     # until #670: a KPI was renamed, a delete control moved behind a menu, and the specs
@@ -121,8 +132,21 @@ jobs:
         if: steps.creds.outputs.have == 'true'
         run: pnpm install --frozen-lockfile
 
+      # Without this the browser is re-downloaded on EVERY pull request, so every
+      # run depends on Playwright's CDN being healthy. That download is what
+      # stalled three times on 2026-08-19 (#885).
+      - name: Cache the Playwright browser
+        if: steps.creds.outputs.have == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ms-playwright-${{ runner.os }}-
+
       - name: Install Chromium
         if: steps.creds.outputs.have == 'true'
+        # --with-deps installs OS packages that the cache cannot hold, so this
+        # still runs; on a cache hit it verifies rather than downloads.
         run: pnpm --filter web exec playwright install --with-deps chromium
 
       # Build what production actually runs (#678). This gate is mostly about colour
@@ -217,6 +241,7 @@ jobs:
   auth-gate:
     name: Auth gate fails closed
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Issue #728. The login protection was untested while looking tested: the browser
     # spec asserted /workflows "ends at /login", which still passes with middleware.ts
     # deleted, because the API client redirects to /login on any 401. This job asks the
@@ -306,6 +331,7 @@ jobs:
   db-types-fresh:
     name: DB types regenerated with schema migrations
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -365,6 +391,7 @@ jobs:
   security:
     name: Security scans
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -458,6 +485,7 @@ jobs:
   direct-push-guard:
     name: Main has no unreviewed direct push
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Push to main only. On a pull request the head commit legitimately has no
     # merged PR yet, so running there would fail every single PR, and a guard
     # that is always red is a guard nobody reads.
