@@ -70,4 +70,34 @@ describe('accessibility scan scoping', () => {
       expect(window, `${step} is gated on steps.web.outputs.changed`).toMatch(/steps\.web\.outputs\.changed/)
     }
   })
+
+  it('grants the job the pull-requests read permission its detection depends on', () => {
+    // The repo default workflow token grants contents and packages read, NOT
+    // pull-requests. Without an explicit grant the changed-files API call fails,
+    // the job fails closed, and the scan runs on every pull request while
+    // reporting success: the optimisation is silently inert and nothing says so
+    // (L90, L98). Measured 2026-08-19 on #885, which emitted "Could not
+    // determine the changed files, so the accessibility scan runs."
+    //
+    // direct-push-guard already declares exactly this for the same reason.
+    const section = a11ySection()
+    const beforeSteps = section.slice(0, section.indexOf('steps:'))
+
+    expect(beforeSteps).toMatch(/permissions:/)
+    expect(beforeSteps).toMatch(/pull-requests:\s*read/)
+  })
+
+  it('warns loudly when it cannot tell, rather than passing silently', () => {
+    // Failing closed is safe but SILENT: the job scans everything and reports
+    // success, so a permanently broken lookup is indistinguishable from a
+    // healthy one that keeps finding web changes. That state ran unnoticed for
+    // an hour on 2026-08-19. An indeterminate result is a different cause from
+    // a clean decision and gets a different message (L11).
+    const section = a11ySection()
+    const script = section.slice(section.indexOf('id: web'), section.indexOf('Check for e2e credentials'))
+
+    const indeterminate = script.split('\n').filter((l) => /could not determine/i.test(l))
+    expect(indeterminate.length, 'both indeterminate branches announce themselves').toBe(2)
+    for (const line of indeterminate) expect(line).toMatch(/::warning::/)
+  })
 })

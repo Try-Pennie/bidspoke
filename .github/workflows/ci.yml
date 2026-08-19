@@ -69,6 +69,14 @@ jobs:
     name: Accessibility (axe)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # The repo default workflow token grants contents and packages read, NOT
+    # pull-requests, so the changed-files lookup below needs this explicitly.
+    # Without it the lookup fails, the job fails closed and scans everything,
+    # and the scoping is silently inert while every run still reports success.
+    # direct-push-guard declares the same pair for the same reason.
+    permissions:
+      contents: read
+      pull-requests: read
     # Runs e2e/a11y.spec.ts against THIS commit's UI (#673). Nothing ran the Playwright
     # suite automatically before, which is how six specs drifted from the app unnoticed
     # until #670: a KPI was renamed, a delete control moved behind a menu, and the specs
@@ -126,12 +134,12 @@ jobs:
           fi
           if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Could not determine the changed files, so the accessibility scan runs. Failing closed."
+            echo "::warning::Could not determine the changed files, so the accessibility scan runs. Failing closed."
             exit 0
           fi
           if [ -z "${files}" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Could not determine the changed files (empty list), so the accessibility scan runs. Failing closed."
+            echo "::warning::Could not determine the changed files (empty list), so the accessibility scan runs. Failing closed."
             exit 0
           fi
           if printf '%s\n' "${files}" | grep -q '^apps/web/'; then
