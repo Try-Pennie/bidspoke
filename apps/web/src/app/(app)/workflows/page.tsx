@@ -8,7 +8,7 @@ import Link from 'next/link'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { WorkflowSummary, Folder } from '@/types/workflow'
-import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, ArrowUpDown, Loader2, Eye, EyeOff, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
+import { Plus, MoreHorizontal, Power, Pencil, Copy, Trash2, Check, ArrowUpDown, Loader2, Folder as FolderIcon, FolderPlus, FolderInput, ChevronRight, ChevronDown } from 'lucide-react'
 import { FolderDndProvider, useDraggableRow, useDroppableFolder, DragHandle, InlineFolderCreate, InlineRenameInput, SearchInput } from '@/components/folders/FolderDnd'
 import type { DragEndEvent, SearchInputHandle } from '@/components/folders/FolderDnd'
 import { validateWorkflowDef } from '@/lib/workflow-validation'
@@ -512,19 +512,6 @@ export default function WorkflowsPage() {
     }
   }
 
-  async function handleToggleCaptureSightings(wf: WorkflowSummary) {
-    setOpenMenuId(null)
-    const current = wf.capture_sightings ?? true
-    const next = !current
-    setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, capture_sightings: next } : w))
-    try {
-      await api.workflows.setCaptureSightings(wf.id, next)
-    } catch (e) {
-      setWorkflows((ws) => ws.map((w) => w.id === wf.id ? { ...w, capture_sightings: current } : w))
-      setError(e instanceof Error ? e.message : 'Failed to update workflow')
-    }
-  }
-
   function startRename(wf: WorkflowSummary) {
     setOpenMenuId(null)
     setRenamingId(wf.id)
@@ -765,17 +752,6 @@ export default function WorkflowsPage() {
                 >
                   <Copy className="h-4 w-4 text-gray-500" />
                   Duplicate
-                </button>
-                <button
-                  onClick={() => handleToggleCaptureSightings(wf)}
-                  className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 hover:bg-beige"
-                >
-                  {(wf.capture_sightings ?? true) ? (
-                    <EyeOff className="h-4 w-4 text-gray-500" />
-                  ) : (
-                    <Eye className="h-4 w-4 text-gray-500" />
-                  )}
-                  {(wf.capture_sightings ?? true) ? 'Stop capturing' : 'Capture sightings'}
                 </button>
                 <button
                   onClick={() => { setOpenMenuId(null); setMovingWorkflowId(wf.id) }}
