@@ -251,8 +251,9 @@ hand.
    purge it gates is NOT repointed. If a job exists it becomes a fifth erasure
    target in A7. If it does not, three checked boxes in TODO.md section 3.5
    describe a system that does not exist and must be corrected.
-2. **Snowflake per-statement text limit.** Unmeasured; the account is not
-   reachable from this environment. Batch sizing in A3 depends on it.
+2. ~~**Snowflake per-statement text limit.**~~ **ANSWERED 2026-08-20**, see "The
+   statement ceiling is not the constraint" above. Snowflake accepted 50 MB, so it
+   is not what A3 sizes batches against; the Worker's 128 MB isolate is.
 3. **Cold-warehouse read latency.** Unmeasured. Sets the read deadline in A6.
 4. **Snowflake credit cost.** Unmeasured. Must be checked against the real bill
    before A5 repoints either destructive job.
@@ -343,6 +344,47 @@ permission denial as a healthy round trip.
 
 The reader and eraser key pairs are NOT created yet, for the reason A2 gave and
 this section demonstrates: they have no code to prove them until A6 and A7.
+
+## The statement ceiling is not the constraint, measured 2026-08-20 (Phase A3)
+
+Unresolved item 2 below said the Snowflake per-statement text limit was unmeasured
+and that A3's batch sizing depended on it. It is now measured, and the answer
+changes what the batching is sized against.
+
+Probed through the writer identity with `SELECT LENGTH('<filler>')`, which writes
+nothing, asserting the returned length equalled the length sent so an accepted but
+truncated statement could not read as a pass:
+
+| statement text | result |
+|---|---|
+| 1 kB | accepted |
+| 100 kB | accepted |
+| 500 kB | accepted |
+| 1 MB | accepted |
+| 2 MB | accepted |
+| 5 MB | accepted |
+| 10 MB | accepted |
+| 20 MB | accepted |
+| 50 MB | accepted |
+
+**Snowflake did not refuse at any size the archive could plausibly send.** At the
+measured bundle sizes (11.3 kB p50 on the wire, 48.7 kB p99), a 90 bundle batch is
+roughly 6 MB, which is an eighth of a size already accepted. Sizing batches against
+this limit would be sizing against a ceiling nothing reaches, and a limit that
+cannot fire is not protection (L182).
+
+**The real constraint is the Worker, and it is memory, not statement text.** A
+Cloudflare Worker isolate has 128 MB. An hour is roughly 4,375 executions, and the
+archiver holds, at once: the step rows read from Postgres, the assembled JSON per
+bundle before compression, and the base64 wire strings. Raw JSON is 42 kB at p50
+and 504 kB at p99, so an unbatched hour is several hundred megabytes of transient
+allocation, far past the isolate before Snowflake would object to anything.
+
+So A3 batches to bound **memory held at once**, not statement length, and the
+"bundle over the ceiling" outcome in the phase's table is about a single runaway
+execution (p99 raw is 504 kB, max observed 3.16 MB) rather than about a batch. The
+per-execution refusal keeps its purpose: one execution whose step output ran away
+is a real signal and must not silently consume the whole run's headroom.
 
 ## The archive holds unerasable identity data until A7, and that is accepted
 
