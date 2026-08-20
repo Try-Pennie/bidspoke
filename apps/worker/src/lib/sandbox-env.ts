@@ -19,7 +19,7 @@ type EnvStringKey = { [K in keyof Env]-?: NonNullable<Env[K]> extends string ? K
 
 // 'block' = platform master secret / sensitive credential — withheld from code
 // nodes. 'expose' = non-secret config safe to pass through.
-const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
+export const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   // Master secrets and sensitive credentials — never exposed.
   SUPABASE_SECRET_KEY: 'block',
   API_KEY_MAP: 'block',
@@ -34,6 +34,17 @@ const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   SNOWFLAKE_SCHEMA: 'block',
   SNOWFLAKE_WAREHOUSE: 'block',
   SNOWFLAKE_ROLE: 'block',
+  // Execution archive identities (#870). Blocked for the same reason as the
+  // existing Snowflake credentials, and with one extra: the eraser is the only
+  // identity in the account holding DELETE on 13 months of archived identity
+  // data, so a code node reaching it could destroy the backup the whole milestone
+  // exists to guarantee.
+  ARCHIVE_WRITER_USER: 'block',
+  ARCHIVE_WRITER_PRIVATE_KEY: 'block',
+  ARCHIVE_READER_USER: 'block',
+  ARCHIVE_READER_PRIVATE_KEY: 'block',
+  ARCHIVE_ERASER_USER: 'block',
+  ARCHIVE_ERASER_PRIVATE_KEY: 'block',
   GITHUB_TOKEN: 'block',
   GITHUB_ACTIONS_TOKEN: 'block',
   ANTHROPIC_API_KEY: 'block',

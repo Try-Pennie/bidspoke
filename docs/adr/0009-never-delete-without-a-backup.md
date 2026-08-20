@@ -137,6 +137,50 @@ Recorded because they are the argument for the principle, not incidental.
 
 Both produced a confident, reassuring, wrong number. Neither threw.
 
+## Tenancy, measured (2026-08-20, Phase A2)
+
+The single-tenant decision below is what lets the archive skip a database-layer
+tenant boundary, so it is worth a number rather than an assumption. Measured on
+prod:
+
+| organization | workflows (incl. soft deleted) | executions in the retained window |
+|---|---|---|
+| `trypennie.com` | 34 (10 live) | 755,713, none flagged as tests |
+| `E2E Test` | 9 (0 live) | 0 |
+
+So exactly one organization has ever produced an execution, and the claim holds
+today. It is **not** structurally guaranteed: the e2e org does create workflows,
+so a future e2e test that triggers a run would produce executions under a second
+organization, and the justification for having no boundary would have expired
+without anything saying so.
+
+The guard the plan requires for this lands with the archiver in A3 (#871), not
+here, and deliberately: at that point there are real rows to judge, so the
+archiver can refuse an execution whose organization is not the expected one and
+alert, which fails closed on the actual data. A daily poll written here would
+instead be a second predicate about the same fact, checking a table the archive
+does not yet read.
+
+## What Phase A2 dropped from the plan, and why
+
+The plan specified the archive's tenant boundary as a secure view filtered on a
+session parameter carrying the caller's org, with the reader role granted SELECT
+on that view and never on the base table.
+
+That is superseded by the single-tenant decision recorded below. A per-org
+predicate would filter on a column holding one value, and the secure view would
+buy nothing the base-table grant does not: the reader's credentials live in the
+Worker, so SELECT on a view and SELECT on the table expose the same rows to the
+same holder. A Snowflake row access policy, which would close it properly, needs
+Enterprise edition and was priced and declined on the same grounds.
+
+What remains, and is not weakened by dropping the view: the reader identity holds
+SELECT and nothing else, and the eraser is the only identity in the account with
+DELETE on the archive. The boundary against another organization is the route's
+own `organization_id` check plus the measurement above, and that is weaker than
+the RLS sitting behind the live path. Stated here rather than implied, because
+the thing being protected is 13 months of unredacted identity data.
+
 ## Unresolved, and deliberately not guessed
 
 1. **Cloudflare Logpush.** Whether a job exists could not be determined: the

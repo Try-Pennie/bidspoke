@@ -111,6 +111,27 @@ export interface Env {
   SNOWFLAKE_WAREHOUSE: string
   SNOWFLAKE_ROLE: string
 
+  // Execution archive (#870, Phase A2). Three identities in their own Snowflake
+  // database, split by what each may DESTROY: the writer and the reader hold no
+  // DELETE, and the eraser is the only one that does, so a bug or a leaked
+  // credential on the hourly ingest or the read path cannot remove archived rows.
+  //
+  // The account, database, schema and warehouse are NOT repeated per identity:
+  // all three live in BIDSPOKE_ARCHIVE.EXECUTIONS on ARCHIVE_WH, created by
+  // docs/snowflake-archive-setup.sql, and a second copy of those values is a
+  // second thing to keep in step.
+  //
+  // Deliberately NOT in REQUIRED_SECRETS yet. That guard alerts every org's Slack
+  // daily, so registering six secrets before the Snowflake identities exist would
+  // page for nothing every day until they do. They join it in A3 (#871), when the
+  // archiver that reads them ships.
+  ARCHIVE_WRITER_USER: string
+  ARCHIVE_WRITER_PRIVATE_KEY: string    // RSA PEM, the PRIVATE half of the writer key pair
+  ARCHIVE_READER_USER: string
+  ARCHIVE_READER_PRIVATE_KEY: string
+  ARCHIVE_ERASER_USER: string
+  ARCHIVE_ERASER_PRIVATE_KEY: string
+
   // Dynamic Worker dispatch — code node sandboxing (PRD Section 5.4)
   DYNAMIC_WORKER_LOADER: DispatchNamespace
 
