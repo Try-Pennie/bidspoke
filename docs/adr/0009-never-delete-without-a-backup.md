@@ -212,6 +212,21 @@ a copy for up to eight days, rather than reporting a bare row count. Any clone o
 share taken before the delete keeps it indefinitely, which is a separate question
 A7 still has to answer.
 
+The three roles and three service users were confirmed present the same day, and
+two things in that output are worth keeping. `TYPE = SERVICE` is supported on this
+account, so none of the three can sign in to Snowsight interactively. And all
+three carried `DEFAULT_SECONDARY_ROLES = ALL`, which is Snowflake's default since
+the 2024_08 behaviour change and makes a session's privileges the union of every
+role granted to the user rather than just its primary role.
+
+That was harmless as found, because each user has exactly one role, and that is
+precisely why it was worth changing: the safety story here is that the writer and
+the reader cannot DELETE, and under ALL that held by circumstance rather than by
+construction. Granting any second role to one of those users, for any reason,
+would have activated it silently. The setup script now creates them with no
+secondary roles and carries the ALTER statements to bring an existing set into
+line.
+
 **Not yet done in A2**: three RSA key pairs and six Worker secrets, so no identity
 can authenticate to any of this yet. The role refusal checks (proving the reader
 and writer genuinely cannot DELETE) move to A3, where the Worker's own credential
