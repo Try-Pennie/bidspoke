@@ -181,6 +181,43 @@ own `organization_id` check plus the measurement above, and that is weaker than
 the RLS sitting behind the live path. Stated here rather than implied, because
 the thing being protected is 13 months of unredacted identity data.
 
+## The archive destination exists, measured 2026-08-20
+
+`docs/snowflake-archive-setup.sql` was run by hand under ACCOUNTADMIN. What the
+verification queries reported:
+
+| | |
+|---|---|
+| account | `JYC55588`, region `AWS_US_EAST_1` |
+| right account? | yes, two ways: it matches the identifier the Worker already uses, and `BIDSPOKE.PUBLIC.LEAD_SIGHTINGS` is present |
+| `execution_archive` | created |
+| Time Travel retention | **1 day** |
+
+The retention number is the one that mattered, and it closes the worst version of
+a question A7 would otherwise have had to guess at.
+
+**What an erasure can honestly claim.** A Snowflake DELETE does not remove the
+rows: the prior version stays readable through AT/BEFORE for
+`DATA_RETENTION_TIME_IN_DAYS`, and Fail-safe holds a further seven days that no
+customer, including an account admin, can query or purge. At 1 day, an erasure
+request means the row is unreadable to any query one day later, and gone entirely
+after eight. The plan's concern was that this setting is the kind of thing set
+generously and forgotten, in which case the route would have been reporting a
+deletion while the SSN stayed queryable for weeks (L82: measure the platform
+guarantee a control rests on, before shipping the control; L11: a message may
+claim only what its check actually measured).
+
+So A7's erasure response must say the row is removed AND that the platform holds
+a copy for up to eight days, rather than reporting a bare row count. Any clone or
+share taken before the delete keeps it indefinitely, which is a separate question
+A7 still has to answer.
+
+**Not yet done in A2**: three RSA key pairs and six Worker secrets, so no identity
+can authenticate to any of this yet. The role refusal checks (proving the reader
+and writer genuinely cannot DELETE) move to A3, where the Worker's own credential
+performs them, which tests the real path rather than a person switching roles by
+hand.
+
 ## Unresolved, and deliberately not guessed
 
 1. **Cloudflare Logpush.** Whether a job exists could not be determined: the
@@ -194,6 +231,11 @@ the thing being protected is 13 months of unredacted identity data.
 3. **Cold-warehouse read latency.** Unmeasured. Sets the read deadline in A6.
 4. **Snowflake credit cost.** Unmeasured. Must be checked against the real bill
    before A5 repoints either destructive job.
+
+Item 2 above (the per-statement text limit) is still open, and A3's batch sizing
+depends on it. It is now answerable, since the account is reachable by hand: send
+one deliberately oversized statement and read where it refuses, rather than
+sizing batches against a guess.
 
 ## Decisions taken (Dan, 2026-08-19)
 
