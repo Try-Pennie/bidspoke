@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT, workspacePackages } from './_scan-utils'
 
 /**
  * CI must invoke the test suite of every workspace package that has one (#869).
@@ -23,36 +23,16 @@ import { REPO_ROOT } from './_scan-utils'
  */
 const CI = path.join(REPO_ROOT, '.github/workflows/ci.yml')
 
-/** Every workspace package directory, from the globs the workspace file declares. */
-const workspaceDirs = (): string[] => {
-  const workspace = readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8')
-  const globs = [...workspace.matchAll(/^\s*-\s*'([^']+)'\s*$/gm)].map((m) => m[1])
-  expect(globs.length, 'no package globs found in pnpm-workspace.yaml').toBeGreaterThan(0)
-
-  const dirs: string[] = []
-  for (const glob of globs) {
-    // Only the single-level `dir/*` form the workspace actually uses. A deeper
-    // glob would need real matching, and silently ignoring it is what would make
-    // this pass while blind, so it is refused loudly instead.
-    const match = /^([^*]+)\/\*$/.exec(glob)
-    expect(match, `workspace glob '${glob}' is not the dir/* form this check understands`).not.toBeNull()
-    const parent = path.join(REPO_ROOT, match![1])
-    if (!existsSync(parent)) continue
-    for (const entry of readdirSync(parent)) {
-      if (existsSync(path.join(parent, entry, 'package.json'))) dirs.push(path.join(parent, entry))
-    }
-  }
-  return dirs
-}
-
-/** Package name plus whether it declares a `test` script. */
+/**
+ * Packages that declare a `test` script, by name.
+ *
+ * The workspace parsing lives in `_scan-utils` because a second guard needs it
+ * too (every deploy target must be able to see a shared package change), and two
+ * copies of it would be two things to get wrong.
+ */
 const packagesWithTests = (): string[] =>
-  workspaceDirs()
-    .map((dir) => JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) as {
-      name: string
-      scripts?: Record<string, string>
-    })
-    .filter((pkg) => typeof pkg.scripts?.test === 'string')
+  workspacePackages()
+    .filter((pkg) => typeof pkg.scripts.test === 'string')
     .map((pkg) => pkg.name)
 
 /** The body of ci.yml's `test:` job, so a mention in another job cannot answer. */

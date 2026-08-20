@@ -8,7 +8,7 @@
  * consumer. Centralizing them here stops the copies from drifting. The file is
  * NOT a test (no `.test.ts` suffix) so vitest won't collect it.
  */
-import { readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -242,6 +242,60 @@ export function findSupabaseWrites(sanitized: string, raw: string): SupabaseWrit
       rawStmt: raw.slice(m.index, end),
       end,
     })
+  }
+  return out
+}
+
+/** One workspace package, as declared by its own package.json. */
+export interface WorkspacePackage {
+  /** Absolute directory. */
+  dir: string
+  /** Repo-relative directory, e.g. `packages/uuidv7`. */
+  relativeDir: string
+  /** The `name` field, e.g. `@bidspoke/uuidv7`. */
+  name: string
+  scripts: Record<string, string>
+}
+
+/**
+ * Every workspace package, enumerated from the globs `pnpm-workspace.yaml`
+ * declares (#869).
+ *
+ * Shared rather than copied into each guard that needs it, because two guards
+ * already do (CI must run every package's suite, and every deploy must be able to
+ * see a shared package change) and a second copy of the parsing is a second thing
+ * to get wrong.
+ *
+ * Only the single-level `dir/*` form the workspace actually uses is understood. A
+ * deeper glob throws rather than being skipped, because silently ignoring one
+ * would leave every caller reporting green about packages it never looked at.
+ */
+export function workspacePackages(): WorkspacePackage[] {
+  const workspace = readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf8')
+  const globs = [...workspace.matchAll(/^\s*-\s*'([^']+)'\s*$/gm)].map((m) => m[1])
+  if (globs.length === 0) throw new Error('pnpm-workspace.yaml declares no package globs')
+
+  const out: WorkspacePackage[] = []
+  for (const glob of globs) {
+    const match = /^([^*]+)\/\*$/.exec(glob)
+    if (!match) throw new Error(`workspace glob '${glob}' is not the dir/* form this helper understands`)
+    const parentRelative = match[1]
+    const parent = path.join(REPO_ROOT, parentRelative)
+    if (!existsSync(parent)) continue
+    for (const entry of readdirSync(parent)) {
+      const manifest = path.join(parent, entry, 'package.json')
+      if (!existsSync(manifest)) continue
+      const pkg = JSON.parse(readFileSync(manifest, 'utf8')) as {
+        name?: string
+        scripts?: Record<string, string>
+      }
+      out.push({
+        dir: path.join(parent, entry),
+        relativeDir: `${parentRelative}/${entry}`,
+        name: pkg.name ?? entry,
+        scripts: pkg.scripts ?? {},
+      })
+    }
   }
   return out
 }
