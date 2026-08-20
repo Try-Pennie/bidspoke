@@ -12,15 +12,21 @@ import {
 import { REQUIRED_SECRETS } from '../required-secrets'
 import type { Env } from '../../index'
 
+// Deliberately NOT shaped like a PEM. Nothing here parses the key, archiveConfig
+// only requires it to be non-empty, and a realistic private key header in a
+// committed fixture is flagged by the repo's secret scanner, which is the scanner
+// working correctly: it cannot tell a fake key from a real one.
+const FAKE_KEY_MATERIAL = 'test-key-material-not-a-real-key'
+
 function envWith(overrides: Record<string, string | undefined> = {}): Env {
   const base: Record<string, string | undefined> = {
     SNOWFLAKE_ACCOUNT: 'jyc55588.us-east-1',
     ARCHIVE_WRITER_USER: 'bidspoke_archive_writer_svc',
-    ARCHIVE_WRITER_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----',
+    ARCHIVE_WRITER_PRIVATE_KEY: FAKE_KEY_MATERIAL,
     ARCHIVE_READER_USER: 'bidspoke_archive_reader_svc',
-    ARCHIVE_READER_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----',
+    ARCHIVE_READER_PRIVATE_KEY: FAKE_KEY_MATERIAL,
     ARCHIVE_ERASER_USER: 'bidspoke_archive_eraser_svc',
-    ARCHIVE_ERASER_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----',
+    ARCHIVE_ERASER_PRIVATE_KEY: FAKE_KEY_MATERIAL,
   }
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete base[k]
