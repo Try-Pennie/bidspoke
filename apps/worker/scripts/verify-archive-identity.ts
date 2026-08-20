@@ -84,11 +84,14 @@ if (!result.ok) {
 console.log(`\nround trip OK, archive table holds ${result.rowCount} rows`)
 
 if (checkDelete) {
-  // A predicate no row can match, so the only thing this can measure is whether
-  // the grant exists. A refusal is the PASS.
+  // The predicate is unsatisfiable by CONSTRUCTION, not merely by the literal
+  // being a value no execution id can hold: `1 = 0` is false for every row, so
+  // this statement cannot delete anything even if the literal is later edited
+  // or the table is full (L5, L9). The only thing it can measure is whether the
+  // grant exists, and a refusal is the PASS.
   const statement =
     `DELETE FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
-    `WHERE execution_id = 'archive-identity-probe-matches-nothing'`
+    `WHERE 1 = 0 AND execution_id = 'archive-identity-probe-matches-nothing'`
   let refused: string | null = null
   let accepted = false
   try {
