@@ -125,28 +125,33 @@ export type PagedFetch<T> =
   | { usable: true; rows: T[]; pages: number }
   | { usable: false; rows: []; pages: number; reason: string }
 
-
 /**
- * Reads every page of a range-paged query and reconciles the total against an
+ * Reads every page of a CURSOR-paged query and reconciles the total against an
  * independently sourced expectation.
  *
- * The reconciliation is the point. PostgREST caps a response at 1,000 rows
+ * CURSOR, NOT OFFSET, and this is not a preference. Offset paging makes Postgres
+ * walk and discard every row before the offset, so page cost grows linearly with
+ * depth. Measured against production on 2026-08-20: reading one real hour of
+ * steps (52,820 rows over 53 pages) failed at offset 48,000 with "canceling
+ * statement due to statement timeout". Every run would have died there. Keyed on
+ * the last row's id instead, each page costs the same regardless of depth.
+ *
+ * The reconciliation is the other half. PostgREST caps a response at 1,000 rows
  * whatever limit is asked for, and a short read is FASTER than a complete one,
  * so truncation presents as a performance win: measured in A0, a truncated 150
- * execution batch reported a 15.9x speedup against the correct run's 9x. Only
- * an expectation from somewhere else can tell the two apart (L98, L63).
+ * execution batch reported a 15.9x speedup against the correct run's 9x. Only an
+ * expectation from somewhere else can tell the two apart (L98, L63).
  *
- * The caller must order the underlying query by a unique column. Range paging
- * over an unordered result is undefined, and the same mistake in A0 dropped
- * precisely the youngest rows, which were the only ones that could have
- * disproved the thing being measured.
+ * The caller must order the underlying query by the same unique column the
+ * cursor is taken from, or rows repeat or vanish between pages.
  */
 export async function fetchAllPages<T>(opts: {
   expected: number
   pageSize: number
-  fetchPage: (from: number, to: number) => Promise<Page<T>>
+  cursorOf: (row: T) => string
+  fetchPage: (cursor: string | null, limit: number) => Promise<Page<T>>
 }): Promise<PagedFetch<T>> {
-  const { expected, pageSize, fetchPage } = opts
+  const { expected, pageSize, cursorOf, fetchPage } = opts
 
   if (pageSize > POSTGREST_ROW_CAP) {
     throw new Error(
@@ -163,14 +168,14 @@ export async function fetchAllPages<T>(opts: {
 
   const rows: T[] = []
   let pages = 0
+  let cursor: string | null = null
 
   // One page of slack past the expectation, so a table that grew between the
   // count and the read is DETECTED rather than read forever on a fixed budget.
   const maxPages = Math.ceil(expected / pageSize) + 1
 
   while (pages < maxPages) {
-    const from = pages * pageSize
-    const page = await fetchPage(from, from + pageSize - 1)
+    const page: Page<T> = await fetchPage(cursor, pageSize)
     pages++
 
     if (page.error !== undefined) {
@@ -178,7 +183,7 @@ export async function fetchAllPages<T>(opts: {
         usable: false,
         rows: [],
         pages,
-        reason: `page starting at ${from} failed: ${page.error}`,
+        reason: `page ${pages} failed: ${page.error}`,
       }
     }
 
@@ -193,6 +198,20 @@ export async function fetchAllPages<T>(opts: {
       }
     }
     if (page.rows.length < pageSize) break
+
+    // Without a usable cursor the next request repeats this page forever, so
+    // refusing names the cause rather than hanging (L110).
+    const last = page.rows[page.rows.length - 1]
+    const next = cursorOf(last)
+    if (typeof next !== 'string' || next.length === 0) {
+      return {
+        usable: false,
+        rows: [],
+        pages,
+        reason: `page ${pages} ended with a row carrying no cursor, so paging cannot advance`,
+      }
+    }
+    cursor = next
   }
 
   const assessment = assessBatch({ rowsExpected: expected, rowsReturned: rows.length })

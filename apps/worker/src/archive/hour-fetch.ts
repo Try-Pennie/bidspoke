@@ -95,16 +95,20 @@ export async function fetchHour(
   const executions = await fetchAllPages<Record<string, unknown>>({
     expected: executionCount.count,
     pageSize: PAGE_SIZE,
-    fetchPage: async (from, to) => {
-      const { data, error } = (await supabase
+    cursorOf: (row) => String(row.id),
+    fetchPage: async (cursor, limit) => {
+      let q = supabase
         .from('workflow_executions')
         .select('*')
         .gte('started_at', hourStart)
         .lt('started_at', hourEnd)
-        // Range paging over an unordered result is undefined: rows can repeat or
-        // vanish between pages. Ordered by the primary key, which is unique.
+        // Ordered by the primary key, which is unique and is what the cursor is
+        // taken from. Paging over an unordered result is undefined: rows repeat
+        // or vanish between pages.
         .order('id')
-        .range(from, to)) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
+        .limit(limit)
+      if (cursor !== null) q = q.gt('id', cursor)
+      const { data, error } = (await q) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
       if (error) return { rows: [], error: JSON.stringify(error) }
       return { rows: data ?? [] }
     },
@@ -129,8 +133,9 @@ export async function fetchHour(
   const steps = await fetchAllPages<Record<string, unknown>>({
     expected: stepCount.count,
     pageSize: PAGE_SIZE,
-    fetchPage: async (from, to) => {
-      const { data, error } = (await supabase
+    cursorOf: (row) => String(row.id),
+    fetchPage: async (cursor, limit) => {
+      let q = supabase
         .from('execution_steps')
         .select('*')
         // Correctness bound: the hour the step's EXECUTION belongs to.
@@ -141,7 +146,9 @@ export async function fetchHour(
         .gte('started_at', window.stepStartedFrom)
         .lt('started_at', window.stepStartedTo)
         .order('id')
-        .range(from, to)) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
+        .limit(limit)
+      if (cursor !== null) q = q.gt('id', cursor)
+      const { data, error } = (await q) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
       if (error) return { rows: [], error: JSON.stringify(error) }
       return { rows: data ?? [] }
     },

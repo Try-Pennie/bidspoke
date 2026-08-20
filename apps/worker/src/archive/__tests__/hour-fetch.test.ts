@@ -11,7 +11,8 @@ interface RecordedQuery {
   head: boolean
   gte: Record<string, string>
   lt: Record<string, string>
-  range?: [number, number]
+  gt?: Record<string, string>
+  limit?: number
   order?: string
 }
 
@@ -57,8 +58,12 @@ function fakeSupabase(opts: {
           q.order = col
           return builder
         },
-        range(from: number, to: number) {
-          q.range = [from, to]
+        gt(col: string, value: string) {
+          q.gt = { ...(q.gt ?? {}), [col]: value }
+          return builder
+        },
+        limit(n: number) {
+          q.limit = n
           return builder
         },
         then(resolve: (v: { data: unknown; error: null; count: number | null }) => void) {
@@ -66,8 +71,10 @@ function fakeSupabase(opts: {
             resolve({ data: null, error: null, count: countFor(table) })
             return
           }
-          const [from, to] = q.range ?? [0, rowsFor(table).length - 1]
-          resolve({ data: rowsFor(table).slice(from, to + 1), error: null, count: null })
+          const all = rowsFor(table)
+          const after = q.gt?.id
+          const start = after === undefined ? 0 : all.findIndex((r) => String(r.id) === after) + 1
+          resolve({ data: all.slice(start, start + (q.limit ?? all.length)), error: null, count: null })
         },
       }
       return builder
@@ -114,6 +121,7 @@ describe('fetchHour', () => {
 
     for (const q of queries.filter((q) => !q.head)) {
       expect(q.order, `${q.table} was paged without an order`).toBe('id')
+      expect(q.limit, `${q.table} was paged without a limit`).toBeGreaterThan(0)
     }
   })
 

@@ -250,8 +250,17 @@ export function toRow(
   }
 }
 
+/**
+ * There are TWO relationships between workflows and organizations: the direct
+ * foreign key, and a many-to-many through source_workflow_assignments. PostgREST
+ * refuses an ambiguous embed rather than picking one, so the constraint is named
+ * explicitly. Without it every run fails on its first read, which no unit test
+ * would show because the query is doubled there. Found by a dry run against the
+ * real database (L52: a test whose only outside dependency is a stub you wrote
+ * can only confirm your own assumption about the real interface).
+ */
 async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, string>> {
-  const { data, error } = await supabase.from('workflows').select('id, organizations(slug)')
+  const { data, error } = await supabase.from('workflows').select('id, organizations!workflows_organization_id_fkey(slug)')
   if (error) throw new Error(`loading workflow organizations failed: ${formatErr(error)}`)
   const map = new Map<string, string>()
   for (const row of (data ?? []) as Array<Record<string, unknown>>) {
