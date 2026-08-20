@@ -12,16 +12,16 @@
   },
   "dependencies": {
     "@bidspoke/uuidv7": "workspace:*",
-    "@supabase/supabase-js": "^2.110.8",
-    "hono": "^4.12.32"
+    "@supabase/supabase-js": "^2.112.3",
+    "hono": "^4.13.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260727.1",
+    "@cloudflare/workers-types": "^5.20260817.1",
     "@eslint/js": "^10.0.1",
-    "@typescript-eslint/eslint-plugin": "^8.65.0",
-    "@typescript-eslint/parser": "^8.65.0",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
     "eslint": "^10.6.0",
     "vitest": "^4.1.10",
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.123.0"
   }
 }
