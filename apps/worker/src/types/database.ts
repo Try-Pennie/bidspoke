@@ -447,6 +447,66 @@ export type Database = {
           },
         ]
       }
+      execution_archive_ids: {
+        Row: {
+          archive_day: string
+          archived_at: string
+          execution_id: string
+        }
+        Insert: {
+          archive_day: string
+          archived_at?: string
+          execution_id: string
+        }
+        Update: {
+          archive_day?: string
+          archived_at?: string
+          execution_id?: string
+        }
+        Relationships: []
+      }
+      execution_archive_progress: {
+        Row: {
+          stream: string
+          updated_at: string
+          watermark_hour: string
+        }
+        Insert: {
+          stream: string
+          updated_at?: string
+          watermark_hour: string
+        }
+        Update: {
+          stream?: string
+          updated_at?: string
+          watermark_hour?: string
+        }
+        Relationships: []
+      }
+      execution_archive_refusals: {
+        Row: {
+          archive_day: string
+          execution_id: string
+          reason: string
+          refused_at: string
+          resolved_at: string | null
+        }
+        Insert: {
+          archive_day: string
+          execution_id: string
+          reason: string
+          refused_at?: string
+          resolved_at?: string | null
+        }
+        Update: {
+          archive_day?: string
+          execution_id?: string
+          reason?: string
+          refused_at?: string
+          resolved_at?: string | null
+        }
+        Relationships: []
+      }
       execution_steps: {
         Row: {
           completed_at: string | null
