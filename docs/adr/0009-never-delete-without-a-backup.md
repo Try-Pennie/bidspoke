@@ -273,6 +273,77 @@ If archiving stalls the delete does not run. Snowflake only, single shared
 warehouse. Single tenant, so no Snowflake row access policy and no session
 parameter design; intra-organisation read access remains an open A7 question.
 
+## The writer identity authenticates, measured 2026-08-20 (Phase A3)
+
+A2 left three service users with no keys, deliberately: nothing can prove a key
+pair works until code opens a connection with it, so creating them earlier would
+have left three logins in a state nobody could verify (L3). The writer's key pair
+was generated and set as A3's first step, and the first thing built against it was
+a trivial authenticated round trip.
+
+What it reported, through `apps/worker/scripts/verify-archive-identity.ts`, which
+runs the same code path the archiver will:
+
+| | |
+|---|---|
+| identity | `bidspoke_archive_writer_svc` |
+| role | `bidspoke_archive_writer` |
+| target | `BIDSPOKE_ARCHIVE.EXECUTIONS.EXECUTION_ARCHIVE` |
+| result | round trip OK, table holds 0 rows |
+
+One call proves four things that a later batch failure would conflate: the key
+authenticates, the role is granted, the warehouse resumes, and the table is
+reachable. `DESC USER` was read first and showed an empty `RSA_PUBLIC_KEY_FP`, so
+this was a first set rather than a rotation of a key something was already using.
+
+`ARCHIVE_WRITER_USER` and `ARCHIVE_WRITER_PRIVATE_KEY` are now Worker secrets and
+are registered in `REQUIRED_SECRETS`, in the same change that first reads them.
+The reader and eraser secrets stay out of that array until their code paths ship
+in A6 and A7: the guard alerts every organization's Slack daily, so a secret
+listed before it is set pages every morning for nothing.
+
+**What the round trip did NOT prove, stated because it would otherwise read as
+proven.** It used the private key from its local file, not from the Worker
+secret, so it is evidence about the KEY and not about the SECRET. Both were set
+by piping into `wrangler secret put`, and `docs/disaster-recovery.md` records
+that a non-interactive `secret put` can upload a blank value while printing the
+same success message it prints for a real one. `wrangler secret list` confirms
+only that the two names exist, never their contents.
+
+What closes that gap without a new mechanism: registering both in
+`REQUIRED_SECRETS` in this same change means the existing daily guard treats an
+empty value as missing and pages, so a blank upload announces itself within a day
+of this deploying rather than surfacing as an authentication failure on the
+archiver's first run. The definitive proof is still that first run, and the
+warning in the recovery doc is deliberately left as it stands, since nothing here
+measured it either way.
+
+**The writer genuinely cannot delete, measured rather than trusted.** A2 created
+the roles with the writer holding SELECT, INSERT and UPDATE and no DELETE, and
+deferred proving it to the phase where the Worker's own credential could do the
+proving instead of a person switching roles by hand. Run with `--check-delete`,
+against a statement whose `WHERE 1 = 0` makes it unsatisfiable by construction so
+it cannot remove a row even if the table were full, Snowflake answered:
+
+```
+003001 SQL access control error:
+Insufficient privileges to operate on table 'EXECUTION_ARCHIVE'.
+Your primary role BIDSPOKE_ARCHIVE_WRITER must have DELETE granted on
+TABLE BIDSPOKE_ARCHIVE.EXECUTIONS.EXECUTION_ARCHIVE.
+```
+
+**Success is judged by a value read back, never by the response mentioning the
+table.** An error message quotes the thing it failed on, so a substring check for
+`EXECUTION_ARCHIVE` is satisfied by the permission failure about
+`EXECUTION_ARCHIVE` (L156). That guard was mutation checked: rewriting it into the
+substring form turns its test red. The refusal above is that trap in the wild
+rather than in a fixture: the text Snowflake returned when the writer was denied
+contains `EXECUTION_ARCHIVE` twice, so the substring form would have read a
+permission denial as a healthy round trip.
+
+The reader and eraser key pairs are NOT created yet, for the reason A2 gave and
+this section demonstrates: they have no code to prove them until A6 and A7.
+
 ## The archive holds unerasable identity data until A7, and that is accepted
 
 Decision (Dan, 2026-08-20, Phase A3). The phase order is unchanged: A7's erasure

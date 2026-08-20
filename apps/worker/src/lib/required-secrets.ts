@@ -32,6 +32,13 @@ export const REQUIRED_SECRETS = [
   'SNOWFLAKE_SCHEMA',
   'SNOWFLAKE_WAREHOUSE',
   'SNOWFLAKE_ROLE',
+  // Execution archive writer (#871). Registered here in the change that first
+  // READS them, and not in A2 when they were declared: this guard alerts every
+  // org's Slack daily, so a secret listed before it is set pages every morning
+  // for nothing. The reader and eraser secrets join when their code paths ship
+  // (A6, A7), for the same reason.
+  'ARCHIVE_WRITER_USER',
+  'ARCHIVE_WRITER_PRIVATE_KEY',
 ] as const satisfies readonly (keyof Env)[]
 
 /**
