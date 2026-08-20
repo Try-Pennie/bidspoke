@@ -29,7 +29,7 @@ import {
   ARCHIVE_ROLES,
   archiveConfig,
   verifyArchiveIdentity,
-  type ArchiveIdentity,
+  resolveIdentity,
 } from '../src/lib/archive-snowflake'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -49,14 +49,7 @@ function devVar(name: string): string {
   throw new Error(`${name} is not in apps/worker/.dev.vars`)
 }
 
-const IDENTITIES: ArchiveIdentity[] = ['writer', 'reader', 'eraser']
-const arg = process.argv[2]
-const identity: ArchiveIdentity = arg && IDENTITIES.includes(arg as ArchiveIdentity)
-  ? (arg as ArchiveIdentity)
-  : 'writer'
-if (arg && !IDENTITIES.includes(arg as ArchiveIdentity) && !arg.startsWith('--')) {
-  throw new Error(`unknown identity "${arg}", expected one of ${IDENTITIES.join(', ')}`)
-}
+const identity = resolveIdentity(process.argv.slice(2))
 const checkDelete = process.argv.includes('--check-delete')
 
 // The private key is read from its own file rather than from .dev.vars, because

@@ -32,6 +32,33 @@ export const ARCHIVE_ROLES = {
 
 export type ArchiveIdentity = keyof typeof ARCHIVE_ROLES
 
+export const ARCHIVE_IDENTITIES = Object.keys(ARCHIVE_ROLES) as ArchiveIdentity[]
+
+/** Flags the verification script understands, so a mistyped one is not read as an identity. */
+const KNOWN_FLAGS = ['--check-delete']
+
+/**
+ * Which identity a run was asked about. A misspelling REFUSES rather than
+ * falling back to the writer: a fallback would verify an identity nobody asked
+ * about and print a pass, so someone checking the eraser would be reassured
+ * about the eraser on the strength of the writer (L75).
+ */
+export function resolveIdentity(args: string[]): ArchiveIdentity {
+  for (const arg of args) {
+    if (arg.startsWith('--')) {
+      if (!KNOWN_FLAGS.includes(arg)) {
+        throw new Error(`unknown flag "${arg}", expected one of ${KNOWN_FLAGS.join(', ')}`)
+      }
+      continue
+    }
+    if (!ARCHIVE_IDENTITIES.includes(arg as ArchiveIdentity)) {
+      throw new Error(`unknown identity "${arg}", expected one of ${ARCHIVE_IDENTITIES.join(', ')}`)
+    }
+    return arg as ArchiveIdentity
+  }
+  return 'writer'
+}
+
 const SECRET_NAMES: Record<ArchiveIdentity, { user: keyof Env; privateKey: keyof Env }> = {
   writer: { user: 'ARCHIVE_WRITER_USER', privateKey: 'ARCHIVE_WRITER_PRIVATE_KEY' },
   reader: { user: 'ARCHIVE_READER_USER', privateKey: 'ARCHIVE_READER_PRIVATE_KEY' },

@@ -7,6 +7,7 @@ import {
   ARCHIVE_ROLES,
   archiveConfig,
   verifyArchiveIdentity,
+  resolveIdentity,
 } from '../archive-snowflake'
 import { REQUIRED_SECRETS } from '../required-secrets'
 import type { Env } from '../../index'
@@ -126,5 +127,31 @@ describe('the archive secrets the daily check knows about', () => {
   it('covers exactly the two the writer reads', () => {
     const archiveSecrets = REQUIRED_SECRETS.filter((name) => name.startsWith('ARCHIVE_'))
     expect(archiveSecrets).toEqual(['ARCHIVE_WRITER_USER', 'ARCHIVE_WRITER_PRIVATE_KEY'])
+  })
+})
+
+describe('resolveIdentity', () => {
+  it('defaults to the writer when no identity is named', () => {
+    expect(resolveIdentity([])).toBe('writer')
+    expect(resolveIdentity(['--check-delete'])).toBe('writer')
+  })
+
+  it('takes the identity that was named', () => {
+    expect(resolveIdentity(['eraser'])).toBe('eraser')
+    expect(resolveIdentity(['reader', '--check-delete'])).toBe('reader')
+  })
+
+  // The failure this exists for: falling back to the writer on a typo verifies
+  // an identity nobody asked about and prints a pass, so someone checking the
+  // eraser would be told the eraser is fine on the strength of the writer
+  // (L75: when identifying the target fails, refuse rather than act on a
+  // nearby candidate).
+  it('refuses a misspelled identity rather than falling back to the writer', () => {
+    expect(() => resolveIdentity(['eraserr'])).toThrow(/eraserr/)
+    expect(() => resolveIdentity(['eraserr'])).toThrow(/writer, reader, eraser/)
+  })
+
+  it('refuses an unknown flag rather than reading it as an identity', () => {
+    expect(() => resolveIdentity(['--chekc-delete'])).toThrow(/--chekc-delete/)
   })
 })
