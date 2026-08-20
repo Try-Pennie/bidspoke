@@ -78,6 +78,18 @@ export const CRON_JOBS: CronJob[] = [
       'exported lead_sightings rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
   },
   {
+    id: 'execution-archive',
+    label: 'Execution archive to Snowflake',
+    triggerCron: '23 * * * *',
+    // 1h cadence, 1h slack. Registered in the existing registry rather than
+    // given its own heartbeat, so absence-of-run alerting comes from the
+    // mechanism that already covers every other cron and there is no second
+    // list to drift (#871).
+    staleMs: 2 * H,
+    dependents:
+      'workflow_executions and execution_steps are no longer being copied to Snowflake, so the 7-day purge would delete rows with no backup',
+  },
+  {
     id: 'sighting-bids-purge',
     label: 'Lead sighting bids purge',
     triggerCron: '47 0-22/2 * * *',

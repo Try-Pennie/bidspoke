@@ -134,8 +134,27 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    (SF token fetch exercises the SF HTTPS pool;
 #                                    CF's outbound keep-alive times out at ~60-90s
 #                                    so a 1-min cadence keeps it warm)
+#   "23 * * * *"    hourly          : execution archive to Snowflake (#871). Deliberately
+#                                    at :23: :00 and :30 carry the hourly partner sync and
+#                                    the every-30-minute pg_cron drain, :15 the timeout
+#                                    audit, and :37/:47 the sightings export and purges.
+#                                    This job reads execution_steps in bulk, which is the
+#                                    same table the timeout audit's percentile queries hit.
 [triggers]
-crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "* * * * *"]
+
+# CPU ceiling, stated explicitly rather than inherited (#871).
+#
+# 30000 ms is the platform default, so this RAISES nothing: it is here so the
+# number the archive's per-run hour cap is derived from is visible in the same
+# file as the cron that runs it. Raising it would apply to every invocation of
+# this Worker including the request path, where a runaway handler would then burn
+# five minutes of CPU instead of being killed at thirty seconds, and the archive
+# does not need it: A0 measured 0.8 ms of CPU per bundle, so an hour of ~4,375
+# executions is about 3.5 s and the cap in execution-archive.ts keeps a drain
+# inside this ceiling instead.
+[limits]
+cpu_ms = 30000
 # "15 8 * * *" is the timeout audit, deliberately off peak (#251). Its grouped
 # percentile queries are the heaviest thing we run against execution_steps, and
 # 08:00 UTC is the quietest hour of the day: 9,541 executions over 7 days to

@@ -25,6 +25,13 @@ export type RunStop =
 
 export interface EncodedForSend extends SizedBundle {
   wire: string
+  /**
+   * Steps in the ENCODED bundle, read back out of the wire form by
+   * encodeBundle rather than taken from the caller's intent. The deletion gate
+   * sums this against an independent Postgres count, so a count sourced from
+   * intent would let both sides agree while every bundle was short (L63).
+   */
+  stepCount: number
 }
 
 export interface RunBudget {

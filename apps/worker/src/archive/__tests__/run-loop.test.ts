@@ -24,7 +24,7 @@ function deps(overrides: Partial<RunDeps> = {}): RunDeps {
       executionCount: 1,
       stepCount: 0,
     }),
-    encode: async (bundle) => ({ executionId: bundle.executionId, wire: 'x', wireBytes: 10 }),
+    encode: async (bundle) => ({ executionId: bundle.executionId, wire: 'x', wireBytes: 10, stepCount: 0 }),
     send: async (batch) => {
       sent.push(batch.map((b) => b.executionId))
     },
@@ -235,7 +235,7 @@ describe('runArchive', () => {
       }),
       encode: async (bundle) => {
         if (bundle.executionId === 'bad') throw new Error('gzip exploded')
-        return { executionId: bundle.executionId, wire: 'x', wireBytes: 10 }
+        return { executionId: bundle.executionId, wire: 'x', wireBytes: 10, stepCount: 0 }
       },
       recordRefusal: async (executionId, reason) => {
         refusals.push({ executionId, reason })
