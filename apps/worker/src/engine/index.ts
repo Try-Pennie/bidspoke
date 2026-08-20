@@ -1,3 +1,4 @@
+import { uuidv7 } from '@bidspoke/uuidv7'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from '../lib/format-error'
 import { resolveFailedStepType } from '../lib/upstream-outage'
@@ -190,7 +191,12 @@ export async function executeWorkflow(
   const useIdempotency = idempotencyKey !== null && !options.isTest
 
   // Parallel: idempotency check + env var load (both independent once we have definition/org_id)
-  const executionId = options.executionId ?? crypto.randomUUID()
+  // UUIDv7, so the execution archive can derive the UTC day from the id in the URL
+  // and prune a point lookup to one day of micro-partitions (#869). Time ordered
+  // is the whole point: a random id prunes nothing and would need paid Search
+  // Optimization on a table that grows forever. `lead_sightings.id` deliberately
+  // stays random; only the execution id changes.
+  const executionId = options.executionId ?? uuidv7()
   const startedAt = new Date().toISOString()
 
   const [idempotencyCached, envVars] = await Promise.all([

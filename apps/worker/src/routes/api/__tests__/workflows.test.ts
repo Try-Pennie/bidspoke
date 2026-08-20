@@ -27,6 +27,7 @@ import { executeNode } from '../../../engine/nodes/index'
 import { loadEnvVars } from '../../../lib/env-loader'
 import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
+import { uuidv7 } from '@bidspoke/uuidv7'
 
 /**
  * The shared mock now covers what this file kept a local copy for: a handler for
@@ -958,6 +959,90 @@ describe('POST /workflows/:id/test', () => {
       expect.anything(),
       expect.anything(),
       expect.anything()
+    )
+  })
+
+  /**
+   * The only way a non-v7 execution id can reach the archive (#869, Phase A1).
+   *
+   * The engine mints its own id, so live runs are v7 by construction. The canvas
+   * test runner is different: it needs the id BEFORE the run so it can open its
+   * realtime channel filter on it, so it mints one in the browser and posts it
+   * here, and this route passed `body.execution_id` straight into the engine
+   * without looking at it. That makes the every-id-is-v7 invariant a rule living
+   * in a prompt (L27) rather than something the code enforces.
+   *
+   * It REFUSES rather than quietly minting its own replacement. Substituting one
+   * would leave the browser listening on a channel for an id that no longer
+   * exists, so the panel would sit empty with the run succeeding invisibly, which
+   * is a silent failure where a refusal is a legible one (L10, L11). The refusal
+   * is validated against the READER's own predicate, so the route accepts exactly
+   * what `utcDayFromUuidV7` can consume and nothing wider (L150).
+   */
+  const withWorkflow = () =>
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { single: existingWorkflow },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+
+  it('accepts a v7 execution id and passes it through unchanged', async () => {
+    withWorkflow()
+    vi.mocked(executeWorkflow).mockResolvedValue({
+      response: { ok: true }, status: 200,
+      executionId: 'exec-test', traceId: 'trace-test', idempotentReplay: false,
+    })
+
+    const id = uuidv7()
+    const res = await request(app, 'POST', '/workflows/wf-1/test', {
+      body: { payload: {}, execution_id: id },
+    })
+
+    expect(res.status).toBe(200)
+    expect(vi.mocked(executeWorkflow)).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: id }),
+      expect.anything(), expect.anything(), expect.anything()
+    )
+  })
+
+  it('rejects a v4 execution id, which is what a stale browser tab still mints', async () => {
+    withWorkflow()
+    const res = await request(app, 'POST', '/workflows/wf-1/test', {
+      body: { payload: {}, execution_id: '9f8e7d6c-5b4a-4938-8271-605f4e3d2c1b' },
+    })
+
+    expect(res.status).toBe(400)
+    // The message has to tell the person what to DO, and the action that clears
+    // this state is a reload, because the id is minted by the page's own bundle
+    // (L111).
+    expect(((await res.json()) as { error: string }).error).toMatch(/reload/i)
+  })
+
+  it('does not run the workflow at all when it rejects the id', async () => {
+    // A refusal that still executed would leave a real execution behind under an
+    // id the archive cannot place, which is the exact row this guard exists to
+    // prevent.
+    withWorkflow()
+    await request(app, 'POST', '/workflows/wf-1/test', {
+      body: { payload: {}, execution_id: 'not-a-uuid' },
+    })
+    expect(vi.mocked(executeWorkflow)).not.toHaveBeenCalled()
+  })
+
+  it('still runs when no execution id is supplied, letting the engine mint one', async () => {
+    // The webhook and replay paths send no id. Rejecting an ABSENT id would break
+    // every caller that correctly leaves it to the engine.
+    withWorkflow()
+    vi.mocked(executeWorkflow).mockResolvedValue({
+      response: { ok: true }, status: 200,
+      executionId: 'exec-test', traceId: 'trace-test', idempotentReplay: false,
+    })
+    const res = await request(app, 'POST', '/workflows/wf-1/test', { body: { payload: {} } })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(executeWorkflow)).toHaveBeenCalledWith(
+      expect.objectContaining({ executionId: undefined }),
+      expect.anything(), expect.anything(), expect.anything()
     )
   })
 
