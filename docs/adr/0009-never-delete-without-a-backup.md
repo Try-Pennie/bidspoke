@@ -318,11 +318,28 @@ archiver's first run. The definitive proof is still that first run, and the
 warning in the recovery doc is deliberately left as it stands, since nothing here
 measured it either way.
 
+**The writer genuinely cannot delete, measured rather than trusted.** A2 created
+the roles with the writer holding SELECT, INSERT and UPDATE and no DELETE, and
+deferred proving it to the phase where the Worker's own credential could do the
+proving instead of a person switching roles by hand. Run with `--check-delete`,
+against a statement whose `WHERE 1 = 0` makes it unsatisfiable by construction so
+it cannot remove a row even if the table were full, Snowflake answered:
+
+```
+003001 SQL access control error:
+Insufficient privileges to operate on table 'EXECUTION_ARCHIVE'.
+Your primary role BIDSPOKE_ARCHIVE_WRITER must have DELETE granted on
+TABLE BIDSPOKE_ARCHIVE.EXECUTIONS.EXECUTION_ARCHIVE.
+```
+
 **Success is judged by a value read back, never by the response mentioning the
 table.** An error message quotes the thing it failed on, so a substring check for
 `EXECUTION_ARCHIVE` is satisfied by the permission failure about
 `EXECUTION_ARCHIVE` (L156). That guard was mutation checked: rewriting it into the
-substring form turns its test red.
+substring form turns its test red. The refusal above is that trap in the wild
+rather than in a fixture: the text Snowflake returned when the writer was denied
+contains `EXECUTION_ARCHIVE` twice, so the substring form would have read a
+permission denial as a healthy round trip.
 
 The reader and eraser key pairs are NOT created yet, for the reason A2 gave and
 this section demonstrates: they have no code to prove them until A6 and A7.
