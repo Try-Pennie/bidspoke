@@ -26,8 +26,9 @@
 -- starts producing executions, that justification has expired: the archiver
 -- refuses rather than widening (see #871).
 --
--- SECRETS. Each of the three users needs an RSA key pair. The PUBLIC half goes
--- into the ALTER USER statements below and is not a secret. The PRIVATE half is a
+-- SECRETS. Each of the three users needs an RSA key pair. The PUBLIC half is not
+-- a secret and is set with a one-off `ALTER USER` per identity, at the end of
+-- this file, deliberately outside the re-runnable part. The PRIVATE half IS a
 -- secret and must never be pasted into this file, a worksheet, or any terminal:
 -- it goes straight into a Worker secret via `wrangler secret put`. Generate with:
 --
@@ -195,12 +196,25 @@ GRANT SELECT, DELETE ON TABLE BIDSPOKE.PUBLIC.LEAD_SIGHTING_BIDS  TO ROLE bidspo
 -- TYPE = SERVICE so none of these can log in to Snowsight interactively, and
 -- DEFAULT_ROLE plus DEFAULT_WAREHOUSE so a statement that forgets to set them
 -- fails closed on permissions rather than silently running as something wider.
+-- Everything above this line is safe to re-run: `IF NOT EXISTS` and `GRANT` are
+-- idempotent, so a second pass changes nothing.
+--
+-- Everything below is NOT. `CREATE USER IF NOT EXISTS` protects the user, but an
+-- `ALTER USER ... SET RSA_PUBLIC_KEY` runs regardless and REPLACES whatever key
+-- is already there. Re-running this file as a whole, after the identities are
+-- live, would therefore overwrite three working keys with the placeholder text
+-- below and break archive ingest, reads and erasure at once, with the only
+-- symptom being authentication failures from a script that appeared to succeed
+-- (LESSONS L5: never destroy good state before its replacement is verified).
+--
+-- So the users are created here, and the keys are set SEPARATELY and one at a
+-- time. Check first, and only proceed for an identity that shows no fingerprint:
+
 CREATE USER IF NOT EXISTS bidspoke_archive_writer_svc
   TYPE              = SERVICE
   DEFAULT_ROLE      = bidspoke_archive_writer
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: hourly execution archive ingest (#871)';
-ALTER USER bidspoke_archive_writer_svc SET RSA_PUBLIC_KEY = '<WRITER_PUBLIC_KEY>';
 GRANT ROLE bidspoke_archive_writer TO USER bidspoke_archive_writer_svc;
 
 CREATE USER IF NOT EXISTS bidspoke_archive_reader_svc
@@ -208,7 +222,6 @@ CREATE USER IF NOT EXISTS bidspoke_archive_reader_svc
   DEFAULT_ROLE      = bidspoke_archive_reader
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: archived execution report reads (#874)';
-ALTER USER bidspoke_archive_reader_svc SET RSA_PUBLIC_KEY = '<READER_PUBLIC_KEY>';
 GRANT ROLE bidspoke_archive_reader TO USER bidspoke_archive_reader_svc;
 
 CREATE USER IF NOT EXISTS bidspoke_archive_eraser_svc
@@ -216,8 +229,38 @@ CREATE USER IF NOT EXISTS bidspoke_archive_eraser_svc
   DEFAULT_ROLE      = bidspoke_archive_eraser
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: erasure requests and the 13 month expiry job (#875)';
-ALTER USER bidspoke_archive_eraser_svc SET RSA_PUBLIC_KEY = '<ERASER_PUBLIC_KEY>';
 GRANT ROLE bidspoke_archive_eraser TO USER bidspoke_archive_eraser_svc;
+
+-- ============================================================================
+-- Keys: run these ONE AT A TIME, and read the check before each
+-- ============================================================================
+-- `RSA_PUBLIC_KEY_FP` is empty for an identity that has no key yet, and holds a
+-- fingerprint for one that does. A fingerprint present means the identity is
+-- already in use: setting a key there is a ROTATION, which breaks the Worker
+-- until the matching private half is put in the Worker secret, so do it
+-- deliberately or not at all.
+DESC USER bidspoke_archive_writer_svc;   -- read RSA_PUBLIC_KEY_FP
+DESC USER bidspoke_archive_reader_svc;
+DESC USER bidspoke_archive_eraser_svc;
+
+-- Then, for each identity with NO fingerprint, substitute the PUBLIC half of its
+-- key pair (one line, BEGIN/END armour stripped) and run its statement alone. The
+-- placeholders are left deliberately invalid so a copy-paste of the whole file
+-- fails loudly rather than setting a key nobody chose.
+--
+--   ALTER USER bidspoke_archive_writer_svc SET RSA_PUBLIC_KEY = '<WRITER_PUBLIC_KEY>';
+--   ALTER USER bidspoke_archive_reader_svc SET RSA_PUBLIC_KEY = '<READER_PUBLIC_KEY>';
+--   ALTER USER bidspoke_archive_eraser_svc SET RSA_PUBLIC_KEY = '<ERASER_PUBLIC_KEY>';
+--
+-- The PRIVATE half of each pair goes straight into a Worker secret and must never
+-- be pasted into this file, a worksheet, or any terminal:
+--
+--   wrangler secret put ARCHIVE_WRITER_PRIVATE_KEY --name bidspoke-worker
+--   wrangler secret put ARCHIVE_READER_PRIVATE_KEY --name bidspoke-worker
+--   wrangler secret put ARCHIVE_ERASER_PRIVATE_KEY --name bidspoke-worker
+--
+-- plus the three matching `ARCHIVE_*_USER` values, which are just the user names
+-- above and are not secret, though they are set the same way.
 
 -- ============================================================================
 -- Verify, rather than assume, before wiring the Worker
