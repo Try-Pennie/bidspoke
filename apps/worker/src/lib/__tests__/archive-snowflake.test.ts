@@ -8,6 +8,7 @@ import {
   archiveConfig,
   verifyArchiveIdentity,
 } from '../archive-snowflake'
+import { REQUIRED_SECRETS } from '../required-secrets'
 import type { Env } from '../../index'
 
 function envWith(overrides: Record<string, string | undefined> = {}): Env {
@@ -115,5 +116,15 @@ describe('verifyArchiveIdentity', () => {
 
     expect(result.identity).toBe('reader')
     expect(result.role).toBe(ARCHIVE_ROLES.reader)
+  })
+})
+
+// The other four archive secrets stay OUT until the reader and eraser code paths
+// ship: REQUIRED_SECRETS alerts every org's Slack daily, so registering a secret
+// nothing has set yet pages every morning for nothing (#870).
+describe('the archive secrets the daily check knows about', () => {
+  it('covers exactly the two the writer reads', () => {
+    const archiveSecrets = REQUIRED_SECRETS.filter((name) => name.startsWith('ARCHIVE_'))
+    expect(archiveSecrets).toEqual(['ARCHIVE_WRITER_USER', 'ARCHIVE_WRITER_PRIVATE_KEY'])
   })
 })

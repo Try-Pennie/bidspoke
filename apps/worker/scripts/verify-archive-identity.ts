@@ -71,45 +71,52 @@ const env = {
   [`ARCHIVE_${identity.toUpperCase()}_PRIVATE_KEY`]: readFileSync(keyFile, 'utf8'),
 } as unknown as Parameters<typeof archiveConfig>[0]
 
-console.log(`identity: ${identity}`)
-console.log(`role:     ${ARCHIVE_ROLES[identity]}`)
-console.log(`key file: ${keyFile}`)
-console.log(`target:   ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`)
+async function main(): Promise<void> {
+  console.log(`identity: ${identity}`)
+  console.log(`role:     ${ARCHIVE_ROLES[identity]}`)
+  console.log(`key file: ${keyFile}`)
+  console.log(`target:   ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`)
 
-const result = await verifyArchiveIdentity(env, identity)
-if (!result.ok) {
-  console.log(`\nROUND TRIP FAILED: ${result.reason ?? 'no reason given'}`)
-  process.exit(1)
-}
-console.log(`\nround trip OK, archive table holds ${result.rowCount} rows`)
-
-if (checkDelete) {
-  // The predicate is unsatisfiable by CONSTRUCTION, not merely by the literal
-  // being a value no execution id can hold: `1 = 0` is false for every row, so
-  // this statement cannot delete anything even if the literal is later edited
-  // or the table is full (L5, L9). The only thing it can measure is whether the
-  // grant exists, and a refusal is the PASS.
-  const statement =
-    `DELETE FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
-    `WHERE 1 = 0 AND execution_id = 'archive-identity-probe-matches-nothing'`
-  let refused: string | null = null
-  let accepted = false
-  try {
-    const response = await executeStatement(archiveConfig(env, identity), statement)
-    accepted = true
-    console.log(`\nDELETE was ACCEPTED. rows affected: ${JSON.stringify(response.data ?? [])}`)
-  } catch (err) {
-    refused = err instanceof Error ? err.message : String(err)
-  }
-
-  const shouldHoldDelete = identity === 'eraser'
-  if (shouldHoldDelete) {
-    console.log(accepted ? '\nexpected: the eraser holds DELETE, and it does' : `\nUNEXPECTED: the eraser was refused DELETE: ${refused ?? ''}`)
-    process.exit(accepted ? 0 : 1)
-  }
-  if (accepted) {
-    console.log(`\nFAILED: ${identity} was allowed to run DELETE. It must not hold that grant.`)
+  const result = await verifyArchiveIdentity(env, identity)
+  if (!result.ok) {
+    console.log(`\nROUND TRIP FAILED: ${result.reason ?? 'no reason given'}`)
     process.exit(1)
   }
-  console.log(`\nDELETE refused, as required. Snowflake said: ${refused ?? ''}`)
+  console.log(`\nround trip OK, archive table holds ${result.rowCount} rows`)
+
+  if (checkDelete) {
+    // The predicate is unsatisfiable by CONSTRUCTION, not merely by the literal
+    // being a value no execution id can hold: `1 = 0` is false for every row, so
+    // this statement cannot delete anything even if the literal is later edited
+    // or the table is full (L5, L9). The only thing it can measure is whether the
+    // grant exists, and a refusal is the PASS.
+    const statement =
+      `DELETE FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+      `WHERE 1 = 0 AND execution_id = 'archive-identity-probe-matches-nothing'`
+    let refused: string | null = null
+    let accepted = false
+    try {
+      const response = await executeStatement(archiveConfig(env, identity), statement)
+      accepted = true
+      console.log(`\nDELETE was ACCEPTED. rows affected: ${JSON.stringify(response.data ?? [])}`)
+    } catch (err) {
+      refused = err instanceof Error ? err.message : String(err)
+    }
+
+    const shouldHoldDelete = identity === 'eraser'
+    if (shouldHoldDelete) {
+      console.log(accepted ? '\nexpected: the eraser holds DELETE, and it does' : `\nUNEXPECTED: the eraser was refused DELETE: ${refused ?? ''}`)
+      process.exit(accepted ? 0 : 1)
+    }
+    if (accepted) {
+      console.log(`\nFAILED: ${identity} was allowed to run DELETE. It must not hold that grant.`)
+      process.exit(1)
+    }
+    console.log(`\nDELETE refused, as required. Snowflake said: ${refused ?? ''}`)
+  }
 }
+
+main().catch((err: unknown) => {
+  console.error(err instanceof Error ? err.message : String(err))
+  process.exit(1)
+})
