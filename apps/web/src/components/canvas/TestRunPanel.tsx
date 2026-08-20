@@ -1,5 +1,6 @@
 'use client'
 
+import { uuidv7 } from '@bidspoke/uuidv7'
 import { useMemo, useState } from 'react'
 import { api } from '@/lib/api'
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2, MinusCircle, Play, Save, Trash2, X, XCircle, Zap } from 'lucide-react'
@@ -131,7 +132,13 @@ export default function TestRunPanel({
     setTestSteps(null)
     setExpandedStep(null)
 
-    const execId = crypto.randomUUID()
+    // UUIDv7, matching what the engine mints for live runs, because the execution
+    // archive derives the UTC day from the id to prune a point lookup (#869). The
+    // id is still minted here rather than server-side: the realtime channel filter
+    // below has to be open before the run starts, so the id is needed first. The
+    // route refuses a non-v7 id, so an older cached bundle gets a legible error
+    // rather than a run whose results never arrive on this panel.
+    const execId = uuidv7()
 
     const supabase = createClient()
     const channel = supabase

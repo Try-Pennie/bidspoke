@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { isUuidV7 } from '@bidspoke/uuidv7'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
@@ -829,6 +830,28 @@ workflows.post('/:id/test', async (c) => {
       c.env.WORKFLOW_CACHE
     ).catch((e) => { console.error('[code-nodes] test deploy failed:', e); return { bundleName: null } })
     testBundleName = dep.bundleName
+  }
+
+  // The canvas test runner mints the execution id in the browser, because it needs
+  // it before the run to open its realtime channel filter, so this is the one path
+  // by which an id the engine did not generate reaches an execution. Every new id
+  // must be a UUIDv7 or the archive's read path cannot derive a day from it and
+  // prunes nothing (#869).
+  //
+  // Validated against the READER's own predicate rather than a looser shape check,
+  // so this accepts exactly what `utcDayFromUuidV7` can consume (L150). And it
+  // REFUSES rather than substituting an id of its own: a substitution would leave
+  // the page listening on a channel for an id that no longer exists, so the run
+  // would succeed with the panel sitting empty, which is a silent failure where a
+  // refusal is a legible one (L10).
+  if (body.execution_id !== undefined && !isUuidV7(String(body.execution_id))) {
+    return c.json(
+      {
+        error:
+          'This page is running an older build that generates execution ids the archive cannot index. Reload the page and run the test again.',
+      },
+      400
+    )
   }
 
   const result = await executeWorkflow(

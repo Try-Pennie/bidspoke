@@ -11,6 +11,7 @@
     "db:types": "bash scripts/gen-db-types.sh"
   },
   "dependencies": {
+    "@bidspoke/uuidv7": "workspace:*",
     "@supabase/supabase-js": "^2.110.8",
     "hono": "^4.12.32"
   },

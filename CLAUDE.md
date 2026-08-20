@@ -15,6 +15,16 @@
 ## Monorepo
 - `apps/web` — Next.js frontend
 - `apps/worker` — Cloudflare Worker (API + execution engine)
+- `apps/worker-tail`: tail consumer that writes per-execution cost
+- `packages/*`: code both apps import, so there is one implementation rather than
+  a copy per app. Plain TypeScript source with no build step, listed in
+  `transpilePackages` for Next. A package with tests must also be named in the CI
+  test job, which `apps/web/src/lib/__tests__/ci-runs-every-package-suite.test.ts`
+  enforces, because that job names its suites one by one and a new one would
+  otherwise be green locally and never run in CI.
+  - `packages/uuidv7`: UUIDv7 execution ids, minted identically by the Worker for
+    live runs and by the browser for canvas test runs, plus the UTC day the
+    execution archive derives from them.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`

@@ -59,6 +59,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Every workspace package with a `test` script must appear here. The list is
+      # named rather than recursive, so a new package's suite would otherwise be
+      # green locally and unrun in CI, silently. Guarded by
+      # apps/web/src/lib/__tests__/ci-runs-every-package-suite.test.ts (#869).
+      - name: Test shared packages
+        run: pnpm --filter @bidspoke/uuidv7 test
+
       - name: Test worker
         run: pnpm --filter worker test
 
