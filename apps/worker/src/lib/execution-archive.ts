@@ -144,8 +144,12 @@ export async function runExecutionArchive(
         if (error) throw new Error(`advancing the watermark failed: ${formatErr(error)}`)
       },
       fetchHour: async (hourStart, hourEnd) => {
-        subrequests -= 4
         const hour = await fetchHour(supabase, hourStart, hourEnd)
+        // Counted by the fetch itself, not estimated here: at the measured 11.9
+        // steps per execution an hour is roughly fifty pages of steps alone, so
+        // a hand-picked number would sit far below reality and the clean stop
+        // could never fire (L182).
+        subrequests -= hour.requests
         if (!hour.usable) return hour
 
         // Disposition sits between reading and encoding, so a refused execution
@@ -174,7 +178,7 @@ export async function runExecutionArchive(
         }
       },
       send: async (batch: EncodedForSend[]) => {
-        subrequests -= 2
+        subrequests -= 1
         await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById)))
       },
       recordArchived: async (executionIds) => {

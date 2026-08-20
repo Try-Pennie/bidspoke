@@ -25,8 +25,25 @@ export interface HourBundle {
 }
 
 export type HourFetch =
-  | { usable: true; bundles: HourBundle[]; empty: boolean; executionCount: number; stepCount: number }
-  | { usable: false; reason: string }
+  | {
+      usable: true
+      bundles: HourBundle[]
+      empty: boolean
+      executionCount: number
+      stepCount: number
+      /**
+       * Requests this fetch actually made, counted rather than estimated.
+       *
+       * The run loop stops before exhausting its per-invocation allowance, and
+       * that stop is only real if the number it works from is the number that
+       * happened. An estimate drifts with volume: at the measured 11.9 steps per
+       * execution an hour is roughly fifty pages of steps alone, so a guess of a
+       * handful can never fire and the platform limit arrives as a crash
+       * mid-batch instead of a clean stop (L182).
+       */
+      requests: number
+    }
+  | { usable: false; reason: string; requests: number }
 
 interface CountResult {
   count: number | null
@@ -54,7 +71,9 @@ export async function fetchHour(
   hourEnd: string,
 ): Promise<HourFetch> {
   const window = stepWindowFor(hourStart, hourEnd)
+  let requests = 0
 
+  requests++
   const executionCount = await countRows(
     () =>
       supabase
@@ -64,13 +83,13 @@ export async function fetchHour(
         .lt('started_at', hourEnd),
     'executions',
   )
-  if ('error' in executionCount) return { usable: false, reason: executionCount.error }
+  if ('error' in executionCount) return { usable: false, reason: executionCount.error, requests }
 
   // An hour with no executions is a real answer with its own wording, and it must
   // not go on to read steps: "found nothing" and "read nothing" are different
   // outcomes and must not be reported the same way (L98).
   if (executionCount.count === 0) {
-    return { usable: true, bundles: [], empty: true, executionCount: 0, stepCount: 0 }
+    return { usable: true, bundles: [], empty: true, executionCount: 0, stepCount: 0, requests }
   }
 
   const executions = await fetchAllPages<Record<string, unknown>>({
@@ -90,8 +109,10 @@ export async function fetchHour(
       return { rows: data ?? [] }
     },
   })
-  if (!executions.usable) return { usable: false, reason: `executions: ${executions.reason}` }
+  requests += executions.pages
+  if (!executions.usable) return { usable: false, reason: `executions: ${executions.reason}`, requests }
 
+  requests++
   const stepCount = await countRows(
     () =>
       supabase
@@ -103,7 +124,7 @@ export async function fetchHour(
         .lt('started_at', window.stepStartedTo),
     'steps',
   )
-  if ('error' in stepCount) return { usable: false, reason: stepCount.error }
+  if ('error' in stepCount) return { usable: false, reason: stepCount.error, requests }
 
   const steps = await fetchAllPages<Record<string, unknown>>({
     expected: stepCount.count,
@@ -125,7 +146,8 @@ export async function fetchHour(
       return { rows: data ?? [] }
     },
   })
-  if (!steps.usable) return { usable: false, reason: `steps: ${steps.reason}` }
+  requests += steps.pages
+  if (!steps.usable) return { usable: false, reason: `steps: ${steps.reason}`, requests }
 
   const byExecution = groupStepsByExecution(steps.rows)
 
@@ -150,5 +172,6 @@ export async function fetchHour(
     empty: false,
     executionCount: executions.rows.length,
     stepCount: steps.rows.length,
+    requests,
   }
 }

@@ -8,6 +8,11 @@ vi.mock('../snowflake', async (importOriginal) => ({
   executeStatement: (...args: unknown[]) => executeStatement(...args),
 }))
 
+const fetchHour = vi.fn()
+vi.mock('../../archive/hour-fetch', () => ({
+  fetchHour: (...args: unknown[]) => fetchHour(...args),
+}))
+
 const notifyExportFailure = vi.fn()
 vi.mock('../export-alerts', () => ({
   notifyExportFailure: (...args: unknown[]) => notifyExportFailure(...args),
@@ -79,6 +84,55 @@ const envWith = (kv: ReturnType<typeof fakeKv>): Env =>
 beforeEach(() => {
   executeStatement.mockReset()
   notifyExportFailure.mockReset()
+  fetchHour.mockReset()
+  fetchHour.mockResolvedValue({
+    usable: true,
+    empty: true,
+    bundles: [],
+    executionCount: 0,
+    stepCount: 0,
+    requests: 1,
+  })
+})
+
+// The clean stop on the request allowance is only real if the number it works
+// from is the number that actually happened. An estimate drifts with volume: at
+// the measured 11.9 steps per execution one hour is roughly fifty pages of steps
+// alone, so a hand-picked handful can never fire and the platform limit arrives
+// as a crash mid-batch instead (L182).
+describe('the request allowance', () => {
+  const behind = { watermark: '2026-08-10T00:00:00.000Z' }
+
+  it('is spent at the rate the fetch reports, not at a fixed guess', async () => {
+    fetchHour.mockResolvedValue({
+      usable: true,
+      empty: true,
+      bundles: [],
+      executionCount: 0,
+      stepCount: 0,
+      requests: 500,
+    })
+    const { client } = fakeSupabase(behind)
+
+    const result = await runExecutionArchive(envWith(fakeKv()), client, {
+      sendBatch: vi.fn(),
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+
+    expect(result.stop).toBe('subrequests')
+  })
+
+  it('keeps going when each hour is cheap, rather than stopping on the guess', async () => {
+    const { client } = fakeSupabase(behind)
+
+    const result = await runExecutionArchive(envWith(fakeKv()), client, {
+      sendBatch: vi.fn(),
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+
+    expect(result.stop).not.toBe('subrequests')
+    expect(result.hoursEmpty).toBeGreaterThan(1)
+  })
 })
 
 describe('runExecutionArchive', () => {

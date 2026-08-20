@@ -106,3 +106,21 @@ describe('run budgets', () => {
     expect(WALL_TIME_BUDGET_MS).toBeLessThan(15 * 60 * 1000)
   })
 })
+
+describe('the per-invocation request allowance', () => {
+  // Measured shape of one hour, from ADR 0009: ~4,375 executions at 11.9 steps
+  // each is ~52,000 step rows, which at the 1,000 row page cap is 52 pages, plus
+  // 5 pages of executions and 2 counts. So an hour costs roughly 60 reads, not
+  // the handful a hand-picked estimate would assume.
+  it('a measured hour costs far more requests than a small estimate would suggest', () => {
+    const executions = 4375
+    const steps = Math.ceil(executions * 11.9)
+    const pageCap = 1000
+    const reads = 2 + Math.ceil(executions / pageCap) + Math.ceil(steps / pageCap)
+
+    expect(reads).toBeGreaterThan(50)
+    // And a full run of MAX_HOURS_PER_RUN still fits inside a Worker's 1,000
+    // subrequest allowance, with the sends and id writes on top.
+    expect(MAX_HOURS_PER_RUN * (reads + 12)).toBeLessThan(1000)
+  })
+})

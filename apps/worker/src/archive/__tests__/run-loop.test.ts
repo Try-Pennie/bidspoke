@@ -23,6 +23,7 @@ function deps(overrides: Partial<RunDeps> = {}): RunDeps {
       bundles: [{ executionId: 'e1', execution: { id: 'e1' }, steps: [] }],
       executionCount: 1,
       stepCount: 0,
+      requests: 1,
     }),
     encode: async (bundle) => ({ executionId: bundle.executionId, wire: 'x', wireBytes: 10, stepCount: 0 }),
     send: async (batch) => {
@@ -58,7 +59,7 @@ describe('runArchive', () => {
       budget: { maxHours: 6, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
       fetchHour: async (hourStart) => {
         asked.push(hourStart)
-        return { usable: true as const, empty: false, bundles: [], executionCount: 0, stepCount: 0 }
+        return { usable: true as const, empty: false, bundles: [], executionCount: 0, stepCount: 0, requests: 1 }
       },
     })
 
@@ -82,7 +83,7 @@ describe('runArchive', () => {
 
   it('reports an hour with no executions as its own outcome, worded differently from a full one', async () => {
     const d = deps({
-      fetchHour: async () => ({ usable: true as const, empty: true, bundles: [], executionCount: 0, stepCount: 0 }),
+      fetchHour: async () => ({ usable: true as const, empty: true, bundles: [], executionCount: 0, stepCount: 0, requests: 1 }),
     })
     const result = await runArchive(d)
 
@@ -150,7 +151,7 @@ describe('runArchive', () => {
       advanceWatermark: async (hourEnd) => {
         watermark = hourEnd
       },
-      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows' }),
+      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
     })
 
     const result = await runArchive(d)
@@ -232,6 +233,7 @@ describe('runArchive', () => {
         ],
         executionCount: 2,
         stepCount: 0,
+        requests: 1,
       }),
       encode: async (bundle) => {
         if (bundle.executionId === 'bad') throw new Error('gzip exploded')
@@ -296,7 +298,7 @@ describe('runArchive reports how far behind it still is', () => {
 
   it('reports the lag even when the run failed, so a stuck hour is visible as lag too', async () => {
     const d = deps({
-      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows' }),
+      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
     })
     const result = await runArchive(d)
 

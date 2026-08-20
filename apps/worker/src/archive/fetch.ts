@@ -125,6 +125,7 @@ export type PagedFetch<T> =
   | { usable: true; rows: T[]; pages: number }
   | { usable: false; rows: []; pages: number; reason: string }
 
+
 /**
  * Reads every page of a range-paged query and reconciles the total against an
  * independently sourced expectation.
