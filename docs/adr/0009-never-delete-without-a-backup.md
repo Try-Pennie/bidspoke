@@ -273,6 +273,61 @@ If archiving stalls the delete does not run. Snowflake only, single shared
 warehouse. Single tenant, so no Snowflake row access policy and no session
 parameter design; intra-organisation read access remains an open A7 question.
 
+## The archive holds unerasable identity data until A7, and that is accepted
+
+Decision (Dan, 2026-08-20, Phase A3). The phase order is unchanged: A7's erasure
+route, the eraser identity's key and the 13 month expiry job stay where the plan
+puts them, after A3 and A4. This section exists because the lessons audit on
+discussion #867 raised it as violation 3 (L142) and required that whichever order
+was chosen be written here, so that the ADR and the plan cannot disagree.
+
+**What is being accepted, in numbers.** From the first hour of the shadow write,
+roughly 105,000 executions a day and about 1.1 GB a day of compressed bundles
+accumulate in `BIDSPOKE_ARCHIVE.EXECUTIONS.EXECUTION_ARCHIVE`, carrying SSNs,
+dates of birth, addresses and credit reports at full fidelity. Nothing can remove
+any of it: `bidspoke_archive_eraser` is the only identity in the account holding
+DELETE on that table, and it has no key until A7. The window is A3 (two weeks
+minimum) plus A4 (two weeks) plus A8 and A6, so four to six weeks. After seven
+days the archive holds more history of this data than any other live store,
+because the Postgres retention it shadows is seven days.
+
+**The fallback if a subject request arrives inside that window** is a manual
+delete run by an account admin under ACCOUNTADMIN. That is a person with a
+credential, not a control, and it would not write
+`execution_archive_erasures`, so the A4 gate would then find a count shortfall it
+cannot explain on that day. Stated so nobody discovers it mid request.
+
+**What was weighed.** `BIDSPOKE.PUBLIC.LEAD_SIGHTINGS` already holds raw SSNs in
+Snowflake, retained indefinitely, and the Postgres rows are purged after export,
+so Snowflake is already the sole copy and there is already no erasure route for
+it. The archive adds a second and richer unerasable store rather than the first
+one. That is the reason this was judged acceptable rather than blocking, and it
+is also a standing argument for A7 covering both, which it already enumerates.
+
+Three alternatives were considered and declined:
+
+1. Move A7's erasure path, eraser identity and expiry job ahead of A3. The
+   largest reorder in the milestone, and it would build an erasure route with no
+   archived rows to point it at, which is the same unverifiable state the key
+   pairs were deliberately deferred out of A2 to avoid (L3).
+2. Run the shadow phase against a throwaway `EXECUTION_ARCHIVE_SHADOW` with a
+   short retention, dropped at the end of A3. It moves the window rather than
+   closing it: A4's gate needs the real table, so accumulation starts two weeks
+   later and the exposure goes from about six weeks to about four.
+3. Ship the 13 month expiry job early with a short window, lifted later. The
+   smallest reorder that genuinely closes it, and the counting gate would still
+   work because the gate only ever asks about the last seven days. Declined on
+   scope.
+
+**Reconciling the sentence this contradicts.** Phase A7's header says "the
+controls ship with the archive or the archive does not ship." That is true of the
+milestone and not of each phase, and the distinction is load bearing: the archive
+is not in service until A5 repoints the two destructive jobs, and A7 precedes A5
+in the sequence. So no deletion is ever authorised on the strength of an archive
+nothing can erase from. What the sentence does not cover, and what is accepted
+here, is the observation period before A5, during which the archive exists and
+holds real data while the controls do not.
+
 ## Fixtures and measurement output are numeric or synthetic, never captured
 
 These bundles carry live SSNs, dates of birth, addresses and credit reports, and
