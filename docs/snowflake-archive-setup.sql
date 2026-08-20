@@ -37,6 +37,25 @@
 --
 -- ============================================================================
 
+-- ============================================================================
+-- BEFORE YOU RUN ANYTHING: how Snowsight decides what to execute
+-- ============================================================================
+-- Pressing Run executes only the statement under the CURSOR, not the whole
+-- worksheet. To run this file, select all of it and use Run All.
+--
+-- This is not a nicety. Measured on 2026-08-20: three ALTER statements pasted on
+-- one line applied only the last of the three, and the worksheet reported
+-- success. Two of the three identities kept the setting that was being removed,
+-- and nothing said so. It was caught only by reading the state back afterwards.
+--
+-- It matters most for the KEY statements at the end of this file, where the same
+-- mistake would set one identity's key, look like it worked, and leave the other
+-- two unable to authenticate at all. Those are deliberately meant to be run ONE
+-- AT A TIME, with the check read between each.
+--
+-- Whatever you run, read the state back rather than trusting that it applied.
+-- ============================================================================
+
 USE ROLE ACCOUNTADMIN;
 
 -- ============================================================================
@@ -255,7 +274,11 @@ GRANT ROLE bidspoke_archive_eraser TO USER bidspoke_archive_eraser_svc;
 --
 -- Safe to run whether or not they are already empty, and unlike the key
 -- statements below it cannot destroy anything: it narrows a session, it does not
--- replace a credential.
+-- replace a credential. Run each on its own and read the state back, per the
+-- note at the top of this file.
+--
+-- Done on the live account 2026-08-20: all three now report an empty
+-- DEFAULT_SECONDARY_ROLES.
 
 -- ============================================================================
 -- Keys: run these ONE AT A TIME, and read the check before each
