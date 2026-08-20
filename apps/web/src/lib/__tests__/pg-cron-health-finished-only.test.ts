@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { latestRoutineBody, readMigrations } from './_pg-cron'
 
 /**
  * pg_cron_health must count a run as failed only once it has FINISHED.
@@ -18,34 +17,34 @@ import { join } from 'node:path'
  * surface (L36).
  *
  * This asserts the shipped definition, in the migration that is the source of
- * truth for it, rather than a copy of the rule written beside it (L107).
+ * truth for it, rather than a copy of the rule written beside it (L107). It
+ * reads through the shared migration reader, which strips SQL comments, so no
+ * assertion below can be satisfied by prose describing the rule rather than by
+ * the rule itself (L103). This file lives in the general test directory rather
+ * than the worker guard directory because it reads migrations, not worker
+ * source (#502).
  */
-const MIGRATIONS = join(process.cwd(), '..', '..', 'supabase', 'migrations')
+const MIGRATIONS = readMigrations()
 
 /** The definition that actually ships is the one in the LAST migration to touch it. */
-function shippedDefinition(): { file: string; sql: string } {
-  const files = readdirSync(MIGRATIONS)
-    .filter((f) => f.endsWith('.sql'))
-    .sort()
-  let found: { file: string; sql: string } | null = null
-  for (const file of files) {
-    const sql = readFileSync(join(MIGRATIONS, file), 'utf8')
-    if (/FUNCTION\s+(public\.)?pg_cron_health/i.test(sql)) found = { file, sql }
-  }
+function shippedDefinition(): { file: string; body: string; sql: string } {
+  const found = latestRoutineBody('pg_cron_health', MIGRATIONS)
   if (!found) throw new Error('no migration defines pg_cron_health, so this guard would pass vacuously')
-  return found
+  const migration = MIGRATIONS.find((m) => m.name === found.migration)
+  if (!migration) throw new Error(`migration ${found.migration} is not in the migration list`)
+  return { file: found.migration, body: found.body, sql: migration.sql }
 }
 
 /** The body of the failures CTE, which is the part that decides what counts. */
-function failuresClause(sql: string): string {
-  const match = /WITH\s+failures\s+AS\s*\(([\s\S]*?)\),/i.exec(sql)
+function failuresClause(body: string): string {
+  const match = /WITH\s+failures\s+AS\s*\(([\s\S]*?)\),/i.exec(body)
   if (!match) throw new Error('could not find the failures CTE, so the assertions below would not be checking it')
   return match[1]
 }
 
 describe('the shipped pg_cron_health definition', () => {
-  const { file, sql } = shippedDefinition()
-  const failures = failuresClause(sql)
+  const { file, body, sql } = shippedDefinition()
+  const failures = failuresClause(body)
 
   it('was found in a real migration, so this file cannot pass vacuously', () => {
     expect(file).toMatch(/\.sql$/)
