@@ -48,6 +48,29 @@ describe('runArchive', () => {
     expect(result.stop).toBe<RunStop>('caught-up')
   })
 
+  // The watermark identifies an hour by its START, so advancing it to the hour's
+  // END skips every other hour. Nothing else notices: each run reports success,
+  // the watermark moves forward, and half the executions are simply never
+  // archived, surfacing weeks later as a deletion gate refusing alternate days.
+  it('archives contiguous hours, leaving no gap between them', async () => {
+    const asked: string[] = []
+    const d = deps({
+      budget: { maxHours: 6, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
+      fetchHour: async (hourStart) => {
+        asked.push(hourStart)
+        return { usable: true as const, empty: false, bundles: [], executionCount: 0, stepCount: 0 }
+      },
+    })
+
+    await runArchive(d)
+
+    expect(asked.length).toBeGreaterThan(1)
+    for (let i = 1; i < asked.length; i++) {
+      expect(Date.parse(asked[i]) - Date.parse(asked[i - 1]), `gap before ${asked[i]}`).toBe(HOUR)
+    }
+    expect(asked[0]).toBe('2026-08-16T11:00:00.000Z')
+  })
+
   it('stops when the next hour is not ready, and says so distinctly', async () => {
     const d = deps({ readWatermark: async () => new Date(NOW.getTime() - HOUR).toISOString() })
     const result = await runArchive(d)
@@ -244,5 +267,40 @@ describe('runArchive', () => {
     await runArchive(d)
 
     expect(watermark).not.toBe(WATERMARK)
+  })
+})
+
+// L13: a background job must alert on zero work done while a backlog grows. Every
+// clean stop here is honestly successful, so a run that stops on its budget
+// without catching up reports success while the lag grows forever. The loop
+// therefore reports how far behind it still is, and the alerting half thresholds
+// that rather than the stop reason.
+describe('runArchive reports how far behind it still is', () => {
+  it('reports zero when it caught up', async () => {
+    const d = deps()
+    const result = await runArchive(d)
+
+    expect(result.stop).toBe<RunStop>('caught-up')
+    expect(result.hoursBehind).toBe(0)
+  })
+
+  it('reports the remaining lag when it stopped on a budget', async () => {
+    const d = deps({
+      budget: { maxHours: 2, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
+    })
+    const result = await runArchive(d)
+
+    expect(result.stop).toBe<RunStop>('max-hours')
+    expect(result.hoursBehind).toBeGreaterThan(20)
+  })
+
+  it('reports the lag even when the run failed, so a stuck hour is visible as lag too', async () => {
+    const d = deps({
+      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows' }),
+    })
+    const result = await runArchive(d)
+
+    expect(result.failed).toBe(true)
+    expect(result.hoursBehind).toBeGreaterThan(20)
   })
 })

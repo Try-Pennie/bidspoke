@@ -36,7 +36,13 @@ export interface RunBudget {
 export interface RunDeps {
   now: () => Date
   readWatermark: () => Promise<string>
-  advanceWatermark: (hourEnd: string) => Promise<void>
+  /**
+   * Stores the START of the hour just archived, because that is what the
+   * watermark means: "the last hour fully archived". Storing the hour's END
+   * instead skips every other hour, and nothing notices, because each run still
+   * reports success and the watermark still moves forward.
+   */
+  advanceWatermark: (hourStart: string) => Promise<void>
   fetchHour: (hourStart: string, hourEnd: string) => Promise<HourFetch>
   encode: (bundle: HourBundle) => Promise<EncodedForSend>
   send: (batch: EncodedForSend[]) => Promise<void>
@@ -53,6 +59,18 @@ export interface RunResult {
   hoursEmpty: number
   executionsArchived: number
   executionsRefused: number
+  /**
+   * Hours still unarchived when the run stopped, counting from the watermark to
+   * the newest hour that is closed and past the settle window.
+   *
+   * Every clean stop here is honestly successful, so a run that stops on its
+   * budget without catching up reports success while the lag grows without
+   * bound and nothing says so (L13: alert on zero work done while a backlog
+   * grows). This is the number the alerting half thresholds, rather than the
+   * stop reason, because the stop reason is the same whether the archive is one
+   * hour behind or three days behind.
+   */
+  hoursBehind: number
   detail: string
 }
 
@@ -67,23 +85,47 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     hoursEmpty: 0,
     executionsArchived: 0,
     executionsRefused: 0,
+    hoursBehind: 0,
     detail: '',
+  }
+
+  /**
+   * Counts the hours between the current watermark and the newest hour that is
+   * ready to archive. Uses the same readiness predicate the loop does, so the
+   * lag and the decision to stop can never disagree about what "ready" means
+   * (L144).
+   */
+  const measureLag = async (): Promise<number> => {
+    let hour = await deps.readWatermark()
+    let behind = 0
+    for (;;) {
+      const next = nextHourToArchive({ watermarkHour: hour, now: deps.now() })
+      if (!next.archive) return behind
+      behind++
+      hour = next.hourStart
+      // A watermark far enough in the past would otherwise walk hour by hour
+      // forever; the number is only useful as a threshold, so cap and say so.
+      if (behind >= 24 * 30) return behind
+    }
   }
 
   for (;;) {
     if (result.hoursArchived + result.hoursEmpty >= deps.budget.maxHours) {
       result.stop = 'max-hours'
       result.detail = `stopped after ${deps.budget.maxHours} hours in one run`
+      result.hoursBehind = await measureLag()
       return result
     }
     if (deps.now().getTime() >= deps.budget.deadlineAt) {
       result.stop = 'wall-time'
       result.detail = `stopped on the wall-time budget after ${result.hoursArchived} hours`
+      result.hoursBehind = await measureLag()
       return result
     }
     if (deps.budget.subrequestsLeft() < SUBREQUEST_FLOOR) {
       result.stop = 'subrequests'
       result.detail = `stopped with ${deps.budget.subrequestsLeft()} subrequests left after ${result.hoursArchived} hours`
+      result.hoursBehind = await measureLag()
       return result
     }
 
@@ -92,6 +134,7 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     if (!next.archive) {
       result.stop = 'caught-up'
       result.detail = next.reason
+      result.hoursBehind = 0
       return result
     }
 
@@ -103,11 +146,12 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       result.stop = 'read-failed'
       result.failed = true
       result.detail = `hour ${next.hourStart}: ${hour.reason}`
+      result.hoursBehind = await measureLag()
       return result
     }
 
     if (hour.empty) {
-      await deps.advanceWatermark(next.hourEnd)
+      await deps.advanceWatermark(next.hourStart)
       result.hoursEmpty++
       result.detail = `hour ${next.hourStart} contained no executions`
       continue
@@ -147,12 +191,13 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
         result.stop = 'send-failed'
         result.failed = true
         result.detail = `hour ${next.hourStart}: ${formatErr(err)}`
+        result.hoursBehind = await measureLag()
         return result
       }
     }
 
-    await deps.advanceWatermark(next.hourEnd)
+    await deps.advanceWatermark(next.hourStart)
     result.hoursArchived++
-    result.detail = `archived up to ${next.hourEnd}`
+    result.detail = `archived the hour beginning ${next.hourStart}`
   }
 }
