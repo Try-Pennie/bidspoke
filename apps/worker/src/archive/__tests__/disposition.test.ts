@@ -20,8 +20,8 @@ const execution = (over: Record<string, unknown> = {}): Record<string, unknown> 
 })
 
 const orgs = new Map([
-  ['wf-live', EXPECTED_ORGANIZATION_SLUG],
-  ['wf-e2e', 'E2E Test'],
+  ['wf-live', { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG }],
+  ['wf-e2e', { id: 'org-e2e', slug: 'E2E Test' }],
 ])
 
 describe('dispositionFor', () => {
