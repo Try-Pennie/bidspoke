@@ -60,3 +60,144 @@ export function groupStepsByExecution<T extends Record<string, unknown>>(steps: 
   }
   return byExecution
 }
+
+// ============================================================
+// Paging, and the window a step fetch must cover
+// ============================================================
+
+/**
+ * The worst gap ever observed between a step's own start and its execution's
+ * start, measured on prod 2026-08-20 across 5 UTC days and 5,250,914 step rows
+ * (per-day maxima 88.669, 35.372, 40.722, 45.198, 40.669 seconds). Nothing
+ * exceeded 5 minutes and no step started before its execution.
+ *
+ * Recorded so the constant below can be checked against a number rather than
+ * against a feeling.
+ */
+export const MEASURED_WORST_STEP_LAG_MS = 88_669
+
+/**
+ * How far past an hour's end the step fetch's partition hint reaches.
+ *
+ * Deliberately about 40x the worst observed lag. Too small silently DROPS
+ * steps, which is unrecoverable once the source partition is purged; too large
+ * only pulls in one more daily partition on a read that is already bounded by
+ * execution_started_at. The asymmetry says pick generously.
+ */
+export const MAX_STEP_LAG_MS = 60 * 60 * 1000
+
+export interface StepWindow {
+  /** Correctness: which hour the step's EXECUTION belongs to. */
+  executionStartedFrom: string
+  executionStartedTo: string
+  /** Partition pruning hint only, widened so late steps are not dropped. */
+  stepStartedFrom: string
+  stepStartedTo: string
+}
+
+/**
+ * The predicates a step fetch for one hour must use.
+ *
+ * `execution_started_at` is the correctness bound: it is the same definition of
+ * which hour a step belongs to that archiveDay uses for the day. `started_at`
+ * is only a hint to keep the read inside a few daily partitions, and it MUST
+ * reach past the hour end, because a step that began after its execution's hour
+ * closed lives in the next partition. Bounding it at the hour end, or at the
+ * last execution's start, silently stores a short bundle for every execution
+ * near the end of the window.
+ */
+export function stepWindowFor(hourStart: string, hourEnd: string): StepWindow {
+  return {
+    executionStartedFrom: hourStart,
+    executionStartedTo: hourEnd,
+    stepStartedFrom: hourStart,
+    stepStartedTo: new Date(Date.parse(hourEnd) + MAX_STEP_LAG_MS).toISOString(),
+  }
+}
+
+export interface Page<T> {
+  rows: T[]
+  /** Set when the page could not be read. A partial collection is never a result. */
+  error?: string
+}
+
+export type PagedFetch<T> =
+  | { usable: true; rows: T[]; pages: number }
+  | { usable: false; rows: []; pages: number; reason: string }
+
+/**
+ * Reads every page of a range-paged query and reconciles the total against an
+ * independently sourced expectation.
+ *
+ * The reconciliation is the point. PostgREST caps a response at 1,000 rows
+ * whatever limit is asked for, and a short read is FASTER than a complete one,
+ * so truncation presents as a performance win: measured in A0, a truncated 150
+ * execution batch reported a 15.9x speedup against the correct run's 9x. Only
+ * an expectation from somewhere else can tell the two apart (L98, L63).
+ *
+ * The caller must order the underlying query by a unique column. Range paging
+ * over an unordered result is undefined, and the same mistake in A0 dropped
+ * precisely the youngest rows, which were the only ones that could have
+ * disproved the thing being measured.
+ */
+export async function fetchAllPages<T>(opts: {
+  expected: number
+  pageSize: number
+  fetchPage: (from: number, to: number) => Promise<Page<T>>
+}): Promise<PagedFetch<T>> {
+  const { expected, pageSize, fetchPage } = opts
+
+  if (pageSize > POSTGREST_ROW_CAP) {
+    throw new Error(
+      `page size ${pageSize} exceeds the ${POSTGREST_ROW_CAP} row cap, and asking for more returns the cap silently`,
+    )
+  }
+  if (pageSize < 1) {
+    throw new Error(`page size ${pageSize} would never make progress`)
+  }
+
+  // Zero expected is a real answer, not a failure, and it must not be reached by
+  // reading a page: "found nothing" and "read nothing" are different (L98).
+  if (expected === 0) return { usable: true, rows: [], pages: 0 }
+
+  const rows: T[] = []
+  let pages = 0
+
+  // One page of slack past the expectation, so a table that grew between the
+  // count and the read is DETECTED rather than read forever on a fixed budget.
+  const maxPages = Math.ceil(expected / pageSize) + 1
+
+  while (pages < maxPages) {
+    const from = pages * pageSize
+    const page = await fetchPage(from, from + pageSize - 1)
+    pages++
+
+    if (page.error !== undefined) {
+      return {
+        usable: false,
+        rows: [],
+        pages,
+        reason: `page starting at ${from} failed: ${page.error}`,
+      }
+    }
+
+    rows.push(...page.rows)
+
+    if (rows.length > expected) {
+      return {
+        usable: false,
+        rows: [],
+        pages,
+        reason: `more rows arrived than expected: ${rows.length} against ${expected}, so the source changed mid-read`,
+      }
+    }
+    if (page.rows.length < pageSize) break
+  }
+
+  const assessment = assessBatch({ rowsExpected: expected, rowsReturned: rows.length })
+  if (!assessment.usable) {
+    return { usable: false, rows: [], pages, reason: assessment.reason ?? 'the batch did not reconcile' }
+  }
+
+  return { usable: true, rows, pages }
+}
