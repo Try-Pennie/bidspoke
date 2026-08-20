@@ -371,6 +371,20 @@ export default {
             return notifyExportFailure(supabase, 'Lead sighting bids purge', [formatErr(e)], env.IDEMPOTENCY)
           })
       )
+    } else if (event.cron === '23 * * * *') {
+      // Execution archive to Snowflake (#871, Phase A3). SHADOW: it writes the
+      // archive and its own bookkeeping, and changes nothing about what any job
+      // deletes. Both destructive jobs stay untouched until A5 (#873).
+      ctx.waitUntil(
+        (async () => {
+          await writeHeartbeat(env.IDEMPOTENCY, 'execution-archive')
+          const { runExecutionArchive } = await import('./lib/execution-archive')
+          const { sendArchiveBatch } = await import('./lib/execution-archive-send')
+          return runExecutionArchive(env, supabase, {
+            sendBatch: (rows) => sendArchiveBatch(env, rows),
+          })
+        })().catch((e) => console.error('[execution-archive] failed:', e))
+      )
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(
         syncAllSalesforceConfigs(env, supabase)

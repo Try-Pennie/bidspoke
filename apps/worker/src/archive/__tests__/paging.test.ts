@@ -41,23 +41,52 @@ describe('stepWindowFor', () => {
 
 describe('fetchAllPages', () => {
   const pageOf = (n: number, offset = 0): { id: string }[] =>
-    Array.from({ length: n }, (_, i) => ({ id: `row-${offset + i}` }))
+    Array.from({ length: n }, (_, i) => ({ id: `row-${String(offset + i).padStart(6, '0')}` }))
 
-  it('keeps paging while pages come back full, and stops on a short one', async () => {
-    const calls: Array<[number, number]> = []
+  const cursorOf = (row: { id: string }): string => row.id
+
+  // Offset paging makes the database walk and discard every row before the
+  // offset, so page cost grows linearly and a deep page eventually exceeds the
+  // statement timeout. Measured against production on 2026-08-20: reading one
+  // real hour of steps failed at offset 48,000 of roughly 52,800 with
+  // "canceling statement due to statement timeout". Cursor paging is O(page)
+  // regardless of depth.
+  it('pages by cursor, never by offset', async () => {
+    const seen: Array<string | null> = []
     const result = await fetchAllPages<{ id: string }>({
       expected: 250,
       pageSize: 100,
-      fetchPage: async (from, to) => {
-        calls.push([from, to])
-        if (from >= 200) return { rows: pageOf(50, from) }
-        return { rows: pageOf(100, from) }
+      cursorOf,
+      fetchPage: async (cursor, limit) => {
+        seen.push(cursor)
+        const start = cursor === null ? 0 : Number(cursor.slice(4)) + 1
+        return { rows: pageOf(Math.min(limit, 250 - start), start) }
       },
     })
 
     expect(result.usable).toBe(true)
+    if (!result.usable) return
     expect(result.rows).toHaveLength(250)
-    expect(calls).toEqual([[0, 99], [100, 199], [200, 299]])
+    // First page has no cursor, each later page carries the last row of the one before.
+    expect(seen[0]).toBeNull()
+    expect(seen[1]).toBe('row-000099')
+    expect(seen[2]).toBe('row-000199')
+  })
+
+  it('stops on a short page', async () => {
+    const result = await fetchAllPages<{ id: string }>({
+      expected: 150,
+      pageSize: 100,
+      cursorOf,
+      fetchPage: async (cursor, limit) => {
+        const start = cursor === null ? 0 : Number(cursor.slice(4)) + 1
+        return { rows: pageOf(Math.min(limit, 150 - start), start) }
+      },
+    })
+
+    expect(result.usable).toBe(true)
+    if (!result.usable) return
+    expect(result.pages).toBe(2)
   })
 
   // A short read is FASTER, so truncation presents as a performance win. The
@@ -66,7 +95,8 @@ describe('fetchAllPages', () => {
     const result = await fetchAllPages<{ id: string }>({
       expected: 250,
       pageSize: 100,
-      fetchPage: async (from) => (from >= 100 ? { rows: [] } : { rows: pageOf(100, from) }),
+      cursorOf,
+      fetchPage: async (cursor) => (cursor === null ? { rows: pageOf(100) } : { rows: [] }),
     })
 
     expect(result.usable).toBe(false)
@@ -79,6 +109,7 @@ describe('fetchAllPages', () => {
       fetchAllPages<{ id: string }>({
         expected: 10,
         pageSize: POSTGREST_ROW_CAP + 1,
+        cursorOf,
         fetchPage: async () => ({ rows: [] }),
       }),
     ).rejects.toThrow(new RegExp(String(POSTGREST_ROW_CAP)))
@@ -88,13 +119,14 @@ describe('fetchAllPages', () => {
     const result = await fetchAllPages<{ id: string }>({
       expected: 250,
       pageSize: 100,
-      fetchPage: async (from) =>
-        from === 100 ? { rows: [], error: 'connection reset' } : { rows: pageOf(100, from) },
+      cursorOf,
+      fetchPage: async (cursor) =>
+        cursor === null ? { rows: pageOf(100) } : { rows: [], error: 'canceling statement due to statement timeout' },
     })
 
     expect(result.usable).toBe(false)
     if (result.usable) return
-    expect(result.reason).toMatch(/connection reset/)
+    expect(result.reason).toMatch(/statement timeout/)
   })
 
   it('treats an expectation of zero as its own outcome, not as an error', async () => {
@@ -102,6 +134,7 @@ describe('fetchAllPages', () => {
     const result = await fetchAllPages<{ id: string }>({
       expected: 0,
       pageSize: 100,
+      cursorOf,
       fetchPage: async () => {
         called = true
         return { rows: [] }
@@ -109,20 +142,21 @@ describe('fetchAllPages', () => {
     })
 
     expect(result.usable).toBe(true)
+    if (!result.usable) return
     expect(result.rows).toEqual([])
     expect(called).toBe(false)
   })
 
-  // If the table grew between the count and the read, pages keep arriving full
-  // past the expectation. Reading forever would burn the whole run's budget.
   it('stops and refuses when more rows keep arriving than were expected', async () => {
     let pages = 0
     const result = await fetchAllPages<{ id: string }>({
       expected: 100,
       pageSize: 100,
-      fetchPage: async (from) => {
+      cursorOf,
+      fetchPage: async (cursor) => {
+        const start = cursor === null ? 0 : Number(cursor.slice(4)) + 1
         pages++
-        return { rows: pageOf(100, from) }
+        return { rows: pageOf(100, start) }
       },
     })
 
@@ -130,5 +164,20 @@ describe('fetchAllPages', () => {
     if (result.usable) return
     expect(result.reason).toMatch(/more rows/)
     expect(pages).toBeLessThanOrEqual(3)
+  })
+
+  // Without a cursor the pager cannot advance, so it would request the same
+  // page forever. Refusing names the cause instead of hanging.
+  it('refuses a row it cannot derive a cursor from', async () => {
+    const result = await fetchAllPages<{ id: string }>({
+      expected: 200,
+      pageSize: 100,
+      cursorOf: () => '',
+      fetchPage: async () => ({ rows: pageOf(100) }),
+    })
+
+    expect(result.usable).toBe(false)
+    if (result.usable) return
+    expect(result.reason).toMatch(/cursor/)
   })
 })

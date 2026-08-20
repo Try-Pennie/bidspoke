@@ -11,7 +11,8 @@ interface RecordedQuery {
   head: boolean
   gte: Record<string, string>
   lt: Record<string, string>
-  range?: [number, number]
+  gt?: Record<string, string>
+  limit?: number
   order?: string
 }
 
@@ -57,8 +58,12 @@ function fakeSupabase(opts: {
           q.order = col
           return builder
         },
-        range(from: number, to: number) {
-          q.range = [from, to]
+        gt(col: string, value: string) {
+          q.gt = { ...(q.gt ?? {}), [col]: value }
+          return builder
+        },
+        limit(n: number) {
+          q.limit = n
           return builder
         },
         then(resolve: (v: { data: unknown; error: null; count: number | null }) => void) {
@@ -66,8 +71,10 @@ function fakeSupabase(opts: {
             resolve({ data: null, error: null, count: countFor(table) })
             return
           }
-          const [from, to] = q.range ?? [0, rowsFor(table).length - 1]
-          resolve({ data: rowsFor(table).slice(from, to + 1), error: null, count: null })
+          const all = rowsFor(table)
+          const after = q.gt?.id
+          const start = after === undefined ? 0 : all.findIndex((r) => String(r.id) === after) + 1
+          resolve({ data: all.slice(start, start + (q.limit ?? all.length)), error: null, count: null })
         },
       }
       return builder
@@ -114,6 +121,7 @@ describe('fetchHour', () => {
 
     for (const q of queries.filter((q) => !q.head)) {
       expect(q.order, `${q.table} was paged without an order`).toBe('id')
+      expect(q.limit, `${q.table} was paged without a limit`).toBeGreaterThan(0)
     }
   })
 
@@ -211,5 +219,50 @@ describe('fetchHour', () => {
     expect(result.bundles).toEqual([])
     expect(result.empty).toBe(true)
     expect(queries.some((q) => q.table === 'execution_steps')).toBe(false)
+  })
+})
+
+// The run loop stops cleanly before it exhausts its per-invocation request
+// allowance. That stop is only real if the count it works from is the count that
+// actually happened: a hand-picked estimate drifts, and a guard working from a
+// number far below reality can never fire, so the platform limit arrives as a
+// crash mid-batch instead (L182).
+describe('fetchHour reports the requests it actually made', () => {
+  it('counts both counts and both paged reads', async () => {
+    const supabase = fakeSupabase({
+      executions: [execution('e1')],
+      steps: [step('s1', 'e1')],
+      queries: [],
+    })
+
+    const result = await fetchHour(supabase, HOUR_START, HOUR_END)
+
+    expect(result.usable).toBe(true)
+    if (!result.usable) return
+    // two counts plus one page each.
+    expect(result.requests).toBe(4)
+  })
+
+  it('counts every page, so a big hour reports more than a small one', async () => {
+    const many = Array.from({ length: 2500 }, (_, i) => execution(`e${i}`))
+    const supabase = fakeSupabase({ executions: many, steps: [], queries: [] })
+
+    const result = await fetchHour(supabase, HOUR_START, HOUR_END)
+
+    expect(result.usable).toBe(true)
+    if (!result.usable) return
+    // 2,500 executions is three pages of 1,000, plus its count, plus the step
+    // count, plus at least one step read.
+    expect(result.requests).toBeGreaterThan(4)
+  })
+
+  it('reports the requests an empty hour cost, rather than none', async () => {
+    const supabase = fakeSupabase({ executions: [], steps: [], queries: [] })
+
+    const result = await fetchHour(supabase, HOUR_START, HOUR_END)
+
+    expect(result.usable).toBe(true)
+    if (!result.usable) return
+    expect(result.requests).toBe(1)
   })
 })
