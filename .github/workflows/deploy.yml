@@ -85,17 +85,33 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: filter
         with:
+          # `packages/**` is in EVERY target, deliberately as a superset rather
+          # than per-consumer (#869). Shared code is imported by more than one app,
+          # and a filter derived from real dependency edges would silently miss a
+          # package newly imported by an app whose filter nobody revisited. Without
+          # it, a commit touching only shared code deploys nowhere AND all three
+          # drift checks report every target up to date, because they ask git about
+          # the same paths: the guard built to catch a stranded deploy would be
+          # blind to this one by construction (#327, #802, #804).
+          #
+          # Over-triggering costs nothing: Deploy Worker compares built bundle
+          # bytes and skips when they match, and a redundant Pages deploy is free.
+          # Guarded by
+          # apps/web/src/lib/__tests__/deploy-covers-shared-packages.test.ts.
           filters: |
             worker:
               - 'apps/worker/**'
+              - 'packages/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
             worker_tail:
               - 'apps/worker-tail/**'
+              - 'packages/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
             pages:
               - 'apps/web/**'
+              - 'packages/**'
               - 'pnpm-lock.yaml'
               - 'package.json'
 

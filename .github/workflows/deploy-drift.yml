@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           LIVE_SHA=$(curl -fsS "$WORKER_URL/" | jq -r '.version // "unknown"')
-          LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker)
+          LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker packages)
           echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
           echo "live_sha=$LIVE_SHA" >> "$GITHUB_OUTPUT"
           echo "last_worker_commit=$LAST_WORKER_COMMIT" >> "$GITHUB_OUTPUT"
@@ -289,7 +289,7 @@ jobs:
           # The same paths that gate Deploy Pages in deploy.yml. Asking a
           # different question than the deploy asks is exactly what made the
           # worker check page for a month with nothing unshipped (#802, L144).
-          LAST_WEB_COMMIT=$(git log -1 --format=%H -- apps/web pnpm-lock.yaml package.json)
+          LAST_WEB_COMMIT=$(git log -1 --format=%H -- apps/web packages pnpm-lock.yaml package.json)
           echo "last_web_commit=$LAST_WEB_COMMIT" >> "$GITHUB_OUTPUT"
 
           OBSERVATIONS=""
@@ -446,7 +446,7 @@ jobs:
           fi
 
           # The same paths that gate Deploy Worker Tail in deploy.yml.
-          LAST_TAIL_COMMIT=$(git log -1 --format=%H -- apps/worker-tail pnpm-lock.yaml package.json)
+          LAST_TAIL_COMMIT=$(git log -1 --format=%H -- apps/worker-tail packages pnpm-lock.yaml package.json)
           echo "tail=$TAIL_SHA last_tail_commit=$LAST_TAIL_COMMIT"
           echo "last_tail_commit=$LAST_TAIL_COMMIT" >> "$GITHUB_OUTPUT"
 
