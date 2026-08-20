@@ -225,7 +225,17 @@ the reader cannot DELETE, and under ALL that held by circumstance rather than by
 construction. Granting any second role to one of those users, for any reason,
 would have activated it silently. The setup script now creates them with no
 secondary roles and carries the ALTER statements to bring an existing set into
-line.
+line. Applied to the live account the same day and read back: all three report an
+empty `DEFAULT_SECONDARY_ROLES`.
+
+Applying it also produced a smaller lesson worth keeping, because it will recur
+on the key statements. The three ALTERs were first issued on one line, and
+Snowsight applied only the LAST of them and reported success. Two identities kept
+the setting being removed and nothing indicated a partial result; it was caught
+only by reading the state back. The same mistake on the key statements would set
+one identity's key, look like it worked, and leave the other two unable to
+authenticate. The script now says this at the top rather than assuming whoever
+runs it knows.
 
 **Not yet done in A2**: three RSA key pairs and six Worker secrets, so no identity
 can authenticate to any of this yet. The role refusal checks (proving the reader
