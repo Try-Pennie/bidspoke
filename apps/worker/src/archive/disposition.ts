@@ -33,6 +33,12 @@ export const EXPECTED_ORGANIZATION_SLUG = 'trypennie.com'
  */
 export const ARCHIVE_DEADLINE_MS = 24 * 60 * 60 * 1000
 
+/** A workflow's owning organization: the id the archive stores, the slug it judges. */
+export interface WorkflowOrganization {
+  id: string
+  slug: string
+}
+
 export interface Disposition {
   action: 'archive' | 'refuse'
   /** True when archived at the deadline while still non-terminal. */
@@ -45,7 +51,7 @@ const TERMINAL_STATUSES = new Set(['success', 'failed', 'error', 'rejected', 'ex
 
 export function dispositionFor(
   execution: Record<string, unknown>,
-  ctx: { now: Date; organizationOf: Map<string, string> },
+  ctx: { now: Date; organizationOf: Map<string, WorkflowOrganization> },
 ): Disposition {
   const id = typeof execution.id === 'string' ? execution.id : '(no id)'
   const workflowId = typeof execution.workflow_id === 'string' ? execution.workflow_id : ''
@@ -61,12 +67,12 @@ export function dispositionFor(
       reason: `execution ${id} belongs to workflow ${workflowId || '(none)'}, which maps to no organization`,
     }
   }
-  if (organization !== EXPECTED_ORGANIZATION_SLUG) {
+  if (organization.slug !== EXPECTED_ORGANIZATION_SLUG) {
     return {
       action: 'refuse',
       incomplete: false,
       reason:
-        `execution ${id} belongs to organization ${organization}, not ${EXPECTED_ORGANIZATION_SLUG}. ` +
+        `execution ${id} belongs to organization ${organization.slug}, not ${EXPECTED_ORGANIZATION_SLUG}. ` +
         `The archive has no database-layer tenant boundary because only one organization has ever produced executions, ` +
         `and that is no longer true.`,
     }

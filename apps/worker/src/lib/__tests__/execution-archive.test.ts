@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { toRow, initialWatermark, MAX_HOURS_PER_RUN, WALL_TIME_BUDGET_MS } from '../execution-archive'
 import type { EncodedForSend } from '../../archive/run-loop'
+import type { ArchiveScalars } from '../../archive/scalars'
 
 const encoded = (executionId: string, stepCount = 3): EncodedForSend => ({
   executionId,
@@ -9,12 +10,34 @@ const encoded = (executionId: string, stepCount = 3): EncodedForSend => ({
   stepCount,
 })
 
+const someScalars: ArchiveScalars = {
+  organizationId: 'org-1',
+  workflowId: 'wf-1',
+  workflowVersionId: null,
+  parentExecutionId: null,
+  resumedFromExecutionId: null,
+  traceId: null,
+  source: null,
+  status: 'success',
+  outcome: null,
+  isTest: false,
+  startedAtUtc: '2026-08-16T11:00:00.000',
+  completedAtUtc: null,
+  durationMs: null,
+  costUsd: null,
+}
+
+/** Scalars present for every id the caller mentions, which is the healthy case. */
+const scalarsFor = (...ids: string[]): Map<string, ArchiveScalars> =>
+  new Map(ids.map((id) => [id, someScalars]))
+
 describe('toRow', () => {
   it('stamps the day the execution belongs to, taken per execution', () => {
     const row = toRow(
       encoded('e1'),
       new Map([['e1', '2026-08-16']]),
       new Map([['e1', false]]),
+      scalarsFor('e1'),
     )
 
     expect(row.archiveDay).toBe('2026-08-16')
@@ -22,7 +45,7 @@ describe('toRow', () => {
   })
 
   it('carries the incomplete marker for an execution archived at the deadline', () => {
-    const row = toRow(encoded('e1'), new Map([['e1', '2026-08-16']]), new Map([['e1', true]]))
+    const row = toRow(encoded('e1'), new Map([['e1', '2026-08-16']]), new Map([['e1', true]]), scalarsFor('e1'))
 
     expect(row.incomplete).toBe(true)
   })
@@ -32,12 +55,27 @@ describe('toRow', () => {
   // came from: the Snowflake count would see it and the Postgres count would
   // not, and that day would refuse deletion forever with nothing explaining why.
   it('refuses to build a row with no archive day rather than sending a blank one', () => {
-    expect(() => toRow(encoded('e1'), new Map(), new Map())).toThrow(/no archive day/)
-    expect(() => toRow(encoded('e1'), new Map([['e1', '']]), new Map())).toThrow(/no archive day/)
+    expect(() => toRow(encoded('e1'), new Map(), new Map(), scalarsFor('e1'))).toThrow(/no archive day/)
+    expect(() => toRow(encoded('e1'), new Map([['e1', '']]), new Map(), scalarsFor('e1'))).toThrow(/no archive day/)
+  })
+
+  // Three of the archive table's columns are NOT NULL and all three come from
+  // here, so a row that reached the send without scalars cannot be written and
+  // must not travel in a batch alongside rows that can: the whole statement
+  // would be rejected and the hour would stall.
+  it('refuses to build a row with no scalars rather than sending a partial one', () => {
+    expect(() => toRow(encoded('e1'), new Map([['e1', '2026-08-16']]), new Map(), new Map())).toThrow(/no scalars/)
+  })
+
+  it('carries the scalars through to the row', () => {
+    const row = toRow(encoded('e1'), new Map([['e1', '2026-08-16']]), new Map(), scalarsFor('e1'))
+
+    expect(row.scalars.organizationId).toBe('org-1')
+    expect(row.scalars.startedAtUtc).toBe('2026-08-16T11:00:00.000')
   })
 
   it('names the execution it could not place, so the refusal is actionable', () => {
-    expect(() => toRow(encoded('e-missing'), new Map(), new Map())).toThrow(/e-missing/)
+    expect(() => toRow(encoded('e-missing'), new Map(), new Map(), scalarsFor('e-missing'))).toThrow(/e-missing/)
   })
 
   // Two executions in one batch can belong to different days, because an hour
@@ -49,8 +87,8 @@ describe('toRow', () => {
       ['after', '2026-08-17'],
     ])
 
-    expect(toRow(encoded('before'), days, new Map()).archiveDay).toBe('2026-08-16')
-    expect(toRow(encoded('after'), days, new Map()).archiveDay).toBe('2026-08-17')
+    expect(toRow(encoded('before'), days, new Map(), scalarsFor('before')).archiveDay).toBe('2026-08-16')
+    expect(toRow(encoded('after'), days, new Map(), scalarsFor('after')).archiveDay).toBe('2026-08-17')
   })
 })
 
@@ -61,13 +99,13 @@ describe('the step count the deletion gate reads', () => {
   // count instead, both sides agree perfectly while every bundle is short, which
   // is exactly the truncation the paging guard exists to catch (L63).
   it('carries the count through to the row rather than recomputing it', () => {
-    const row = toRow(encoded('e1', 14), new Map([['e1', '2026-08-16']]), new Map())
+    const row = toRow(encoded('e1', 14), new Map([['e1', '2026-08-16']]), new Map(), scalarsFor('e1'))
 
     expect(row.stepCount).toBe(14)
   })
 
   it('carries a genuine zero for an execution that logged no steps', () => {
-    const row = toRow(encoded('e1', 0), new Map([['e1', '2026-08-16']]), new Map())
+    const row = toRow(encoded('e1', 0), new Map([['e1', '2026-08-16']]), new Map(), scalarsFor('e1'))
 
     expect(row.stepCount).toBe(0)
   })

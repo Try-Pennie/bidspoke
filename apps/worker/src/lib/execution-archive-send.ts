@@ -16,6 +16,77 @@ import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from '
 import type { ArchiveRow } from './execution-archive'
 import type { Env } from '../index'
 
+/** A SQL literal, already escaped and quoted, or the NULL keyword. */
+function text(value: string | null): string {
+  return value === null ? 'NULL' : `'${escapeSqlLiteral(value)}'`
+}
+
+function timestamp(value: string | null): string {
+  return value === null ? 'NULL' : `'${escapeSqlLiteral(value)}'::TIMESTAMP_NTZ`
+}
+
+/**
+ * A number, or NULL. NaN and Infinity are refused rather than interpolated,
+ * because both render as a bare word that Snowflake reads as an identifier, and
+ * the statement then fails for a reason that names a column rather than a value.
+ */
+function numeric(value: number | null): string {
+  if (value === null) return 'NULL'
+  if (!Number.isFinite(value)) throw new Error(`refusing to write ${String(value)} as a number`)
+  return String(value)
+}
+
+function boolean(value: boolean | null): string {
+  if (value === null) return 'NULL'
+  return value ? 'TRUE' : 'FALSE'
+}
+
+/**
+ * How each column of the archive table gets its value.
+ *
+ * The column list and the VALUES tuple are derived from this one map rather
+ * than written twice, so they cannot drift into a silent off-by-one where every
+ * row is written with its fields shifted. That is a class of defect the
+ * database cannot catch whenever the shifted columns share a type.
+ */
+const VALUE_OF: Record<string, (row: ArchiveRow, archivedAtUtc: string) => string> = {
+  execution_id: (r) => text(r.executionId),
+  archive_day: (r) => `${text(r.archiveDay)}::DATE`,
+  organization_id: (r) => text(r.scalars.organizationId),
+  workflow_id: (r) => text(r.scalars.workflowId),
+  workflow_version_id: (r) => text(r.scalars.workflowVersionId),
+  parent_execution_id: (r) => text(r.scalars.parentExecutionId),
+  resumed_from_execution_id: (r) => text(r.scalars.resumedFromExecutionId),
+  trace_id: (r) => text(r.scalars.traceId),
+  source: (r) => text(r.scalars.source),
+  status: (r) => text(r.scalars.status),
+  outcome: (r) => text(r.scalars.outcome),
+  is_test: (r) => boolean(r.scalars.isTest),
+  started_at_utc: (r) => timestamp(r.scalars.startedAtUtc),
+  completed_at_utc: (r) => timestamp(r.scalars.completedAtUtc),
+  duration_ms: (r) => numeric(r.scalars.durationMs),
+  cost_usd: (r) => numeric(r.scalars.costUsd),
+  step_count: (r) => String(r.stepCount),
+  archived_incomplete: (r) => boolean(r.incomplete),
+  // Left unwritten until #927 decides where it comes from. Nullable, and the
+  // erasure path in A7 (#875) is documented as never resolving through it alone.
+  ssn_hash: () => 'NULL',
+  bundle_gz_b64: (r) => text(r.wire),
+  bundle_bytes: (r) => String(r.wire.length),
+  archived_at_utc: (_r, archivedAtUtc) => timestamp(archivedAtUtc),
+}
+
+/**
+ * The columns this INSERT names, in the order the VALUES tuples supply them.
+ *
+ * Exported so a test can compare it against the committed table definition. The
+ * table is created by a SQL file run by hand against Snowflake, so nothing else
+ * in the build relates the two, and a column the table requires and this list
+ * omits is a constraint violation on the first real send rather than a test
+ * failure.
+ */
+export const insertColumns: string[] = Object.keys(VALUE_OF)
+
 /**
  * Builds the INSERT for one batch.
  *
@@ -23,29 +94,20 @@ import type { Env } from '../index'
  * carries no quote to escape, and the batch is sized in bytes against a
  * statement limit measured at 50 MB. Every value still goes through
  * escapeSqlLiteral, because "this input cannot contain a quote" is exactly the
- * assumption that stops being true later.
+ * assumption that stops being true later, and unlike the bundle these scalars
+ * carry free text a person wrote (a source name, an outcome).
  */
 export function buildInsert(rows: ArchiveRow[], archivedAtUtc: string): string {
   if (rows.length === 0) {
     throw new Error('refusing to build an INSERT for an empty batch, which would report a send that sent nothing')
   }
   const values = rows
-    .map((r) => {
-      return (
-        `('${escapeSqlLiteral(r.executionId)}',` +
-        `'${escapeSqlLiteral(r.archiveDay)}'::DATE,` +
-        `${r.incomplete ? 'TRUE' : 'FALSE'},` +
-        `${r.stepCount},` +
-        `'${escapeSqlLiteral(r.wire)}',` +
-        `${r.wire.length},` +
-        `'${escapeSqlLiteral(archivedAtUtc)}'::TIMESTAMP_NTZ)`
-      )
-    })
+    .map((r) => `(${insertColumns.map((column) => VALUE_OF[column](r, archivedAtUtc)).join(',')})`)
     .join(',')
 
   return (
     `INSERT INTO ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
-    `(execution_id, archive_day, archived_incomplete, step_count, bundle_gz_b64, bundle_bytes, archived_at_utc) ` +
+    `(${insertColumns.join(', ')}) ` +
     `VALUES ${values}`
   )
 }

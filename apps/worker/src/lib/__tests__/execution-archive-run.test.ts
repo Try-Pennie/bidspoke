@@ -47,6 +47,10 @@ function fakeKv(seed: Record<string, string> = {}) {
  */
 function fakeSupabase(over: { workflows?: unknown[]; failOn?: string; watermark?: string } = {}) {
   const writes: Array<{ table: string; rows: unknown }> = []
+  // The watermark the double reports MOVES when the job writes it. A fixed one
+  // makes the loop re-read the same hour every pass and stop only on its hour
+  // cap, so a test about one hour silently becomes a test about four.
+  let watermark = over.watermark
   const client = {
     from(table: string) {
       const builder: Record<string, unknown> = {
@@ -57,12 +61,17 @@ function fakeSupabase(over: { workflows?: unknown[]; failOn?: string; watermark?
         order: () => builder,
         range: () => builder,
         maybeSingle: async () => ({
-          data: over.watermark === undefined ? null : { watermark_hour: over.watermark },
+          data: watermark === undefined ? null : { watermark_hour: watermark },
           error: null,
         }),
         upsert: async (rows: unknown) => {
           writes.push({ table, rows })
-          return { error: over.failOn === table ? { message: 'write refused' } : null }
+          if (over.failOn === table) return { error: { message: 'write refused' } }
+          if (table === 'execution_archive_progress') {
+            const hour = (rows as { watermark_hour?: unknown }).watermark_hour
+            if (typeof hour === 'string') watermark = hour
+          }
+          return { error: null }
         },
         then: (resolve: (v: unknown) => void) => {
           if (table === 'workflows') {
@@ -237,10 +246,175 @@ describe('runExecutionArchive', () => {
   })
 })
 
+/**
+ * The archive table requires an organization, a workflow and a start, and all
+ * three come off the execution row. A row missing one cannot be written at all,
+ * so what matters is WHERE that is discovered: per execution, where a refusal is
+ * a recorded outcome and the hour still finishes, or at the send, where the
+ * whole batch is rejected and the watermark stalls on an hour that can never
+ * pass (L47, L110).
+ */
+describe('an execution the archive table could not accept', () => {
+  const HOUR = '2026-08-18T09:00:00.000Z'
+  const NOW = () => new Date('2026-08-18T12:00:00.000Z')
+
+  const bundle = (over: Record<string, unknown> = {}) => ({
+    executionId: 'e1',
+    execution: {
+      id: 'e1',
+      workflow_id: 'wf-live',
+      status: 'success',
+      started_at: HOUR,
+      ...over,
+    },
+    steps: [],
+  })
+
+  const withHour = (bundles: unknown[]) => {
+    fetchHour.mockResolvedValue({
+      usable: true,
+      empty: false,
+      bundles,
+      executionCount: bundles.length,
+      stepCount: 0,
+      requests: 3,
+    })
+  }
+
+  const live = {
+    watermark: '2026-08-18T08:00:00.000Z',
+    workflows: [{ id: 'wf-live', organizations: { id: 'org-live', slug: 'trypennie.com' } }],
+  }
+
+  const refusals = (writes: Array<{ table: string; rows: unknown }>) =>
+    writes.filter((w) => w.table === 'execution_archive_refusals')
+
+  it('sends the row, carrying its scalars, when everything required is present', async () => {
+    withHour([bundle()])
+    const { client, writes } = fakeSupabase(live)
+    const sendBatch = vi.fn()
+
+    const result = await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
+
+    expect(refusals(writes)).toEqual([])
+    expect(sendBatch).toHaveBeenCalledTimes(1)
+    const sent = sendBatch.mock.calls[0][0] as Array<{ scalars: { organizationId: string } }>
+    expect(sent[0].scalars.organizationId).toBe('org-live')
+    expect(result.executionsArchived).toBe(1)
+  })
+
+  it('refuses it by id, and still finishes the hour, when it has no workflow', async () => {
+    withHour([bundle({ workflow_id: null })])
+    const { client, writes } = fakeSupabase(live)
+    const sendBatch = vi.fn()
+
+    const result = await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
+
+    expect(refusals(writes).length).toBe(1)
+    expect(sendBatch).not.toHaveBeenCalled()
+    // The hour still advanced: a refusal is permanent for that execution, so
+    // holding the watermark for it would stop all archiving forever.
+    expect(result.stop).not.toBe('read-failed')
+    expect(result.executionsArchived).toBe(0)
+  })
+
+  /**
+   * The one route by which a MISSING SCALAR, rather than the tenancy check, is
+   * what refuses a row in the running job.
+   *
+   * Every other required scalar is already required by something upstream: the
+   * organization comes from a lookup keyed on the workflow id, so neither can be
+   * absent without the tenancy check refusing first. A TERMINAL execution is the
+   * exception, because it is dispositioned without its start ever being read,
+   * and started_at_utc is NOT NULL on the archive table.
+   *
+   * Worth pinning rather than assuming, because a test aimed at this that
+   * tripped the tenancy check instead would pass while proving nothing about the
+   * check it named (L159).
+   */
+  it('refuses a terminal execution whose start cannot be read, naming that column', async () => {
+    withHour([bundle({ status: 'success', started_at: null })])
+    const { client, writes } = fakeSupabase(live)
+    const sendBatch = vi.fn()
+
+    await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
+
+    expect(sendBatch).not.toHaveBeenCalled()
+    const row = refusals(writes)[0].rows as { reason: string; execution_id: string }
+    expect(row.execution_id).toBe('e1')
+    expect(row.reason).toMatch(/started_at/)
+    // Named by the scalars, not by the tenancy check, which would have refused
+    // it for an entirely different reason.
+    expect(row.reason).not.toMatch(/organization/)
+  })
+
+  /**
+   * A workflow whose organization row came back without an id is UNMAPPED, not
+   * half-mapped.
+   *
+   * Both readings refuse the execution, so "it was refused" cannot tell them
+   * apart; the reason can. Half-mapping lets the slug satisfy the tenancy check
+   * and leaves the scalars to report a missing organization id, which reads as a
+   * fault in this job rather than as a workflow whose organization could not be
+   * resolved. The ledger is the only record anyone reads afterwards, so the
+   * reason on it is the whole difference (L11).
+   */
+  it('refuses an execution whose workflow maps to an organization with no id, as unmapped', async () => {
+    withHour([bundle()])
+    const { client, writes } = fakeSupabase({
+      ...live,
+      workflows: [{ id: 'wf-live', organizations: { slug: 'trypennie.com' } }],
+    })
+    const sendBatch = vi.fn()
+
+    await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
+
+    expect(sendBatch).not.toHaveBeenCalled()
+    expect(refusals(writes).length).toBe(1)
+    const row = refusals(writes)[0].rows as { reason: string }
+    expect(row.reason).toMatch(/maps to no organization/)
+  })
+
+  it('refuses an execution from another organization before anything is encoded', async () => {
+    withHour([bundle({ workflow_id: 'wf-e2e' })])
+    const { client, writes } = fakeSupabase({
+      ...live,
+      workflows: [
+        { id: 'wf-live', organizations: { id: 'org-live', slug: 'trypennie.com' } },
+        { id: 'wf-e2e', organizations: { id: 'org-e2e', slug: 'E2E Test' } },
+      ],
+    })
+    const sendBatch = vi.fn()
+
+    await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
+
+    expect(sendBatch).not.toHaveBeenCalled()
+    const row = refusals(writes)[0].rows as { reason: string }
+    expect(row.reason).toMatch(/E2E Test/)
+  })
+})
+
 describe('sendArchiveBatch', () => {
+  const scalars = {
+    organizationId: 'org-1',
+    workflowId: 'wf-1',
+    workflowVersionId: null,
+    parentExecutionId: null,
+    resumedFromExecutionId: null,
+    traceId: null,
+    source: null,
+    status: 'success',
+    outcome: null,
+    isTest: false,
+    startedAtUtc: '2026-08-16T11:00:00.000',
+    completedAtUtc: null,
+    durationMs: null,
+    costUsd: null,
+  }
+
   const rows = [
-    { executionId: 'a', archiveDay: '2026-08-16', wire: 'x', incomplete: false, stepCount: 2 },
-    { executionId: 'b', archiveDay: '2026-08-16', wire: 'y', incomplete: false, stepCount: 3 },
+    { executionId: 'a', archiveDay: '2026-08-16', wire: 'x', incomplete: false, stepCount: 2, scalars },
+    { executionId: 'b', archiveDay: '2026-08-16', wire: 'y', incomplete: false, stepCount: 3, scalars },
   ]
 
   const env = {

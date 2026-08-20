@@ -14,7 +14,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
 import { alertsFor } from '../archive/alerts'
-import { dispositionFor } from '../archive/disposition'
+import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
+import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
 import { archiveDay } from '../archive/clock'
 import { encodeBundle } from '../archive/bundle'
 import { fetchHour } from '../archive/hour-fetch'
@@ -58,6 +59,8 @@ export interface ArchiveRow {
   incomplete: boolean
   /** From the encoded bundle, never recomputed here. See EncodedForSend. */
   stepCount: number
+  /** Copied off the execution row, so later phases need not decompress. */
+  scalars: ArchiveScalars
 }
 
 export interface ArchiveDeps {
@@ -118,6 +121,7 @@ export async function runExecutionArchive(
      */
     const dayById = new Map<string, string>()
     const incompleteById = new Map<string, boolean>()
+    const scalarsById = new Map<string, ArchiveScalars>()
 
     const deadline = now().getTime() + WALL_TIME_BUDGET_MS
     let subrequests = 900
@@ -162,8 +166,23 @@ export async function runExecutionArchive(
             await upsertRefusal(supabase, bundle.executionId, day, d.reason ?? 'refused', now())
             continue
           }
+          // The archive table requires an organization, a workflow and a start.
+          // A row missing any of them is refused BY ID here, where a refusal is
+          // already an outcome the loop records, rather than at the send, where
+          // it would fail a whole batch and stall the watermark on an hour that
+          // could never pass.
+          const workflowId = bundle.execution.workflow_id
+          const scalars = scalarsFor(
+            bundle.execution,
+            typeof workflowId === 'string' ? organizationOf.get(workflowId)?.id : undefined,
+          )
+          if (!scalars.ok) {
+            await upsertRefusal(supabase, bundle.executionId, day, scalars.reason, now())
+            continue
+          }
           dayById.set(bundle.executionId, day)
           incompleteById.set(bundle.executionId, d.incomplete)
+          scalarsById.set(bundle.executionId, scalars.scalars)
           keep.push(bundle)
         }
         return { ...hour, bundles: keep }
@@ -179,7 +198,7 @@ export async function runExecutionArchive(
       },
       send: async (batch: EncodedForSend[]) => {
         subrequests -= 1
-        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById)))
+        await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)))
       },
       recordArchived: async (executionIds) => {
         subrequests -= 1
@@ -233,6 +252,7 @@ export function toRow(
   encoded: EncodedForSend,
   dayById: Map<string, string>,
   incompleteById: Map<string, boolean>,
+  scalarsById: Map<string, ArchiveScalars>,
 ): ArchiveRow {
   const day = dayById.get(encoded.executionId)
   if (day === undefined || day === '') {
@@ -241,12 +261,20 @@ export function toRow(
     // row that can never be matched to the partition it came from.
     throw new Error(`execution ${encoded.executionId} reached the send with no archive day`)
   }
+  const scalars = scalarsById.get(encoded.executionId)
+  if (scalars === undefined) {
+    // Same refusal as the day above, for the same reason: three of these
+    // columns are NOT NULL, so a row that reached the send without them cannot
+    // be written and must not be sent alongside rows that can.
+    throw new Error(`execution ${encoded.executionId} reached the send with no scalars`)
+  }
   return {
     executionId: encoded.executionId,
     archiveDay: day,
     wire: encoded.wire,
     incomplete: incompleteById.get(encoded.executionId) === true,
     stepCount: encoded.stepCount,
+    scalars,
   }
 }
 
@@ -259,14 +287,22 @@ export function toRow(
  * real database (L52: a test whose only outside dependency is a stub you wrote
  * can only confirm your own assumption about the real interface).
  */
-async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, string>> {
-  const { data, error } = await supabase.from('workflows').select('id, organizations!workflows_organization_id_fkey(slug)')
+async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, WorkflowOrganization>> {
+  const { data, error } = await supabase
+    .from('workflows')
+    .select('id, organizations!workflows_organization_id_fkey(id, slug)')
   if (error) throw new Error(`loading workflow organizations failed: ${formatErr(error)}`)
-  const map = new Map<string, string>()
+  const map = new Map<string, WorkflowOrganization>()
   for (const row of (data ?? []) as Array<Record<string, unknown>>) {
     const id = row.id
-    const org = row.organizations as { slug?: string } | null
-    if (typeof id === 'string' && typeof org?.slug === 'string') map.set(id, org.slug)
+    const org = row.organizations as { id?: string; slug?: string } | null
+    // Both halves or neither. A workflow whose organization row came back
+    // without an id must not be recorded as known-and-live, because the slug
+    // alone would pass the tenancy check and then be refused at the scalars for
+    // a reason that reads like a different problem.
+    if (typeof id === 'string' && typeof org?.id === 'string' && typeof org.slug === 'string') {
+      map.set(id, { id: org.id, slug: org.slug })
+    }
   }
   return map
 }
