@@ -196,6 +196,17 @@ GRANT SELECT, DELETE ON TABLE BIDSPOKE.PUBLIC.LEAD_SIGHTING_BIDS  TO ROLE bidspo
 -- TYPE = SERVICE so none of these can log in to Snowsight interactively, and
 -- DEFAULT_ROLE plus DEFAULT_WAREHOUSE so a statement that forgets to set them
 -- fails closed on permissions rather than silently running as something wider.
+--
+-- DEFAULT_SECONDARY_ROLES = () is the one that is easy to miss. Snowflake's
+-- default since the 2024_08 behaviour change is ALL, which makes a session's
+-- privileges the UNION of every role granted to the user rather than just its
+-- primary role. With one role each that is currently harmless, and that is the
+-- problem: the whole safety story here is that the writer and the reader cannot
+-- DELETE, and under ALL that holds by circumstance rather than by construction.
+-- The day anyone grants a second role to one of these users for convenience, it
+-- activates silently with no explicit switch and no error. Setting it empty makes
+-- the split structural, and costs nothing, because the Worker names the role it
+-- wants on every request.
 -- Everything above this line is safe to re-run: `IF NOT EXISTS` and `GRANT` are
 -- idempotent, so a second pass changes nothing.
 --
@@ -213,6 +224,7 @@ GRANT SELECT, DELETE ON TABLE BIDSPOKE.PUBLIC.LEAD_SIGHTING_BIDS  TO ROLE bidspo
 CREATE USER IF NOT EXISTS bidspoke_archive_writer_svc
   TYPE              = SERVICE
   DEFAULT_ROLE      = bidspoke_archive_writer
+  DEFAULT_SECONDARY_ROLES = ()
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: hourly execution archive ingest (#871)';
 GRANT ROLE bidspoke_archive_writer TO USER bidspoke_archive_writer_svc;
@@ -220,6 +232,7 @@ GRANT ROLE bidspoke_archive_writer TO USER bidspoke_archive_writer_svc;
 CREATE USER IF NOT EXISTS bidspoke_archive_reader_svc
   TYPE              = SERVICE
   DEFAULT_ROLE      = bidspoke_archive_reader
+  DEFAULT_SECONDARY_ROLES = ()
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: archived execution report reads (#874)';
 GRANT ROLE bidspoke_archive_reader TO USER bidspoke_archive_reader_svc;
@@ -227,9 +240,22 @@ GRANT ROLE bidspoke_archive_reader TO USER bidspoke_archive_reader_svc;
 CREATE USER IF NOT EXISTS bidspoke_archive_eraser_svc
   TYPE              = SERVICE
   DEFAULT_ROLE      = bidspoke_archive_eraser
+  DEFAULT_SECONDARY_ROLES = ()
   DEFAULT_WAREHOUSE = ARCHIVE_WH
   COMMENT           = 'Worker: erasure requests and the 13 month expiry job (#875)';
 GRANT ROLE bidspoke_archive_eraser TO USER bidspoke_archive_eraser_svc;
+
+-- If the users already EXIST from an earlier run, `CREATE USER IF NOT EXISTS`
+-- changes nothing about them, so the secondary-roles setting above will not have
+-- been applied. Bring an existing set into line with:
+--
+--   ALTER USER bidspoke_archive_writer_svc SET DEFAULT_SECONDARY_ROLES = ();
+--   ALTER USER bidspoke_archive_reader_svc SET DEFAULT_SECONDARY_ROLES = ();
+--   ALTER USER bidspoke_archive_eraser_svc SET DEFAULT_SECONDARY_ROLES = ();
+--
+-- Safe to run whether or not they are already empty, and unlike the key
+-- statements below it cannot destroy anything: it narrows a session, it does not
+-- replace a credential.
 
 -- ============================================================================
 -- Keys: run these ONE AT A TIME, and read the check before each
