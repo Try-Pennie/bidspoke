@@ -16,11 +16,13 @@ import { notifyExportFailure } from './export-alerts'
 import { alertsFor } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
-import { archiveDay } from '../archive/clock'
+import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
 import { encodeBundle } from '../archive/bundle'
 import { fetchHour } from '../archive/hour-fetch'
 import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
 import type { Env } from '../index'
+
+const HOUR_MS = 60 * 60 * 1000
 
 /** One row, one stream. A second stream (a backfill, a replay) gets its own id. */
 export const ARCHIVE_STREAM = 'executions'
@@ -72,12 +74,38 @@ export interface ArchiveRunSummary extends RunResult {
   skipped?: 'locked'
 }
 
-/** Where a fresh watermark starts when no row exists yet. */
+/**
+ * Where a fresh watermark starts when no row exists yet.
+ *
+ * Derived from the settle window rather than picked, because picking it is what
+ * broke. This used to return the hour before the current one, which reads as
+ * "one hour back, so a first run archives one hour". Composed with
+ * `nextHourToArchive` it meant the next hour to archive was the CURRENT hour,
+ * which has not closed, so the run archived nothing, never advanced the
+ * watermark, and the next run recomputed the same too-recent watermark from the
+ * new clock. A permanent standstill by construction: the job ran hourly for 19
+ * hours on prod and its three bookkeeping tables stayed empty.
+ *
+ * The selector archives the hour AFTER the watermark, and only once that hour
+ * has closed and cleared the settle window. So the newest usable watermark is:
+ *
+ *   hourEnd   <= now - SETTLE          (fully settled)
+ *   hourStart  = watermark + 1 hour
+ *   hourEnd    = watermark + 2 hours
+ *   watermark <= now - SETTLE - 2 hours
+ *
+ * Flooring `now` to the hour keeps it on the grid the selector requires, and
+ * makes the boundary case (exactly on the hour) land on `>= SETTLE`, which the
+ * selector accepts.
+ *
+ * Newest rather than oldest on purpose: starting further back would make a
+ * first run crawl the retained window an hour at a time for no reason. The
+ * hours before it are not lost, they are simply never claimed by a fresh
+ * stream, which is what a first run should do.
+ */
 export function initialWatermark(now: Date): string {
-  // The hour before the one that just closed, so a first run archives one hour
-  // rather than attempting the entire retained window in a single invocation.
-  const ms = Math.floor(now.getTime() / 3_600_000) * 3_600_000 - 3_600_000
-  return new Date(ms).toISOString()
+  const flooredMs = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS
+  return new Date(flooredMs - SETTLE_WINDOW_MS - 2 * HOUR_MS).toISOString()
 }
 
 export async function runExecutionArchive(

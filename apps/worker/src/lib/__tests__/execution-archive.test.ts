@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { toRow, initialWatermark, MAX_HOURS_PER_RUN, WALL_TIME_BUDGET_MS } from '../execution-archive'
+import { nextHourToArchive } from '../../archive/clock'
 import type { EncodedForSend } from '../../archive/run-loop'
 import type { ArchiveScalars } from '../../archive/scalars'
 
@@ -112,10 +113,60 @@ describe('the step count the deletion gate reads', () => {
 })
 
 describe('initialWatermark', () => {
-  it('starts one hour before the hour that just closed, not at the start of retention', () => {
-    const w = initialWatermark(new Date('2026-08-18T10:37:00.000Z'))
+  /**
+   * The seam, and the whole reason this block exists.
+   *
+   * A fresh watermark only matters through `nextHourToArchive`, and until
+   * 2026-08-21 the two were only ever tested apart: this file asserted the
+   * watermark's value, clock.test.ts asserted the selector's behaviour, and each
+   * agreed with itself. Composed, they produced a permanent standstill. The
+   * watermark started at the hour before the current one, so the next hour to
+   * archive was the CURRENT hour, which has not closed, so the run archived
+   * nothing and never advanced the watermark, so the next run recomputed the
+   * same too-recent watermark from the new clock.
+   *
+   * Measured on prod: the job ran hourly for 19 hours (heartbeat present, no
+   * worker errors, no run lock held) and `execution_archive_progress`,
+   * `execution_archive_ids` and `execution_archive_refusals` were all empty.
+   *
+   * A test that never composes two units can only prove each is
+   * self-consistent (L178), and a run that finds nothing to do is
+   * indistinguishable from one with nothing to do (L98), so nothing reported it.
+   */
+  it('yields a watermark the hour selector will actually archive from', () => {
+    // Across the whole hour, because the bug is a boundary between the hour
+    // grid and the settle window, and a single sample can sit on the lucky side.
+    for (const minute of [0, 1, 17, 30, 59]) {
+      const now = new Date(`2026-08-18T10:${String(minute).padStart(2, '0')}:00.000Z`)
+      const next = nextHourToArchive({ watermarkHour: initialWatermark(now), now })
 
-    expect(w).toBe('2026-08-18T09:00:00.000Z')
+      expect(
+        next.archive,
+        `a first run at :${minute} refused to archive: ${next.archive ? '' : next.reason}`,
+      ).toBe(true)
+    }
+  })
+
+  it('picks the newest hour that is fully settled, not an older one', () => {
+    const now = new Date('2026-08-18T10:37:00.000Z')
+    const next = nextHourToArchive({ watermarkHour: initialWatermark(now), now })
+
+    // Settle window is 2 hours, so the newest archivable hour at 10:37 is the
+    // one running 07:00 to 08:00. Starting further back would make a first run
+    // crawl through the retained window an hour at a time for no reason.
+    expect(next.archive && next.hourStart).toBe('2026-08-18T07:00:00.000Z')
+    expect(next.archive && next.hourEnd).toBe('2026-08-18T08:00:00.000Z')
+  })
+
+  it('is exactly one hour behind the oldest watermark that still archives', () => {
+    // Pins the derivation rather than the number: one hour later and the
+    // selector must refuse, which is what proves this is the newest settled
+    // hour rather than an arbitrary offset.
+    const now = new Date('2026-08-18T10:00:00.000Z')
+    const w = Date.parse(initialWatermark(now))
+
+    expect(nextHourToArchive({ watermarkHour: new Date(w).toISOString(), now }).archive).toBe(true)
+    expect(nextHourToArchive({ watermarkHour: new Date(w + 3_600_000).toISOString(), now }).archive).toBe(false)
   })
 
   it('lands on an hour boundary, which the hour selector requires', () => {
