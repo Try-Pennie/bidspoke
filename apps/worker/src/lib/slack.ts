@@ -375,6 +375,22 @@ export interface UpstreamOutageAlertPayload {
   window_minutes: number
   /** Distinct workflows hit by this cause. */
   workflow_names: string[]
+  /**
+   * The busiest distinct error shapes behind this cause, busiest first (#834).
+   * The cause label alone ("Salesforce appears degraded") does not distinguish a
+   * vendor outage from our own call pattern hitting their concurrency governor,
+   * and the specific message was already in memory when this payload was built.
+   */
+  error_shapes?: { sample: string; count: number }[]
+  /** Distinct shapes not listed, so the top one does not read as the whole story. */
+  other_shape_count?: number
+  /**
+   * What to actually go and look at, derived from the dominant shape by
+   * describeHowToCheck rather than a fixed sentence about the vendor's status
+   * page (L36). Optional so a caller that cannot judge falls back to the neutral
+   * wording rather than asserting a cause.
+   */
+  how_to_check?: string
   timestamp: string
 }
 
@@ -397,6 +413,19 @@ export async function sendUpstreamOutageAlert(
   const workflowsLine = affected > 0
     ? `Affected ${affected === 1 ? 'workflow' : 'workflows'}: ${payload.workflow_names.join(', ')}.`
     : ''
+  // The specific errors, which are what tell a vendor outage from our own call
+  // pattern. Rendered as code so long JSON payloads stay readable, and the
+  // unshown remainder is counted so this does not read as the whole story.
+  const shapes = payload.error_shapes ?? []
+  const shapesLine = shapes.length > 0
+    ? [
+        '*What they failed on:*',
+        ...shapes.map((s) => `- ${s.count} x \`${s.sample.replace(/`/g, "'")}\``),
+        ...((payload.other_shape_count ?? 0) > 0
+          ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
+          : []),
+      ].join('\n')
+    : ''
   const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
 
   const blocks = [
@@ -409,9 +438,13 @@ export async function sendUpstreamOutageAlert(
       },
     },
     ...(workflowsLine ? [{ type: 'section', text: { type: 'mrkdwn', text: workflowsLine } }] : []),
+    ...(shapesLine ? [{ type: 'section', text: { type: 'mrkdwn', text: shapesLine } }] : []),
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `*How to check:* confirm ${payload.cause_label} health (status page / direct call), then review the affected runs.` },
+      text: {
+        type: 'mrkdwn',
+        text: `*How to check:* ${payload.how_to_check ?? `review the affected runs to see what they failed on.`}`,
+      },
     },
     {
       type: 'section',
