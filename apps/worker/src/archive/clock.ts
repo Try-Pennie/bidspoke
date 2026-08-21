@@ -14,6 +14,14 @@
  * execution (p99 duration 14 s, max 45 s) but the tail consumer writing
  * cost_usd, and nothing stamps when that write happened, so the margin is
  * deliberately far wider than the measurement.
+ *
+ * That 100% is right about latency and wrong as a universal (#931). It was
+ * bucketed over one hour, and a FAILED execution may never carry a cost at all:
+ * counted over every execution past this window on 2026-08-21, 20 of 764,301
+ * had none, all 20 failed, the oldest 93 hours old with a completion time. So
+ * widening this window does not produce a cost for those rows, and nothing may
+ * treat a null cost as a reason to keep waiting. See
+ * fixtures/cost-settlement.json.
  */
 export const SETTLE_WINDOW_MS = 2 * 60 * 60 * 1000
 

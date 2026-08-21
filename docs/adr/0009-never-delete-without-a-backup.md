@@ -118,6 +118,40 @@ oldest unsettled execution observed was 0.59 seconds old.
 
 An hourly cadence archiving executions at least one hour old has ample margin.
 
+**Corrected 2026-08-21 (#931).** The 100% above is right about the tail
+consumer's latency and wrong as a universal. It was bucketed over ONE HOUR of
+traffic, and the exception is roughly 5 rows a day, so it could be absent from an
+hour's sample without the sample being wrong (L172).
+
+Counted over EVERY execution past the 2 hour settle window, not sampled:
+
+| | |
+|---|---|
+| settled executions | 764,301 |
+| without `cost_usd` | 20 |
+| of those, `status = 'failed'` | 20 |
+| of those, `completed` or `degraded` | 0 |
+| oldest, at measurement | 93 hours, with a completion time |
+
+**For a failed execution an absent cost is the settled, final state, not a late
+arrival.** Waiting longer does not produce one.
+
+What that forbids: a null cost must never be part of the test for whether a row
+is still expected to change. Anything that waits for a cost before considering a
+row finished waits forever on about 5 rows a day. In the amend pass (#932) that
+is 5 rows a day flagged for a rewrite that never comes and then alerting when
+they are abandoned, a permanent low-level alert stream about nothing (L36). The
+deletion gate (#872) has the same exposure if it reads a null cost as an
+incomplete record.
+
+What it still allows: a null cost remains part of change DETECTION. If a cost
+does arrive later, the archived row should come to reflect it. The distinction is
+between noticing a change and waiting for one.
+
+The measurement is committed at `apps/worker/src/archive/fixtures/cost-settlement.json`
+and enforced by `archive/__tests__/cost-settlement.test.ts`, so neither the amend
+pass nor the gate can be built on the assumption that a cost always arrives.
+
 ## Two defects found by running the measurement, both of the class this milestone removes
 
 Recorded because they are the argument for the principle, not incidental.

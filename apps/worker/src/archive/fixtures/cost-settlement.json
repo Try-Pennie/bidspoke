@@ -1,0 +1,19 @@
+{
+  "provenance": {
+    "note": "Whether a settled execution always carries cost_usd. Measured against production on 2026-08-21 over every execution older than the 2 hour settle window, counted through PostgREST with Prefer: count=exact rather than sampled.",
+    "measuredAt": "2026-08-21T16:05:46.000Z",
+    "settleWindowHours": 2,
+    "supersedes": "The ADR 0009 settle-window measurement reported 100% of executions settled beyond 5 minutes. That was bucketed over ONE HOUR of traffic, and this population is roughly 5 rows a day, so it could be absent from an hour's sample without the sample being wrong. The earlier figure is right about the tail consumer's latency and wrong as a universal (L172)."
+  },
+  "settledExecutions": 764301,
+  "withoutCost": {
+    "total": 20,
+    "byStatus": { "failed": 20, "completed": 0, "degraded": 0, "running": 0 },
+    "oldestStartedAt": "2026-08-17T18:35:28.765Z",
+    "oldestAgeHoursAtMeasurement": 93,
+    "allHaveCompletedAt": true
+  },
+  "conclusion": "For a FAILED execution an absent cost is the settled, final state, not a late arrival. Every one of the 20 had a completion time and the oldest was 93 hours old. No completed or degraded execution was missing a cost.",
+  "whatThisForbids": "A null cost must never be part of the test for whether a row is still expected to change. Anything that waits for a cost before considering a row finished waits forever on roughly 5 rows a day: in the amend pass (#932) that is 5 rows a day flagged for a rewrite that never comes and then alerting when abandoned, a permanent low-level alert stream about nothing (L36). The deletion gate (#872) has the same exposure if it reads a null cost as an incomplete record.",
+  "whatThisStillAllows": "A null cost remains part of change DETECTION. If a cost does arrive later, the archived row should come to reflect it. The distinction is between noticing a change and waiting for one."
+}
