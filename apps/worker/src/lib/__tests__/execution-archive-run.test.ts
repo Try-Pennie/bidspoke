@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
+import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'
 
 const executeStatement = vi.fn()
 vi.mock('../snowflake', async (importOriginal) => ({
@@ -283,7 +284,7 @@ describe('an execution the archive table could not accept', () => {
 
   const live = {
     watermark: '2026-08-18T08:00:00.000Z',
-    workflows: [{ id: 'wf-live', organizations: { id: 'org-live', slug: 'trypennie.com' } }],
+    workflows: [{ id: 'wf-live', organizations: { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG } }],
   }
 
   const refusals = (writes: Array<{ table: string; rows: unknown }>) =>
@@ -363,7 +364,7 @@ describe('an execution the archive table could not accept', () => {
     withHour([bundle()])
     const { client, writes } = fakeSupabase({
       ...live,
-      workflows: [{ id: 'wf-live', organizations: { slug: 'trypennie.com' } }],
+      workflows: [{ id: 'wf-live', organizations: { slug: EXPECTED_ORGANIZATION_SLUG } }],
     })
     const sendBatch = vi.fn()
 
@@ -380,7 +381,7 @@ describe('an execution the archive table could not accept', () => {
     const { client, writes } = fakeSupabase({
       ...live,
       workflows: [
-        { id: 'wf-live', organizations: { id: 'org-live', slug: 'trypennie.com' } },
+        { id: 'wf-live', organizations: { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG } },
         { id: 'wf-e2e', organizations: { id: 'org-e2e', slug: 'E2E Test' } },
       ],
     })

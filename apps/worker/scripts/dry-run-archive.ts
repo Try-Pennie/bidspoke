@@ -16,6 +16,8 @@
  *
  * Run: npx tsx scripts/dry-run-archive.ts [hoursAgo]
  */
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createClient } from '@supabase/supabase-js'
 import { fetchHour } from '../src/archive/hour-fetch'
@@ -23,9 +25,10 @@ import { encodeBundle } from '../src/archive/bundle'
 import { batchByBytes } from '../src/archive/batching'
 import { dispositionFor } from '../src/archive/disposition'
 import { archiveDay } from '../src/archive/clock'
+import { loadWorkflowOrganizations } from '../src/lib/execution-archive'
 
 function devVars(): Record<string, string> {
-  const raw = readFileSync(new URL('../.dev.vars', import.meta.url), 'utf8')
+  const raw = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.dev.vars'), 'utf8')
   const out: Record<string, string> = {}
   for (const line of raw.split('\n')) {
     const t = line.trim()
@@ -78,14 +81,20 @@ async function main(): Promise<void> {
     return
   }
 
-  // The organization map, same read the job makes.
-  const { data: workflows, error } = await supabase.from('workflows').select('id, organizations!workflows_organization_id_fkey(slug)')
-  if (error) throw new Error(`workflow read failed: ${JSON.stringify(error)}`)
-  const organizationOf = new Map<string, string>()
-  for (const row of (workflows ?? []) as Array<Record<string, unknown>>) {
-    const org = row.organizations as { slug?: string } | null
-    if (typeof row.id === 'string' && typeof org?.slug === 'string') organizationOf.set(row.id, org.slug)
-  }
+  // The organization map, from the JOB'S OWN loader rather than a second read
+  // that claims to match it.
+  //
+  // This used to build its own Map<string, string> of workflow id to slug, with
+  // a comment saying it was the same read the job makes. It was not: the job
+  // hands dispositionFor a Map<string, WorkflowOrganization>, so `.slug` on a
+  // bare string was undefined and EVERY execution was refused as "belongs to
+  // organization undefined". The tool reported a tenancy failure that did not
+  // exist, which is worse than reporting nothing, because it sends the reader
+  // after a problem in production that is really in the diagnostic.
+  //
+  // TypeScript did not catch it because apps/worker/tsconfig.json only includes
+  // `src`, so this directory was never typechecked. That is fixed alongside.
+  const organizationOf = await loadWorkflowOrganizations(supabase)
 
   const now = new Date()
   const refusals: string[] = []

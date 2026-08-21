@@ -315,7 +315,7 @@ export function toRow(
  * real database (L52: a test whose only outside dependency is a stub you wrote
  * can only confirm your own assumption about the real interface).
  */
-async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, WorkflowOrganization>> {
+export async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, WorkflowOrganization>> {
   const { data, error } = await supabase
     .from('workflows')
     .select('id, organizations!workflows_organization_id_fkey(id, slug)')
