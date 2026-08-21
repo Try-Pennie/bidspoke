@@ -263,7 +263,7 @@ describe('an execution the archive table could not accept', () => {
     execution: {
       id: 'e1',
       workflow_id: 'wf-live',
-      status: 'success',
+      status: 'completed',
       started_at: HOUR,
       ...over,
     },
@@ -333,7 +333,7 @@ describe('an execution the archive table could not accept', () => {
    * check it named (L159).
    */
   it('refuses a terminal execution whose start cannot be read, naming that column', async () => {
-    withHour([bundle({ status: 'success', started_at: null })])
+    withHour([bundle({ status: 'completed', started_at: null })])
     const { client, writes } = fakeSupabase(live)
     const sendBatch = vi.fn()
 
@@ -403,7 +403,7 @@ describe('sendArchiveBatch', () => {
     resumedFromExecutionId: null,
     traceId: null,
     source: null,
-    status: 'success',
+    status: 'completed',
     outcome: null,
     isTest: false,
     startedAtUtc: '2026-08-16T11:00:00.000',
