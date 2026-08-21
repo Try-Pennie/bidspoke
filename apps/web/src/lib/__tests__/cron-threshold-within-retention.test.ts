@@ -15,11 +15,15 @@
  * fixes today; the next person to shorten retention, or to add a job with a
  * generous threshold, recreates it. A job that cannot fire is indistinguishable
  * from a job with nothing to do (L98), so nothing at runtime will ever report it.
+ *
+ * It lives here rather than in `__guards__/worker/` because it reads
+ * `supabase/migrations`, not worker source. The placement guard enforces that
+ * distinction and caught this file in the wrong directory on the first run.
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from '../../__tests__/_scan-utils'
+import { REPO_ROOT } from './_scan-utils'
 
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 
@@ -42,11 +46,31 @@ export function retentionDays(): number {
     // Only the form used inside a cron.schedule body counts as setting the live
     // window; a one-off manual CALL in a backfill migration does not.
     for (const m of sql.matchAll(/'(?:CALL\s+)?(?:truncate|drop)_expired_execution_partitions(?:_safe)?\((\d+)\)'/g)) {
-      found = Number(m[1])
+      found = parseDays(m[1], `retention argument in ${file}`)
     }
   }
   expect(found, 'no migration schedules a partition purge, so this guard has no window to judge against').not.toBeNull()
   return found as number
+}
+
+/**
+ * Parse a day count, refusing anything that is not a finite positive integer.
+ *
+ * The direct `Number(...)` this replaces is L50 exactly: a value that fails to
+ * parse yields NaN, and NaN compares false against EVERY threshold, so the
+ * comparison below would silently pass on every job. For a guard that is the
+ * worst available outcome, because it reports green while blind. The regexes here
+ * capture digits only, so this should be unreachable; that is precisely the
+ * argument that stops being true the first time somebody widens one.
+ */
+export function parseDaysForTest(raw: string): number {
+  return parseDays(raw, 'test')
+}
+
+function parseDays(raw: string, where: string): number {
+  const n = Number(raw)
+  expect(Number.isInteger(n) && n > 0, `could not read a day count from "${raw}" (${where})`).toBe(true)
+  return n
 }
 
 /**
@@ -90,9 +114,13 @@ describe('a cron job threshold must sit inside the retention window', () => {
     const retention = retentionDays()
     const offenders: string[] = []
 
+    // Asserted rather than assumed: if retention itself were NaN, every
+    // comparison below would be false and this guard would pass on everything.
+    expect(Number.isInteger(retention) && retention > 0).toBe(true)
+
     for (const [name, body] of liveCronJobs()) {
       for (const m of body.matchAll(/INTERVAL\s+'(\d+)\s+days?'/gi)) {
-        const days = Number(m[1])
+        const days = parseDays(m[1], `cron job ${name}`)
         if (days >= retention) offenders.push(`${name}: INTERVAL '${days} days' against ${retention} day retention`)
       }
     }
@@ -119,6 +147,22 @@ describe('a cron job threshold must sit inside the retention window', () => {
     const sql = readFileSync(path.join(MIGRATIONS, dropMigration as string), 'utf8')
     expect(sql).toMatch(/jobname\s*=\s*'compact-execution-payloads'/)
     expect(sql).toMatch(/cron\.unschedule\(/)
+  })
+})
+
+describe('the day-count parser', () => {
+  // A guard whose number parsing can yield NaN passes on everything, silently,
+  // which is worse than having no guard (L50). So the refusal has its own test
+  // rather than resting on the regexes happening to capture digits today.
+  it('refuses anything that is not a positive integer', () => {
+    for (const bad of ['', 'seven', '0', '-3', '1.5', 'NaN']) {
+      expect(() => parseDaysForTest(bad), bad).toThrow()
+    }
+  })
+
+  it('accepts a plain day count', () => {
+    expect(parseDaysForTest('7')).toBe(7)
+    expect(parseDaysForTest('14')).toBe(14)
   })
 })
 
