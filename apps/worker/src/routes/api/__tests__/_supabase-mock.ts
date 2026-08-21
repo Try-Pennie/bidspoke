@@ -37,6 +37,18 @@ export interface TableConfig {
   singleError?: QueryError
   /** Bare-await / list result (`.select()....` then awaited). */
   list?: Record<string, unknown>[]
+  /**
+   * Bare-await returns this error instead of rows. Needed because a route that
+   * DISCARDS a list error is indistinguishable from one that read an empty
+   * table, and that is exactly the defect class worth testing (#877).
+   */
+  listError?: QueryError
+  /**
+   * `count` for a `.select('id', { count: 'exact', head: true })` query. Unset
+   * leaves it undefined, which models PostgREST on an errored count and is what
+   * a `?? 0` fallback silently turns into "empty".
+   */
+  count?: number
   /** `.maybeSingle()` result. Falls back to `single`, then null. */
   maybeSingle?: Record<string, unknown> | null
   insertResult?: Record<string, unknown> | null
@@ -206,7 +218,8 @@ export function makeSupabase(
 
             const readSingle = (): { data: unknown; error: unknown } =>
               cfg.singleError ? { data: null, error: cfg.singleError } : cfg.single ? { data: cfg.single, error: null } : { data: null, error: NOT_FOUND }
-            const readList = (): { data: unknown; error: unknown } => ({ data: cfg.list ?? [], error: null })
+            const readList = (): { data: unknown; error: unknown } =>
+              cfg.listError ? { data: null, error: cfg.listError } : { data: cfg.list ?? [], error: null }
 
             if (prop === 'single') {
               return () => Promise.resolve(readSingle())
@@ -221,7 +234,11 @@ export function makeSupabase(
 
             if (prop === 'then') {
               return (resolve: (v: unknown) => unknown) =>
-                Promise.resolve({ data: cfg.list ?? [], error: null }).then(resolve)
+                Promise.resolve(
+                  cfg.listError
+                    ? { data: null, error: cfg.listError, count: null }
+                    : { data: cfg.list ?? [], error: null, count: cfg.count },
+                ).then(resolve)
             }
 
             if (prop === 'insert') {

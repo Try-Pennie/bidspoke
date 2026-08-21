@@ -7,6 +7,7 @@
 // DELETE /api/sources/:name  — revoke all keys for a source
 
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { dbError, isNotFoundError, requireRowOr404, rowsTouched } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -14,6 +15,7 @@ import { setCfSecret } from '../../lib/cf-secrets'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
+import { formatErr } from '../../lib/format-error'
 
 type Variables = AuthVariables
 
@@ -38,12 +40,31 @@ function parseKeyMap(raw: string): Record<string, string> {
 // which have no org association and can't live in api_sources) are preserved.
 // `removeKeys` drops specific keys from the result even though they may still be
 // in the table — used on delete to revoke the key before the row is removed.
+//
+// Returns the error rather than a map when the read fails, and the callers must
+// not write on that path. A discarded error here was not a missing map, it was a
+// WRONG one: `data` comes back null, every key in the table drops out of
+// `dbMap`, every key in the live secret is "preserved" instead, and the result
+// is precisely the point-in-time snapshot the comment above says this function
+// exists to avoid. Writing it answered 200 while the change the operator asked
+// for (a new source's key) never reached production (L12, #877).
+//
+// When `api_sources` gains `deleted_at`, the select needs `.is('deleted_at',
+// null)`: an unfiltered read returns tombstoned rows, so the next mutation
+// merges a revoked partner key back into the live secret and re-authorises a
+// source somebody deliberately cut off. The column does not exist yet and
+// PostgREST answers 42703 for one that is not there, so the filter cannot be
+// written ahead of it; the guard in __tests__/key-map-integrity.test.ts fails
+// the moment the column appears without it.
+type KeyMapResult = { map: Record<string, string>; error?: undefined } | { map?: undefined; error: unknown }
+
 async function rebuildKeyMap(
   supabase: ReturnType<typeof createSupabaseClient>,
   currentEnvMap: Record<string, string>,
   removeKeys: Set<string> = new Set(),
-): Promise<Record<string, string>> {
-  const { data } = await supabase.from('api_sources').select('name, api_key')
+): Promise<KeyMapResult> {
+  const { data, error } = await supabase.from('api_sources').select('name, api_key')
+  if (error) return { error }
   const rows = (data ?? []) as { name: string; api_key: string }[]
   const dbMap: Record<string, string> = {}
   const dbKeys = new Set<string>()
@@ -57,7 +78,53 @@ async function rebuildKeyMap(
   }
   const merged: Record<string, string> = { ...preserved, ...dbMap }
   for (const k of removeKeys) delete merged[k]
-  return merged
+  return { map: merged }
+}
+
+// Undo a just-inserted source when the key map could not be brought in line
+// with it. The insert deliberately happens FIRST (so the rebuilt map, derived
+// from the table, includes the new row), which means every path that gives up
+// after the insert owns this rollback. Skipping it leaves a source in the table
+// and absent from the auth map: it does not authenticate, and it blocks
+// re-creating the same name with a 409 the operator can see no reason for (L33).
+//
+// A rollback that errors, or that matches nothing, leaves exactly that state and
+// nothing here can recover it, so it is logged loudly rather than swallowed
+// (#588). onMiss 'error' covers the zero-row case.
+async function rollbackCreatedSource(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  name: string,
+): Promise<void> {
+  const { error: rollbackError } = await requireRowsAffected(
+    'api_sources.rollback',
+    () => supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id'),
+    { onMiss: 'error', context: { source_name: name, organization_id: orgId } },
+  )
+  if (rollbackError && !isNoRowMatchedError(rollbackError)) {
+    console.error(
+      JSON.stringify({
+        event: 'api_source_rollback_failed',
+        source_name: name,
+        organization_id: orgId,
+        reason: rollbackError.message,
+      }),
+    )
+  }
+}
+
+// One wording for both callers, naming the secret that was NOT touched. An
+// operator reading it needs to know the live key map is unchanged, which is the
+// difference between "retry this" and "go and check what production is using".
+function keyMapReadFailed(c: Context, error: unknown): Response {
+  console.error('[sources] API_KEY_MAP rebuild aborted: api_sources read failed', error)
+  return c.json(
+    {
+      error: 'Could not rebuild the API key map because the api_sources read failed. The live API_KEY_MAP secret was not changed.',
+      details: formatErr(error),
+    },
+    500,
+  )
 }
 
 // GET /api/sources — return list of {name, api_key} from Supabase
@@ -103,31 +170,16 @@ sources.post('/', async (c) => {
     return dbError(c, insertError)
   }
 
-  const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'))
+  const rebuilt = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'))
+  if (rebuilt.error) {
+    await rollbackCreatedSource(supabase, orgId, name)
+    return keyMapReadFailed(c, rebuilt.error)
+  }
+  const newMap = rebuilt.map
   try {
     await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
   } catch (err) {
-    // Roll back so a half-created source (in the table but not the auth map)
-    // doesn't linger and block re-creation with a 409.
-    // A rollback that errors, or that matches nothing, leaves exactly the
-    // half-created source this catch block exists to prevent. Nothing here can
-    // recover it, so make the failure loud instead of silent (#588). onMiss
-    // 'error' covers the zero-row case; a real database error is logged below.
-    const { error: rollbackError } = await requireRowsAffected(
-      'api_sources.rollback',
-      () => supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id'),
-      { onMiss: 'error', context: { source_name: name, organization_id: orgId } }
-    )
-    if (rollbackError && !isNoRowMatchedError(rollbackError)) {
-      console.error(
-        JSON.stringify({
-          event: 'api_source_rollback_failed',
-          source_name: name,
-          organization_id: orgId,
-          reason: rollbackError.message,
-        })
-      )
-    }
+    await rollbackCreatedSource(supabase, orgId, name)
     return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
   }
 
@@ -282,7 +334,13 @@ sources.delete('/:name', async (c) => {
   // Revoke first: rebuild the map from the table minus the deleted key(s), so
   // auth is cut before the row is removed and a stale-snapshot read-modify-write
   // can't drop an unrelated source's key. Manual keys are preserved.
-  const newMap = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
+  // A delete whose rebuild read failed must not write either. The alternative is
+  // worse than it looks: the merged map would be the stale env snapshot minus
+  // the deleted keys, so the revocation appears to work while any key added by a
+  // concurrent mutation is silently dropped from production.
+  const rebuilt = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
+  if (rebuilt.error) return keyMapReadFailed(c, rebuilt.error)
+  const newMap = rebuilt.map
   await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
 
   const deleteBlocked = await requireRowOr404(c, 'Source not found', () =>
