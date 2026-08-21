@@ -11,10 +11,15 @@ const HOUR_START = '2026-08-18T10:00:00.000Z'
 const settled = new Date(Date.parse(HOUR_START) + SETTLE_WINDOW_MS + 60_000)
 const pastDeadline = new Date(Date.parse(HOUR_START) + SETTLE_WINDOW_MS + ARCHIVE_DEADLINE_MS + 60_000)
 
+// 'completed' rather than a plausible-looking invented value: this fixture used
+// to say 'success', which nothing has ever written, so it agreed with a set that
+// was itself wrong and neither was ever checked against the database (L52, #929).
+// The measured vocabulary lives in ../fixtures/execution-statuses.json and is
+// enforced by ./execution-status-vocabulary.test.ts.
 const execution = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   id: 'e1',
   workflow_id: 'wf-live',
-  status: 'success',
+  status: 'completed',
   started_at: HOUR_START,
   ...over,
 })

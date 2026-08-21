@@ -1,0 +1,48 @@
+{
+  "provenance": {
+    "note": "The complete set of distinct workflow_executions.status values present in production, enumerated exhaustively rather than listed by hand. Method: an index skip scan over idx_executions_status (repeated `status=gt.<previous> order by status asc limit 1` against PostgREST until it returned nothing), so the list cannot omit a value that a hand-written enumeration would have missed. Counts are exact (Prefer: count=exact). A `not.in` sweep for values outside this set was also attempted and timed out, which is why the skip scan is the method of record.",
+    "measuredAt": "2026-08-21T14:10:00.000Z",
+    "windowStart": "2026-08-14T00:00:00.130Z",
+    "windowEnd": "2026-08-21T14:07:58.663Z",
+    "windowLimitation": "The window is the whole retained window, not a chosen slice: workflow_executions sits on daily partitions dropped at 7 days, so no wider measurement is possible from this table. A status used less often than once a week can therefore be absent here while still being legitimate. That is exactly why an unrecognised status must be a loud, distinctly-worded outcome in the code rather than falling into the in-flight default.",
+    "nullStatusRows": 0
+  },
+  "statuses": [
+    {
+      "status": "completed",
+      "rows": 762391,
+      "expected": "terminal",
+      "note": "The ordinary success. Written by the finalize handler."
+    },
+    {
+      "status": "failed",
+      "rows": 1934,
+      "expected": "terminal",
+      "note": "The lead was not served correctly: a step-log flush error, a never-advanced run, or a failed step found by strand recovery."
+    },
+    {
+      "status": "degraded",
+      "rows": 61,
+      "expected": "terminal",
+      "note": "Served correctly, but a post-response continuation (the Salesforce writeback) failed (#310). A final state, so terminal: resolveContinuationStatus in engine/finalize-status.ts never revisits it."
+    },
+    {
+      "status": "running",
+      "rows": 11,
+      "expected": "in-flight",
+      "note": "The only genuinely non-terminal value. Either still executing, or stranded, in which case finalize_unrecoverable_stranded gives up on it at 26 hours, the same point the archive deadline falls."
+    }
+  ],
+  "absentButLegitimate": [
+    {
+      "status": "exited",
+      "rows": 0,
+      "expected": "terminal",
+      "note": "Zero rows in the retained window, but named in the original core_tables CHECK constraint, still in the ExecutionStatus union, and still counted by routes/api/stats.ts. Classified deliberately rather than left to the default, which is the whole point of this fixture: an early Exit-node termination is finished, not in flight."
+    }
+  ],
+  "measuredAbsent": {
+    "note": "Values the previous hand-written TERMINAL_STATUSES set claimed, each confirmed at exactly 0 rows on 2026-08-21. Nothing in the codebase writes any of them; they were invented at the keyboard. Recorded so the next reader can see the old set was wrong in both directions, not merely incomplete.",
+    "statuses": ["success", "error", "rejected", "timeout", "cancelled"]
+  }
+}

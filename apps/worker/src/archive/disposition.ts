@@ -47,7 +47,50 @@ export interface Disposition {
   reason?: string
 }
 
-const TERMINAL_STATUSES = new Set(['success', 'failed', 'error', 'rejected', 'exited', 'timeout', 'cancelled'])
+/**
+ * How the archive reads one `workflow_executions.status` value.
+ *
+ * Three classes, not two, and the third is the point. The previous version of
+ * this file matched a hand-written set of terminal statuses and let everything
+ * else fall into "still running". That default is a legitimate outcome, so a
+ * status nobody had accounted for was indistinguishable from one deliberately
+ * treated as unfinished, and the set shipped wrong in both directions: it
+ * claimed five values nothing has ever written and omitted `completed` and
+ * `degraded`, which are 99.75% of production. Every execution was refused, the
+ * shadow archive backed up close to nothing, and the hourly refusal alert said
+ * so for as long as it ran (#929).
+ *
+ * `unrecognised` gives that case a name, so it is loud rather than silent.
+ */
+export type StatusClass = 'terminal' | 'in-flight' | 'unrecognised'
+
+/**
+ * The declared classification of every status the archive knows about.
+ *
+ * This is deliberately a declaration in code, not a set read out of the fixture
+ * at runtime: a data file should not decide production branching, and a reader
+ * should be able to see what each value means here. What keeps it honest is
+ * `fixtures/execution-statuses.json`, an exhaustive measurement of what
+ * `workflow_executions` actually holds, and the guard in
+ * `__tests__/execution-status-vocabulary.test.ts` that fails when this map does
+ * not account for every value in it (#930).
+ *
+ * `exited` has no rows in the retained window but is classified anyway: it is
+ * named in the original CHECK constraint, is still in the `ExecutionStatus`
+ * union, and is still counted by the stats route. An early Exit-node
+ * termination is finished, not in flight.
+ */
+const STATUS_CLASSES: Record<string, Exclude<StatusClass, 'unrecognised'>> = {
+  completed: 'terminal',
+  failed: 'terminal',
+  degraded: 'terminal',
+  exited: 'terminal',
+  running: 'in-flight',
+}
+
+export function classifyExecutionStatus(status: string): StatusClass {
+  return STATUS_CLASSES[status] ?? 'unrecognised'
+}
 
 export function dispositionFor(
   execution: Record<string, unknown>,
@@ -79,7 +122,8 @@ export function dispositionFor(
   }
 
   const status = typeof execution.status === 'string' ? execution.status : ''
-  if (TERMINAL_STATUSES.has(status)) {
+  const statusClass = classifyExecutionStatus(status)
+  if (statusClass === 'terminal') {
     return { action: 'archive', incomplete: false }
   }
 
@@ -97,7 +141,25 @@ export function dispositionFor(
     return {
       action: 'archive',
       incomplete: true,
-      reason: `execution ${id} is still ${status || 'non-terminal'} at the archive deadline, so it is archived as it stands`,
+      reason:
+        statusClass === 'unrecognised'
+          ? `execution ${id} has the unrecognised status ${status || '(empty)'}, still unaccounted for at the archive deadline, so it is archived as it stands`
+          : `execution ${id} is still ${status || 'non-terminal'} at the archive deadline, so it is archived as it stands`,
+    }
+  }
+
+  // Distinct causes get distinct messages (L11). An ordinary in-flight run and
+  // a status the archive has never been taught about are read the same way here
+  // (both wait for the deadline) but they mean different things: the first
+  // resolves itself, the second needs someone to classify it in STATUS_CLASSES.
+  // Wording them identically is what hid #929 for as long as it hid.
+  if (statusClass === 'unrecognised') {
+    return {
+      action: 'refuse',
+      incomplete: false,
+      reason:
+        `execution ${id} has the unrecognised status ${status || '(empty)'}, which the archive does not classify as ` +
+        `finished or in flight. Add it to STATUS_CLASSES in archive/disposition.ts and to the measured fixture beside it.`,
     }
   }
 

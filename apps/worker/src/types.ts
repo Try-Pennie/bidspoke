@@ -108,7 +108,12 @@ export interface EdgeDefinition {
 // Execution types
 // ============================================================
 
-export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'exited'
+// 'degraded' (served correctly, but a post-response continuation failed, #310)
+// was missing here for as long as it has been written to the database. The
+// measured vocabulary and the guard that keeps it honest live in
+// src/archive/fixtures/execution-statuses.json and
+// src/archive/__tests__/execution-status-vocabulary.test.ts (#930).
+export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'exited' | 'degraded'
 export type StepStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'failed_with_fallback'
 export type ErrorType = 'transient' | 'permanent' | null
 
