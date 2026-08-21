@@ -11,6 +11,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import type { Database } from '../../types/database'
+import { formatErr } from '../../lib/format-error'
 
 type Variables = AuthVariables
 
@@ -149,10 +150,48 @@ folders.delete('/:id', async (c) => {
   if (existingBlocked) return existingBlocked
   if (!existing) return c.json({ error: 'folder not found' }, 404)
 
-  const [{ count: childFolders }, { count: childWorkflows }] = await Promise.all([
+  // The emptiness test that gates a destructive delete, so both halves have to
+  // be true before it runs (#877).
+  //
+  // `deleted_at IS NULL` on the workflow count: `workflows` has been soft-deleted
+  // for a long time, so counting tombstones meant a folder whose only remaining
+  // contents were already-deleted workflows could never be deleted, and the page
+  // said "folder not empty" about a folder that looked empty on screen. Nothing
+  // is blocked by this in production today (0 of 33 soft-deleted workflows carry
+  // a folder_id, measured 2026-08-21), which is why it went unnoticed. The
+  // folders count gets the same filter the moment folders gain the column.
+  const [childFolderCount, childWorkflowCount] = await Promise.all([
     supabase.from('folders').select('id', { count: 'exact', head: true }).eq('parent_id', id),
-    supabase.from('workflows').select('id', { count: 'exact', head: true }).eq('folder_id', id),
+    supabase
+      .from('workflows')
+      .select('id', { count: 'exact', head: true })
+      .eq('folder_id', id)
+      .is('deleted_at', null),
   ])
+
+  // Fail closed, and separately per count. `count` is null on a failed query and
+  // `?? 0` read that as "no children", so a folder WITH contents was deleted
+  // because the query that would have found them failed. An error state is not
+  // an empty state (L10), and each count needs its own boundary or one answers
+  // for the other (L73).
+  for (const [what, result] of [
+    ['child folders', childFolderCount],
+    ['child workflows', childWorkflowCount],
+  ] as const) {
+    if (result.error || result.count === null || result.count === undefined) {
+      console.error(`[folders] delete refused: ${what} count failed`, result.error)
+      return c.json(
+        {
+          error: `Could not count ${what}, so this folder was not deleted. Nothing was changed.`,
+          details: result.error ? formatErr(result.error) : 'the count came back empty',
+        },
+        500,
+      )
+    }
+  }
+
+  const childFolders = childFolderCount.count
+  const childWorkflows = childWorkflowCount.count
 
   if ((childFolders ?? 0) > 0 || (childWorkflows ?? 0) > 0) {
     return c.json(
