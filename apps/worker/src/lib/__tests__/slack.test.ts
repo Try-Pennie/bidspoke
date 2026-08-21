@@ -962,6 +962,73 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     expect(/\p{Extended_Pictographic}/u.test(text)).toBe(false)
     expect(body.channel).toBe('#alerts')
   })
+
+  // #834: the cause label alone cannot tell a vendor outage from our own call
+  // pattern hitting their concurrency governor, and on 2026-08-17 it sent the
+  // reader to the Salesforce status page for 31 runs the governor had rejected.
+  it('shows the specific errors and the advice derived from them', async () => {
+    await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      {
+        ...outagePayload,
+        error_shapes: [
+          { sample: 'Salesforce API error (403): ConcurrentPerOrgLongTxn Limit exceeded.', count: 21 },
+          { sample: 'Salesforce API error (503): Service Unavailable', count: 2 },
+        ],
+        other_shape_count: 2,
+        how_to_check: 'The dominant error is a limit or governor rejection. Check concurrent in-flight calls first.',
+      },
+      'https://app.example.com',
+    )
+
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).toContain('ConcurrentPerOrgLongTxn')
+    expect(text).toContain('21 x')
+    // The remainder is counted, so the top shape does not read as the whole story.
+    expect(text).toContain('2 other error shapes')
+    expect(text).toContain('Check concurrent in-flight calls')
+    // And it no longer steers towards the vendor status page for this case.
+    expect(text).not.toContain('status page')
+  })
+
+  // The failure path the issue asks for by name. Losing the page is worse than
+  // sending it with only the cause label, so a payload with nothing to show must
+  // still send, and must assert no cause it cannot support (L36).
+  it('still sends, with neutral advice, when no error detail was captured', async () => {
+    const ts = await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      outagePayload,
+      'https://app.example.com',
+    )
+
+    expect(ts).toBe('9.99')
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).toContain('Salesforce appears degraded')
+    expect(text).toContain('review the affected runs')
+    expect(text).not.toContain('status page')
+    expect(text).not.toContain('What they failed on')
+  })
+
+  it('keeps a long sample inside the Slack section cap', async () => {
+    await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      {
+        ...outagePayload,
+        error_shapes: Array.from({ length: 3 }, (_, i) => ({ sample: `${'x'.repeat(220)}${i}`, count: 5 })),
+        other_shape_count: 0,
+        how_to_check: 'Review the affected runs.',
+      },
+      'https://app.example.com',
+    )
+
+    const blocks = JSON.parse(fetchMock.mock.calls[0][1].body).blocks as { text?: { text?: string } }[]
+    for (const b of blocks) {
+      if (b.text?.text) expect(b.text.text.length).toBeLessThanOrEqual(3000)
+    }
+  })
 })
 
 describe('sendRequiredSecretsAlert', () => {

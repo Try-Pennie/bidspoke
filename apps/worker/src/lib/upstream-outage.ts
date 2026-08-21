@@ -148,6 +148,136 @@ export function resolveFailedStepType(
   return nodes.find((n) => n.namespace === failedNamespace)?.type ?? null
 }
 
+/**
+ * How many distinct error shapes the alert shows, and how long each sample may
+ * be. Three shapes at 220 characters is roughly 700 characters of the 3000 a
+ * Slack section allows, which leaves room for the rest of the message. The rest
+ * of the shapes are counted rather than shown.
+ */
+export const MAX_ERROR_SHAPES = 3
+export const MAX_SHAPE_SAMPLE_CHARS = 220
+
+/**
+ * A grouping key for an error message: the same real failure produces the same
+ * key regardless of which lead it happened to.
+ *
+ * Calibrated against real messages rather than invented ones. A 60-row prod
+ * sample on 2026-08-21 held 6 distinct raw strings for 4 real causes, because
+ * three `Code returned error response` failures differed only by the lead's
+ * UUID. Grouping on the raw string would report 31 "shapes" for one cause, which
+ * is the fragmentation this exists to prevent.
+ *
+ * What it deliberately does NOT erase matters as much as what it does. A status
+ * code carries the identity of the error, so a 403 governor rejection must not
+ * merge with a 503 outage: those are different diagnoses with different
+ * remedies. Only digits in positions that vary per lead are replaced, and an
+ * id-shaped token has to carry BOTH letters and digits to qualify, so a long
+ * word like ConcurrentPerOrgLongTxn survives (L104).
+ */
+export function normalizeErrorShape(message: string | null | undefined): string {
+  if (!message) return ''
+  return message
+    // UUIDs first, since they would otherwise be partly eaten by the id rule.
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<id>')
+    // Salesforce ids: 15 or 18 characters carrying both letters and digits.
+    .replace(/\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{15}([A-Za-z0-9]{3})?\b/g, '<sfid>')
+    // A duration or size, which varies run to run. Anchored on the unit so a
+    // bare status code in brackets is left alone.
+    .replace(/\b\d+(ms|s|kb|mb|bytes)\b/gi, '<n>$1')
+    // Timestamps, which fragment a shape as thoroughly as an id.
+    .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z?/g, '<ts>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** One distinct failure shape and how many rows collapsed into it. */
+export interface ErrorShape {
+  /** A representative raw message, truncated for display. */
+  sample: string
+  count: number
+}
+
+/**
+ * The busiest distinct error shapes among a cause's messages, plus how many
+ * shapes were left out.
+ *
+ * `otherShapeCount` is what keeps the aggregate honest: without it, the top
+ * shape reads as the whole story even when the group holds several genuinely
+ * different failures (L11).
+ *
+ * An empty or unparseable message contributes nothing rather than throwing. The
+ * alert has to survive a group with no usable messages at all, because losing
+ * the page is worse than sending it with only the cause label.
+ */
+export function topErrorShapes(
+  messages: (string | null | undefined)[],
+  limit: number = MAX_ERROR_SHAPES,
+): { shapes: ErrorShape[]; otherShapeCount: number } {
+  const byShape = new Map<string, { sample: string; count: number }>()
+  for (const raw of messages) {
+    const key = normalizeErrorShape(raw)
+    if (!key) continue
+    const existing = byShape.get(key)
+    if (existing) existing.count++
+    else byShape.set(key, { sample: truncateSample(String(raw).replace(/\s+/g, ' ').trim()), count: 1 })
+  }
+  const ranked = [...byShape.values()].sort((a, b) => b.count - a.count)
+  return { shapes: ranked.slice(0, limit), otherShapeCount: Math.max(0, ranked.length - limit) }
+}
+
+function truncateSample(sample: string): string {
+  if (sample.length <= MAX_SHAPE_SAMPLE_CHARS) return sample
+  // Visible truncation: a cut string must not read as the whole message.
+  return sample.slice(0, MAX_SHAPE_SAMPLE_CHARS - 3) + '...'
+}
+
+/** Signals that the failure is about OUR call pattern, not the vendor's health. */
+const OUR_CALL_PATTERN_SIGNALS = [
+  'concurrentperorglongtxn',
+  'request_limit_exceeded',
+  'limit exceeded',
+  'too many requests',
+  'rate limit',
+  'throttl',
+  '429',
+]
+
+/** Signals that the vendor itself is unwell. */
+const VENDOR_HEALTH_SIGNALS = ['(5', 'service unavailable', 'bad gateway', 'gateway timeout', 'timed out', 'abort']
+
+/**
+ * What to actually go and look at, derived from the dominant shape rather than
+ * asserted (L36).
+ *
+ * The alert used to say "confirm <vendor> health (status page / direct call)"
+ * whatever had happened. On 2026-08-17 that sent the reader to the Salesforce
+ * status page for 31 runs rejected by Salesforce's concurrency governor, which
+ * is a fact about our own volume. So a limit or throttle signal now points at the
+ * call pattern instead.
+ *
+ * Judged on the DOMINANT shape only. A minority governor rejection among mostly
+ * timeouts must not claim a concurrency problem. With nothing to judge, it names
+ * no cause at all rather than guessing, because the wrong steer is worse than
+ * none.
+ */
+export function describeHowToCheck(causeLabel: string, shapes: ErrorShape[]): string {
+  const dominant = shapes[0]
+  if (!dominant) {
+    return `Review the affected runs to see what they failed on. Not enough detail was captured to narrow this down here.`
+  }
+  const lower = dominant.sample.toLowerCase()
+  if (OUR_CALL_PATTERN_SIGNALS.some((sig) => lower.includes(sig))) {
+    return (
+      `The dominant error is a limit or governor rejection, which is about our own call pattern and volume ` +
+      `rather than ${causeLabel} being down. Check concurrent in-flight calls and recent volume first.`
+    )
+  }
+  if (VENDOR_HEALTH_SIGNALS.some((sig) => lower.includes(sig))) {
+    return `Confirm ${causeLabel} health (status page / direct call), then review the affected runs.`
+  }
+  return `Review the affected runs, starting with the dominant error above.`
+}
+
 /** Whether a windowed count should fire the aggregated alert. */
 export function detectOutageSpike(count: number, threshold: number): boolean {
   if (threshold <= 0) return false
@@ -179,6 +309,10 @@ export interface OutageGroup {
   cause: OutageCause
   count: number
   workflowNames: string[]
+  /** The busiest distinct error shapes behind this cause, busiest first (#834). */
+  shapes: ErrorShape[]
+  /** Distinct shapes not shown, so the top one does not read as the whole story. */
+  otherShapeCount: number
 }
 
 /**
@@ -192,22 +326,31 @@ export function groupOutages(
   windowStartMs: number,
   causes: OutageCause[] = UPSTREAM_OUTAGE_CAUSES,
 ): OutageGroup[] {
-  const byCause = new Map<string, { cause: OutageCause; count: number; workflows: Set<string> }>()
+  const byCause = new Map<
+    string,
+    { cause: OutageCause; count: number; workflows: Set<string>; messages: (string | null)[] }
+  >()
   for (const r of rows) {
     if (!r.completed_at || new Date(r.completed_at).getTime() < windowStartMs) continue
     const cause = attributeOutageCause(r.error_message, r.failed_step_type, causes)
     if (!cause) continue
     let g = byCause.get(cause.key)
     if (!g) {
-      g = { cause, count: 0, workflows: new Set() }
+      g = { cause, count: 0, workflows: new Set(), messages: [] }
       byCause.set(cause.key, g)
     }
     g.count++
+    // Collected from the SAME rows the count is built from, and inside the same
+    // window guard, so the shapes can never describe runs the count excluded.
+    g.messages.push(r.error_message)
     const name = workflowNameById.get(r.workflow_id)
     if (name) g.workflows.add(name)
   }
   return [...byCause.values()]
-    .map((g) => ({ cause: g.cause, count: g.count, workflowNames: [...g.workflows] }))
+    .map((g) => {
+      const { shapes, otherShapeCount } = topErrorShapes(g.messages)
+      return { cause: g.cause, count: g.count, workflowNames: [...g.workflows], shapes, otherShapeCount }
+    })
     .sort((a, b) => b.count - a.count)
 }
 
@@ -294,6 +437,9 @@ export async function runUpstreamOutageCheck(
           failure_count: group.count,
           window_minutes: DEFAULT_OUTAGE_WINDOW_MINUTES,
           workflow_names: group.workflowNames,
+          error_shapes: group.shapes,
+          other_shape_count: group.otherShapeCount,
+          how_to_check: describeHowToCheck(group.cause.label, group.shapes),
           timestamp: new Date(now).toISOString(),
         },
         appUrl,
