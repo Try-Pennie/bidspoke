@@ -2,6 +2,7 @@
 // (see issue #265): async-correctness rules are errors; the `no-unsafe-*`
 // family on `any`-typed TraceItem/Supabase data is warned, not blocked.
 import js from '@eslint/js'
+import { sharedRules } from '../../eslint.rules.shared.mjs'
 import tsPlugin from '@typescript-eslint/eslint-plugin'
 import tsParser from '@typescript-eslint/parser'
 
@@ -19,59 +20,11 @@ export default [
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    rules: {
-      // --- Async correctness: ERROR ---
-      '@typescript-eslint/no-floating-promises': 'error',
-      '@typescript-eslint/no-misused-promises': 'error',
-      '@typescript-eslint/require-await': 'error',
-      '@typescript-eslint/await-thenable': 'error',
-      '@typescript-eslint/no-implied-eval': 'error',
-      '@typescript-eslint/only-throw-error': 'error',
-
-      // --- Type-safety on `any` boundaries: WARN (tracked debt) ---
-      '@typescript-eslint/no-unsafe-assignment': 'warn',
-      '@typescript-eslint/no-unsafe-member-access': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
-      '@typescript-eslint/no-unsafe-call': 'warn',
-      '@typescript-eslint/no-unsafe-return': 'warn',
-      '@typescript-eslint/no-unsafe-function-type': 'warn',
-      '@typescript-eslint/no-explicit-any': 'warn',
-      '@typescript-eslint/no-unnecessary-type-assertion': 'warn',
-      '@typescript-eslint/unbound-method': 'warn',
-      '@typescript-eslint/restrict-template-expressions': 'warn',
-
-      // Information loss, not a style nit: stringifying a plain object yields
-      // "[object Object]" and destroys the cause. Held at error in both Worker
-      // packages so the invariant can't drift (#601).
-      '@typescript-eslint/no-base-to-string': 'error',
-
-      // no-base-to-string is blind to a value still typed `unknown` (a caught
-      // error), so a name-based guard bans a bare String(err) / `${err}` on an
-      // identifier named err/error/e (#606). The
-      // `err instanceof Error ? err.message : String(err)` idiom was exempt until
-      // #687: its false branch is exactly where a non-Error lands, so it renders
-      // the "[object Object]" this guard exists to stop. Held in both Worker
-      // packages so the invariant can't drift; render a caught error safely
-      // (never a bare String()).
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector:
-            "CallExpression[callee.name=/^(String|coerceString)$/] > Identifier[name=/^(err|error|e)$/]",
-          message:
-            'Do not stringify a caught error with String()/coerceString(): a plain object renders as "[object Object]" ("{}" via coerceString) and blanks the alert. Render it safely (never a bare String()).',
-        },
-        {
-          selector: "TemplateLiteral > Identifier[name=/^(err|error|e)$/]",
-          message:
-            'Do not interpolate a caught error into a template: a plain object renders as "[object Object]". Render it safely (never a bare template).',
-        },
-      ],
-
-      // tsc already enforces these via noUnusedLocals/noUnusedParameters
-      '@typescript-eslint/no-unused-vars': 'off',
-      'no-constant-condition': ['error', { checkLoops: false }],
-      'prefer-const': ['error', { ignoreReadBeforeAssign: true }],
-    },
+    // The shared definition, spread rather than restated (#907). These rules
+    // were duplicated here with comments saying they were "held in both Worker
+    // packages so the invariant can't drift", which is the right intent and the
+    // wrong mechanism: two copies drift the moment one is edited. There is now
+    // one definition, and a guard fails if a package restates it instead (L41).
+    rules: { ...sharedRules },
   },
 ]
