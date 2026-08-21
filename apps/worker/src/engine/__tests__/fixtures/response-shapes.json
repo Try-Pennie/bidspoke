@@ -1,0 +1,51 @@
+{
+  "provenance": {
+    "note": "Every response body shape the live bidding workflows actually sent, measured from workflow_executions.response_body on 2026-08-21. 300 most recent non-test executions per workflow, grouped by their sorted top-level key set, with exact counts. The declarations in engine/response-contracts.ts are seeded from THIS, not written from memory, because a contract invented at the keyboard is how #926 shipped a guard reading a field nobody sends (L48).",
+    "measuredAt": "2026-08-21T15:25:00.000Z",
+    "method": "300 most recent non-test executions per workflow with a non-null response_body, grouped by sorted top-level keys",
+    "limitation": "300 rows per workflow is a recent slice, not the whole retained window, so a rare response family could be absent. That is why a body matching no declared family is reported as unrecognised rather than treated as a violation: the first thing to check is whether it is a family nobody declared."
+  },
+  "workflows": [
+    {
+      "workflowId": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+      "name": "Engine Bidding Workflow",
+      "shapes": [
+        { "keys": ["lead_id", "reason", "status"], "count": 282 },
+        { "keys": ["offers", "requestId"], "count": 18 }
+      ]
+    },
+    {
+      "workflowId": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+      "name": "Lead Economy - Bidding Workflow",
+      "shapes": [
+        { "keys": ["lead_id", "reason", "status"], "count": 276 },
+        { "keys": ["offers", "requestId"], "count": 12 },
+        { "keys": ["lead_id", "reason", "requestId", "status"], "count": 10 },
+        { "keys": ["error", "trace_id"], "count": 2 }
+      ]
+    },
+    {
+      "workflowId": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+      "name": "RML - Bidding Workflow (GigFi)",
+      "shapes": [
+        { "keys": ["lead_id", "reason", "status"], "count": 209 },
+        { "keys": ["offers", "requestId"], "count": 91 }
+      ]
+    },
+    {
+      "workflowId": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+      "name": "RML - Bidding Workflow (LendSwift)",
+      "shapes": [
+        { "keys": ["lead_id", "reason", "status"], "count": 258 },
+        { "keys": ["offers", "requestId"], "count": 42 }
+      ]
+    }
+  ],
+  "findings": {
+    "note": "Two things the measurement itself turned up, recorded so they are not rediscovered.",
+    "items": [
+      "Lead Economy sent 2 responses shaped { error, trace_id }. trace_id is OUR identifier, not the partner's, so a partner receiving one cannot tie it back to the lead they sent. This is the same defect #933 is about, on the internal-error path rather than a rejection path, and it is why an unrecognised family is worth reporting.",
+      "The offer family carries no lead_id and no status, so a flat 'every response must contain lead_id and status' contract would be false for it. The invariant is per family, which is why the declaration is shaped that way."
+    ]
+  }
+}

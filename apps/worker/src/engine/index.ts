@@ -1,6 +1,7 @@
 import { uuidv7 } from '@bidspoke/uuidv7'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from '../lib/format-error'
+import { checkResponseContract, reportResponseContract } from './response-contracts'
 import { resolveFailedStepType } from '../lib/upstream-outage'
 import { parseJson } from '../lib/json'
 import { generateTraceId, deriveIdempotencyKey } from '../lib/crypto'
@@ -414,6 +415,26 @@ export async function executeWorkflow(
     }
     response = { error: errorMessage, trace_id: traceId }
   }
+
+  // Response contract check (#933). Placed here, after every branch above has
+  // assigned `response`, because this is the ONE point all three converge: the
+  // early response, the completed walk, and the engine-error body. A check per
+  // branch would have nowhere its own completeness could be seen, and the branch
+  // added next year would simply not have one (L94).
+  //
+  // It reports and never blocks. A rejection missing a field is still a usable
+  // rejection; refusing to send it turns that into a 500 and breaks the
+  // integration, which is worse for the partner than the defect.
+  //
+  // Note this deliberately judges the error body above too. That shape is
+  // { error, trace_id }, and trace_id is OUR identifier, so a partner receiving
+  // one cannot tie it to the lead it sent. It reports as an unrecognised family,
+  // which is the honest verdict rather than a pass.
+  reportResponseContract(checkResponseContract(workflowId, response), {
+    workflowId,
+    executionId,
+    traceId,
+  })
 
   // Code-node sentinel responses with status >= 500 are real failures even
   // though the walk completed normally (the node logged itself as failed but
