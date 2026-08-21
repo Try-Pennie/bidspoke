@@ -1,3 +1,12 @@
+# Tree matches commit (#889): local checks read the WORKING TREE, CI reads the
+# COMMIT. When they diverge every local signal is green and the PR is broken, and
+# nothing local can see it, because every local tool is on the wrong side of the
+# divergence. This is the class that produced PR #888: a partially-bad `git add`
+# staged nothing, so the commit kept a stale import while the full local suite
+# passed. Runs first, and fast (one git call), because every check after it is
+# only meaningful if this one holds. Skip with SKIP_TREE_CHECK=1.
+node scripts/verify-tree-matches-commit.mjs
+
 node scripts/typecheck-tracked.mjs
 
 # Docs integrity (#382): catch a broken doc link or a page missing from llms.txt
