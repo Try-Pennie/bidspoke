@@ -112,6 +112,32 @@ describe('rebuildKeyMap when the api_sources read fails', () => {
     expect(JSON.stringify(body)).toMatch(/key map/i)
   })
 
+  // L33: the insert happens BEFORE the rebuild, so refusing to write the map
+  // without also undoing the insert leaves exactly the half-created source (in
+  // the table, absent from the auth map) that the setCfSecret catch block
+  // already exists to prevent. It would also block re-creating the source with a
+  // 409 on a name the operator can see nothing wrong with.
+  it('rolls back the inserted row, so no half-created source is left behind', async () => {
+    const supabase = makeSupabase({
+      users: { single: testUser },
+      api_sources: [
+        { insertResult: { id: 'src-new' } },
+        { listError: { message: 'connection reset by peer', code: '08006' } },
+        // The rollback delete, which lands.
+        { writeRows: [{ id: 'src-new' }] },
+      ],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+
+    const res = await request(app, 'POST', '/sources', { name: 'new_partner' })
+
+    expect(res.status).toBeGreaterThanOrEqual(500)
+    expect(setCfSecret).not.toHaveBeenCalled()
+    // Scoped to the org and the name, not a bare delete.
+    const eq = supabase.eqCalls['api_sources'] ?? []
+    expect(eq).toEqual(expect.arrayContaining([['organization_id', USER_ORG], ['name', 'new_partner']]))
+  })
+
   it('still writes the map when the read succeeds, preserving manual keys', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({

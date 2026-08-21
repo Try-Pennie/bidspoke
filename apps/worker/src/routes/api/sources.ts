@@ -81,6 +81,38 @@ async function rebuildKeyMap(
   return { map: merged }
 }
 
+// Undo a just-inserted source when the key map could not be brought in line
+// with it. The insert deliberately happens FIRST (so the rebuilt map, derived
+// from the table, includes the new row), which means every path that gives up
+// after the insert owns this rollback. Skipping it leaves a source in the table
+// and absent from the auth map: it does not authenticate, and it blocks
+// re-creating the same name with a 409 the operator can see no reason for (L33).
+//
+// A rollback that errors, or that matches nothing, leaves exactly that state and
+// nothing here can recover it, so it is logged loudly rather than swallowed
+// (#588). onMiss 'error' covers the zero-row case.
+async function rollbackCreatedSource(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  name: string,
+): Promise<void> {
+  const { error: rollbackError } = await requireRowsAffected(
+    'api_sources.rollback',
+    () => supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id'),
+    { onMiss: 'error', context: { source_name: name, organization_id: orgId } },
+  )
+  if (rollbackError && !isNoRowMatchedError(rollbackError)) {
+    console.error(
+      JSON.stringify({
+        event: 'api_source_rollback_failed',
+        source_name: name,
+        organization_id: orgId,
+        reason: rollbackError.message,
+      }),
+    )
+  }
+}
+
 // One wording for both callers, naming the secret that was NOT touched. An
 // operator reading it needs to know the live key map is unchanged, which is the
 // difference between "retry this" and "go and check what production is using".
@@ -139,32 +171,15 @@ sources.post('/', async (c) => {
   }
 
   const rebuilt = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'))
-  if (rebuilt.error) return keyMapReadFailed(c, rebuilt.error)
+  if (rebuilt.error) {
+    await rollbackCreatedSource(supabase, orgId, name)
+    return keyMapReadFailed(c, rebuilt.error)
+  }
   const newMap = rebuilt.map
   try {
     await setCfSecret('API_KEY_MAP', JSON.stringify(newMap), c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
   } catch (err) {
-    // Roll back so a half-created source (in the table but not the auth map)
-    // doesn't linger and block re-creation with a 409.
-    // A rollback that errors, or that matches nothing, leaves exactly the
-    // half-created source this catch block exists to prevent. Nothing here can
-    // recover it, so make the failure loud instead of silent (#588). onMiss
-    // 'error' covers the zero-row case; a real database error is logged below.
-    const { error: rollbackError } = await requireRowsAffected(
-      'api_sources.rollback',
-      () => supabase.from('api_sources').delete().eq('organization_id', orgId).eq('name', name).select('id'),
-      { onMiss: 'error', context: { source_name: name, organization_id: orgId } }
-    )
-    if (rollbackError && !isNoRowMatchedError(rollbackError)) {
-      console.error(
-        JSON.stringify({
-          event: 'api_source_rollback_failed',
-          source_name: name,
-          organization_id: orgId,
-          reason: rollbackError.message,
-        })
-      )
-    }
+    await rollbackCreatedSource(supabase, orgId, name)
     return c.json({ error: err instanceof Error ? err.message : 'Failed to update API_KEY_MAP secret' }, 500)
   }
 
