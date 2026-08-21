@@ -11,6 +11,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   checkResponseContract,
   reportResponseContract,
+  resetUndeclaredReporting,
   RESPONSE_CONTRACTS,
   RESPONSE_CONTRACT_EVENTS,
   type ResponseContract,
@@ -145,7 +146,10 @@ describe('checkResponseContract', () => {
 })
 
 describe('reportResponseContract', () => {
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    resetUndeclaredReporting()
+  })
 
   it('says nothing at all on a healthy response', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
@@ -189,6 +193,37 @@ describe('reportResponseContract', () => {
     // The line has to say what it COSTS, not just what is absent, so a reader
     // knows why it matters without going to the issue.
     expect(String(first.detail)).toMatch(/tie the response to the lead/)
+  })
+
+  // L77: `undeclared` is equally true of every execution of that workflow, so a
+  // line per run would be hundreds of thousands a day and would bury the two
+  // signals that describe real defects.
+  it('reports an undeclared workflow once per isolate, not once per execution', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    for (let i = 0; i < 50; i++) reportResponseContract({ status: 'undeclared' }, { ...ctx, executionId: `e-${i}` })
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    // And a DIFFERENT workflow still gets its own line, so the dedup cannot hide
+    // a second undeclared workflow behind the first.
+    reportResponseContract({ status: 'undeclared' }, { ...ctx, workflowId: 'other-wf' })
+    expect(warn).toHaveBeenCalledTimes(2)
+  })
+
+  // The other two must NOT be collapsed: their volume is the signal, and one bad
+  // path has to stay distinguishable from a systemic one.
+  it('reports every missing field and every unrecognised shape, so volume stays visible', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    for (let i = 0; i < 5; i++) {
+      reportResponseContract(
+        { status: 'missing', family: 'rejection', missing: ['lead_id'], workflowName: 'Lead Economy' },
+        ctx,
+      )
+      reportResponseContract({ status: 'unrecognised', keys: ['error'], workflowName: 'Lead Economy' }, ctx)
+    }
+
+    expect(err).toHaveBeenCalledTimes(10)
   })
 })
 

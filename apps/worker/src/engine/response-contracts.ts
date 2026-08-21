@@ -177,6 +177,27 @@ export const RESPONSE_CONTRACT_EVENTS = {
 } as const
 
 /**
+ * Workflows already reported as undeclared in this isolate.
+ *
+ * `undeclared` is a CONFIGURATION gap, not a per-run event: it is equally true
+ * of every execution of that workflow, so a line per run would be hundreds of
+ * thousands a day and would bury the two signals that describe actual defects.
+ * Deduplicating it per isolate keeps it discoverable (a recycled isolate says it
+ * again) while costing one line rather than one per lead.
+ *
+ * The other two are deliberately NOT deduplicated. A missing field and an
+ * unrecognised shape are per-response defects whose VOLUME is the signal, and
+ * collapsing them would make one bad path indistinguishable from a systemic one,
+ * which is the failure L77 describes.
+ */
+const undeclaredReported = new Set<string>()
+
+/** Test seam: the dedup set is module state, so a suite must be able to clear it. */
+export function resetUndeclaredReporting(): void {
+  undeclaredReported.clear()
+}
+
+/**
  * Emit the verdict. Structured and one event name per outcome, so the three can
  * be counted and alerted separately instead of sharing one status field.
  *
@@ -215,11 +236,15 @@ export function reportResponseContract(
     )
     return
   }
+  if (undeclaredReported.has(ctx.workflowId)) return
+  undeclaredReported.add(ctx.workflowId)
   console.warn(
     JSON.stringify({
       event: RESPONSE_CONTRACT_EVENTS.undeclared,
       ...base,
-      detail: 'this workflow has no declared response contract, so its responses are unchecked',
+      detail:
+        'this workflow has no declared response contract, so its responses are unchecked. ' +
+        'Reported once per isolate, because it is equally true of every execution.',
     }),
   )
 }
