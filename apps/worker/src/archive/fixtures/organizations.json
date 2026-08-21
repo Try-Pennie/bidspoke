@@ -1,0 +1,21 @@
+{
+  "provenance": {
+    "note": "Every row of public.organizations, read on 2026-08-21. Both the name and the slug are recorded on purpose: they differ only by one character, and mistaking one for the other is what made the archive refuse 100% of production.",
+    "measuredAt": "2026-08-21T16:35:00.000Z",
+    "trap": "name is 'trypennie.com' with a DOT. slug is 'trypennie-com' with a HYPHEN. The archive compares against organization.slug, and EXPECTED_ORGANIZATION_SLUG held the name, so every execution was refused as belonging to the wrong tenant. A constant named for one column and populated from another is invisible to every reader, because both values look right (L176)."
+  },
+  "organizations": [
+    {
+      "id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+      "name": "trypennie.com",
+      "slug": "trypennie-com",
+      "note": "The one organization that has ever produced an execution."
+    },
+    {
+      "id": "70b18e42-60f8-4907-9345-d35369c52470",
+      "name": "E2E Test",
+      "slug": "e2e-test",
+      "note": "Creates workflows, has never produced an execution. Its own org since #664."
+    }
+  ]
+}

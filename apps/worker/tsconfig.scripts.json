@@ -1,0 +1,24 @@
+{
+  // Typecheck for apps/worker/scripts (#907 follow-up, found while working #866).
+  //
+  // These are operator tools run with tsx on a laptop, not Worker code, so they
+  // need Node types that the main tsconfig deliberately excludes: src compiles
+  // against @cloudflare/workers-types alone, and adding Node globals there would
+  // let a `process` or an `fs` import into code that has neither at runtime.
+  //
+  // They were previously typechecked by NOTHING, because the main tsconfig
+  // includes only `src`. That is not cosmetic. dry-run-archive.ts built its own
+  // Map<string, string> and passed it where dispositionFor wants a
+  // Map<string, WorkflowOrganization>, so `.slug` was undefined and the tool
+  // reported that EVERY execution belonged to "organization undefined". It sent
+  // the reader after a tenancy failure in production that was really a type
+  // error in the diagnostic, which is worse than reporting nothing at all.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "@cloudflare/workers-types"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  "include": ["scripts", "src"]
+}

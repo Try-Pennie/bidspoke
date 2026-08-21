@@ -9,14 +9,24 @@ import { SETTLE_WINDOW_MS } from './clock'
 /**
  * The one organization that has ever produced an execution.
  *
- * Measured on prod 2026-08-20 (ADR 0009): `trypennie.com` had 755,713
- * executions in the retained window and `E2E Test` had 0. That measurement is
- * what lets the archive skip a database-layer tenant boundary, and it is a fact
- * about today rather than a structural guarantee, because the e2e org does
- * create workflows. So the claim is ENFORCED here, where there is real data to
- * judge, instead of being asserted in a document nothing checks.
+ * Measured on prod 2026-08-20 (ADR 0009): the organization named `trypennie.com`
+ * had 755,713 executions in the retained window and `E2E Test` had 0. That
+ * measurement is what lets the archive skip a database-layer tenant boundary,
+ * and it is a fact about today rather than a structural guarantee, because the
+ * e2e org does create workflows. So the claim is ENFORCED here, where there is
+ * real data to judge, instead of being asserted in a document nothing checks.
+ *
+ * This is the SLUG, and the distinction cost the whole archive. The value here
+ * used to be `trypennie.com`, which is that organization's NAME; its slug is
+ * `trypennie-com`. The comparison below is against `organization.slug`, so every
+ * execution in production was refused as belonging to the wrong tenant, measured
+ * at 5,617 of 5,617 in one hour. Both values look right to a reader, which is
+ * precisely why a constant named for one column and populated from another is
+ * invisible (L176). Both columns are recorded in fixtures/organizations.json and
+ * __tests__/expected-organization.test.ts asserts this is the slug and is NOT
+ * the name.
  */
-export const EXPECTED_ORGANIZATION_SLUG = 'trypennie.com'
+export const EXPECTED_ORGANIZATION_SLUG = 'trypennie-com'
 
 /**
  * How long past the settle window a non-terminal execution is refused before it
