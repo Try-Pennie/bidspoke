@@ -151,6 +151,19 @@ export async function runExecutionArchive(
     const incompleteById = new Map<string, boolean>()
     const scalarsById = new Map<string, ArchiveScalars>()
 
+    /**
+     * Refusals decided at disposition, which the run loop cannot see.
+     *
+     * Disposition happens inside the fetchHour callback below, so the loop's own
+     * `executionsRefused` only ever rises for an encode failure or an oversized
+     * bundle. Those are the rare paths. The common ones, a foreign tenant and a
+     * row missing a required column, incremented nothing, so a run that refused
+     * EVERY execution reported zero refusals and the alert written for exactly
+     * that case could not speak: #949 measured 5,617 of 5,617 refused for a
+     * tenancy mismatch and nothing said so (#957, L90).
+     */
+    let refusedAtDisposition = 0
+
     const deadline = now().getTime() + WALL_TIME_BUDGET_MS
     let subrequests = 900
 
@@ -192,6 +205,7 @@ export async function runExecutionArchive(
           const d = dispositionFor(bundle.execution, { now: now(), organizationOf })
           if (d.action === 'refuse') {
             await upsertRefusal(supabase, bundle.executionId, day, d.reason ?? 'refused', now())
+            refusedAtDisposition++
             continue
           }
           // The archive table requires an organization, a workflow and a start.
@@ -206,6 +220,7 @@ export async function runExecutionArchive(
           )
           if (!scalars.ok) {
             await upsertRefusal(supabase, bundle.executionId, day, scalars.reason, now())
+            refusedAtDisposition++
             continue
           }
           dayById.set(bundle.executionId, day)
@@ -248,6 +263,11 @@ export async function runExecutionArchive(
         subrequestsLeft: () => subrequests,
       },
     })
+
+    // Folded in BEFORE the alerts are computed, so the refusal alert and the
+    // "refused every execution it read" wording judge the same number the ledger
+    // holds. Added after, the alert would go on reading zero.
+    result.executionsRefused += refusedAtDisposition
 
     // Each condition under its own name, and nothing at all for a healthy run:
     // notifyExportFailure clears its grace marker when called with no errors.
