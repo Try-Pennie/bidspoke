@@ -20,7 +20,7 @@ import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
 import { encodeBundle } from '../archive/bundle'
 import { extractPersonFields } from '../engine/lead-sightings'
 import { hashSsn } from '../engine/persons-crypto'
-import { fetchHour } from '../archive/hour-fetch'
+import { streamHour, type HourBundle } from '../archive/stream-hour'
 import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
 import type { Env } from '../index'
 
@@ -32,12 +32,19 @@ export const ARCHIVE_STREAM = 'executions'
 /**
  * Hours a single run may archive.
  *
- * Derived from the CPU ceiling in wrangler.toml rather than picked: A0 measured
- * 0.8 ms of CPU per bundle, so an hour of roughly 4,375 executions is about
- * 3.5 s, and four hours is 14 s against a 30,000 ms ceiling shared with
- * everything else the invocation does. A8 (#876) measures this for real; until
- * then the cap stays inside half the ceiling, and a test asserts that rather
- * than leaving the margin as a claim in this comment.
+ * The previous version of this comment derived the number from the CPU ceiling,
+ * and that reasoning was against the wrong limit. MEMORY is what binds: measured
+ * on prod 2026-08-22, one hour of 2,615 executions holds 183.5 MB of raw rows
+ * plus 33.8 MB of wires against a 128 MB ceiling, and the 16:23 UTC run was
+ * killed with outcome `exceededMemory` at 9.4 s of a 30,000 ms CPU allowance.
+ * Every run after it died the same way, because a killed run never advances the
+ * watermark, so it retried the same oversized work forever.
+ *
+ * Memory is now bounded by the SLICE rather than by this number (#953), so what
+ * this cap protects is the per-invocation request allowance and the wall clock:
+ * at SLICE_SIZE executions per slice an hour costs roughly 90 requests of the
+ * 900 available, and the measured 39 s per hour sits inside the 10 minute
+ * budget. Four hours is comfortably within both.
  *
  * At four hours per hourly run the archive gains three hours of ground per hour
  * of real time, so a three day backlog drains in roughly a day.
@@ -230,19 +237,12 @@ export async function runExecutionArchive(
           )
         if (error) throw new Error(`advancing the watermark failed: ${formatErr(error)}`)
       },
-      fetchHour: async (hourStart, hourEnd) => {
-        const hour = await fetchHour(supabase, hourStart, hourEnd)
-        // Counted by the fetch itself, not estimated here: at the measured 11.9
-        // steps per execution an hour is roughly fifty pages of steps alone, so
-        // a hand-picked number would sit far below reality and the clean stop
-        // could never fire (L182).
-        subrequests -= hour.requests
-        if (!hour.usable) return hour
-
+      streamHour: async (hourStart, hourEnd, onSlice) => {
+        const hour = await streamHour(supabase, hourStart, hourEnd, async (bundles) => {
         // Disposition sits between reading and encoding, so a refused execution
         // never reaches the encoder or the wire.
-        const keep: typeof hour.bundles = []
-        for (const bundle of hour.bundles) {
+        const keep: HourBundle[] = []
+        for (const bundle of bundles) {
           const day = dayOf(bundle.execution, hourStart)
           const d = dispositionFor(bundle.execution, { now: now(), organizationOf })
           if (d.action === 'refuse') {
@@ -273,7 +273,14 @@ export async function runExecutionArchive(
           scalarsById.set(bundle.executionId, scalars.scalars)
           keep.push(bundle)
         }
-        return { ...hour, bundles: keep }
+          await onSlice(keep)
+        })
+        // Counted by the read itself, not estimated here: at the measured 11.9
+        // steps per execution an hour is many pages of steps alone, so a
+        // hand-picked number would sit far below reality and the clean stop
+        // could never fire (L182).
+        subrequests -= hour.requests
+        return hour
       },
       encode: async (bundle) => {
         const encoded = await encodeBundle({ execution: bundle.execution, steps: bundle.steps })

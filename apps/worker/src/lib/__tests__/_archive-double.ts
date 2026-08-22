@@ -66,6 +66,7 @@ export function makeArchiveDouble(opts: { organizationSlug: string; triggerPaylo
   const client = {
     from(table: string) {
       let counting = false
+      let inValues: string[] | null = null
       const chain: Record<string, unknown> = {
         select(_cols?: unknown, opt?: { count?: string; head?: boolean }) {
           counting = opt?.count !== undefined
@@ -84,6 +85,10 @@ export function makeArchiveDouble(opts: { organizationSlug: string; triggerPaylo
           return chain
         },
         eq() { return chain },
+        // Honoured rather than ignored: the slice reader asks for a slice's
+        // steps BY NAME, and a double that returned every step regardless would
+        // hide a reader that named the wrong ids.
+        in(_col: string, values: string[]) { inValues = values; return chain },
         gte() { return chain },
         lt() { return chain },
         gt() { return chain },
@@ -104,8 +109,12 @@ export function makeArchiveDouble(opts: { organizationSlug: string; triggerPaylo
             return { data: { watermark_hour: watermark }, error: null }
           case 'workflow_executions':
             return counting ? { count: 1, error: null } : { data: [execution], error: null }
-          case 'execution_steps':
-            return counting ? { count: 1, error: null } : { data: [step], error: null }
+          case 'execution_steps': {
+            if (counting) return { count: 1, error: null }
+            const wanted = inValues
+            const mine = wanted === null || wanted.includes(EXECUTION_ID) ? [step] : []
+            return { data: mine, error: null }
+          }
           default:
             // Writes answer with no error. A write that silently failed would
             // make every assertion below pass while nothing landed.

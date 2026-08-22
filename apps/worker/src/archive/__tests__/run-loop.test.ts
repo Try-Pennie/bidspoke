@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest'
+interface FakeBundle { executionId: string; execution: Record<string, unknown>; steps: Record<string, unknown>[] }
+
 import { runArchive, type RunDeps, type RunStop } from '../run-loop'
 import { SETTLE_WINDOW_MS } from '../clock'
 
@@ -17,14 +19,16 @@ function deps(overrides: Partial<RunDeps> = {}): RunDeps {
     advanceWatermark: async (hourEnd) => {
       watermark = hourEnd
     },
-    fetchHour: async () => ({
+    streamHour: async (_hourStart: string, _hourEnd: string, onSlice: (b: FakeBundle[]) => Promise<void>) => {
+      await onSlice([{ executionId: 'e1', execution: { id: 'e1' }, steps: [] }])
+      return {
       usable: true as const,
       empty: false,
-      bundles: [{ executionId: 'e1', execution: { id: 'e1' }, steps: [] }],
-      executionCount: 1,
-      stepCount: 0,
-      requests: 1,
-    }),
+        executionCount: 1,
+        stepCount: 0,
+        requests: 1,
+      }
+    },
     encode: async (bundle) => ({ executionId: bundle.executionId, wire: 'x', wireBytes: 10, stepCount: 0 }),
     send: async (batch) => {
       sent.push(batch.map((b) => b.executionId))
@@ -57,9 +61,10 @@ describe('runArchive', () => {
     const asked: string[] = []
     const d = deps({
       budget: { maxHours: 6, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
-      fetchHour: async (hourStart) => {
+      streamHour: async (hourStart: string, _hourEnd: string, onSlice: (b: FakeBundle[]) => Promise<void>) => {
         asked.push(hourStart)
-        return { usable: true as const, empty: false, bundles: [], executionCount: 0, stepCount: 0, requests: 1 }
+        await onSlice([])
+        return { usable: true as const, empty: false, executionCount: 0, stepCount: 0, requests: 1 }
       },
     })
 
@@ -83,7 +88,7 @@ describe('runArchive', () => {
 
   it('reports an hour with no executions as its own outcome, worded differently from a full one', async () => {
     const d = deps({
-      fetchHour: async () => ({ usable: true as const, empty: true, bundles: [], executionCount: 0, stepCount: 0, requests: 1 }),
+      streamHour: async () => ({ usable: true as const, empty: true, executionCount: 0, stepCount: 0, requests: 1 }),
     })
     const result = await runArchive(d)
 
@@ -151,7 +156,7 @@ describe('runArchive', () => {
       advanceWatermark: async (hourEnd) => {
         watermark = hourEnd
       },
-      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
+      streamHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
     })
 
     const result = await runArchive(d)
@@ -224,17 +229,19 @@ describe('runArchive', () => {
     const refusals: Array<{ executionId: string; reason: string }> = []
     const d = deps({
       budget: { maxHours: 1, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
-      fetchHour: async () => ({
-        usable: true as const,
-        empty: false,
-        bundles: [
+      streamHour: async (_hourStart: string, _hourEnd: string, onSlice: (b: FakeBundle[]) => Promise<void>) => {
+        await onSlice([
           { executionId: 'good', execution: { id: 'good' }, steps: [] },
           { executionId: 'bad', execution: { id: 'bad' }, steps: [] },
-        ],
-        executionCount: 2,
-        stepCount: 0,
-        requests: 1,
-      }),
+        ])
+        return {
+        usable: true as const,
+        empty: false,
+          executionCount: 2,
+          stepCount: 0,
+          requests: 1,
+        }
+      },
       encode: async (bundle) => {
         if (bundle.executionId === 'bad') throw new Error('gzip exploded')
         return { executionId: bundle.executionId, wire: 'x', wireBytes: 10, stepCount: 0 }
@@ -298,7 +305,7 @@ describe('runArchive reports how far behind it still is', () => {
 
   it('reports the lag even when the run failed, so a stuck hour is visible as lag too', async () => {
     const d = deps({
-      fetchHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
+      streamHour: async () => ({ usable: false as const, reason: 'steps: batch returned fewer rows', requests: 1 }),
     })
     const result = await runArchive(d)
 

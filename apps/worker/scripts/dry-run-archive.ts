@@ -1,7 +1,7 @@
 /**
  * Dry run of the execution archive against production (#871, Phase A3).
  *
- * READ ONLY BY CONSTRUCTION. It calls fetchHour and encodeBundle, which are the
+ * READ ONLY BY CONSTRUCTION. It calls streamHour and encodeBundle, which are the
  * real read and compress path, and it never calls the send, the watermark write,
  * the id record or the refusal write. There is no code path in this file that
  * writes anything, anywhere.
@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createClient } from '@supabase/supabase-js'
-import { fetchHour } from '../src/archive/hour-fetch'
+import { streamHour, SLICE_SIZE, type HourBundle } from '../src/archive/stream-hour'
 import { encodeBundle } from '../src/archive/bundle'
 import { batchByBytes } from '../src/archive/batching'
 import { dispositionFor } from '../src/archive/disposition'
@@ -63,7 +63,13 @@ async function main(): Promise<void> {
   console.log('mode:     DRY RUN, nothing is written to Snowflake or Postgres')
 
   const t0 = Date.now()
-  const hour = await fetchHour(supabase, hourStart, hourEnd)
+  // Accumulated deliberately, which the WORKER must never do: this runs on a
+  // laptop with gigabytes, and holding the hour is the only way to measure how
+  // big it is. That measurement is the reason the Worker slices (#953).
+  const bundles: HourBundle[] = []
+  const hour = await streamHour(supabase, hourStart, hourEnd, async (slice) => {
+    bundles.push(...slice)
+  })
   const fetchMs = Date.now() - t0
 
   if (!hour.usable) {
@@ -100,7 +106,7 @@ async function main(): Promise<void> {
   const refusals: string[] = []
   const keep = []
   const days = new Set<string>()
-  for (const bundle of hour.bundles) {
+  for (const bundle of bundles) {
     const d = dispositionFor(bundle.execution, { now, organizationOf })
     if (d.action === 'refuse') {
       refusals.push(d.reason ?? 'refused')
@@ -150,6 +156,43 @@ async function main(): Promise<void> {
   console.log(`  wire p99: ${percentile(sorted, 99)} B`)
   console.log(`  wire max: ${sorted[sorted.length - 1] ?? 0} B`)
   console.log(`  total:    ${(total / 1024 / 1024).toFixed(1)} MB held at once`)
+
+  // The number the per-run cap has to be sized against. The wire total above is
+  // the COMPRESSED figure, and the raw rows are alive at the same time as the
+  // wires during encoding, so a cap justified by the wire total is justified
+  // against roughly a quarter of the real footprint. Cloudflare killed the
+  // 2026-08-22 16:23 UTC run with outcome exceededMemory at 9.4 s of CPU, well
+  // inside the processor allowance, so memory is the limit that binds and this
+  // is the only measurement that speaks to it. JSON length is a LOWER bound: a
+  // live JS object costs more than its serialised form.
+  let rawBytes = 0
+  for (const bundle of bundles) {
+    rawBytes += JSON.stringify(bundle.execution).length
+    for (const step of bundle.steps) rawBytes += JSON.stringify(step).length
+  }
+  // The MEAN is not what the slice has to survive. Sizes are heavily skewed
+  // (p50 against max below), so a slice of the heaviest consecutive executions
+  // is what decides whether SLICE_SIZE is safe. Measured over the real ordering
+  // the reader uses, which is by id.
+  const perExecution = bundles.map(
+    (b) => JSON.stringify(b.execution).length + b.steps.reduce((n, st) => n + JSON.stringify(st).length, 0),
+  )
+  let worstWindow = 0
+  let window = 0
+  for (let i = 0; i < perExecution.length; i++) {
+    window += perExecution[i]
+    if (i >= SLICE_SIZE) window -= perExecution[i - SLICE_SIZE]
+    if (window > worstWindow) worstWindow = window
+  }
+  console.log(`\nworst slice of ${SLICE_SIZE} consecutive executions`)
+  console.log(`  raw:      ${(worstWindow / 1024 / 1024).toFixed(1)} MB`)
+  console.log(`  heaviest single execution: ${(Math.max(...perExecution) / 1024).toFixed(0)} kB`)
+  console.log(`  if every one were the heaviest: ${((Math.max(...perExecution) * SLICE_SIZE) / 1024 / 1024).toFixed(1)} MB`)
+
+  console.log(`\nmemory footprint for ONE hour`)
+  console.log(`  raw rows:   ${(rawBytes / 1024 / 1024).toFixed(1)} MB (lower bound)`)
+  console.log(`  wires:      ${(total / 1024 / 1024).toFixed(1)} MB`)
+  console.log(`  both alive: ${((rawBytes + total) / 1024 / 1024).toFixed(1)} MB against a 128 MB ceiling`)
 
   console.log(`\nbatching`)
   console.log(`  batches:   ${batches.length}`)

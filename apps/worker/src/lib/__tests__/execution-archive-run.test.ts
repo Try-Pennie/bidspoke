@@ -9,9 +9,9 @@ vi.mock('../snowflake', async (importOriginal) => ({
   executeStatement: (...args: unknown[]) => executeStatement(...args),
 }))
 
-const fetchHour = vi.fn()
-vi.mock('../../archive/hour-fetch', () => ({
-  fetchHour: (...args: unknown[]) => fetchHour(...args),
+const streamHour = vi.fn()
+vi.mock('../../archive/stream-hour', () => ({
+  streamHour: (...args: unknown[]) => streamHour(...args),
 }))
 
 const notifyExportFailure = vi.fn()
@@ -94,11 +94,10 @@ const envWith = (kv: ReturnType<typeof fakeKv>): Env =>
 beforeEach(() => {
   executeStatement.mockReset()
   notifyExportFailure.mockReset()
-  fetchHour.mockReset()
-  fetchHour.mockResolvedValue({
+  streamHour.mockReset()
+  streamHour.mockResolvedValue({
     usable: true,
     empty: true,
-    bundles: [],
     executionCount: 0,
     stepCount: 0,
     requests: 1,
@@ -114,10 +113,9 @@ describe('the request allowance', () => {
   const behind = { watermark: '2026-08-10T00:00:00.000Z' }
 
   it('is spent at the rate the fetch reports, not at a fixed guess', async () => {
-    fetchHour.mockResolvedValue({
+    streamHour.mockResolvedValue({
       usable: true,
       empty: true,
-      bundles: [],
       executionCount: 0,
       stepCount: 0,
       requests: 500,
@@ -271,15 +269,16 @@ describe('an execution the archive table could not accept', () => {
     steps: [],
   })
 
+  // The reader now hands slices to a callback, so the double has to CALL it.
+  // A double that only returned a result would leave every bundle unprocessed
+  // and every assertion below passing on an hour that archived nothing.
   const withHour = (bundles: unknown[]) => {
-    fetchHour.mockResolvedValue({
-      usable: true,
-      empty: false,
-      bundles,
-      executionCount: bundles.length,
-      stepCount: 0,
-      requests: 3,
-    })
+    streamHour.mockImplementation(
+      async (_client: unknown, _s: string, _e: string, onSlice: (b: unknown[]) => Promise<void>) => {
+        await onSlice(bundles)
+        return { usable: true, empty: false, executionCount: bundles.length, stepCount: 0, requests: 3 }
+      },
+    )
   }
 
   const live = {
