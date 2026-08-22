@@ -39,10 +39,25 @@ interface Column {
  */
 function tableColumns(): Column[] {
   const sql = readFileSync(DDL, 'utf8')
-  const match = /CREATE TABLE IF NOT EXISTS execution_archive \(([\s\S]*?)\n\)\s*\nCOMMENT/.exec(sql)
-  if (!match) throw new Error('could not find the execution_archive CREATE TABLE, so this guard would pass vacuously')
+  // Anchored on the closing paren of the column list, NOT on COMMENT following
+  // it immediately. Snowflake allows table properties between the two, and the
+  // first one added (DATA_RETENTION_TIME_IN_DAYS, #909) broke a version of this
+  // regex that required them to be adjacent. The statement is still bounded by
+  // its own terminating semicolon, so a match cannot run on into the roles and
+  // grants further down the file (L135).
+  // SQL comments are dropped before the statement is bounded, because the
+  // terminator search is for a real `;` and prose contains them: the first
+  // version of this looked for the first semicolon after the column list and
+  // found one inside a comment explaining the retention setting, which reads as
+  // "this is not the statement I meant" rather than as a parsing problem.
+  const code = sql.replace(/^\s*--.*$/gm, '')
+  const statement = /CREATE TABLE IF NOT EXISTS execution_archive \(([\s\S]*?)\n\)([\s\S]*?);/.exec(code)
+  if (!statement) throw new Error('could not find the execution_archive CREATE TABLE, so this guard would pass vacuously')
+  if (!/\bCOMMENT\s*=/.test(statement[2])) {
+    throw new Error('found a CREATE TABLE for execution_archive with no COMMENT, so this is probably not the statement this guard means')
+  }
   const columns: Column[] = []
-  for (const raw of match[1].split('\n')) {
+  for (const raw of statement[1].split('\n')) {
     const line = raw.trim()
     if (line === '' || line.startsWith('--')) continue
     columns.push({
@@ -72,6 +87,30 @@ describe('the archive INSERT against the table it writes into', () => {
   const columns = tableColumns()
   const required = columns.filter((c) => c.notNull && !c.hasDefault).map((c) => c.name)
   const written = insertColumns()
+
+  // The declared value the runtime read-back (#980) will compare the live table
+  // against. Asserted here so the number in the DDL is load bearing rather than
+  // prose: the guarantee on #909 is a 30 day undo window, and a script that
+  // recreated this table at the 1 day default would satisfy every other check in
+  // this file.
+  it('declares the 30 day undo window, on the CREATE and on a re-runnable ALTER', () => {
+    const sql = readFileSync(DDL, 'utf8').replace(/^\s*--.*$/gm, '')
+
+    // Scoped to the CREATE's own property section, NOT searched over the whole
+    // file. A file-wide search for the retention is answered by the ALTER below,
+    // so both assertions would be satisfied by one line and neither half would
+    // be checked (L178). Verified by deleting the clause from the CREATE and
+    // watching this fail.
+    const create = /CREATE TABLE IF NOT EXISTS execution_archive \([\s\S]*?\n\)([\s\S]*?);/.exec(sql)
+    expect(create, 'no execution_archive CREATE TABLE, so this would pass vacuously').not.toBeNull()
+    expect(create![1]).toMatch(/DATA_RETENTION_TIME_IN_DAYS\s*=\s*30/)
+
+    // Both, deliberately. CREATE TABLE IF NOT EXISTS does nothing to a table
+    // that already exists, so on every run after the first the clause on the
+    // CREATE is inert and the ALTER is the only line putting the window in
+    // force (#909).
+    expect(sql).toMatch(/ALTER TABLE execution_archive SET DATA_RETENTION_TIME_IN_DAYS\s*=\s*30/)
+  })
 
   it('found a real table and a real statement, so nothing below passes vacuously', () => {
     // Every count asserted separately: a regex that matched a fragment would
