@@ -12,7 +12,7 @@
 import { formatErr } from '../lib/format-error'
 import { nextHourToArchive } from './clock'
 import { batchByBytes, type SizedBundle } from './batching'
-import type { HourBundle, HourFetch } from './hour-fetch'
+import type { HourBundle, HourStream } from './stream-hour'
 
 export type RunStop =
   /** No hour left that is closed and settled. The healthy steady state. */
@@ -59,7 +59,17 @@ export interface RunDeps {
    * reports success and the watermark still moves forward.
    */
   advanceWatermark: (hourStart: string) => Promise<void>
-  fetchHour: (hourStart: string, hourEnd: string) => Promise<HourFetch>
+  /**
+   * Reads the hour and hands back ONE SLICE at a time, awaiting the callback
+   * before reading the next. The callback shape is the memory guarantee: a
+   * version that returned every bundle was killed by the platform for memory on
+   * a single busy hour (#953).
+   */
+  streamHour: (
+    hourStart: string,
+    hourEnd: string,
+    onSlice: (bundles: HourBundle[]) => Promise<void>,
+  ) => Promise<HourStream>
   encode: (bundle: HourBundle) => Promise<EncodedForSend>
   send: (batch: EncodedForSend[]) => Promise<void>
   recordArchived: (executionIds: string[]) => Promise<void>
@@ -154,7 +164,69 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       return result
     }
 
-    const hour = await deps.fetchHour(next.hourStart, next.hourEnd)
+    // Set by the slice callback when a SEND fails, so a send failure is not
+    // reported as a read failure. They have different remedies and must not
+    // share one status (L53).
+    let sendFailure: string | null = null
+
+    let hour: HourStream
+    try {
+      hour = await deps.streamHour(next.hourStart, next.hourEnd, async (bundles) => {
+      // Encode per execution, so one bundle that will not compress is refused by
+      // id rather than failing the hour. That refusal is permanent for that
+      // execution, so it must not hold the watermark: one such row would stop
+      // all archiving forever with nothing able to clear it (L47, L110).
+      const encoded: EncodedForSend[] = []
+      for (const bundle of bundles) {
+        try {
+          encoded.push(await deps.encode(bundle))
+        } catch (err) {
+          await deps.recordRefusal(bundle.executionId, `could not encode: ${formatErr(err)}`)
+          result.executionsRefused++
+        }
+      }
+
+      const { batches, oversized } = batchByBytes(encoded)
+      for (const executionId of oversized) {
+        await deps.recordRefusal(executionId, 'bundle is over the per-bundle ceiling')
+        result.executionsRefused++
+      }
+
+      for (const batch of batches) {
+        try {
+          // Snowflake FIRST, then the local record. A crash between them leaves
+          // a bundle nothing knows about, so the gate under-counts and refuses a
+          // healthy day, which a re-run clears because duplicates are harmless
+          // to a COUNT(DISTINCT) gate. The reverse order would let us believe a
+          // backup exists that does not, and authorise deleting unarchived data.
+          await deps.send(batch)
+          await deps.recordArchived(batch.map((b) => b.executionId))
+          result.executionsArchived += batch.length
+        } catch (err) {
+          sendFailure = formatErr(err)
+          // Thrown so the read stops immediately rather than streaming the rest
+          // of the hour into a destination that is refusing it.
+          throw err
+        }
+      }
+      })
+    } catch (err) {
+      // Only a send failure is expected here, and it has already been recorded
+      // with its own wording. Anything else is rethrown rather than folded into
+      // the send-failed status, because a status field shared by two unrelated
+      // causes can report neither (L53).
+      if (sendFailure === null) throw err
+      hour = { usable: false, reason: 'send failed', requests: 0 }
+    }
+
+    if (sendFailure !== null) {
+      result.stop = 'send-failed'
+      result.failed = true
+      result.detail = `hour ${next.hourStart}: ${String(sendFailure)}`
+      result.hoursBehind = await measureLag()
+      return result
+    }
+
     if (!hour.usable) {
       // The watermark deliberately does NOT advance: a read that did not
       // reconcile means we do not know what this hour contains, and advancing
@@ -171,45 +243,6 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       result.hoursEmpty++
       result.detail = `hour ${next.hourStart} contained no executions`
       continue
-    }
-
-    // Encode per execution, so one bundle that will not compress is refused by
-    // id rather than failing the hour. That refusal is permanent for that
-    // execution, so it must not hold the watermark: one such row would stop all
-    // archiving forever with nothing able to clear it (L47, L110).
-    const encoded: EncodedForSend[] = []
-    for (const bundle of hour.bundles) {
-      try {
-        encoded.push(await deps.encode(bundle))
-      } catch (err) {
-        await deps.recordRefusal(bundle.executionId, `could not encode: ${formatErr(err)}`)
-        result.executionsRefused++
-      }
-    }
-
-    const { batches, oversized } = batchByBytes(encoded)
-    for (const executionId of oversized) {
-      await deps.recordRefusal(executionId, 'bundle is over the per-bundle ceiling')
-      result.executionsRefused++
-    }
-
-    for (const batch of batches) {
-      try {
-        // Snowflake FIRST, then the local record. A crash between them leaves a
-        // bundle nothing knows about, so the gate under-counts and refuses a
-        // healthy day, which a re-run clears because duplicates are harmless to
-        // a COUNT(DISTINCT) gate. The reverse order would let us believe a
-        // backup exists that does not, and authorise deleting unarchived data.
-        await deps.send(batch)
-        await deps.recordArchived(batch.map((b) => b.executionId))
-        result.executionsArchived += batch.length
-      } catch (err) {
-        result.stop = 'send-failed'
-        result.failed = true
-        result.detail = `hour ${next.hourStart}: ${formatErr(err)}`
-        result.hoursBehind = await measureLag()
-        return result
-      }
     }
 
     await deps.advanceWatermark(next.hourStart)
