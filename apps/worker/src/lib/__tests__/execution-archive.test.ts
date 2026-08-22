@@ -219,6 +219,22 @@ describe('run budgets', () => {
     expect(MAX_HOURS_PER_RUN * measuredCpuMsPerHour).toBeLessThan(30_000 / 2)
   })
 
+  // MEASURED IN PRODUCTION on the 2026-08-22 recovery run, from the watermark's
+  // own timestamps: the run began at 20:23:00Z, finished the 13:00 hour at
+  // 20:26:22Z and the 14:00 hour at 20:30:39Z. So an hour of real data costs
+  // between 202 and 257 seconds end to end, far more than the 48 s the local
+  // rehearsal suggested, because the rehearsal does not pay the Worker's
+  // per-request latency or the Snowflake send.
+  const MEASURED_WORST_MS_PER_HOUR = 257_000
+
+  // A cap the clock stops before it can ever be reached is not a cap. It reads
+  // as the control and can never fire, which is worse than no number at all
+  // because whoever reads it believes it (L109). This fails if the hour cap is
+  // raised without the wall budget, or the wall budget lowered without the cap.
+  it('can actually reach its hour cap inside its own wall-time budget', () => {
+    expect(MAX_HOURS_PER_RUN * MEASURED_WORST_MS_PER_HOUR).toBeLessThanOrEqual(WALL_TIME_BUDGET_MS)
+  })
+
   it('gains ground every run, so a backlog drains rather than persisting', () => {
     // Anything less than 2 would never catch up on an hourly cadence.
     expect(MAX_HOURS_PER_RUN).toBeGreaterThan(1)

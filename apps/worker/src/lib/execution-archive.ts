@@ -41,15 +41,24 @@ export const ARCHIVE_STREAM = 'executions'
  * watermark, so it retried the same oversized work forever.
  *
  * Memory is now bounded by the SLICE rather than by this number (#953), so what
- * this cap protects is the per-invocation request allowance and the wall clock:
- * at SLICE_SIZE executions per slice an hour costs roughly 90 requests of the
- * 900 available, and the measured 39 s per hour sits inside the 10 minute
- * budget. Four hours is comfortably within both.
+ * this cap protects is the wall clock. MEASURED IN PRODUCTION on the 2026-08-22
+ * recovery run, from the watermark's own timestamps: the run began at 20:23:00Z,
+ * finished the 13:00 hour at 20:26:22Z and the 14:00 hour at 20:30:39Z, then
+ * stopped. So an hour of real data costs 202 to 257 seconds end to end.
  *
- * At four hours per hourly run the archive gains three hours of ground per hour
- * of real time, so a three day backlog drains in roughly a day.
+ * That is five times the 39 s the local rehearsal suggested, because the
+ * rehearsal pays neither the Worker's per-request latency nor the Snowflake
+ * send. Sizing this constant from the rehearsal is what produced the previous
+ * value of 4, which the wall budget stops at 2 and which could therefore never
+ * fire: a cap the clock reaches first is not a cap, it is a number that reads
+ * like the control while the control is somewhere else.
+ *
+ * At two hours per hourly run the archive still gains an hour of ground per hour
+ * of real time, so a backlog drains, just at half the rate the old comment
+ * implied. Raising this requires raising WALL_TIME_BUDGET_MS with it, and a test
+ * asserts the two agree.
  */
-export const MAX_HOURS_PER_RUN = 4
+export const MAX_HOURS_PER_RUN = 2
 
 /** Wall-clock budget for one run, inside the platform's cron limit. */
 export const WALL_TIME_BUDGET_MS = 10 * 60 * 1000
