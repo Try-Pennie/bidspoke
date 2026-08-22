@@ -38,6 +38,10 @@ const BIG_TABLES = [
   'audit_log',
   'field_presence_daily',
   'workflow_stats_daily',
+  // ~105,000 rows/day, ~3.2M at steady state, by its own migration's stated
+  // volume (20260820000001). Not partitioned on purpose, so the completeness
+  // test above cannot reach it; the daily runtime guard flagged it instead.
+  'execution_archive_ids',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
@@ -71,8 +75,7 @@ function walkChain(src: string, from: number): { methods: string[]; end: number 
 
 interface Finding { file: string; line: number; table: string; methods: string[] }
 
-function scanFile(file: string): Finding[] {
-  const src = readFileSync(file, 'utf8')
+function scanSource(src: string, relPath: string): Finding[] {
   const findings: Finding[] = []
 
   // Classify a single `<recv>.from(...)` occurrence. `start` is the index of the
@@ -101,7 +104,7 @@ function scanFile(file: string): Finding[] {
     const stmtText = allLines.slice(li, endLineIdx + 1).join('\n')
     if (/paginate-ok/.test(stmtText)) return
 
-    findings.push({ file: path.relative(WORKER_SRC, file), line: fromLineIdx + 1, table, methods })
+    findings.push({ file: relPath, line: fromLineIdx + 1, table, methods })
   }
 
   // 1. Reads of a known big table named by a string literal.
@@ -125,6 +128,10 @@ function scanFile(file: string): Finding[] {
   }
 
   return findings
+}
+
+function scanFile(file: string): Finding[] {
+  return scanSource(readFileSync(file, 'utf8'), path.relative(WORKER_SRC, file))
 }
 
 // Extract the names of partitioned parent tables declared in a migration:
@@ -187,6 +194,57 @@ describe('runtime big-table guard mirrors BIG_TABLES (#222)', () => {
         `missing from worker: ${missing.join(', ') || '(none)'}\n` +
         `extra in worker: ${extra.join(', ') || '(none)'}`,
     ).toEqual({ missing: [], extra: [] })
+  })
+})
+
+describe('each BIG_TABLES entry is load-bearing', () => {
+  // Every other test here can pass while the list is wrong: the completeness
+  // test only covers PARTITIONED tables, the mirror test only compares the two
+  // lists to each other, and the scan below reports nothing for a table it was
+  // never told about. So none of them can fail when an entry is MISSING, which
+  // is how execution_archive_ids (~105,000 rows/day by its own migration's
+  // stated volume) sat outside the guard until a runtime alert found it.
+  //
+  // This drives the scanner against a deliberate unbounded read of each listed
+  // table and requires it to be reported. It fails if an entry is dropped, and
+  // it fails if a scanner change stops matching the shape it exists to catch.
+  it.each(BIG_TABLES)('an unbounded read of %s is reported', (table) => {
+    const findings = scanSource(
+      `const { data } = await supabase.from('${table}').select('*')\n`,
+      'fixture.ts',
+    )
+    expect(findings.map((f) => f.table)).toContain(table)
+  })
+
+  it('an unbounded read of execution_archive_ids is reported (#871)', () => {
+    // Named separately from the it.each above because the it.each can only
+    // check entries the list ALREADY has, and this table's absence is the
+    // defect: the archive writes one row per archived execution, which its own
+    // migration (20260820000001) states as ~105,000 rows/day and ~3.2M at
+    // steady state, so it is far past the 1,000-row cap. It is not partitioned
+    // (deliberately, see that migration), so the completeness test above cannot
+    // find it either. Today the worker only WRITES to it; this fails the moment
+    // the deletion gate's orphan count (#872) reads it without a bound.
+    const findings = scanSource(
+      "const { data } = await supabase.from('execution_archive_ids').select('execution_id')\n",
+      'fixture.ts',
+    )
+    expect(
+      findings.map((f) => f.table),
+      'execution_archive_ids must be in BIG_TABLES so an unbounded read of it is caught',
+    ).toContain('execution_archive_ids')
+  })
+
+  it('a bounded read of the same table is not reported', () => {
+    // The positive case above is satisfied by a scanner that reports
+    // EVERYTHING, so prove the same fixture goes quiet once it is bounded.
+    for (const table of BIG_TABLES) {
+      const findings = scanSource(
+        `const { data } = await supabase.from('${table}').select('*').limit(100)\n`,
+        'fixture.ts',
+      )
+      expect(findings, `bounded read of ${table} should not be reported`).toEqual([])
+    }
   })
 })
 
