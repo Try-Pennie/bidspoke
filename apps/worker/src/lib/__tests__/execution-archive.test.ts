@@ -13,6 +13,7 @@ const encoded = (executionId: string, stepCount = 3): EncodedForSend => ({
 
 const someScalars: ArchiveScalars = {
   organizationId: 'org-1',
+  ssnHash: null,
   workflowId: 'wf-1',
   workflowVersionId: null,
   parentExecutionId: null,

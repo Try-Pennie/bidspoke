@@ -29,6 +29,17 @@ export interface ArchiveScalars {
   completedAtUtc: string | null
   durationMs: number | null
   costUsd: number | null
+  /**
+   * Peppered hash of the SSN on the execution's own trigger payload, or null
+   * when it carries none (a measured 3.5% of executions).
+   *
+   * Passed IN rather than computed here, because hashing is async and this
+   * function is the one place the scalar row is constructed. Computing it here
+   * would either make every caller await a pure mapping or invite a second
+   * assignment after construction, which is how a field ends up set in two
+   * places and true in neither (#927).
+   */
+  ssnHash: string | null
 }
 
 export type ScalarsResult = { ok: true; scalars: ArchiveScalars } | { ok: false; reason: string }
@@ -68,7 +79,14 @@ export function toNtz(value: unknown): string | null {
   return new Date(ms).toISOString().replace('Z', '')
 }
 
-export function scalarsFor(execution: Record<string, unknown>, organizationId: string | undefined): ScalarsResult {
+export function scalarsFor(
+  execution: Record<string, unknown>,
+  organizationId: string | undefined,
+  // Required, with no default. A default standing for absent would silently
+  // write null for every row the day a caller forgot it, and after A5 removes
+  // the source those rows can never be given one (L168).
+  ssnHash: string | null,
+): ScalarsResult {
   const id = str(execution.id) ?? '(no id)'
 
   if (organizationId === undefined || organizationId === '') {
@@ -87,6 +105,7 @@ export function scalarsFor(execution: Record<string, unknown>, organizationId: s
     ok: true,
     scalars: {
       organizationId,
+      ssnHash,
       workflowId,
       workflowVersionId: str(execution.workflow_version_id),
       parentExecutionId: str(execution.parent_execution_id),
