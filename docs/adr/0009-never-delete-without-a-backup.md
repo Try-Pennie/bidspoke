@@ -225,10 +225,35 @@ verification queries reported:
 | account | `JYC55588`, region `AWS_US_EAST_1` |
 | right account? | yes, two ways: it matches the identifier the Worker already uses, and `BIDSPOKE.PUBLIC.LEAD_SIGHTINGS` is present |
 | `execution_archive` | created |
-| Time Travel retention | **1 day** |
+| Time Travel retention | **30 days**, set on #909 (2026-08-22). Was 1 day as created |
 
 The retention number is the one that mattered, and it closes the worst version of
 a question A7 would otherwise have had to guess at.
+
+**Corrected 2026-08-22 (#911, #909).** The paragraphs below were written when
+1 day looked like the ceiling, and reasoned from that. It was not the ceiling: it
+was the DEFAULT. This account is Enterprise or above, established by creating a
+table with a 2 day window and reading the setting back rather than trusting the
+success message, so anything up to 90 days was available the whole time. Left in
+place rather than rewritten, because a decision that reads as considered when it
+was actually inherited from a wrong premise is worth being able to see.
+
+The window is now **30 days**, decided on #909. The reasoning that changed: once
+A5 (#873) repoints the purge, this database is the only place 13 months of
+execution history exists, and at 1 day a bad archiver write or a wrong erasure is
+unrecoverable after 24 hours, which is the exact outcome this ADR exists to
+prevent. It costs almost nothing in storage, because Snowflake bills Time Travel
+on what changes and this table is insert-only apart from erasures.
+
+What it costs instead is erasure promptness, and that is accepted deliberately:
+an erased row now stays readable for 30 days rather than 1, so A7's response must
+say when the data actually becomes unrecoverable. The numbers in the next
+paragraph (one day, eight days) are the OLD ones and now read 30 and 37.
+
+The row access policy decision is NOT affected. It was declined because A0
+measured this account as single tenant, so a per-org predicate would filter on a
+column holding one value; the edition was the secondary clause, and the primary
+one still stands.
 
 **What an erasure can honestly claim.** A Snowflake DELETE does not remove the
 rows: the prior version stays readable through AT/BEFORE for
