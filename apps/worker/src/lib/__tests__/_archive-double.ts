@@ -18,6 +18,15 @@ export const NOW = new Date('2026-08-22T10:00:00.000Z')
 export const FOREIGN_WORKFLOW = 'wf-foreign'
 export const EXECUTION_ID = '0198f0a0-0000-7000-8000-000000000001'
 
+/**
+ * The id of the nth execution the double holds, so a suite asking for several
+ * can name them without knowing how they are built. The first is EXECUTION_ID,
+ * so a suite that asks for one is unchanged.
+ */
+export function executionIdAt(index: number): string {
+  return `0198f0a0-0000-7000-8000-${String(index + 1).padStart(12, '0')}`
+}
+
 export function makeKV(): KVNamespace {
   const store = new Map<string, string>()
   return {
@@ -37,25 +46,36 @@ interface Recorded { table: string; rows: unknown[] }
  * so handing it anything other than EXPECTED_ORGANIZATION_SLUG produces a real
  * refusal through the real disposition code rather than a simulated one.
  */
-export function makeArchiveDouble(opts: { organizationSlug: string; triggerPayload?: unknown }) {
+export function makeArchiveDouble(opts: {
+  organizationSlug: string
+  triggerPayload?: unknown
+  /**
+   * How many executions the hour holds. One by default, so every suite written
+   * against a single execution is unaffected. A suite that needs to see how the
+   * archive behaves ACROSS a population, rather than on one row, asks for more.
+   */
+  executions?: number
+}) {
   const writes: Recorded[] = []
-  const execution = {
-    id: EXECUTION_ID,
+  const executionCount = opts.executions ?? 1
+  const startedAt = '2026-08-22T07:30:00.000Z'
+  const executions = Array.from({ length: executionCount }, (_, i) => ({
+    id: executionIdAt(i),
     workflow_id: FOREIGN_WORKFLOW,
-    started_at: '2026-08-22T07:30:00.000Z',
+    started_at: startedAt,
     status: 'completed',
     finished_at: '2026-08-22T07:30:04.000Z',
     cost_usd: 0.0001,
     // Undefined rather than null when the caller says nothing, so a suite that
     // does not care about the payload is not silently asserting it is absent.
     trigger_payload: opts.triggerPayload ?? null,
-  }
-  const step = {
-    id: 'step-1',
-    execution_id: EXECUTION_ID,
+  }))
+  const steps = executions.map((execution, i) => ({
+    id: `step-${i + 1}`,
+    execution_id: execution.id,
     execution_started_at: execution.started_at,
     started_at: '2026-08-22T07:30:01.000Z',
-  }
+  }))
 
   // The stored watermark, advanced by the archive's own upsert. Held as state
   // rather than answered as a constant: a double that always replies with the
@@ -108,11 +128,11 @@ export function makeArchiveDouble(opts: { organizationSlug: string; triggerPaylo
           case 'execution_archive_progress':
             return { data: { watermark_hour: watermark }, error: null }
           case 'workflow_executions':
-            return counting ? { count: 1, error: null } : { data: [execution], error: null }
+            return counting ? { count: executions.length, error: null } : { data: executions, error: null }
           case 'execution_steps': {
-            if (counting) return { count: 1, error: null }
+            if (counting) return { count: steps.length, error: null }
             const wanted = inValues
-            const mine = wanted === null || wanted.includes(EXECUTION_ID) ? [step] : []
+            const mine = wanted === null ? steps : steps.filter((s) => wanted.includes(s.execution_id))
             return { data: mine, error: null }
           }
           default:

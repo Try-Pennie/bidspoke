@@ -22,6 +22,7 @@ import { extractPersonFields } from '../engine/lead-sightings'
 import { hashSsn } from '../engine/persons-crypto'
 import { streamHour, type HourBundle } from '../archive/stream-hour'
 import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
+import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
 import type { Env } from '../index'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -69,6 +70,13 @@ export const WALL_TIME_BUDGET_MS = 10 * 60 * 1000
  * and the gate's COUNT(DISTINCT) are what make a duplicate harmless.
  */
 export const RUN_LOCK_KEY = 'execution-archive:run-lock'
+
+/**
+ * Subrequests one invocation may issue, held below the platform's own limit so
+ * the loop stops cleanly before it is killed. Every consumer decrements it:
+ * reads, sends, the archived-id record and the refusal writes (#965).
+ */
+export const SUBREQUEST_BUDGET = 900
 const RUN_LOCK_TTL_SECONDS = 15 * 60
 
 /** A row on its way to Snowflake, with the scalars the gate reads without decompressing. */
@@ -88,8 +96,28 @@ export interface ArchiveDeps {
   now?: () => Date
 }
 
+/**
+ * Subrequests the run actually issued, by kind, counted at the call rather than
+ * estimated from the work (L182).
+ *
+ * Reported rather than kept internal because the budget is what decides whether
+ * the loop stops cleanly or the platform kills the invocation, and a budget that
+ * counts only some of its consumers reports headroom while the real limit is
+ * already breached. #965: the refusal writes were not counted at all, so a run
+ * that refused all 5,617 executions of an hour would issue 5,617 uncounted
+ * writes while `subrequestsLeft()` still reported around 840.
+ */
+export interface SubrequestsUsed {
+  read: number
+  send: number
+  record: number
+  refusal: number
+  total: number
+}
+
 export interface ArchiveRunSummary extends RunResult {
   skipped?: 'locked'
+  subrequestsUsed: SubrequestsUsed
 }
 
 /**
@@ -143,6 +171,7 @@ const EMPTY_RUN: ArchiveRunSummary = {
   executionsRefused: 0,
   hoursBehind: 0,
   detail: '',
+  subrequestsUsed: { read: 0, send: 0, record: 0, refusal: 0, total: 0 },
 }
 
 export async function runExecutionArchive(
@@ -177,6 +206,33 @@ export async function runExecutionArchive(
     }
   }
   await env.IDEMPOTENCY.put(RUN_LOCK_KEY, new Date().toISOString(), { expirationTtl: RUN_LOCK_TTL_SECONDS })
+
+  /**
+   * Every consumer of the budget, counted where the request is issued.
+   *
+   * Held as one object rather than a bare countdown so the remaining budget
+   * is DERIVED from the kinds rather than maintained alongside them: a new
+   * consumer that forgets to decrement is then a missing field rather than a
+   * silent overspend, which is exactly what the refusal writes were (#965).
+   */
+  const used = { read: 0, send: 0, record: 0, refusal: 0 }
+  const totalUsed = (): number => used.read + used.send + used.record + used.refusal
+
+  /**
+   * Buffered so a mass refusal is a handful of requests rather than one per
+   * execution, and flushed at the end of every slice so the buffer never
+   * holds more than a slice and the budget sees the cost inside the loop
+   * rather than after it (#965).
+   */
+  const refusals = createRefusalBuffer({
+    writeBatch: async (rows) => {
+      used.refusal++
+      const { error } = await supabase
+        .from('execution_archive_refusals')
+        .upsert(rows, { onConflict: 'execution_id' })
+      if (error) throw new Error(`recording ${rows.length} refusals failed: ${formatErr(error)}`)
+    },
+  })
 
   try {
     // One small read per run, cached for the run. workflow_executions carries no
@@ -223,7 +279,6 @@ export async function runExecutionArchive(
     let executionsWithNoSsn = 0
 
     const deadline = now().getTime() + WALL_TIME_BUDGET_MS
-    let subrequests = 900
 
     const result = await runArchive({
       now,
@@ -255,7 +310,7 @@ export async function runExecutionArchive(
           const day = dayOf(bundle.execution, hourStart)
           const d = dispositionFor(bundle.execution, { now: now(), organizationOf })
           if (d.action === 'refuse') {
-            await upsertRefusal(supabase, bundle.executionId, day, d.reason ?? 'refused', now())
+            await refusals.add(refusalRow(bundle.executionId, day, d.reason ?? 'refused', now()))
             refusedAtDisposition++
             continue
           }
@@ -273,7 +328,7 @@ export async function runExecutionArchive(
             ssnHash,
           )
           if (!scalars.ok) {
-            await upsertRefusal(supabase, bundle.executionId, day, scalars.reason, now())
+            await refusals.add(refusalRow(bundle.executionId, day, scalars.reason, now()))
             refusedAtDisposition++
             continue
           }
@@ -282,13 +337,20 @@ export async function runExecutionArchive(
           scalarsById.set(bundle.executionId, scalars.scalars)
           keep.push(bundle)
         }
-          await onSlice(keep)
+          try {
+            await onSlice(keep)
+          } finally {
+            // In a finally so a send failure still writes the refusals this
+            // slice already decided. They are a permanent property of those
+            // executions, not of the send that failed after them.
+            await refusals.flush()
+          }
         })
         // Counted by the read itself, not estimated here: at the measured 11.9
         // steps per execution an hour is many pages of steps alone, so a
         // hand-picked number would sit far below reality and the clean stop
         // could never fire (L182).
-        subrequests -= hour.requests
+        used.read += hour.requests
         return hour
       },
       encode: async (bundle) => {
@@ -301,11 +363,11 @@ export async function runExecutionArchive(
         }
       },
       send: async (batch: EncodedForSend[]) => {
-        subrequests -= 1
+        used.send++
         await deps.sendBatch(batch.map((b) => toRow(b, dayById, incompleteById, scalarsById)))
       },
       recordArchived: async (executionIds) => {
-        subrequests -= 1
+        used.record++
         const { error } = await supabase.from('execution_archive_ids').upsert(
           executionIds.map((execution_id) => ({
             execution_id,
@@ -316,14 +378,20 @@ export async function runExecutionArchive(
         if (error) throw new Error(`recording archived ids failed: ${formatErr(error)}`)
       },
       recordRefusal: async (executionId, reason) => {
-        await upsertRefusal(supabase, executionId, dayById.get(executionId) ?? '', reason, now())
+        await refusals.add(refusalRow(executionId, dayById.get(executionId) ?? '', reason, now()))
       },
       budget: {
         maxHours: MAX_HOURS_PER_RUN,
         deadlineAt: deadline,
-        subrequestsLeft: () => subrequests,
+        subrequestsLeft: () => SUBREQUEST_BUDGET - totalUsed(),
       },
     })
+
+    // Anything the per-slice flushes did not take: a refusal the run loop
+    // recorded after its last slice, or a partial batch. Awaited on the success
+    // path so a write failure here fails the run loudly rather than losing a
+    // refusal the deletion gate will later need to account for.
+    await refusals.flush()
 
     // Folded in BEFORE the alerts are computed, so the refusal alert and the
     // "refused every execution it read" wording judge the same number the ledger
@@ -339,10 +407,21 @@ export async function runExecutionArchive(
     console.log(
       `[execution-archive] stop=${result.stop} hours=${result.hoursArchived} empty=${result.hoursEmpty} ` +
         `archived=${result.executionsArchived} refused=${result.executionsRefused} ` +
-        `no_ssn=${executionsWithNoSsn} behind=${result.hoursBehind}`,
+        `no_ssn=${executionsWithNoSsn} behind=${result.hoursBehind} ` +
+        `subrequests=${totalUsed()}/${SUBREQUEST_BUDGET} ` +
+        `(read=${used.read} send=${used.send} record=${used.record} refusal=${used.refusal})`,
     )
-    return result
+    return { ...result, subrequestsUsed: { ...used, total: totalUsed() } }
   } finally {
+    // Named rather than swallowed. Reaching here with rows still buffered means
+    // the run threw before they could be written, and the count says how many
+    // refusals the ledger is short by, which is what the deletion gate will
+    // later report as an unexplained difference.
+    if (refusals.buffered > 0) {
+      console.error(
+        `[execution-archive] ${refusals.buffered} refusals were never written, so the refusal ledger is short by that many`,
+      )
+    }
     await env.IDEMPOTENCY.delete(RUN_LOCK_KEY)
   }
 }
@@ -440,22 +519,18 @@ export async function loadWorkflowOrganizations(supabase: SupabaseClient): Promi
   return map
 }
 
-async function upsertRefusal(
-  supabase: SupabaseClient,
-  executionId: string,
-  archiveDayValue: string,
-  reason: string,
-  now: Date,
-): Promise<void> {
-  const { error } = await supabase.from('execution_archive_refusals').upsert(
-    {
-      execution_id: executionId,
-      archive_day: archiveDayValue,
-      reason,
-      refused_at: now.toISOString(),
-      resolved_at: null,
-    },
-    { onConflict: 'execution_id' },
-  )
-  if (error) throw new Error(`recording a refusal failed: ${formatErr(error)}`)
+/**
+ * One refusal row, built in one place so both callers (disposition and the run
+ * loop) write the same shape. `resolved_at` is set explicitly to null rather
+ * than omitted, because the upsert has to CLEAR it when an execution that was
+ * once resolved is refused again.
+ */
+function refusalRow(executionId: string, archiveDayValue: string, reason: string, now: Date): RefusalRecord {
+  return {
+    execution_id: executionId,
+    archive_day: archiveDayValue,
+    reason,
+    refused_at: now.toISOString(),
+    resolved_at: null,
+  }
 }
