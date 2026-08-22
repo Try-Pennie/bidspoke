@@ -80,6 +80,20 @@ describe('a lock left behind by a killed run (#954)', () => {
     // the dead predecessor's stamp.
     expect(await kv.get(RUN_LOCK_KEY)).toBeNull()
   })
+
+  it('still archives when the takeover cannot be reported', async () => {
+    // The report runs before any archiving, so an unreachable Slack would
+    // otherwise turn one killed run into a second one that never started, and
+    // the second looks exactly like the first. A watchdog must not share the
+    // abort behaviour of the work it watches (L71).
+    vi.mocked(notifyExportFailure).mockRejectedValueOnce(new Error('slack is down'))
+    const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
+
+    const { summary, sent } = await runWithLock(stale)
+
+    expect(summary.executionsArchived).toBe(1)
+    expect(sent).toHaveLength(1)
+  })
 })
 
 describe('a lock held by a run that is genuinely alive (#954)', () => {

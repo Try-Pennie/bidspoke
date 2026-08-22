@@ -235,12 +235,25 @@ export async function runExecutionArchive(
     // is indistinguishable from an hour with no work, so the takeover is the one
     // moment anything can say it happened (L98).
     console.warn(`[execution-archive] taking over a stale run lock: ${lock.reason}`)
-    await notifyExportFailure(
-      supabase,
-      ARCHIVE_JOB_NAMES.killed,
-      [`${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived.`],
-      env.IDEMPOTENCY,
-    )
+    try {
+      await notifyExportFailure(
+        supabase,
+        ARCHIVE_JOB_NAMES.killed,
+        [`${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived.`],
+        env.IDEMPOTENCY,
+      )
+    } catch (err) {
+      // The report must not be able to stop the work it reports on (L71). This
+      // alert runs BEFORE any archiving, so an unreachable Slack or a failing
+      // Supabase write would otherwise turn one killed run into a second one
+      // that never started, which looks exactly like the first. Both facts are
+      // stated, because "the run was killed" and "we could not say so" are
+      // different things and the second one hides the first.
+      console.error(
+        `[execution-archive] took over a stale run lock (${lock.reason}) ` +
+          `but could not report it: ${formatErr(err)}`,
+      )
+    }
   }
   await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, WALL_TIME_BUDGET_MS), {
     expirationTtl: RUN_LOCK_TTL_SECONDS,
