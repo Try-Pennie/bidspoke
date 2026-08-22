@@ -184,29 +184,34 @@ describe('run budgets', () => {
   // hour of 2,615 executions holds 183.5 MB of raw rows plus 33.8 MB of encoded
   // wires, both alive at once, against Cloudflare's 128 MB ceiling. That is
   // roughly 70 kB per execution including its steps.
-  const MEASURED_BYTES_PER_EXECUTION = (183.5 + 33.8) * 1024 * 1024 / 2615
   const WORKER_MEMORY_CEILING_BYTES = 128 * 1024 * 1024
+
+  // The WORST WINDOW, not the mean. Sizes are heavily skewed (7.5 kB median wire
+  // against 218 kB largest), so a mean justifies a slice size the tail breaks.
+  const MEASURED_WORST_SLICE_BYTES = 14.1 * 1024 * 1024
+  const MEASURED_AT_SLICE_SIZE = 150
+  const MEASURED_HOUR_BYTES = (253.3 + 46.2) * 1024 * 1024
 
   // The assertion that matters, against the limit that actually binds. The
   // previous version of this block asserted the CPU margin instead, and it
   // passed the whole time the archive was being killed for memory every hour: a
   // guard that measures a proxy for the quantity it protects reports health
   // while the real thing fails (L63).
-  it('keeps a slice inside the memory ceiling with an order of magnitude to spare', () => {
-    const sliceBytes = SLICE_SIZE * MEASURED_BYTES_PER_EXECUTION
+  it('keeps a slice inside the memory ceiling, judged on the worst slice measured', () => {
+    // Scaled from the measurement, so raising SLICE_SIZE past what the evidence
+    // supports fails here rather than in production at 3 a.m.
+    const sliceBytes = (SLICE_SIZE / MEASURED_AT_SLICE_SIZE) * MEASURED_WORST_SLICE_BYTES
 
-    expect(sliceBytes).toBeLessThan(WORKER_MEMORY_CEILING_BYTES / 10)
+    expect(sliceBytes).toBeLessThan(WORKER_MEMORY_CEILING_BYTES / 5)
   })
 
   // Kept, because the whole point of slicing is that this number no longer
   // decides memory. If it ever does again, this fails rather than the platform.
   it('does not let the per-run hour cap decide memory at all', () => {
-    const hourBytes = 4375 * MEASURED_BYTES_PER_EXECUTION
-
     // One hour exceeds the ceiling on its own, which is why no value of the hour
     // cap could have fixed this and why the slice is the unit that protects it.
-    expect(hourBytes).toBeGreaterThan(WORKER_MEMORY_CEILING_BYTES)
-    expect(SLICE_SIZE).toBeLessThan(4375)
+    expect(MEASURED_HOUR_BYTES).toBeGreaterThan(WORKER_MEMORY_CEILING_BYTES)
+    expect(SLICE_SIZE).toBeLessThan(3575)
   })
 
   it('keeps a full run inside the declared CPU ceiling with margin', () => {

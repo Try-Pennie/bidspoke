@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFileSync } from 'node:fs'
 import { createClient } from '@supabase/supabase-js'
-import { streamHour, type HourBundle } from '../src/archive/stream-hour'
+import { streamHour, SLICE_SIZE, type HourBundle } from '../src/archive/stream-hour'
 import { encodeBundle } from '../src/archive/bundle'
 import { batchByBytes } from '../src/archive/batching'
 import { dispositionFor } from '../src/archive/disposition'
@@ -170,6 +170,25 @@ async function main(): Promise<void> {
     rawBytes += JSON.stringify(bundle.execution).length
     for (const step of bundle.steps) rawBytes += JSON.stringify(step).length
   }
+  // The MEAN is not what the slice has to survive. Sizes are heavily skewed
+  // (p50 against max below), so a slice of the heaviest consecutive executions
+  // is what decides whether SLICE_SIZE is safe. Measured over the real ordering
+  // the reader uses, which is by id.
+  const perExecution = bundles.map(
+    (b) => JSON.stringify(b.execution).length + b.steps.reduce((n, st) => n + JSON.stringify(st).length, 0),
+  )
+  let worstWindow = 0
+  let window = 0
+  for (let i = 0; i < perExecution.length; i++) {
+    window += perExecution[i]
+    if (i >= SLICE_SIZE) window -= perExecution[i - SLICE_SIZE]
+    if (window > worstWindow) worstWindow = window
+  }
+  console.log(`\nworst slice of ${SLICE_SIZE} consecutive executions`)
+  console.log(`  raw:      ${(worstWindow / 1024 / 1024).toFixed(1)} MB`)
+  console.log(`  heaviest single execution: ${(Math.max(...perExecution) / 1024).toFixed(0)} kB`)
+  console.log(`  if every one were the heaviest: ${((Math.max(...perExecution) * SLICE_SIZE) / 1024 / 1024).toFixed(1)} MB`)
+
   console.log(`\nmemory footprint for ONE hour`)
   console.log(`  raw rows:   ${(rawBytes / 1024 / 1024).toFixed(1)} MB (lower bound)`)
   console.log(`  wires:      ${(total / 1024 / 1024).toFixed(1)} MB`)

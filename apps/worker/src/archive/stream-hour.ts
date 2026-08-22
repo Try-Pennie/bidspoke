@@ -32,10 +32,25 @@ import { groupStepsByExecution, stepWindowFor, POSTGREST_ROW_CAP } from './fetch
 /**
  * Executions per slice.
  *
- * Derived from the measurement above rather than picked: 183.5 MB across 2,615
- * executions is roughly 70 kB per execution including its steps, so 150 is about
- * 10 MB of raw rows plus their wires, an order of magnitude inside the ceiling
- * even if a slice is unusually heavy.
+ * Derived from the measured WORST WINDOW, not from the mean, because the sizes
+ * are heavily skewed and a mean would justify a number the tail can break.
+ * Measured on prod 2026-08-22 over the 13:00 UTC hour (3,575 executions):
+ *
+ *   heaviest slice of 150 consecutive executions   14.1 MB
+ *   heaviest single execution                       2.0 MB
+ *   median wire                                     7.5 kB
+ *   largest wire                                  218   kB
+ *
+ * So 150 leaves roughly a 9x margin against the worst slice that hour actually
+ * contained. It does NOT leave a margin against a hypothetical slice of 150
+ * heaviest-case executions, which would be 304 MB: a count-based cap cannot,
+ * because the count says nothing about the bytes. That residual is recorded
+ * rather than papered over, and the byte-aware fix is its own change.
+ *
+ * Not larger, because the slice's step ids travel in the URL (see
+ * MAX_ID_LIST_CHARS). Not smaller, because each slice costs a fixed handful of
+ * subrequests and the run's allowance is what limits how many hours a run can
+ * catch up: at 150 an hour costs about 90 requests of the 900 available.
  *
  * Not larger, because the slice's step ids travel in the URL (see
  * MAX_ID_LIST_CHARS). Not smaller, because each slice costs a fixed handful of
