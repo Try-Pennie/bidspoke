@@ -13,7 +13,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
-import { alertsFor } from '../archive/alerts'
+import { alertsFor, ARCHIVE_JOB_NAMES } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
 import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
@@ -23,6 +23,7 @@ import { hashSsn } from '../engine/persons-crypto'
 import { streamHour, type HourBundle } from '../archive/stream-hour'
 import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
 import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
+import { decideLock, lockValue } from '../archive/run-lock'
 import type { Env } from '../index'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -77,7 +78,24 @@ export const RUN_LOCK_KEY = 'execution-archive:run-lock'
  * reads, sends, the archived-id record and the refusal writes (#965).
  */
 export const SUBREQUEST_BUDGET = 900
-const RUN_LOCK_TTL_SECONDS = 15 * 60
+/**
+ * How long the lock survives without being deleted.
+ *
+ * DELIBERATELY LONGER THAN THE HOURLY CADENCE (#954). The obvious value is
+ * something just over the wall budget, so a killed run's lock clears itself.
+ * That is what was here (15 minutes) and it is why a killed run was invisible:
+ * the isolate is terminated, the `finally` never runs, the key expires quietly
+ * before the next run at :23 ever reads it, and the only evidence disappears on
+ * a timer. The 2026-08-21 case was found only because somebody happened to look
+ * inside the four minute window where the key still existed.
+ *
+ * At 90 minutes the next hourly run READS the stale lock, `decideLock` names it
+ * as left behind by a killed run, and the takeover is alerted. A live run is
+ * protected by the deadline stamp and its grace, not by this number, so making
+ * it long costs nothing: the worst case if the takeover logic itself failed is
+ * that one run is skipped and the one after it proceeds.
+ */
+const RUN_LOCK_TTL_SECONDS = 90 * 60
 
 /** A row on its way to Snowflake, with the scalars the gate reads without decompressing. */
 export interface ArchiveRow {
@@ -196,16 +214,50 @@ export async function runExecutionArchive(
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
   }
 
-  const held = await env.IDEMPOTENCY.get(RUN_LOCK_KEY)
-  if (held) {
-    console.log('[execution-archive] another run holds the lock, skipping')
-    return {
-      ...EMPTY_RUN,
-      skipped: 'locked',
-      detail: 'another invocation holds the run lock',
+  const startedAt = now()
+  const lock = decideLock({
+    stored: await env.IDEMPOTENCY.get(RUN_LOCK_KEY),
+    now: startedAt,
+    wallBudgetMs: WALL_TIME_BUDGET_MS,
+  })
+  if (lock.action === 'skip') {
+    // The age travels with the message. A bare "locked" is what made a killed
+    // run indistinguishable from a genuine concurrent one (#954, L11).
+    const detail =
+      `another invocation has held the run lock for ${Math.round(lock.heldForMs / 60000)} minutes ` +
+      `and is ${Math.round(lock.deadlineInMs / 60000)} minutes inside its own deadline`
+    console.log(`[execution-archive] ${detail}, skipping`)
+    return { ...EMPTY_RUN, skipped: 'locked', detail }
+  }
+  if (lock.action === 'take-over') {
+    // Alerted, not merely logged. A killed run leaves the watermark,
+    // execution_archive_ids and execution_archive_refusals all untouched, which
+    // is indistinguishable from an hour with no work, so the takeover is the one
+    // moment anything can say it happened (L98).
+    console.warn(`[execution-archive] taking over a stale run lock: ${lock.reason}`)
+    try {
+      await notifyExportFailure(
+        supabase,
+        ARCHIVE_JOB_NAMES.killed,
+        [`${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived.`],
+        env.IDEMPOTENCY,
+      )
+    } catch (err) {
+      // The report must not be able to stop the work it reports on (L71). This
+      // alert runs BEFORE any archiving, so an unreachable Slack or a failing
+      // Supabase write would otherwise turn one killed run into a second one
+      // that never started, which looks exactly like the first. Both facts are
+      // stated, because "the run was killed" and "we could not say so" are
+      // different things and the second one hides the first.
+      console.error(
+        `[execution-archive] took over a stale run lock (${lock.reason}) ` +
+          `but could not report it: ${formatErr(err)}`,
+      )
     }
   }
-  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, new Date().toISOString(), { expirationTtl: RUN_LOCK_TTL_SECONDS })
+  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, WALL_TIME_BUDGET_MS), {
+    expirationTtl: RUN_LOCK_TTL_SECONDS,
+  })
 
   /**
    * Every consumer of the budget, counted where the request is issued.
@@ -278,7 +330,7 @@ export async function runExecutionArchive(
      */
     let executionsWithNoSsn = 0
 
-    const deadline = now().getTime() + WALL_TIME_BUDGET_MS
+    const deadline = startedAt.getTime() + WALL_TIME_BUDGET_MS
 
     const result = await runArchive({
       now,

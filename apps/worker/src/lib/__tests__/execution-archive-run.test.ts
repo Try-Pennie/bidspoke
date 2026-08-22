@@ -156,7 +156,16 @@ describe('runExecutionArchive', () => {
     const sendBatch = vi.fn()
     const { client } = fakeSupabase()
 
-    const result = await runExecutionArchive(envWith(kv), client, { sendBatch })
+    // The clock is pinned two minutes past the holder's start, so the holder is
+    // inside its own wall budget and this is a genuine concurrent run. Left to
+    // real time the stored stamp is years old and the run correctly takes the
+    // lock over instead, which is a different outcome and a different test
+    // (#954). A fixture whose meaning is the relationship between a stored time
+    // and the clock has to pin both ends (L130).
+    const result = await runExecutionArchive(envWith(kv), client, {
+      sendBatch,
+      now: () => new Date('2026-08-18T11:02:00.000Z'),
+    })
 
     expect(result.skipped).toBe('locked')
     expect(sendBatch).not.toHaveBeenCalled()
