@@ -21,6 +21,15 @@ export const ARCHIVE_JOB_NAMES = {
   ingest: 'execution-archive-ingest',
   refusal: 'execution-archive-refusal',
   lag: 'execution-archive-lag',
+  /**
+   * A run taking over a lock its predecessor never released (#954).
+   *
+   * Its own name, not folded into `ingest`. The remedy is different and the
+   * cooldown must be too: an ingest failure clears by the next successful run,
+   * while a killed run is a statement about an invocation that is already over
+   * and whose hours are simply unarchived until the loop reaches them again.
+   */
+  killed: 'execution-archive-killed',
 } as const
 
 /**
