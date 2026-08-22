@@ -293,6 +293,19 @@ describe('an execution the archive table could not accept', () => {
   const refusals = (writes: Array<{ table: string; rows: unknown }>) =>
     writes.filter((w) => w.table === 'execution_archive_refusals')
 
+  /**
+   * The rows of the nth refusal REQUEST, flattened.
+   *
+   * Refusals are upserted as a batch per slice rather than one call per
+   * execution (#965), so the argument is an array even when it holds a single
+   * row. Read through here rather than cast in each test, so a future change
+   * back to one row per call fails in one place.
+   */
+  const refusedRows = (writes: Array<{ table: string; rows: unknown }>, request = 0) => {
+    const rows = refusals(writes)[request].rows
+    return (Array.isArray(rows) ? rows : [rows]) as Array<{ reason: string; execution_id: string }>
+  }
+
   it('sends the row, carrying its scalars, when everything required is present', async () => {
     withHour([bundle()])
     const { client, writes } = fakeSupabase(live)
@@ -344,7 +357,7 @@ describe('an execution the archive table could not accept', () => {
     await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
 
     expect(sendBatch).not.toHaveBeenCalled()
-    const row = refusals(writes)[0].rows as { reason: string; execution_id: string }
+    const row = refusedRows(writes)[0]
     expect(row.execution_id).toBe('e1')
     expect(row.reason).toMatch(/started_at/)
     // Named by the scalars, not by the tenancy check, which would have refused
@@ -375,7 +388,7 @@ describe('an execution the archive table could not accept', () => {
 
     expect(sendBatch).not.toHaveBeenCalled()
     expect(refusals(writes).length).toBe(1)
-    const row = refusals(writes)[0].rows as { reason: string }
+    const row = refusedRows(writes)[0]
     expect(row.reason).toMatch(/maps to no organization/)
   })
 
@@ -393,7 +406,7 @@ describe('an execution the archive table could not accept', () => {
     await runExecutionArchive(envWith(fakeKv()), client, { sendBatch, now: NOW })
 
     expect(sendBatch).not.toHaveBeenCalled()
-    const row = refusals(writes)[0].rows as { reason: string }
+    const row = refusedRows(writes)[0]
     expect(row.reason).toMatch(/E2E Test/)
   })
 })
