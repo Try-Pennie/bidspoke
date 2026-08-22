@@ -18,6 +18,7 @@ const scalars = (over: Partial<ArchiveScalars> = {}): ArchiveScalars => ({
   completedAtUtc: '2026-08-16T11:00:09.000',
   durationMs: 9000,
   costUsd: 0.0031,
+  ssnHash: null,
   ...over,
 })
 
@@ -124,6 +125,24 @@ describe('buildInsert', () => {
 
     expect(sql).toContain(',NULL,')
     expect(sql).not.toContain("'NULL'")
+  })
+
+  // The INSERT is the only thing Snowflake ever sees, so a resolver that is
+  // present on the row and absent from the statement is a column that reads as
+  // "this execution had no SSN" for every execution forever (#927). Asserted on
+  // the SQL, because a test that stops at the row cannot tell the two apart.
+  it('carries the person resolver into the statement', () => {
+    const digest = 'a'.repeat(64)
+    const sql = buildInsert([row({ scalars: scalars({ ssnHash: digest }) })], AT)
+
+    expect(sql).toContain(`'${digest}'`)
+  })
+
+  it('writes no resolver as NULL for an execution that carried no SSN', () => {
+    const sql = buildInsert([row({ scalars: scalars({ ssnHash: null }) })], AT)
+
+    expect(sql).not.toContain("'null'")
+    expect(sql).not.toContain("'undefined'")
   })
 
   // A row that reached here with a broken number would otherwise interpolate

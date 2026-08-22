@@ -80,18 +80,18 @@ describe('a settled execution with no cost', () => {
   })
 
   it('produces scalars rather than a refusal, carrying the null through', () => {
-    const s = scalarsFor(execution(), 'org-live')
+    const s = scalarsFor(execution(), 'org-live', null)
 
     expect(s.ok).toBe(true)
     expect(s.ok && s.scalars.costUsd).toBeNull()
     // The columns the archive genuinely requires are still enforced, so this is
     // not a test that scalarsFor accepts anything (L159).
-    expect(scalarsFor(execution({ workflow_id: null }), 'org-live').ok).toBe(false)
-    expect(scalarsFor(execution(), undefined).ok).toBe(false)
+    expect(scalarsFor(execution({ workflow_id: null }), 'org-live', null).ok).toBe(false)
+    expect(scalarsFor(execution(), undefined, null).ok).toBe(false)
   })
 
   it('carries a real cost through unchanged when there is one', () => {
-    const s = scalarsFor(execution({ cost_usd: '0.00042' }), 'org-live')
+    const s = scalarsFor(execution({ cost_usd: '0.00042' }), 'org-live', null)
 
     expect(s.ok && s.scalars.costUsd).toBeCloseTo(0.00042)
   })
@@ -99,8 +99,8 @@ describe('a settled execution with no cost', () => {
   // Zero is a real measured cost, not an absent one, and the two must not be
   // folded together by anything downstream.
   it('keeps a zero cost distinct from a missing one', () => {
-    const zero = scalarsFor(execution({ cost_usd: 0 }), 'org-live')
-    const missing = scalarsFor(execution({ cost_usd: null }), 'org-live')
+    const zero = scalarsFor(execution({ cost_usd: 0 }), 'org-live', null)
+    const missing = scalarsFor(execution({ cost_usd: null }), 'org-live', null)
 
     expect(zero.ok && zero.scalars.costUsd).toBe(0)
     expect(missing.ok && missing.scalars.costUsd).toBeNull()

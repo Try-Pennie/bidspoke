@@ -22,6 +22,15 @@ export type RunStop =
   | 'max-hours'
   | 'read-failed'
   | 'send-failed'
+  /**
+   * A configuration fault that affects every row, not one execution.
+   *
+   * Its own stop rather than a read failure, because the remedy is different:
+   * a read failure clears by re-running, and this one clears only by setting
+   * something. A message that named the wrong remedy would send whoever reads
+   * it to re-run a job that will fail identically (L11).
+   */
+  | 'misconfigured'
 
 export interface EncodedForSend extends SizedBundle {
   wire: string

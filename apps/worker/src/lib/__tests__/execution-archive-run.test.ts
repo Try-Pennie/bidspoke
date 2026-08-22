@@ -89,7 +89,7 @@ function fakeSupabase(over: { workflows?: unknown[]; failOn?: string; watermark?
 }
 
 const envWith = (kv: ReturnType<typeof fakeKv>): Env =>
-  ({ IDEMPOTENCY: kv, SNOWFLAKE_ACCOUNT: 'acct' }) as unknown as Env
+  ({ IDEMPOTENCY: kv, SNOWFLAKE_ACCOUNT: 'acct', SSN_HASH_PEPPER: 'test-pepper' }) as unknown as Env
 
 beforeEach(() => {
   executeStatement.mockReset()
@@ -411,6 +411,7 @@ describe('sendArchiveBatch', () => {
     completedAtUtc: null,
     durationMs: null,
     costUsd: null,
+    ssnHash: null,
   }
 
   const rows = [

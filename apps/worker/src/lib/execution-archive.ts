@@ -18,6 +18,8 @@ import { dispositionFor, type WorkflowOrganization } from '../archive/dispositio
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
 import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
 import { encodeBundle } from '../archive/bundle'
+import { extractPersonFields } from '../engine/lead-sightings'
+import { hashSsn } from '../engine/persons-crypto'
 import { fetchHour } from '../archive/hour-fetch'
 import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
 import type { Env } from '../index'
@@ -108,6 +110,25 @@ export function initialWatermark(now: Date): string {
   return new Date(flooredMs - SETTLE_WINDOW_MS - 2 * HOUR_MS).toISOString()
 }
 
+/**
+ * A run that did no work, as the shared base for every early return.
+ *
+ * Written once so an early return cannot quietly omit a field and report, say,
+ * zero hours behind when nobody measured. `stop` and `detail` are always
+ * overridden by the caller, because an early return that kept the healthy
+ * steady state wording would read as a successful catch-up.
+ */
+const EMPTY_RUN: ArchiveRunSummary = {
+  stop: 'caught-up',
+  failed: false,
+  hoursArchived: 0,
+  hoursEmpty: 0,
+  executionsArchived: 0,
+  executionsRefused: 0,
+  hoursBehind: 0,
+  detail: '',
+}
+
 export async function runExecutionArchive(
   env: Env,
   supabase: SupabaseClient,
@@ -115,18 +136,27 @@ export async function runExecutionArchive(
 ): Promise<ArchiveRunSummary> {
   const now = deps.now ?? ((): Date => new Date())
 
+  // Checked before anything is read or locked. A missing pepper is not a per
+  // execution problem: it would write a null resolver for EVERY row of the
+  // hour, and after A5 (#873) removes the Postgres source those rows can never
+  // be given one. Archiving the hour and reporting success would therefore lose
+  // something permanently while looking healthy, so the run refuses instead and
+  // the hour stays unarchived until the secret is set (#927).
+  const pepper = env.SSN_HASH_PEPPER
+  if (typeof pepper !== 'string' || pepper.length === 0) {
+    const detail = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
+    for (const alert of alertsFor({ ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail })) {
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY)
+    }
+    return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
+  }
+
   const held = await env.IDEMPOTENCY.get(RUN_LOCK_KEY)
   if (held) {
     console.log('[execution-archive] another run holds the lock, skipping')
     return {
+      ...EMPTY_RUN,
       skipped: 'locked',
-      stop: 'caught-up',
-      failed: false,
-      hoursArchived: 0,
-      hoursEmpty: 0,
-      executionsArchived: 0,
-      executionsRefused: 0,
-      hoursBehind: 0,
       detail: 'another invocation holds the run lock',
     }
   }
@@ -163,6 +193,18 @@ export async function runExecutionArchive(
      * tenancy mismatch and nothing said so (#957, L90).
      */
     let refusedAtDisposition = 0
+
+    /**
+     * Executions archived with no person resolver.
+     *
+     * Counted rather than ignored because the absence is legitimate at a
+     * measured 3.5% and catastrophic at 100%, and those two arrive on the same
+     * path and read identically unless something knows the rate (L77). Logged
+     * with the run so a payload shape change that silences extraction is
+     * visible as a number rather than discovered by an erasure that finds
+     * nothing months later.
+     */
+    let executionsWithNoSsn = 0
 
     const deadline = now().getTime() + WALL_TIME_BUDGET_MS
     let subrequests = 900
@@ -214,9 +256,12 @@ export async function runExecutionArchive(
           // it would fail a whole batch and stall the watermark on an hour that
           // could never pass.
           const workflowId = bundle.execution.workflow_id
+          const ssnHash = await ssnHashFor(bundle.execution, pepper)
+          if (ssnHash === null) executionsWithNoSsn++
           const scalars = scalarsFor(
             bundle.execution,
             typeof workflowId === 'string' ? organizationOf.get(workflowId)?.id : undefined,
+            ssnHash,
           )
           if (!scalars.ok) {
             await upsertRefusal(supabase, bundle.executionId, day, scalars.reason, now())
@@ -277,12 +322,36 @@ export async function runExecutionArchive(
 
     console.log(
       `[execution-archive] stop=${result.stop} hours=${result.hoursArchived} empty=${result.hoursEmpty} ` +
-        `archived=${result.executionsArchived} refused=${result.executionsRefused} behind=${result.hoursBehind}`,
+        `archived=${result.executionsArchived} refused=${result.executionsRefused} ` +
+        `no_ssn=${executionsWithNoSsn} behind=${result.hoursBehind}`,
     )
     return result
   } finally {
     await env.IDEMPOTENCY.delete(RUN_LOCK_KEY)
   }
+}
+
+/**
+ * The archive's secondary erasure resolver, from the execution's own payload.
+ *
+ * The field path is NOT re-derived here: `extractPersonFields` is the single
+ * place that records where an SSN sits in a trigger payload, verified against
+ * the live Engine Bidding Workflow, and it already returns null when there is
+ * none. `hashSsn` normalises to digits before hashing, so an erasure request
+ * arriving as 123-45-6789 and a payload carrying 123456789 meet (L185).
+ *
+ * Read off the payload the archiver is already holding rather than joined from
+ * `lead_sightings`: that join costs an extra paged read every hour and cannot
+ * tell an execution that genuinely carried no SSN from a sightings row already
+ * purged, because both return nothing (#927).
+ */
+export async function ssnHashFor(
+  execution: Record<string, unknown>,
+  pepper: string,
+): Promise<string | null> {
+  const ssn = extractPersonFields(execution.trigger_payload)?.ssn
+  if (typeof ssn !== 'string' || ssn.length === 0) return null
+  return hashSsn(ssn, pepper)
 }
 
 /**

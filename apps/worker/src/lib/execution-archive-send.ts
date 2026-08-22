@@ -68,9 +68,11 @@ const VALUE_OF: Record<string, (row: ArchiveRow, archivedAtUtc: string) => strin
   cost_usd: (r) => numeric(r.scalars.costUsd),
   step_count: (r) => String(r.stepCount),
   archived_incomplete: (r) => boolean(r.incomplete),
-  // Left unwritten until #927 decides where it comes from. Nullable, and the
-  // erasure path in A7 (#875) is documented as never resolving through it alone.
-  ssn_hash: () => 'NULL',
+  // From the execution's own trigger payload, hashed with the shared peppered
+  // hash so an erasure request in A7 (#875) hashes to the same value (#927).
+  // Still never the only resolver: an execution carrying no SSN writes null
+  // here and is resolvable only through the bundle.
+  ssn_hash: (r) => text(r.scalars.ssnHash),
   bundle_gz_b64: (r) => text(r.wire),
   bundle_bytes: (r) => String(r.wire.length),
   archived_at_utc: (_r, archivedAtUtc) => timestamp(archivedAtUtc),
