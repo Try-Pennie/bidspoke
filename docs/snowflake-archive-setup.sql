@@ -153,7 +153,28 @@ CREATE TABLE IF NOT EXISTS execution_archive (
   archived_at_utc           TIMESTAMP_NTZ NOT NULL,
   amended_at_utc            TIMESTAMP_NTZ
 )
+-- 30 days of Time Travel, decided on #909 (2026-08-22). Once A5 (#873) repoints
+-- the purge this database is the ONLY place 13 months of execution history
+-- exists, and at the 1 day default a bad archiver write or a wrong erasure is
+-- unrecoverable after 24 hours. Available because this account is Enterprise or
+-- above, established by probe and read-back on #911; Standard caps this at 1.
+--
+-- Near free in storage terms: Snowflake bills Time Travel on what CHANGES, and
+-- this table is insert-only apart from erasures.
+--
+-- The cost is paid on the erasure side, deliberately and with eyes open: a
+-- deleted row stays readable through AT/BEFORE for these 30 days, plus Fail-safe
+-- beyond that. A7 (#875) must therefore state when the data actually becomes
+-- unrecoverable rather than report a bare row count.
+DATA_RETENTION_TIME_IN_DAYS = 30
 COMMENT = 'One gzipped JSON bundle per execution. Loaded hourly in started_at order (#871)';
+
+-- Re-runnable, and NOT redundant with the clause above. CREATE TABLE IF NOT
+-- EXISTS does nothing to a table that already exists, so on every run after the
+-- first the clause above is inert and this is the only line that puts the window
+-- in force. Without it, running this script against the live table would report
+-- success while leaving the retention at whatever it already was.
+ALTER TABLE execution_archive SET DATA_RETENTION_TIME_IN_DAYS = 30;
 
 -- NO CLUSTER BY, deliberately. Hourly loads arrive in started_at order, so the
 -- micro-partitions are already naturally ordered by day. Declaring
