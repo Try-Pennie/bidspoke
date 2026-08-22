@@ -400,6 +400,19 @@ export default {
         runFieldPresenceDroughtCheck(supabase)
           .catch((e) => console.error('[field-presence-drought] failed:', e))
       )
+      // The execution archive making no progress (#946). Hourly rather than
+      // inside the archive run itself, because a run the platform kills reports
+      // nothing, and a watchdog must not share the fate of the work it watches.
+      // The cron heartbeat covers the archive not RUNNING; this covers it
+      // running and getting nowhere, which is what happened for 19 hours on
+      // 2026-08-21 with every other signal reading healthy.
+      ctx.waitUntil(
+        (async () => {
+          const { checkArchiveStandstill } = await import('./lib/archive-standstill')
+          const r = await checkArchiveStandstill(supabase, env.IDEMPOTENCY)
+          console.log(`[archive-standstill] ${r.verdict.status} alerted=${r.alerted}`)
+        })().catch((e) => console.error('[archive-standstill] failed:', e))
+      )
       // Watches GitHub's own scheduled workflows (#805). cron-heartbeat covers
       // this worker's crons; nothing covered the ones running in Actions, and a
       // scheduled workflow that stops firing is silent in exactly the same way as
