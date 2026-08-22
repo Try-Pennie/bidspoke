@@ -113,12 +113,16 @@ describe('the request allowance', () => {
   const behind = { watermark: '2026-08-10T00:00:00.000Z' }
 
   it('is spent at the rate the fetch reports, not at a fixed guess', async () => {
+    // 860 of the 900 allowance in ONE hour, so the floor is breached before the
+    // hour cap is reached. The cap is 2 (measured, #953), and the loop checks it
+    // first, so a cheaper fixture would stop on max-hours and this test would
+    // assert nothing about the allowance at all.
     streamHour.mockResolvedValue({
       usable: true,
       empty: true,
       executionCount: 0,
       stepCount: 0,
-      requests: 500,
+      requests: 860,
     })
     const { client } = fakeSupabase(behind)
 
