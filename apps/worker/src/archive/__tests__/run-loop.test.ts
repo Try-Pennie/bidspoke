@@ -9,9 +9,16 @@ const WATERMARK = '2026-08-16T10:00:00.000Z'
 /** Far enough ahead that many hours are closed and settled. */
 const NOW = new Date(Date.parse(WATERMARK) + 30 * HOUR + SETTLE_WINDOW_MS)
 
-function deps(overrides: Partial<RunDeps> = {}): RunDeps {
+type TestDeps = RunDeps & {
+  sent: string[][]
+  recorded: string[][]
+  hoursRecorded: Array<{ hourStart: string; executionCount: number; stepCount: number }>
+}
+
+function deps(overrides: Partial<RunDeps> = {}): TestDeps {
   const sent: string[][] = []
   const recorded: string[][] = []
+  const hoursRecorded: Array<{ hourStart: string; executionCount: number; stepCount: number }> = []
   let watermark = WATERMARK
   return {
     now: () => NOW,
@@ -37,12 +44,81 @@ function deps(overrides: Partial<RunDeps> = {}): RunDeps {
       recorded.push(ids)
     },
     recordRefusal: async () => undefined,
+    // Recorded per hour so the deletion gate can sum them instead of scanning
+    // the day (#872). Captured here so the ordering test can see it.
+    recordHour: async (hourStart: string, counts: { executionCount: number; stepCount: number }) => {
+      hoursRecorded.push({ hourStart, ...counts })
+    },
     budget: { maxHours: 100, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
     sent,
     recorded,
+    hoursRecorded,
     ...overrides,
-  } as RunDeps & { sent: string[][]; recorded: string[][] }
+  } as TestDeps
 }
+
+describe('the per-hour counts the deletion gate sums (#872)', () => {
+  it('records an hour BEFORE advancing past it', async () => {
+    // The other order lets a crash between the two leave an hour the watermark
+    // has passed with no row, which the gate reads as an hour that was never
+    // archived and which nothing will ever fill: the watermark never goes back.
+    const order: string[] = []
+    const d = deps({
+      recordHour: async () => { order.push('record') },
+      advanceWatermark: async () => { order.push('advance') },
+      budget: { maxHours: 1, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
+    })
+
+    await runArchive(d)
+
+    expect(order).toEqual(['record', 'advance'])
+  })
+
+  it('records an EMPTY hour too, with zeros', async () => {
+    // A day is 24 hours and a missing row is how the gate detects an hour that
+    // was never archived. Skipping the quiet ones would refuse every quiet
+    // night for a reason that names counting rather than quiet.
+    const d = deps({
+      streamHour: async () => ({ usable: true as const, empty: true, executionCount: 0, stepCount: 0, requests: 1 }),
+      budget: { maxHours: 1, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
+    })
+
+    const result = await runArchive(d)
+
+    expect(result.hoursEmpty).toBe(1)
+    expect(d.hoursRecorded).toEqual([
+      { hourStart: d.hoursRecorded[0].hourStart, executionCount: 0, stepCount: 0 },
+    ])
+  })
+
+  it('records the counts the hour actually reconciled against, not the loop\'s own tally', async () => {
+    const d = deps({
+      streamHour: async (_s, _e, onSlice) => {
+        await onSlice([{ executionId: 'e1', execution: {}, steps: [] }])
+        return { usable: true as const, empty: false, executionCount: 7, stepCount: 83, requests: 1 }
+      },
+      budget: { maxHours: 1, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 },
+    })
+
+    await runArchive(d)
+
+    expect(d.hoursRecorded[0].executionCount).toBe(7)
+    expect(d.hoursRecorded[0].stepCount).toBe(83)
+  })
+
+  it('records nothing for an hour that did not reconcile', async () => {
+    // A row here means the hour reconciled. Recording an unusable hour would
+    // give the gate a count taken from a read that did not add up.
+    const d = deps({
+      streamHour: async () => ({ usable: false as const, reason: 'counts did not match', requests: 1 }),
+    })
+
+    const result = await runArchive(d)
+
+    expect(result.stop).toBe('read-failed')
+    expect(d.hoursRecorded).toEqual([])
+  })
+})
 
 describe('runArchive', () => {
   it('drains many hours in one run, so an outage does not become a permanent lag', async () => {

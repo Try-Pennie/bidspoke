@@ -60,6 +60,18 @@ export interface RunDeps {
    */
   advanceWatermark: (hourStart: string) => Promise<void>
   /**
+   * Keeps the hour's own reconciled Postgres counts, so the deletion gate can
+   * sum them instead of scanning the day (#872).
+   *
+   * Called only for an hour that RECONCILED: `streamHour` refuses the hour
+   * unless the rows it read match the counts it took, so a row recorded here is
+   * a verified count rather than a claim. An EMPTY hour is recorded too, with
+   * zeros, because a day is 24 hours and a missing row is how the gate detects
+   * an hour that was never archived. Skipping the quiet ones would refuse every
+   * quiet night.
+   */
+  recordHour: (hourStart: string, counts: { executionCount: number; stepCount: number }) => Promise<void>
+  /**
    * Reads the hour and hands back ONE SLICE at a time, awaiting the callback
    * before reading the next. The callback shape is the memory guarantee: a
    * version that returned every bundle was killed by the platform for memory on
@@ -239,12 +251,20 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     }
 
     if (hour.empty) {
+      // Recorded BEFORE the watermark advances. The other order would let a
+      // crash between the two leave an hour the watermark has passed with no
+      // row, which the gate reads as a missing hour that nothing will ever fill.
+      await deps.recordHour(next.hourStart, { executionCount: 0, stepCount: 0 })
       await deps.advanceWatermark(next.hourStart)
       result.hoursEmpty++
       result.detail = `hour ${next.hourStart} contained no executions`
       continue
     }
 
+    await deps.recordHour(next.hourStart, {
+      executionCount: hour.executionCount,
+      stepCount: hour.stepCount,
+    })
     await deps.advanceWatermark(next.hourStart)
     result.hoursArchived++
     result.detail = `archived the hour beginning ${next.hourStart}`

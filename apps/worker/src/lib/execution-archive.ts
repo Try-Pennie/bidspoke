@@ -344,6 +344,20 @@ export async function runExecutionArchive(
         const stored = (data as { watermark_hour?: unknown } | null)?.watermark_hour
         return typeof stored === 'string' ? stored : initialWatermark(now())
       },
+      recordHour: async (hourStart, counts) => {
+        used.record++
+        const { error } = await supabase.from('execution_archive_hours').upsert(
+          {
+            hour_start: hourStart,
+            archive_day: archiveDay(hourStart),
+            execution_count: counts.executionCount,
+            step_count: counts.stepCount,
+            recorded_at: new Date().toISOString(),
+          },
+          { onConflict: 'hour_start' },
+        )
+        if (error) throw new Error(`recording the hour's counts failed: ${formatErr(error)}`)
+      },
       advanceWatermark: async (hourStart) => {
         const { error } = await supabase
           .from('execution_archive_progress')

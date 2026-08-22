@@ -101,5 +101,44 @@
     },
     "anon": "denied",
     "note": "Read hourly by the Worker's pg-cron watch (#770) to see whether the database's own scheduled jobs are failing or have stopped. Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default, which is #762, and without the REVOKE this hands anybody with the publishable key a listing of every scheduled job and its error messages."
+  },
+  {
+    "name": "archive_day_measurements",
+    "args": {
+      "p_day": "1970-01-01"
+    },
+    "anon": "denied",
+    "note": "The Postgres half of the deletion gate's per-day measurement (#872): execution and step counts, orphan executions, erasures. Read daily by the Worker. Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default (#762), and this returns volume figures for the whole tenant. Probed with an ancient day so the probe measures nothing."
+  },
+  {
+    "name": "archive_day_probe_sample",
+    "args": {
+      "p_day": "1970-01-01",
+      "p_sample_size": 0
+    },
+    "anon": "denied",
+    "note": "Picks the executions the deletion gate decompresses and checks (#872), returning their ids and trace ids. Security definer and it hands back identifiers, so anon must be denied. Probed with a sample size of zero so it returns nothing."
+  },
+  {
+    "name": "record_archive_day_measurement",
+    "args": {
+      "p_day": "1970-01-01",
+      "p_pg_execution_count": 0,
+      "p_pg_step_count": 0,
+      "p_orphan_execution_count": 0,
+      "p_orphan_step_count_seen": 0,
+      "p_orphan_sample_size": 0,
+      "p_hours_recorded": 0,
+      "p_hours_execution_count": 0,
+      "p_sf_execution_count": 0,
+      "p_sf_step_count": 0,
+      "p_erased_execution_count": 0,
+      "p_incomplete_count": 0,
+      "p_probe_sampled": 0,
+      "p_probe_ok": false,
+      "p_probe_failure_reason": "reachability probe"
+    },
+    "anon": "denied",
+    "note": "Writes a day's gate measurement (#872). A WRITE, so anon reaching it would let anybody fabricate the numbers that authorise deleting a partition once A5 (#873) lands. Probed against 1970-01-01, a day that can never be a deletion candidate, so a successful probe leaves one inert row rather than corrupting a real day."
   }
 ]

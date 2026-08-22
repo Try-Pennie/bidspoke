@@ -447,6 +447,114 @@ export type Database = {
           },
         ]
       }
+      execution_archive_days: {
+        Row: {
+          archive_day: string
+          erased_execution_count: number | null
+          first_measured_at: string | null
+          hours_execution_count: number | null
+          hours_recorded: number | null
+          incomplete_count: number | null
+          measured_at: string | null
+          orphan_execution_count: number | null
+          orphan_sample_size: number | null
+          orphan_step_count_seen: number | null
+          pg_execution_count: number | null
+          pg_orphan_step_count: number | null
+          pg_step_count: number | null
+          probe_failure_reason: string | null
+          probe_ok: boolean | null
+          probe_sampled: number | null
+          sf_execution_count: number | null
+          sf_step_count: number | null
+        }
+        Insert: {
+          archive_day: string
+          erased_execution_count?: number | null
+          first_measured_at?: string | null
+          hours_execution_count?: number | null
+          hours_recorded?: number | null
+          incomplete_count?: number | null
+          measured_at?: string | null
+          orphan_execution_count?: number | null
+          orphan_sample_size?: number | null
+          orphan_step_count_seen?: number | null
+          pg_execution_count?: number | null
+          pg_orphan_step_count?: number | null
+          pg_step_count?: number | null
+          probe_failure_reason?: string | null
+          probe_ok?: boolean | null
+          probe_sampled?: number | null
+          sf_execution_count?: number | null
+          sf_step_count?: number | null
+        }
+        Update: {
+          archive_day?: string
+          erased_execution_count?: number | null
+          first_measured_at?: string | null
+          hours_execution_count?: number | null
+          hours_recorded?: number | null
+          incomplete_count?: number | null
+          measured_at?: string | null
+          orphan_execution_count?: number | null
+          orphan_sample_size?: number | null
+          orphan_step_count_seen?: number | null
+          pg_execution_count?: number | null
+          pg_orphan_step_count?: number | null
+          pg_step_count?: number | null
+          probe_failure_reason?: string | null
+          probe_ok?: boolean | null
+          probe_sampled?: number | null
+          sf_execution_count?: number | null
+          sf_step_count?: number | null
+        }
+        Relationships: []
+      }
+      execution_archive_erasures: {
+        Row: {
+          archive_day: string
+          erased_at: string
+          execution_id: string
+          reason: string
+        }
+        Insert: {
+          archive_day: string
+          erased_at?: string
+          execution_id: string
+          reason: string
+        }
+        Update: {
+          archive_day?: string
+          erased_at?: string
+          execution_id?: string
+          reason?: string
+        }
+        Relationships: []
+      }
+      execution_archive_hours: {
+        Row: {
+          archive_day: string
+          execution_count: number
+          hour_start: string
+          recorded_at: string
+          step_count: number
+        }
+        Insert: {
+          archive_day: string
+          execution_count: number
+          hour_start: string
+          recorded_at?: string
+          step_count: number
+        }
+        Update: {
+          archive_day?: string
+          execution_count?: number
+          hour_start?: string
+          recorded_at?: string
+          step_count?: number
+        }
+        Relationships: []
+      }
       execution_archive_ids: {
         Row: {
           archive_day: string
@@ -1884,6 +1992,27 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      archive_day_measurements: {
+        Args: { p_day: string }
+        Returns: {
+          erased_execution_count: number
+          hours_execution_count: number
+          hours_recorded: number
+          orphan_execution_count: number
+          orphan_sample_size: number
+          orphan_step_count_seen: number
+          pg_execution_count: number
+          pg_step_count: number
+        }[]
+      }
+      archive_day_probe_sample: {
+        Args: { p_day: string; p_sample_size: number }
+        Returns: {
+          execution_id: string
+          step_count: number
+          trace_id: string
+        }[]
+      }
       auth_user_with_allowlist: {
         Args: { p_user_id: string }
         Returns: {
@@ -1939,6 +2068,26 @@ export type Database = {
         }[]
       }
       prune_orphan_auth_users: { Args: never; Returns: number }
+      record_archive_day_measurement: {
+        Args: {
+          p_day: string
+          p_erased_execution_count: number
+          p_hours_execution_count: number
+          p_hours_recorded: number
+          p_incomplete_count: number
+          p_orphan_execution_count: number
+          p_orphan_sample_size: number
+          p_orphan_step_count_seen: number
+          p_pg_execution_count: number
+          p_pg_step_count: number
+          p_probe_failure_reason: string
+          p_probe_ok: boolean
+          p_probe_sampled: number
+          p_sf_execution_count: number
+          p_sf_step_count: number
+        }
+        Returns: undefined
+      }
       reduce_finalize_stranded: {
         Args: { p_lookback_days?: number }
         Returns: number

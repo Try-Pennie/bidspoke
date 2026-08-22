@@ -304,6 +304,18 @@ export default {
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
       )
+      // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
+      // numbers to execution_archive_days and nothing reads them to authorise a
+      // deletion until A5 (#873). Daily, because it re-measures every day still
+      // inside the 7 day retention window and the staleness limit is one cadence
+      // plus slack.
+      ctx.waitUntil(
+        (async () => {
+          const { runArchiveGate } = await import('./lib/archive-gate')
+          const r = await runArchiveGate(env, supabase)
+          console.log(`[archive-gate] ${r.detail}`)
+        })().catch((e) => console.error('[archive-gate] failed:', e))
+      )
     } else if (event.cron === '37 */2 * * *') {
       // Lead sightings export runs every 2 hours in its own invocation so it gets a
       // full per-run subrequest budget. One run drains ~50K rows (the platform
