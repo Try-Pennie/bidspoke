@@ -21,6 +21,14 @@ const runExecutionArchive = vi.fn().mockResolvedValue({
   detail: 'test',
 })
 const sendArchiveBatch = vi.fn()
+const runArchiveGate = vi.fn().mockResolvedValue({
+  daysConsidered: 0,
+  daysMeasured: 0,
+  daysDeletable: 0,
+  results: [],
+  failed: false,
+  detail: 'test',
+})
 const writeHeartbeat = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../lib/execution-archive', () => ({
@@ -28,6 +36,9 @@ vi.mock('../lib/execution-archive', () => ({
 }))
 vi.mock('../lib/execution-archive-send', () => ({
   sendArchiveBatch: (...args: unknown[]) => sendArchiveBatch(...args),
+}))
+vi.mock('../lib/archive-gate', () => ({
+  runArchiveGate: (...args: unknown[]) => runArchiveGate(...args),
 }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
@@ -59,6 +70,7 @@ function ctxWith(waited: Promise<unknown>[]): ExecutionContext {
 beforeEach(() => {
   runExecutionArchive.mockClear()
   writeHeartbeat.mockClear()
+  runArchiveGate.mockClear()
 })
 
 describe('the scheduled handler', () => {
@@ -92,6 +104,33 @@ describe('the scheduled handler', () => {
       await Promise.allSettled(waited)
 
       expect(runExecutionArchive, `${cron} ran the archive`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('runs the deletion gate measurement on the daily batch', async () => {
+    // Its own assertion rather than trust in the wiring guard, which reads the
+    // source and cannot tell a branch that dispatches from one that dispatches
+    // the wrong thing. Daily, because it re-measures every day still inside the
+    // 7 day retention window and its staleness limit is one cadence plus slack.
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.allSettled(waited)
+
+    expect(runArchiveGate).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not run the deletion gate measurement from any other cron', async () => {
+    // Running it from the hourly slot would measure six days twelve times a day
+    // against production volume, and the wiring guard would still pass.
+    for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
+      runArchiveGate.mockClear()
+      const waited: Promise<unknown>[] = []
+
+      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      await Promise.allSettled(waited)
+
+      expect(runArchiveGate, `${cron} ran the gate measurement`).not.toHaveBeenCalled()
     }
   })
 
