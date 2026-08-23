@@ -100,11 +100,22 @@ USE WAREHOUSE ARCHIVE_WH;
 --
 -- SNOWFLAKE ENFORCES NO UNIQUENESS. A PRIMARY KEY or UNIQUE here would be
 -- accepted and then ignored, which is worse than not writing one, because it
--- reads as a guarantee. Idempotency comes from the loader using MERGE keyed on
--- (archive_day, execution_id), which prunes correctly because archive_day is
--- part of the key. Without that a crash mid batch duplicates rows, the Snowflake
--- count exceeds the Postgres count, and the deletion gate then blocks that day
--- forever on an otherwise healthy run (#871).
+-- reads as a guarantee.
+--
+-- AND NOTHING DEDUPLICATES ON THE WAY IN. This comment used to say idempotency
+-- came from the loader using MERGE. It does not: the loader emits a plain
+-- INSERT and says so in its own opening lines (#987). DUPLICATE ROWS ARE A
+-- NORMAL STATE, not an anomaly, and they are designed in: an hour that fails to
+-- reconcile does not advance the watermark, so it is read and sent again, and a
+-- crash between the send and the local record leaves a bundle that is re-sent
+-- next run.
+--
+-- What makes that safe is deduplication AT READ TIME. The deletion gate counts
+-- COUNT(DISTINCT execution_id), and sums step_count over one row per execution
+-- rather than over every row, so a re-sent hour changes neither number (#872).
+-- A uniqueness constraint would not help even if Snowflake enforced one: it
+-- would turn a harmless re-send into a send failure, and a failed send stalls
+-- the watermark on an hour that could then never pass.
 --
 -- VARCHAR holds 16 MB, and the largest execution measured in A0 was 3.16 MB of
 -- raw JSON before gzip, so there is real headroom. A bundle that would exceed it
@@ -212,8 +223,10 @@ GRANT USAGE ON SCHEMA BIDSPOKE_ARCHIVE.EXECUTIONS TO ROLE bidspoke_archive_write
 GRANT USAGE ON SCHEMA BIDSPOKE_ARCHIVE.EXECUTIONS TO ROLE bidspoke_archive_reader;
 GRANT USAGE ON SCHEMA BIDSPOKE_ARCHIVE.EXECUTIONS TO ROLE bidspoke_archive_eraser;
 
--- The writer needs SELECT as well as INSERT: the deletion gate's Snowflake side
--- counts rows for a day, and MERGE reads the target to decide insert or update.
+-- The writer needs SELECT as well as INSERT so it can read back what it wrote,
+-- and UPDATE for the amend pass, which rewrites a row that has since finalised.
+-- It deliberately holds no DELETE: a bug or a leaked credential on the hourly
+-- ingest cannot remove an archived row.
 GRANT SELECT, INSERT, UPDATE ON TABLE execution_archive TO ROLE bidspoke_archive_writer;
 GRANT SELECT                 ON TABLE execution_archive TO ROLE bidspoke_archive_reader;
 GRANT SELECT, DELETE         ON TABLE execution_archive TO ROLE bidspoke_archive_eraser;

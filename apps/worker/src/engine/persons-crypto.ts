@@ -1,6 +1,23 @@
-// AES-GCM encryption + peppered SHA-256 hashing for the persons table.
+// AES-GCM encryption + peppered SHA-256 hashing.
 // AES-GCM uses SECRET_ENCRYPTION_KEY (shared with secret-crypto.ts).
-// Peppered SHA-256 uses SSN_HASH_PEPPER for indexed dedup lookups.
+// Peppered SHA-256 uses SSN_HASH_PEPPER.
+//
+// THIS FILE IS NOT DORMANT, whatever older notes say (#977). It was described
+// that way after #765 removed the `persons` writer, kept only so a future
+// reveal-PII surface would be cheap to re-enable. That stopped being true when
+// the execution archive started using it:
+//
+//   hashSsn   -> lib/execution-archive.ts, on the live hourly archive path.
+//                It writes the archive's ONLY person resolver (#927), and after
+//                A5 (#873) removes the Postgres source, a row archived without
+//                one can never be given one. An erasure request would then find
+//                nothing, months later, with nothing having reported a problem.
+//   formatSsn -> engine/index.ts and routes/api/admin.ts, on the live sightings
+//                path.
+//
+// So the next dead-code sweep must not read "dormant" as permission to delete
+// this. encryptPii and decryptPii genuinely have no live caller and are the only
+// part kept for a future reveal surface.
 
 const PEPPER_SEPARATOR = ':'
 
