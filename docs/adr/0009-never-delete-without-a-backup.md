@@ -302,6 +302,36 @@ and writer genuinely cannot DELETE) move to A3, where the Worker's own credentia
 performs them, which tests the real path rather than a person switching roles by
 hand.
 
+## What protects the archive itself, decided 2026-08-22 (#909)
+
+The principle above is that nothing is deleted without a verified backup. After
+A5 the backup is one Snowflake database, and nothing backs THAT up, so the
+milestone would otherwise end with a single copy of the very data it was built
+to stop losing.
+
+Dan's decision: **accept the single copy for now, and file the second copy as
+follow-up work (#1001) rather than build it into this milestone.** Recorded here
+and in `docs/disaster-recovery.md` so it is a choice with stated limits rather
+than an omission.
+
+What the single copy actually gives, measured rather than assumed:
+
+- **30 days of Time Travel** on `execution_archive` (#911), so a mistaken or
+  malicious DELETE is recoverable through `AT`/`BEFORE` within that window. This
+  is now re-read daily (#980), because it is set by hand and was wrong in this
+  very ADR for days before anyone probed it.
+- **7 days of Fail-safe** after that, which Snowflake staff can recover and we
+  cannot query. It is not a backup we can use, and no message about an erasure
+  may describe it as one.
+- Neither covers a Snowflake account or billing problem, nor a clone or share
+  taken before a delete. Those are the loss modes #909 names as realistic, and
+  they are exactly what the deferred R2 copy would cover.
+
+The credential surface is narrow and now verified rather than asserted: the
+eraser is the only identity in the account with DELETE on this table, and since
+#914 each identity ATTEMPTS a delete daily, so an excessive grant is observed
+rather than described.
+
 ## Unresolved, and deliberately not guessed
 
 1. **Cloudflare Logpush.** Whether a job exists could not be determined: the
