@@ -20,6 +20,21 @@ export const ARCHIVE_WAREHOUSE = 'ARCHIVE_WH'
 export const ARCHIVE_TABLE = 'EXECUTION_ARCHIVE'
 
 /**
+ * The archive table's Time Travel window, in days.
+ *
+ * DECLARED HERE so there is one number the ADR, the setup script and the daily
+ * read-back (#980) all mean. It is the whole content of the undo story: a
+ * Snowflake DELETE leaves the prior row readable through AT/BEFORE for this many
+ * days, and then in Fail-safe for seven more that nobody can query or purge.
+ *
+ * Set by hand in docs/snowflake-archive-setup.sql, which is exactly why it is
+ * read back on a schedule: it was recorded in ADR 0009 as a measured fact, was
+ * wrong for days because nobody had established the account edition, and was
+ * caught only because somebody happened to probe (#909, #911).
+ */
+export const ARCHIVE_UNDO_WINDOW_DAYS = 30
+
+/**
  * Split by what each identity may DESTROY. The writer and reader hold no DELETE,
  * so a bug or a leaked credential on the hourly ingest or the read path cannot
  * remove archived rows.

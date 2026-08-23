@@ -21,6 +21,11 @@ const runExecutionArchive = vi.fn().mockResolvedValue({
   detail: 'test',
 })
 const sendArchiveBatch = vi.fn()
+const checkArchiveSettings = vi.fn().mockResolvedValue({
+  observed: { retentionDays: 30, retentionLevel: 'TABLE', columns: [], unreadable: [] },
+  differences: [],
+  alerted: false,
+})
 const runArchiveGate = vi.fn().mockResolvedValue({
   daysConsidered: 0,
   daysMeasured: 0,
@@ -39,6 +44,9 @@ vi.mock('../lib/execution-archive-send', () => ({
 }))
 vi.mock('../lib/archive-gate', () => ({
   runArchiveGate: (...args: unknown[]) => runArchiveGate(...args),
+}))
+vi.mock('../lib/archive-settings-check', () => ({
+  checkArchiveSettings: (...args: unknown[]) => checkArchiveSettings(...args),
 }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
@@ -71,6 +79,7 @@ beforeEach(() => {
   runExecutionArchive.mockClear()
   writeHeartbeat.mockClear()
   runArchiveGate.mockClear()
+  checkArchiveSettings.mockClear()
 })
 
 describe('the scheduled handler', () => {
@@ -131,6 +140,30 @@ describe('the scheduled handler', () => {
       await Promise.allSettled(waited)
 
       expect(runArchiveGate, `${cron} ran the gate measurement`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('reads the archive\'s Snowflake settings back on the daily batch', async () => {
+    // The guarantee rests on settings applied by hand in Snowflake, and the
+    // undo window has already been wrong for days once in this milestone with
+    // nothing saying so.
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.allSettled(waited)
+
+    expect(checkArchiveSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not read the settings from any other cron', async () => {
+    for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
+      checkArchiveSettings.mockClear()
+      const waited: Promise<unknown>[] = []
+
+      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      await Promise.allSettled(waited)
+
+      expect(checkArchiveSettings, `${cron} read the settings`).not.toHaveBeenCalled()
     }
   })
 

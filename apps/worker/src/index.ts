@@ -304,6 +304,19 @@ export default {
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
       )
+      // The archive's Snowflake settings, read back (#980). The
+      // never-delete-without-a-backup guarantee rests on settings applied BY
+      // HAND in Snowflake, and nothing read any of them back: the undo window
+      // was recorded as a measured fact, was wrong for days, and was caught only
+      // because somebody happened to probe. A setting whose value carries the
+      // guarantee is asserted on a schedule, not audited at change time (L502).
+      ctx.waitUntil(
+        (async () => {
+          const { checkArchiveSettings } = await import('./lib/archive-settings-check')
+          const r = await checkArchiveSettings(env, supabase)
+          if (r.alerted) console.error(`[archive-settings] ${r.differences.length} differences`)
+        })().catch((e) => console.error('[archive-settings] failed:', e))
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still
