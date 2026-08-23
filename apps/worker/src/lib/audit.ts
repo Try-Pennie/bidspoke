@@ -16,6 +16,8 @@ export type AuditEntityType =
   | 'api_source'
   | 'partner_uuid'
   | 'field_presence_silence'
+  // A subject erasure across the archive and both sightings tables (#875).
+  | 'archive_erasure'
 
 export type AuditAction =
   | 'created'
@@ -28,6 +30,7 @@ export type AuditAction =
   | 'schema_synced'
   | 'field_silence_set'
   | 'field_silence_cleared'
+  | 'subject_erased'
 
 export async function writeAuditLog(
   supabase: SupabaseClient,

@@ -22,6 +22,9 @@ import { formatErr } from '../../lib/format-error'
 import { runExecutionArchive } from '../../lib/execution-archive'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
+import { eraseSubject } from '../../lib/archive-erasure'
+import { hashSsn } from '../../engine/persons-crypto'
+import { writeAuditLog } from '../../lib/audit'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -396,6 +399,74 @@ admin.post('/re-archive', async (c) => {
   return c.json(
     { hours: request.hours, summary },
     summary.failed ? 500 : 200,
+  )
+})
+
+/**
+ * Erases one subject from every place their identity landed (#875, Phase A7).
+ *
+ * Moving from a 7 day truncate to a 13 month archive multiplies the SSN exposure
+ * window by roughly 56x, and the truncate was the only control. This is the
+ * control that replaces it.
+ *
+ * The response NEVER says "erased" unless every enumerated target succeeded and
+ * none is unverified. A partial erasure answers 500: the subject's identity
+ * survives somewhere, and reporting success would close the matter, which ADR
+ * 0009 calls out as worse than not trying.
+ *
+ * THE SSN IS NEVER WRITTEN ANYWHERE BY THIS ROUTE. The audit row is keyed on the
+ * peppered hash, which identifies the request without storing the value it is
+ * about (L19).
+ */
+admin.post('/erase-subject', async (c) => {
+  const { orgId, email } = c.get('user')
+  const body = await c.req
+    .json<{ ssn?: unknown; reason?: unknown }>()
+    .catch(() => ({}) as { ssn?: unknown; reason?: unknown })
+
+  if (typeof body.ssn !== 'string' || body.ssn.replace(/\D/g, '').length !== 9) {
+    return c.json({ error: 'ssn must be a nine digit social security number' }, 400)
+  }
+  // Required, not defaulted. An erasure with no stated reason leaves a ledger
+  // row nobody can account for later, and the ledger is what the deletion gate
+  // subtracts against.
+  if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
+    return c.json({ error: 'reason is required, and is recorded against the erasure' }, 400)
+  }
+
+  const pepper = c.env.SSN_HASH_PEPPER
+  if (typeof pepper !== 'string' || pepper.length === 0) {
+    // Refused rather than run. Without the pepper the secondary resolver is
+    // absent, so the erasure would silently cover less than it claims.
+    return c.json({ error: 'SSN_HASH_PEPPER is not set, so an erasure cannot resolve the subject in full' }, 503)
+  }
+
+  const supabase = createSupabaseClient(c.env)
+  const result = await eraseSubject(c.env, supabase, {
+    ssn: body.ssn,
+    reason: body.reason,
+    organizationId: orgId,
+    requestedBy: email ?? 'unknown',
+  })
+
+  await writeAuditLog(
+    supabase,
+    orgId,
+    'archive_erasure',
+    await hashSsn(body.ssn, pepper),
+    'subject_erased',
+    email ?? 'unknown',
+    {
+      reason: body.reason,
+      status: result.verdict.status,
+      executions: result.executionIds.length,
+      per_target: Object.fromEntries(result.outcomes.map((o) => [o.target, o.error ?? o.rowsDeleted])),
+    },
+  )
+
+  return c.json(
+    { status: result.verdict.status, summary: result.summary, outcomes: result.outcomes },
+    result.verdict.status === 'partial' ? 500 : 200,
   )
 })
 
