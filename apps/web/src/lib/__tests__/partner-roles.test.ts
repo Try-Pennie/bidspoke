@@ -13,7 +13,7 @@ import {
 // must answer yes to each. These predicates are the single vocabulary every
 // caller shares, so a new value cannot be handled one way in the partner form
 // and another way on the canvas.
-describe('partner roles — buyer eligibility', () => {
+describe('partner roles: buyer eligibility', () => {
   it('treats a buyer partner as buyer-eligible', () => {
     expect(isBuyerPartner('buyer')).toBe(true)
   })
@@ -27,7 +27,7 @@ describe('partner roles — buyer eligibility', () => {
   })
 })
 
-describe('partner roles — source eligibility', () => {
+describe('partner roles: source eligibility', () => {
   it('treats a source partner as source-eligible', () => {
     expect(isSourcePartner('source')).toBe(true)
   })
@@ -41,7 +41,7 @@ describe('partner roles — source eligibility', () => {
   })
 })
 
-describe('partner roles — vocabulary', () => {
+describe('partner roles: vocabulary', () => {
   it('offers exactly source, buyer and both', () => {
     expect([...PARTNER_TYPES]).toEqual(['source', 'buyer', 'both'])
   })

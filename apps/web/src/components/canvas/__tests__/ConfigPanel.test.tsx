@@ -322,7 +322,7 @@ describe('ConfigPanel code editor wrapping (#718)', () => {
 // only, so a `both` partner (Engine: inbound source and fallback buyer at once)
 // could never be added to a bid group. The failure is silent: the partner just
 // is not in the list, with nothing saying why.
-describe('ConfigPanel — BidGroup offers buyer-eligible partners (#306)', () => {
+describe('ConfigPanel: BidGroup offers buyer-eligible partners (#306)', () => {
   function partnerOf(id: string, name: string, partner_type: 'source' | 'buyer' | 'both') {
     return {
       id,

@@ -89,7 +89,7 @@ describe('PartnerForm — sub-account UUID removal surfaces errors (#514)', () =
 // `partner_type === 'buyer'` / `=== 'source'` comparison, which excludes a third
 // value silently: the sections simply do not render, and the form reads as a
 // partner with nothing to configure rather than as an unhandled value.
-describe('PartnerForm — a both partner exposes buyer and source config (#306)', () => {
+describe('PartnerForm: a both partner exposes buyer and source config (#306)', () => {
   const bothPartner: Partner = { ...partner, partner_type: 'both' }
 
   it('offers all three partner types on the type toggle', () => {
@@ -146,7 +146,7 @@ describe('PartnerForm — a both partner exposes buyer and source config (#306)'
 // read and write. Rendering it here is what makes the check preventive: without
 // it the field is written and never read, and the only place the fault surfaces
 // is still a lost lead.
-describe('PartnerForm — missing credential warning (#416)', () => {
+describe('PartnerForm: missing credential warning (#416)', () => {
   it('shows the warning the API reported', async () => {
     render(
       <PartnerForm
