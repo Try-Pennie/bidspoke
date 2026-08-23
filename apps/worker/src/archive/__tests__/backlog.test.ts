@@ -16,6 +16,7 @@ import {
   recordAttempt,
   pruneBacklogState,
   emptyBacklogState,
+  parseBacklogState,
   type BacklogState,
 } from '../backlog'
 
@@ -222,5 +223,62 @@ describe('pruneBacklogState', () => {
   it('keeps everything when every day is still held', () => {
     const state: BacklogState = { noProgress: { '2026-08-17': 1 }, setAsideUntil: {} }
     expect(pruneBacklogState(state, new Set(['2026-08-17', '2026-08-18']))).toEqual(state)
+  })
+})
+
+describe('parseBacklogState', () => {
+  it('keeps usable numeric entries', () => {
+    const r = parseBacklogState({ noProgress: { '2026-08-16': 2 }, setAsideUntil: { '2026-08-17': NOW } })
+
+    expect(r.state).toEqual({ noProgress: { '2026-08-16': 2 }, setAsideUntil: { '2026-08-17': NOW } })
+    expect(r.discarded).toEqual([])
+  })
+
+  it('drops a set-aside window that is not a number, rather than letting it compare false', () => {
+    // A string or a null flows straight into `until > nowMs`, which is FALSE for
+    // anything non-numeric, so the day would quietly stop being set aside and the
+    // walk would retry it forever: the exact defect this feature removes (L50).
+    const r = parseBacklogState({ setAsideUntil: { '2026-08-16': 'soon', '2026-08-17': NOW } })
+
+    expect(r.state.setAsideUntil).toEqual({ '2026-08-17': NOW })
+    expect(r.discarded).toContain('setAsideUntil.2026-08-16')
+  })
+
+  it('drops a NaN, which no comparison can be trusted with', () => {
+    const r = parseBacklogState({ setAsideUntil: { '2026-08-16': Number.NaN } })
+
+    expect(r.state.setAsideUntil).toEqual({})
+    expect(r.discarded).toContain('setAsideUntil.2026-08-16')
+  })
+
+  it('drops a non-numeric attempt count', () => {
+    const r = parseBacklogState({ noProgress: { '2026-08-16': null } })
+
+    expect(r.state.noProgress).toEqual({})
+    expect(r.discarded).toContain('noProgress.2026-08-16')
+  })
+
+  it('reports the whole value when it is not an object at all', () => {
+    const r = parseBacklogState('not a state')
+
+    expect(r.state).toEqual(emptyBacklogState())
+    expect(r.discarded).toHaveLength(1)
+  })
+
+  it('tolerates a state missing either half', () => {
+    // An older stored value, or one written before a field existed. Absent is not
+    // the same as unusable and must not be reported as discarded.
+    const r = parseBacklogState({ noProgress: { '2026-08-16': 1 } })
+
+    expect(r.state).toEqual({ noProgress: { '2026-08-16': 1 }, setAsideUntil: {} })
+    expect(r.discarded).toEqual([])
+  })
+
+  it('a dropped window means the day is not treated as set aside', () => {
+    // The end-to-end consequence, asserted through the consumer rather than
+    // stopping at the parser: this is the pair of values that actually decides it.
+    const { state } = parseBacklogState({ setAsideUntil: { '2026-08-16': 'soon' } })
+
+    expect(daysSetAside(state, NOW)).toEqual([])
   })
 })

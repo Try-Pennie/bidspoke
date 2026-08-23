@@ -29,6 +29,7 @@ import {
   recordAttempt,
   pruneBacklogState,
   emptyBacklogState,
+  parseBacklogState,
   MAX_NO_PROGRESS_ATTEMPTS,
   type BacklogState,
 } from '../archive/backlog'
@@ -280,18 +281,22 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
     readState: async () => {
       const raw = await env.IDEMPOTENCY.get(BACKLOG_STATE_KEY)
       if (raw === null) return emptyBacklogState()
-      // A stored value that will not parse is NOT read as "no attempts yet": that
-      // would silently restart every count and the walk could never set anything
-      // aside. It throws, and the run does not write, so the bad value is still
-      // there to be looked at (L215).
-      const parsed = JSON.parse(raw) as Partial<BacklogState>
-      if (typeof parsed !== 'object' || parsed === null) {
-        throw new Error(`the archive backlog state at ${BACKLOG_STATE_KEY} is not an object`)
+      // JSON that will not parse at all THROWS, so the run does not write and the
+      // bad value is still there to be looked at. Reading it as "no attempts yet"
+      // would restart every count silently, and the walk could never set anything
+      // aside (L215).
+      const parsed: unknown = JSON.parse(raw)
+      // Individual entries are a different matter: a single unusable value is
+      // dropped rather than throwing, because one bad day must not stop the walk
+      // reasoning about the other thirteen. Said out loud, not fixed silently.
+      const { state, discarded } = parseBacklogState(parsed)
+      if (discarded.length > 0) {
+        console.warn(
+          `[archive-backlog] discarded unusable entries from ${BACKLOG_STATE_KEY}: ${discarded.join(', ')}. ` +
+            `Those days start their attempt count again.`,
+        )
       }
-      return {
-        noProgress: parsed.noProgress ?? {},
-        setAsideUntil: parsed.setAsideUntil ?? {},
-      }
+      return state
     },
     writeState: async (state: BacklogState) => {
       await env.IDEMPOTENCY.put(BACKLOG_STATE_KEY, JSON.stringify(state))

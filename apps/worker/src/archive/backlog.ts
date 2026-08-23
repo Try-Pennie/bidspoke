@@ -60,6 +60,54 @@ export function emptyBacklogState(): BacklogState {
   return { noProgress: {}, setAsideUntil: {} }
 }
 
+/**
+ * Reads a stored state, keeping only entries whose values are usable numbers.
+ *
+ * A value that came back as a string, a null or a NaN would flow straight into
+ * `until > nowMs`, which is FALSE for anything non-numeric, so the day would
+ * quietly stop being set aside and the walk would go back to retrying it for ever
+ * (L50). Dropping the entry instead lands on a state that is merely neutral: the
+ * day has no memory, so it gets its three attempts again and is set aside again
+ * if it still cannot progress. The worst case is three extra runs, and it repairs
+ * itself rather than persisting a value nothing can interpret.
+ *
+ * Returns the entries it discarded so the caller can say so rather than fixing
+ * things silently.
+ */
+export function parseBacklogState(raw: unknown): { state: BacklogState; discarded: string[] } {
+  const discarded: string[] = []
+  const state = emptyBacklogState()
+  if (typeof raw !== 'object' || raw === null) {
+    return { state, discarded: ['the whole value, which was not an object'] }
+  }
+
+  const source = raw as { noProgress?: unknown; setAsideUntil?: unknown }
+
+  const usableNumber = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null
+
+  for (const [key, field] of [
+    ['noProgress', source.noProgress],
+    ['setAsideUntil', source.setAsideUntil],
+  ] as const) {
+    if (field === undefined || field === null) continue
+    if (typeof field !== 'object') {
+      discarded.push(`${key}, which was not an object`)
+      continue
+    }
+    for (const [day, value] of Object.entries(field as Record<string, unknown>)) {
+      const usable = usableNumber(value)
+      if (usable === null) {
+        discarded.push(`${key}.${day}`)
+        continue
+      }
+      state[key][day] = usable
+    }
+  }
+
+  return { state, discarded }
+}
+
 /** Days still inside their set-aside window, and therefore to be passed over. */
 export function daysSetAside(state: BacklogState, nowMs: number): string[] {
   return Object.entries(state.setAsideUntil)
