@@ -30,34 +30,76 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { groupStepsByExecution, stepWindowFor, POSTGREST_ROW_CAP } from './fetch'
 
 /**
- * Executions per slice.
+ * The largest page of executions the reader will ask for.
  *
- * Derived from the measured WORST WINDOW, not from the mean, because the sizes
- * are heavily skewed and a mean would justify a number the tail can break.
- * Measured on prod 2026-08-22 over the 13:00 UTC hour (3,575 executions):
+ * A COUNT, and a count says nothing about bytes, which is what the 128 MB
+ * isolate actually constrains. Measured on prod 2026-08-22 over the 13:00 UTC
+ * hour (3,575 executions):
  *
- *   heaviest slice of 150 consecutive executions   14.1 MB
- *   heaviest single execution                       2.0 MB
- *   median wire                                     7.5 kB
- *   largest wire                                  218   kB
+ *   heaviest window of 150 consecutive executions   14.1 MB
+ *   heaviest single execution                        2.0 MB
+ *   median wire                                      7.5 kB
+ *   largest wire                                   218   kB
  *
- * So 150 leaves roughly a 9x margin against the worst slice that hour actually
- * contained. It does NOT leave a margin against a hypothetical slice of 150
- * heaviest-case executions, which would be 304 MB: a count-based cap cannot,
- * because the count says nothing about the bytes. That residual is recorded
- * rather than papered over, and the byte-aware fix is its own change.
+ * So 150 leaves roughly a 9x margin against the worst window that hour actually
+ * contained, and NO margin at all against 150 of the heaviest: that page would
+ * be 304 MB and would be killed exactly as the whole-hour reader was. The
+ * distribution is fat tailed, and the margin rests entirely on the tail not
+ * clustering, which is the kind of assumption this milestone keeps finding to be
+ * wrong (#983).
  *
- * Not larger, because the slice's step ids travel in the URL (see
- * MAX_ID_LIST_CHARS). Not smaller, because each slice costs a fixed handful of
- * subrequests and the run's allowance is what limits how many hours a run can
- * catch up: at 150 an hour costs about 90 requests of the 900 available.
- *
- * Not larger, because the slice's step ids travel in the URL (see
- * MAX_ID_LIST_CHARS). Not smaller, because each slice costs a fixed handful of
- * subrequests and the run's allowance is what limits how many hours a run can
- * catch up.
+ * So this is now a CEILING on an adaptive page rather than the page itself. See
+ * TARGET_SLICE_BYTES.
  */
-export const SLICE_SIZE = 150
+export const MAX_PAGE_SIZE = 150
+
+/**
+ * Kept as the name the id-length assertion and its tests use, and now meaning
+ * the largest page rather than every page.
+ */
+export const SLICE_SIZE = MAX_PAGE_SIZE
+
+/**
+ * The first page of an hour, before anything is known about its rows.
+ *
+ * SLOW START. The adaptive size below can only react to bytes it has already
+ * seen, so the FIRST page of an hour is the one exposure no measurement can
+ * cover. At 25, an hour made entirely of the heaviest execution measured (2.0
+ * MB) costs 50 MB on that first page, which fits; at 150 it would be 300 MB and
+ * the run would be killed before it could learn anything.
+ *
+ * It costs almost nothing on a normal hour: the page grows to the ceiling after
+ * the first one, so an hour of 3,575 executions pays about one extra read.
+ */
+export const INITIAL_PAGE_SIZE = 25
+
+/**
+ * The smallest page, so a run of enormous executions still makes progress rather
+ * than shrinking to nothing.
+ */
+export const MIN_PAGE_SIZE = 5
+
+/**
+ * Bytes of raw rows a page should aim to hold.
+ *
+ * 24 MB of a 128 MB isolate. Deliberately a small fraction: the raw rows are
+ * held alongside the JSON assembled from them and the base64 wires, and the
+ * previous slice may not have been collected yet.
+ *
+ * The page size is derived from this and the bytes actually measured so far in
+ * the hour, so a normal hour (about 70 kB per execution including its steps)
+ * computes a page far above the ceiling and simply runs at 150, while an hour of
+ * 2 MB executions computes 12 and runs at 12.
+ */
+export const TARGET_SLICE_BYTES = 24 * 1024 * 1024
+
+/** The page to ask for next, from what the hour has actually weighed so far. */
+export function nextPageSize(bytesSeen: number, executionsSeen: number): number {
+  if (executionsSeen <= 0) return INITIAL_PAGE_SIZE
+  const averageBytes = Math.max(1, bytesSeen / executionsSeen)
+  const fits = Math.floor(TARGET_SLICE_BYTES / averageBytes)
+  return Math.min(MAX_PAGE_SIZE, Math.max(MIN_PAGE_SIZE, fits))
+}
 
 /**
  * Ceiling on the id list a slice may put in one URL.
@@ -164,9 +206,20 @@ export async function streamHour(
   let stepsRead = 0
   let cursor: string | null = null
 
-  // One slice of slack past the expectation, so a table that grew between the
-  // count and the read is DETECTED rather than read forever on a fixed budget.
-  const maxSlices = Math.ceil(executionCount.count / SLICE_SIZE) + 1
+  /**
+   * What the hour has actually weighed so far, which is what sizes the next
+   * page. Measured from the rows themselves rather than assumed from a count
+   * (#983).
+   */
+  let bytesSeen = 0
+  let pageSize = INITIAL_PAGE_SIZE
+
+  // Bounded against the SMALLEST page rather than the largest, because the page
+  // shrinks on a heavy hour and a bound computed from the ceiling would stop the
+  // read partway through with the shortfall reported as a counting problem. One
+  // page of slack past the expectation, so a table that grew between the count
+  // and the read is DETECTED rather than read forever on a fixed budget.
+  const maxSlices = Math.ceil(executionCount.count / MIN_PAGE_SIZE) + 1
 
   for (let slice = 0; slice < maxSlices; slice++) {
     requests++
@@ -179,7 +232,7 @@ export async function streamHour(
       // taken from. Paging over an unordered result is undefined: rows repeat or
       // vanish between pages.
       .order('id')
-      .limit(SLICE_SIZE)
+      .limit(pageSize)
     if (cursor !== null) q = q.gt('id', cursor)
     const { data, error } = (await q) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
     if (error) return { usable: false, reason: `executions slice ${slice + 1}: ${JSON.stringify(error)}`, requests }
@@ -209,10 +262,10 @@ export async function streamHour(
 
     const steps: Record<string, unknown>[] = []
     let stepCursor: string | null = null
-    // Bounded rather than while(true): a slice of SLICE_SIZE executions cannot
-    // legitimately need many pages, and a loop with no bound cannot fail, only
-    // hang (L110).
-    const maxStepPages = Math.ceil((SLICE_SIZE * 200) / PAGE_SIZE) + 1
+    // Bounded rather than while(true): a page of at most MAX_PAGE_SIZE
+    // executions cannot legitimately need many pages of steps, and a loop with
+    // no bound cannot fail, only hang (L110).
+    const maxStepPages = Math.ceil((MAX_PAGE_SIZE * 200) / PAGE_SIZE) + 1
     for (let page = 0; page < maxStepPages; page++) {
       requests++
       let sq = supabase
@@ -257,9 +310,22 @@ export async function streamHour(
     stepsRead += steps.length
     cursor = ids[ids.length - 1]
 
+    // Weighed BEFORE the slice is handed over, so the next page is sized from
+    // what this one actually cost rather than from a count that says nothing
+    // about bytes. One extra stringify of rows the encoder is about to stringify
+    // anyway: measured at 0.8 ms of CPU per bundle for the whole encode, so this
+    // is a fraction of a second across an hour against a 30 s allowance.
+    for (const bundle of bundles) bytesSeen += JSON.stringify(bundle).length
+
+    const askedFor = pageSize
+    pageSize = nextPageSize(bytesSeen, executionsRead)
+
     await onSlice(bundles)
 
-    if (rows.length < SLICE_SIZE) break
+    // Against what was ASKED FOR, not against the new page size. A short page is
+    // how the loop knows the hour is done, and comparing it to a size that has
+    // just been recomputed would end the read early whenever the page shrank.
+    if (rows.length < askedFor) break
   }
 
   // Reconciled AFTER the slices have been handed over, which is a deliberate

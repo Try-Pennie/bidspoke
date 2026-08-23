@@ -27,6 +27,30 @@ import { dispositionFor } from '../src/archive/disposition'
 import { archiveDay } from '../src/archive/clock'
 import { loadWorkflowOrganizations } from '../src/lib/execution-archive'
 
+/**
+ * Every timing this script prints is a LOWER BOUND on production, and by a large
+ * factor (#989).
+ *
+ * It runs on a laptop, so it pays neither the Worker's per-request latency to
+ * Supabase nor the Snowflake send at all. Measured 2026-08-22: this script
+ * reported 39 seconds for an hour that the deployed Worker took 202 to 257
+ * seconds to do, read from the recovery run's own watermark timestamps (began
+ * 20:23:00Z, hours completed 20:26:22Z and 20:30:39Z). That is roughly 5x to 7x.
+ *
+ * It matters because the 39 second figure was quoted straight into
+ * MAX_HOURS_PER_RUN's justification and produced a cap of 4 that the wall budget
+ * stops at 2, so the constant could never fire. The number was not wrong for
+ * what it measures; it was wrong for what it was used for, and nothing in the
+ * output said which.
+ *
+ * The caveat is deliberately attached to the TIMING lines only. The memory and
+ * size figures below are measured on the same rows production handles and are
+ * trustworthy as they stand, so a blanket disclaimer would teach the reader to
+ * discount those too.
+ */
+const TIMING_CAVEAT =
+  '(LOWER BOUND: no Worker request latency, no Snowflake send. Production measured 5x to 7x this, see #989)'
+
 function devVars(): Record<string, string> {
   const raw = readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.dev.vars'), 'utf8')
   const out: Record<string, string> = {}
@@ -78,7 +102,7 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  console.log(`\nread OK in ${fetchMs} ms`)
+  console.log(`\nread OK in ${fetchMs} ms ${TIMING_CAVEAT}`)
   console.log(`  executions: ${hour.executionCount}`)
   console.log(`  steps:      ${hour.stepCount}`)
   console.log(`  requests:   ${hour.requests}`)
@@ -150,7 +174,7 @@ async function main(): Promise<void> {
     for (const [kind, n] of byReason) console.log(`    ${n}x ${kind}`)
   }
 
-  console.log(`\nencode, ${encodeMs} ms for ${encoded.length} bundles`)
+  console.log(`\nencode, ${encodeMs} ms for ${encoded.length} bundles ${TIMING_CAVEAT}`)
   console.log(`  failures: ${encodeFailures}`)
   console.log(`  wire p50: ${percentile(sorted, 50)} B`)
   console.log(`  wire p99: ${percentile(sorted, 99)} B`)
