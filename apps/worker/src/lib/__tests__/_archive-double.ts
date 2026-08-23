@@ -104,6 +104,12 @@ export function makeArchiveDouble(opts: {
           writes.push({ table, rows: Array.isArray(row) ? row : [row] })
           return chain
         },
+        // Recorded like a write, because it IS one: job_runs closes a row by id
+        // and a suite has to be able to see the ending that was stamped (#960).
+        update(row: unknown) {
+          writes.push({ table, rows: [row] })
+          return chain
+        },
         eq() { return chain },
         // Honoured rather than ignored: the slice reader asks for a slice's
         // steps BY NAME, and a double that returned every step regardless would
@@ -115,7 +121,15 @@ export function makeArchiveDouble(opts: {
         order() { return chain },
         limit() { return chain },
         maybeSingle() { return Promise.resolve(resolve()) },
-        single() { return Promise.resolve(resolve()) },
+        // `single` unwraps to ONE row and a plain await yields the ARRAY. The
+        // job_runs insert reads its new id back through single, and its close
+        // reads the row it touched through the array, so a double that answered
+        // the same shape to both would make one of them silently wrong.
+        single() {
+          const answer = resolve() as { data?: unknown; error?: unknown }
+          const data = Array.isArray(answer.data) ? (answer.data[0] ?? null) : answer.data
+          return Promise.resolve({ ...answer, data })
+        },
         then(res: (v: unknown) => unknown) { return Promise.resolve(resolve()).then(res) },
       }
       function resolve(): unknown {
@@ -135,6 +149,11 @@ export function makeArchiveDouble(opts: {
             const mine = wanted === null ? steps : steps.filter((s) => wanted.includes(s.execution_id))
             return { data: mine, error: null }
           }
+          case 'job_runs':
+            // The insert reads back its id, so the run has a row to close, and
+            // the close reads back the row it touched, because a zero-row UPDATE
+            // reports error null and would otherwise pass (#583).
+            return counting ? { count: 1, error: null } : { data: [{ id: 'run-1' }], error: null }
           default:
             // Writes answer with no error. A write that silently failed would
             // make every assertion below pass while nothing landed.

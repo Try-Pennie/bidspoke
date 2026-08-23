@@ -159,6 +159,39 @@ describe('the lock this run writes (#954)', () => {
   })
 })
 
+describe('the durable record of a run (#960)', () => {
+  it('opens a row when the run starts and closes it with the outcome', async () => {
+    const { writes } = await runWithLock(null)
+    const runs = writes.filter((w) => w.table === 'job_runs')
+
+    expect(runs).toHaveLength(2)
+    expect((runs[0].rows[0] as Record<string, unknown>).job).toBe('execution-archive')
+    const ending = runs[1].rows[0] as Record<string, unknown>
+    expect(typeof ending.finished_at).toBe('string')
+    expect(ending.outcome).toBe('caught-up')
+  })
+
+  it('records a run that skipped on the lock, closed immediately', async () => {
+    // A run that looked and found the lock held is a run that happened. No row
+    // would make it indistinguishable from an invocation that never fired.
+    const live = lockValue(new Date(NOW.getTime() - 60 * 1000), WALL_TIME_BUDGET_MS)
+    const { writes } = await runWithLock(live)
+    const runs = writes.filter((w) => w.table === 'job_runs')
+
+    expect(runs).toHaveLength(2)
+    expect((runs[1].rows[0] as Record<string, unknown>).outcome).toBe('skipped-locked')
+  })
+
+  it('carries the run\'s counts, so the record is worth reading', async () => {
+    const { writes } = await runWithLock(null)
+    const ending = writes.filter((w) => w.table === 'job_runs')[1].rows[0] as Record<string, unknown>
+    const summary = ending.summary as Record<string, unknown>
+
+    expect(summary.executionsArchived).toBe(1)
+    expect(summary.hoursArchived).toBe(1)
+  })
+})
+
 describe('a free lock (#954)', () => {
   it('runs, and raises no killed alert', async () => {
     const { summary } = await runWithLock(null)

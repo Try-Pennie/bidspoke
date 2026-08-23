@@ -783,6 +783,36 @@ export type Database = {
           },
         ]
       }
+      job_runs: {
+        Row: {
+          detail: string | null
+          finished_at: string | null
+          id: string
+          job: string
+          outcome: string | null
+          started_at: string
+          summary: Json | null
+        }
+        Insert: {
+          detail?: string | null
+          finished_at?: string | null
+          id?: string
+          job: string
+          outcome?: string | null
+          started_at?: string
+          summary?: Json | null
+        }
+        Update: {
+          detail?: string | null
+          finished_at?: string | null
+          id?: string
+          job?: string
+          outcome?: string | null
+          started_at?: string
+          summary?: Json | null
+        }
+        Relationships: []
+      }
       lead_sighting_bids: {
         Row: {
           attempted_at_et: string
