@@ -16,6 +16,7 @@ export type ExportErrorClass =
   | 'db_congestion'
   | 'transient_snowflake'
   | 'transient_connectivity'
+  | 'missing_credential'
   | 'snowflake_auth'
   | 'snowflake_permission'
   | 'snowflake_schema'
@@ -27,6 +28,8 @@ export const GENERIC_FIX_HINT =
   'Check Snowflake availability and the export credentials. If it stays down, watch Supabase disk: the un-purged rows accumulate until a run succeeds.'
 
 const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
+  missing_credential:
+    'A Worker secret is not set, so the job could not authenticate. Nothing is wrong with Snowflake. Set it with `wrangler secret put <NAME> --name bidspoke-worker` and the next scheduled run picks it up.',
   db_congestion:
     'Database congestion, not Snowflake. There is no action to take: the rows retry on the next run and usually clear on their own. If it persists across runs, look for a pg_cron job colliding with the export window.',
   transient_snowflake:
@@ -52,6 +55,15 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
 //      003001 on a missing grant. Match Snowflake's own 003001 first, and only
 //      then fall through to the Postgres phrasing.
 const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> = [
+  // FIRST, because it is the least ambiguous cause there is and it must not be
+  // read as anything else. The 2026-08-23 archive identity alert was six lines
+  // saying a named secret was unset, and it still ended with "check Snowflake
+  // availability", which is the exact failure this file was written to stop.
+  //
+  // The name is required to look like an env var (upper case, an underscore or
+  // more, next to the words) so an ordinary sentence containing "is not set"
+  // cannot claim a secret is missing.
+  { cls: 'missing_credential', test: /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+ is not set\b/ },
   { cls: 'db_congestion', test: /\b57014\b|statement timeout/i },
   { cls: 'platform_limit', test: /too many subrequests|subrequest limit/i },
   {

@@ -5,6 +5,7 @@ import {
   ARCHIVE_WAREHOUSE,
   ARCHIVE_TABLE,
   ARCHIVE_ROLES,
+  ARCHIVE_SECRET_NAMES,
   archiveConfig,
   verifyArchiveIdentity,
   resolveIdentity,
@@ -126,13 +127,21 @@ describe('verifyArchiveIdentity', () => {
   })
 })
 
-// The other four archive secrets stay OUT until the reader and eraser code paths
-// ship: REQUIRED_SECRETS alerts every org's Slack daily, so registering a secret
-// nothing has set yet pages every morning for nothing (#870).
+// A secret is registered in the change that first READS it, because
+// REQUIRED_SECRETS alerts every org's Slack daily and one listed before it is set
+// pages every morning for nothing (#870). The reader and eraser were held back on
+// that reasoning until 2026-08-22, when their code paths shipped.
+//
+// Asserted as the RULE rather than as a frozen list of names: the previous version
+// pinned the exact two and so had to be edited by the very change that added the
+// others, which makes it a restatement of the list rather than a check on it
+// (L103).
 describe('the archive secrets the daily check knows about', () => {
-  it('covers exactly the two the writer reads', () => {
-    const archiveSecrets = REQUIRED_SECRETS.filter((name) => name.startsWith('ARCHIVE_'))
-    expect(archiveSecrets).toEqual(['ARCHIVE_WRITER_USER', 'ARCHIVE_WRITER_PRIVATE_KEY'])
+  it('lists both credentials for every identity, and nothing that is not one', () => {
+    const registered = REQUIRED_SECRETS.filter((name) => name.startsWith('ARCHIVE_'))
+    const real = Object.values(ARCHIVE_SECRET_NAMES).flatMap((n) => [n.user, n.privateKey])
+
+    expect([...registered].sort()).toEqual([...real].sort())
   })
 })
 

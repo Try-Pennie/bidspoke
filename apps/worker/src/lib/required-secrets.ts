@@ -32,13 +32,26 @@ export const REQUIRED_SECRETS = [
   'SNOWFLAKE_SCHEMA',
   'SNOWFLAKE_WAREHOUSE',
   'SNOWFLAKE_ROLE',
-  // Execution archive writer (#871). Registered here in the change that first
-  // READS them, and not in A2 when they were declared: this guard alerts every
-  // org's Slack daily, so a secret listed before it is set pages every morning
-  // for nothing. The reader and eraser secrets join when their code paths ship
-  // (A6, A7), for the same reason.
+  // Execution archive (#871). Each pair is registered in the change that first
+  // READS it, never when it is merely declared: this guard alerts every org's
+  // Slack daily, so a secret listed before it is set pages every morning for
+  // nothing.
+  //
+  // The reader and eraser were held back on exactly that reasoning, and the
+  // deferral then outlived its reason. Their code paths shipped on 2026-08-22
+  // (the deletion gate and the settings read-back authenticate as the reader,
+  // the erasure path as the eraser), both credentials were still unset in
+  // production, and the only thing that noticed was a downstream job failing
+  // the next morning with a message about Snowflake availability. A deferral
+  // whose condition has expired is not a deferral, it is a gap (L129).
+  //
+  // Kept in step with the credential map by a derived test rather than by hand.
   'ARCHIVE_WRITER_USER',
   'ARCHIVE_WRITER_PRIVATE_KEY',
+  'ARCHIVE_READER_USER',
+  'ARCHIVE_READER_PRIVATE_KEY',
+  'ARCHIVE_ERASER_USER',
+  'ARCHIVE_ERASER_PRIVATE_KEY',
 ] as const satisfies readonly (keyof Env)[]
 
 /**
