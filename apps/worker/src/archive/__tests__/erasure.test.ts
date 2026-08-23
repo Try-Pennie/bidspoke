@@ -128,13 +128,25 @@ describe('a target nobody has been able to check', () => {
     expect(summary).toMatch(/12 rows removed from the live tables/)
   })
 
-  it('ships with Logpush unverified, which is the state of the world today', () => {
-    // ADR 0009 records it: the Cloudflare API answers 10000 Authentication
-    // error for every credential this codebase can reach, and no wrangler
-    // session here carries the Logpush read scope. Listed in code rather than
-    // left out until somebody finds out, because the alternative is an erasure
-    // reporting completeness it has not got.
-    expect(UNVERIFIED_TARGETS).toContain('cloudflare_logpush')
+  it('names the two Logpush destinations that actually exist, not a placeholder', () => {
+    // Established from the Cloudflare dashboard on 2026-08-23: two enabled
+    // account-scoped jobs on Workers trace events, one to R2 and one to Better
+    // Stack. "cloudflare_logpush" as a single unknown was the right placeholder
+    // while nobody could look; it is the wrong thing to keep once somebody has,
+    // because it hides that one of them is a third party.
+    expect(UNVERIFIED_TARGETS).toContain('logpush_r2_bidspoke_logs')
+    expect(UNVERIFIED_TARGETS).toContain('logpush_better_stack')
+    expect(UNVERIFIED_TARGETS).not.toContain('cloudflare_logpush')
+  })
+
+  it('still refuses to call an erasure complete while they are uncovered', () => {
+    // Knowing what they are is not the same as covering them. The dataset is
+    // trace events rather than payloads, so the exposure is probably small, but
+    // "probably small" is not a basis for telling a subject the matter is
+    // closed (#1007).
+    const v = erasureVerdict(allDeleted(3))
+
+    expect(v.status).toBe('incomplete-coverage')
   })
 })
 

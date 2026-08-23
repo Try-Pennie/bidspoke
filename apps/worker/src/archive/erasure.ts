@@ -31,21 +31,35 @@ export const ERASURE_TARGETS = [
 export type ErasureTarget = (typeof ERASURE_TARGETS)[number]
 
 /**
- * Targets that are enumerated but whose existence has NOT been established.
+ * Destinations that are enumerated and NOT yet covered by the erasure.
  *
- * Cloudflare Logpush is a possible fifth full-fidelity sink. Whether a job
- * exists could not be determined: the Cloudflare API answers `10000:
- * Authentication error` for every credential this codebase can reach, and no
- * token or wrangler session available here carries the Logpush read scope
- * (checked 2026-08-22). ADR 0009 records it as unresolved.
+ * ANSWERED 2026-08-23, from the Cloudflare dashboard. Two account-scoped
+ * Logpush jobs are enabled on the `Workers trace events` dataset:
  *
- * It is listed HERE, rather than left out of the code until somebody finds out,
- * because the alternative is an erasure that reports completeness it has not
- * got. While this list is non-empty no erasure may be described as complete,
- * and the response names what was not covered. Emptying it is a deliberate act
- * that requires establishing the answer either way.
+ *   bidspoke-worker-logs      -> R2 bucket `bidspoke-logs`
+ *                                (showed no activity in 24h, see #1008)
+ *   logpush-better-stack...   -> Better Stack, an EXTERNAL vendor, live at
+ *                                7,960 records per 24h (#1007)
+ *
+ * They are named individually rather than as one "cloudflare_logpush" unknown,
+ * because that placeholder hid the fact that one of them is a third party. It
+ * was the right shape while nobody could look, and the wrong thing to keep once
+ * somebody had.
+ *
+ * The plan feared Logpush might be a fifth FULL-FIDELITY copy of execution data.
+ * It is not: the dataset is trace events, and a sweep of all 241 console
+ * statements in the Worker found none logging a trigger payload or request body.
+ * So the exposure is probably small. It is still listed, because "probably
+ * small" is not a basis for telling a subject the matter is closed, and neither
+ * destination can currently be deleted from by anything here.
+ *
+ * Emptying this list means covering them or proving they hold nothing, not
+ * deciding they are unlikely to matter.
  */
-export const UNVERIFIED_TARGETS: readonly string[] = ['cloudflare_logpush']
+export const UNVERIFIED_TARGETS: readonly string[] = [
+  'logpush_r2_bidspoke_logs',
+  'logpush_better_stack',
+]
 
 export interface TargetOutcome {
   target: ErasureTarget

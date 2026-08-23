@@ -334,12 +334,42 @@ rather than described.
 
 ## Unresolved, and deliberately not guessed
 
-1. **Cloudflare Logpush.** Whether a job exists could not be determined: the
-   Cloudflare API returns `10000: Authentication error` for the available token.
-   Until answered, `app_config.logpush_active` is NOT deleted and the 90-day
-   purge it gates is NOT repointed. If a job exists it becomes a fifth erasure
-   target in A7. If it does not, three checked boxes in TODO.md section 3.5
-   describe a system that does not exist and must be corrected.
+1. ~~**Cloudflare Logpush.**~~ **ANSWERED 2026-08-23**, from the Cloudflare
+   dashboard, because no credential here can read it: the CF API returns
+   `10000: Authentication error` and the wrangler OAuth session carries no
+   Logpush scope. Two account-scoped jobs are enabled on the `Workers trace
+   events` dataset:
+
+   | job | destination | last 24h |
+   |---|---|---|
+   | `bidspoke-worker-logs` (1564508) | R2 bucket `bidspoke-logs` | no activity |
+   | `logpush-better-stack...` (1740821) | Better Stack, `betterstackdata.com` | 7,960 records, 100% success |
+
+   Three consequences, and the second was not anticipated by the plan at all.
+
+   **It is not a fifth full-fidelity sink.** The dataset is trace events, not
+   execution payloads. A sweep of all 241 `console.*` statements in
+   `apps/worker/src` found none logging a trigger payload or request body. One
+   path logs a 200 character snippet of a failed Salesforce response
+   (`engine/nodes/salesforce.ts:457`), which could in principle echo field
+   values. That is a spot check and not an audit, so it does not support a claim
+   that no PII reaches the logs.
+
+   **One destination is an external vendor**, which appears in no artifact of
+   this milestone. The enumeration of where identity data lands was built by
+   reading the codebase, and Logpush is configured in a dashboard, so no
+   code-derived list could have found it. Tracked as #1007.
+
+   **The R2 job reports Pushing while delivering nothing**, against a checked box
+   in TODO.md:207 claiming R2 archival was verified queryable by trace id. Both
+   cannot be current. Tracked as #1008.
+
+   `app_config.logpush_active` gates nothing either way: the 90 day purge it was
+   written for was replaced by the partition drop in
+   `20260518000001_retention_14_days.sql`, which leaves the flag as an explicit
+   no-op. Both destinations are now named individually in A7's
+   `UNVERIFIED_TARGETS`, so no erasure reports itself complete while they are
+   uncovered.
 2. ~~**Snowflake per-statement text limit.**~~ **ANSWERED 2026-08-20**, see "The
    statement ceiling is not the constraint" above. Snowflake accepted 50 MB, so it
    is not what A3 sizes batches against; the Worker's 128 MB isolate is.
