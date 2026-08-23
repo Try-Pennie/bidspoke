@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
+import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, parseList, listToString,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
@@ -372,7 +373,7 @@ export default function PartnerForm({
   const [alertTransient, setAlertTransient] = useState(defaultAlertConfig?.transient_errors?.alert !== false)
   const [alertPermanent, setAlertPermanent] = useState(defaultAlertConfig?.permanent_errors?.alert !== false)
 
-  const [partnerType, setPartnerType] = useState<'source' | 'buyer'>(partner?.partner_type ?? 'buyer')
+  const [partnerType, setPartnerType] = useState<PartnerType>(partner?.partner_type ?? 'buyer')
 
   const [sellOffOfferTitle, setSellOffOfferTitle] = useState(partner?.sell_off_offer_title ?? '')
   const [sellOffOfferDetails, setSellOffOfferDetails] = useState(partner?.sell_off_offer_details ?? '')
@@ -581,6 +582,18 @@ export default function PartnerForm({
         </div>
       )}
 
+      {/*
+        #416. Deliberately NOT the error banner above: an error means the save did
+        not happen, and a partner whose credential is unprovisioned saved fine.
+        Amber, and its own role="status", so it reads as a standing condition
+        rather than as a failed action.
+      */}
+      {partner?.credential_warning && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {partner.credential_warning}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-8">
 
         <Section title="Identity">
@@ -600,9 +613,9 @@ export default function PartnerForm({
               />
             </Field>
           )}
-          <Field label="Type" hint="Source partners send leads to Pennie. Buyer partners receive bids.">
+          <Field label="Type" hint="Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.">
             <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
-              {(['source', 'buyer'] as const).map((t) => (
+              {PARTNER_TYPES.map((t) => (
                 <button
                   key={t}
                   type="button"
@@ -613,13 +626,13 @@ export default function PartnerForm({
                       : 'text-gray-500 hover:text-graphite'
                   }`}
                 >
-                  {t === 'source' ? 'Source' : 'Buyer'}
+                  {partnerTypeLabel(t)}
                 </button>
               ))}
             </div>
           </Field>
           <div className="flex items-center gap-6">
-            {partnerType === 'buyer' && (
+            {isBuyerPartner(partnerType) && (
               <Field label="Priority">
                 <Input value={priority} onChange={setPriority} type="number" placeholder="0" />
               </Field>
@@ -633,7 +646,7 @@ export default function PartnerForm({
           </div>
         </Section>
 
-        {partnerType === 'buyer' && <Section title="Bid resolution">
+        {isBuyerPartner(partnerType) && <Section title="Bid resolution">
           <BidResolverEditor
             resolverType={resolverType}
             resolverConfig={resolverConfig}
@@ -669,7 +682,7 @@ export default function PartnerForm({
           )}
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Endpoints">
+        {isBuyerPartner(partnerType) && <Section title="Endpoints">
           <Field
             label="Click URL"
             hint="Landing page URL for leads routed to this partner. Exposed as {Slug}ClickUrl in the Constants node."
@@ -684,11 +697,11 @@ export default function PartnerForm({
           </Field>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Outbound field mapping">
+        {isBuyerPartner(partnerType) && <Section title="Outbound field mapping">
           <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
         </Section>}
 
-        {partnerType === 'buyer' && resolverType === 'api' && <Section title="Response handling">
+        {isBuyerPartner(partnerType) && resolverType === 'api' && <Section title="Response handling">
           <Field label="Bid mode" hint="commit: the API call creates a lead. ping_only: the call is a lightweight bid quote with no side effects.">
             <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
               {(['commit', 'ping_only'] as const).map((m) => (
@@ -721,7 +734,7 @@ export default function PartnerForm({
           </div>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Bidding limits">
+        {isBuyerPartner(partnerType) && <Section title="Bidding limits">
           <div className="grid grid-cols-2 gap-4">
             <Field label="Daily cap" hint="Max leads per day. Leave blank for unlimited.">
               <Input value={dailyCap} onChange={setDailyCap} type="number" placeholder="∞" />
@@ -732,7 +745,7 @@ export default function PartnerForm({
           </div>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Per-sub-account min bids">
+        {isBuyerPartner(partnerType) && <Section title="Per-sub-account min bids">
           <p className="text-xs text-gray-500">
             Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
             this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
@@ -774,7 +787,7 @@ export default function PartnerForm({
           </div>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Circuit breaker">
+        {isBuyerPartner(partnerType) && <Section title="Circuit breaker">
           <div className="flex items-center gap-2.5">
             <Toggle checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
             <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
@@ -800,7 +813,7 @@ export default function PartnerForm({
           </div>
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Response classification">
+        {isBuyerPartner(partnerType) && <Section title="Response classification">
           <p className="text-xs text-gray-500">
             Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
             Leave all sections empty to use default HTTP status–based classification.
@@ -819,7 +832,7 @@ export default function PartnerForm({
           </Field>
         </Section>
 
-        {partnerType === 'source' && <Section title="Sell-off offer copy">
+        {isSourcePartner(partnerType) && <Section title="Sell-off offer copy">
           <p className="text-xs text-gray-500">
             Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
           </p>
@@ -837,7 +850,7 @@ export default function PartnerForm({
           </Field>
         </Section>}
 
-        {partnerType === 'source' && <Section title="Sub-account UUIDs">
+        {isSourcePartner(partnerType) && <Section title="Sub-account UUIDs">
           <p className="text-xs text-gray-500">
             External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
           </p>
@@ -923,7 +936,7 @@ export default function PartnerForm({
           {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
         </Section>}
 
-        {partnerType === 'buyer' && <Section title="Alert configuration">
+        {isBuyerPartner(partnerType) && <Section title="Alert configuration">
           <p className="text-xs text-gray-500">
             Default: alert on all errors. Turn off alert types that produce noise for this partner.
             Business rejections never alert regardless.

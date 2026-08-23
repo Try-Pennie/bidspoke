@@ -1,5 +1,8 @@
 import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
+import type { PartnerType } from './partner-roles'
+
+export type { PartnerType }
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
 export type BidMode = 'commit' | 'ping_only'
@@ -42,7 +45,13 @@ export interface Partner {
   sell_off_offer_details: string | null
   click_url: string | null
   sub_account_min_bids: Record<string, number> | null
-  partner_type: 'source' | 'buyer'
+  partner_type: PartnerType
+  /**
+   * A declared credential the environment cannot supply (#416). Derived per
+   * response by the worker rather than stored, so it is always current, and null
+   * means "checked, nothing owed" rather than "not checked".
+   */
+  credential_warning?: string | null
   created_at: string
   updated_at: string
   updated_by_email: string | null

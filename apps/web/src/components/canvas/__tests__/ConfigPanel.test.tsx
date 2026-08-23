@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import ConfigPanel from '../ConfigPanel'
+import { api } from '@/lib/api'
 
 // Characterization tests (#239): every node type's config form mounts via the
 // public ConfigPanel (the per-type sub-forms are internal, not exported), so a
@@ -314,5 +315,54 @@ describe('ConfigPanel code editor wrapping (#718)', () => {
   it('wraps long lines in the code editor', () => {
     renderPanel(nodeOf('code'))
     expect(screen.getByTestId('monaco-editor')).toHaveAttribute('data-wordwrap', 'on')
+  })
+})
+
+// #306 / ADR 0001. The BidGroup partner picker listed `partner_type === 'buyer'`
+// only, so a `both` partner (Engine: inbound source and fallback buyer at once)
+// could never be added to a bid group. The failure is silent: the partner just
+// is not in the list, with nothing saying why.
+describe('ConfigPanel: BidGroup offers buyer-eligible partners (#306)', () => {
+  function partnerOf(id: string, name: string, partner_type: 'source' | 'buyer' | 'both') {
+    return {
+      id,
+      name,
+      slug: name.toLowerCase(),
+      partner_type,
+      is_active: true,
+      priority: 0,
+    } as unknown as Awaited<ReturnType<typeof api.partners.list>>[number]
+  }
+
+  it('lists a both partner alongside a buyer partner, and excludes a source-only one', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([
+      partnerOf('p-buyer', 'BuyerCo', 'buyer'),
+      partnerOf('p-both', 'BothCo', 'both'),
+      partnerOf('p-source', 'SourceCo', 'source'),
+    ])
+
+    renderPanel(nodeOf('bid_group'))
+
+    // Scoped to the picker button: the fallback-partner <select> lists the same
+    // set, so a bare text query matches twice and says nothing about the picker.
+    expect(await screen.findByRole('button', { name: /BothCo/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /BuyerCo/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /SourceCo/ })).not.toBeInTheDocument()
+    // A source-only partner must be absent from every surface here, not just the
+    // picker, so the fallback select is covered too.
+    expect(screen.queryAllByText('SourceCo')).toHaveLength(0)
+  })
+
+  it('adds a both partner to the group when it is picked', async () => {
+    vi.mocked(api.partners.list).mockResolvedValue([partnerOf('p-both', 'BothCo', 'both')])
+
+    const { onUpdate } = renderPanel(nodeOf('bid_group'))
+
+    fireEvent.click(await screen.findByRole('button', { name: /BothCo/ }))
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      'n1',
+      expect.objectContaining({ config: expect.objectContaining({ partner_ids: ['p-both'] }) }),
+    )
   })
 })
