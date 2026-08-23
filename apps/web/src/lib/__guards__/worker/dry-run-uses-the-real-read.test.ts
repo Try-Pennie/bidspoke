@@ -69,3 +69,46 @@ describe('the archive dry run', () => {
     }
   })
 })
+
+/**
+ * The dry run's timings must say they understate production (#989).
+ *
+ * The script runs on a laptop and pays neither the Worker's per-request latency
+ * to Supabase nor the Snowflake send. Measured 2026-08-22: it reported 39
+ * seconds for an hour the deployed Worker took 202 to 257 seconds to do. That 39
+ * was quoted straight into MAX_HOURS_PER_RUN's justification and produced a cap
+ * of 4 that the wall budget stops at 2, so the constant could never fire.
+ *
+ * The caveat belongs on the TIMING lines only: the memory and size figures the
+ * same script reports are measured on the same rows production handles and are
+ * trustworthy, so a blanket disclaimer would teach the reader to discount those
+ * too.
+ */
+describe('the dry run labels its timings as a lower bound (#989)', () => {
+  const source = readFileSync(SCRIPT, 'utf8')
+
+  it('prints a caveat on every line that reports a duration', () => {
+    const timingLines = source
+      .split('\n')
+      .filter((line) => /console\.log\(`[^`]*\$\{(fetchMs|encodeMs)\}/.test(line))
+
+    expect(timingLines.length, 'no timing lines were found, so this check proves nothing').toBeGreaterThan(0)
+    for (const line of timingLines) {
+      expect(line, `this timing line carries no caveat: ${line.trim()}`).toMatch(/TIMING_CAVEAT/)
+    }
+  })
+
+  it('names what the timing excludes, not just that it is approximate', () => {
+    // "roughly" would tell the reader nothing about which direction or by how
+    // much, and the whole failure was somebody using the number for sizing.
+    expect(source).toMatch(/LOWER BOUND/)
+    expect(source).toMatch(/no Snowflake send/)
+  })
+
+  it('leaves the memory and size figures unqualified', () => {
+    const memoryLine = source.split('\n').find((l) => l.includes('MB held at once'))
+
+    expect(memoryLine).toBeDefined()
+    expect(memoryLine).not.toMatch(/TIMING_CAVEAT/)
+  })
+})

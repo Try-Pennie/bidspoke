@@ -112,7 +112,26 @@ export interface RunResult {
   detail: string
 }
 
-/** Enough headroom for the next hour's reads and sends before the platform cuts us off. */
+/**
+ * Headroom kept back so the loop stops cleanly rather than being cut off
+ * mid-hour.
+ *
+ * WHEN THIS ACTUALLY BINDS, stated rather than left to look like a live control
+ * (#990). Requests for an hour are roughly 2N/p, where N is the hour's
+ * executions and p the adaptive page size: one read for the page, one for its
+ * steps. With N = 3,575 (the measured 13:00 UTC hour) and the usual p = 150,
+ * that is 48 requests, and two hours cost about 96 of the 850 usable. Reaching
+ * this floor would take ten hours of work, which MAX_HOURS_PER_RUN makes
+ * impossible, so at ordinary page sizes this stop cannot fire.
+ *
+ * It is NOT dead, and that is the point of stating the arithmetic. The page size
+ * is now sized by bytes (#983), so a run of heavy executions shrinks it: at
+ * p = 17 two hours cost about 840 requests and this floor is what stops the run
+ * cleanly instead of the platform killing it. That happens when executions
+ * average more than roughly 1.4 MB, which is exactly the fat tail #983 exists
+ * for. So it is a live backstop against the same case, not a number that reads
+ * like a control while the control is somewhere else.
+ */
 const SUBREQUEST_FLOOR = 50
 
 /**
