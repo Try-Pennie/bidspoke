@@ -16,6 +16,6 @@ describe('isNotFoundError', () => {
 
 describe('EXECUTION_RETENTION_DAYS', () => {
   it('matches the nightly purge cron (drop_expired_execution_partitions_safe(7))', () => {
-    expect(EXECUTION_RETENTION_DAYS).toBe(7)
+    expect(EXECUTION_RETENTION_DAYS).toBe(14)
   })
 })

@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { REPO_ROOT } from './_scan-utils'
+import { EXECUTION_RETENTION_DAYS } from '../execution-retention'
 
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase/migrations')
 
@@ -167,10 +168,23 @@ describe('the day-count parser', () => {
 })
 
 describe('the retention window itself', () => {
-  it('is the 7 days the purge actually runs at', () => {
+  it('is the 14 days the purge actually runs at', () => {
     // Pinned so a change to retention is a deliberate act that updates this
     // line, rather than something the guard silently absorbs.
-    expect(retentionDays()).toBe(7)
+    //
+    // TEMPORARILY 14 (2026-08-23, migration 20260823000002): six partly archived
+    // days were days from being purged with nobody available to intervene, and
+    // deletion is not gated on the archive yet (#873). Back to 7 once every day
+    // the database holds shows 24 archived hours.
+    expect(retentionDays()).toBe(14)
+  })
+
+  it('is the same number the UI quotes to people', () => {
+    // `EXECUTION_RETENTION_DAYS` is what the missing-execution notice states, and
+    // its own comment asked for the two to be updated together with nothing
+    // enforcing it: a list maintained by hand beside its source of truth (L41).
+    // The cron is the authority, because it is the thing that deletes.
+    expect(EXECUTION_RETENTION_DAYS).toBe(retentionDays())
   })
 
   it('is not contradicted by the whole migration corpus mentioning a longer one', () => {
