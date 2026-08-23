@@ -21,7 +21,14 @@ import { encodeBundle } from '../archive/bundle'
 import { extractPersonFields } from '../engine/lead-sightings'
 import { hashSsn } from '../engine/persons-crypto'
 import { streamHour, type HourBundle } from '../archive/stream-hour'
-import { runArchive, type RunResult, type EncodedForSend } from '../archive/run-loop'
+import {
+  runArchive,
+  reArchiveHours,
+  type RunDeps,
+  type RunResult,
+  type EncodedForSend,
+  type ReArchiveResult,
+} from '../archive/run-loop'
 import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
 import { decideLock, lockValue } from '../archive/run-lock'
 import type { Env } from '../index'
@@ -112,6 +119,19 @@ export interface ArchiveRow {
 export interface ArchiveDeps {
   sendBatch: (rows: ArchiveRow[]) => Promise<void>
   now?: () => Date
+  /**
+   * Named UTC hours to re-archive instead of following the watermark (#976).
+   *
+   * A mode of the SAME run rather than a second entry point, so the repair uses
+   * the identical fetch, disposition, encode, send and bookkeeping. A separate
+   * recovery tool would be evidence about the tool rather than about the
+   * archiver, and would drift from it in exactly the situation where nobody is
+   * watching.
+   *
+   * The watermark is not touched in either direction: a named hour is a repair,
+   * not progress.
+   */
+  hours?: string[]
 }
 
 /**
@@ -332,7 +352,7 @@ export async function runExecutionArchive(
 
     const deadline = startedAt.getTime() + WALL_TIME_BUDGET_MS
 
-    const result = await runArchive({
+    const pipeline: RunDeps = {
       now,
       readWatermark: async () => {
         const { data, error } = await supabase
@@ -451,7 +471,13 @@ export async function runExecutionArchive(
         deadlineAt: deadline,
         subrequestsLeft: () => SUBREQUEST_BUDGET - totalUsed(),
       },
-    })
+    }
+
+    // One pipeline, two ways of choosing which hours it runs over.
+    const result: RunResult =
+      deps.hours === undefined
+        ? await runArchive(pipeline)
+        : summariseReArchive(await reArchiveHours(pipeline, deps.hours))
 
     // Anything the per-slice flushes did not take: a refusal the run loop
     // recorded after its last slice, or a partial batch. Awaited on the success
@@ -591,6 +617,37 @@ export async function loadWorkflowOrganizations(supabase: SupabaseClient): Promi
  * than omitted, because the upsert has to CLEAR it when an execution that was
  * once resolved is refused again.
  */
+/**
+ * A re-archive's outcome in the shape the alerts and the summary already read.
+ *
+ * Mapped rather than given its own alerting path, so a repair that fails is
+ * reported by the same machinery as a run that fails. `hoursBehind` is zero
+ * because a repair says nothing about the lag: it never moved the watermark, so
+ * reporting a lag here would be a number about something this run did not do.
+ */
+export function summariseReArchive(r: ReArchiveResult): RunResult {
+  const failed = r.failures.length > 0
+  const skipped =
+    r.skipped.length > 0 ? `; ${r.skipped.length} hours were not attempted (${r.skipped.join(', ')})` : ''
+  return {
+    // Its own stop reason would need a new member of a union every alert reads.
+    // A repair that could not do what it was asked reports the same read-failed
+    // it would report inside the loop, and names the hours.
+    stop: failed ? 'read-failed' : 'caught-up',
+    failed,
+    hoursArchived: r.hoursArchived,
+    hoursEmpty: r.hoursEmpty,
+    executionsArchived: r.executionsArchived,
+    executionsRefused: r.executionsRefused,
+    hoursBehind: 0,
+    detail: failed
+      ? `re-archived ${r.hoursArchived} of ${r.hoursRequested} hours; ` +
+        r.failures.map((f) => `${f.hourStart}: ${f.reason}`).join('; ') +
+        skipped
+      : `re-archived ${r.hoursArchived} hours and recorded ${r.hoursEmpty} empty ones` + skipped,
+  }
+}
+
 function refusalRow(executionId: string, archiveDayValue: string, reason: string, now: Date): RefusalRecord {
   return {
     execution_id: executionId,

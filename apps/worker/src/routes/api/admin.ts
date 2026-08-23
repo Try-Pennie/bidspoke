@@ -19,6 +19,9 @@ import { formatSsn } from '../../engine/persons-crypto'
 import { runSightingsExport } from '../../lib/sightings-export'
 import { runAchieveExport } from '../../lib/achieve-export'
 import { formatErr } from '../../lib/format-error'
+import { runExecutionArchive } from '../../lib/execution-archive'
+import { sendArchiveBatch } from '../../lib/execution-archive-send'
+import { parseReArchiveRequest } from '../../archive/rearchive-request'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -356,6 +359,44 @@ admin.post('/run-export-now', async (c) => {
   }
 
   return c.json(result, result.errors.length > 0 ? 500 : 200)
+})
+
+/**
+ * Re-archives a named hour or day, leaving the watermark alone (#976).
+ *
+ * The archive advances strictly forward, so an hour that was skipped or only
+ * partly archived had no recovery path. That matters because the deletion gate
+ * (#872) clears a day only when its counts reconcile: ONE missed hour makes that
+ * day permanently unverifiable, and after A5 (#873) the only escape would be a
+ * recorded human release authorising the deletion of data that has no backup.
+ *
+ * It runs the hourly job's own pipeline through `hours`, not a separate tool, so
+ * a successful repair is evidence about the archiver. Duplicates are harmless:
+ * the gate counts DISTINCT execution ids and every write here is a keyed upsert.
+ */
+admin.post('/re-archive', async (c) => {
+  const body = await c.req.json<{ hour?: unknown; day?: unknown }>().catch(() => ({}))
+  const request = parseReArchiveRequest(body, new Date())
+  if (!request.ok) return c.json({ error: request.reason }, 400)
+
+  const supabase = createSupabaseClient(c.env)
+  const summary = await runExecutionArchive(c.env, supabase, {
+    sendBatch: (rows) => sendArchiveBatch(c.env, rows),
+    hours: request.hours,
+  })
+
+  // A run that could not take the lock did NO work, and answering 200 with a
+  // summary of zeros would read as an hour that turned out to be empty. The
+  // caller has to be able to tell "there is nothing there" from "we did not
+  // look" (L98).
+  if (summary.skipped === 'locked') {
+    return c.json({ error: `the archive is already running: ${summary.detail}`, hours: request.hours }, 409)
+  }
+
+  return c.json(
+    { hours: request.hours, summary },
+    summary.failed ? 500 : 200,
+  )
 })
 
 export default admin
