@@ -51,6 +51,23 @@ Two items are pure dead weight in the figures above and removing them shortens t
 - **Lead-sighting + bid outcome data** is exported nightly (09:00 UTC) to Snowflake, so analytics-grade outcome history survives even past the Postgres retention window.
 - **The engine bidding flow stays warm on Pipedream** as the designated rollback target (the original platform, kept live since the cutover). This is the fastest mitigation for an engine-bidding outage — reroute the engine to Pipedream while Bidspoke is restored (see Scenario E).
 
+### The execution archive has NO independent backup, and that is a decision (#909)
+
+`BIDSPOKE_ARCHIVE.EXECUTIONS` holds the full-fidelity copy of `workflow_executions` and `execution_steps`. Once A5 (#873) repoints the Postgres purge at the archive gate, it becomes the **only** place 13 months of execution history exists. Nothing copies it anywhere else.
+
+That is accepted, with its limits stated rather than assumed. Decided by Dan on 2026-08-22.
+
+| | |
+|---|---|
+| Time Travel on `execution_archive` | **30 days**, measured (#911), re-asserted daily (#980) |
+| Fail-safe after that | 7 days, recoverable by Snowflake staff only, **not queryable by us** |
+| What both cover | a mistaken or malicious DELETE, inside 30 days |
+| What neither covers | a Snowflake account or billing problem, and a clone or share made before a delete |
+
+The realistic loss modes are account level and credential level, not hardware. The eraser is the only identity in the account holding DELETE on this table, and since #914 that split is verified daily by having each identity attempt a delete rather than by reading its grants.
+
+**A second copy in R2 is wanted and deliberately deferred**: issue #1001. Until it exists, a lost Snowflake account is a lost archive, and after A5 that is unrecoverable rather than inconvenient.
+
 ## Scenarios
 
 ### A. Supabase project loss or corruption
