@@ -1,0 +1,208 @@
+/**
+ * Verifying what each archive identity can actually do, daily (#914).
+ *
+ * The decision is in `archive/identity-permissions.ts` and is pure. This asks
+ * Snowflake, as each identity in turn.
+ *
+ * THE DELETE PROBE IS THE POINT. Reading `SHOW GRANTS` tells you what the
+ * account says; running a delete tells you what happens. A guard is only real
+ * once it has been seen to refuse something (L1), and this is the only thing in
+ * the system that ever asks the writer or reader to destroy an archived row.
+ *
+ * The statement is built by `deleteProbeStatement` below, which interpolates
+ * NOTHING and always carries a constant-false predicate, and a test asserts
+ * exactly that. It matters more than it looks: this runs daily, as an identity
+ * that may hold DELETE, against 13 months of unredacted identity data. The
+ * predicate is the only thing standing between a permission check and an
+ * erasure, so it is not allowed to be built from anything a caller supplies.
+ */
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { formatErr } from './format-error'
+import { notifyExportFailure } from './export-alerts'
+import { executeStatement, SnowflakeStatementError, type SnowflakeStatementResponse } from './snowflake'
+import {
+  archiveConfig,
+  ARCHIVE_DATABASE,
+  ARCHIVE_SCHEMA,
+  ARCHIVE_TABLE,
+  ARCHIVE_ROLES,
+  type ArchiveIdentity,
+} from './archive-snowflake'
+import {
+  identityFindings,
+  type IdentityObservation,
+  type IdentityFinding,
+  type IdentityName,
+} from '../archive/identity-permissions'
+import type { Env } from '../index'
+
+export const ARCHIVE_IDENTITY_JOB = 'execution-archive-identities'
+
+const QUALIFIED_TABLE = `${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`
+
+/**
+ * Snowflake codes that mean the role was refused on privileges.
+ *
+ * 003001 is "Insufficient privileges to operate on <object>". 003011 is the
+ * same shape for a statement the role may not run at all.
+ */
+const INSUFFICIENT_PRIVILEGE_CODES = new Set(['003001', '003011'])
+
+/**
+ * Codes Snowflake uses for "does not exist OR not authorized", deliberately
+ * conflating the two so an unauthorised caller cannot probe for object names.
+ * Resolved by the decision using the other identities in the same run.
+ */
+const AMBIGUOUS_CODES = new Set(['002003'])
+
+/**
+ * The probe statement. Takes no arguments and interpolates nothing.
+ *
+ * `WHERE FALSE` is a constant-false predicate, so the statement can match no row
+ * under any circumstances. It exists to be REFUSED: for the writer and reader a
+ * privilege error is the only outcome a correct account can produce, and success
+ * is the finding.
+ */
+export function deleteProbeStatement(): string {
+  return `DELETE FROM ${QUALIFIED_TABLE} WHERE FALSE`
+}
+
+export interface IdentityCheckResult {
+  observations: IdentityObservation[]
+  findings: IdentityFinding[]
+  alerted: boolean
+}
+
+export interface IdentityCheckDeps {
+  /** Runs a statement AS the given identity. Injected so tests drive the real logic. */
+  query?: (identity: ArchiveIdentity, statement: string) => Promise<SnowflakeStatementResponse>
+}
+
+function columnAt(response: SnowflakeStatementResponse, name: string): number {
+  const names = response.resultSetMetaData?.rowType?.map((c) => c.name.toLowerCase()) ?? []
+  return names.indexOf(name.toLowerCase())
+}
+
+/**
+ * Privileges SHOW GRANTS reports on the archive table.
+ *
+ * Read by column NAME and matched on the object name, because a role holds
+ * grants on the database and schema too and counting those as table privileges
+ * would report a role as holding whatever it holds anywhere (L135).
+ */
+function tablePrivileges(response: SnowflakeStatementResponse): string[] | null {
+  const privilegeAt = columnAt(response, 'privilege')
+  const nameAt = columnAt(response, 'name')
+  const onAt = columnAt(response, 'granted_on')
+  if (privilegeAt < 0 || nameAt < 0 || onAt < 0) return null
+
+  const wanted = QUALIFIED_TABLE.toUpperCase()
+  const found: string[] = []
+  for (const row of response.data ?? []) {
+    if (String(row[onAt]).toUpperCase() !== 'TABLE') continue
+    if (String(row[nameAt]).toUpperCase() !== wanted) continue
+    found.push(String(row[privilegeAt]))
+  }
+  return found
+}
+
+async function observe(
+  identity: ArchiveIdentity,
+  query: (identity: ArchiveIdentity, statement: string) => Promise<SnowflakeStatementResponse>,
+): Promise<IdentityObservation> {
+  const observation: IdentityObservation = {
+    identity: identity as IdentityName,
+    tablePrivileges: null,
+    secondaryRoles: null,
+    deleteProbe: 'unknown',
+    unreadable: [],
+  }
+
+  // Each read in its own try. The delete probe is the one that matters, so it
+  // must run even if the grant listing failed: a check that stopped at the first
+  // error would skip the only observed evidence it collects.
+  try {
+    const response = await query(identity, `SHOW GRANTS TO ROLE ${ARCHIVE_ROLES[identity]}`)
+    const privileges = tablePrivileges(response)
+    if (privileges === null) {
+      observation.unreadable.push('SHOW GRANTS came back in a shape with no privilege, name or granted_on column')
+    } else {
+      observation.tablePrivileges = privileges
+    }
+  } catch (err) {
+    observation.unreadable.push(`its grants could not be read: ${formatErr(err)}`)
+  }
+
+  try {
+    const response = await query(identity, 'SELECT CURRENT_SECONDARY_ROLES()')
+    const cell = response.data?.[0]?.[0]
+    if (cell === null || cell === undefined) {
+      observation.secondaryRoles = ''
+    } else if (typeof cell === 'string' || typeof cell === 'number') {
+      observation.secondaryRoles = String(cell)
+    } else {
+      // Not stringified blindly. An object renders as "[object Object]", which
+      // reads as roles being active and produces an alert nobody can act on.
+      observation.unreadable.push(
+        `its active secondary roles came back as ${JSON.stringify(cell)}, which is not a value this can read`,
+      )
+    }
+  } catch (err) {
+    observation.unreadable.push(`its active secondary roles could not be read: ${formatErr(err)}`)
+  }
+
+  try {
+    await query(identity, deleteProbeStatement())
+    // It RAN. For an identity that must hold no DELETE this is the finding, not
+    // a success.
+    observation.deleteProbe = 'allowed'
+  } catch (err) {
+    // Classified on Snowflake's own error CODE, never on words in the message.
+    // The wording is Snowflake's to change, and an unrecognised message would
+    // fall to whichever side a regex happened to leave it, which for this check
+    // means silently reporting an outage as a verified control (L35, L11).
+    const code = err instanceof SnowflakeStatementError ? err.code : null
+    if (code !== null && INSUFFICIENT_PRIVILEGE_CODES.has(code)) {
+      observation.deleteProbe = 'refused'
+    } else if (code !== null && AMBIGUOUS_CODES.has(code)) {
+      observation.deleteProbe = 'ambiguous'
+    } else {
+      observation.unreadable.push(
+        `its delete probe failed for a reason other than permissions: ${formatErr(err)}`,
+      )
+    }
+  }
+
+  return observation
+}
+
+export async function checkArchiveIdentities(
+  env: Env,
+  supabase: SupabaseClient,
+  deps: IdentityCheckDeps = {},
+): Promise<IdentityCheckResult> {
+  const query =
+    deps.query ??
+    ((identity: ArchiveIdentity, statement: string) => executeStatement(archiveConfig(env, identity), statement))
+
+  const observations: IdentityObservation[] = []
+  for (const identity of ['writer', 'reader', 'eraser'] as ArchiveIdentity[]) {
+    observations.push(await observe(identity, query))
+  }
+
+  const findings = identityFindings(observations)
+  await notifyExportFailure(
+    supabase,
+    ARCHIVE_IDENTITY_JOB,
+    findings.map((f) => f.message),
+    env.IDEMPOTENCY,
+  )
+
+  console.log(
+    `[archive-identities] ${observations
+      .map((o) => `${o.identity}:${o.deleteProbe}`)
+      .join(' ')} findings=${findings.length}`,
+  )
+
+  return { observations, findings, alerted: findings.length > 0 }
+}

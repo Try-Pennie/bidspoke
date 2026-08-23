@@ -21,6 +21,7 @@ const runExecutionArchive = vi.fn().mockResolvedValue({
   detail: 'test',
 })
 const sendArchiveBatch = vi.fn()
+const checkArchiveIdentities = vi.fn().mockResolvedValue({ observations: [], findings: [], alerted: false })
 const checkArchiveSettings = vi.fn().mockResolvedValue({
   observed: { retentionDays: 30, retentionLevel: 'TABLE', columns: [], unreadable: [] },
   differences: [],
@@ -47,6 +48,9 @@ vi.mock('../lib/archive-gate', () => ({
 }))
 vi.mock('../lib/archive-settings-check', () => ({
   checkArchiveSettings: (...args: unknown[]) => checkArchiveSettings(...args),
+}))
+vi.mock('../lib/archive-identity-check', () => ({
+  checkArchiveIdentities: (...args: unknown[]) => checkArchiveIdentities(...args),
 }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
@@ -80,6 +84,7 @@ beforeEach(() => {
   writeHeartbeat.mockClear()
   runArchiveGate.mockClear()
   checkArchiveSettings.mockClear()
+  checkArchiveIdentities.mockClear()
 })
 
 describe('the scheduled handler', () => {
@@ -164,6 +169,32 @@ describe('the scheduled handler', () => {
       await Promise.allSettled(waited)
 
       expect(checkArchiveSettings, `${cron} read the settings`).not.toHaveBeenCalled()
+    }
+  })
+
+  it('verifies the archive identities on the daily batch', async () => {
+    // The least-privilege split is what keeps a bug or a leaked credential on
+    // the ingest path from destroying archived rows, and an excessive grant
+    // never surfaces on its own because nothing ever attempts it.
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.allSettled(waited)
+
+    expect(checkArchiveIdentities).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not verify the identities from any other cron', async () => {
+    // It runs a DELETE against production, inert though the predicate is. It
+    // belongs on one schedule, not wherever a branch happens to reach it.
+    for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
+      checkArchiveIdentities.mockClear()
+      const waited: Promise<unknown>[] = []
+
+      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      await Promise.allSettled(waited)
+
+      expect(checkArchiveIdentities, `${cron} verified the identities`).not.toHaveBeenCalled()
     }
   })
 

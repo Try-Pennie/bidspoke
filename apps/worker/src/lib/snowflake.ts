@@ -14,6 +14,41 @@ export interface SnowflakeConfig {
   role: string
 }
 
+/**
+ * A statement Snowflake rejected, carrying the structured fields of the
+ * rejection rather than only the prose.
+ *
+ * Added for the archive identity check (#914), which has to tell a PERMISSION
+ * refusal from a sleeping warehouse. Classifying that by matching words in the
+ * message is exactly the branch-on-substring L35 warns about: the wording is
+ * Snowflake's to change, and an unrecognised message would fall to whichever
+ * side the regex happened to leave.
+ *
+ * Existing callers read `.message` and are unaffected.
+ */
+export class SnowflakeStatementError extends Error {
+  readonly status: number
+  /** Snowflake's own error code, e.g. 003001 for insufficient privileges. */
+  readonly code: string | null
+
+  constructor(message: string, status: number, code: string | null) {
+    super(message)
+    this.name = 'SnowflakeStatementError'
+    this.status = status
+    this.code = code
+  }
+}
+
+/** Pulls Snowflake's structured error code out of a response body, if it has one. */
+export function snowflakeErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown }
+    return typeof parsed.code === 'string' ? parsed.code : null
+  } catch {
+    return null
+  }
+}
+
 export interface SnowflakeStatementResponse {
   resultSetMetaData?: {
     numRows?: number
@@ -141,7 +176,7 @@ export async function postStatementWithRetry(
       const text = await res.text()
       if (res.ok) return { status: res.status, text }
       retryable = isTransientSnowflakeError(res.status, text)
-      error = new Error(`Snowflake ${res.status}: ${text}`)
+      error = new SnowflakeStatementError(`Snowflake ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
     } catch (e) {
       // fetch rejected, so no response ever arrived. Always retryable: the
       // requestId contract covers the ambiguity about whether it executed.
@@ -212,7 +247,7 @@ export async function pollStatement(
     const res = await fetch(url, { method: 'GET', headers })
     const text = await res.text()
     if (res.status === 202) continue // still running
-    if (!res.ok) throw new Error(`Snowflake poll ${res.status}: ${text}`)
+    if (!res.ok) throw new SnowflakeStatementError(`Snowflake poll ${res.status}: ${text}`, res.status, snowflakeErrorCode(text))
     return parseResponse(text)
   }
   throw new Error(`Snowflake statement ${handle} did not complete after ${maxAttempts} polls`)
