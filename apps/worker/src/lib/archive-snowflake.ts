@@ -74,7 +74,12 @@ export function resolveIdentity(args: string[]): ArchiveIdentity {
   return 'writer'
 }
 
-const SECRET_NAMES: Record<ArchiveIdentity, { user: keyof Env; privateKey: keyof Env }> = {
+/**
+ * The two secrets per identity, EXPORTED so the daily missing-secret guard can
+ * derive its list from this map rather than repeat it by hand (L41). A fourth
+ * identity added here is covered by that guard without anyone remembering to.
+ */
+export const ARCHIVE_SECRET_NAMES: Record<ArchiveIdentity, { user: keyof Env; privateKey: keyof Env }> = {
   writer: { user: 'ARCHIVE_WRITER_USER', privateKey: 'ARCHIVE_WRITER_PRIVATE_KEY' },
   reader: { user: 'ARCHIVE_READER_USER', privateKey: 'ARCHIVE_READER_PRIVATE_KEY' },
   eraser: { user: 'ARCHIVE_ERASER_USER', privateKey: 'ARCHIVE_ERASER_PRIVATE_KEY' },
@@ -95,7 +100,7 @@ function requireSecret(env: Env, name: keyof Env): string {
 }
 
 export function archiveConfig(env: Env, identity: ArchiveIdentity): SnowflakeConfig {
-  const names = SECRET_NAMES[identity]
+  const names = ARCHIVE_SECRET_NAMES[identity]
   return {
     account: requireSecret(env, 'SNOWFLAKE_ACCOUNT'),
     user: requireSecret(env, names.user),

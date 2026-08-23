@@ -62,11 +62,20 @@ const AMBIGUOUS = new SnowflakeStatementError(
   '002003',
 )
 
+/**
+ * What no secondary roles actually looks like on the live account, measured on
+ * 2026-08-23. The fixtures default to this rather than to an empty string, so a
+ * green suite is evidence about the account we have (L48).
+ */
+const NO_SECONDARY_ROLES = '{"roles":"","value":""}'
+
 interface Behaviour {
   privileges?: string[]
   secondary?: string
   /** What the constant-false DELETE does for this identity. */
   onDelete?: 'allow' | Error
+  /** Fails EVERY statement for this identity, however it is asked. */
+  onEvery?: Error
 }
 
 const HEALTHY: Record<ArchiveIdentity, Behaviour> = {
@@ -84,8 +93,11 @@ function run(over: Partial<Record<ArchiveIdentity, Behaviour>> = {}) {
       query: async (identity, statement) => {
         asked.push({ identity, statement })
         const b = behaviour[identity]
+        if (b.onEvery instanceof Error) throw b.onEvery
         if (statement.startsWith('SHOW GRANTS')) return grants(b.privileges ?? [])
-        if (statement.startsWith('SELECT CURRENT_SECONDARY_ROLES')) return secondaryRoles(b.secondary ?? '')
+        if (statement.startsWith('SELECT CURRENT_SECONDARY_ROLES')) {
+          return secondaryRoles(b.secondary ?? NO_SECONDARY_ROLES)
+        }
         if (b.onDelete instanceof Error) throw b.onDelete
         return { data: [['0']] }
       },
@@ -277,5 +289,38 @@ describe('when a read fails', () => {
     })
 
     expect(asked.filter((a) => a.statement.startsWith('DELETE'))).toHaveLength(3)
+  })
+})
+
+describe('an identity whose credential is not set', () => {
+  /** What the Worker throws before any request leaves, when the secret is absent. */
+  const NOT_SET = new Error('ARCHIVE_READER_USER is not set, so the archive cannot authenticate to Snowflake')
+
+  it('is reported once, not once per thing the check tried to read', async () => {
+    // On 2026-08-23 two unset credentials produced SIX alert lines, three per
+    // identity, each naming the same missing secret. One cause must read as one
+    // cause: a reader counting lines cannot tell six problems from one, and the
+    // repetition buried the single genuine finding in the same alert.
+    const { result } = run({ reader: { onEvery: NOT_SET } })
+    const readerFindings = (await result).findings.filter((f) => f.identity === 'reader')
+
+    expect(readerFindings).toHaveLength(1)
+    expect(readerFindings[0].message).toContain('ARCHIVE_READER_USER is not set')
+  })
+
+  it('still reports each cause separately when the reads fail for DIFFERENT reasons', async () => {
+    // The collapse must key on the causes being the SAME. Two genuinely
+    // different failures are two things to look at, and folding them together
+    // would hide one of them (L11).
+    const { result } = run({
+      reader: {
+        privileges: ['SELECT'],
+        secondary: 'a shape nothing can read',
+        onDelete: new Error('the warehouse could not resume'),
+      },
+    })
+    const readerFindings = (await result).findings.filter((f) => f.identity === 'reader')
+
+    expect(readerFindings).toHaveLength(2)
   })
 })

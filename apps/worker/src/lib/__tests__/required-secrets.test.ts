@@ -91,3 +91,20 @@ describe('findMissingRequiredSecrets', () => {
     expect(all).not.toContain('SCOUT_KEY')
   })
 })
+
+describe('the archive credentials', () => {
+  it('covers every identity the archive can authenticate as', async () => {
+    // DERIVED from the credential map rather than listed by hand, so a fourth
+    // identity cannot be added with nothing watching whether its secrets are set
+    // (L41, L96). The reader and eraser were deliberately held back until their
+    // code paths shipped, which they did on 2026-08-22, and the deferral then
+    // outlived its reason: both were unset in production and the only thing that
+    // noticed was a downstream job failing the next morning.
+    const { ARCHIVE_SECRET_NAMES } = await import('../archive-snowflake')
+
+    const needed = Object.values(ARCHIVE_SECRET_NAMES).flatMap((n) => [n.user, n.privateKey])
+    const missing = needed.filter((n) => !(REQUIRED_SECRETS as readonly string[]).includes(n))
+
+    expect(missing).toEqual([])
+  })
+})

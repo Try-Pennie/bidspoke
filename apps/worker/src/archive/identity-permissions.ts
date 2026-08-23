@@ -184,5 +184,24 @@ export function identityFindings(observations: IdentityObservation[]): IdentityF
  */
 function isNoSecondaryRoles(value: string): boolean {
   const normalised = value.trim().toUpperCase()
-  return normalised === '' || normalised === 'NULL' || normalised === '[]' || normalised === 'NONE'
+  if (normalised === '' || normalised === 'NULL' || normalised === '[]' || normalised === 'NONE') return true
+
+  // The spelling the live account actually uses is a JSON object, measured on
+  // 2026-08-23 as {"roles":"","value":""} for all three identities. It is PARSED
+  // rather than pattern matched, because a substring test for an empty roles list
+  // would also be satisfied by a populated one that happens to contain the same
+  // characters, and this is the field that decides whether the least-privilege
+  // split means anything.
+  //
+  // Anything that does not parse into that shape stays a concern. That is the
+  // fail-safe direction: over-reporting costs a look, under-reporting costs the
+  // control (L11).
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+    const roles = (parsed as { roles?: unknown }).roles
+    return typeof roles === 'string' && roles.trim() === ''
+  } catch {
+    return false
+  }
 }

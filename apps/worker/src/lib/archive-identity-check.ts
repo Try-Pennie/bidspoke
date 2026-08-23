@@ -118,6 +118,10 @@ async function observe(
     unreadable: [],
   }
 
+  // Why each read failed, in the read's own words, kept alongside the messages
+  // so identical causes can be recognised at the end.
+  const causes: string[] = []
+
   // Each read in its own try. The delete probe is the one that matters, so it
   // must run even if the grant listing failed: a check that stopped at the first
   // error would skip the only observed evidence it collects.
@@ -130,7 +134,9 @@ async function observe(
       observation.tablePrivileges = privileges
     }
   } catch (err) {
-    observation.unreadable.push(`its grants could not be read: ${formatErr(err)}`)
+    const cause = formatErr(err)
+    causes.push(cause)
+    observation.unreadable.push(`its grants could not be read: ${cause}`)
   }
 
   try {
@@ -148,7 +154,9 @@ async function observe(
       )
     }
   } catch (err) {
-    observation.unreadable.push(`its active secondary roles could not be read: ${formatErr(err)}`)
+    const cause = formatErr(err)
+    causes.push(cause)
+    observation.unreadable.push(`its active secondary roles could not be read: ${cause}`)
   }
 
   try {
@@ -167,10 +175,26 @@ async function observe(
     } else if (code !== null && AMBIGUOUS_CODES.has(code)) {
       observation.deleteProbe = 'ambiguous'
     } else {
+      const cause = formatErr(err)
+      causes.push(cause)
       observation.unreadable.push(
-        `its delete probe failed for a reason other than permissions: ${formatErr(err)}`,
+        `its delete probe failed for a reason other than permissions: ${cause}`,
       )
     }
+  }
+
+  // ONE CAUSE MUST READ AS ONE CAUSE. An unset credential fails every read
+  // before a request leaves the Worker, and on 2026-08-23 two missing secrets
+  // produced six alert lines, three per identity, each naming the same secret.
+  // Six lines cannot be told from six problems, and the repetition buried the
+  // one genuine finding in the same alert.
+  //
+  // Collapsed only on an EXACT match of the causes, and only when every
+  // unreadable entry came from a failed read, so two genuinely different
+  // failures stay two findings (L11). Keyed on the causes rather than on a
+  // count of the reads, so adding a fourth read cannot silently unfix this.
+  if (causes.length >= 2 && causes.length === observation.unreadable.length && new Set(causes).size === 1) {
+    observation.unreadable = [causes[0]]
   }
 
   return observation

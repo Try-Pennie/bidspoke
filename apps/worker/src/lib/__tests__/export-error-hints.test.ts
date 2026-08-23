@@ -172,3 +172,25 @@ describe('isTransientExportError', () => {
     expect(isTransientExportError(msg)).toBe(false)
   })
 })
+
+describe('a Worker secret that is not set', () => {
+  /** Verbatim from the 2026-08-23 alert, where this fell through to the generic hint. */
+  const MESSAGE =
+    'the reader identity could not be verified: ARCHIVE_READER_USER is not set, ' +
+    'so the archive cannot authenticate to Snowflake'
+
+  it('is classified as a missing credential, not as an unknown failure', () => {
+    expect(classifyExportError(MESSAGE)).toBe('missing_credential')
+  })
+
+  it('is not treated as transient, because no retry sets a secret', () => {
+    expect(isTransientExportError(MESSAGE)).toBe(false)
+  })
+
+  it('gets advice naming the secret rather than pointing at Snowflake availability', () => {
+    const hint = buildFixHint([MESSAGE])
+
+    expect(hint).toContain('wrangler secret put')
+    expect(hint).not.toContain(GENERIC_FIX_HINT)
+  })
+})

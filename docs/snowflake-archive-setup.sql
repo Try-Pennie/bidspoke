@@ -313,6 +313,13 @@ GRANT ROLE bidspoke_archive_eraser TO USER bidspoke_archive_eraser_svc;
 --
 -- Done on the live account 2026-08-20: all three now report an empty
 -- DEFAULT_SECONDARY_ROLES.
+--
+-- Note for anyone reading the daily identity check's output: an empty setting is
+-- reported by SHOW USERS as `[]`, and by CURRENT_SECONDARY_ROLES() inside a
+-- session as `{"roles":"","value":""}`. The check reads the second one. It did
+-- not recognise that spelling until 2026-08-23 and reported all three identities
+-- as loose on its first real run, which was a fault in the check and not in the
+-- account.
 
 -- ============================================================================
 -- Keys: run these ONE AT A TIME, and read the check before each
@@ -334,6 +341,14 @@ DESC USER bidspoke_archive_eraser_svc;
 --   ALTER USER bidspoke_archive_writer_svc SET RSA_PUBLIC_KEY = '<WRITER_PUBLIC_KEY>';
 --   ALTER USER bidspoke_archive_reader_svc SET RSA_PUBLIC_KEY = '<READER_PUBLIC_KEY>';
 --   ALTER USER bidspoke_archive_eraser_svc SET RSA_PUBLIC_KEY = '<ERASER_PUBLIC_KEY>';
+--
+-- KEY STATUS ON THE LIVE ACCOUNT. The writer's key was set 2026-08-20. The
+-- reader's and the eraser's were set 2026-08-23, and NOT before: for three days
+-- both users existed with no key and no Worker secret, so the deletion gate, the
+-- settings read-back and the erasure path could not authenticate at all, and the
+-- daily identity check could verify only the writer. All three now hold a
+-- fingerprint, so every ALTER USER ... SET RSA_PUBLIC_KEY below is now a
+-- ROTATION. Do not run any of them without meaning it.
 --
 -- The PRIVATE half of each pair goes straight into a Worker secret and must never
 -- be pasted into this file, a worksheet, or any terminal:
