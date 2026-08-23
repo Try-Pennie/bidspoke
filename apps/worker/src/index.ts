@@ -304,6 +304,20 @@ export default {
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
       )
+      // What each archive identity can actually DO, verified by attempting it
+      // (#914). The least-privilege split is what keeps a bug or a leaked
+      // credential on the ingest path from destroying archived rows, and it
+      // rested entirely on the statements in a SQL file. The gap is asymmetric:
+      // a missing grant fails loudly on the first run, an excessive one never
+      // surfaces because nothing ever attempts what it should not be allowed to
+      // do (L503).
+      ctx.waitUntil(
+        (async () => {
+          const { checkArchiveIdentities } = await import('./lib/archive-identity-check')
+          const r = await checkArchiveIdentities(env, supabase)
+          if (r.alerted) console.error(`[archive-identities] ${r.findings.length} findings`)
+        })().catch((e) => console.error('[archive-identities] failed:', e))
+      )
       // The archive's Snowflake settings, read back (#980). The
       // never-delete-without-a-backup guarantee rests on settings applied BY
       // HAND in Snowflake, and nothing read any of them back: the undo window
