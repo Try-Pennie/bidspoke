@@ -47,13 +47,17 @@ describe('secondary roles', () => {
     expect(findings[0].message).toContain('BIDSPOKE_ARCHIVE_ERASER')
   })
 
-  it('reports a concern when the value is a shape it cannot read, rather than assuming none', () => {
-    // Fail safe. An unparseable answer must not read as "no roles active": the
-    // whole point of the field is that it can quietly widen what an identity can
-    // do, so an unreadable answer is a concern, not a pass.
+  it('reports a value it cannot read as unreadable, not as roles being active', () => {
+    // Fail safe in BOTH directions. An unparseable answer must not read as "no
+    // roles active", because the field can quietly widen what an identity can do.
+    // But it must not claim roles ARE active either: the check did not observe
+    // that, it observed that it could not tell, and a message may only claim what
+    // it measured (L11).
     const findings = identityFindings([healthy({ secondaryRoles: 'something new from Snowflake' })])
 
     expect(findings).toHaveLength(1)
-    expect(findings[0].code).toBe('secondary-roles')
+    expect(findings[0].code).toBe('unreadable')
+    expect(findings[0].message).toContain('something new from Snowflake')
+    expect(findings[0].message).not.toContain('has secondary roles active')
   })
 })

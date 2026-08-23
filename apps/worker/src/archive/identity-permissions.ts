@@ -157,7 +157,21 @@ export function identityFindings(observations: IdentityObservation[]): IdentityF
       }
     }
 
-    if (o.secondaryRoles !== null && !isNoSecondaryRoles(o.secondaryRoles)) {
+    if (o.secondaryRoles !== null && readSecondaryRoles(o.secondaryRoles) === 'unreadable') {
+      // NOT reported as roles being active. The check did not observe that, it
+      // observed that it could not tell, and the two need different remedies:
+      // one is a permission to remove, the other is a spelling this code has
+      // never seen and has to learn (L11).
+      findings.push({
+        code: 'unreadable',
+        identity: o.identity,
+        message:
+          `the ${o.identity} identity's active secondary roles came back as ${o.secondaryRoles}, which this ` +
+          'cannot read, so whether the least-privilege split is in force is unknown rather than confirmed',
+      })
+    }
+
+    if (o.secondaryRoles !== null && readSecondaryRoles(o.secondaryRoles) === 'active') {
       // What makes the split structural rather than circumstantial. Two of the
       // three were found loose when this was first checked by hand: with
       // secondary roles active, an identity holds whatever any of them holds and
@@ -176,32 +190,41 @@ export function identityFindings(observations: IdentityObservation[]): IdentityF
 }
 
 /**
- * Snowflake reports "no roles active" in more than one spelling depending on
- * version and how the session was opened, and an empty string is the commonest.
- * Anything else is treated as roles being active, which is the fail-safe
- * direction: over-reporting a permission concern costs a look, under-reporting
- * it costs the control.
+ * What CURRENT_SECONDARY_ROLES() is telling us.
+ *
+ * THREE answers, not two. 'none' and 'active' are the two real states, and
+ * 'unreadable' is the honest third: a spelling this code has never seen is not
+ * evidence that roles are active, and saying so would send someone to remove a
+ * permission that may not exist. Both of the non-'none' answers raise a finding,
+ * so the fail-safe direction is kept, but they say different things (L11).
+ *
+ * Snowflake reports the empty state in more than one spelling depending on
+ * version and how the session was opened. The live account's spelling is a JSON
+ * object, measured on 2026-08-23 as {"roles":"","value":""} for all three
+ * identities. It is PARSED rather than pattern matched, because a substring test
+ * for an empty roles list would also be satisfied by a populated one that happens
+ * to contain the same characters, and this is the field that decides whether the
+ * least-privilege split means anything.
  */
-function isNoSecondaryRoles(value: string): boolean {
+function readSecondaryRoles(value: string): 'none' | 'active' | 'unreadable' {
   const normalised = value.trim().toUpperCase()
-  if (normalised === '' || normalised === 'NULL' || normalised === '[]' || normalised === 'NONE') return true
+  if (normalised === '' || normalised === 'NULL' || normalised === '[]' || normalised === 'NONE') return 'none'
+  // Older sessions answer with the bare word, which is unambiguous: every role
+  // granted to the user is active. Enumerated alongside the empty spellings,
+  // because the third answer here is "I do not recognise this", and a known
+  // spelling must never fall into it.
+  if (normalised === 'ALL') return 'active'
 
-  // The spelling the live account actually uses is a JSON object, measured on
-  // 2026-08-23 as {"roles":"","value":""} for all three identities. It is PARSED
-  // rather than pattern matched, because a substring test for an empty roles list
-  // would also be satisfied by a populated one that happens to contain the same
-  // characters, and this is the field that decides whether the least-privilege
-  // split means anything.
-  //
-  // Anything that does not parse into that shape stays a concern. That is the
-  // fail-safe direction: over-reporting costs a look, under-reporting costs the
-  // control (L11).
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(value)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-    const roles = (parsed as { roles?: unknown }).roles
-    return typeof roles === 'string' && roles.trim() === ''
+    parsed = JSON.parse(value)
   } catch {
-    return false
+    // Not an error to swallow: an answer that is neither a known spelling nor
+    // valid JSON is reported as unreadable by the caller, never as none.
+    return 'unreadable'
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unreadable'
+  const roles = (parsed as { roles?: unknown }).roles
+  if (typeof roles !== 'string') return 'unreadable'
+  return roles.trim() === '' ? 'none' : 'active'
 }
