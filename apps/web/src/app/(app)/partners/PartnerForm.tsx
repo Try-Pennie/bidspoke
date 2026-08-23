@@ -582,6 +582,18 @@ export default function PartnerForm({
         </div>
       )}
 
+      {/*
+        #416. Deliberately NOT the error banner above: an error means the save did
+        not happen, and a partner whose credential is unprovisioned saved fine.
+        Amber, and its own role="status", so it reads as a standing condition
+        rather than as a failed action.
+      */}
+      {partner?.credential_warning && (
+        <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {partner.credential_warning}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="space-y-8">
 
         <Section title="Identity">

@@ -141,3 +141,43 @@ describe('PartnerForm — a both partner exposes buyer and source config (#306)'
     expect(screen.getByText('Bid resolution')).toBeInTheDocument()
   })
 })
+
+// #416. The API reports a declared-but-unprovisioned partner credential on every
+// read and write. Rendering it here is what makes the check preventive: without
+// it the field is written and never read, and the only place the fault surfaces
+// is still a lost lead.
+describe('PartnerForm — missing credential warning (#416)', () => {
+  it('shows the warning the API reported', async () => {
+    render(
+      <PartnerForm
+        partner={{ ...partner, credential_warning: "Credential 'SOFI_SECRET' is not set, so this partner will fail on the next live lead." }}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    )
+
+    expect(await screen.findByText(/SOFI_SECRET/)).toBeInTheDocument()
+  })
+
+  it('shows nothing when the API reported no warning', async () => {
+    render(<PartnerForm partner={{ ...partner, credential_warning: null }} onSave={vi.fn()} onCancel={vi.fn()} />)
+
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+  })
+
+  it('does not present the warning as a save error', async () => {
+    // The two are different: an error means the save did not happen, and this
+    // save did. Sharing the error banner would say the opposite of what occurred.
+    render(
+      <PartnerForm
+        partner={{ ...partner, credential_warning: "Credential 'SOFI_SECRET' is not set. Set it before activating this partner." }}
+        onSave={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    )
+
+    const warning = await screen.findByRole('status')
+    expect(warning).toHaveTextContent('SOFI_SECRET')
+    expect(warning.className).not.toContain('red')
+  })
+})

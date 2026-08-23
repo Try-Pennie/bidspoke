@@ -46,6 +46,12 @@ export interface Partner {
   click_url: string | null
   sub_account_min_bids: Record<string, number> | null
   partner_type: PartnerType
+  /**
+   * A declared credential the environment cannot supply (#416). Derived per
+   * response by the worker rather than stored, so it is always current, and null
+   * means "checked, nothing owed" rather than "not checked".
+   */
+  credential_warning?: string | null
   created_at: string
   updated_at: string
   updated_by_email: string | null
