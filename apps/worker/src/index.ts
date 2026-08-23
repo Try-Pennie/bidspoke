@@ -439,6 +439,32 @@ export default {
         runFieldPresenceDroughtCheck(supabase)
           .catch((e) => console.error('[field-presence-drought] failed:', e))
       )
+      // Archive gaps the forward-only run leaves behind (#1015). The hourly run
+      // advances a watermark and never looks back, so a day it did not cover
+      // stays uncovered: six such days existed on 2026-08-23 and nothing had
+      // reported them, because the hourly run was healthy the whole time.
+      //
+      // Runs AFTER the archive above, so it works on a settled frontier rather
+      // than competing with the run that is moving it, and it takes the same lock,
+      // so a conflict simply means the hourly run is busy and this waits a cycle.
+      ctx.waitUntil(
+        (async () => {
+          const { runArchiveBacklog, backlogDeps, hoursOfDay } = await import('./lib/archive-backlog-run')
+          const { runExecutionArchive } = await import('./lib/execution-archive')
+          const { sendArchiveBatch } = await import('./lib/execution-archive-send')
+          const deps = backlogDeps(env, supabase, async (day, alreadyRecorded) => {
+            const summary = await runExecutionArchive(env, supabase, {
+              sendBatch: (rows) => sendArchiveBatch(env, rows),
+              hours: hoursOfDay(day),
+              alreadyRecorded,
+            })
+            return { hoursArchived: summary.hoursArchived, failed: summary.failed, detail: summary.detail }
+          })
+          const r = await runArchiveBacklog(deps)
+          console.log(`[archive-backlog] ${r.detail}`)
+        })().catch((e) => console.error('[archive-backlog] failed:', e)),
+      )
+
       // The execution archive making no progress (#946). Hourly rather than
       // inside the archive run itself, because a run the platform kills reports
       // nothing, and a watchdog must not share the fate of the work it watches.
