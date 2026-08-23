@@ -22,7 +22,17 @@
  * to destruction (#1017).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { nextBacklogDay, HOURS_PER_DAY } from '../archive/backlog'
+import {
+  nextBacklogDay,
+  HOURS_PER_DAY,
+  daysSetAside,
+  recordAttempt,
+  pruneBacklogState,
+  emptyBacklogState,
+  parseBacklogState,
+  MAX_NO_PROGRESS_ATTEMPTS,
+  type BacklogState,
+} from '../archive/backlog'
 import { newestFinishedDay } from '../archive/candidate-days'
 import { canonicalHourStart } from '../archive/clock'
 import { formatErr } from './format-error'
@@ -38,6 +48,8 @@ export interface BacklogRunSummary {
   progressed: boolean
   /** Hours recorded for that day after the run, out of 24. */
   hoursRecorded: number
+  /** True when this run gave up on the day and the walk moved past it (#1021). */
+  setAside: boolean
   detail: string
 }
 
@@ -60,8 +72,26 @@ export interface BacklogDeps {
     day: string,
     alreadyRecorded: ReadonlySet<string>,
   ) => Promise<{ hoursArchived: number; failed: boolean; detail: string }>
-  /** Raised only for a condition a person has to act on. */
-  alert: (message: string) => Promise<void>
+  /**
+   * The remembered attempt state, and where it goes (#1021).
+   *
+   * A read that answers EMPTY on failure would erase the whole memory the first
+   * time it failed, and at the moment the memory matters: every day would look
+   * unattempted, so nothing would ever be set aside and the walk would go back to
+   * retrying one dead day for ever (L105). So the read throws and the write does
+   * not happen.
+   */
+  readState: () => Promise<BacklogState>
+  writeState: (state: BacklogState) => Promise<void>
+  /**
+   * Raised when the walk gives up on a day and moves on.
+   *
+   * The ONLY alert this job raises. A single barren run is routine (a killed
+   * invocation, a slow read) and the next hourly run just retries it, so paging on
+   * one is the cry-wolf case (L36). Giving up is different: the day will be purged
+   * with no backup unless a person does something, and nothing else will say so.
+   */
+  alertSetAside: (message: string) => Promise<void>
 }
 
 export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSummary> {
@@ -70,32 +100,48 @@ export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSu
     // No watermark means the archive has never run. There is no backlog to speak
     // of yet, and guessing a frontier would let this repair days the hourly run
     // is about to do properly.
-    return { day: null, progressed: false, hoursRecorded: 0, detail: 'the archive has no watermark yet' }
+    return { day: null, progressed: false, hoursRecorded: 0, setAside: false, detail: 'the archive has no watermark yet' }
   }
 
   const finished = newestFinishedDay(watermark, deps.now())
   if (finished === null) {
-    return { day: null, progressed: false, hoursRecorded: 0, detail: 'no day has been finished yet' }
+    return { day: null, progressed: false, hoursRecorded: 0, setAside: false, detail: 'no day has been finished yet' }
   }
 
-  const [held, recordedBefore] = await Promise.all([deps.daysHeldInPostgres(), deps.recordedHoursByDay()])
+  const [held, recordedBefore, storedState] = await Promise.all([
+    deps.daysHeldInPostgres(),
+    deps.recordedHoursByDay(),
+    deps.readState(),
+  ])
 
   const countsBefore: Record<string, number> = {}
   for (const [day, hours] of Object.entries(recordedBefore)) countsBefore[day] = hours.length
+
+  // Days Postgres has dropped can never be worked again and their counters can
+  // never be cleared by progress, so their memory is forgotten here rather than
+  // accumulating and reporting a long-dead day as set aside.
+  const state = pruneBacklogState(storedState, new Set(held))
+  const nowMs = deps.now().getTime()
 
   const day = nextBacklogDay({
     daysHeldInPostgres: held,
     recordedHoursByDay: countsBefore,
     newestFinishedDay: finished,
+    setAsideDays: new Set(daysSetAside(state, nowMs)),
   })
 
   if (day === null) {
+    // The prune is still persisted: a run with nothing to do is exactly when the
+    // memory of dropped days should be tidied, and leaving it would let the state
+    // grow for as long as the archive stays caught up.
+    await deps.writeState(state)
     // Silence is the healthy state. Nothing is alerted here, because a job that
     // speaks when it found nothing wrong is a job people stop reading.
     return {
       day: null,
       progressed: false,
       hoursRecorded: 0,
+      setAside: false,
       detail: `every readable day up to ${finished} is fully archived`,
     }
   }
@@ -108,14 +154,25 @@ export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSu
   const after = ((await deps.recordedHoursByDay())[day] ?? []).length
   const progressed = after > before
 
-  if (!progressed) {
-    // Judged on hours GAINED, never on the run not failing. The observed failure
-    // mode answered success on every call while making no progress at all, so a
-    // check on `failed` would have stayed quiet through the whole thing (#1019).
-    await deps.alert(
-      `the archive backlog made no progress on ${day}: it holds ${after} of ${HOURS_PER_DAY} hours and this run ` +
-        `recorded none. Every later day is waiting behind it, and its Postgres partition will be purged whether or ` +
-        `not it is archived. The run said: ${result.detail}`,
+  // Judged on hours GAINED, never on the run not failing. The observed failure mode
+  // answered success on every call while making no progress at all, so a check on
+  // `failed` would have stayed quiet through the whole thing (#1019).
+  const { state: nextState, outcome } = recordAttempt(state, day, progressed, nowMs)
+  await deps.writeState(nextState)
+
+  if (outcome.kind === 'set-aside') {
+    await deps.alertSetAside(
+      `the archive backlog is setting ${day} aside after ${outcome.attempts} runs that recorded nothing. It holds ` +
+        `${after} of ${HOURS_PER_DAY} hours, so the rest of that day has no backup, and its Postgres partition will ` +
+        `be purged on schedule whether or not it is archived. The walk is moving on to the days behind it and will ` +
+        `try this one again later. The last run said: ${result.detail}`,
+    )
+  } else if (outcome.kind === 'no-progress') {
+    // Deliberately not an alert. Stated in the log so a person reading the run
+    // history can see the count building towards the one that does speak.
+    console.log(
+      `[archive-backlog] ${day} recorded nothing (${outcome.attempts} of ${MAX_NO_PROGRESS_ATTEMPTS} before it is ` +
+        `set aside); it holds ${after} of ${HOURS_PER_DAY} hours. The run said: ${result.detail}`,
     )
   }
 
@@ -123,11 +180,15 @@ export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSu
     day,
     progressed,
     hoursRecorded: after,
+    setAside: outcome.kind === 'set-aside',
     detail: `${day}: ${before} to ${after} of ${HOURS_PER_DAY} hours`,
   }
 }
 
 export const ARCHIVE_BACKLOG_JOB = 'execution-archive-backlog'
+
+/** Where the walk's memory of attempts lives between invocations (#1021). */
+export const BACKLOG_STATE_KEY = 'execution-archive:backlog-state'
 
 /**
  * How far back to look for readable days.
@@ -213,7 +274,35 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
 
     reArchiveDay: reArchive,
 
-    alert: async (message: string) => {
+    // One KV key holding the whole state, rather than a key per day: the state is
+    // at most a fortnight of days, there is one writer per hour, and a single get
+    // avoids a KV list, which is eventually consistent and would let a set-aside
+    // day reappear as eligible.
+    readState: async () => {
+      const raw = await env.IDEMPOTENCY.get(BACKLOG_STATE_KEY)
+      if (raw === null) return emptyBacklogState()
+      // JSON that will not parse at all THROWS, so the run does not write and the
+      // bad value is still there to be looked at. Reading it as "no attempts yet"
+      // would restart every count silently, and the walk could never set anything
+      // aside (L215).
+      const parsed: unknown = JSON.parse(raw)
+      // Individual entries are a different matter: a single unusable value is
+      // dropped rather than throwing, because one bad day must not stop the walk
+      // reasoning about the other thirteen. Said out loud, not fixed silently.
+      const { state, discarded } = parseBacklogState(parsed)
+      if (discarded.length > 0) {
+        console.warn(
+          `[archive-backlog] discarded unusable entries from ${BACKLOG_STATE_KEY}: ${discarded.join(', ')}. ` +
+            `Those days start their attempt count again.`,
+        )
+      }
+      return state
+    },
+    writeState: async (state: BacklogState) => {
+      await env.IDEMPOTENCY.put(BACKLOG_STATE_KEY, JSON.stringify(state))
+    },
+
+    alertSetAside: async (message: string) => {
       await notifyExportFailure(supabase, ARCHIVE_BACKLOG_JOB, [message], env.IDEMPOTENCY)
     },
   }

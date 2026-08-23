@@ -8,7 +8,17 @@
  * destroyed. Asking the data removes a whole class of that mistake (#1017).
  */
 import { describe, it, expect } from 'vitest'
-import { nextBacklogDay } from '../backlog'
+import {
+  nextBacklogDay,
+  MAX_NO_PROGRESS_ATTEMPTS,
+  SET_ASIDE_MS,
+  daysSetAside,
+  recordAttempt,
+  pruneBacklogState,
+  emptyBacklogState,
+  parseBacklogState,
+  type BacklogState,
+} from '../backlog'
 
 const FULL = 24
 
@@ -18,6 +28,7 @@ describe('nextBacklogDay', () => {
       daysHeldInPostgres: ['2026-08-16', '2026-08-17', '2026-08-18'],
       recordedHoursByDay: { '2026-08-16': 2, '2026-08-17': 0, '2026-08-18': FULL },
       newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
     })
 
     expect(day).toBe('2026-08-16')
@@ -28,6 +39,7 @@ describe('nextBacklogDay', () => {
       daysHeldInPostgres: ['2026-08-16', '2026-08-17'],
       recordedHoursByDay: { '2026-08-16': FULL, '2026-08-17': FULL },
       newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
     })
 
     expect(day).toBeNull()
@@ -41,6 +53,7 @@ describe('nextBacklogDay', () => {
       daysHeldInPostgres: ['2026-08-18'],
       recordedHoursByDay: { '2026-08-15': 0, '2026-08-18': 3 },
       newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
     })
 
     expect(day).toBe('2026-08-18')
@@ -54,6 +67,7 @@ describe('nextBacklogDay', () => {
       daysHeldInPostgres: ['2026-08-22', '2026-08-23'],
       recordedHoursByDay: { '2026-08-22': FULL, '2026-08-23': 6 },
       newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
     })
 
     expect(day).toBeNull()
@@ -66,8 +80,205 @@ describe('nextBacklogDay', () => {
       daysHeldInPostgres: ['2026-08-19', '2026-08-20'],
       recordedHoursByDay: { '2026-08-20': 12 },
       newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
     })
 
     expect(day).toBe('2026-08-19')
+  })
+})
+
+/**
+ * Setting aside a day that cannot be finished (#1021).
+ *
+ * The selector takes the OLDEST incomplete day, which is right, and that is
+ * exactly why one unfinishable day blocks every day behind it forever. The walk
+ * would select it on every run, gain nothing, and never reach the days waiting
+ * behind, whose partitions get purged on schedule regardless. Every run still
+ * looks busy, which is the #1019 shape in a new place.
+ *
+ * The memory of attempts is kept OUT of the selector so both halves stay
+ * testable: the selector is told which days are set aside, and a separate
+ * transition decides when a day becomes one.
+ */
+const NOW = Date.parse('2026-08-23T22:00:00.000Z')
+
+describe('nextBacklogDay with days set aside (#1021)', () => {
+  it('skips a set-aside day and takes the next oldest, so the days behind it are not blocked', () => {
+    const day = nextBacklogDay({
+      daysHeldInPostgres: ['2026-08-16', '2026-08-17', '2026-08-18'],
+      recordedHoursByDay: { '2026-08-16': 4, '2026-08-17': 0, '2026-08-18': 0 },
+      newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(['2026-08-16']),
+    })
+
+    expect(day).toBe('2026-08-17')
+  })
+
+  it('takes the set-aside day again once nothing else is outstanding', () => {
+    // Setting aside is not abandoning. With no other work to do, retrying the
+    // hard day is strictly better than idling: its partition is still going to be
+    // purged either way.
+    const day = nextBacklogDay({
+      daysHeldInPostgres: ['2026-08-16', '2026-08-17'],
+      recordedHoursByDay: { '2026-08-16': 4, '2026-08-17': 24 },
+      newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(['2026-08-16']),
+    })
+
+    expect(day).toBe('2026-08-16')
+  })
+
+  it('behaves as before when no day is set aside', () => {
+    const day = nextBacklogDay({
+      daysHeldInPostgres: ['2026-08-16', '2026-08-17'],
+      recordedHoursByDay: { '2026-08-16': 4 },
+      newestFinishedDay: '2026-08-22',
+      setAsideDays: new Set(),
+    })
+
+    expect(day).toBe('2026-08-16')
+  })
+})
+
+describe('daysSetAside', () => {
+  it('reports a day whose window has not expired', () => {
+    const state: BacklogState = { noProgress: {}, setAsideUntil: { '2026-08-16': NOW + 1000 } }
+    expect(daysSetAside(state, NOW)).toEqual(['2026-08-16'])
+  })
+
+  it('stops reporting a day once its window has passed, so it is retried', () => {
+    // The cause may have been transient (a slow read, a Snowflake blip). A day set
+    // aside forever on one bad hour would be indistinguishable from one abandoned.
+    const state: BacklogState = { noProgress: {}, setAsideUntil: { '2026-08-16': NOW - 1 } }
+    expect(daysSetAside(state, NOW)).toEqual([])
+  })
+})
+
+describe('recordAttempt', () => {
+  it('clears the count on a run that gained an hour', () => {
+    const state: BacklogState = { noProgress: { '2026-08-16': 2 }, setAsideUntil: {} }
+    const r = recordAttempt(state, '2026-08-16', true, NOW)
+
+    expect(r.outcome).toEqual({ kind: 'progressed' })
+    expect(r.state.noProgress['2026-08-16']).toBeUndefined()
+  })
+
+  it('counts a run that gained nothing without setting the day aside yet', () => {
+    const r = recordAttempt(emptyBacklogState(), '2026-08-16', false, NOW)
+
+    expect(r.outcome).toEqual({ kind: 'no-progress', attempts: 1 })
+    expect(r.state.setAsideUntil['2026-08-16']).toBeUndefined()
+  })
+
+  it('sets the day aside on the attempt that reaches the limit', () => {
+    const state: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    const r = recordAttempt(state, '2026-08-16', false, NOW)
+
+    expect(r.outcome).toEqual({
+      kind: 'set-aside',
+      attempts: MAX_NO_PROGRESS_ATTEMPTS,
+      eligibleAgainAtMs: NOW + SET_ASIDE_MS,
+    })
+    expect(r.state.setAsideUntil['2026-08-16']).toBe(NOW + SET_ASIDE_MS)
+  })
+
+  it('starts the count over after a set-aside, so the next window needs its own failures', () => {
+    // Otherwise one historic bad patch would set the day aside again on its first
+    // retry forever, which is abandoning it under another name.
+    const state: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    const afterSetAside = recordAttempt(state, '2026-08-16', false, NOW).state
+    const retry = recordAttempt(afterSetAside, '2026-08-16', false, NOW + SET_ASIDE_MS + 1)
+
+    expect(retry.outcome).toEqual({ kind: 'no-progress', attempts: 1 })
+  })
+
+  it('progress on a set-aside day releases it immediately', () => {
+    const state: BacklogState = { noProgress: {}, setAsideUntil: { '2026-08-16': NOW + SET_ASIDE_MS } }
+    const r = recordAttempt(state, '2026-08-16', true, NOW)
+
+    expect(r.state.setAsideUntil['2026-08-16']).toBeUndefined()
+  })
+
+  it('keeps other days untouched', () => {
+    const state: BacklogState = { noProgress: { '2026-08-17': 1 }, setAsideUntil: { '2026-08-18': NOW + 1 } }
+    const r = recordAttempt(state, '2026-08-16', false, NOW)
+
+    expect(r.state.noProgress['2026-08-17']).toBe(1)
+    expect(r.state.setAsideUntil['2026-08-18']).toBe(NOW + 1)
+  })
+})
+
+describe('pruneBacklogState', () => {
+  it('drops state for a day Postgres no longer holds, because it can never be worked again', () => {
+    const state: BacklogState = {
+      noProgress: { '2026-08-10': 3, '2026-08-17': 1 },
+      setAsideUntil: { '2026-08-10': NOW + 1, '2026-08-17': NOW + 1 },
+    }
+    const pruned = pruneBacklogState(state, new Set(['2026-08-17']))
+
+    expect(pruned.noProgress).toEqual({ '2026-08-17': 1 })
+    expect(pruned.setAsideUntil).toEqual({ '2026-08-17': NOW + 1 })
+  })
+
+  it('keeps everything when every day is still held', () => {
+    const state: BacklogState = { noProgress: { '2026-08-17': 1 }, setAsideUntil: {} }
+    expect(pruneBacklogState(state, new Set(['2026-08-17', '2026-08-18']))).toEqual(state)
+  })
+})
+
+describe('parseBacklogState', () => {
+  it('keeps usable numeric entries', () => {
+    const r = parseBacklogState({ noProgress: { '2026-08-16': 2 }, setAsideUntil: { '2026-08-17': NOW } })
+
+    expect(r.state).toEqual({ noProgress: { '2026-08-16': 2 }, setAsideUntil: { '2026-08-17': NOW } })
+    expect(r.discarded).toEqual([])
+  })
+
+  it('drops a set-aside window that is not a number, rather than letting it compare false', () => {
+    // A string or a null flows straight into `until > nowMs`, which is FALSE for
+    // anything non-numeric, so the day would quietly stop being set aside and the
+    // walk would retry it forever: the exact defect this feature removes (L50).
+    const r = parseBacklogState({ setAsideUntil: { '2026-08-16': 'soon', '2026-08-17': NOW } })
+
+    expect(r.state.setAsideUntil).toEqual({ '2026-08-17': NOW })
+    expect(r.discarded).toContain('setAsideUntil.2026-08-16')
+  })
+
+  it('drops a NaN, which no comparison can be trusted with', () => {
+    const r = parseBacklogState({ setAsideUntil: { '2026-08-16': Number.NaN } })
+
+    expect(r.state.setAsideUntil).toEqual({})
+    expect(r.discarded).toContain('setAsideUntil.2026-08-16')
+  })
+
+  it('drops a non-numeric attempt count', () => {
+    const r = parseBacklogState({ noProgress: { '2026-08-16': null } })
+
+    expect(r.state.noProgress).toEqual({})
+    expect(r.discarded).toContain('noProgress.2026-08-16')
+  })
+
+  it('reports the whole value when it is not an object at all', () => {
+    const r = parseBacklogState('not a state')
+
+    expect(r.state).toEqual(emptyBacklogState())
+    expect(r.discarded).toHaveLength(1)
+  })
+
+  it('tolerates a state missing either half', () => {
+    // An older stored value, or one written before a field existed. Absent is not
+    // the same as unusable and must not be reported as discarded.
+    const r = parseBacklogState({ noProgress: { '2026-08-16': 1 } })
+
+    expect(r.state).toEqual({ noProgress: { '2026-08-16': 1 }, setAsideUntil: {} })
+    expect(r.discarded).toEqual([])
+  })
+
+  it('a dropped window means the day is not treated as set aside', () => {
+    // The end-to-end consequence, asserted through the consumer rather than
+    // stopping at the parser: this is the pair of values that actually decides it.
+    const { state } = parseBacklogState({ setAsideUntil: { '2026-08-16': 'soon' } })
+
+    expect(daysSetAside(state, NOW)).toEqual([])
   })
 })

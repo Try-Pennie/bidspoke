@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { runArchiveBacklog } from '../archive-backlog-run'
+import { MAX_NO_PROGRESS_ATTEMPTS, SET_ASIDE_MS, emptyBacklogState, type BacklogState } from '../../archive/backlog'
 
 const NOW = new Date('2026-08-23T18:00:00.000Z')
 
@@ -26,6 +27,8 @@ interface Harness {
   watermark?: string
   /** Hours the re-archive run records, per call, keyed by the day it was given. */
   archives?: Record<string, number>
+  /** The remembered attempt state the run starts from (#1021). */
+  state?: BacklogState
 }
 
 /**
@@ -45,10 +48,22 @@ function deps(h: Harness = {}) {
   const recorded: Record<string, string[]> = {}
   for (const [day, n] of Object.entries(counts)) recorded[day] = scatteredHours(day, n)
   const runs: Array<{ day: string; hours: number; alreadyRecorded: number }> = []
+  // Held by the harness rather than by the injected deps, so a test can assert on
+  // what was PERSISTED instead of on what the run happened to return.
+  let state: BacklogState = h.state ?? emptyBacklogState()
+  const wrote = { any: false }
 
-  return {
+  const harness = {
     runs,
+    get state() { return state },
+    get written() { return wrote.any },
     injected: {
+      readState: async () => state,
+      writeState: async (next: BacklogState) => {
+        wrote.any = true
+        state = next
+      },
+      alertSetAside: vi.fn(async (_message: string) => undefined),
       now: () => NOW,
       readWatermark: async () => h.watermark ?? '2026-08-22T23:00:00.000Z',
       daysHeldInPostgres: async () => held,
@@ -66,9 +81,9 @@ function deps(h: Harness = {}) {
         runs.push({ day, hours: gained, alreadyRecorded: alreadyRecorded.size })
         return { hoursArchived: gained, failed: false, detail: 'ok' }
       }),
-      alert: vi.fn(async (_message: string) => undefined),
     },
   }
+  return harness
 }
 
 describe('runArchiveBacklog', () => {
@@ -79,7 +94,7 @@ describe('runArchiveBacklog', () => {
 
     expect(r.day).toBeNull()
     expect(d.injected.reArchiveDay).not.toHaveBeenCalled()
-    expect(d.injected.alert).not.toHaveBeenCalled()
+    expect(d.injected.alertSetAside).not.toHaveBeenCalled()
   })
 
   it('works on the oldest day that is short, because that is the one nearest being purged', async () => {
@@ -101,16 +116,22 @@ describe('runArchiveBacklog', () => {
     expect(d.runs[0].alreadyRecorded).toBe(4)
   })
 
-  it('reports a day that recorded no new hour, because that cannot fix itself', async () => {
-    // The observed failure mode returned SUCCESS while making no progress, so
-    // progress is judged by hours gained rather than by the run not failing.
+  it('records a day that gained no hour, and stays quiet about one barren run', async () => {
+    // Progress is judged by hours GAINED, not by the run reporting failure: the
+    // observed failure mode returned success while making no progress (#1019).
+    //
+    // One barren run is routine, though: the invocation gets killed, a read times
+    // out, Snowflake blips, and the next hourly run simply retries. Alerting on it
+    // is the cry-wolf case (L36), so the alarm moved to the point where the walk
+    // actually gives up on the day (#1021). Nothing is at risk in the meantime,
+    // because the purge that threatens the day is nightly.
     const d = deps({ recorded: { '2026-08-16': 4 }, archives: { '2026-08-16': 0 } })
 
     const r = await runArchiveBacklog(d.injected)
 
     expect(r.progressed).toBe(false)
-    expect(d.injected.alert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(d.injected.alert).mock.calls[0][0]).toMatch(/2026-08-16/)
+    expect(d.injected.alertSetAside).not.toHaveBeenCalled()
+    expect(d.state.noProgress['2026-08-16']).toBe(1)
   })
 
   it('leaves a day the live archiver has not finished alone', async () => {
@@ -134,6 +155,87 @@ describe('runArchiveBacklog', () => {
 
     await runArchiveBacklog(d.injected)
 
-    expect(d.injected.alert).not.toHaveBeenCalled()
+    expect(d.injected.alertSetAside).not.toHaveBeenCalled()
+  })
+
+  it('sets the day aside on the third barren run and says so, naming the shortfall', async () => {
+    const d = deps({
+      recorded: { '2026-08-16': 4 },
+      archives: { '2026-08-16': 0 },
+      state: { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} },
+    })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.injected.alertSetAside).toHaveBeenCalledTimes(1)
+    const message = vi.mocked(d.injected.alertSetAside).mock.calls[0][0]
+    expect(message).toMatch(/2026-08-16/)
+    // The shortfall, not just the day: 4 of 24 held is what tells whoever reads
+    // this how much data is about to be purged with no backup.
+    expect(message).toMatch(/4 of 24/)
+    expect(d.state.setAsideUntil['2026-08-16']).toBe(NOW.getTime() + SET_ASIDE_MS)
+  })
+
+  it('works on the next day once the hard one is set aside, instead of retrying it forever', async () => {
+    // This is the whole point: one unfinishable day must not block every day
+    // behind it, because those days get purged on their own schedule regardless.
+    const d = deps({
+      recorded: { '2026-08-16': 4, '2026-08-17': 0 },
+      state: { noProgress: {}, setAsideUntil: { '2026-08-16': NOW.getTime() + SET_ASIDE_MS } },
+    })
+
+    const r = await runArchiveBacklog(d.injected)
+
+    expect(r.day).toBe('2026-08-17')
+  })
+
+  it('retries a set-aside day once its window has passed', async () => {
+    // Setting aside is not abandoning. The cause may have been transient.
+    const d = deps({
+      recorded: { '2026-08-16': 4, '2026-08-17': 24 },
+      state: { noProgress: {}, setAsideUntil: { '2026-08-16': NOW.getTime() - 1 } },
+    })
+
+    const r = await runArchiveBacklog(d.injected)
+
+    expect(r.day).toBe('2026-08-16')
+  })
+
+  it('clears the barren count when a day gains an hour', async () => {
+    const d = deps({
+      recorded: { '2026-08-16': 4 },
+      state: { noProgress: { '2026-08-16': 2 }, setAsideUntil: {} },
+    })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.state.noProgress['2026-08-16']).toBeUndefined()
+  })
+
+  it('forgets a day Postgres no longer holds', async () => {
+    const d = deps({
+      held: ['2026-08-17'],
+      recorded: { '2026-08-17': 24 },
+      state: { noProgress: { '2026-08-10': 2 }, setAsideUntil: { '2026-08-10': NOW.getTime() + SET_ASIDE_MS } },
+    })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.state.noProgress['2026-08-10']).toBeUndefined()
+    expect(d.state.setAsideUntil['2026-08-10']).toBeUndefined()
+  })
+
+  it('throws rather than writing an empty state when the state read fails', async () => {
+    // A read-modify-write whose read answers empty on failure erases the whole
+    // memory the first time the read fails, and it does so at the moment the
+    // memory is worth having (L105): every day would look like it had never been
+    // attempted, so nothing would ever be set aside.
+    const d = deps({ recorded: { '2026-08-16': 4 } })
+    d.injected.readState = async () => {
+      throw new Error('KV unavailable')
+    }
+
+    await expect(runArchiveBacklog(d.injected)).rejects.toThrow(/KV unavailable/)
+    expect(d.written).toBe(false)
   })
 })
