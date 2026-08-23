@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 interface FakeBundle { executionId: string; execution: Record<string, unknown>; steps: Record<string, unknown>[] }
 
-import { runArchive, type RunDeps, type RunStop } from '../run-loop'
+import { runArchive, reArchiveHours, type RunDeps, type RunStop } from '../run-loop'
 import { SETTLE_WINDOW_MS } from '../clock'
 
 const HOUR = 60 * 60 * 1000
@@ -387,5 +387,56 @@ describe('runArchive reports how far behind it still is', () => {
 
     expect(result.failed).toBe(true)
     expect(result.hoursBehind).toBeGreaterThan(20)
+  })
+})
+
+describe('a repair that is bigger than one run (#1019)', () => {
+  const DAY = Array.from({ length: 24 }, (_, i) =>
+    new Date(Date.parse('2026-08-16T00:00:00.000Z') + i * HOUR).toISOString(),
+  )
+
+  it('spends its budget on hours that are NOT yet recorded, so successive runs advance', async () => {
+    // Measured on prod 2026-08-23: a day whose hours cost more than one run's
+    // budget stayed at 2 of 24 hours through 40 minutes of calls, because every
+    // call restarted at hour 00 and redid the two it could afford. A repair that
+    // cannot advance is not a repair, and it returned 200 every time.
+    const d = deps({ budget: { maxHours: 2, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 } })
+
+    const first = await reArchiveHours(d, DAY, { alreadyRecorded: new Set() })
+    const done = new Set(d.hoursRecorded.map((h) => h.hourStart))
+    const second = await reArchiveHours(d, DAY, { alreadyRecorded: done })
+
+    // The second run must work on hours the first did not reach.
+    const secondHours = d.hoursRecorded.slice(first.hoursArchived + first.hoursEmpty).map((h) => h.hourStart)
+    expect(secondHours).not.toEqual([])
+    for (const h of secondHours) expect(done.has(h)).toBe(false)
+    expect(second.hoursArchived + second.hoursEmpty).toBeGreaterThan(0)
+  })
+
+  it('reports hours it skipped as already done separately from hours a budget stopped', async () => {
+    // Two different facts. "Already archived" needs no action; "ran out of
+    // budget" means call again. Collapsing them into one number leaves a caller
+    // unable to tell a finished day from a starved one (L11).
+    const d = deps({ budget: { maxHours: 2, deadlineAt: NOW.getTime() + 10 * 60 * 1000, subrequestsLeft: () => 1000 } })
+
+    const r = await reArchiveHours(d, DAY, { alreadyRecorded: new Set([DAY[0], DAY[1]]) })
+
+    expect(r.alreadyDone).toEqual([DAY[0], DAY[1]])
+    expect(r.alreadyDone).not.toContain(DAY[2])
+    // Being already done must not consume the budget meant for real work.
+    expect(r.hoursArchived + r.hoursEmpty).toBe(2)
+    expect(r.skipped.length).toBeGreaterThan(0)
+  })
+
+  it('still redoes a named hour when no recorded set is supplied, so a deliberate repair works', async () => {
+    // The single-hour form exists to redo an hour that was archived WRONGLY.
+    // Skipping it because a row already exists would remove the only way to fix
+    // a bad archive.
+    const d = deps()
+
+    const r = await reArchiveHours(d, [DAY[0]])
+
+    expect(r.hoursArchived + r.hoursEmpty).toBe(1)
+    expect(r.alreadyDone).toEqual([])
   })
 })

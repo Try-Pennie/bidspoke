@@ -366,11 +366,49 @@ export interface ReArchiveResult {
   failures: Array<{ hourStart: string; reason: string }>
   /** Hours not attempted because a budget ran out, so a partial run says what it skipped (L98). */
   skipped: string[]
+  /**
+   * Hours passed over because they were ALREADY recorded.
+   *
+   * Its own field, never folded into `skipped`. The two mean opposite things to a
+   * caller: an hour already done needs nothing, and an hour a budget stopped needs
+   * another call. One number covering both leaves a finished day and a starved one
+   * looking identical (L11).
+   */
+  alreadyDone: string[]
 }
 
 export type ReArchiveDeps = HourDeps & Pick<RunDeps, 'recordHour' | 'now'> & { budget: RunBudget }
 
-export async function reArchiveHours(deps: ReArchiveDeps, hourStarts: string[]): Promise<ReArchiveResult> {
+export interface ReArchiveOptions {
+  /**
+   * Hours the archive has already recorded, which this run must not spend budget
+   * on.
+   *
+   * WITHOUT this the repair cannot advance on any day bigger than one run's
+   * budget. Measured on prod 2026-08-23: a day whose hours each cost minutes sat
+   * at 2 of 24 through 40 minutes of calls, because every call restarted at hour
+   * 00 and redid the two it could afford, then answered 200. A repair that cannot
+   * progress is not a repair, and nothing in the response said so (#1019).
+   *
+   * OMITTED means redo everything asked for. That is deliberate, not a default
+   * standing in for absent: the single hour form exists to re-archive an hour that
+   * was archived WRONGLY, and skipping it because a row already exists would
+   * remove the only way to correct a bad archive.
+   */
+  alreadyRecorded?: ReadonlySet<string>
+}
+
+export async function reArchiveHours(
+  deps: ReArchiveDeps,
+  hourStarts: string[],
+  opts: ReArchiveOptions = {},
+): Promise<ReArchiveResult> {
+  const recorded = opts.alreadyRecorded
+  // Partitioned BEFORE the loop, so passing over a done hour costs no budget and
+  // `skipped` describes only the work this run could not reach.
+  const alreadyDone = recorded === undefined ? [] : hourStarts.filter((h) => recorded.has(h))
+  const work = recorded === undefined ? hourStarts : hourStarts.filter((h) => !recorded.has(h))
+
   const result: ReArchiveResult = {
     hoursRequested: hourStarts.length,
     hoursArchived: 0,
@@ -379,10 +417,11 @@ export async function reArchiveHours(deps: ReArchiveDeps, hourStarts: string[]):
     executionsRefused: 0,
     failures: [],
     skipped: [],
+    alreadyDone,
   }
 
-  for (let i = 0; i < hourStarts.length; i++) {
-    const hourStart = hourStarts[i]
+  for (let i = 0; i < work.length; i++) {
+    const hourStart = work[i]
 
     // Checked before each hour, and what is left is REPORTED. A repair that
     // silently did four of six hours reads as a repair that worked, and the two
@@ -396,7 +435,7 @@ export async function reArchiveHours(deps: ReArchiveDeps, hourStarts: string[]):
             ? 'the subrequest budget'
             : null
     if (stopped !== null) {
-      result.skipped = hourStarts.slice(i)
+      result.skipped = work.slice(i)
       break
     }
 

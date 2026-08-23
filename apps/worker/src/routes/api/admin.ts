@@ -377,15 +377,53 @@ admin.post('/run-export-now', async (c) => {
  * a successful repair is evidence about the archiver. Duplicates are harmless:
  * the gate counts DISTINCT execution ids and every write here is a keyed upsert.
  */
+/**
+ * Which of these hours the archive already holds.
+ *
+ * `hour_start` comes back in Postgres' own rendering, so every value is
+ * normalised to the same ISO form the caller asked with. Comparing them raw finds
+ * no match, which does not fail: it silently redoes work that was already done,
+ * which is the exact defect this lookup exists to prevent (#1019).
+ *
+ * A failed read THROWS rather than answering an empty set, because an empty set
+ * means "skip nothing", so a broken lookup would reinstate the treadmill with no
+ * symptom (L215).
+ */
+async function recordedHoursAmong(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  hours: string[],
+): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from('execution_archive_hours')
+    .select('hour_start')
+    .in('hour_start', hours)
+  if (error) throw new Error(`reading which hours are already archived failed: ${formatErr(error)}`)
+  const found = new Set<string>()
+  for (const row of (data ?? []) as Array<{ hour_start?: unknown }>) {
+    const raw = row.hour_start
+    if (typeof raw !== 'string') continue
+    const ms = Date.parse(raw)
+    if (Number.isFinite(ms)) found.add(new Date(ms).toISOString())
+  }
+  return found
+}
+
 admin.post('/re-archive', async (c) => {
   const body = await c.req.json<{ hour?: unknown; day?: unknown }>().catch(() => ({}))
   const request = parseReArchiveRequest(body, new Date())
   if (!request.ok) return c.json({ error: request.reason }, 400)
 
   const supabase = createSupabaseClient(c.env)
+
+  // A day is a repair of what is missing, so what is already there is left alone.
+  // A named hour is a deliberate redo, so nothing is skipped.
+  const alreadyRecorded =
+    request.form === 'day' ? await recordedHoursAmong(supabase, request.hours) : undefined
+
   const summary = await runExecutionArchive(c.env, supabase, {
     sendBatch: (rows) => sendArchiveBatch(c.env, rows),
     hours: request.hours,
+    alreadyRecorded,
   })
 
   // A run that could not take the lock did NO work, and answering 200 with a
@@ -396,9 +434,23 @@ admin.post('/re-archive', async (c) => {
     return c.json({ error: `the archive is already running: ${summary.detail}`, hours: request.hours }, 409)
   }
 
+  // COMPLETION IS READ BACK, not inferred from what the run says it did. One
+  // invocation archives only what fits its budget, so a clean finish is not a
+  // finished day, and a caller that reads only the status code must not be able
+  // to mistake the one for the other (#1018). 202 says accepted and incomplete.
+  const recorded = await recordedHoursAmong(supabase, request.hours)
+  const complete = recorded.size >= request.hours.length
+
   return c.json(
-    { hours: request.hours, summary },
-    summary.failed ? 500 : 200,
+    {
+      hours: request.hours,
+      hoursRequested: request.hours.length,
+      hoursRecorded: recorded.size,
+      hoursRemaining: request.hours.length - recorded.size,
+      complete,
+      summary,
+    },
+    summary.failed ? 500 : complete ? 200 : 202,
   )
 })
 

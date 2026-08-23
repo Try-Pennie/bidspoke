@@ -133,6 +133,16 @@ export interface ArchiveDeps {
    * not progress.
    */
   hours?: string[]
+
+  /**
+   * Hours the archive already holds, which a repair must not spend budget on.
+   *
+   * Only meaningful alongside `hours`. Left undefined means redo everything asked
+   * for, which is what a deliberate single hour repair wants. Supplied, it is what
+   * lets a day bigger than one run's budget make progress across calls instead of
+   * redoing its first hours forever (#1019).
+   */
+  alreadyRecorded?: ReadonlySet<string>
 }
 
 /**
@@ -494,7 +504,7 @@ export async function runExecutionArchive(
     const result: RunResult =
       deps.hours === undefined
         ? await runArchive(pipeline)
-        : summariseReArchive(await reArchiveHours(pipeline, deps.hours))
+        : summariseReArchive(await reArchiveHours(pipeline, deps.hours, { alreadyRecorded: deps.alreadyRecorded }))
 
     // Anything the per-slice flushes did not take: a refusal the run loop
     // recorded after its last slice, or a partial batch. Awaited on the success
