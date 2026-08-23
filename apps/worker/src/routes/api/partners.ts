@@ -12,6 +12,7 @@ import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loa
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
+import { partnerCredentialMissing } from '../../lib/partner-credential'
 
 type Variables = AuthVariables
 
@@ -45,6 +46,35 @@ interface PartnerBody {
   click_url?: string | null
   sub_account_min_bids?: Record<string, number> | null
   partner_type?: PartnerType
+}
+
+// #416. A partner may name a worker secret in cf_secret_key; the name is config,
+// the value is a binding that may never have been provisioned. #411 made that
+// fail loudly on a live lead. This is the preventive half: the same condition,
+// reported on the settings surface.
+//
+// Attached on READ as well as on write, because a missing credential PERSISTS in
+// the config (LESSONS L126): a notice living only in the save response would be
+// gone by the next visit while the fault stayed.
+//
+// The presence question is answered by partnerCredentialMissing, which is the
+// same predicate the bid path uses to decide whether to make the call, so the
+// warning cannot contradict the runtime behaviour (LESSONS L144). The value never
+// enters the message; only the key name, which the person already typed.
+function credentialWarning(env: Env, row: unknown): string | null {
+  const partner = row as { cf_secret_key?: string | null; is_active?: boolean | null } | null
+  const key = partner?.cf_secret_key ?? null
+  if (!partnerCredentialMissing(env, key)) return null
+  // Distinct causes, distinct messages (LESSONS L11). An inactive partner is not
+  // losing leads today, and saying it is would teach the reader to discount the
+  // warning on the partner that IS live.
+  return partner?.is_active
+    ? `Credential '${key}' is not set, so this partner will fail on the next live lead.`
+    : `Credential '${key}' is not set. Set it before activating this partner.`
+}
+
+function withCredentialWarning<T>(env: Env, row: T): T & { credential_warning: string | null } {
+  return { ...(row as object), credential_warning: credentialWarning(env, row) } as T & { credential_warning: string | null }
 }
 
 // #306. One refusal shared by POST and PUT, so the create and update paths cannot
@@ -89,7 +119,7 @@ partners.get('/', async (c) => {
     .order('priority', { ascending: true })
 
   if (error) return dbError(c, error)
-  return c.json(data)
+  return c.json((data ?? []).map((row) => withCredentialWarning(c.env, row)))
 })
 
 // ── Get ───────────────────────────────────────────────────────────────────────
@@ -109,7 +139,7 @@ partners.get('/:id', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, error)
   if (blocked) return blocked
   if (!data) return c.json({ error: 'Partner not found' }, 404)
-  return c.json(data)
+  return c.json(withCredentialWarning(c.env, data))
 })
 
 // ── Create ────────────────────────────────────────────────────────────────────
@@ -181,7 +211,7 @@ partners.post('/', async (c) => {
   // so invalidate unconditionally rather than gating on the copy fields.
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
 
-  return c.json(data, 201)
+  return c.json(withCredentialWarning(c.env, data), 201)
 })
 
 // ── Update ────────────────────────────────────────────────────────────────────
@@ -251,7 +281,7 @@ partners.put('/:id', async (c) => {
     await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   }
 
-  return c.json(data)
+  return c.json(withCredentialWarning(c.env, data))
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import { evaluateResponseClassification, shouldSuppressAlert } from './error-cla
 import { linkAbort } from './retry'
 import { PartnerApiError } from './partner-bid-error'
 import { lookupMatrixBid } from '../lib/bid-matrix-lookup'
+import { partnerCredentialValue } from '../lib/partner-credential'
 import { applyOutboundMapping } from '../lib/field-mapper'
 import { containsHtmlDocument } from '../lib/html-error-summary'
 
@@ -196,7 +197,9 @@ async function callBidApi(
   }
 
   if (partner.cf_secret_key) {
-    const secretValue = (env as unknown as Record<string, string | undefined>)[partner.cf_secret_key]
+    // Shared with the save-time warning in the partner routes (#416), so the two
+    // cannot disagree about what counts as a usable credential.
+    const secretValue = partnerCredentialValue(env, partner.cf_secret_key)
     if (secretValue) {
       headers['Authorization'] = `Bearer ${secretValue}`
     } else {
