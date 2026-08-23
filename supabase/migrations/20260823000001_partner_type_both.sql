@@ -10,8 +10,8 @@
 -- code deployed after it can write 'both' the moment the constraint is applied.
 -- No existing row changes value, and nothing needs a contract step later.
 --
--- The original constraint came from an inline CHECK on ADD COLUMN
--- (20260421000002_partner_type.sql), so Postgres named it
+-- The original constraint came from an inline CHECK on the column definition in
+-- 20260421000002_partner_type.sql, so Postgres named it
 -- partner_configs_partner_type_check. Dropped by that name and re-added
 -- explicitly named, so a future widening has a name to target rather than
 -- depending on the auto-naming rule again.
