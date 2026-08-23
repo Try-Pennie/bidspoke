@@ -22,6 +22,7 @@ import { formatErr } from '../../lib/format-error'
 import { runExecutionArchive } from '../../lib/execution-archive'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
+import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
 import { writeAuditLog } from '../../lib/audit'
@@ -402,8 +403,8 @@ async function recordedHoursAmong(
   for (const row of (data ?? []) as Array<{ hour_start?: unknown }>) {
     const raw = row.hour_start
     if (typeof raw !== 'string') continue
-    const ms = Date.parse(raw)
-    if (Number.isFinite(ms)) found.add(new Date(ms).toISOString())
+    const canonical = canonicalHourStart(raw)
+    if (canonical !== null) found.add(canonical)
   }
   return found
 }

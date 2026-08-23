@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { archiveDay, nextHourToArchive, SETTLE_WINDOW_MS } from '../clock'
+import { archiveDay, nextHourToArchive, SETTLE_WINDOW_MS, canonicalHourStart } from '../clock'
 import ARCHIVE_DAY_CASES from '../fixtures/archive-day-cases.json'
 
 /**
@@ -121,5 +121,40 @@ describe('nextHourToArchive', () => {
   it('refuses a watermark in the future, which would silently archive nothing forever', () => {
     expect(() => nextHourToArchive({ watermarkHour: '2027-01-01T00:00:00.000Z', now: new Date('2026-08-18T00:00:00Z') }))
       .toThrow(/future/)
+  })
+})
+
+describe('canonicalHourStart', () => {
+  // The database renders a timestamptz its own way and the caller asks with ISO.
+  // Whether a given engine's Date.parse accepts the difference is
+  // implementation-defined, and a mismatch does not throw: it produces an empty
+  // set of already-archived hours, which means "skip nothing" and silently
+  // restores the repair treadmill (#1019). So the normalisation is explicit and
+  // asserted here rather than left to the host's tolerance (L52).
+  it('reduces every rendering of one instant to the same canonical hour', () => {
+    const same = [
+      '2026-08-16 00:00:00+00',
+      '2026-08-16T00:00:00+00:00',
+      '2026-08-16 00:00:00.000+00',
+      '2026-08-16T00:00:00Z',
+      '2026-08-16T00:00:00.000Z',
+      '  2026-08-16 00:00:00+00  ',
+    ]
+
+    for (const raw of same) {
+      expect(canonicalHourStart(raw), `"${raw}"`).toBe('2026-08-16T00:00:00.000Z')
+    }
+  })
+
+  it('keeps a non-zero offset meaning the instant it names, not the wall clock', () => {
+    // 02:00 at +02:00 is midnight UTC. Dropping the offset would silently shift
+    // the hour and make a recorded hour look unrecorded.
+    expect(canonicalHourStart('2026-08-16 02:00:00+02')).toBe('2026-08-16T00:00:00.000Z')
+  })
+
+  it('answers null for something it cannot read, rather than a wrong instant', () => {
+    for (const bad of ['', 'not a time', '2026-13-45 00:00:00+00']) {
+      expect(canonicalHourStart(bad), `"${bad}"`).toBeNull()
+    }
   })
 })

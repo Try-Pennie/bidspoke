@@ -252,3 +252,57 @@ describe('what the caller is told about progress (#1018, #1019)', () => {
     expect(deps.alreadyRecorded).toBeUndefined()
   })
 })
+
+describe('reading Postgres timestamps back', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const DAY = '2020-01-01'
+  const dayHours = Array.from({ length: 24 }, (_, i) =>
+    new Date(Date.parse(`${DAY}T00:00:00.000Z`) + i * 3600000).toISOString(),
+  )
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    recordedHours = null
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(runExecutionArchive).mockResolvedValue(
+      CLEAN as unknown as Awaited<ReturnType<typeof runExecutionArchive>>
+    )
+    app = await makeApp()
+  })
+
+  it('matches every rendering the database and the caller can disagree on', async () => {
+    // NOT left to Date.parse's tolerance. A space separator instead of a T, a
+    // two digit offset instead of four, a fractional second: these are all the
+    // same instant, and whether a given engine parses them is
+    // implementation-defined. Getting it wrong does not throw, it returns an
+    // empty set, which means "skip nothing" and silently restores the treadmill.
+    for (const rendering of [
+      '2020-01-01 00:00:00+00',
+      '2020-01-01T00:00:00+00:00',
+      '2020-01-01 00:00:00.000+00',
+      '2020-01-01T00:00:00Z',
+    ]) {
+      vi.mocked(runExecutionArchive).mockClear()
+      recordedHours = null
+      const supa = {
+        from: (table: string) =>
+          table === 'execution_archive_hours'
+            ? { select: () => ({ in: () => Promise.resolve({ data: [{ hour_start: rendering }], error: null }) }) }
+            : ({} as Record<string, unknown>),
+        rpc: (name: string) =>
+          name === 'auth_user_with_allowlist'
+            ? Promise.resolve({ data: [{ ...testUser, allowed: true }], error: null })
+            : Promise.resolve({ data: [], error: null }),
+      }
+      vi.mocked(createSupabaseClient).mockReturnValue(supa as unknown as ReturnType<typeof createSupabaseClient>)
+
+      await post(app, { day: DAY })
+
+      const deps = vi.mocked(runExecutionArchive).mock.calls[0][2] as { alreadyRecorded?: ReadonlySet<string> }
+      expect([...(deps.alreadyRecorded ?? [])], `"${rendering}" was not recognised as hour 00`).toEqual([dayHours[0]])
+    }
+  })
+})
