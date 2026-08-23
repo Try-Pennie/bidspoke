@@ -190,3 +190,82 @@ describe('PUT /partners/:id: zero-row 404 vs real DB error (#595)', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
+
+// #306 / ADR 0001. `partner_type` gained a third value `both`. The form's option
+// list and the values this route accepts are ONE vocabulary (LESSONS L89), so the
+// route validates against that list rather than letting the database CHECK be the
+// only gate: a CHECK violation surfaces as an opaque 500, which reads as "the
+// service is broken" rather than "that is not a partner type".
+describe('partner_type vocabulary on the write path (#306)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  function send(method: 'POST' | 'PUT', path: string, body: unknown) {
+    return app.request(
+      path,
+      { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) },
+      testEnv,
+      mockCtx
+    )
+  }
+
+  function supabaseForUpdate(updated: Record<string, unknown>) {
+    return makeSupabase({
+      users: { single: testUser },
+      partner_configs: [{ single: { id: 'p-1' } }, { updateResult: updated }],
+    }) as unknown as ReturnType<typeof createSupabaseClient>
+  }
+
+  it('PUT accepts partner_type both and persists it', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(supabaseForUpdate({ id: 'p-1', partner_type: 'both' }))
+    const res = await send('PUT', '/partners/p-1', { partner_type: 'both' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ partner_type: 'both' })
+  })
+
+  it('PUT refuses an unknown partner_type with a 400 naming the accepted values', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(supabaseForUpdate({ id: 'p-1' }))
+    const res = await send('PUT', '/partners/p-1', { partner_type: 'seller' })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('seller')
+    expect(body.error).toContain('both')
+  })
+
+  it('PUT writes nothing when the partner_type is refused', async () => {
+    // A 400 that still ran the update would have stored the bad value and only
+    // reported the refusal, which is worse than no validation at all.
+    vi.mocked(createSupabaseClient).mockReturnValue(supabaseForUpdate({ id: 'p-1' }))
+    await send('PUT', '/partners/p-1', { partner_type: 'seller' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('POST refuses an unknown partner_type with a 400', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: { single: { id: 'p-new' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await send('POST', '/partners', { name: 'Seller Co', slug: 'seller-co', partner_type: 'seller' })
+    expect(res.status).toBe(400)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('POST accepts partner_type both', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        partner_configs: { insertResult: { id: 'p-new', partner_type: 'both' } },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await send('POST', '/partners', { name: 'Engine', slug: 'engine', partner_type: 'both' })
+    expect(res.status).toBe(201)
+  })
+})

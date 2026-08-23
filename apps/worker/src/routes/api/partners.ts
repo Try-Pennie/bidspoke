@@ -11,6 +11,7 @@ import { writeAuditLog } from '../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
+import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 
 type Variables = AuthVariables
 
@@ -43,7 +44,19 @@ interface PartnerBody {
   sell_off_offer_details?: string | null
   click_url?: string | null
   sub_account_min_bids?: Record<string, number> | null
-  partner_type?: 'source' | 'buyer'
+  partner_type?: PartnerType
+}
+
+// #306. One refusal shared by POST and PUT, so the create and update paths cannot
+// disagree about which partner types exist. Returns the message rather than the
+// response so each caller keeps its own status shape.
+function partnerTypeRefusal(body: PartnerBody): string | null {
+  if (body.partner_type === undefined) return null
+  if (isPartnerType(body.partner_type)) return null
+  return (
+    `Invalid partner_type ${JSON.stringify(body.partner_type)}. ` +
+    `Accepted values: ${PARTNER_TYPES.join(', ')}.`
+  )
 }
 
 // Derive resolver type from legacy fields when a client posts without bid_resolver_type.
@@ -108,6 +121,8 @@ partners.post('/', async (c) => {
 
   if (!body.name) return c.json({ error: 'name is required' }, 400)
   if (!body.slug) return c.json({ error: 'slug is required' }, 400)
+  const createTypeRefusal = partnerTypeRefusal(body)
+  if (createTypeRefusal) return c.json({ error: createTypeRefusal }, 400)
 
   // slug must be lowercase URL-safe
   const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')
@@ -176,6 +191,9 @@ partners.put('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<PartnerBody>()
+
+  const updateTypeRefusal = partnerTypeRefusal(body)
+  if (updateTypeRefusal) return c.json({ error: updateTypeRefusal }, 400)
 
   const { data: partner, error: fetchError } = await supabase
     .from('partner_configs')

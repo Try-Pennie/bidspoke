@@ -18,6 +18,7 @@ import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
 import { duplicateBranchArmIndices } from '@/lib/branch-validation'
 import { isHardCoded4xx } from '@/lib/response-status'
+import { isBuyerPartner } from '@/lib/partner-roles'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -2039,7 +2040,7 @@ function BidGroupConfig({
   const noWinnerBehavior: 'route' | 'exit' = rawNoWinner === 'exit' ? 'exit' : 'route'
   const cascadeTimeoutMs = (config.cascade_total_timeout_ms as number | undefined) ?? 30000
 
-  const buyerPartners = partners.filter((p) => p.partner_type === 'buyer')
+  const buyerPartners = partners.filter((p) => isBuyerPartner(p.partner_type))
   const partnerById = new Map(buyerPartners.map((p) => [p.id, p]))
 
   function setMode(next: BidGroupMode) {

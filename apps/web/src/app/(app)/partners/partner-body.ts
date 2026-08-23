@@ -3,6 +3,7 @@
 // is testable without the React component — it's what the Undo affordance re-saves
 // (#98), so a missing field here would silently drop a real-money setting.
 import type { PartnerBody, BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '@/lib/api'
+import type { PartnerType } from '@/lib/partner-roles'
 
 export type BodyCondition = 'equals' | 'contains' | 'in' | 'not_in' | 'present'
 export type StatusCondition = 'contains' | 'in' | 'not_in' | 'present'
@@ -26,7 +27,7 @@ export interface FormSnapshot {
   circuitWindow: string; circuitCooldown: string; signalRules: SignalRules
   alertTransient: boolean; alertPermanent: boolean
   sellOffOfferTitle: string; sellOffOfferDetails: string
-  partnerType: 'source' | 'buyer'
+  partnerType: PartnerType
   confirmationWindowMs: string
   subAccountFloors: SubAccountFloor[]
 }
