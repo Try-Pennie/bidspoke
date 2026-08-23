@@ -56,6 +56,35 @@ beforeEach(() => {
   vi.mocked(notifyExportFailure).mockClear()
 })
 
+describe("the archive records each hour's reconciled counts (#872)", () => {
+  it('writes the hour to execution_archive_hours, keyed on its start and its day', async () => {
+    // The deletion gate SUMS these instead of counting a day's steps directly,
+    // which timed out at 30 s against production volume. A day is 24 hours, so
+    // a missing row here is how the gate detects an hour that was never
+    // archived, and the archiver is the only thing that can write one.
+    const { writes } = await run(EXPECTED_ORGANIZATION_SLUG)
+    const hours = rowsFor(writes, 'execution_archive_hours') as Record<string, unknown>[]
+
+    expect(hours).toHaveLength(1)
+    expect(hours[0].hour_start).toBe(HOUR_START)
+    expect(hours[0].archive_day).toBe('2026-08-22')
+    expect(hours[0].execution_count).toBe(1)
+    expect(hours[0].step_count).toBe(1)
+  })
+
+  it('writes the hour even when every execution in it was refused', async () => {
+    // The hour still RECONCILED: the rows read matched the counts taken. What
+    // the archiver then did with them is a different question, and skipping the
+    // row would make the gate report a missing hour for an hour that was fully
+    // read.
+    const { writes } = await run('someone-else')
+    const hours = rowsFor(writes, 'execution_archive_hours') as Record<string, unknown>[]
+
+    expect(hours).toHaveLength(1)
+    expect(hours[0].execution_count).toBe(1)
+  })
+})
+
 describe('the archive records a refusal in the database (#957)', () => {
   it('writes the refused execution to execution_archive_refusals', async () => {
     const { summary, writes } = await run('someone-else')

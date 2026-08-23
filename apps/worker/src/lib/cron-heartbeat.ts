@@ -49,7 +49,7 @@ export const CRON_JOBS: CronJob[] = [
     // 24h cadence, 2h slack.
     staleMs: 26 * H,
     dependents:
-      'volume-anomaly, field-presence, email-drop-rate, secret-drift, required-secrets, big-table-guard, drain-stall',
+      'volume-anomaly, field-presence, email-drop-rate, secret-drift, required-secrets, big-table-guard, drain-stall, archive-gate',
   },
   {
     id: 'timeout-audit',
