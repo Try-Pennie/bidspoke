@@ -115,6 +115,103 @@ export interface RunResult {
 /** Enough headroom for the next hour's reads and sends before the platform cuts us off. */
 const SUBREQUEST_FLOOR = 50
 
+/**
+ * What archiving ONE hour produced, independent of anything to do with the
+ * watermark.
+ *
+ * Extracted (#976) so the hourly loop and an operator re-archiving a named hour
+ * run the SAME fetch, disposition, encode and send. A separate recovery tool
+ * would be evidence about the tool rather than about the archiver, and would
+ * drift from it in exactly the situation where nobody is watching.
+ */
+export type HourOutcome =
+  | { kind: 'archived'; executionsArchived: number; executionsRefused: number; executionCount: number; stepCount: number }
+  | { kind: 'empty' }
+  | { kind: 'read-failed'; reason: string; executionsArchived: number; executionsRefused: number }
+  | { kind: 'send-failed'; reason: string; executionsArchived: number; executionsRefused: number }
+
+/** The subset of RunDeps that archiving one hour needs. Deliberately no watermark. */
+export type HourDeps = Pick<
+  RunDeps,
+  'streamHour' | 'encode' | 'send' | 'recordArchived' | 'recordRefusal'
+>
+
+export async function archiveHour(
+  deps: HourDeps,
+  hourStart: string,
+  hourEnd: string,
+): Promise<HourOutcome> {
+  let executionsArchived = 0
+  let executionsRefused = 0
+
+  // Set by the slice callback when a SEND fails, so a send failure is not
+  // reported as a read failure. They have different remedies and must not share
+  // one status (L53).
+  let sendFailure: string | null = null
+
+  let hour: HourStream
+  try {
+    hour = await deps.streamHour(hourStart, hourEnd, async (bundles) => {
+      // Encode per execution, so one bundle that will not compress is refused by
+      // id rather than failing the hour. That refusal is permanent for that
+      // execution, so it must not hold the watermark: one such row would stop
+      // all archiving forever with nothing able to clear it (L47, L110).
+      const encoded: EncodedForSend[] = []
+      for (const bundle of bundles) {
+        try {
+          encoded.push(await deps.encode(bundle))
+        } catch (err) {
+          await deps.recordRefusal(bundle.executionId, `could not encode: ${formatErr(err)}`)
+          executionsRefused++
+        }
+      }
+
+      const { batches, oversized } = batchByBytes(encoded)
+      for (const executionId of oversized) {
+        await deps.recordRefusal(executionId, 'bundle is over the per-bundle ceiling')
+        executionsRefused++
+      }
+
+      for (const batch of batches) {
+        try {
+          // Snowflake FIRST, then the local record. A crash between them leaves
+          // a bundle nothing knows about, so the gate under-counts and refuses a
+          // healthy day, which a re-run clears because duplicates are harmless
+          // to a COUNT(DISTINCT) gate. The reverse order would let us believe a
+          // backup exists that does not, and authorise deleting unarchived data.
+          await deps.send(batch)
+          await deps.recordArchived(batch.map((b) => b.executionId))
+          executionsArchived += batch.length
+        } catch (err) {
+          sendFailure = formatErr(err)
+          // Thrown so the read stops immediately rather than streaming the rest
+          // of the hour into a destination that is refusing it.
+          throw err
+        }
+      }
+    })
+  } catch (err) {
+    // Only a send failure is expected here, and it has already been recorded
+    // with its own wording. Anything else is rethrown rather than folded into
+    // the send-failed status, because a status field shared by two unrelated
+    // causes can report neither (L53).
+    if (sendFailure === null) throw err
+    return { kind: 'send-failed', reason: String(sendFailure), executionsArchived, executionsRefused }
+  }
+
+  if (!hour.usable) {
+    return { kind: 'read-failed', reason: hour.reason, executionsArchived, executionsRefused }
+  }
+  if (hour.empty) return { kind: 'empty' }
+  return {
+    kind: 'archived',
+    executionsArchived,
+    executionsRefused,
+    executionCount: hour.executionCount,
+    stepCount: hour.stepCount,
+  }
+}
+
 export async function runArchive(deps: RunDeps): Promise<RunResult> {
   const result: RunResult = {
     stop: 'caught-up',
@@ -176,81 +273,30 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       return result
     }
 
-    // Set by the slice callback when a SEND fails, so a send failure is not
-    // reported as a read failure. They have different remedies and must not
-    // share one status (L53).
-    let sendFailure: string | null = null
+    const outcome = await archiveHour(deps, next.hourStart, next.hourEnd)
+    result.executionsArchived += outcome.kind === 'empty' ? 0 : outcome.executionsArchived ?? 0
+    result.executionsRefused += outcome.kind === 'empty' ? 0 : outcome.executionsRefused ?? 0
 
-    let hour: HourStream
-    try {
-      hour = await deps.streamHour(next.hourStart, next.hourEnd, async (bundles) => {
-      // Encode per execution, so one bundle that will not compress is refused by
-      // id rather than failing the hour. That refusal is permanent for that
-      // execution, so it must not hold the watermark: one such row would stop
-      // all archiving forever with nothing able to clear it (L47, L110).
-      const encoded: EncodedForSend[] = []
-      for (const bundle of bundles) {
-        try {
-          encoded.push(await deps.encode(bundle))
-        } catch (err) {
-          await deps.recordRefusal(bundle.executionId, `could not encode: ${formatErr(err)}`)
-          result.executionsRefused++
-        }
-      }
-
-      const { batches, oversized } = batchByBytes(encoded)
-      for (const executionId of oversized) {
-        await deps.recordRefusal(executionId, 'bundle is over the per-bundle ceiling')
-        result.executionsRefused++
-      }
-
-      for (const batch of batches) {
-        try {
-          // Snowflake FIRST, then the local record. A crash between them leaves
-          // a bundle nothing knows about, so the gate under-counts and refuses a
-          // healthy day, which a re-run clears because duplicates are harmless
-          // to a COUNT(DISTINCT) gate. The reverse order would let us believe a
-          // backup exists that does not, and authorise deleting unarchived data.
-          await deps.send(batch)
-          await deps.recordArchived(batch.map((b) => b.executionId))
-          result.executionsArchived += batch.length
-        } catch (err) {
-          sendFailure = formatErr(err)
-          // Thrown so the read stops immediately rather than streaming the rest
-          // of the hour into a destination that is refusing it.
-          throw err
-        }
-      }
-      })
-    } catch (err) {
-      // Only a send failure is expected here, and it has already been recorded
-      // with its own wording. Anything else is rethrown rather than folded into
-      // the send-failed status, because a status field shared by two unrelated
-      // causes can report neither (L53).
-      if (sendFailure === null) throw err
-      hour = { usable: false, reason: 'send failed', requests: 0 }
-    }
-
-    if (sendFailure !== null) {
+    if (outcome.kind === 'send-failed') {
       result.stop = 'send-failed'
       result.failed = true
-      result.detail = `hour ${next.hourStart}: ${String(sendFailure)}`
+      result.detail = `hour ${next.hourStart}: ${outcome.reason}`
       result.hoursBehind = await measureLag()
       return result
     }
 
-    if (!hour.usable) {
+    if (outcome.kind === 'read-failed') {
       // The watermark deliberately does NOT advance: a read that did not
       // reconcile means we do not know what this hour contains, and advancing
       // past it would leave a gap nothing could ever fill.
       result.stop = 'read-failed'
       result.failed = true
-      result.detail = `hour ${next.hourStart}: ${hour.reason}`
+      result.detail = `hour ${next.hourStart}: ${outcome.reason}`
       result.hoursBehind = await measureLag()
       return result
     }
 
-    if (hour.empty) {
+    if (outcome.kind === 'empty') {
       // Recorded BEFORE the watermark advances. The other order would let a
       // crash between the two leave an hour the watermark has passed with no
       // row, which the gate reads as a missing hour that nothing will ever fill.
@@ -262,11 +308,107 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     }
 
     await deps.recordHour(next.hourStart, {
-      executionCount: hour.executionCount,
-      stepCount: hour.stepCount,
+      executionCount: outcome.executionCount,
+      stepCount: outcome.stepCount,
     })
     await deps.advanceWatermark(next.hourStart)
     result.hoursArchived++
     result.detail = `archived the hour beginning ${next.hourStart}`
   }
+}
+
+/**
+ * Re-archives named hours, leaving the watermark alone (#976).
+ *
+ * The archive advances strictly forward and the watermark only moves on, so an
+ * hour that was skipped or only partly archived had no recovery path at all.
+ * That matters because the deletion gate (#872) clears a day only when its
+ * counts reconcile, so ONE missed hour makes that day permanently unverifiable:
+ * after A5 (#873) its partition is never truncated, its disk is held
+ * indefinitely, and the only escape is a recorded human release, which
+ * authorises deleting data that has no backup rather than recovering it.
+ *
+ * It runs the SAME `archiveHour` the hourly loop runs, so it is evidence about
+ * the archiver rather than about a separate tool, and it writes through the same
+ * idempotent upserts: duplicates are harmless to the gate's COUNT(DISTINCT), and
+ * `execution_archive_ids` and `execution_archive_hours` are both keyed upserts.
+ *
+ * THE WATERMARK IS NOT TOUCHED, in either direction. Moving it forward would
+ * skip the hours between, and moving it back would re-archive everything since.
+ * A named hour is a repair, not progress.
+ */
+export interface ReArchiveResult {
+  hoursRequested: number
+  hoursArchived: number
+  hoursEmpty: number
+  executionsArchived: number
+  executionsRefused: number
+  /** Hours that did not archive, each with why. Never collapsed into a count. */
+  failures: Array<{ hourStart: string; reason: string }>
+  /** Hours not attempted because a budget ran out, so a partial run says what it skipped (L98). */
+  skipped: string[]
+}
+
+export type ReArchiveDeps = HourDeps & Pick<RunDeps, 'recordHour' | 'now'> & { budget: RunBudget }
+
+export async function reArchiveHours(deps: ReArchiveDeps, hourStarts: string[]): Promise<ReArchiveResult> {
+  const result: ReArchiveResult = {
+    hoursRequested: hourStarts.length,
+    hoursArchived: 0,
+    hoursEmpty: 0,
+    executionsArchived: 0,
+    executionsRefused: 0,
+    failures: [],
+    skipped: [],
+  }
+
+  for (let i = 0; i < hourStarts.length; i++) {
+    const hourStart = hourStarts[i]
+
+    // Checked before each hour, and what is left is REPORTED. A repair that
+    // silently did four of six hours reads as a repair that worked, and the two
+    // it skipped stay missing with nothing naming them.
+    const stopped =
+      result.hoursArchived + result.hoursEmpty >= deps.budget.maxHours
+        ? `the per-run limit of ${deps.budget.maxHours} hours`
+        : deps.now().getTime() >= deps.budget.deadlineAt
+          ? 'the wall-time budget'
+          : deps.budget.subrequestsLeft() < SUBREQUEST_FLOOR
+            ? 'the subrequest budget'
+            : null
+    if (stopped !== null) {
+      result.skipped = hourStarts.slice(i)
+      break
+    }
+
+    const hourEnd = new Date(Date.parse(hourStart) + 60 * 60 * 1000).toISOString()
+    const outcome = await archiveHour(deps, hourStart, hourEnd)
+
+    if (outcome.kind === 'empty') {
+      // Still recorded. An hour that genuinely holds nothing is exactly the case
+      // the gate needs a row for: without one it reads as an hour never
+      // archived, which is the state this repair was called to fix.
+      await deps.recordHour(hourStart, { executionCount: 0, stepCount: 0 })
+      result.hoursEmpty++
+      continue
+    }
+
+    result.executionsArchived += outcome.executionsArchived
+    result.executionsRefused += outcome.executionsRefused
+
+    if (outcome.kind === 'read-failed' || outcome.kind === 'send-failed') {
+      // One hour failing does not stop the others: they are independent repairs
+      // and a caller who asked for six wants the five that can be done.
+      result.failures.push({ hourStart, reason: outcome.reason })
+      continue
+    }
+
+    await deps.recordHour(hourStart, {
+      executionCount: outcome.executionCount,
+      stepCount: outcome.stepCount,
+    })
+    result.hoursArchived++
+  }
+
+  return result
 }
