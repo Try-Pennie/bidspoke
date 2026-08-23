@@ -111,3 +111,33 @@ export function nextHourToArchive(input: { watermarkHour: string; now: Date }): 
     hourEnd: new Date(hourEndMs).toISOString(),
   }
 }
+
+/**
+ * One canonical ISO instant for an hour, whatever spelling it arrived in.
+ *
+ * Needed because the two sides of a comparison come from different places: the
+ * caller names hours as ISO with a Z, and Postgres renders `timestamptz` with a
+ * space separator and a two digit offset (`2026-08-16 00:00:00+00`). Whether a
+ * given engine's `Date.parse` accepts the second form is implementation-defined,
+ * and the Worker does not run on the engine the tests run on.
+ *
+ * Getting it wrong does not throw. It yields no match, which reads as "this hour
+ * is not archived yet", so the repair redoes work it had already done and the
+ * treadmill comes back with no symptom at all (#1019). So the separator and the
+ * short offset are normalised HERE, explicitly, rather than trusted to the host.
+ *
+ * Returns null for anything it cannot read, because a wrong instant is worse than
+ * no answer: it would silently claim a different hour was archived.
+ */
+export function canonicalHourStart(raw: string): string | null {
+  const trimmed = raw.trim()
+  if (trimmed === '') return null
+
+  // A space between the date and the time is Postgres' rendering, not ISO.
+  // A bare two digit offset (+00) is also not ISO, which wants +00:00.
+  const iso = trimmed.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')
+
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toISOString()
+}

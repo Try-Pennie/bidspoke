@@ -25,7 +25,20 @@ const HOUR_MS = 60 * 60 * 1000
 export const MAX_HOURS_PER_REQUEST = 24
 
 export type ReArchiveRequest =
-  | { ok: true; hours: string[] }
+  | {
+      ok: true
+      hours: string[]
+      /**
+       * Which form was used, because it decides whether already archived hours
+       * are skipped.
+       *
+       * A 'day' is a REPAIR of whatever is missing, so hours already recorded are
+       * left alone or the run cannot advance (#1019). A named 'hour' is a
+       * deliberate redo of that hour, which is the only way to correct an hour
+       * archived wrongly, so nothing is skipped.
+       */
+      form: 'day' | 'hour'
+    }
   | { ok: false; reason: string }
 
 interface RawRequest {
@@ -54,6 +67,7 @@ export function parseReArchiveRequest(body: RawRequest, now: Date): ReArchiveReq
   }
 
   let hours: string[]
+  let form: 'day' | 'hour'
   if (typeof hour === 'string') {
     if (!isHourBoundary(hour)) {
       return {
@@ -62,6 +76,7 @@ export function parseReArchiveRequest(body: RawRequest, now: Date): ReArchiveReq
       }
     }
     hours = [new Date(Date.parse(hour)).toISOString()]
+    form = 'hour'
   } else if (typeof day === 'string') {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
       return { ok: false, reason: `"${day}" is not a YYYY-MM-DD day` }
@@ -69,6 +84,7 @@ export function parseReArchiveRequest(body: RawRequest, now: Date): ReArchiveReq
     const dayStart = Date.parse(`${day}T00:00:00.000Z`)
     if (!Number.isFinite(dayStart)) return { ok: false, reason: `"${day}" is not a real date` }
     hours = Array.from({ length: 24 }, (_, i) => new Date(dayStart + i * HOUR_MS).toISOString())
+    form = 'day'
   } else {
     // Not defaulted to anything. A missing field and a deliberate choice must
     // not produce the same work, least of all work against production tables.
@@ -93,5 +109,5 @@ export function parseReArchiveRequest(body: RawRequest, now: Date): ReArchiveReq
     }
   }
 
-  return { ok: true, hours }
+  return { ok: true, hours, form }
 }

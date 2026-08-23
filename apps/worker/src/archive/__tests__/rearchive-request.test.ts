@@ -14,7 +14,19 @@ describe('parseReArchiveRequest', () => {
   it('accepts one settled hour', () => {
     const r = parseReArchiveRequest({ hour: '2026-08-22T07:00:00.000Z' }, NOW)
 
-    expect(r).toEqual({ ok: true, hours: ['2026-08-22T07:00:00.000Z'] })
+    expect(r.ok).toBe(true)
+    expect(r.ok && r.hours).toEqual(['2026-08-22T07:00:00.000Z'])
+  })
+
+  it('reports WHICH form was used, because it decides whether archived hours are skipped', () => {
+    // A day is a repair of what is missing, so hours already archived are left
+    // alone or the run redoes its first hours forever (#1019). A named hour is a
+    // deliberate redo, which is the only way to correct an hour archived wrongly.
+    const anHour = parseReArchiveRequest({ hour: '2026-08-22T07:00:00.000Z' }, NOW)
+    const aDay = parseReArchiveRequest({ day: '2026-08-20' }, NOW)
+
+    expect(anHour.ok && anHour.form).toBe('hour')
+    expect(aDay.ok && aDay.form).toBe('day')
   })
 
   it('expands a day into its 24 hours, in order', () => {
