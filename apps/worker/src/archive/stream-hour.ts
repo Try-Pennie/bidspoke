@@ -26,6 +26,7 @@
  *    Every read still pages, and the hour is still reconciled against
  *    independently counted expectations before it can be called usable.
  */
+import { describeReadError } from '../lib/format-error'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { groupStepsByExecution, stepWindowFor, POSTGREST_ROW_CAP } from './fetch'
 
@@ -135,14 +136,17 @@ export type HourStream =
 interface CountResult {
   count: number | null
   error: unknown
+  /** Carried because on a HEAD failure it is the ONLY diagnosis. See describeReadError. */
+  status?: number
+  statusText?: string
 }
 
 async function countRows(
   build: () => PromiseLike<CountResult>,
   what: string,
 ): Promise<{ count: number } | { error: string }> {
-  const { count, error } = await build()
-  if (error) return { error: `counting ${what} failed: ${JSON.stringify(error)}` }
+  const { count, error, status, statusText } = await build()
+  if (error) return { error: `counting ${what} failed: ${describeReadError(error, status, statusText)}` }
   // A null count is not zero. PostgREST omits it when the header is absent, and
   // reading that as "no rows" would make every hour archive nothing and report
   // success (L90).
@@ -234,8 +238,15 @@ export async function streamHour(
       .order('id')
       .limit(pageSize)
     if (cursor !== null) q = q.gt('id', cursor)
-    const { data, error } = (await q) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
-    if (error) return { usable: false, reason: `executions slice ${slice + 1}: ${JSON.stringify(error)}`, requests }
+    const { data, error, status, statusText } = (await q) as unknown as {
+      data: Record<string, unknown>[] | null
+      error: unknown
+      status?: number
+      statusText?: string
+    }
+    if (error) {
+      return { usable: false, reason: `executions slice ${slice + 1}: ${describeReadError(error, status, statusText)}`, requests }
+    }
 
     const rows = data ?? []
     if (rows.length === 0) break
@@ -282,9 +293,18 @@ export async function streamHour(
         .order('id')
         .limit(PAGE_SIZE)
       if (stepCursor !== null) sq = sq.gt('id', stepCursor)
-      const res = (await sq) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
+      const res = (await sq) as unknown as {
+        data: Record<string, unknown>[] | null
+        error: unknown
+        status?: number
+        statusText?: string
+      }
       if (res.error) {
-        return { usable: false, reason: `steps for slice ${slice + 1}: ${JSON.stringify(res.error)}`, requests }
+        return {
+          usable: false,
+          reason: `steps for slice ${slice + 1}: ${describeReadError(res.error, res.status, res.statusText)}`,
+          requests,
+        }
       }
       const page_rows = res.data ?? []
       steps.push(...page_rows)

@@ -76,3 +76,40 @@ export function formatErr(e: unknown): string {
   }
   return String(e)
 }
+
+/**
+ * Renders a failed Supabase/PostgREST read so the message names a cause (L520).
+ *
+ * A HEAD request cannot carry a response body, so PostgREST's error text is
+ * stripped in transit and supabase-js builds `{ message: '' }` out of the empty
+ * body. `formatErr` alone then renders `{"message":""}`, which reads as no
+ * information rather than as the diagnosis it is. Every `head: true` count is
+ * exposed to this, so the STATUS has to be carried: on such a response it is the
+ * only thing that survives.
+ *
+ * Measured on prod 2026-08-24: the execution archive's steps count hit the 30 s
+ * statement timeout, which Supabase's edge log recorded as `PostgREST;
+ * error=57014`, HTTP 500, and the alert said only
+ * `counting steps failed: {"message":""}` (#1040).
+ *
+ * The empty-body wording is applied ONLY to the exact shape that produces it, so
+ * a real PostgREST error keeps every field and a bare `{}` gets its status
+ * without a story about where the body went. A hint that replaced a real payload
+ * would trade this blind spot for a worse one (L104).
+ */
+export function describeReadError(error: unknown, status?: number, statusText?: string): string {
+  const http = status === undefined ? '' : `HTTP ${status}${statusText ? ` ${statusText}` : ''}: `
+  const bodyIsEmpty =
+    error !== null &&
+    typeof error === 'object' &&
+    (error as { message?: unknown }).message === '' &&
+    Object.keys(error).length === 1
+  if (bodyIsEmpty) {
+    return (
+      `${http}the response carried no error body, which is what a HEAD request ` +
+      `returns, so the cause is only in the Postgres logs. A 500 here is most ` +
+      `often the statement timeout (Postgres 57014) on an unindexed scan`
+    )
+  }
+  return `${http}${formatErr(error)}`
+}

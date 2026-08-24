@@ -14,6 +14,7 @@
  * (well after both drains + the 09:00 export) for rows older than 30h. A
  * meaningful count means the drain stalled, whatever the cause.
  */
+import { describeReadError } from './format-error'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendDrainStallAlert } from './slack'
@@ -43,14 +44,24 @@ export async function runDrainStallCheck(
   const cutoff = new Date(now - DRAIN_STALL_AGE_HOURS * 3600_000).toISOString()
   const floor = new Date(now - PARTITION_FLOOR_DAYS * 86400_000).toISOString()
 
-  const { count, error } = await supabase
+  // status/statusText are carried because this is a `head: true` count, and a
+  // HEAD response has no body to carry an error in: `error.message` is the EMPTY
+  // STRING on a timeout, so the thrown error used to read "drain-stall count
+  // query failed: " and stop. Same defect class as #1040 (L520). A watchdog whose
+  // own failure names nothing is the one place that cannot afford it.
+  const { count, error, status, statusText } = (await supabase
     .from('lead_sightings')
     .select('*', { count: 'exact', head: true })
     .eq('is_test', false)
     .eq('outcome_state', 'in_flight')
     .lt('execution_started_at_utc', cutoff)
-    .gt('execution_started_at_utc', floor)
-  if (error) throw new Error(`drain-stall count query failed: ${error.message}`)
+    .gt('execution_started_at_utc', floor)) as unknown as {
+    count: number | null
+    error: unknown
+    status?: number
+    statusText?: string
+  }
+  if (error) throw new Error(`drain-stall count query failed: ${describeReadError(error, status, statusText)}`)
 
   const stranded = count ?? 0
   if (!isDrainStalled(stranded)) return { stranded, alerted: false }
