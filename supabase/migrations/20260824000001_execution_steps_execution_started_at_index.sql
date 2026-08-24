@@ -1,0 +1,57 @@
+-- Index the archive's own read path on execution_steps (#1021).
+--
+-- The archive counts an hour's steps before reading them, as its reconciliation
+-- check. That count filters on execution_started_at (the correctness bound, which
+-- decides the hour a step belongs to) plus started_at (a hint that prunes daily
+-- partitions). Until now NO index existed on execution_started_at, on any
+-- partition or on the parent.
+--
+-- What that cost, measured on prod for the 2026-08-23 20:00 UTC hour: to count
+-- 54,955 steps Postgres scanned 105,612 rows through
+-- execution_steps_..._workflow_id_step_namespace_start_idx, discarded 50,657 by
+-- filter, and touched 115,204 buffers (about 900 MB). Warm that took 7.1 s. At
+-- 2026-08-24T00:23:37Z it took 30.2 s and was cancelled by the 30 s statement
+-- timeout, which Supabase's edge log recorded as `PostgREST; error=57014`,
+-- HTTP 500. The archive stopped on read-failed and the watermark stalled at the
+-- 19:00 hour. Volume grew from 4,194 to 5,805 executions/hour across that day, so
+-- every afternoon peak hour was in range of the same timeout.
+--
+-- Leading on execution_started_at makes the hour a range scan instead of a filter,
+-- and carrying started_at as the second column keeps the whole predicate in the
+-- index, so the count is satisfied index-only: ~55,000 index entries rather than
+-- 105,612 heap rows. Not partial: unlike idx_exec_steps_namespace_completed, the
+-- archive reads EVERY step of the hour regardless of status, so a predicate would
+-- exclude exactly the rows it has to count.
+--
+-- ----------------------------------------------------------------------------------
+-- PROD NOTE: a plain CREATE INDEX on the parent recurses and takes ACCESS
+-- EXCLUSIVE on every partition for the whole build. Partitions are DAILY here, so
+-- all but the current day are sealed and have no writers: those were built in
+-- place. Only the live partition could stall step logging, and it was built while
+-- small during the low-volume hour. Applied to prod 2026-08-24 as:
+--
+--   -- 1. Per partition (each its own statement, statement_timeout raised).
+--   --    Sealed days first, the live day last while it was smallest.
+--   CREATE INDEX execution_steps_2026_08_16_exec_started_idx
+--     ON execution_steps_2026_08_16 (execution_started_at, started_at);
+--   ...one per partition, including every empty future partition, because the
+--   --    parent index cannot be attached until EVERY partition has a match...
+--
+--   -- 2. Parent index, metadata only (instant; INVALID until all partitions attach)
+--   CREATE INDEX idx_exec_steps_execution_started
+--     ON ONLY execution_steps (execution_started_at, started_at);
+--
+--   -- 3. Attach each (flips the parent to VALID once the last one lands)
+--   ALTER INDEX idx_exec_steps_execution_started
+--     ATTACH PARTITION execution_steps_2026_08_16_exec_started_idx;
+--   ...one per partition...
+--
+-- Future partitions auto-inherit this index (a matching index is built on
+-- PARTITION OF), so the daily partition cron needs no change.
+--
+-- The statement below is therefore a NO-OP on prod (the named parent index already
+-- exists). On fresh/CI databases it builds normally against empty partitions.
+-- ----------------------------------------------------------------------------------
+
+CREATE INDEX IF NOT EXISTS idx_exec_steps_execution_started
+  ON execution_steps (execution_started_at, started_at);

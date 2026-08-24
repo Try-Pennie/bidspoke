@@ -135,14 +135,54 @@ export type HourStream =
 interface CountResult {
   count: number | null
   error: unknown
+  /** Carried because on a HEAD failure it is the ONLY diagnosis. See describeReadError. */
+  status?: number
+  statusText?: string
+}
+
+/**
+ * Renders a failed read so the message names a cause.
+ *
+ * Both counts here are HEAD requests, and an HTTP HEAD response carries no
+ * body, so PostgREST's error text is stripped in transit: supabase-js finds an
+ * error status with an empty body and builds `{ message: '' }` from it. Printing
+ * that verbatim is what produced this alert on 2026-08-24, which said only
+ * `counting steps failed: {"message":""}` for what Supabase's own edge log
+ * recorded as `PostgREST; error=57014`, HTTP 500, after 30.2 s. Every count
+ * failure the archive can have looks like that, so the status has to be carried
+ * and the emptiness has to be named rather than shown.
+ *
+ * The empty-body wording is applied ONLY to an empty body. A genuine PostgREST
+ * error keeps every field, because a hint that replaced a real payload would
+ * trade this blind spot for a worse one (L104).
+ */
+export function describeReadError(error: unknown, status?: number, statusText?: string): string {
+  const http = status === undefined ? '' : `HTTP ${status}${statusText ? ` ${statusText}` : ''}: `
+  // EXACTLY the shape postgrest-js builds from an empty body, not merely any
+  // object that happens to carry no information. The wording below claims the
+  // response was a HEAD, so the check has to establish that rather than infer it
+  // from an absence (L11): a bare `{}` gets its status and is rendered as-is.
+  const bodyIsEmpty =
+    error !== null &&
+    typeof error === 'object' &&
+    (error as { message?: unknown }).message === '' &&
+    Object.keys(error).length === 1
+  if (bodyIsEmpty) {
+    return (
+      `${http}the response carried no error body, which is what a HEAD request ` +
+      `returns, so the cause is only in the Postgres logs. A 500 here is most ` +
+      `often the statement timeout (Postgres 57014) on an unindexed scan`
+    )
+  }
+  return `${http}${JSON.stringify(error)}`
 }
 
 async function countRows(
   build: () => PromiseLike<CountResult>,
   what: string,
 ): Promise<{ count: number } | { error: string }> {
-  const { count, error } = await build()
-  if (error) return { error: `counting ${what} failed: ${JSON.stringify(error)}` }
+  const { count, error, status, statusText } = await build()
+  if (error) return { error: `counting ${what} failed: ${describeReadError(error, status, statusText)}` }
   // A null count is not zero. PostgREST omits it when the header is absent, and
   // reading that as "no rows" would make every hour archive nothing and report
   // success (L90).
@@ -234,8 +274,15 @@ export async function streamHour(
       .order('id')
       .limit(pageSize)
     if (cursor !== null) q = q.gt('id', cursor)
-    const { data, error } = (await q) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
-    if (error) return { usable: false, reason: `executions slice ${slice + 1}: ${JSON.stringify(error)}`, requests }
+    const { data, error, status, statusText } = (await q) as unknown as {
+      data: Record<string, unknown>[] | null
+      error: unknown
+      status?: number
+      statusText?: string
+    }
+    if (error) {
+      return { usable: false, reason: `executions slice ${slice + 1}: ${describeReadError(error, status, statusText)}`, requests }
+    }
 
     const rows = data ?? []
     if (rows.length === 0) break
@@ -282,9 +329,18 @@ export async function streamHour(
         .order('id')
         .limit(PAGE_SIZE)
       if (stepCursor !== null) sq = sq.gt('id', stepCursor)
-      const res = (await sq) as unknown as { data: Record<string, unknown>[] | null; error: unknown }
+      const res = (await sq) as unknown as {
+        data: Record<string, unknown>[] | null
+        error: unknown
+        status?: number
+        statusText?: string
+      }
       if (res.error) {
-        return { usable: false, reason: `steps for slice ${slice + 1}: ${JSON.stringify(res.error)}`, requests }
+        return {
+          usable: false,
+          reason: `steps for slice ${slice + 1}: ${describeReadError(res.error, res.status, res.statusText)}`,
+          requests,
+        }
       }
       const page_rows = res.data ?? []
       steps.push(...page_rows)

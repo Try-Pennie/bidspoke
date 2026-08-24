@@ -44,6 +44,13 @@ function fakeSupabase(opts: {
   executionCount?: number | null
   stepCount?: number | null
   queries: RecordedQuery[]
+  /**
+   * How a COUNT fails, reproduced from what production actually returned on
+   * 2026-08-24 rather than invented: a HEAD request cannot carry an error body,
+   * so PostgREST's real message never reaches the client and supabase-js builds
+   * `{ message: '' }` out of the empty body. Only the status says what happened.
+   */
+  countFailure?: { table: string; status: number; statusText: string; error: unknown }
 }) {
   const countFor = (table: string): number | null => {
     if (table === 'workflow_executions') {
@@ -67,8 +74,13 @@ function fakeSupabase(opts: {
         gt(col: string, value: string) { q.gt = { ...(q.gt ?? {}), [col]: value }; return builder },
         in(col: string, values: string[]) { q.inValues = values; void col; return builder },
         limit(n: number) { q.limit = n; return builder },
-        then(resolve: (v: { data: unknown; error: null; count: number | null }) => void) {
+        then(resolve: (v: { data: unknown; error: unknown; count: number | null; status?: number; statusText?: string }) => void) {
           if (q.head) {
+            const failure = opts.countFailure
+            if (failure !== undefined && failure.table === table) {
+              resolve({ data: null, error: failure.error, count: null, status: failure.status, statusText: failure.statusText })
+              return
+            }
             resolve({ data: null, error: null, count: countFor(table) })
             return
           }
@@ -207,5 +219,117 @@ describe('streamHour holds a slice, never an hour', () => {
     // URL. A slice size that outgrew the limit must say so, not quietly ask for
     // fewer and reconcile short (L99, L100).
     expect(SLICE_SIZE * 40).toBeLessThan(MAX_ID_LIST_CHARS)
+  })
+})
+
+/**
+ * A count that fails must say what failed (L11, L184).
+ *
+ * Measured on prod 2026-08-24T00:23:37Z. The steps count for the 20:00 UTC hour
+ * ran 30.2 s and Postgres cancelled it at the statement timeout. Supabase's own
+ * edge log named it exactly: `PostgREST; error=57014`, HTTP 500. None of that
+ * reached the alert, which said only:
+ *
+ *   archive run stopped on read-failed: hour 2026-08-23T20:00:00.000Z:
+ *   counting steps failed: {"message":""}
+ *
+ * The reason is structural, not a one-off. The count is sent as HEAD, and an
+ * HTTP HEAD response carries no body, so PostgREST's error text is stripped in
+ * transit; supabase-js finds an error status with an empty body and builds
+ * `{ message: '' }` from it (postgrest-js PostgrestBuilder, the non-2xx
+ * `JSON.parse` fallback). Both of the archive's counts are HEAD requests, so
+ * EVERY count failure it can ever have reports that same empty object. The
+ * status code was on the response the whole time and was thrown away.
+ */
+describe('a failed count names its cause', () => {
+  const timeout = {
+    table: 'execution_steps',
+    status: 500,
+    statusText: 'Internal Server Error',
+    error: { message: '' },
+  }
+
+  it('reports the HTTP status when the error body is empty', async () => {
+    const { executions, steps } = fixture(3, 1)
+    const { result } = await collect({ executions, steps, queries: [], countFailure: timeout })
+
+    expect(result.usable).toBe(false)
+    if (result.usable) return
+    // The status is the only thing that survives a HEAD failure, so it must be
+    // in the message. Without it the operator has nothing to search on.
+    expect(result.reason).toContain('500')
+    expect(result.reason).toContain('Internal Server Error')
+    // And the empty body must be EXPLAINED rather than printed. `{"message":""}`
+    // reads as "no information available" when in fact the emptiness is itself
+    // the diagnosis: it tells you this was a HEAD request, not a lost error.
+    expect(result.reason).not.toMatch(/\{"message":""\}/)
+    expect(result.reason).toMatch(/HEAD/)
+    expect(result.reason).toMatch(/statement timeout|57014/)
+    // Still says WHICH count, since executions and steps fail differently.
+    expect(result.reason).toMatch(/steps/)
+  })
+
+  it('still renders a real error payload rather than replacing it with the hint', async () => {
+    // The guard against over-matching (L104): the empty-body wording must apply
+    // ONLY to an empty body. A count that fails with a genuine PostgREST error
+    // has to keep every field of it, or this fix trades one blind spot for a
+    // worse one.
+    const { executions, steps } = fixture(3, 1)
+    const { result } = await collect({
+      executions,
+      steps,
+      queries: [],
+      countFailure: {
+        table: 'execution_steps',
+        status: 400,
+        statusText: 'Bad Request',
+        error: { code: '42703', message: 'column "nope" does not exist', details: null, hint: null },
+      },
+    })
+
+    expect(result.usable).toBe(false)
+    if (result.usable) return
+    expect(result.reason).toContain('400')
+    // JSON.stringify escapes the inner quotes, so assert on the escaped form
+    // the operator actually reads in the alert.
+    expect(result.reason).toContain('column \\"nope\\" does not exist')
+    expect(result.reason).toContain('42703')
+    expect(result.reason).not.toMatch(/HEAD/)
+    expect(result.reason).not.toMatch(/statement timeout/)
+  })
+
+  it('distinguishes a failed executions count from a failed steps count', async () => {
+    const { executions, steps } = fixture(3, 1)
+    const { result } = await collect({
+      executions,
+      steps,
+      queries: [],
+      countFailure: { ...timeout, table: 'workflow_executions' },
+    })
+
+    expect(result.usable).toBe(false)
+    if (result.usable) return
+    expect(result.reason).toMatch(/executions/)
+    expect(result.reason).toContain('500')
+  })
+})
+
+describe('the empty-body hint fires only on the shape that produces it', () => {
+  it('renders an information-free object as-is rather than claiming it was a HEAD', async () => {
+    // A bare {} is not evidence of a HEAD request. It gets its status, which is
+    // the honest amount, and no story about where the body went.
+    const { executions, steps } = fixture(3, 1)
+    const { result } = await collect({
+      executions,
+      steps,
+      queries: [],
+      countFailure: { table: 'execution_steps', status: 503, statusText: 'Service Unavailable', error: {} },
+    })
+
+    expect(result.usable).toBe(false)
+    if (result.usable) return
+    expect(result.reason).toContain('503')
+    expect(result.reason).toContain('{}')
+    expect(result.reason).not.toMatch(/HEAD/)
   })
 })
