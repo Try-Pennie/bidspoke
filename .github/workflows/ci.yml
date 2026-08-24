@@ -193,7 +193,7 @@ jobs:
       # stalled three times on 2026-08-19 (#885).
       - name: Cache the Playwright browser
         if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
