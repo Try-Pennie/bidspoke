@@ -168,15 +168,16 @@ describe('the day-count parser', () => {
 })
 
 describe('the retention window itself', () => {
-  it('is the 14 days the purge actually runs at', () => {
+  it('is the 21 days the purge actually runs at', () => {
     // Pinned so a change to retention is a deliberate act that updates this
     // line, rather than something the guard silently absorbs.
     //
-    // TEMPORARILY 14 (2026-08-23, migration 20260823000002): six partly archived
-    // days were days from being purged with nobody available to intervene, and
-    // deletion is not gated on the archive yet (#873). Back to 7 once every day
-    // the database holds shows 24 archived hours.
-    expect(retentionDays()).toBe(14)
+    // TEMPORARILY 21 (2026-08-24, migration 20260824000002): roughly 119 hours
+    // across 2026-08-17 to 08-23 were still unarchived with nobody available to
+    // intervene, and deletion is not gated on the archive yet (#873), so a stalled
+    // backlog walk would delete unbacked-up days with no alert at all. Back to 7
+    // once every day the database holds shows 24 archived hours.
+    expect(retentionDays()).toBe(21)
   })
 
   it('is the same number the UI quotes to people', () => {
