@@ -26,6 +26,7 @@
  *    Every read still pages, and the hour is still reconciled against
  *    independently counted expectations before it can be called usable.
  */
+import { describeReadError } from '../lib/format-error'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { groupStepsByExecution, stepWindowFor, POSTGREST_ROW_CAP } from './fetch'
 
@@ -138,43 +139,6 @@ interface CountResult {
   /** Carried because on a HEAD failure it is the ONLY diagnosis. See describeReadError. */
   status?: number
   statusText?: string
-}
-
-/**
- * Renders a failed read so the message names a cause.
- *
- * Both counts here are HEAD requests, and an HTTP HEAD response carries no
- * body, so PostgREST's error text is stripped in transit: supabase-js finds an
- * error status with an empty body and builds `{ message: '' }` from it. Printing
- * that verbatim is what produced this alert on 2026-08-24, which said only
- * `counting steps failed: {"message":""}` for what Supabase's own edge log
- * recorded as `PostgREST; error=57014`, HTTP 500, after 30.2 s. Every count
- * failure the archive can have looks like that, so the status has to be carried
- * and the emptiness has to be named rather than shown.
- *
- * The empty-body wording is applied ONLY to an empty body. A genuine PostgREST
- * error keeps every field, because a hint that replaced a real payload would
- * trade this blind spot for a worse one (L104).
- */
-export function describeReadError(error: unknown, status?: number, statusText?: string): string {
-  const http = status === undefined ? '' : `HTTP ${status}${statusText ? ` ${statusText}` : ''}: `
-  // EXACTLY the shape postgrest-js builds from an empty body, not merely any
-  // object that happens to carry no information. The wording below claims the
-  // response was a HEAD, so the check has to establish that rather than infer it
-  // from an absence (L11): a bare `{}` gets its status and is rendered as-is.
-  const bodyIsEmpty =
-    error !== null &&
-    typeof error === 'object' &&
-    (error as { message?: unknown }).message === '' &&
-    Object.keys(error).length === 1
-  if (bodyIsEmpty) {
-    return (
-      `${http}the response carried no error body, which is what a HEAD request ` +
-      `returns, so the cause is only in the Postgres logs. A 500 here is most ` +
-      `often the statement timeout (Postgres 57014) on an unindexed scan`
-    )
-  }
-  return `${http}${JSON.stringify(error)}`
 }
 
 async function countRows(

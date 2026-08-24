@@ -290,9 +290,9 @@ describe('a failed count names its cause', () => {
     expect(result.usable).toBe(false)
     if (result.usable) return
     expect(result.reason).toContain('400')
-    // JSON.stringify escapes the inner quotes, so assert on the escaped form
-    // the operator actually reads in the alert.
-    expect(result.reason).toContain('column \\"nope\\" does not exist')
+    // Rendered through formatErr, the one sanctioned renderer, which folds the
+    // code in as `message (code)` rather than dumping raw JSON.
+    expect(result.reason).toContain('column "nope" does not exist')
     expect(result.reason).toContain('42703')
     expect(result.reason).not.toMatch(/HEAD/)
     expect(result.reason).not.toMatch(/statement timeout/)
