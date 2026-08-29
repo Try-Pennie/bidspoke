@@ -167,9 +167,20 @@ describe('trace_id propagation — structured logs', () => {
       node('c', 'step_c', 'response')
     )
 
+    // step_b exhausts its retries, so this used to live through the real 1.5s of
+    // default backoff (1510ms). Record the delays instead and assert them
+    // (#1063).
+    const slept: number[] = []
+    const ctx = makeCtx(TRACE_ID, WORKFLOW_ID)
+    ctx.retrySleep = async (ms) => { slept.push(ms) }
+
     await expect(
-      walkGraph(makeCtx(TRACE_ID, WORKFLOW_ID), def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
+      walkGraph(ctx, def, EXECUTION_ID, new Date().toISOString(), supabase, env, WORKFLOW_VERSION_ID)
     ).rejects.toThrow()
+
+    // Two retries on the engine default, exponential from 500ms, and no sleep
+    // after the attempt that gives up.
+    expect(slept).toEqual([500, 1000])
 
     const errorLog = parsedLogs().find((l) => l.event === 'step_error' && l.step_namespace === 'step_b')
     expect(errorLog).toBeDefined()

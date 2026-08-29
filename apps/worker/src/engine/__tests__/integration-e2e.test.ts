@@ -591,6 +591,10 @@ describe('parallel_end logging — matches parallel start status', () => {
   it('logs parallel_end with failed status when parallel itself fails', async () => {
     // wait_for:'first' with every child rejecting causes executeParallelNode to throw
     vi.mocked(executeNode).mockRejectedValue(new Error('child blew up'))
+    // Each child exhausts its retries, so this used to live through the real
+    // 1.5s of default backoff twice over: 1512ms, the slowest test in the
+    // worker suite. Record the delays instead and assert them (#1063).
+    const slept: number[] = []
 
     const childA = node('a', 'child_a', 'code')
     const childB = node('b', 'child_b', 'code')
@@ -608,14 +612,24 @@ describe('parallel_end logging — matches parallel start status', () => {
     }
 
     const queue: import('../step-logger').StepLogEntry[] = []
+    const ctx = makeCtx()
+    ctx.retrySleep = async (ms) => { slept.push(ms) }
     await expect(
-      walkGraph(makeCtx(), def, 'exec-par-fail', new Date().toISOString(), supabase, env, '', queue)
+      walkGraph(ctx, def, 'exec-par-fail', new Date().toISOString(), supabase, env, '', queue)
     ).rejects.toThrow()
 
     const endRow = queue.find((r) => r.step_namespace === 'fan_end')
     expect(endRow).toBeDefined()
     expect(endRow!.step_type).toBe('parallel_end')
     expect(endRow!.status).toBe('failed')
+
+    // The children each retried on the engine's default exponential backoff.
+    // Asserting the delays rather than merely outliving them is what the seam
+    // buys: before this, a backoff of the wrong length or order looked the same
+    // from here (L524). Both children are in flight at once, so the ORDER
+    // across them is a scheduling detail; the multiset is what is defined.
+    expect(slept.length).toBeGreaterThan(0)
+    expect([...new Set(slept)].sort((a, b) => a - b)).toEqual([500, 1000])
   })
 })
 
