@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT, workspacePackages } from './_scan-utils'
+import { readWorkflow, workflowJobBody, workspacePackages } from './_scan-utils'
 
 /**
  * CI must invoke the test suite of every workspace package that has one (#869).
@@ -21,7 +19,7 @@ import { REPO_ROOT, workspacePackages } from './_scan-utils'
  * packages that EXIST and requires each to appear in CI, so the check cannot be
  * satisfied by a package simply being left off a hand maintained list.
  */
-const CI = path.join(REPO_ROOT, '.github/workflows/ci.yml')
+const CI = '.github/workflows/ci.yml'
 
 /**
  * Packages that declare a `test` script, by name.
@@ -36,17 +34,7 @@ const packagesWithTests = (): string[] =>
     .map((pkg) => pkg.name)
 
 /** The body of ci.yml's `test:` job, so a mention in another job cannot answer. */
-const testJobBody = (): string => {
-  const text = readFileSync(CI, 'utf8')
-  const start = text.indexOf('\n  test:\n')
-  expect(start, 'ci.yml has no job called test').toBeGreaterThan(-1)
-  // Up to the next top-level job key, so this is scoped to the one job. A match
-  // anywhere in the file would be answered by an unrelated job that happens to
-  // filter the same package (L135).
-  const rest = text.slice(start + 1)
-  const next = rest.search(/\n {2}\w[\w-]*:\n/)
-  return next === -1 ? rest : rest.slice(0, next)
-}
+const testJobBody = (): string => workflowJobBody(readWorkflow(CI), 'test')
 
 describe('CI runs every workspace package that has tests (#869)', () => {
   it('finds packages to check, so this cannot pass vacuously', () => {

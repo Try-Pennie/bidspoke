@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { readWorkflow, workflowJobBody } from './_scan-utils'
 
 /**
  * The accessibility scan runs only when web code changed, and FAILS CLOSED.
@@ -17,16 +15,14 @@ import { REPO_ROOT } from './_scan-utils'
  * changed. If it cannot tell, it runs. A wasted seven minutes is cheap; an
  * accessibility regression waved through by a detection bug is not (L42, L72).
  */
-const CI_YML = path.join(REPO_ROOT, '.github/workflows/ci.yml')
+const CI_YML = '.github/workflows/ci.yml'
 
-function a11ySection(): string {
-  const yaml = readFileSync(CI_YML, 'utf8')
-  const start = yaml.indexOf('\n  a11y:')
-  const end = yaml.indexOf('\n  auth-gate:')
-  expect(start, 'a11y job found').toBeGreaterThan(0)
-  expect(end, 'next job found, so the slice is bounded').toBeGreaterThan(start)
-  return yaml.slice(start, end)
-}
+/**
+ * The a11y job's own body. Sliced by job key (#1066), never by naming the job
+ * that follows: this used to run from `a11y:` to `auth-gate:`, so inserting a
+ * job between them would have quietly widened every assertion below.
+ */
+const a11ySection = (): string => workflowJobBody(readWorkflow(CI_YML), 'a11y')
 
 describe('accessibility scan scoping', () => {
   it('decides whether web code changed before doing the expensive work', () => {
