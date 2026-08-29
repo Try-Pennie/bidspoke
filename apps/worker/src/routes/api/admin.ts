@@ -20,6 +20,7 @@ import { runSightingsExport } from '../../lib/sightings-export'
 import { runAchieveExport } from '../../lib/achieve-export'
 import { formatErr } from '../../lib/format-error'
 import { runExecutionArchive } from '../../lib/execution-archive'
+import { checkArchiveSettings } from '../../lib/archive-settings-check'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { canonicalHourStart } from '../../archive/clock'
@@ -452,6 +453,37 @@ admin.post('/re-archive', async (c) => {
       summary,
     },
     summary.failed ? 500 : complete ? 200 : 202,
+  )
+})
+
+/**
+ * Runs the daily archive settings read-back on demand (#1050).
+ *
+ * The scheduled version answers once a day, so a change to WHAT it asks
+ * Snowflake could only be confirmed a day later. That is not hypothetical: the
+ * first version of the retention read used a statement the reader identity may
+ * not run, and it reported its own refusal every morning for six days before
+ * anyone was in a position to see it.
+ *
+ * It calls the scheduled check itself rather than reimplementing the reads. A
+ * separate probe would be evidence about the probe, and would drift from the
+ * real check exactly when nobody is watching.
+ *
+ * NOT 200 when something drifted. The whole value of this route is being able to
+ * trust a green, so a caller that reads only the status code must not be able to
+ * mistake a reported difference for a verified setting (L98).
+ */
+admin.post('/archive-settings-check', async (c) => {
+  const supabase = createSupabaseClient(c.env)
+  const result = await checkArchiveSettings(c.env, supabase)
+
+  return c.json(
+    {
+      ok: result.differences.length === 0,
+      observed: result.observed,
+      differences: result.differences,
+    },
+    result.differences.length === 0 ? 200 : 500,
   )
 })
 

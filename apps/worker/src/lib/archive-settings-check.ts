@@ -1,13 +1,30 @@
 /**
- * Reads the archive's Snowflake settings back on a schedule (#980).
+ * Reads the archive's Snowflake settings back on a schedule (#980, #1050).
  *
  * The decision is in `archive/settings-drift.ts` and is pure. This is the half
  * that asks Snowflake, through the READER identity: the check needs to see the
  * table, not to change it, and running it as the writer would prove less while
  * risking more.
  *
- * Reading a SHOW result BY COLUMN NAME rather than by position, because SHOW
- * output is not a stable contract and an index that quietly shifted would read
+ * EVERY READ HERE IS ONE THE READER IS ALLOWED TO RUN, which is not a detail.
+ * The first version asked for the Time Travel window with
+ * `SHOW PARAMETERS ... IN TABLE`, and Snowflake refuses that for a role holding
+ * only SELECT: reading an object's parameters effectively needs ownership, and
+ * there is no grantable USAGE on a table to hand out. So from the day it shipped
+ * this check reported its own refusal every morning and asserted nothing about
+ * the window it exists to assert (#1050). The fix is not a wider grant, which
+ * would let the read path drop the archive table, but statements the reader can
+ * answer: INFORMATION_SCHEMA carries RETENTION_TIME for the table, the schema
+ * and the database, and shows every object the role has a privilege on.
+ *
+ * What that costs, stated plainly: the parameter's LEVEL is not in
+ * INFORMATION_SCHEMA, so this can no longer tell an inherited window from one
+ * the table owns. The surrounding windows are read instead, which answers the
+ * question the level was asked for (what the archive falls back to) using
+ * privileges the reader already holds.
+ *
+ * Reading a result BY COLUMN NAME rather than by position, because the column
+ * order is not a stable contract and an index that quietly shifted would read
  * the wrong cell and report a passing check about the wrong thing (L156, L215).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -56,6 +73,50 @@ function cell(response: SnowflakeStatementResponse, row: number, column: string)
   return typeof value === 'string' || typeof value === 'number' ? String(value) : null
 }
 
+/**
+ * One RETENTION_TIME cell, or null with the reason recorded.
+ *
+ * Every way this can come back empty is its own message. A missing row and a
+ * refused statement are different situations with different remedies, and one
+ * message covering both would send whoever reads it looking in the wrong place
+ * (L11).
+ */
+async function readRetention(
+  query: (statement: string) => Promise<SnowflakeStatementResponse>,
+  observed: ObservedSettings,
+  subject: string,
+  statement: string,
+): Promise<number | null> {
+  try {
+    const response = await query(statement)
+    if ((response.data ?? []).length === 0) {
+      // No row is not a window of none. Either the object is gone or the reader
+      // cannot see it, and both are worth saying.
+      observed.unreadable.push(
+        `${subject}'s Time Travel window matched no row, so it is missing or the reader cannot see it`,
+      )
+      return null
+    }
+    const value = cell(response, 0, 'retention_time')
+    if (value === null) {
+      observed.unreadable.push(
+        `${subject}'s Time Travel window came back in a shape with no readable value ` +
+          `(${response.message ?? 'no message'})`,
+      )
+      return null
+    }
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+      observed.unreadable.push(`${subject}'s Time Travel window came back as "${value}", which is not a number`)
+      return null
+    }
+    return parsed
+  } catch (err) {
+    observed.unreadable.push(`${subject}'s Time Travel window could not be read: ${formatErr(err)}`)
+    return null
+  }
+}
+
 export async function checkArchiveSettings(
   env: Env,
   supabase: SupabaseClient,
@@ -66,7 +127,7 @@ export async function checkArchiveSettings(
 
   const observed: ObservedSettings = {
     retentionDays: null,
-    retentionLevel: null,
+    surroundingRetentionDays: [],
     columns: null,
     unreadable: [],
   }
@@ -74,29 +135,35 @@ export async function checkArchiveSettings(
   // Each read in its own try. One failing must not hide what the others found:
   // a check that reports nothing because its first query failed is
   // indistinguishable from a check that found everything correct.
-  try {
-    const response = await query(
-      `SHOW PARAMETERS LIKE 'DATA_RETENTION_TIME_IN_DAYS' IN TABLE ` +
-        `${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE}`,
-    )
-    const value = cell(response, 0, 'value')
-    const level = cell(response, 0, 'level')
-    if (value === null) {
-      observed.unreadable.push(
-        `the Time Travel window came back in a shape with no readable value (${response.message ?? 'no message'})`,
-      )
-    } else {
-      const days = Number(value)
-      if (Number.isFinite(days)) observed.retentionDays = days
-      else observed.unreadable.push(`the Time Travel window came back as "${value}", which is not a number`)
-    }
-    // An empty level is not 'TABLE'. Snowflake reports the empty string when a
-    // parameter is at its account default, so reading it as absent-and-therefore
-    // fine would pass the exact case this looks for.
-    observed.retentionLevel = level === null ? null : level === '' ? 'ACCOUNT DEFAULT' : level
-    if (level === null) observed.unreadable.push('the Time Travel window carried no level, so it is unknown whether the table owns it')
-  } catch (err) {
-    observed.unreadable.push(`the Time Travel window could not be read: ${formatErr(err)}`)
+  observed.retentionDays = await readRetention(
+    query,
+    observed,
+    'the archive table',
+    `SELECT retention_time FROM ${ARCHIVE_DATABASE}.INFORMATION_SCHEMA.TABLES ` +
+      `WHERE table_schema = '${ARCHIVE_SCHEMA}' AND table_name = '${ARCHIVE_TABLE}'`,
+  )
+
+  // The two windows the archive would fall back to. Read even when the table's
+  // own is correct: the point is to know the fallback BEFORE anything depends on
+  // it, not to explain a shortfall afterwards.
+  for (const surrounding of [
+    {
+      level: `${ARCHIVE_SCHEMA} schema`,
+      statement:
+        `SELECT retention_time FROM ${ARCHIVE_DATABASE}.INFORMATION_SCHEMA.SCHEMATA ` +
+        `WHERE schema_name = '${ARCHIVE_SCHEMA}'`,
+    },
+    {
+      level: `${ARCHIVE_DATABASE} database`,
+      statement:
+        `SELECT retention_time FROM ${ARCHIVE_DATABASE}.INFORMATION_SCHEMA.DATABASES ` +
+        `WHERE database_name = '${ARCHIVE_DATABASE}'`,
+    },
+  ]) {
+    observed.surroundingRetentionDays.push({
+      level: surrounding.level,
+      days: await readRetention(query, observed, `the ${surrounding.level}`, surrounding.statement),
+    })
   }
 
   try {
@@ -132,8 +199,11 @@ export async function checkArchiveSettings(
     env.IDEMPOTENCY,
   )
 
+  const surrounding = observed.surroundingRetentionDays
+    .map((s) => `${s.level}=${String(s.days)}`)
+    .join(' ')
   console.log(
-    `[archive-settings] retention=${String(observed.retentionDays)} level=${String(observed.retentionLevel)} ` +
+    `[archive-settings] retention=${String(observed.retentionDays)} ${surrounding} ` +
       `columns=${observed.columns?.length ?? 'unreadable'} differences=${differences.length}`,
   )
 
