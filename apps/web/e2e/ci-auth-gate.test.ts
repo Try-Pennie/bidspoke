@@ -7,18 +7,15 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
+import { readWorkflow, workflowJobBody } from '../src/lib/__tests__/_scan-utils'
 
 function readCi(): string {
-  return fs.readFileSync(path.resolve(__dirname, '../../../.github/workflows/ci.yml'), 'utf8')
+  return readWorkflow('.github/workflows/ci.yml')
 }
 
-/** The `auth-gate:` job's block, up to the next top-level job key. */
+/** The `auth-gate:` job body, sliced by job key rather than by its neighbour (#1066). */
 function gateJob(ci: string): string {
-  const start = ci.indexOf('\n  auth-gate:')
-  expect(start, 'ci.yml no longer defines an `auth-gate:` job').toBeGreaterThan(-1)
-  const rest = ci.slice(start + 1)
-  const next = rest.slice(1).search(/\n {2}[a-z][a-z0-9-]*:\n/)
-  return next === -1 ? rest : rest.slice(0, next + 1)
+  return workflowJobBody(ci, 'auth-gate')
 }
 
 /** Strip comments before matching, so a comment ABOUT a rule cannot satisfy it. */

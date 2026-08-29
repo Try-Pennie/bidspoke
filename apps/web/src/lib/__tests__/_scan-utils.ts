@@ -299,3 +299,114 @@ export function workspacePackages(): WorkspacePackage[] {
   }
   return out
 }
+
+/**
+ * ---------------------------------------------------------------------------
+ * GitHub Actions workflow slicing (#1066)
+ * ---------------------------------------------------------------------------
+ *
+ * Six guard tests each carved one job out of `.github/workflows/ci.yml`, and
+ * each did it differently. Three defined the job they wanted by naming the job
+ * that happened to FOLLOW it (`\n  a11y:` to `\n  auth-gate:`). That is a window
+ * chosen by a neighbour: insert a job between the two, or rename either, and the
+ * slice silently returns a different span. The guard does not go red, it goes on
+ * asserting confidently about the wrong job (L135).
+ *
+ * The job splits in the "Faster PR testing" milestone add, rename and reorder
+ * jobs in both ci.yml and deploy.yml, so that shape had to go before they land.
+ *
+ * These helpers derive the boundaries from the two-space job keys themselves,
+ * and an absent id THROWS naming the ids that are present. Returning '' instead
+ * would be the worse failure: every `expect(body).not.toMatch(...)` in these
+ * guards passes against an empty string, so a mistyped id would read as the
+ * property being satisfied (L215).
+ */
+
+/** Zero-based line index of the `jobs:` key, or -1. */
+function jobsBlockAt(lines: string[]): number {
+  return lines.findIndex((l) => /^jobs:\s*$/.test(l))
+}
+
+/** True when the line is a job key: exactly two spaces deep, directly under `jobs:`. */
+function jobKeyOn(line: string): string | null {
+  const match = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line)
+  return match ? match[1] : null
+}
+
+/**
+ * Every job id in `yaml`, in file order.
+ *
+ * Takes the workflow's TEXT rather than a path, so a caller can slice a file it
+ * has already read and a test can feed it a literal.
+ */
+export function workflowJobIds(yaml: string): string[] {
+  const lines = yaml.split('\n')
+  const jobsAt = jobsBlockAt(lines)
+  if (jobsAt === -1) throw new Error('workflow has no top-level `jobs:` block')
+  return lines
+    .slice(jobsAt + 1)
+    .map(jobKeyOn)
+    .filter((id): id is string => id !== null)
+}
+
+/**
+ * The body of exactly one job, from its key line to the line before the next
+ * job key (or the end of the file for the last job).
+ *
+ * Trailing blank lines and any comment block sitting between two jobs belong to
+ * NEITHER job: a comment written above `auth-gate:` explains auth-gate, so
+ * leaving it inside the previous job's slice would let it answer that job's
+ * assertions. They are trimmed off the end of every body.
+ */
+export function workflowJobBody(yaml: string, jobId: string): string {
+  const lines = yaml.split('\n')
+  const jobsAt = jobsBlockAt(lines)
+  if (jobsAt === -1) throw new Error('workflow has no top-level `jobs:` block')
+
+  const starts = new Map<string, number>()
+  for (let i = jobsAt + 1; i < lines.length; i++) {
+    const id = jobKeyOn(lines[i])
+    if (id !== null && !starts.has(id)) starts.set(id, i)
+  }
+
+  const start = starts.get(jobId)
+  if (start === undefined) {
+    const found = [...starts.keys()].join(', ') || '(none)'
+    throw new Error(`workflow has no job called '${jobId}'. It defines: ${found}`)
+  }
+
+  let end = lines.length
+  for (let i = start + 1; i < lines.length; i++) {
+    if (jobKeyOn(lines[i]) !== null) {
+      end = i
+      break
+    }
+  }
+
+  // Walk back over the blank lines and the comment block that introduce the
+  // NEXT job, so they are not read as part of this one.
+  while (end > start + 1) {
+    const previous = lines[end - 1].trim()
+    if (previous === '' || previous.startsWith('#')) end -= 1
+    else break
+  }
+
+  return lines.slice(start, end).join('\n')
+}
+
+/** Read a workflow file from the repo and return its text. */
+export function readWorkflow(relativePath: string): string {
+  const file = path.join(REPO_ROOT, relativePath)
+  const text = readFileSync(file, 'utf8')
+  if (text.length === 0) throw new Error(`${file} is empty`)
+  return text
+}
+
+/** Every `.github/workflows/*.yml` path, relative to the repo root, in name order. */
+export function workflowFiles(): string[] {
+  const dir = path.join(REPO_ROOT, '.github/workflows')
+  return readdirSync(dir)
+    .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+    .sort()
+    .map((f) => `.github/workflows/${f}`)
+}

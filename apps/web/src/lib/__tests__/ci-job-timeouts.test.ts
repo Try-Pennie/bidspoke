@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { readWorkflow, workflowJobBody } from './_scan-utils'
 
 /**
  * Every CI job must set `timeout-minutes`.
@@ -18,7 +16,7 @@ import { REPO_ROOT } from './_scan-utils'
  * working" throughout.
  */
 
-const CI_YML = path.join(REPO_ROOT, '.github/workflows/ci.yml')
+const CI_YML = '.github/workflows/ci.yml'
 
 /** Job keys are exactly two spaces deep under `jobs:`; steps are deeper. */
 function jobsWithoutTimeout(yaml: string): string[] {
@@ -52,7 +50,7 @@ describe('CI job timeouts', () => {
   it('finds the jobs, so the guard cannot pass by parsing nothing', () => {
     // A parser that matches no jobs reports no offenders and reads as a clean
     // pass. Assert the positive case first (LESSONS L159).
-    const yaml = readFileSync(CI_YML, 'utf8')
+    const yaml = readWorkflow(CI_YML)
     const lines = yaml.split('\n')
     const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
     const found = lines.slice(jobsAt + 1).filter((l) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(l))
@@ -61,7 +59,7 @@ describe('CI job timeouts', () => {
   })
 
   it('gives every job an explicit timeout, so a stall fails instead of hanging', () => {
-    const offenders = jobsWithoutTimeout(readFileSync(CI_YML, 'utf8'))
+    const offenders = jobsWithoutTimeout(readWorkflow(CI_YML))
 
     expect(offenders, `jobs missing timeout-minutes: ${offenders.join(', ')}`).toEqual([])
   })
@@ -72,8 +70,7 @@ describe('accessibility job browser cache', () => {
     // The download is the step that stalled three times. Only pnpm packages were
     // cached, so every pull request in the repo re-fetched Chromium and was
     // exposed to that download being slow.
-    const yaml = readFileSync(CI_YML, 'utf8')
-    const a11y = yaml.slice(yaml.indexOf('\n  a11y:'), yaml.indexOf('\n  auth-gate:'))
+    const a11y = workflowJobBody(readWorkflow(CI_YML), 'a11y')
 
     expect(a11y).toContain('actions/cache')
     expect(a11y).toMatch(/ms-playwright/)

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
 
 /**
  * The coverage floors in CI must equal what the specs actually declare (#797).
@@ -29,12 +29,18 @@ const read = (relative: string): string => {
   return text
 }
 
-/** The floor passed to the coverage checker for a given report name. */
-function floorFor(reportName: string): number {
-  const line = read('.github/workflows/ci.yml')
+/**
+ * The floor passed to the coverage checker inside a given job.
+ *
+ * Read out of the JOB rather than the whole file (#1066): two jobs run a
+ * coverage check, so a whole-file search is answered by whichever line matches
+ * first, and a line copied into the wrong job satisfies both lookups (L135).
+ */
+function floorFor(jobId: string, reportName: string): number {
+  const line = workflowJobBody(readWorkflow('.github/workflows/ci.yml'), jobId)
     .split('\n')
     .find((l) => l.includes('playwright-coverage.mjs') && l.includes(reportName))
-  expect(line, `no coverage check found for ${reportName} in ${CI}`).toBeDefined()
+  expect(line, `no coverage check for ${reportName} in ci.yml's ${jobId} job`).toBeDefined()
   const match = line!.match(/([0-9]+)\s*$/)
   expect(match, `the coverage check for ${reportName} passes no floor`).not.toBeNull()
   return Number(match![1])
@@ -69,7 +75,7 @@ describe('the accessibility coverage floor matches the pages it declares (#797)'
     const spec = read('apps/web/e2e/a11y.spec.ts')
     const expected = arrayLength(spec, 'PAGES') + standaloneTests(spec)
     expect(
-      floorFor('a11y-report.json'),
+      floorFor('a11y', 'a11y-report.json'),
       `the accessibility spec declares ${expected} tests. Update the floor in ci.yml to match, so the gate cannot quietly cover fewer pages than it lists.`,
     ).toBe(expected)
   })
@@ -81,23 +87,39 @@ describe('the auth gate coverage floor matches the paths it declares (#797)', ()
     const expected =
       arrayLength(probe, 'GATED_PATHS') + arrayLength(probe, 'PUBLIC_PATHS') + standaloneTests(probe)
     expect(
-      floorFor('gate-report.json'),
+      floorFor('auth-gate', 'gate-report.json'),
       `the auth gate probe declares ${expected} tests. Update the floor in ci.yml to match, so the gate cannot quietly probe fewer paths than it lists.`,
     ).toBe(expected)
   })
 })
 
 describe('both gates actually run the checker (#797)', () => {
-  it('writes a JSON report and then checks it, in both jobs', () => {
+  it('writes a JSON report and then checks it, in each job that has one', () => {
     // The checker reading a report nobody wrote is the shape it is built to
     // refuse, but a job that never invokes it at all is quieter still.
-    const ci = read('.github/workflows/ci.yml')
-    for (const report of ['a11y-report.json', 'gate-report.json']) {
-      expect(ci, `${report} is never produced`).toContain(`PLAYWRIGHT_JSON_OUTPUT_NAME`)
-      expect(ci, `${report} is never checked`).toContain(`playwright-coverage.mjs "\${{ runner.temp }}/${report}"`)
+    //
+    // Asserted per JOB rather than over the whole file (#1066). A whole-file
+    // count of two `--reporter=json` lines is equally satisfied by two runs in
+    // ONE job, which is precisely the state where the other job's checker has
+    // nothing to read: two conditions over one body of text prove neither half
+    // (L178).
+    const ci = readWorkflow('.github/workflows/ci.yml')
+    for (const [jobId, report] of [
+      ['a11y', 'a11y-report.json'],
+      ['auth-gate', 'gate-report.json'],
+    ] as const) {
+      const job = workflowJobBody(ci, jobId)
+      expect(job, `${jobId} never names ${report} as its JSON output`).toContain(
+        `PLAYWRIGHT_JSON_OUTPUT_NAME: \${{ runner.temp }}/${report}`,
+      )
+      expect(job, `${jobId} never checks ${report}`).toContain(
+        `playwright-coverage.mjs "\${{ runner.temp }}/${report}"`,
+      )
+      const jsonRuns = job.split('\n').filter((l) => l.includes('--reporter=json'))
+      expect(
+        jsonRuns.length,
+        `${jobId} must make exactly one JSON-reporting playwright run, so its checker reads that run`,
+      ).toBe(1)
     }
-    // And the run that produces it must actually ask for the json reporter.
-    const jsonRuns = ci.split('\n').filter((l) => l.includes('--reporter=json'))
-    expect(jsonRuns.length, 'a job writes no JSON report, so its checker has nothing to read').toBe(2)
   })
 })

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
+import { readWorkflow, workflowJobBody } from '../src/lib/__tests__/_scan-utils'
 
 /**
  * Guards the CI accessibility job itself (#673).
@@ -15,24 +16,12 @@ import * as path from 'path'
  * not care how the app is served or what the job is called, only that a11y.spec.ts is
  * actually run and is actually allowed to fail the build.
  */
-const CI_YML = path.resolve(__dirname, '../../../.github/workflows/ci.yml')
+const CI_YML = '.github/workflows/ci.yml'
 
-const readCi = () => {
-  const text = fs.readFileSync(CI_YML, 'utf8')
-  // Fail loudly rather than let every assertion below pass against an empty string if the
-  // workflow is ever moved or renamed.
-  expect(text.length, `${CI_YML} is empty`).toBeGreaterThan(0)
-  return text
-}
+const readCi = () => readWorkflow(CI_YML)
 
-/** The `a11y:` job body: from its key to the start of the next top-level job. */
-const a11yJob = (ci: string): string => {
-  const start = ci.indexOf('\n  a11y:')
-  expect(start, 'ci.yml no longer defines an `a11y:` job').toBeGreaterThan(-1)
-  const rest = ci.slice(start + 1)
-  const next = rest.slice(1).search(/\n {2}[a-z][a-z0-9-]*:\n/)
-  return next === -1 ? rest : rest.slice(0, next + 1)
-}
+/** The `a11y:` job body, sliced by job key rather than by its neighbour (#1066). */
+const a11yJob = (ci: string): string => workflowJobBody(ci, 'a11y')
 
 describe('CI accessibility gate', () => {
   it('runs the accessibility spec on every PR and push to main', () => {
