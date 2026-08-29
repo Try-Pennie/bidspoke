@@ -46,6 +46,7 @@ const workflow = (file: string, label: string): WatchedWorkflow => ({
   label,
   cron: '17 * * * *',
   staleMs: 4 * 3_600_000,
+  driveAfterMs: 50 * 60_000,
   dependents: `nothing is watching ${label}`,
 })
 

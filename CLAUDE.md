@@ -126,7 +126,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Snowflake export | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | Salesforce | `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
 | Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY` |
-| Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads this repo's Actions history for the scheduled-workflow watch, #842), `ANTHROPIC_API_KEY` (changelog drafting) |
+| Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads this repo's Actions history for the scheduled-workflow watch, #842, and dispatches those workflows, #1058, so it needs Actions read AND write), `ANTHROPIC_API_KEY` (changelog drafting) |
 
 Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (changing it breaks person dedup) and `SECRET_ENCRYPTION_KEY` (for old reveals).
 

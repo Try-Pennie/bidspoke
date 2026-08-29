@@ -12,6 +12,7 @@ import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
 import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
+import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
 export interface SlackConnection {
   bot_token: string
@@ -1237,7 +1238,79 @@ const scheduleFixes = (statuses: Set<ScheduleStatus>): string[] => {
  * backup repo and cannot see this repository at all.
  */
 const SCHEDULE_ACCESS_FIX =
-  'The worker needs `GITHUB_ACTIONS_TOKEN` set to a credential that can read this repository\'s Actions history (a fine-grained token scoped to this repository with Actions: read and Metadata: read), and `GITHUB_CODE_REPO` set to this repository. `GITHUB_TOKEN` is only a fallback and belongs to the workflow-backup repo, so it is expected not to work here.'
+  'The worker needs `GITHUB_ACTIONS_TOKEN` set to a credential that can read this repository\'s Actions history (a fine-grained token scoped to this repository with Actions: read and write, and Metadata: read; write is needed because the worker also dispatches these workflows itself), and `GITHUB_CODE_REPO` set to this repository. `GITHUB_TOKEN` is only a fallback and belongs to the workflow-backup repo, so it is expected not to work here.'
+
+/**
+ * The worker could not DISPATCH one or more scheduled workflows (#1058).
+ *
+ * Separate from `sendWorkflowScheduleAlert` on purpose. That one reports a
+ * workflow that has stopped running and points the reader at GitHub Actions to
+ * re-enable it. When the cause is our own driver being refused, that advice is
+ * wrong and the reader loses time on a workflow that was never disabled, which
+ * is L11 exactly: a message may claim only what its check actually measured.
+ * This fires hours earlier and names the real repair.
+ *
+ * Only `failed` and `unconfigured` speak. An `unknown` outcome means the last
+ * run could not be read, and the schedule watch already reports that condition;
+ * repeating it here would be two checks alerting on one fact (L53).
+ */
+export async function sendWorkflowDispatchAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  results: DispatchAttempt[],
+): Promise<boolean> {
+  const problems = dispatchFailed(results)
+  if (problems.length === 0) return false
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+
+  const many = problems.length > 1
+  const files = problems.map((p) => `\`${p.file}\``).join(', ')
+  const blocks: unknown[] = [
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: many
+          ? `The worker could not start ${problems.length} scheduled checks`
+          : `The worker could not start ${problems[0].file}`,
+        emoji: false,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `GitHub stopped delivering this repository's scheduled events reliably, so the worker dispatches these ` +
+          `checks from its own cron. That dispatch is failing, which means ${files} ${many ? 'are' : 'is'} ` +
+          'not running at all. Whatever each one protects is unprotected until this is fixed.',
+      },
+    },
+  ]
+
+  for (const problem of problems) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*\`${problem.file}\`:* ${problem.reason}` },
+    })
+  }
+
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text:
+        '*How to fix:* This is not a workflow that needs re-enabling in GitHub Actions. The dispatch itself is ' +
+        'being refused, so read the reason above: a 401 or 403 means `GITHUB_ACTIONS_TOKEN` needs Actions read ' +
+        'and write on this repository, a 422 means the workflow is missing its `driver` input, and a missing ' +
+        'secret names itself.',
+    },
+  })
+
+  const summary = `workflow dispatch failed: ${problems.map((p) => p.file).join(', ')}`
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary)) !== null
+}
 
 export async function sendWorkflowScheduleAlert(
   supabase: SupabaseClient,

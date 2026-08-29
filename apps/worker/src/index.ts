@@ -500,6 +500,20 @@ export default {
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
       )
+      // Drive the scheduled workflows before watching them (#1058). GitHub
+      // stopped delivering this repository's cron events reliably on 2026-08-26
+      // while on-demand triggers kept working, so the worker fires them itself
+      // when they fall behind. Runs BEFORE the watch so the watch reads a
+      // frontier this run has already advanced. The work itself lives in
+      // workflow-dispatch-run.ts rather than here, because what matters about it
+      // is how it behaves when things go wrong and none of that is reachable
+      // from a test while it sits inside scheduled().
+      ctx.waitUntil(
+        (async () => {
+          const { runAndReportDispatch } = await import('./lib/workflow-dispatch-run')
+          await runAndReportDispatch(supabase, env)
+        })().catch((e) => console.error('[workflow-dispatch] driver failed:', e)),
+      )
       ctx.waitUntil(
         runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
           .then((rs) => {

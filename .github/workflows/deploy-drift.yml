@@ -27,6 +27,18 @@ on:
   schedule:
     - cron: '17 * * * *' # hourly, offset off the top of the hour
   workflow_dispatch:
+    inputs:
+      driver:
+        description: 'Who is running this. The worker sets cloudflare-cron; a manual run leaves the default.'
+        required: false
+        default: 'manual'
+
+# Stamped into the run's display title so the worker's schedule watch can tell a
+# run it drove from one a PERSON started by hand (#1058). GitHub stopped
+# delivering this repo's cron events reliably on 2026-08-26, so the worker
+# dispatches this itself; a driven run has to count as the schedule being alive,
+# while a manual press still must not, or one click hides a dead schedule.
+run-name: Deploy Drift (${{ inputs.driver || 'schedule' }})
 
 jobs:
   drift:
