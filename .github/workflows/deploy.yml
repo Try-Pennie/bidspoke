@@ -13,6 +13,8 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    # measured max 264s over 4 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -76,6 +78,8 @@ jobs:
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    # measured max 9s over 6 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 5
     outputs:
       worker: ${{ steps.filter.outputs.worker }}
       worker_tail: ${{ steps.filter.outputs.worker_tail }}
@@ -118,6 +122,8 @@ jobs:
   deploy-worker-tail:
     name: Deploy Worker Tail
     runs-on: ubuntu-latest
+    # conditional and rarely run; sized like Deploy Worker, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     needs: [verify, changes]
     if: needs.changes.outputs.worker_tail == 'true'
     steps:
@@ -148,6 +154,8 @@ jobs:
   worker_artifact:
     name: Worker artifact changed
     runs-on: ubuntu-latest
+    # measured max 43s over 3 runs, and it builds twice, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     needs: [verify, changes]
     if: needs.changes.outputs.worker == 'true'
     outputs:
@@ -258,6 +266,8 @@ jobs:
   deploy-worker:
     name: Deploy Worker
     runs-on: ubuntu-latest
+    # measured max 39s, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     needs: [verify, changes, worker_artifact]
     # Skips ONLY on an explicit `false`, meaning the gate positively decided the
     # built artifact is byte identical to what is already live. Any other state,
@@ -308,6 +318,8 @@ jobs:
   deploy-pages:
     name: Deploy Pages
     runs-on: ubuntu-latest
+    # measured max 135s over 2 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     needs: [verify, changes]
     if: needs.changes.outputs.pages == 'true'
     steps:
@@ -353,6 +365,8 @@ jobs:
   assert-db-objects:
     name: Live database has the objects the app needs
     runs-on: ubuntu-latest
+    # measured max 11s over 4 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     # Runs AFTER the deploys, because asserting before them would measure the
     # previous release. always() so it still reports when a deploy job was
     # skipped by its paths filter, which is the common case: the objects are

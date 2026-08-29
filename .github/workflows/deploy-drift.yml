@@ -49,6 +49,12 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # The in-flight gate asks GitHub whether a Deploy is still running, and
+      # this repository's default workflow token is `read`, which grants contents
+      # and packages and nothing else. Without this the query was refused every
+      # time, the error was discarded, and the empty answer read as "no deploy is
+      # running", so the gate that exists to prevent a false page caused one
+      # (#899).
       actions: read
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
