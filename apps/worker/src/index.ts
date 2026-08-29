@@ -520,10 +520,18 @@ export default {
           const problems = dispatchFailed(results)
           if (problems.length === 0) return
           for (const p of problems) console.error(`[workflow-dispatch] ${p.file} ${p.outcome}: ${p.reason}`)
-          const { data: conns } = await supabase
+          // The error is READ, not discarded. A failed lookup here yields no
+          // orgs, the loop below runs zero times, and the alert silently does
+          // not go out: a transient database error and a healthy system would
+          // otherwise produce the identical outcome, with nothing to tell them
+          // apart (L10, L11). The failure is loud in the log even though the
+          // alert cannot be delivered.
+          const { data: conns, error: connsError } = await supabase
             .from('service_connections')
             .select('organization_id')
             .eq('service_type', 'slack')
+          const { logReadFailure } = await import('./lib/scheduled-read')
+          logReadFailure('workflow-dispatch', 'slack connections', connsError)
           for (const orgId of [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]) {
             // Failing to DELIVER the verdict must not destroy it: the run log
             // above is the other half of this check's output.
