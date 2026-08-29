@@ -69,8 +69,11 @@ const fetchAll = (
           stamp === null
             ? []
             : [
-                { created_at: stamp, conclusion },
-                { created_at: stamp, conclusion },
+                // `event` matters since #1058: the lookup no longer asks GitHub
+                // to filter to scheduled runs, it decides per run, so a fixture
+                // that does not say what triggered it now reads as unreadable.
+                { created_at: stamp, conclusion, event: 'schedule' },
+                { created_at: stamp, conclusion, event: 'schedule' },
               ],
       }),
       { status: 200 },

@@ -3,6 +3,7 @@ import {
   WATCHED_WORKFLOWS,
   checkRepoAccess,
   evaluateSchedule,
+  DRIVER_MARKER,
   lookupLastScheduledRun,
   formatScheduleSummary,
   resolveGithubAccess,
@@ -262,16 +263,71 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
 
   const runs = (body: unknown) => vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
 
-  it('asks only for scheduled runs, so a manual dispatch cannot mask a dead cron', async () => {
-    const fetchMock = runs({ workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success' }] })
+  it('counts a scheduled run', async () => {
+    const fetchMock = runs({
+      workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'schedule' }],
+    })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'] })
+    expect(String(fetchMock.mock.calls[0][0])).toContain('deploy-drift.yml')
+  })
 
-    const url = String(fetchMock.mock.calls[0][0])
-    expect(url, 'the lookup counts runs of every kind, so running it by hand hides a dead schedule').toContain(
-      'event=schedule',
-    )
-    expect(url).toContain('deploy-drift.yml')
+  it('counts a run the worker driver dispatched, because that IS the check running', async () => {
+    // GitHub stopped delivering this repo's cron events on 2026-08-26 while
+    // on-demand triggers kept working, so the worker now dispatches these
+    // workflows itself (#1058). A driven run has to count, or the watch would
+    // alert for ever about a check that is in fact running every hour.
+    const fetchMock = runs({
+      workflow_runs: [
+        {
+          created_at: '2026-08-17T11:17:00Z',
+          conclusion: 'success',
+          event: 'workflow_dispatch',
+          display_title: `Deploy Drift (${DRIVER_MARKER})`,
+        },
+      ],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'] })
+  })
+
+  it('still ignores a dispatch a PERSON started, so a manual press cannot mask a dead schedule', async () => {
+    // The property the old `event=schedule` filter existed to protect, kept
+    // intact now that the filter is gone: somebody pressing Run workflow once
+    // must not read as the schedule being alive.
+    const fetchMock = runs({
+      workflow_runs: [
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'Deploy Drift (manual)' },
+        { created_at: '2026-08-10T09:17:00Z', conclusion: 'success', event: 'schedule', display_title: 'Deploy Drift' },
+      ],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(
+      result.ok === true && result.lastRunIso,
+      'the manual press was counted, so a dead schedule now reads as healthy',
+    ).toBe('2026-08-10T09:17:00Z')
+  })
+
+  it('reports only unqualifying runs as a real absence rather than reading the newest anyway', async () => {
+    const fetchMock = runs({
+      workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'Deploy Drift (manual)' }],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
+  })
+
+  it('builds the failure streak only from qualifying runs', async () => {
+    // A manual press that happened to succeed must not break a streak of real
+    // scheduled failures, and one that failed must not manufacture a streak.
+    const fetchMock = runs({
+      workflow_runs: [
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'failure', event: 'schedule' },
+        { created_at: '2026-08-17T10:30:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'Deploy Drift (manual)' },
+        { created_at: '2026-08-17T10:17:00Z', conclusion: 'failure', event: 'schedule' },
+      ],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result.ok === true && result.conclusions).toEqual(['failure', 'failure'])
   })
 
   it('asks for more than one run, so a run of failures can be seen at all', async () => {
@@ -286,8 +342,8 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
   it('carries the conclusions back in order, newest first', async () => {
     const fetchMock = runs({
       workflow_runs: [
-        { created_at: '2026-08-17T11:17:00Z', conclusion: 'failure' },
-        { created_at: '2026-08-17T10:17:00Z', conclusion: 'success' },
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'failure', event: 'schedule' },
+        { created_at: '2026-08-17T10:17:00Z', conclusion: 'success', event: 'schedule' },
       ],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
@@ -297,6 +353,35 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
 
   it('reports a confirmed empty list as a real absence', async () => {
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', runs({ workflow_runs: [] }))
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
+  })
+
+  it('reports runs that carry no trigger at all as unreadable, not as an absence', async () => {
+    // If GitHub ever stops returning `event`, every run becomes unqualifying and
+    // the filter would report a busy workflow as never having run: an accusation
+    // built on an answer we could not read (L119, L11). A page of runs where NONE
+    // names its trigger is an API shape we do not understand, and must say so.
+    const fetchMock = runs({
+      workflow_runs: [
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'success' },
+        { created_at: '2026-08-17T10:17:00Z', conclusion: 'success' },
+      ],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result.ok, 'an unreadable page was reported as a workflow that never ran').toBe(false)
+    expect(result.ok === false && result.missing).not.toBe(true)
+  })
+
+  it('reports a page of readable but unqualifying runs as a genuine absence', async () => {
+    // The other side of the line above: these runs DID name their trigger, and
+    // none of them counts. That is a real reading, not a broken one.
+    const fetchMock = runs({
+      workflow_runs: [
+        { created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'by hand' },
+        { created_at: '2026-08-17T10:17:00Z', conclusion: 'success', event: 'push' },
+      ],
+    })
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
   })
 

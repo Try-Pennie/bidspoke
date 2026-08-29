@@ -500,6 +500,41 @@ export default {
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
       )
+      // Drive the scheduled workflows before watching them (#1058). GitHub
+      // stopped delivering this repository's cron events reliably on 2026-08-26
+      // while on-demand triggers kept working, so the worker fires them itself
+      // when they fall behind. Runs BEFORE the watch so the watch reads a
+      // frontier this run has already advanced, and awaited inside its own
+      // waitUntil so a slow dispatch cannot delay the checks after it.
+      ctx.waitUntil(
+        (async () => {
+          const { runWorkflowDispatchDriver, formatDispatchSummary, dispatchFailed } = await import(
+            './lib/workflow-dispatch-driver'
+          )
+          const { sendWorkflowDispatchAlert } = await import('./lib/slack')
+          const results = await runWorkflowDispatchDriver(env)
+          // Logged on every run, including a clean one: a driver that silently
+          // stopped driving is the failure this whole change exists to prevent,
+          // and only a positive reading tells it from a healthy one (L98).
+          console.log(`[workflow-dispatch] ${formatDispatchSummary(results)}`)
+          const problems = dispatchFailed(results)
+          if (problems.length === 0) return
+          for (const p of problems) console.error(`[workflow-dispatch] ${p.file} ${p.outcome}: ${p.reason}`)
+          const { data: conns } = await supabase
+            .from('service_connections')
+            .select('organization_id')
+            .eq('service_type', 'slack')
+          for (const orgId of [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]) {
+            // Failing to DELIVER the verdict must not destroy it: the run log
+            // above is the other half of this check's output.
+            try {
+              await sendWorkflowDispatchAlert(supabase, orgId, results)
+            } catch (e) {
+              console.error('[workflow-dispatch] alert failed:', e)
+            }
+          }
+        })().catch((e) => console.error('[workflow-dispatch] driver failed:', e)),
+      )
       ctx.waitUntil(
         runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
           .then((rs) => {

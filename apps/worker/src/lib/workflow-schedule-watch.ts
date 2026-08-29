@@ -63,6 +63,15 @@ export interface WatchedWorkflow {
   cron: string
   /** Age past which the schedule is declared dark. Well above the cadence. */
   staleMs: number
+  /**
+   * Age past which the worker DISPATCHES this workflow itself (#1058).
+   *
+   * A different number from `staleMs` and always well below it: this is when we
+   * act, that is when we complain. The gap between them is the room a single
+   * failed dispatch has before anybody is paged, and the guard in
+   * `workflow-dispatch-driver.test.ts` requires at least one whole cycle of it.
+   */
+  driveAfterMs: number
   /** What stops being true while this workflow is dark (for the alert body). */
   dependents: string
 }
@@ -87,6 +96,11 @@ export const WATCHED_WORKFLOWS: WatchedWorkflow[] = [
     cron: '17 * * * *',
     // Hourly cadence, 4h window. Four consecutive misses before it speaks.
     staleMs: 4 * H,
+    // Slightly under the hour, because the worker's own driving cron is hourly:
+    // at exactly 1 * H the comparison would land on whichever side the two crons
+    // happened to drift, and a threshold decided by a race skips a cycle at
+    // random. 50 minutes always trips on the next tick.
+    driveAfterMs: 50 * 60 * 1000,
     dependents:
       'nothing is checking whether the live worker and the live site are running the code that is on main, so a failed deploy would leave production behind with no signal',
   },
@@ -96,6 +110,11 @@ export const WATCHED_WORKFLOWS: WatchedWorkflow[] = [
     cron: '0 8 * * *',
     // Daily cadence, 26h window, matching the daily worker crons.
     staleMs: 26 * H,
+    // 20h, not 24h. Driving at exactly the cadence would walk this run an hour
+    // later every day (the worker's cron is hourly, so it fires on the first
+    // tick PAST the threshold), and would leave only 2h before the alert. At 20h
+    // it runs a little more than daily, stays anchored, and keeps a 6h margin.
+    driveAfterMs: 20 * H,
     dependents:
       'nothing is checking that the generated database types still match the live schema, so a migration can drift from the types the worker compiles against',
   },
@@ -290,16 +309,54 @@ export async function checkRepoAccess(
  * More than one run is fetched so a streak of failures can be seen at all: a page
  * size of one cannot tell a blip from a workflow failing every night (#844).
  */
-export const RUNS_PER_LOOKUP = 5
+export const RUNS_PER_LOOKUP = 20
+
+/**
+ * The marker the worker's dispatch driver stamps into a run's display title.
+ *
+ * GitHub stopped delivering this repository's scheduled events reliably on
+ * 2026-08-26 (scheduled runs fell from about 24 a day to 3, while push and
+ * pull_request runs kept firing normally), so the worker now dispatches these
+ * workflows itself. A driven run has to count as the check running, or this
+ * watch would alert for ever about a workflow running every hour.
+ *
+ * It cannot simply count every `workflow_dispatch` run, because that is also how
+ * a PERSON runs a workflow by hand, and letting one manual press read as a live
+ * schedule is the exact blindness the old `event=schedule` filter existed to
+ * prevent. The actor cannot tell the two apart either: the driver dispatches
+ * with a token owned by the same account that would press the button. So the
+ * workflows set `run-name` from a `driver` input, and only a run carrying this
+ * marker counts.
+ */
+export const DRIVER_MARKER = 'cloudflare-cron'
+
+/**
+ * Does this run count as evidence the check is still running on a cadence?
+ *
+ * A real scheduled run always does. A dispatched one does only when the driver
+ * stamped it, so an unmarked dispatch (a person pressing Run workflow) is
+ * ignored exactly as it was before the driver existed.
+ */
+export function isQualifyingRun(run: unknown): boolean {
+  const event = (run as { event?: unknown })?.event
+  if (event === 'schedule') return true
+  if (event !== 'workflow_dispatch') return false
+  const title = (run as { display_title?: unknown })?.display_title
+  return typeof title === 'string' && title.includes(DRIVER_MARKER)
+}
 
 export async function lookupLastScheduledRun(
   access: Extract<GithubAccess, { ok: true }>,
   file: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ScheduleLookup> {
-  // event=schedule is the whole point: a manual dispatch must not count as the
-  // schedule still firing.
-  const url = `https://api.github.com/repos/${access.repo}/actions/workflows/${file}/runs?event=schedule&per_page=${RUNS_PER_LOOKUP}`
+  // Deliberately NOT filtered to `event=schedule` any more. Runs driven by the
+  // worker arrive as `workflow_dispatch` and have to be counted, so the server
+  // side filter is replaced by `isQualifyingRun` below, which keeps the same
+  // decision (a manual press does not count) while admitting a driven run. The
+  // page is larger to compensate: unqualifying runs are now fetched and then
+  // discarded, and a streak still has to be visible in what survives.
+  const url = `https://api.github.com/repos/${access.repo}/actions/workflows/${file}/runs?per_page=${RUNS_PER_LOOKUP}`
 
   let response: Response
   try {
@@ -334,13 +391,32 @@ export async function lookupLastScheduledRun(
   if (!Array.isArray(runs)) {
     return { ok: false, reason: `GitHub's response had no workflow_runs list for ${file}` }
   }
+  // GitHub confirming there are zero runs is a real, complete answer, and has to
+  // be returned before the shape check below: an empty list trivially satisfies
+  // "no run named its trigger" and would otherwise be reported as unreadable.
   if (runs.length === 0) return { ok: true, lastRunIso: null, conclusions: [] }
 
-  const createdAt = (runs[0] as { created_at?: unknown }).created_at
+  // A page of runs where not one names its trigger is an API shape we cannot
+  // read, not a workflow that never ran. Without this, GitHub dropping the
+  // `event` field would make every run unqualifying and turn a busy workflow
+  // into a confident "no scheduled runs on record": an accusation resting on an
+  // answer we failed to parse (L119, L11).
+  if (!runs.some((run) => typeof (run as { event?: unknown })?.event === 'string')) {
+    return { ok: false, reason: `none of the runs GitHub returned for ${file} said what triggered it` }
+  }
+
+  // Filtered AFTER the shape checks, so a malformed body is still a failed
+  // lookup rather than an empty one. A page holding only readable, unqualifying
+  // runs IS a real absence: reading the newest run anyway would count a manual
+  // press as the schedule being alive.
+  const qualifying = runs.filter(isQualifyingRun)
+  if (qualifying.length === 0) return { ok: true, lastRunIso: null, conclusions: [] }
+
+  const createdAt = (qualifying[0] as { created_at?: unknown }).created_at
   if (typeof createdAt !== 'string' || Number.isNaN(Date.parse(createdAt))) {
     return { ok: false, reason: `the most recent run of ${file} carried no readable timestamp` }
   }
-  const conclusions = runs.map((run) => {
+  const conclusions = qualifying.map((run) => {
     const c = (run as { conclusion?: unknown }).conclusion
     return typeof c === 'string' ? c : null
   })

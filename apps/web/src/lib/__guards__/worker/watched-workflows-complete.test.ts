@@ -86,4 +86,41 @@ describe('every scheduled workflow is watched (#805)', () => {
       ).toContain(declared![1])
     }
   })
+  /**
+   * Every watched workflow is also DRIVEN by the worker (#1058), because GitHub
+   * stopped delivering this repository's scheduled events reliably on
+   * 2026-08-26. Two things have to be true of the workflow file for that to
+   * work, and neither fails in a way anybody would notice quickly:
+   *
+   * Without a `driver` input, GitHub rejects the dispatch with 422 and the
+   * workflow is simply never driven. Without a `run-name` that carries that
+   * input, the dispatch succeeds but the resulting run is indistinguishable from
+   * a person pressing Run workflow, so the schedule watch does not count it and
+   * alerts for ever about a workflow that is in fact running every hour.
+   */
+  it('gives every watched workflow the driver input its dispatch needs', () => {
+    for (const file of scheduledWorkflows()) {
+      const yml = readFileSync(path.join(WORKFLOW_DIR, file), 'utf8')
+      expect(
+        /^\s{2}workflow_dispatch:/m.test(yml),
+        `${file} is driven by the worker but has no workflow_dispatch trigger, so the dispatch is refused`,
+      ).toBe(true)
+      expect(
+        /^\s{6}driver:/m.test(yml),
+        `${file} has no 'driver' input, so GitHub answers 422 and the worker can never drive it`,
+      ).toBe(true)
+    }
+  })
+
+  it("stamps the driver into every watched workflow run name, so a driven run is recognisable", () => {
+    for (const file of scheduledWorkflows()) {
+      const yml = readFileSync(path.join(WORKFLOW_DIR, file), 'utf8')
+      const runName = yml.match(/^run-name:.*$/m)
+      expect(runName, `${file} has no run-name, so a driven run cannot be told from a manual press`).not.toBeNull()
+      expect(
+        runName![0],
+        `${file}'s run-name does not include the driver input, so the watch will ignore every run the worker drives`,
+      ).toContain('inputs.driver')
+    }
+  })
 })
