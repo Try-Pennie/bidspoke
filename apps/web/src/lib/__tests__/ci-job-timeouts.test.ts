@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { readWorkflow, workflowJobBody } from './_scan-utils'
+import { readWorkflow, workflowFiles, workflowJobBody } from './_scan-utils'
 
 /**
- * Every CI job must set `timeout-minutes`.
+ * Every job in every workflow must set `timeout-minutes` (#885, widened by
+ * #1062).
  *
  * GitHub's default job timeout is 360 minutes. Without an explicit one, a step
  * that stalls does not fail, it HANGS, and a hang is worse than a failure
@@ -14,15 +15,25 @@ import { readWorkflow, workflowJobBody } from './_scan-utils'
  * touching only `apps/worker/src/archive/`. Every other check finished inside
  * three minutes. It never reached a single assertion, and it read as "still
  * working" throughout.
+ *
+ * The guard written then read ci.yml and nothing else, which is the defect its
+ * own subject names: a rule enforced on one file while three others are exempt
+ * (L135, L30). The same Chromium install could hang the Pages build; a Verify
+ * that stalls holds the whole deploy for six hours while reading as in
+ * progress; and an hourly drift job that hangs for six hours also blocks the
+ * next five scheduled runs from meaning anything, which is the one job whose
+ * silence is supposed to be evidence.
+ *
+ * So it now reads EVERY `.github/workflows/*.yml`, enumerated from disk rather
+ * than listed here, so a workflow added later is covered on the day it lands
+ * rather than the day someone remembers this file (L96).
  */
-
-const CI_YML = '.github/workflows/ci.yml'
 
 /** Job keys are exactly two spaces deep under `jobs:`; steps are deeper. */
 function jobsWithoutTimeout(yaml: string): string[] {
   const lines = yaml.split('\n')
   const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
-  expect(jobsAt, 'ci.yml has a jobs: block').toBeGreaterThanOrEqual(0)
+  expect(jobsAt, 'workflow has a jobs: block').toBeGreaterThanOrEqual(0)
 
   const offenders: string[] = []
   let current: string | null = null
@@ -46,31 +57,36 @@ function jobsWithoutTimeout(yaml: string): string[] {
   return offenders
 }
 
-describe('CI job timeouts', () => {
-  it('finds the jobs, so the guard cannot pass by parsing nothing', () => {
-    // A parser that matches no jobs reports no offenders and reads as a clean
-    // pass. Assert the positive case first (LESSONS L159).
-    const yaml = readWorkflow(CI_YML)
-    const lines = yaml.split('\n')
-    const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
-    const found = lines.slice(jobsAt + 1).filter((l) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(l))
+const jobKeysIn = (yaml: string): string[] => {
+  const lines = yaml.split('\n')
+  const jobsAt = lines.findIndex((l) => /^jobs:\s*$/.test(l))
+  return lines.slice(jobsAt + 1).filter((l) => /^ {2}[A-Za-z0-9_-]+:\s*$/.test(l))
+}
 
-    expect(found.length).toBeGreaterThanOrEqual(6)
+describe('job timeouts across every workflow (#1062)', () => {
+  it('finds workflows to check, so the guard cannot pass by reading nothing', () => {
+    expect(workflowFiles().length).toBeGreaterThanOrEqual(4)
   })
 
-  it('gives every job an explicit timeout, so a stall fails instead of hanging', () => {
-    const offenders = jobsWithoutTimeout(readWorkflow(CI_YML))
+  it.each(workflowFiles())('%s declares jobs, so it cannot pass by parsing nothing', (file) => {
+    // Per file, not once overall: a single total would be satisfied by one big
+    // workflow while another parsed to nothing at all (L178).
+    expect(jobKeysIn(readWorkflow(file)).length).toBeGreaterThanOrEqual(1)
+  })
 
-    expect(offenders, `jobs missing timeout-minutes: ${offenders.join(', ')}`).toEqual([])
+  it.each(workflowFiles())('%s gives every job an explicit timeout', (file) => {
+    const offenders = jobsWithoutTimeout(readWorkflow(file))
+
+    expect(
+      offenders,
+      `${file} jobs missing timeout-minutes: ${offenders.join(', ')}. Without one a stalled step hangs for six hours instead of failing, and reads as "still working" the whole time.`,
+    ).toEqual([])
   })
 })
 
 describe('accessibility job browser cache', () => {
   it('caches the Playwright browser instead of downloading it on every run', () => {
-    // The download is the step that stalled three times. Only pnpm packages were
-    // cached, so every pull request in the repo re-fetched Chromium and was
-    // exposed to that download being slow.
-    const a11y = workflowJobBody(readWorkflow(CI_YML), 'a11y')
+    const a11y = workflowJobBody(readWorkflow('.github/workflows/ci.yml'), 'a11y')
 
     expect(a11y).toContain('actions/cache')
     expect(a11y).toMatch(/ms-playwright/)

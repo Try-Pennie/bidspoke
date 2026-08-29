@@ -44,6 +44,8 @@ jobs:
   drift:
     name: Live worker matches the latest worker commit
     runs-on: ubuntu-latest
+    # measured max 11s over 6 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 5
     permissions:
       contents: read
       # The in-flight gate asks GitHub whether a Deploy is still running, and
@@ -243,6 +245,8 @@ jobs:
   pages:
     name: Live site matches the latest apps/web commit
     runs-on: ubuntu-latest
+    # measured max 14s over 6 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 5
     permissions:
       contents: read
       # The in-flight gate asks GitHub whether a Deploy is still running, and
@@ -399,6 +403,8 @@ jobs:
   worker_tail:
     name: Live tail worker matches the latest tail commit
     runs-on: ubuntu-latest
+    # measured max 9s over 6 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 5
     permissions:
       contents: read
       # The in-flight gate asks GitHub whether a Deploy is still running, and
