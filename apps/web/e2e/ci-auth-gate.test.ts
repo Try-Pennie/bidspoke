@@ -52,9 +52,29 @@ describe('CI auth-gate probe', () => {
   it('lets a gate failure fail the build', () => {
     const job = withoutComments(gateJob(readCi()))
     expect(job).not.toMatch(/continue-on-error:\s*true/)
-    // No credential check means no skip path: the probe never signs in, so there
-    // is no legitimate reason for it to opt out of running.
+    // The job must never gate itself on a CREDENTIAL the way the a11y job does.
+    // It signs in to nothing, so a missing secret is not a reason for it to
+    // skip, and wiring it to one would silence it on exactly the fork and
+    // Dependabot pull requests it exists to cover.
     expect(job).not.toMatch(/steps\.creds\.outputs\.have/)
+  })
+
+  it('skips only on the shared changed-files decision, never on anything else', () => {
+    // #968 gave this job one legitimate reason to skip: a pull request that
+    // cannot move the artifact it probes. That decision is the shared
+    // fail-closed script, whose own tests cover every way the lookup can go
+    // wrong. Any OTHER condition appearing on these steps is a second, unproven
+    // way for the gate to switch itself off (L42).
+    const job = withoutComments(gateJob(readCi()))
+    const conditions = [...job.matchAll(/^\s*if:\s*(.+)$/gm)].map((m) => m[1].trim())
+    expect(conditions.length, 'no step is conditional, so this cannot pass vacuously').toBeGreaterThan(0)
+    for (const condition of conditions) {
+      expect(
+        condition,
+        `the auth gate skips a step on '${condition}', which is not the shared changed-files decision`,
+      ).toBe("steps.web.outputs.changed == 'true'")
+    }
+    expect(job).toContain('.github/scripts/web-code-changed.sh')
   })
 
   it('fails loudly when the build-time public config is missing', () => {

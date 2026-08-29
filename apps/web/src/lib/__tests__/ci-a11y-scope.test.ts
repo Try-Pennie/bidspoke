@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { readWorkflow, workflowJobBody } from './_scan-utils'
+import { readWorkflow, workflowJobBody, workflowJobIds } from './_scan-utils'
 
 /**
  * The accessibility scan runs only when web code changed, and FAILS CLOSED.
@@ -32,28 +32,23 @@ describe('accessibility scan scoping', () => {
     expect(section).toMatch(/apps\/web/)
   })
 
-  it('runs the scan when it cannot tell what changed, rather than skipping', () => {
-    // The whole risk of this optimisation is a detection bug silently disabling
-    // the gate, so indeterminate must mean run.
-    //
-    // Asserting "a changed=true appears before the first changed=false" is
-    // VACUOUS: any earlier branch's changed=true satisfies it while a later
-    // branch fails open, and this test passed against exactly that defect until
-    // it was mutation-checked (L178). Count instead, and pin where the single
-    // skip lives.
-    const detect = a11ySection()
-    const script = detect.slice(detect.indexOf('id: web'), detect.indexOf('Check for e2e credentials'))
-    const lines = script.split('\n')
+  it('delegates the decision to the shared fail-closed script', () => {
+    // The fail-closed logic itself lives in .github/scripts/web-code-changed.sh
+    // and is exercised by web-code-changed-decision.test.ts, which drives the
+    // real script through every way the lookup can go wrong. What has to be
+    // asserted HERE is only that this job actually consults it: a script nothing
+    // calls is indistinguishable from no script (L3).
+    expect(a11ySection()).toContain('.github/scripts/web-code-changed.sh')
+  })
 
-    const skips = lines.filter((l) => l.includes('changed=false'))
-    expect(skips, 'exactly one branch may skip the scan').toHaveLength(1)
-
-    // That one skip is the else of the path-match, never an error path.
-    const skipAt = lines.findIndex((l) => l.includes('changed=false'))
-    const preceding = lines.slice(0, skipAt).reverse().find((l) => /^\s*(if|else|fi)\b/.test(l.trim()))
-    expect(preceding?.trim(), 'the only skip is the else of the apps/web match').toBe('else')
-
-    expect(script).toMatch(/could not determine/i)
+  it('reports the lookup failing to the script instead of swallowing it', () => {
+    // The script can only fail closed on a failed lookup if the job TELLS it the
+    // lookup failed. A run block that let `gh api` fail silently and passed the
+    // empty output along as a success would leave the script deciding "nothing
+    // matched" on no evidence, with every run still green (L215).
+    const detect = a11ySection().slice(a11ySection().indexOf('id: web'))
+    expect(detect).toMatch(/if files=\$\(gh api/)
+    expect(detect).toMatch(/ok=false/)
   })
 
   it('gates the expensive steps on that decision, not just the final assertion', () => {
@@ -83,18 +78,40 @@ describe('accessibility scan scoping', () => {
     expect(beforeSteps).toMatch(/pull-requests:\s*read/)
   })
 
-  it('warns loudly when it cannot tell, rather than passing silently', () => {
-    // Failing closed is safe but SILENT: the job scans everything and reports
-    // success, so a permanently broken lookup is indistinguishable from a
-    // healthy one that keeps finding web changes. That state ran unnoticed for
-    // an hour on 2026-08-19. An indeterminate result is a different cause from
-    // a clean decision and gets a different message (L11).
-    const section = a11ySection()
-    const script = section.slice(section.indexOf('id: web'), section.indexOf('Check for e2e credentials'))
+  it('is not the only job whose expensive build is scoped this way (#968)', () => {
+    // Both jobs build the identical next-on-pages artifact on every pull
+    // request. Scoping one and not the other leaves the unscoped one as the
+    // critical path of every backend pull request, which is the whole of #968.
+    //
+    // Derived by looking for jobs that BUILD, rather than by naming them, so a
+    // third artifact-building job cannot be added without either being scoped
+    // or failing here (L247).
+    const yaml = readWorkflow(CI_YML)
+    const builders = workflowJobIds(yaml).filter((id) =>
+      workflowJobBody(yaml, id).includes('pages:build'),
+    )
+    expect(builders.length, 'no job builds the artifact, so this cannot pass vacuously').toBeGreaterThanOrEqual(2)
+    for (const id of builders) {
+      expect(
+        workflowJobBody(yaml, id),
+        `ci.yml's ${id} job builds the Pages artifact without consulting web-code-changed.sh, so it runs in full on pull requests that cannot affect it`,
+      ).toContain('.github/scripts/web-code-changed.sh')
+    }
+  })
 
-    const indeterminate = script.split('\n').filter((l) => /could not determine/i.test(l))
-    expect(indeterminate.length, 'both indeterminate branches announce themselves').toBe(2)
-    for (const line of indeterminate) expect(line).toMatch(/::warning::/)
+  it('caches the Next.js build cache in every job that builds the artifact (#970)', () => {
+    const yaml = readWorkflow(CI_YML)
+    const builders = workflowJobIds(yaml).filter((id) =>
+      workflowJobBody(yaml, id).includes('pages:build'),
+    )
+    expect(builders.length).toBeGreaterThanOrEqual(2)
+    for (const id of builders) {
+      const body = workflowJobBody(yaml, id)
+      expect(body, `${id} builds from cold every time`).toContain('apps/web/.next/cache')
+      expect(body, `${id} caches without a restore-keys fallback, so a source change gets no warm start`).toMatch(
+        /restore-keys:/,
+      )
+    }
   })
 
   it('installs the browser without the operating system package step', () => {
