@@ -179,52 +179,105 @@ describe('the tail check tells apart the ways it can fail (#739)', () => {
  * success. It survived a mutation check, and was found only because that check
  * failed to fail (L154).
  */
-describe('each drift job only talks about its own subject (#739)', () => {
-  /** The three jobs, sliced apart by their top-level keys. */
-  const jobBodies = (): Record<string, string> => {
-    const yml = readRepoFile('.github/workflows/deploy-drift.yml')
-    const starts = [...yml.matchAll(/^ {2}([a-z_]+):$/gm)].map((m) => ({ name: m[1], at: m.index! }))
-    expect(starts.length, 'no jobs found in deploy-drift.yml').toBeGreaterThan(2)
+describe('each drift target only talks about its own subject (#739)', () => {
+  /**
+   * #1065 folded the three per-target jobs into one, so the unit is no longer a
+   * job: it is the `Decide and alert` step that actually speaks. That is the
+   * tighter slice anyway, because the step is what composes the Slack message,
+   * and it is the only place a subject can be named wrongly.
+   */
+  const alertBodies = (): Record<string, string> => {
+    const lines = readRepoFile('.github/workflows/deploy-drift.yml').split('\n')
     const out: Record<string, string> = {}
-    starts.forEach((s, i) => {
-      out[s.name] = yml.slice(s.at, i + 1 < starts.length ? starts[i + 1].at : undefined)
+    lines.forEach((line, i) => {
+      const match = /^ {8}id: (worker_alert|pages_alert|tail_alert)$/.exec(line)
+      if (!match) return
+      // Bounded by the NEXT STEP, not by the next alert id. Bounding it by the
+      // next alert ran the site's slice on through the whole tail section, and
+      // the guard then reported the site alert as mentioning the tail worker:
+      // a wrong-window match accusing the wrong place (L135). Found by this
+      // test going red on a change that was correct.
+      let end = lines.length
+      for (let j = i + 1; j < lines.length; j++) {
+        if (/^ {6}- /.test(lines[j])) {
+          end = j
+          break
+        }
+      }
+      // Comments dropped. This guard is about what the alert SAYS TO SLACK, and
+      // a YAML or shell comment is not that. It matters: the prose introducing
+      // the next section sits between two steps, so it lands inside the
+      // previous step's slice and made the site's alert read as naming the tail
+      // worker. Prose ABOUT a thing is not the thing (L103).
+      out[match[1]] = lines
+        .slice(i, end)
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n')
     })
+    expect(Object.keys(out).length, 'no alert steps found in deploy-drift.yml').toBe(3)
     return out
   }
 
-  /** Phrases that name one subject and must not appear in another job. */
+  /** Phrases that name one subject and must not appear in another target's alert. */
   const SUBJECT_PHRASES: Record<string, RegExp> = {
-    drift: /the live worker|stranded worker|Worker code is committed/i,
-    pages: /the site|Pages|routes/i,
-    worker_tail: /tail worker/i,
+    worker_alert: /the live worker|stranded worker|Worker code is committed/i,
+    pages_alert: /the site|Pages|routes/i,
+    tail_alert: /tail worker/i,
   }
 
-  it('slices the jobs apart, so this cannot pass vacuously', () => {
-    const jobs = jobBodies()
+  it('slices the alerts apart, so this cannot pass vacuously', () => {
+    const alerts = alertBodies()
     for (const name of Object.keys(SUBJECT_PHRASES)) {
-      expect(jobs[name], `job ${name} not found`).toBeDefined()
-      expect(jobs[name].length).toBeGreaterThan(200)
+      expect(alerts[name], `alert step ${name} not found`).toBeDefined()
+      expect(alerts[name].length).toBeGreaterThan(200)
+      // Each slice must actually contain its OWN subject, or a slicer that
+      // returned the wrong span would satisfy every not.toMatch below by
+      // containing nothing at all (L215).
+      expect(alerts[name], `${name} does not talk about its own subject`).toMatch(SUBJECT_PHRASES[name])
     }
   })
 
-  it('keeps the tail worker out of the other jobs alerts', () => {
-    const jobs = jobBodies()
-    for (const other of ['drift', 'pages']) {
+  it('keeps the tail worker out of the other targets alerts', () => {
+    const alerts = alertBodies()
+    for (const other of ['worker_alert', 'pages_alert']) {
       expect(
-        jobs[other],
-        `the ${other} job's alerts mention the tail worker, so it would page about the wrong thing`,
-      ).not.toMatch(SUBJECT_PHRASES.worker_tail)
+        alerts[other],
+        `the ${other} step's alerts mention the tail worker, so it would page about the wrong thing`,
+      ).not.toMatch(SUBJECT_PHRASES.tail_alert)
     }
   })
 
-  it('gives each job exactly one arm per verdict', () => {
+  it('gives each target exactly one arm per verdict', () => {
     // A duplicate arm is silent: shell `case` takes the first match and the
-    // second is dead, so the job keeps working while saying the wrong thing.
-    for (const [name, body] of Object.entries(jobBodies())) {
+    // second is dead, so the check keeps working while saying the wrong thing.
+    for (const [name, body] of Object.entries(alertBodies())) {
       const arms = [...body.matchAll(/^\s{12}(alert-[a-z-]+)\)/gm)].map((m) => m[1])
       const seen = new Set<string>()
       const dupes = arms.filter((a) => (seen.has(a) ? true : (seen.add(a), false)))
-      expect(dupes, `the ${name} job has more than one arm for the same verdict`).toEqual([])
+      expect(dupes, `the ${name} step has more than one arm for the same verdict`).toEqual([])
     }
+  })
+
+  it('gives every alert its own failure boundary, and fails the run at the end (#1065)', () => {
+    // The three targets share a job now. Each alert exits 1 after posting to
+    // Slack, so without continue-on-error the first stranded target would end
+    // the run and the others would go unchecked on exactly the hours something
+    // is wrong (L73). And with it, the run would go GREEN while Slack was being
+    // paged, which is worse: hence the gate that puts the failure back (L98).
+    const yml = readRepoFile('.github/workflows/deploy-drift.yml')
+    for (const [name, body] of Object.entries(alertBodies())) {
+      expect(
+        body.slice(0, body.indexOf('run:')),
+        `${name} has no continue-on-error, so a failure there stops the targets checked after it`,
+      ).toMatch(/continue-on-error:\s*true/)
+    }
+    const gate = yml.slice(yml.indexOf('Fail the run if any target is stranded'))
+    expect(gate.length, 'there is no final gate, so an alerting run reports green').toBeGreaterThan(0)
+    for (const id of ['worker_alert', 'pages_alert', 'tail_alert']) {
+      expect(gate, `the final gate ignores ${id}, so that target can alert on a green run`).toContain(
+        `steps.${id}.outcome`,
+      )
+    }
+    expect(gate, 'the final gate never fails the run').toMatch(/exit 1/)
   })
 })

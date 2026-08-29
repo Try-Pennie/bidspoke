@@ -325,8 +325,14 @@ describe('the drift jobs can actually ask whether a deploy is running (#899)', (
     // failure, and a whole-block match is answered by any occurrence in the block
     // including copy ABOUT the thing (LESSONS L103, L135). Verified by deleting
     // the real grant and watching this fail.
+    // #1065 folded the three per-target jobs into one, so there is one header
+    // to carry the grant rather than three. Every job in the file is still
+    // checked, enumerated rather than named, so a target split back out into
+    // its own job later cannot arrive without it (L96).
     const text = drift()
-    for (const name of ['drift', 'pages', 'worker_tail']) {
+    const names = [...text.matchAll(/^ {2}([a-z_]+):$/gm)].map((m) => m[1])
+    expect(names.length, 'no jobs found in deploy-drift.yml').toBeGreaterThan(0)
+    for (const name of names) {
       const start = text.indexOf(`\n  ${name}:\n`)
       expect(start, `deploy-drift.yml has no job called ${name}`).toBeGreaterThan(-1)
       const steps = text.indexOf('\n    steps:\n', start)
