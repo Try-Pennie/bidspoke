@@ -28,6 +28,17 @@ jobs:
     name: Typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pull requests only (#972). On a push to main, deploy.yml's Verify job runs
+    # typecheck, lint and `pnpm -r test` on the same commit at the same time, and
+    # the deploy is gated on Verify rather than on this workflow, so a copy here
+    # gated nothing Verify did not already gate: about 5 minutes of paid compute
+    # per merge for no added protection.
+    #
+    # main is therefore still checked by exactly the same commands, once instead
+    # of twice. That coupling between two files is asserted, not remembered:
+    # apps/web/src/lib/__tests__/ci-main-push-coverage.test.ts fails if Verify
+    # stops running what these jobs run.
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
 
@@ -50,6 +61,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pull requests only, for the reason spelled out on the typecheck job (#972).
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
 
@@ -78,6 +91,8 @@ jobs:
     name: Test (worker)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pull requests only, for the reason spelled out on the typecheck job (#972).
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
 
@@ -113,6 +128,8 @@ jobs:
     name: Test (web)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Pull requests only, for the reason spelled out on the typecheck job (#972).
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
 
@@ -132,6 +149,25 @@ jobs:
         run: pnpm --filter web test
 
 
+  # WHY THIS JOB STARTS AND THEN SKIPS ITS STEPS, RATHER THAN NOT STARTING (#894)
+  #
+  # It costs roughly thirty seconds of runner time on a pull request it will not
+  # scan, and the obvious fix is a `paths` filter. There is no job-level `paths`
+  # in GitHub Actions: the only place it is valid is under `on.<event>`, where it
+  # governs the WHOLE workflow. Adding one here to spare this job would take the
+  # security scan, the db-types check, lint, typecheck and both test jobs down
+  # with it on any pull request that did not match.
+  #
+  # And a workflow that does not run reports no check at all, which is a
+  # different thing from a check that passes. This repo has no server-side
+  # required checks today (#266 stays open on the plan), so that is latent rather
+  # than active, which is exactly why it is written here: the cost only appears
+  # if the plan is ever upgraded, and it appears as a merge button that never
+  # unblocks, with nothing pointing at the filter that caused it.
+  #
+  # So the thirty seconds is deliberate, and it is the smaller cost. The
+  # expensive steps are already scoped (#968).
+  # Guarded by apps/web/src/lib/__tests__/ci-main-push-coverage.test.ts.
   a11y:
     name: Accessibility (axe)
     runs-on: ubuntu-latest
