@@ -42,21 +42,42 @@ run-name: Deploy Drift (${{ inputs.driver || 'schedule' }})
 
 jobs:
   drift:
-    name: Live worker matches the latest worker commit
+    name: Deploy targets match main
     runs-on: ubuntu-latest
+    # measured max 14s per target over 6 runs, plus headroom. Bounds a HANG, not
+    # slowness (#1062).
+    timeout-minutes: 10
     permissions:
       contents: read
-      # The in-flight gate asks GitHub whether a Deploy is still running, and
-      # this repository's default workflow token is `read`, which grants contents
-      # and packages and nothing else. Without this the query was refused every
-      # time, the error was discarded, and the empty answer read as "no deploy is
-      # running", so the gate that exists to prevent a false page caused one
-      # (#899).
       actions: read
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+      SITE_URL: ${{ vars.SITE_URL }}
+      TAIL_URL: ${{ vars.WORKER_TAIL_URL }}
+    # ONE JOB, THREE TARGETS (#1065)
+    #
+    # These were three jobs, one per target, each finishing in 8 to 14 seconds.
+    # A job bills a minimum of one minute, so three of them billed 3 minutes an
+    # hour for under 30 seconds of work: about 2,160 minutes a month, a third of
+    # this repository's Actions bill, for isolation that bought nothing. Nothing
+    # gates on any of them, and separate jobs are only worth their minute when
+    # they must be able to fail separately.
+    #
+    # They still DO fail separately, which is the part that had to be built
+    # rather than assumed. Each target's `Decide and alert` step posts its own
+    # Slack message and then exits 1. In one job that would end the run, and the
+    # targets after it would go unchecked on precisely the hours something is
+    # wrong: the first stranded worker would hide a stranded site behind it
+    # (L73). So each alert step carries `continue-on-error: true` and its own id,
+    # and the gate at the very end fails the run if ANY of them failed.
+    #
+    # Two checkouts, deliberately. The worker section works out of `head/` and
+    # names that path throughout; the site and tail sections work out of the
+    # repository root. Keeping both is a few seconds and leaves every path
+    # reference in the three sections exactly as it was.
     steps:
+      # ---- ENGINE WORKER ----------------------------------------------
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history so merge-base can compare commits
@@ -198,6 +219,13 @@ jobs:
           printf '%s\n' "$ARTIFACT" > artifact-verdict.txt
 
       - name: Decide and alert
+        id: worker_alert
+        # Its own failure boundary (#1065). This step alerts and then exits 1;
+        # without continue-on-error that would end the JOB, and the targets
+        # checked after it would never be checked at all on exactly the hours
+        # something is wrong. The run is still failed, by the gate at the end
+        # (L73).
+        continue-on-error: true
         if: steps.compare.outputs.confirm == 'true'
         run: |
           set -uo pipefail
@@ -240,21 +268,7 @@ jobs:
           fi
           exit 1
 
-  pages:
-    name: Live site matches the latest apps/web commit
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # The in-flight gate asks GitHub whether a Deploy is still running, and
-      # this repository's default workflow token is `read`, which grants contents
-      # and packages and nothing else. Without this the query was refused every
-      # time, the error was discarded, and the empty answer read as "no deploy is
-      # running", so the gate that exists to prevent a false page caused one
-      # (#899).
-      actions: read
-    env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      SITE_URL: ${{ vars.SITE_URL }}
+      # ---- SITE -------------------------------------------------------
     # The site half of the same defect (#804). Deploy Drift watched only the
     # Worker, so a failed or skipped Pages deploy left the site serving an older
     # build with nothing flagging it.
@@ -273,7 +287,6 @@ jobs:
     # asks git about (L144), so a commit that satisfies one satisfies the other
     # and the #802 shape cannot occur here. A test asserts those two lists stay
     # identical.
-    steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history so merge-base can compare commits
@@ -338,6 +351,13 @@ jobs:
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
 
       - name: Decide and alert
+        id: pages_alert
+        # Its own failure boundary (#1065). This step alerts and then exits 1;
+        # without continue-on-error that would end the JOB, and the targets
+        # checked after it would never be checked at all on exactly the hours
+        # something is wrong. The run is still failed, by the gate at the end
+        # (L73).
+        continue-on-error: true
         run: |
           set -uo pipefail
           LAST_WEB_COMMIT='${{ steps.sample.outputs.last_web_commit }}'
@@ -396,21 +416,7 @@ jobs:
           fi
           exit 1
 
-  worker_tail:
-    name: Live tail worker matches the latest tail commit
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # The in-flight gate asks GitHub whether a Deploy is still running, and
-      # this repository's default workflow token is `read`, which grants contents
-      # and packages and nothing else. Without this the query was refused every
-      # time, the error was discarded, and the empty answer read as "no deploy is
-      # running", so the gate that exists to prevent a false page caused one
-      # (#899).
-      actions: read
-    env:
-      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-      TAIL_URL: ${{ vars.WORKER_TAIL_URL }}
+      # ---- TAIL WORKER ------------------------------------------------
     # The third deploy target (#739). apps/worker-tail computes per-execution
     # cost attribution and writes workflow_executions.cost_usd, so a stranded one
     # does not fail: it under-reports what executions cost while the dashboard
@@ -424,13 +430,12 @@ jobs:
     # paths filter IS the deploy's own predicate, this job asks git the same
     # question over the same paths, and the two cannot disagree (L144). A test
     # asserts the two path lists stay identical.
-    steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # full history so merge-base can compare commits
 
       - name: Compare the live tail worker to the latest tail commit
-        id: compare
+        id: tail_compare
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -501,10 +506,17 @@ jobs:
           echo "tail_sha=$TAIL_SHA up_to_date=$UP_TO_DATE inflight=${INFLIGHT_AGE:-none} verdict=$VERDICT"
 
       - name: Decide and alert
+        id: tail_alert
+        # Its own failure boundary (#1065). This step alerts and then exits 1;
+        # without continue-on-error that would end the JOB, and the targets
+        # checked after it would never be checked at all on exactly the hours
+        # something is wrong. The run is still failed, by the gate at the end
+        # (L73).
+        continue-on-error: true
         run: |
           set -uo pipefail
-          VERDICT='${{ steps.compare.outputs.verdict }}'
-          LAST='${{ steps.compare.outputs.last_tail_commit }}'
+          VERDICT='${{ steps.tail_compare.outputs.verdict }}'
+          LAST='${{ steps.tail_compare.outputs.last_tail_commit }}'
 
           case "$VERDICT" in
             ok)
@@ -537,3 +549,29 @@ jobs:
               --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
           fi
           exit 1
+
+      # The three alert steps above each swallow their own exit code so the next
+      # target still gets checked. This is what puts the failure back: without
+      # it, three independently alerting checks would post to Slack and report a
+      # GREEN run, which is the one outcome this workflow exists to prevent
+      # (L98, L184).
+      - name: Fail the run if any target is stranded
+        if: always()
+        env:
+          WORKER: ${{ steps.worker_alert.outcome }}
+          PAGES: ${{ steps.pages_alert.outcome }}
+          TAIL: ${{ steps.tail_alert.outcome }}
+        run: |
+          set -uo pipefail
+          failed=""
+          # `skipped` is the healthy case: the alert step only runs when its
+          # target needs one. Only `failure` counts, so a step that never ran is
+          # not read as a pass and not read as a failure either.
+          [ "$WORKER" = "failure" ] && failed="${failed} worker"
+          [ "$PAGES" = "failure" ] && failed="${failed} site"
+          [ "$TAIL" = "failure" ] && failed="${failed} tail-worker"
+          if [ -n "$failed" ]; then
+            echo "::error::Stranded deploy target(s):${failed}. Each one alerted above with its own reason."
+            exit 1
+          fi
+          echo "All three deploy targets match main (worker=${WORKER} site=${PAGES} tail=${TAIL})."
