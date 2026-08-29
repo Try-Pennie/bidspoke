@@ -10,11 +10,35 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  verify:
-    name: Verify
+  # VERIFY IS FOUR PARALLEL JOBS BEHIND A FAN-IN (#1061)
+  #
+  # Measured over the four deploys from 2026-08-23 to 2026-08-29: Verify took
+  # 216 to 249s with every step in a line (typecheck 41s, lint 38s, tests 123s,
+  # docs 1s, Supabase CLI plus migration check 14s). Every other job here lists
+  # `verify` in `needs`, so Deploy Pages and Deploy Worker could not start until
+  # all of it finished. Merge-to-live was about 6.5 minutes for a web change.
+  #
+  # THE JOB ID `verify` IS LOAD-BEARING and stays exactly where it was. Five
+  # jobs name it in `needs`, and two re-assert `needs.verify.result == 'success'`
+  # by hand because their `always()` discards the implicit all-needs-succeeded
+  # rule. The fan-in below keeps that id and that contract.
+  #
+  # It runs `if: always()` and checks each leg by hand rather than relying on
+  # `needs` alone. Without `always()` a failed leg would leave `verify` SKIPPED,
+  # which still blocks every downstream job correctly but reports as a grey
+  # check nobody reads; failing loudly names the leg instead. The hand check is
+  # then mandatory: `always()` is exactly what throws away the rule that would
+  # otherwise have failed it (the same trap deploy-worker documents below).
+  #
+  # A leg accidentally left out of the fan-in's `needs` would run, gate nothing,
+  # and let a red suite deploy. That cannot happen silently: a test reads this
+  # file and requires the fan-in to need every job in it that runs a test,
+  # typecheck or lint command.
+  verify-static:
+    name: Verify (typecheck + lint)
     runs-on: ubuntu-latest
-    # measured max 264s over 4 runs, plus headroom. Bounds a HANG, not slowness (#1062).
-    timeout-minutes: 15
+    # measured 41s + 38s + setup, plus headroom. Bounds a HANG (#1062).
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -29,16 +53,78 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Lint
         run: pnpm lint
 
-      - name: Test
-        run: pnpm -r test
+  verify-worker:
+    name: Verify (worker tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
 
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test shared packages
+        run: pnpm --filter @bidspoke/uuidv7 test
+
+      # `test:unit`, not `test` (#967). The worker's `test` script also boots the
+      # web vitest project to run the worker guards, which the web leg below
+      # runs anyway in this same deploy. That duplication was part of the 123s.
+      - name: Test worker
+        run: pnpm --filter worker test:unit
+
+  verify-web:
+    name: Verify (web tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test web
+        run: pnpm --filter web test
+
+  verify-release:
+    name: Verify (docs + migrations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
       # Docs are published to the public /docs site by sync-docs.mjs during
       # pages:build; this gate fails the build on broken relative links,
       # moved/renamed pages, or stale llms.txt entries before they go live.
@@ -74,6 +160,38 @@ jobs:
             echo "::error::Unapplied migrations detected. Run 'supabase db push', then re-run this deploy. Migrations must be backward-compatible (expand/contract) so apply order is safe — see docs/adr/0007-expand-contract-migrations.md."
             exit 1
           fi
+
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    # Pure fan-in: no checkout, no install, nothing to hang on.
+    timeout-minutes: 5
+    needs: [verify-static, verify-worker, verify-web, verify-release]
+    if: always()
+    steps:
+      - name: Require every verification leg to have passed
+        env:
+          STATIC: ${{ needs.verify-static.result }}
+          WORKER: ${{ needs.verify-worker.result }}
+          WEB: ${{ needs.verify-web.result }}
+          RELEASE: ${{ needs.verify-release.result }}
+        run: |
+          set -uo pipefail
+          failed=""
+          # Anything that is not an outright success blocks the deploy:
+          # 'failure', 'cancelled' and 'skipped' all mean this leg did not
+          # verify anything, and a leg that never ran must never read as a pass
+          # (L98).
+          [ "$STATIC" = "success" ] || failed="${failed} typecheck+lint($STATIC)"
+          [ "$WORKER" = "success" ] || failed="${failed} worker-tests($WORKER)"
+          [ "$WEB" = "success" ] || failed="${failed} web-tests($WEB)"
+          [ "$RELEASE" = "success" ] || failed="${failed} docs+migrations($RELEASE)"
+          if [ -n "$failed" ]; then
+            echo "::error::Verification failed, so nothing deploys:${failed}"
+            exit 1
+          fi
+          echo "All verification legs passed."
+
 
   changes:
     name: Detect changed paths
@@ -336,6 +454,25 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Same Next.js build cache the PR jobs use (#974, the deploy half of #970).
+      # This build ran from cold on every merge, and it sits on the merged-to-live
+      # wait that is actually felt: the one between pressing merge and being able
+      # to check production.
+      #
+      # Keyed on the lockfile plus a hash of the web sources, so a real source
+      # change always misses and rebuilds; restore-keys then seeds that rebuild
+      # from the nearest previous cache. A restored cache can only make the build
+      # faster or fail loudly, never produce a silently different artifact,
+      # because the key moves whenever the inputs do.
+      - name: Cache the Next.js build cache
+        uses: actions/cache@v6
+        with:
+          path: apps/web/.next/cache
+          key: next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/next.config.*', 'apps/web/tailwind.config.*', 'apps/web/postcss.config.*') }}
+          restore-keys: |
+            next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            next-build-${{ runner.os }}-
 
       - name: Build (next-on-pages)
         run: pnpm --filter=web pages:build

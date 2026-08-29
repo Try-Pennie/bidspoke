@@ -48,7 +48,24 @@ function pullRequestOnlyJobs(): Array<{ id: string; body: string }> {
 const runCommands = (body: string): string[] =>
   [...stripComments(body).matchAll(/^\s*run:\s*(\S.*)$/gm)].map((m) => m[1].trim())
 
-const verifyBody = (): string => stripComments(workflowJobBody(readWorkflow(DEPLOY), 'verify'))
+/**
+ * Everything the deploy gate runs: the `verify` fan-in plus every leg it needs.
+ *
+ * #1061 split Verify into four parallel jobs behind a fan-in that kept the id
+ * `verify`, so reading that one job now finds a body with no commands in it at
+ * all, and this guard would have reported main as uncovered by everything. The
+ * legs are followed from the fan-in's own `needs` rather than listed, so a fifth
+ * leg is included the day it is wired up (L41).
+ */
+function verifyBody(): string {
+  const yaml = readWorkflow(DEPLOY)
+  const fanIn = workflowJobBody(yaml, 'verify')
+  const needsLine = fanIn.split('\n').find((l) => /^ {4}needs:/.test(l))
+  expect(needsLine, "deploy.yml's verify job declares no needs, so it gates nothing").toBeDefined()
+  const legs = [...needsLine!.matchAll(/[\w-]+/g)].map((m) => m[0]).filter((w) => w !== 'needs')
+  expect(legs.length, 'the verify fan-in needs nothing, so nothing verifies main').toBeGreaterThan(0)
+  return stripComments([fanIn, ...legs.map((id) => workflowJobBody(yaml, id))].join('\n'))
+}
 
 describe('what ci.yml skips on main, deploy.yml still runs on main (#972)', () => {
   it('finds jobs restricted to pull requests, so this cannot pass vacuously', () => {
@@ -73,10 +90,19 @@ describe('what ci.yml skips on main, deploy.yml still runs on main (#972)', () =
         // instead of being waved through (L129).
         const isSuite = /--filter[= ][@\w/-]+ test(?::[\w-]+)?(?![\w:-])/.test(command)
         if (isSuite) {
+          // Covered either by the recursive form (a superset: `pnpm -r test`
+          // runs every workspace package's own test script) or by the same
+          // package being named explicitly. #1061 moved deploy.yml to the
+          // named form when it split Verify, so both shapes have to count, and
+          // deploy-verify-fanin.test.ts separately requires deploy.yml to name
+          // EVERY package that has tests.
+          const pkg = /--filter[= ]([@\w/-]+) test/.exec(command)?.[1]
+          const named = pkg !== undefined &&
+            new RegExp(`--filter[= ]${pkg.replace(/[/@]/g, '\\$&')} test`).test(verify)
           expect(
-            verify,
-            `ci.yml's ${id} job runs \`${command}\` only on pull requests, and deploy.yml's Verify does not run \`pnpm -r test\`, so nothing runs that suite on main`,
-          ).toMatch(/pnpm -r test/)
+            /pnpm -r test/.test(verify) || named,
+            `ci.yml's ${id} job runs \`${command}\` only on pull requests, and the deploy gate runs neither \`pnpm -r test\` nor that package's suite by name, so nothing runs it on main`,
+          ).toBe(true)
           continue
         }
 

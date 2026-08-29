@@ -18,6 +18,21 @@ import { readWorkflow, workflowJobBody, workflowJobIds } from './_scan-utils'
 const CI_YML = '.github/workflows/ci.yml'
 
 /**
+ * A job's body with YAML comments blanked.
+ *
+ * Used wherever a job is identified by a command it RUNS. Without it, the
+ * deploy's `verify-release` job counted as an artifact builder because its docs
+ * comment mentions `pages:build`, and the guard then demanded a build cache on a
+ * job that never builds. Prose about a thing is not the thing (L103).
+ */
+const jobCode = (yaml: string, id: string): string =>
+  workflowJobBody(yaml, id)
+    .split('\n')
+    .map((line) => (/^\s*#/.test(line) ? '' : line.replace(/\s+#.*$/, '')))
+    .join('\n')
+
+
+/**
  * The a11y job's own body. Sliced by job key (#1066), never by naming the job
  * that follows: this used to run from `a11y:` to `auth-gate:`, so inserting a
  * job between them would have quietly widened every assertion below.
@@ -87,9 +102,7 @@ describe('accessibility scan scoping', () => {
     // third artifact-building job cannot be added without either being scoped
     // or failing here (L247).
     const yaml = readWorkflow(CI_YML)
-    const builders = workflowJobIds(yaml).filter((id) =>
-      workflowJobBody(yaml, id).includes('pages:build'),
-    )
+    const builders = workflowJobIds(yaml).filter((id) => jobCode(yaml, id).includes('pages:build'))
     expect(builders.length, 'no job builds the artifact, so this cannot pass vacuously').toBeGreaterThanOrEqual(2)
     for (const id of builders) {
       expect(
@@ -99,18 +112,25 @@ describe('accessibility scan scoping', () => {
     }
   })
 
-  it('caches the Next.js build cache in every job that builds the artifact (#970)', () => {
-    const yaml = readWorkflow(CI_YML)
-    const builders = workflowJobIds(yaml).filter((id) =>
-      workflowJobBody(yaml, id).includes('pages:build'),
-    )
-    expect(builders.length).toBeGreaterThanOrEqual(2)
-    for (const id of builders) {
-      const body = workflowJobBody(yaml, id)
-      expect(body, `${id} builds from cold every time`).toContain('apps/web/.next/cache')
-      expect(body, `${id} caches without a restore-keys fallback, so a source change gets no warm start`).toMatch(
-        /restore-keys:/,
-      )
+  it('caches the Next.js build cache in every job that builds the artifact (#970, #974)', () => {
+    // Across BOTH workflows, not just ci.yml. The deploy's Pages build is the
+    // same cold build on the merged-to-live wait, and scoping this guard to one
+    // file is how that one stayed cold while the rule read as enforced (L135).
+    for (const workflow of ['.github/workflows/ci.yml', '.github/workflows/deploy.yml']) {
+      const yaml = readWorkflow(workflow)
+      const builders = workflowJobIds(yaml).filter((id) => jobCode(yaml, id).includes('pages:build'))
+      expect(
+        builders.length,
+        `${workflow} has no job building the artifact, so this cannot pass vacuously`,
+      ).toBeGreaterThanOrEqual(1)
+      for (const id of builders) {
+        const body = workflowJobBody(yaml, id)
+        expect(body, `${workflow}'s ${id} builds from cold every time`).toContain('apps/web/.next/cache')
+        expect(
+          body,
+          `${workflow}'s ${id} caches without a restore-keys fallback, so a source change gets no warm start`,
+        ).toMatch(/restore-keys:/)
+      }
     }
   })
 
