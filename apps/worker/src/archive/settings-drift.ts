@@ -23,11 +23,17 @@ export interface ObservedSettings {
   /** Effective DATA_RETENTION_TIME_IN_DAYS on the archive table, or null if unreadable. */
   retentionDays: number | null
   /**
-   * Where that parameter is set. 'TABLE' means the table owns it; anything else
-   * means it is inherited, so a change to the schema or account default silently
-   * moves it.
+   * The windows the archive would fall back to if the table's own setting were
+   * ever lost, keyed by the level they were read from. Null when unreadable.
+   *
+   * This is what replaced reading the parameter's LEVEL (#1050). The level
+   * answered 'is the table inheriting this', and no least-privileged identity
+   * can see it: reading an object's parameters effectively needs ownership, and
+   * ownership of the archive table would let the read path drop it. The
+   * surrounding windows answer the question the level was asked for, and every
+   * one of them is readable with the privileges the reader already holds.
    */
-  retentionLevel: string | null
+  surroundingRetentionDays: { level: string; days: number | null }[]
   /** Columns the table actually has, or null if the read failed. */
   columns: string[] | null
   /** Why a reading is null, when it is. */
@@ -52,6 +58,11 @@ export interface SettingsDifference {
   message: string
 }
 
+/** '1 day' / '30 days', so an alert does not say '1 days'. */
+function days(n: number): string {
+  return `${n} ${n === 1 ? 'day' : 'days'}`
+}
+
 export function settingsDifferences(
   observed: ObservedSettings,
   declared: DeclaredSettings,
@@ -69,21 +80,24 @@ export function settingsDifferences(
     differences.push({
       code: 'retention-changed',
       message:
-        `the archive table's Time Travel window is ${observed.retentionDays} days, and this repo and ` +
-        `ADR 0009 declare ${declared.retentionDays}. Every statement about what an accidental deletion ` +
-        'can be undone from is wrong until one of the two changes.',
+        `the archive table's Time Travel window is ${days(observed.retentionDays)}, and this repo and ` +
+        `ADR 0009 declare ${days(declared.retentionDays)}. Every statement about what an accidental ` +
+        'deletion can be undone from is wrong until one of the two changes.',
     })
   }
 
-  if (observed.retentionLevel !== null && observed.retentionLevel !== 'TABLE') {
-    // Caught BEFORE the value moves. Inherited, the window changes whenever
-    // somebody edits the schema or account default, with nothing naming the
-    // archive at the moment of the change.
+  for (const surrounding of observed.surroundingRetentionDays) {
+    // Only BELOW is a difference. A wider surrounding window takes nothing away:
+    // the table still carries its own, and losing that setting would leave more
+    // history rather than less, so reporting it would be a difference nobody can
+    // act on.
+    if (surrounding.days === null || surrounding.days >= declared.retentionDays) continue
     differences.push({
-      code: 'retention-inherited',
+      code: 'surrounding-retention-below',
       message:
-        `the archive table's Time Travel window is set at level ${observed.retentionLevel}, not TABLE, ` +
-        'so it is inherited and will move silently the next time the schema or account default changes',
+        `the ${surrounding.level}'s Time Travel window is ${days(surrounding.days)}, below the ` +
+        `${days(declared.retentionDays)} the archive table carries. Nothing is wrong today, and the ` +
+        "moment the table's own setting is lost the archive silently falls to that shorter window.",
     })
   }
 

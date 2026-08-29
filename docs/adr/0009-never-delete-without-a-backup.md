@@ -320,6 +320,27 @@ What the single copy actually gives, measured rather than assumed:
   malicious DELETE is recoverable through `AT`/`BEFORE` within that window. This
   is now re-read daily (#980), because it is set by hand and was wrong in this
   very ADR for days before anyone probed it.
+
+  **Corrected 2026-08-29 (#1050).** That daily read did not work when it shipped,
+  and said so every morning for six days. It asked for the window with
+  `SHOW PARAMETERS ... IN TABLE`, which Snowflake refuses for a role holding only
+  SELECT: reading an object's parameters effectively needs ownership, and there
+  is no grantable USAGE on a table to hand out. Granting the read path ownership
+  would let it drop the archive, so the statement was replaced rather than the
+  grant widened. The check now reads `RETENTION_TIME` from `INFORMATION_SCHEMA`,
+  for the table and for the schema and database around it, all three of which the
+  reader can already see.
+
+  What that costs: the parameter's LEVEL is not in `INFORMATION_SCHEMA`, so
+  nothing in the Worker can now tell a window the table OWNS from one it merely
+  inherits. In exchange the schema and the database are both set to 30 as well,
+  so if the table's own setting is ever lost the archive inherits 30 rather than
+  the one day account default, and any of the three dropping below 30 is reported
+  the next morning. The level is still readable by hand as ACCOUNTADMIN, and
+  `docs/snowflake-archive-setup.sql` says so at the statement.
+
+  `POST /api/admin/archive-settings-check` runs the same check on demand, because
+  a daily job is a one day feedback loop on any change to what it asks.
 - **7 days of Fail-safe** after that, which Snowflake staff can recover and we
   cannot query. It is not a backup we can use, and no message about an erasure
   may describe it as one.

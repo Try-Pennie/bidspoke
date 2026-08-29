@@ -187,6 +187,27 @@ COMMENT = 'One gzipped JSON bundle per execution. Loaded hourly in started_at or
 -- success while leaving the retention at whatever it already was.
 ALTER TABLE execution_archive SET DATA_RETENTION_TIME_IN_DAYS = 30;
 
+-- The same window on the DATABASE and the SCHEMA, which is belt and braces and
+-- is also the only thing the daily check can verify (#1050).
+--
+-- The check reads these settings back as the READER identity, and the reader
+-- cannot ask what it would most like to know. `SHOW PARAMETERS ... IN TABLE`
+-- returns the parameter's LEVEL, which says whether the table OWNS its window or
+-- merely inherits one, and Snowflake refuses that statement for a role holding
+-- only SELECT: reading an object's parameters effectively needs ownership, and
+-- there is no grantable USAGE on a table to hand out. Granting the read path
+-- ownership of the archive would let it DROP the archive, which is the whole
+-- thing these three roles exist to prevent, so the level is simply not
+-- observable here. What the reader CAN read is RETENTION_TIME in
+-- INFORMATION_SCHEMA, for the table, the schema and the database.
+--
+-- Setting all three to 30 is what makes that enough. If the table's own setting
+-- is ever lost, what it inherits is still 30 rather than the one day account
+-- default, and the daily check reports any of the three dropping below 30 the
+-- next morning. Costs nothing: this database holds one table.
+ALTER DATABASE BIDSPOKE_ARCHIVE SET DATA_RETENTION_TIME_IN_DAYS = 30;
+ALTER SCHEMA BIDSPOKE_ARCHIVE.EXECUTIONS SET DATA_RETENTION_TIME_IN_DAYS = 30;
+
 -- NO CLUSTER BY, deliberately. Hourly loads arrive in started_at order, so the
 -- micro-partitions are already naturally ordered by day. Declaring
 -- CLUSTER BY (archive_day) would switch on Automatic Clustering, a continuous
@@ -371,7 +392,20 @@ DESC USER bidspoke_archive_eraser_svc;
 --    through AT/BEFORE for DATA_RETENTION_TIME_IN_DAYS, and Fail-safe holds a
 --    further seven days nobody can purge. Read the real number before the
 --    erasure route claims a deletion (#875 depends on this).
+--
+--    Run as ACCOUNTADMIN this reports the LEVEL as well, which is worth reading
+--    here even though the daily check cannot see it (see #1050 above).
 SHOW PARAMETERS LIKE 'DATA_RETENTION_TIME_IN_DAYS' IN TABLE execution_archive;
+
+--    And the two the daily check actually reads, in the form it reads them. Run
+--    these as the reader if you want to confirm what that identity can see:
+--      USE ROLE bidspoke_archive_reader;
+SELECT retention_time FROM BIDSPOKE_ARCHIVE.INFORMATION_SCHEMA.TABLES
+  WHERE table_schema = 'EXECUTIONS' AND table_name = 'EXECUTION_ARCHIVE';
+SELECT retention_time FROM BIDSPOKE_ARCHIVE.INFORMATION_SCHEMA.SCHEMATA
+  WHERE schema_name = 'EXECUTIONS';
+SELECT retention_time FROM BIDSPOKE_ARCHIVE.INFORMATION_SCHEMA.DATABASES
+  WHERE database_name = 'BIDSPOKE_ARCHIVE';
 
 -- 2. The grants actually landed, per role. A missing grant surfaces later as a
 --    failing hourly job, which is a slow way to learn it.
