@@ -168,23 +168,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Dependabot PRs and forks are not given secrets, so the sign-in in global-setup
-      # cannot run there. Those skip rather than fail for a credential they were never
-      # going to have.
+      # Decide whether anything that can reach the built artifact changed, via
+      # .github/scripts/web-code-changed.sh. Shared with the auth gate job below
+      # rather than copied (#968): two hand-rolled fail-closed detections in one
+      # file drift, and the half that drifts is the half nobody looks at.
       #
-      # Anything else MUST fail instead of skipping. A deleted or emptied secret would
-      # otherwise skip every run, each reporting a green check, and nobody would be told:
-      # a gate that quietly switches itself off is the exact rot this job exists to stop.
-      # This job is the only one that installs a browser, builds the production
-      # artifact and boots the app, so it costs minutes while the rest cost
-      # seconds. It blocked #885 three times, a branch touching no web code,
-      # without ever examining anything (#887).
-      #
-      # It FAILS CLOSED. The risk of scoping a gate is the rot this job's own
-      # comments name: one that quietly switches itself off. So the skip applies
-      # only when the job can PROVE nothing under apps/web changed. If it cannot
-      # tell, for any reason, it runs. Seven wasted minutes is cheap; an
-      # accessibility regression waved through by a detection bug is not.
+      # The script FAILS CLOSED: the only path to a skip is a lookup that clearly
+      # succeeded, returned a non-empty list, and matched nothing. Its unit tests
+      # are apps/web/src/lib/__tests__/web-code-changed-decision.test.ts.
       #
       # Read from the API rather than `git diff`, because checkout fetches depth
       # 1 and the base commit is simply not present to diff against.
@@ -194,27 +185,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          if [ -z "${PR}" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Not a pull request, so the accessibility scan runs."
-            exit 0
-          fi
-          if ! files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Could not determine the changed files, so the accessibility scan runs. Failing closed."
-            exit 0
-          fi
-          if [ -z "${files}" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Could not determine the changed files (empty list), so the accessibility scan runs. Failing closed."
-            exit 0
-          fi
-          if printf '%s\n' "${files}" | grep -q '^apps/web/'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            ok=true
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No apps/web changes in this pull request, so the accessibility scan is skipped."
+            ok=false
+            files=""
           fi
+          changed=$(bash .github/scripts/web-code-changed.sh "${PR}" "${ok}" "${files}")
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
 
       - name: Check for e2e credentials
         id: creds
@@ -287,6 +265,25 @@ jobs:
       # NEXT_PUBLIC_* must be present at BUILD time (they are compiled into the bundle,
       # not read at runtime). A wrong NEXT_PUBLIC_WORKER_URL leaves authenticated pages
       # retrying a dead endpoint until every spec times out on networkidle.
+      # Next.js keeps incremental build state in apps/web/.next/cache, and both
+      # artifact builds ran from cold every time: 96s in this job and 84s in the
+      # other, on every pull request that touches web code (#970).
+      #
+      # Keyed on the lockfile plus a hash of the web sources, so a real source
+      # change always misses and rebuilds; the restore-keys fallback then seeds
+      # that rebuild from the nearest previous cache. A restored cache can only
+      # make the build faster or fail loudly, never produce a silently different
+      # artifact, because the key changes whenever the inputs do.
+      - name: Cache the Next.js build cache
+        if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
+        uses: actions/cache@v6
+        with:
+          path: apps/web/.next/cache
+          key: next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/next.config.*', 'apps/web/tailwind.config.*', 'apps/web/postcss.config.*') }}
+          restore-keys: |
+            next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            next-build-${{ runner.os }}-
+
       - name: Build the production artifact (next-on-pages)
         if: steps.creds.outputs.have == 'true' && steps.web.outputs.changed == 'true'
         run: pnpm --filter=web pages:build
@@ -366,6 +363,13 @@ jobs:
     name: Auth gate fails closed
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The changed-files lookup below needs this explicitly: the repo default
+    # workflow token grants contents and packages read, NOT pull-requests.
+    # Without it the lookup fails, the job fails closed and builds anyway, and
+    # the scoping is silently inert while every run still reports success.
+    permissions:
+      contents: read
+      pull-requests: read
     # Issue #728. The login protection was untested while looking tested: the browser
     # spec asserted /workflows "ends at /login", which still passes with middleware.ts
     # deleted, because the API client redirects to /login on any 401. This job asks the
@@ -394,7 +398,35 @@ jobs:
       # throw on every request, which the catch-deny converts into a /login redirect: the
       # gate would look like it was working while never having evaluated anything. Fail
       # here, where the cause is legible, rather than letting the probe infer it.
+      # Same shared, fail-closed decision the accessibility job uses (#968).
+      # Measured: this job takes 121 to 144s, of which 84s is building the
+      # artifact and 2s is the actual probe, and it ran in full on pure backend
+      # pull requests where nothing that can move the artifact changed.
+      #
+      # The trigger set is a superset of apps/web for the reason deploy.yml
+      # already documents about its own paths filter: a shared package is
+      # compiled into the site, and a dependency bump can move the middleware
+      # artifact with no apps/web change at all. Dependabot pull requests touch
+      # pnpm-lock.yaml, so they still run the gate, which preserves this job's
+      # deliberate property of running without secrets on fork and Dependabot
+      # pull requests.
+      - name: Check whether web code changed
+        id: web
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            ok=true
+          else
+            ok=false
+            files=""
+          fi
+          changed=$(bash .github/scripts/web-code-changed.sh "${PR}" "${ok}" "${files}")
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+
       - name: Check the build-time public config is present
+        if: steps.web.outputs.changed == 'true'
         run: |
           missing=""
           [ -n "${NEXT_PUBLIC_SUPABASE_URL}" ] || missing="${missing} NEXT_PUBLIC_SUPABASE_URL"
@@ -405,24 +437,48 @@ jobs:
           fi
 
       - uses: pnpm/action-setup@v6
+        if: steps.web.outputs.changed == 'true'
         with:
           version: 9
 
       - uses: actions/setup-node@v7
+        if: steps.web.outputs.changed == 'true'
         with:
           node-version: '22'
           cache: 'pnpm'
 
       - name: Install dependencies
+        if: steps.web.outputs.changed == 'true'
         run: pnpm install --frozen-lockfile
 
       # Build and serve exactly what Pages runs, for the same reasons the a11y job does:
       # the middleware is compiled into the next-on-pages worker, and whether it runs
       # BEFORE static assets is a property of that artifact, not of the dev server.
+      # Next.js keeps incremental build state in apps/web/.next/cache, and both
+      # artifact builds ran from cold every time: 96s in this job and 84s in the
+      # other, on every pull request that touches web code (#970).
+      #
+      # Keyed on the lockfile plus a hash of the web sources, so a real source
+      # change always misses and rebuilds; the restore-keys fallback then seeds
+      # that rebuild from the nearest previous cache. A restored cache can only
+      # make the build faster or fail loudly, never produce a silently different
+      # artifact, because the key changes whenever the inputs do.
+      - name: Cache the Next.js build cache
+        if: steps.web.outputs.changed == 'true'
+        uses: actions/cache@v6
+        with:
+          path: apps/web/.next/cache
+          key: next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/web/src/**', 'apps/web/next.config.*', 'apps/web/tailwind.config.*', 'apps/web/postcss.config.*') }}
+          restore-keys: |
+            next-build-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            next-build-${{ runner.os }}-
+
       - name: Build the production artifact (next-on-pages)
+        if: steps.web.outputs.changed == 'true'
         run: pnpm --filter=web pages:build
 
       - name: Start the app (wrangler pages dev)
+        if: steps.web.outputs.changed == 'true'
         working-directory: apps/web
         run: |
           "${GITHUB_WORKSPACE}/apps/worker/node_modules/.bin/wrangler" pages dev .vercel/output/static \
@@ -442,6 +498,7 @@ jobs:
           exit 1
 
       - name: Probe the auth gate
+        if: steps.web.outputs.changed == 'true'
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/gate-report.json
         run: pnpm --filter web exec playwright test --config=playwright.gate.config.ts --reporter=json,list
@@ -450,6 +507,7 @@ jobs:
       # probe is strong, and none of them can fire if the config matches no spec
       # files, which exits 0.
       - name: Prove the auth gate probe covered its paths
+        if: steps.web.outputs.changed == 'true'
         run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/gate-report.json" 23
 
   db-types-fresh:
