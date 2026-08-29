@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
 
 // The Dependabot auto-merge workflow delegates its "should this PR merge?"
 // decision to a shell script so the logic is unit-testable. Regression context:
@@ -38,5 +38,48 @@ describe('dependabot-automerge-decision', () => {
 
   it('skips when the author is empty (PR lookup failed upstream)', () => {
     expect(decide('', 'dependabot/npm_and_yarn/minor-and-patch-abc123')).toBe('skip')
+  })
+})
+
+
+describe('the branch pre-filter stays a pre-filter (#1065)', () => {
+  /**
+   * The workflow's job-level `if:` skips anything not on a `dependabot/` branch,
+   * so a human pull request costs nothing instead of billing a minute to reach
+   * the same answer.
+   *
+   * The hazard is that a cheap filter which happens to give the right answer
+   * starts being treated as the answer. A branch name is chosen by whoever
+   * opened the branch; the AUTHOR check is what makes this safe, and it lives in
+   * the script above. So this asserts both halves stay in place: the filter is
+   * present (or the saving is silently gone), and the script is still what
+   * decides (or the safety is silently gone).
+   */
+  const job = () => workflowJobBody(readWorkflow('.github/workflows/dependabot-auto-merge.yml'), 'auto-merge')
+
+  it('skips a run whose head branch is not a Dependabot branch', () => {
+    const jobIf = job().slice(0, job().indexOf('steps:'))
+    expect(jobIf).toMatch(/startsWith\(github\.event\.workflow_run\.head_branch, 'dependabot\/'\)/)
+  })
+
+  it('still delegates the actual merge decision to the tested script', () => {
+    // If the pre-filter ever became the decision, a branch name alone would
+    // authorise a merge. The script checks the author too.
+    //
+    // Comments are stripped first, and that is not pedantry: this file's own
+    // prose names the script twice, so before stripping, replacing the real
+    // invocation with `DECISION=merge` left this assertion GREEN. Caught by
+    // mutation-checking it. A comment ABOUT a rule is not the rule (L103).
+    const withoutComments = job()
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n')
+    expect(withoutComments).toMatch(/DECISION=\$\(bash [^\n]*dependabot-automerge-decision\.sh/)
+  })
+
+  it('has a script that refuses on the branch prefix alone', () => {
+    // The property the workflow now leans on, asserted against the real script:
+    // a dependabot-shaped branch from a non-Dependabot author is still a skip.
+    expect(decide('some-human', 'dependabot/npm_and_yarn/minor-and-patch-abc123')).toBe('skip')
   })
 })

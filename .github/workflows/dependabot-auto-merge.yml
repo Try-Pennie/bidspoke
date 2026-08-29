@@ -30,9 +30,25 @@ permissions:
 
 jobs:
   auto-merge:
+    # The branch prefix is a CHEAP PRE-FILTER, not the decision (#1065).
+    #
+    # This workflow fires on every completed CI run, and 302 of them in 30 days
+    # were human pull requests. Each checked out the repo and called `gh` twice
+    # before the decision script could say "not eligible", and a job bills a
+    # minimum of one minute however little it does: roughly 180 billed minutes a
+    # month to reach an answer the event payload already carried.
+    #
+    # `head_branch` is on the workflow_run payload, so skipping here costs
+    # nothing and changes nothing on the Dependabot runs. The allowlist that
+    # actually decides stays in .github/scripts/dependabot-automerge-decision.sh,
+    # which is unit tested and checks the AUTHOR as well as the branch. That
+    # matters: a branch name is attacker-choosable and this prefix alone would
+    # not be a safe basis for merging anything (the author spelling flipping
+    # from dependabot[bot] to app/dependabot is exactly why that script exists).
     if: >
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.head_branch, 'dependabot/')
     runs-on: ubuntu-latest
     steps:
       # Checks out the DEFAULT branch (main), not the PR head, because this job
