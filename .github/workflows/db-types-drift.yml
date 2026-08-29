@@ -27,6 +27,8 @@ jobs:
   drift:
     name: Generated DB types match live schema
     runs-on: ubuntu-latest
+    # measured max 23s over 5 runs, plus headroom. Bounds a HANG, not slowness (#1062).
+    timeout-minutes: 10
     env:
       # Set this repo secret to an incoming-webhook URL to route failures to Slack
       # (#324). Absent -> the alert step no-ops; the job still fails as usual.
