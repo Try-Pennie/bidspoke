@@ -15,8 +15,17 @@ on:
 # headroom, not guesses. A guard test enforces their presence:
 # apps/web/src/lib/__tests__/ci-job-timeouts.test.ts
 jobs:
-  lint-typecheck:
-    name: Lint & Typecheck
+  # Typecheck and Lint are separate jobs, and the package suites are split per
+  # package, so the four run at the same time instead of in a line (#966, #969).
+  # Each pays its own ~25s of checkout and install; that is bought back several
+  # times over, because the job wall time is now the longest single leg rather
+  # than the sum of all of them.
+  #
+  # Measured before the split (2026-08-22): Lint & Typecheck 88 to 114s with
+  # typecheck 44s and lint 38s back to back; Test 168 to 183s with worker 62s
+  # and web 77s back to back, and Test was the critical path of every run.
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -37,13 +46,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Lint
-        run: pnpm lint
-
-  test:
-    name: Test
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -59,18 +65,72 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Every workspace package with a `test` script must appear here. The list is
-      # named rather than recursive, so a new package's suite would otherwise be
-      # green locally and unrun in CI, silently. Guarded by
-      # apps/web/src/lib/__tests__/ci-runs-every-package-suite.test.ts (#869).
+      - name: Lint
+        run: pnpm lint
+
+  # Every workspace package with a `test` script must be invoked by one of the
+  # test jobs. The list is named rather than recursive, so a new package's suite
+  # would otherwise be green locally and unrun in CI, silently. Guarded by
+  # apps/web/src/lib/__tests__/ci-runs-every-package-suite.test.ts (#869), which
+  # DERIVES the jobs from the workflow rather than naming them, so adding a
+  # third test job here does not make it blind.
+  test-worker:
+    name: Test (worker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - name: Test shared packages
         run: pnpm --filter @bidspoke/uuidv7 test
 
+      # `test:unit`, not `test` (#967). The worker's `test` script also boots the
+      # web vitest project to run the 27 guard files that scan worker source.
+      # Locally that is the design working: a worker change gets guard feedback
+      # without the author needing to know the guards live in apps/web. In CI it
+      # is pure duplication, because the web job below runs the whole web suite,
+      # those guards included, in this same run.
+      #
+      # The guard test above checks that `test:unit` is a PREFIX of `test` and
+      # that the remainder is covered elsewhere in CI, so a command added to
+      # `test` later cannot quietly stop running here.
       - name: Test worker
-        run: pnpm --filter worker test
+        run: pnpm --filter worker test:unit
+
+  test-web:
+    name: Test (web)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Test web
         run: pnpm --filter web test
+
 
   a11y:
     name: Accessibility (axe)
