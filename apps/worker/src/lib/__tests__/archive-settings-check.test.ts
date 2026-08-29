@@ -216,13 +216,26 @@ describe('the windows the archive would fall back to', () => {
     ])
   })
 
-  it('accepts a surrounding window wider than the declared one', async () => {
-    // A longer default takes nothing away: the table still carries 30, and
-    // losing its setting would leave more history, not less. Reporting it would
-    // be a difference nobody can act on.
-    const result = await run({ schema: retention(60), database: retention(90) })
+  it('reports a surrounding window wider than the declared one, as its own thing', async () => {
+    // Not the same finding as one below, and not silence either. Nothing is at
+    // risk, because the table still carries 30, so the message must not read as
+    // a shortfall. What it does mean is that the account and this repo disagree
+    // about a setting that is billed for, which is worth a line rather than a
+    // storage bill nobody traces back (L11).
+    const result = await run({ schema: retention(60) })
 
-    expect(result.differences).toEqual([])
+    expect(result.differences.map((d) => d.code)).toEqual(['surrounding-retention-above'])
+    expect(alerted()[0]).toMatch(/60 days/)
+    expect(alerted()[0]).not.toMatch(/falls/)
+  })
+
+  it('tells a wider surrounding window apart from a shorter one in the same run', async () => {
+    const result = await run({ schema: retention(60), database: retention(1) })
+
+    expect(result.differences.map((d) => d.code)).toEqual([
+      'surrounding-retention-above',
+      'surrounding-retention-below',
+    ])
   })
 })
 

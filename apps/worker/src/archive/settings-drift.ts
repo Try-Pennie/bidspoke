@@ -87,18 +87,31 @@ export function settingsDifferences(
   }
 
   for (const surrounding of observed.surroundingRetentionDays) {
-    // Only BELOW is a difference. A wider surrounding window takes nothing away:
-    // the table still carries its own, and losing that setting would leave more
-    // history rather than less, so reporting it would be a difference nobody can
-    // act on.
-    if (surrounding.days === null || surrounding.days >= declared.retentionDays) continue
-    differences.push({
-      code: 'surrounding-retention-below',
-      message:
-        `the ${surrounding.level}'s Time Travel window is ${days(surrounding.days)}, below the ` +
-        `${days(declared.retentionDays)} the archive table carries. Nothing is wrong today, and the ` +
-        "moment the table's own setting is lost the archive silently falls to that shorter window.",
-    })
+    if (surrounding.days === null || surrounding.days === declared.retentionDays) continue
+    // Below and above are separate findings with separate consequences, so they
+    // get separate codes and separate wording (L11). Below is what the archive
+    // silently falls to. Above is billed for and takes nothing away, and calling
+    // it a shortfall would send whoever reads it looking for a risk that is not
+    // there.
+    differences.push(
+      surrounding.days < declared.retentionDays
+        ? {
+            code: 'surrounding-retention-below',
+            message:
+              `the ${surrounding.level}'s Time Travel window is ${days(surrounding.days)}, below the ` +
+              `${days(declared.retentionDays)} the archive table carries. Nothing is wrong today, and ` +
+              "the moment the table's own setting is lost the archive silently falls to that shorter " +
+              'window.',
+          }
+        : {
+            code: 'surrounding-retention-above',
+            message:
+              `the ${surrounding.level}'s Time Travel window is ${days(surrounding.days)}, wider than ` +
+              `the ${days(declared.retentionDays)} this repo declares. Nothing is at risk, and history ` +
+              'kept beyond the declared window is still history somebody is paying to store, so either ' +
+              'the account or this repo is out of date.',
+          },
+    )
   }
 
   if (observed.columns !== null) {

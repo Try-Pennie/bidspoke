@@ -335,8 +335,10 @@ What the single copy actually gives, measured rather than assumed:
   nothing in the Worker can now tell a window the table OWNS from one it merely
   inherits. In exchange the schema and the database are both set to 30 as well,
   so if the table's own setting is ever lost the archive inherits 30 rather than
-  the one day account default, and any of the three dropping below 30 is reported
-  the next morning. The level is still readable by hand as ACCOUNTADMIN, and
+  the one day account default, and any of the three differing from 30 is reported
+  the next morning. Below and above are reported as separate things: below is the
+  window the archive would fall to, above is history nobody declared and somebody
+  is paying to store. The level is still readable by hand as ACCOUNTADMIN, and
   `docs/snowflake-archive-setup.sql` says so at the statement.
 
   `POST /api/admin/archive-settings-check` runs the same check on demand, because

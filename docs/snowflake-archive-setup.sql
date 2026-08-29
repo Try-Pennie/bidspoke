@@ -203,8 +203,10 @@ ALTER TABLE execution_archive SET DATA_RETENTION_TIME_IN_DAYS = 30;
 --
 -- Setting all three to 30 is what makes that enough. If the table's own setting
 -- is ever lost, what it inherits is still 30 rather than the one day account
--- default, and the daily check reports any of the three dropping below 30 the
--- next morning. Costs nothing: this database holds one table.
+-- default, and the daily check reports any of the three differing from 30 the
+-- next morning, in either direction and saying which: below is what the archive
+-- would fall to, above is storage nobody declared. Costs nothing: this database
+-- holds one table.
 ALTER DATABASE BIDSPOKE_ARCHIVE SET DATA_RETENTION_TIME_IN_DAYS = 30;
 ALTER SCHEMA BIDSPOKE_ARCHIVE.EXECUTIONS SET DATA_RETENTION_TIME_IN_DAYS = 30;
 
