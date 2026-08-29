@@ -1,8 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { REPO_ROOT } from './_scan-utils'
+import { REPO_ROOT, readWorkflow, workflowJobBody } from './_scan-utils'
 
 /**
  * Issue #760, the free stand-in for #266.
@@ -114,7 +113,7 @@ describe('main-push-decision: never accuses on an unreadable signal (#760)', () 
 })
 
 describe('ci.yml wires the direct-push guard in (#760)', () => {
-  const workflowText = () => readFileSync(path.join(REPO_ROOT, '.github/workflows/ci.yml'), 'utf8')
+  const workflowText = () => readWorkflow('.github/workflows/ci.yml')
 
   /** Blank YAML comments so prose about a setting is never read as the setting (L103). */
   function stripYamlComments(yml: string): string {
@@ -127,13 +126,13 @@ describe('ci.yml wires the direct-push guard in (#760)', () => {
       .join('\n')
   }
 
+  /**
+   * One job's body, comments blanked. Sliced by the shared helper (#1066) rather
+   * than by a seventh hand-rolled parser: comments are blanked AFTER the slice,
+   * because blanking first moves every offset the slicer would work from.
+   */
   function jobBlock(name: string): string {
-    const wf = stripYamlComments(workflowText())
-    const start = wf.search(new RegExp(`^  ${name}:$`, 'm'))
-    expect(start, `ci.yml has no job named ${name}`).toBeGreaterThan(-1)
-    const rest = wf.slice(start + 1)
-    const next = rest.search(/^ {2}[A-Za-z_][\w-]*:$/m)
-    return next === -1 ? rest : rest.slice(0, next)
+    return stripYamlComments(workflowJobBody(workflowText(), name))
   }
 
   it('has a job that calls the decision script', () => {
