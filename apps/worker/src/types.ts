@@ -139,6 +139,17 @@ export interface ExecutionContext {
   }
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
+  /**
+   * How the engine waits out a step's retry backoff (#1063). Undefined in
+   * production, which means the real timer.
+   *
+   * A test that drives the engine through a retry otherwise lives through the
+   * real 1.5s of default backoff and can assert only that it survived it
+   * (L524). Set this to a recorder and the delays themselves become assertable.
+   * Nothing in the Worker sets it: buildContext does not, so a production run
+   * cannot reach a path that skips its own backoff.
+   */
+  retrySleep?: (ms: number) => Promise<void>
   /** Dispatch-namespace bundle name code nodes route to. Set for test runs to an
    *  ephemeral content-hashed bundle so unsaved edits run immediately; unset for
    *  prod runs (code.ts falls back to the stable codeBundleName). */

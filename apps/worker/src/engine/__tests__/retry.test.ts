@@ -253,15 +253,98 @@ describe('withRetry + classifyStepError — partner errors', () => {
     expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  it('still retries a transient PartnerApiError', async () => {
+  it('still retries a transient PartnerApiError, waiting the linear backoff', async () => {
+    // Was the slowest test in the worker suite at 1501ms, because it lived
+    // through the real backoff. It now RECORDS the delays instead, which is a
+    // stronger assertion than surviving them: the sequence itself is checked
+    // (#1063, L524).
+    const slept: number[] = []
     const fn = vi.fn().mockRejectedValue(new PartnerApiError('Partner API returned 503', 'transient', false))
-    await expect(withRetry(fn, config, classifyStepError)).rejects.toBeInstanceOf(PartnerApiError)
+
+    await expect(
+      withRetry(fn, config, classifyStepError, undefined, async (ms) => { slept.push(ms) }),
+    ).rejects.toBeInstanceOf(PartnerApiError)
+
     expect(fn).toHaveBeenCalledTimes(3) // first attempt + 2 retries
+    expect(slept).toEqual([500, 1000]) // linear: base*(attempt+1), and no sleep after the last attempt
   })
 
   it('does not retry a business-rejection PartnerApiError (null errorType)', async () => {
     const fn = vi.fn().mockRejectedValue(new PartnerApiError('rejected', null, false))
     await expect(withRetry(fn, config, classifyStepError)).rejects.toBeInstanceOf(PartnerApiError)
     expect(fn).toHaveBeenCalledTimes(1)
+  })
+})
+
+
+// The backoff seam (#1063)
+
+/**
+ * `withRetry` slept through a private `setTimeout` with no seam, so every test
+ * that reached a retry through the engine paid the real 1.5s of default backoff
+ * (500ms then 1000ms). The three slowest tests in the worker suite were all
+ * exactly that, and they asserted only that they SURVIVED the wait.
+ *
+ * The sleep is now injectable, so a test can record what the code asked for.
+ * That is the point of the seam, not merely the speed: a wrong backoff sequence
+ * was previously invisible, because waiting 1.5s and waiting 1.5s in the wrong
+ * order look identical from outside (L524).
+ */
+describe('withRetry: injectable backoff (#1063)', () => {
+  it('asks for the exponential sequence, and never sleeps after the final attempt', async () => {
+    const slept: number[] = []
+    const fn = vi.fn().mockRejectedValue(new Error('flaky'))
+
+    await expect(
+      withRetry(fn, { retries: 3, backoff: 'exponential', timeout_ms: 5000 }, transient, undefined,
+        async (ms) => { slept.push(ms) }),
+    ).rejects.toThrow('flaky')
+
+    expect(fn).toHaveBeenCalledTimes(4)
+    // 500 * 2^attempt for attempts 0..2. There is no fourth entry: sleeping
+    // after the attempt that gives up would be pure added latency on the
+    // failure path, and nothing before this seam could see whether it did.
+    expect(slept).toEqual([500, 1000, 2000])
+  })
+
+  it('does not sleep at all when the error is permanent', async () => {
+    const slept: number[] = []
+    const fn = vi.fn().mockRejectedValue(new Error('bad request'))
+
+    await expect(
+      withRetry(fn, { retries: 3, backoff: 'linear', timeout_ms: 5000 }, permanent, undefined,
+        async (ms) => { slept.push(ms) }),
+    ).rejects.toThrow('bad request')
+
+    expect(slept).toEqual([])
+  })
+
+  it('does not sleep at all when the first attempt succeeds', async () => {
+    const slept: number[] = []
+    const fn = vi.fn().mockResolvedValue('ok')
+
+    await expect(
+      withRetry(fn, { retries: 3, backoff: 'linear', timeout_ms: 5000 }, transient, undefined,
+        async (ms) => { slept.push(ms) }),
+    ).resolves.toBe('ok')
+
+    expect(slept).toEqual([])
+  })
+
+  it('uses the real timer when no sleep is injected, so production is unchanged', async () => {
+    // The seam must not become a way for production to skip its own backoff.
+    // Omitting it has to mean the real wait, and this is the only test that
+    // proves the default is still wired to a clock (L188).
+    const started = Date.now()
+    const fn = vi.fn().mockRejectedValue(new Error('flaky'))
+
+    await expect(
+      withRetry(fn, { retries: 1, backoff: 'linear', timeout_ms: 5000 }, transient),
+    ).rejects.toThrow('flaky')
+
+    // One retry at 500ms. Compared against a floor well under it rather than an
+    // exact figure, because a wall-clock assertion is otherwise a check on what
+    // else the machine is running (L224).
+    expect(Date.now() - started).toBeGreaterThanOrEqual(400)
   })
 })

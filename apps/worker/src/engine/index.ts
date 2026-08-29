@@ -1402,7 +1402,8 @@ export async function walkGraph(
         (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
-        retryStats
+        retryStats,
+        ctx.retrySleep
       )
       retriesUsed = retryStats.retries
       output = result.output
@@ -1732,7 +1733,8 @@ export async function runParallelChild(
         (signal) => executeNode(node, ctx, env, supabase, signal, lastOutput),
         retryConfig,
         classifyStepError,
-        retryStats
+        retryStats,
+        ctx.retrySleep
       )
       output = result.output
       stepLogs = result.logs

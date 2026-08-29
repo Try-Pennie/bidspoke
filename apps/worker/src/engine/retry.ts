@@ -15,6 +15,20 @@ export interface RetryStats {
   retries: number
 }
 
+/**
+ * How withRetry waits out a backoff (#1063).
+ *
+ * A hard-coded setTimeout makes every end-to-end test that crosses a retry wait
+ * for the real 1.5s of default backoff, and such a test can only assert that it
+ * SURVIVED the wait: a wrong sequence and a right one are indistinguishable from
+ * outside (L524). Injecting the sleep lets a test record what the code asked for.
+ *
+ * Omitting it means the real timer. The seam exists for tests to pass a
+ * recorder, never for production to skip its own backoff, and nothing in the
+ * Worker sets it.
+ */
+export type Sleep = (ms: number) => Promise<void>
+
 // Abort `controller` whenever `parent` aborts, so an executor's own fetch (which
 // already has a local timeout controller) is ALSO canceled when the step-level
 // timeout fires (#66). No-op when there's no parent signal.
@@ -33,7 +47,8 @@ export async function withRetry<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   config: RetryConfig,
   classifyError: (err: unknown) => ErrorType,
-  stats?: RetryStats
+  stats?: RetryStats,
+  sleepFn: Sleep = sleep
 ): Promise<T> {
   let lastError: unknown
   for (let attempt = 0; attempt <= config.retries; attempt++) {
@@ -57,7 +72,7 @@ export async function withRetry<T>(
       if (isSaturationError(err)) {
         throw err
       }
-      await sleep(backoffMs(attempt, config.backoff))
+      await sleepFn(backoffMs(attempt, config.backoff))
     }
   }
   throw lastError
