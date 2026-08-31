@@ -31,7 +31,9 @@
  *   ACHIEVE_STAGING_USERNAME / _PASSWORD Optional staging pair; each falls back to the main one
  *   ACHIEVE_API_URL                      Legacy explicit host, still honoured. ACHIEVE_ENV wins
  *   ACHIEVE_UTM_SOURCE                   optional utm_source fallback
- *   ACHIEVE_TRUSTED_FORM_CERT            optional tracking.trusted_form_cert
+ *   ACHIEVE_UTM_CAMPAIGN                 optional utm_campaign fallback (default '_achieve_pl')
+ *   ACHIEVE_TRUSTED_FORM_CERT            test-send fallback for tracking.trusted_form_cert;
+ *                                        a real cert is per-lead and comes from the payload
  *
  * The fetch is aborted internally at 12s so a hung Achieve API can never trip
  * the engine-level node timeout (which WOULD fail the step). Recommended node
@@ -51,6 +53,7 @@ import { resolveAchieveEndpoint } from './achieve-endpoint'
 export interface AchieveOffersConfig {
   wait_for_offers?: boolean
   utm_source?: string
+  utm_campaign?: string
   unsecured_debt_ref?: string
   // Optional per-node override for where the pulled Vantage score lives. Defaults to the
   // Main Flow's `gen_vantage_score` step. Only consulted when ACHIEVE_MIN_VANTAGE_SCORE > 0.
@@ -152,6 +155,18 @@ interface LeadPayload {
   financialInformation?: { annualIncome?: number; employmentStatus?: string }
   creditInformation?: { providedCreditRating?: string }
   sessionInformation?: { ipAddress?: string; userAgent?: string }
+  /** Traffic source for tracking.utm_adgroup, when the lead carries one. */
+  traffic_source?: string
+  /** Per-lead TrustedForm cert URL (#1081). xxTrustedFormCertUrl is the field name
+   *  the TrustedForm script itself injects into a form, so a form that forwards its
+   *  fields verbatim already sends that spelling. */
+  trusted_form_cert?: string
+  xxTrustedFormCertUrl?: string
+}
+
+/** A non-empty string or nothing: tracking fields are omitted rather than sent blank. */
+function nonEmpty(v: unknown): string | undefined {
+  return typeof v === 'string' && v ? v : undefined
 }
 
 export async function executeAchieveOffersNode(
@@ -172,8 +187,11 @@ export async function executeAchieveOffersNode(
   // _achieve_evaluation marker, so it writes no DB row and never fails the flow (same contract
   // as the shadow stub). The reason is per-criterion on purpose: a rejected lead never reaches
   // Achieve, so counting rejections by cause is the only measurement left.
-  const verdict = screenLead(ctx, config)
-  if (!verdict.pass) {
+  // Test runs bypass the screen (Dan, 2026-08-31): the score floor doubles as the live
+  // pipe's pause switch, and a canvas test send is a deliberate, person-initiated single
+  // lead, so it goes out regardless. Real webhook traffic stays fully screened.
+  const verdict = ctx.isTest ? undefined : screenLead(ctx, config)
+  if (verdict && !verdict.pass) {
     return {
       output: {
         _achieve_skipped: true as const,
@@ -347,9 +365,16 @@ function buildRequest(
       utm_medium: 'partner',
       utm_media: 'partner',
       utm_source: config.utm_source || ctx.env.ACHIEVE_UTM_SOURCE || 'pennie',
+      utm_campaign: config.utm_campaign || ctx.env.ACHIEVE_UTM_CAMPAIGN || '_achieve_pl',
+      utm_adgroup: nonEmpty(payload.traffic_source),
       ip_address: si.ipAddress || undefined,
       user_agent: si.userAgent || undefined,
-      trusted_form_cert: ctx.env.ACHIEVE_TRUSTED_FORM_CERT || undefined,
+      // A TrustedForm cert is minted per form fill, so the payload is the only place a real
+      // one can come from; the env var is a placeholder for test sends only (#1080/#1081).
+      trusted_form_cert:
+        nonEmpty(payload.trusted_form_cert) ??
+        nonEmpty(payload.xxTrustedFormCertUrl) ??
+        (ctx.env.ACHIEVE_TRUSTED_FORM_CERT || undefined),
     },
     // No targeted_products: Achieve drives product selection server-side and asked us to
     // drop the field. Sending it is ignored at best, and misleading at worst.

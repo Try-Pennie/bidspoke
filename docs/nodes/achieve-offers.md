@@ -23,7 +23,8 @@ The output carries an `_achieve_evaluation` marker. After the run completes, the
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `wait_for_offers` | boolean | No | `true` | When true, Achieve holds the request up to 10s and returns offers inline. When false, Achieve replies accepted/rejected immediately and prequalifies asynchronously (no offers are logged). |
-| `utm_source` | string | No | env `ACHIEVE_UTM_SOURCE`, then `pennie` | `tracking.utm_source` sent to Achieve. Confirm the value with Achieve BizDev. |
+| `utm_source` | string | No | env `ACHIEVE_UTM_SOURCE`, then `pennie` | `tracking.utm_source` sent to Achieve. Achieve asked for `pennie_apl` (2026-08-17), set via the env var. |
+| `utm_campaign` | string | No | env `ACHIEVE_UTM_CAMPAIGN`, then `_achieve_pl` | `tracking.utm_campaign` sent to Achieve (requested 2026-08-27). |
 | `unsecured_debt_ref` | string | No | built-in extraction | Template overriding where the verified unsecured debt is read from, for workflows whose payload shape differs from the Main Flow. Example: `{{steps.my_step.output.debt}}`. |
 | `vantage_score_ref` | string | No | `gen_vantage_score` step | Template overriding where the pulled Vantage score is read from, used only when the `ACHIEVE_MIN_VANTAGE_SCORE` floor is active. Example: `{{steps.my_step.output.score}}`. |
 
@@ -41,7 +42,8 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_STAGING_USERNAME` | No | Staging username. Falls back to `ACHIEVE_USERNAME` when absent, since Achieve confirmed the existing credentials also work against staging. |
 | `ACHIEVE_API_URL` | No | Legacy explicit host, still honoured so nothing broke when `ACHIEVE_ENV` shipped. `ACHIEVE_ENV` wins over it, and only an exact match on the production host counts as production. |
 | `ACHIEVE_UTM_SOURCE` | No | Fallback for `tracking.utm_source`. |
-| `ACHIEVE_TRUSTED_FORM_CERT` | No | Sent as `tracking.trusted_form_cert` when set. |
+| `ACHIEVE_UTM_CAMPAIGN` | No | Fallback for `tracking.utm_campaign` (default `_achieve_pl`). |
+| `ACHIEVE_TRUSTED_FORM_CERT` | No | Test-send fallback for `tracking.trusted_form_cert`. A real cert is minted per form fill by the TrustedForm script, so it comes from the lead payload (`trusted_form_cert` or `xxTrustedFormCertUrl`), which always wins over this var (#1080, #1081). |
 | `ACHIEVE_CONSENT_TCPA` | Yes | Verbatim TCPA text shown on the form. Sent as `consents.tcpa`. |
 | `ACHIEVE_CONSENT_FCRA` | Yes | Verbatim credit-authorization text shown on the form. Sent as `consents.fcra`. |
 | `ACHIEVE_CONSENT_ESIGN` | No | Verbatim Electronic Consent Agreement text. Sent as `consents.e_sign`. |
@@ -69,6 +71,11 @@ any configured criterion is not sent at all.
 Every threshold is an environment variable and every one is **inert when unset**, so all six
 Achieve nodes in the Main Flow are configured from one page and no node config is ever touched.
 A deploy with nothing set changes nothing about which leads are sent.
+
+**Test runs bypass the screen entirely** (Dan, 2026-08-31): the score floor doubles as the live
+pipe's pause switch, and a canvas test send is a deliberate, person-initiated single lead, so it
+goes out to Achieve's real API regardless of the gate. Real webhook traffic stays fully screened.
+This is what makes a partner test send possible while the pipe is paused.
 
 A held-back lead carries its **own** reason on the step output (`reason`, plus the measured
 value under `screen`), never a shared "skipped". That matters because a rejected lead never
@@ -194,6 +201,8 @@ The node builds the Achieve request from the standard lead payload shape:
 | `loan_purpose` | `loanInformation.purpose` when valid |
 | `tracking.unique_identifier`, `partner_lead_id` | `Submission__c`, falling back to the trace id |
 | `tracking.ip_address`, `tracking.user_agent` | `sessionInformation` |
+| `tracking.utm_adgroup` | `traffic_source` on the payload, omitted when absent |
+| `tracking.trusted_form_cert` | `trusted_form_cert` or `xxTrustedFormCertUrl` on the payload, then env `ACHIEVE_TRUSTED_FORM_CERT`, omitted when none |
 
 Achieve requires email, phone, first and last name, mailing state, and either `unsecured_debt` or `loan_amount`. When any of these are missing the node skips the call and records which fields were absent.
 
