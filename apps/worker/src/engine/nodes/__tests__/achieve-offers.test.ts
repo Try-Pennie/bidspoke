@@ -422,6 +422,92 @@ describe('executeAchieveOffersNode', () => {
     expect(body.tracking.utm_source).toBe('pennie_main')
   })
 
+  // Achieve's payload review (Tony, 2026-08-27, #1080) asked for three tracking fields the node
+  // never sent: utm_campaign, utm_adgroup (traffic source, when the lead carries one), and a
+  // per-lead trusted_form_cert. A TrustedForm cert is minted per form fill, so the payload is
+  // the only place a real one can come from; the env var stays as a test-send fallback only.
+  describe('tracking fields for Achieve (#1080)', () => {
+    const trackingSent = async (payload: unknown, env: Record<string, string>, config: Record<string, unknown> = {}) => {
+      const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+      await executeAchieveOffersNode(makeNode(config), makeCtx({ payload, env }))
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+      return JSON.parse(init.body as string).tracking as Record<string, unknown>
+    }
+
+    it('sends utm_campaign, defaulting to _achieve_pl', async () => {
+      const tracking = await trackingSent(fullPayload(), PROD_ENV)
+      expect(tracking.utm_campaign).toBe('_achieve_pl')
+    })
+
+    it('lets config and env override utm_campaign, config winning', async () => {
+      const viaEnv = await trackingSent(fullPayload(), { ...PROD_ENV, ACHIEVE_UTM_CAMPAIGN: 'env_campaign' })
+      expect(viaEnv.utm_campaign).toBe('env_campaign')
+      const viaConfig = await trackingSent(
+        fullPayload(),
+        { ...PROD_ENV, ACHIEVE_UTM_CAMPAIGN: 'env_campaign' },
+        { utm_campaign: 'config_campaign' }
+      )
+      expect(viaConfig.utm_campaign).toBe('config_campaign')
+    })
+
+    it('sends utm_adgroup from the payload traffic source and omits it when absent', async () => {
+      const withSource = await trackingSent({ ...fullPayload(), traffic_source: 'google' }, PROD_ENV)
+      expect(withSource.utm_adgroup).toBe('google')
+      const without = await trackingSent(fullPayload(), PROD_ENV)
+      expect(without).not.toHaveProperty('utm_adgroup')
+    })
+
+    it('sends trusted_form_cert from the payload, beating the env fallback', async () => {
+      const cert = 'https://cert.trustedform.com/abc123'
+      const fromPayload = await trackingSent(
+        { ...fullPayload(), trusted_form_cert: cert },
+        { ...PROD_ENV, ACHIEVE_TRUSTED_FORM_CERT: 'placeholder' }
+      )
+      expect(fromPayload.trusted_form_cert).toBe(cert)
+    })
+
+    it('reads the cert from the TrustedForm hidden-field spelling too', async () => {
+      const cert = 'https://cert.trustedform.com/def456'
+      const tracking = await trackingSent({ ...fullPayload(), xxTrustedFormCertUrl: cert }, PROD_ENV)
+      expect(tracking.trusted_form_cert).toBe(cert)
+    })
+
+    it('falls back to the env cert and omits the field when neither exists', async () => {
+      const viaEnv = await trackingSent(fullPayload(), { ...PROD_ENV, ACHIEVE_TRUSTED_FORM_CERT: 'placeholder' })
+      expect(viaEnv.trusted_form_cert).toBe('placeholder')
+      const absent = await trackingSent(fullPayload(), PROD_ENV)
+      expect(absent).not.toHaveProperty('trusted_form_cert')
+    })
+  })
+
+  // Test runs bypass the screen (Dan, 2026-08-31): the screen's score floor doubles as the
+  // pause switch for the live pipe, and with it set to an impossible value a canvas test lead
+  // could never reach Achieve at all. A test run is a deliberate, person-initiated send of one
+  // lead, so it goes out regardless of the gate; real webhook traffic stays fully screened.
+  describe('screening on test runs', () => {
+    it('sends a test-run lead even when the screen would hold it back', async () => {
+      const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+      const ctx = makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
+      ctx.isTest = true
+      const { output } = await executeAchieveOffersNode(makeNode(), ctx)
+      const out = output as Record<string, unknown>
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(out._achieve_evaluation).toBe(true)
+      expect(out).not.toHaveProperty('_achieve_skipped')
+    })
+
+    it('still screens a non-test lead (the bypass is test-only)', async () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const { output } = await executeAchieveOffersNode(
+        makeNode(),
+        makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect((output as Record<string, unknown>)._achieve_skipped).toBe(true)
+    })
+  })
+
   it('omits annual_income when 0 and unmapped employment status', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     const payload = fullPayload()
