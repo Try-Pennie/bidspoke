@@ -9,6 +9,9 @@ import {
   hasDynamicStepsAccess,
   extractReferencedNamespaces,
   stepReferencePattern,
+  extractTemplateExpressions,
+  referenceOperands,
+  unknownReferenceRoot,
 } from './index'
 
 describe('root namespaces', () => {
@@ -132,5 +135,65 @@ describe('stepReferencePattern', () => {
   })
   it('escapes regex metacharacters in a namespace', () => {
     expect('steps.ab.x'.match(stepReferencePattern('a.b'))).toBeNull()
+  })
+})
+
+describe('extractTemplateExpressions', () => {
+  it('finds a single expression', () => {
+    expect(extractTemplateExpressions('{{trigger.payload.x}}')).toEqual(['trigger.payload.x'])
+  })
+  it('finds every expression in an interpolated string', () => {
+    expect(extractTemplateExpressions('Hi {{trigger.a}} and {{steps.b.c}}')).toEqual(['trigger.a', 'steps.b.c'])
+  })
+  it('trims whitespace inside the braces', () => {
+    expect(extractTemplateExpressions('{{  trigger.a  }}')).toEqual(['trigger.a'])
+  })
+  it('finds nothing in a plain string', () => {
+    expect(extractTemplateExpressions('just text')).toEqual([])
+  })
+})
+
+describe('referenceOperands', () => {
+  // The engine's own grammar: coalesce operands split on ??, arithmetic splits
+  // on whitespace-separated operators, number literals are not references.
+  it('splits a coalesce into its operands', () => {
+    expect(referenceOperands('steps.a.x ?? steps.b.x')).toEqual(['steps.a.x', 'steps.b.x'])
+  })
+  it('splits arithmetic and drops number literals', () => {
+    expect(referenceOperands('steps.a.bid * 0.65')).toEqual(['steps.a.bid'])
+  })
+  it('handles a coalesce whose operands are arithmetic', () => {
+    expect(referenceOperands('steps.a.x * 2 ?? trigger.y')).toEqual(['steps.a.x', 'trigger.y'])
+  })
+  it('leaves a plain reference alone', () => {
+    expect(referenceOperands('trigger.payload.name')).toEqual(['trigger.payload.name'])
+  })
+  it('does not split a payload key containing a hyphen', () => {
+    // Operators must be whitespace separated, because a payload key can legally
+    // contain a dash. Splitting on a bare `-` would corrupt this lookup.
+    expect(referenceOperands('trigger.payload.some-key')).toEqual(['trigger.payload.some-key'])
+  })
+})
+
+describe('unknownReferenceRoot', () => {
+  it('accepts every root the engine resolves', () => {
+    for (const root of ROOT_NAMESPACES) {
+      expect(unknownReferenceRoot(`${root}.something`)).toBeNull()
+    }
+  })
+  it('names a bare payload root, the one that killed the Scout fallback', () => {
+    expect(unknownReferenceRoot('payload.debt')).toBe('payload')
+  })
+  it('reads the root before a bracket', () => {
+    expect(unknownReferenceRoot('payload[0].x')).toBe('payload')
+  })
+  it('accepts a bracketed lookup on a known root', () => {
+    expect(unknownReferenceRoot('steps.c.map[trigger.payload.k].id')).toBeNull()
+  })
+  it('says nothing about a bare number, which is a literal not a reference', () => {
+    expect(unknownReferenceRoot('42')).toBeNull()
+  })
+  it('says nothing about a quoted string literal', () => {
+    expect(unknownReferenceRoot("'Engine'")).toBeNull()
   })
 })

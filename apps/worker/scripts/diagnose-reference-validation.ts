@@ -58,6 +58,32 @@ async function main(): Promise<void> {
       console.log(`    [${p.severity}] ${p.namespace}: ${p.message}`)
     }
   }
+  // Positive control. Zero findings is also what a validator that never runs
+  // reports, so before reading anything into the number above, prove each check
+  // fires on a deliberate defect injected into a REAL definition (L98, L171).
+  const sample = ((data ?? []) as unknown as WorkflowRow[]).find((w) => (w.definition?.nodes?.length ?? 0) > 2)
+  if (!sample) {
+    console.log('\nNO CONTROL AVAILABLE: no definition large enough, so the zeros above are unproven')
+  } else {
+    const nodes = sample.definition?.nodes ?? []
+    const edges = sample.definition?.edges ?? []
+    const last = nodes[nodes.length - 1]
+
+    const withBadRoot = nodes.map((n) =>
+      n.id === last.id ? { ...n, config: { ...n.config, __control: '{{payload.debt}}' } } : n,
+    )
+    const rootCaught = validateDefinitionReferences(withBadRoot, edges).some((p) => p.reference === 'payload')
+
+    const withGhostStep = nodes.map((n) =>
+      n.id === last.id ? { ...n, config: { ...n.config, __control: '{{steps.__ghost__.output.x}}' } } : n,
+    )
+    const stepCaught = validateDefinitionReferences(withGhostStep, edges).some((p) => p.reference === '__ghost__')
+
+    console.log(`\ncontrols against ${sample.name}:`)
+    console.log(`  unknown root {{payload.debt}}: ${rootCaught ? 'CAUGHT' : 'MISSED (the zeros above prove nothing)'}`)
+    console.log(`  missing step steps.__ghost__: ${stepCaught ? 'CAUGHT' : 'MISSED (the zeros above prove nothing)'}`)
+  }
+
   console.log(`\ntotal problems across active workflows: ${total}`)
   console.log('Every one must be inspected: a real broken reference, or a false positive to fix before wiring this to the editor.')
 }
