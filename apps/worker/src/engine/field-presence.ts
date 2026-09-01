@@ -1,21 +1,16 @@
 import type { StepOutput, WorkflowDefinition } from '../types'
+import { parseStepPath } from '@bidspoke/references'
 import { resolveStepField } from './context'
 import { deriveWatchedFields } from './watched-fields'
 
 export { deriveWatchedFields }
 
 /**
- * Parse a watched-field path into namespace-rooted segments. Strips an optional
- * leading `steps.` and collapses an explicit `.output` or `.$return_value`
- * wrapper after the namespace, so `steps.x.output.y`, `steps.x.$return_value.y`,
- * `steps.x.y`, and `x.y` all normalize to ['x', 'y'].
+ * Parse a watched-field path into namespace-rooted segments, through the shared
+ * reference parser (#433) so this and the derivation that produced the path
+ * cannot disagree about what the path names.
  */
-function parseWatchedField(field: string): string[] {
-  let segs = field.split('.').filter(Boolean)
-  if (segs[0] === 'steps') segs = segs.slice(1)
-  if (segs[1] === 'output' || segs[1] === '$return_value') segs = [segs[0], ...segs.slice(2)]
-  return segs
-}
+const parseWatchedField = parseStepPath
 
 /**
  * Per-execution field-presence map: for each watched field whose producing node

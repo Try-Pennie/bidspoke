@@ -10,6 +10,7 @@ import type { Env } from '../../index'
 import { codeBundleName, codeWorkerName, isWorkerNotFoundError } from '../../lib/code-node-deployer'
 import { formatErr } from '../../lib/format-error'
 import { parseCodeSandboxResponse } from '../code-response'
+import { hasDynamicStepsAccess, extractReferencedNamespaces } from '@bidspoke/references'
 import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
@@ -43,18 +44,12 @@ export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext):
 }
 
 /**
- * True when a script accesses `steps` in a way that defeats static analysis:
- * bracket access, whole-object aliasing, Object.* iteration, or for-in/of.
- * Shared by extractReferencedSteps (step-scoping, #190) and the watched-field
- * code scanner (#420), so both bail open on exactly the same patterns.
+ * Re-exported from the shared reference parser (#433), which is where this rule
+ * now lives so the engine's step-scoping and the watched-field scanner cannot
+ * drift apart about what counts as unreadable. Kept as an export here because
+ * existing callers import it from this module.
  */
-export function hasDynamicStepsAccess(script: string): boolean {
-  if (/\bsteps\s*\[/.test(script)) return true
-  if (/\b(?:const|let|var)\s+\w+\s*=\s*steps\b(?!\.)/.test(script)) return true
-  if (/\bObject\s*\.\s*(?:keys|entries|values|assign)\s*\(\s*steps\b/.test(script)) return true
-  if (/\bfor\s*\(\s*(?:const|let|var)\s+\w+\s+(?:in|of)\s+steps\b/.test(script)) return true
-  return false
-}
+export { hasDynamicStepsAccess }
 
 /**
  * Static-analyzes a user script for `steps.X` dot references and returns the
@@ -75,14 +70,7 @@ export function hasDynamicStepsAccess(script: string): boolean {
  * - Everything else → scan for `steps.<ident>` dot references
  */
 function extractReferencedSteps(script: string): Set<string> | null {
-  if (hasDynamicStepsAccess(script)) return null
-  const refs = new Set<string>()
-  const re = /\bsteps\s*\.\s*([a-zA-Z_$][\w$]*)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(script)) !== null) {
-    refs.add(m[1])
-  }
-  return refs
+  return extractReferencedNamespaces(script)
 }
 
 /**

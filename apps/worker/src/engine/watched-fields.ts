@@ -1,4 +1,10 @@
-import { hasDynamicStepsAccess } from './nodes/code'
+import {
+  chainToStepPath,
+  extractStepChains,
+  hasDynamicStepsAccess,
+  STEP_CHAIN_SOURCE,
+  stripOutputWrapper,
+} from '@bidspoke/references'
 import type { WorkflowDefinition } from '../types'
 
 // Watched-field derivation (#420). Pulls every `steps.X.Y.Z` output field any
@@ -8,32 +14,13 @@ import type { WorkflowDefinition } from '../types'
 // extractor leans toward capturing; over-capture is absorbed by the detector's
 // stability gate downstream.
 
-// A `steps...` reference chain: `steps` (not part of a larger identifier) then
-// one or more `.ident` / `?.ident` segments. Whitespace around separators is
-// tolerated to match the existing code scanner. A bracket ends the chain, so
-// `steps.x.list[0]` yields `steps.x.list`.
-const CHAIN_RE =
-  /(?<![\w$])steps(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*(?:(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*)*/g
-
-export function extractChains(text: string): string[] {
-  return [...text.matchAll(CHAIN_RE)].map((m) => m[0])
-}
-
-// Segments AFTER the `steps` root. Drops a leading output wrapper segment
-// (`output` or the Pipedream-legacy `$return_value`) so `x.output.y`,
-// `x.$return_value.y`, and `x.y` all normalize to `x.y`.
-export function normalizeRefSegments(segments: string[]): string[] {
-  if (segments[1] === 'output' || segments[1] === '$return_value') {
-    return [segments[0], ...segments.slice(2)]
-  }
-  return segments
-}
-
-export function chainToWatchedField(chain: string): string {
-  const parts = chain.replace(/\s+/g, '').replace(/\?\./g, '.').split('.')
-  // parts[0] is the literal "steps" root.
-  return normalizeRefSegments(parts.slice(1)).join('.')
-}
+// The chain syntax, the output-wrapper rule and the canonical path form all
+// come from the shared parser (#433), so the field this WATCHES is derived by
+// the same rule the engine resolver READS by. Re-exported under their long-standing names
+// because callers and tests here import them from this module.
+export const extractChains = extractStepChains
+export const normalizeRefSegments = stripOutputWrapper
+export const chainToWatchedField = chainToStepPath
 
 // Recursively walk any value; for every string, add each chain's canonical
 // watched field to `into`. Object keys named `script` are skipped (those are raw
@@ -55,11 +42,13 @@ export function collectStructuredRefs(value: unknown, into: Set<string>): void {
   }
 }
 
-// A local standing in for a `steps` chain: `const r = steps.a.b`. The chain
-// itself reuses the same shape CHAIN_RE matches, so an alias and a literal read
-// are recognised by one definition of what a reference looks like.
-const ALIAS_RE =
-  /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*((?<![\w$])steps(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*(?:(?:\s*\?\.\s*|\s*\.\s*)[A-Za-z_$][\w$]*)*)/g
+// A local standing in for a `steps` chain: `const r = steps.a.b`. Built from
+// the shared chain source rather than restating it, so an alias and a literal
+// read are recognised by ONE definition of what a reference looks like (#433).
+const ALIAS_RE = new RegExp(
+  `\\b(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(${STEP_CHAIN_SOURCE})`,
+  'g',
+)
 
 /** Every `local = <steps chain>` declaration in the script, in source order. */
 function aliasDeclarations(script: string): { local: string; base: string }[] {

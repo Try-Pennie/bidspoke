@@ -1,3 +1,5 @@
+import { stepReferencePattern } from '@bidspoke/references'
+
 /**
  * Rewrites `steps.OLD.…` references to `steps.NEW.…` everywhere they appear
  * in a node config. Used when a user renames a node's namespace (step ID) on
@@ -14,15 +16,11 @@
  * with `steps.`) — use `renameFallbackNamespace` for that.
  */
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function buildStepsPattern(ns: string): RegExp {
-  // \b before "steps" anchors the start; \b after the namespace prevents
-  // matching `steps.foo_bar` when renaming `foo`.
-  return new RegExp(`\\bsteps\\.${escapeRegex(ns)}\\b`, 'g')
-}
+// The pattern comes from the shared reference parser (#433), so the syntax this
+// REWRITES is the syntax the engine RESOLVES. A rename tool with its own idea of
+// what a reference looks like either misses references (leaving them pointing at
+// a namespace that no longer exists) or rewrites text that is not one.
+const buildStepsPattern = stepReferencePattern
 
 /**
  * Rewrite `steps.oldNs.…` → `steps.newNs.…` recursively through any value.
