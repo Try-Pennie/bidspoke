@@ -43,6 +43,22 @@ export const DEAD_MIN_RUNS = 200
 // exactly zero so a chronically dead field that succeeds a handful of times in
 // a large sample is still caught.
 export const DEAD_MAX_RATE = 0.001
+/**
+ * Distinct days of rollup history a field needs before it can be called dead.
+ *
+ * The dead check reads a 7-day window, but the data only covers as long as the
+ * field has been WATCHED, and a field enters the watched set the moment
+ * something starts referencing it. On a workflow running 500,000 executions a
+ * week a brand new field clears the 200-run floor within hours, so without this
+ * it would be judged on a few hours of its first day, and "never resolved over 7
+ * days" would be a claim the data does not support (L98, L11).
+ *
+ * Not hypothetical: #435 resolved code-node aliases and added 108 fields to the
+ * watched set in one deploy, every one of them with no history at all. The same
+ * happens on a smaller scale whenever an author edits a workflow to read a field
+ * it did not read before.
+ */
+export const DEAD_MIN_DAYS = 3
 
 export function dailyRate(ran: number, present: number): number {
   return ran > 0 ? present / ran : 0
@@ -79,6 +95,7 @@ export interface PresenceThresholds {
   minTodaySample?: number
   deadMinRuns?: number
   deadMaxRate?: number
+  deadMinDays?: number
 }
 
 interface ResolvedThresholds {
@@ -90,6 +107,7 @@ interface ResolvedThresholds {
   minTodaySample: number
   deadMinRuns: number
   deadMaxRate: number
+  deadMinDays: number
 }
 
 function resolve(t: PresenceThresholds = {}): ResolvedThresholds {
@@ -104,6 +122,7 @@ function resolve(t: PresenceThresholds = {}): ResolvedThresholds {
     minTodaySample: t.minTodaySample ?? MIN_TODAY_SAMPLE,
     deadMinRuns: t.deadMinRuns ?? DEAD_MIN_RUNS,
     deadMaxRate: t.deadMaxRate ?? DEAD_MAX_RATE,
+    deadMinDays: t.deadMinDays ?? DEAD_MIN_DAYS,
   }
 }
 
@@ -224,8 +243,11 @@ export function findDroughts(
 // Tier-2: per field, sum the window and check day-one-dead. A field is counted
 // as "ever healthy" only on a day with enough runs to trust its rate.
 export function findDayOneDead(rows: PresenceRow[], thresholds?: PresenceThresholds): DeadHit[] {
+  const t = resolve(thresholds)
   const hits: DeadHit[] = []
   for (const bucket of groupByField(rows).values()) {
+    // Distinct days, not rows: two rows for one day is one day of evidence.
+    if (new Set(bucket.map((r) => r.day)).size < t.deadMinDays) continue
     let windowRan = 0
     let windowPresent = 0
     let everHealthy = false
@@ -342,7 +364,7 @@ export function classifyDead(
     // Too little traffic over the window to call a field dead. This is the
     // population the design knowingly accepts a detection delay on, and it is
     // reported as unjudged rather than as fine.
-    if (windowRan < t.deadMinRuns) {
+    if (windowRan < t.deadMinRuns || new Set(bucket.map((r) => r.day)).size < t.deadMinDays) {
       out.push({ ...base, verdict: 'insufficient' })
       continue
     }

@@ -11,7 +11,7 @@ Nothing is tagged by hand. Opting nodes in was considered and rejected: it depen
 Instead, on every run the engine derives the set of fields that **something downstream actually reads**, straight from the running workflow definition. It scans two places:
 
 - **Structured references** in node configs, node variables, and edge conditions: anything written as `steps.x.y.z`.
-- **Code node scripts**, scanned for the same literal `steps.x.y.z` chains.
+- **Code node scripts**, scanned for the same literal `steps.x.y.z` chains, and then for one level of alias: a script that writes `const r = steps.scout.$return_value` and later reads `r.final` has `scout.final` watched, even though that path is never written out in full. A read followed by `(` is a method call, not a field, and is skipped.
 
 For each watched field it records one boolean per execution: did the producing node run, and did the field carry a value. Only booleans are stored, so no value and no PII is persisted. Those booleans roll up nightly into per-day counts per (workflow, field), which is what the detector reads.
 
@@ -23,7 +23,11 @@ Two gaps, both deliberate and both visible rather than assumed away.
 
 **Dynamic access.** A script that reaches `steps` through a variable key (`steps[name]`), aliases the whole object, or iterates it cannot be read statically. The scanner bails on the whole node rather than guess, and the node is listed in the coverage manifest as unreadable. As of 2026-09-01 there are zero such nodes across all active workflows.
 
-**Alias-only reads.** A script that writes `const r = steps.scout.$return_value` and then reads `r.final`, without ever writing the full path once, has `scout` watched but not `scout.final`. Measured 2026-09-01: **108 such fields across 19 code nodes**, in 8 of 10 active workflows, including money-path fields. This is the real coverage gap. Do not read a clean coverage manifest as proof that every field a workflow depends on is watched.
+**Aliases the scanner cannot follow.** Alias resolution stops where the local stops meaning one thing: a local that is declared twice, or reassigned, is not followed, because attributing its reads to the original path would watch the wrong field. Those nodes are listed in the coverage manifest as `alias_only_nodes`, which is a milder statement than unreadable: the node is scanned, some of its reads just cannot be attributed.
+
+Resolving aliases closed the gap that used to dominate here. Measured 2026-09-01, before and after: 108 deep fields across 19 code nodes were read only through a local and therefore unwatched, in 8 of 10 active workflows, including money-path fields such as `ping_lendswift.data.data.bid_amount` and `bid_race.winner.bid`. All 108 are now watched, taking the total across active workflows from 250 to 358.
+
+Still, do not read a clean coverage manifest as proof that every field a workflow depends on is watched. A field is only watched because something references it, so a value nothing reads is invisible here by design, and multi-level aliasing and destructuring are not followed.
 
 ## The two alerts
 
@@ -39,7 +43,9 @@ It fires when today's rate falls below the field's own baseline by more than fou
 
 ### Output Field Never Resolves (daily)
 
-A field that has never carried a value, despite plenty of traffic. Over a rolling 7 days, at least 200 runs and a presence rate at or below 0.1%.
+A field that has never carried a value, despite plenty of traffic. Over a rolling 7 days: at least 200 runs, spread over at least 3 distinct days, with a presence rate at or below 0.1%.
+
+The day floor matters as much as the run floor. A field enters the watched set the moment something starts referencing it, and on a workflow running 500,000 executions a week a brand new field clears 200 runs within hours. Without the day floor, "never resolved over 7 days" would be a claim made from a few hours of one day. So a newly referenced field is not judged for its first few days, which is the honest cost of not accusing it on no evidence.
 
 This is a different problem from the one above, and the message says so. A field that has never once resolved usually means the reference path is **wrong or obsolete**, not that an upstream is down. The fix is normally to correct the path or delete the reference.
 
@@ -83,13 +89,14 @@ Clear it with `DELETE /api/field-coverage/{workflowId}/silence` and the same `fi
 
 - `fields`: every watched field, its `source` (`structured` or `code`), and its recent health (latest day's ran/present counts and rate, plus whether it is currently in drought or dead).
 - `unreadable_nodes`: code nodes the scanner could not read at all.
+- `alias_only_nodes`: code nodes holding a `steps` alias the scanner could not follow, so their watched set may be incomplete.
 - `silences`: every silenced field with its reason and who set it.
 
 All three handlers verify the workflow belongs to the caller's org.
 
 ## What silence from this detector does and does not mean
 
-It means no watched field crossed a threshold on the last run of each check. It does **not** mean every field a workflow depends on is covered: see the alias-only gap above, and note that a field is only watched at all because something references it, so a value nothing reads is invisible here by design.
+It means no watched field crossed a threshold on the last run of each check. It does **not** mean every field a workflow depends on is covered: see the gaps above, and note that a newly referenced field is deliberately not judged by the dead check for its first few days.
 
 If a check itself fails, it throws rather than reporting an all-clear, and the failure is logged. Absence of a run is covered separately by the cron heartbeat.
 

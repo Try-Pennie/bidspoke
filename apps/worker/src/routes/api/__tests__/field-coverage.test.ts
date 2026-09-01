@@ -90,6 +90,7 @@ describe('field-coverage routes (#423)', () => {
       workflow_id: string
       fields: Array<{ path: string; source: string; health: unknown }>
       unreadable_nodes: string[]
+      alias_only_nodes: string[]
       silences: Array<{ field_path: string }>
     }
     expect(body.workflow_id).toBe('wf-1')
@@ -101,7 +102,44 @@ describe('field-coverage routes (#423)', () => {
       },
     ])
     expect(body.unreadable_nodes).toEqual([])
+    expect(body.alias_only_nodes).toEqual([])
     expect(body.silences).toEqual([{ field_path: 'y.skip', reason: 'always empty', created_at: '2026-06-29T00:00:00Z' }])
+  })
+
+  it('GET names a node whose steps alias could not be followed (#435)', async () => {
+    // The manifest has to say where its own coverage is incomplete, or a clean
+    // field list reads as proof that everything a workflow depends on is
+    // watched. `r` is reassigned, so its reads cannot be attributed.
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: {
+        ...DEFINITION,
+        nodes: [
+          ...DEFINITION.nodes,
+          {
+            id: 'n2',
+            namespace: 'build_response',
+            type: 'code',
+            config: { script: 'let r = steps.a.x; r = other; return r.final' },
+          },
+        ],
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflows: { maybeSingle: { id: 'wf-1' } },
+        field_presence_daily: { list: [] },
+        field_presence_silences: { list: [] },
+      }) as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    const res = await request(app, 'GET', '/field-coverage/wf-1')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { alias_only_nodes: string[]; unreadable_nodes: string[] }
+    expect(body.alias_only_nodes).toEqual(['build_response'])
+    // Milder than unreadable: the node IS scanned, some reads just cannot be
+    // attributed, so it must not be reported as both.
+    expect(body.unreadable_nodes).toEqual([])
   })
 
   it('GET pages past a 1,000-row field_presence_daily response instead of truncating', async () => {

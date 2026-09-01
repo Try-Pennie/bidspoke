@@ -86,7 +86,7 @@ describe('collectStructuredRefs', () => {
 describe('collectCodeRefs', () => {
   it('captures the Scout field from a full literal path', () => {
     const set = new Set<string>()
-    const readable = collectCodeRefs(
+    const { readable } = collectCodeRefs(
       'const debt = steps.pennie_or_eligibility?.$return_value?.final ?? null',
       set,
     )
@@ -100,13 +100,13 @@ describe('collectCodeRefs', () => {
   })
   it('bails open on bracket access and adds nothing', () => {
     const set = new Set<string>()
-    const readable = collectCodeRefs('const v = steps["foo"].bar', set)
+    const { readable } = collectCodeRefs('const v = steps["foo"].bar', set)
     expect(readable).toBe(false)
     expect(set.size).toBe(0)
   })
   it('bails open on whole-object aliasing', () => {
     const set = new Set<string>()
-    const readable = collectCodeRefs('const all = steps; return all.x.final', set)
+    const { readable } = collectCodeRefs('const all = steps; return all.x.final', set)
     expect(readable).toBe(false)
     expect(set.size).toBe(0)
   })
@@ -246,5 +246,79 @@ describe('deriveWatchedFieldMap', () => {
       ],
     })
     expect(deriveWatchedFields(d)).toEqual(['x.final', 'y.v'])
+  })
+})
+
+// Alias resolution (#435).
+//
+// Measured 2026-09-01 across all 10 active workflows: zero code nodes are
+// dynamically unreadable, but 108 deep fields across 19 nodes are read only
+// through a local, so they were never watched. That is the real blind spot, and
+// most of it is resolvable rather than merely reportable: both the alias base
+// and the field read are statically visible, so the field is watched rather
+// than flagged (L272). What genuinely cannot be resolved is still reported, so
+// the coverage manifest says "may be incomplete" instead of looking clean.
+describe('alias resolution', () => {
+  const codeNode = (script: string, namespace = 'c') =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def({ nodes: [{ id: 'n1', namespace, type: 'code', config: { script } } as any] })
+
+  it('resolves a one-level alias into the full field path', () => {
+    // The Scout shape: the field is never written as a full literal path.
+    const d = codeNode('const r = steps.scout.$return_value; return r.final')
+    expect(deriveWatchedFields(d)).toEqual(['scout', 'scout.final'])
+  })
+
+  it('resolves several reads through the same alias', () => {
+    const d = codeNode('const b = steps.ping.data.data; return { s: b.status, a: b.bid_amount }')
+    expect(deriveWatchedFields(d)).toEqual([
+      'ping.data.data',
+      'ping.data.data.bid_amount',
+      'ping.data.data.status',
+    ])
+  })
+
+  it('resolves an optional-chained read through an alias', () => {
+    const d = codeNode('const w = steps.race.winner; return w?.bid')
+    expect(deriveWatchedFields(d)).toEqual(['race.winner', 'race.winner.bid'])
+  })
+
+  it('does NOT watch a method call through an alias', () => {
+    // `name.trim()` is a call, not a field. Watching it would invent a field
+    // that can never resolve, and the day-one-dead check would then page about
+    // a field that does not exist.
+    const d = codeNode('const name = steps.parse.firstName; return name.trim()')
+    expect(deriveWatchedFields(d)).toEqual(['parse.firstName'])
+  })
+
+  it('does NOT resolve an alias that is reassigned', () => {
+    // After a reassignment the local no longer stands for the same path, so
+    // resolving it would attribute reads to the wrong field.
+    const d = codeNode('let r = steps.a.x; r = somethingElse; return r.final')
+    const fields = deriveWatchedFields(d)
+    expect(fields).toContain('a.x')
+    expect(fields).not.toContain('a.x.final')
+  })
+
+  it('reports an unresolvable alias so the coverage view can flag the node', () => {
+    const d = codeNode('let r = steps.a.x; r = somethingElse; return r.final', 'build_response')
+    expect(deriveWatchedFieldMap(d).aliasOnlyNodes).toEqual(['build_response'])
+  })
+
+  it('reports no alias gap for a node whose aliases all resolved', () => {
+    const d = codeNode('const r = steps.scout.$return_value; return r.final')
+    expect(deriveWatchedFieldMap(d).aliasOnlyNodes).toEqual([])
+  })
+
+  it('still bails the whole node open on dynamic access, resolving nothing', () => {
+    const d = codeNode('const k = key; const r = steps[k]; return r.final')
+    expect(deriveWatchedFields(d)).toEqual([])
+    expect(deriveWatchedFieldMap(d).unreadableNodes).toEqual(['c'])
+  })
+
+  it('marks an alias-resolved field as code-sourced', () => {
+    const d = codeNode('const r = steps.scout.$return_value; return r.final')
+    const map = deriveWatchedFieldMap(d)
+    expect(map.fields.find((f) => f.path === 'scout.final')?.source).toBe('code')
   })
 })
