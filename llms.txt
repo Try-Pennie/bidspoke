@@ -54,6 +54,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Partners](https://bidspoke.trypennie.dev/docs/reference/partners.md): every partner configuration field.
 - [Error handling](https://bidspoke.trypennie.dev/docs/reference/error-handling.md): error classification, retries, fallback, alerts.
 - [Observability](https://bidspoke.trypennie.dev/docs/reference/observability.md): the dashboard, tracing, alerts, cost, and retention.
+- [Silent output field detection](https://bidspoke.trypennie.dev/docs/reference/silent-output-detection.md): the detector for nodes that succeed while returning nothing.
 
 ## Examples
 

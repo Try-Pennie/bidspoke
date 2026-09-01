@@ -264,7 +264,7 @@ export default {
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
       ctx.waitUntil(
-        runFieldPresenceDeadCheck(supabase)
+        runFieldPresenceDeadCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[field-presence-dead] failed:', e))
       )
       // #744: leads whose email Salesforce rejected are still created, without the
@@ -436,7 +436,7 @@ export default {
           .catch((e) => console.error('[sf-matrix-audit] failed:', e))
       )
       ctx.waitUntil(
-        runFieldPresenceDroughtCheck(supabase)
+        runFieldPresenceDroughtCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[field-presence-drought] failed:', e))
       )
       // Archive gaps the forward-only run leaves behind (#1015). The hourly run

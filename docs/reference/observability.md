@@ -133,6 +133,8 @@ Alerts post to the Slack channel configured on your org's Slack connection (`def
 | Bid Matrix Changed | The hourly Salesforce to bid-matrix sync detects added, edited, or removed rows. Lists the per-row diffs. | `matrix_alerts_enabled` (Integrations); optional dedicated `matrix_alerts_channel` |
 | Timeout Below Reliable Minimum | The daily config audit finds active workflow steps whose configured `timeout_ms` is below the node-type reliability floor (these fail on every cold run). Links straight to each offending node. | `config_alerts_enabled` (Integrations) |
 | Circuit Breaker Opened / Recovered | An upstream service circuit breaker opens or recovers. | Always on when Slack is connected |
+| Output Field Stopped | Hourly. A workflow output field that normally carries a value on at least 90% of runs, with very low variance, has collapsed today. Names the field, its own baseline rate, and today's rate. 12-hour per-field cooldown, with an all-clear when it recovers. See [Silent output field detection](./silent-output-detection.md). | `volume_alerts_enabled` (Integrations) |
+| Output Field Never Resolves | Daily. A workflow output field that something reads has carried a value on at most 0.1% of at least 200 runs over 7 days, and was never healthy. Usually means the reference path is wrong or obsolete. See [Silent output field detection](./silent-output-detection.md). | `volume_alerts_enabled` (Integrations) |
 
 The volume, matrix, and config toggles live on the Integrations page (Slack settings) and all default to on (opt-out). They are read and written through `GET`/`PATCH /api/integrations` as `volume_alerts_enabled`, `matrix_alerts_enabled`, and `config_alerts_enabled`.
 

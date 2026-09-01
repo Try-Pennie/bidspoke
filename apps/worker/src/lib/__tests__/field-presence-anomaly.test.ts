@@ -1,9 +1,17 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+vi.mock('../slack', () => ({
+  getSlackConnection: vi.fn(),
+  postMessage: vi.fn(),
+  sendRecoveryAlert: vi.fn(),
+}))
+import { getSlackConnection, postMessage, sendRecoveryAlert } from '../slack'
 import type { PresenceRow } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
   findDroughts, findDayOneDead, excludeSilenced, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
+  classifyDrought, classifyDead,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -274,6 +282,19 @@ describe('calibration against the measured dark run', () => {
 // `.range()` and swallowed an error by breaking out of the loop with whatever it
 // had, which meant a failed or torn read reported "no fields are dead" in
 // exactly the same words as a healthy sweep (L98, L211, L215).
+/** In-memory KV standing in for the alert cooldown and recovery markers. */
+function makeKv(initial: Record<string, string> = {}) {
+  const m = new Map(Object.entries(initial))
+  return {
+    store: m,
+    get: async (k: string) => m.get(k) ?? null,
+    put: async (k: string, v: string) => { m.set(k, v) },
+    delete: async (k: string) => { m.delete(k) },
+  }
+}
+
+const APP_URL = 'https://app.example.com'
+
 describe('runFieldPresence*Check on a failing rollup read', () => {
   /** Chainable Supabase double; awaiting a chain resolves that table's result. */
   function makeSupabase(tables: Record<string, { data: unknown[] | null; error: { message: string } | null }>) {
@@ -300,7 +321,7 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
       workflows: activeWorkflows,
       field_presence_daily: { data: null, error: { message: 'statement timeout' } },
     })
-    await expect(runFieldPresenceDroughtCheck(supabase as never)).rejects.toThrow(/field_presence_daily/)
+    await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(/field_presence_daily/)
   })
 
   it('dead check rejects rather than reporting an empty digest', async () => {
@@ -308,7 +329,7 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
       workflows: activeWorkflows,
       field_presence_daily: { data: null, error: { message: 'statement timeout' } },
     })
-    await expect(runFieldPresenceDeadCheck(supabase as never)).rejects.toThrow(/field_presence_daily/)
+    await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(/field_presence_daily/)
   })
 
   it('the same doubles succeed when the read works, so the rejection is the error and not the harness', async () => {
@@ -319,8 +340,8 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
       field_presence_daily: { data: [], error: null },
       field_presence_silences: { data: [], error: null },
     })
-    await expect(runFieldPresenceDroughtCheck(supabase as never)).resolves.toBeUndefined()
-    await expect(runFieldPresenceDeadCheck(supabase as never)).resolves.toBeUndefined()
+    await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
+    await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
   })
 })
 
@@ -353,14 +374,14 @@ describe('rollup rows with an unparseable count', () => {
     const supabase = makeSupabase([
       { workflow_id: 'wf-1', field_path: 'f', day: '2026-01-01', ran_count: 'not-a-number', present_count: 0 },
     ])
-    await expect(runFieldPresenceDeadCheck(supabase as never)).rejects.toThrow(/ran_count/)
+    await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(/ran_count/)
   })
 
   it('refuses a row whose present_count is null', async () => {
     const supabase = makeSupabase([
       { workflow_id: 'wf-1', field_path: 'f', day: '2026-01-01', ran_count: 10, present_count: null },
     ])
-    await expect(runFieldPresenceDeadCheck(supabase as never)).rejects.toThrow(/present_count/)
+    await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(/present_count/)
   })
 
   it('accepts the string form Postgres returns for a bigint', async () => {
@@ -370,6 +391,235 @@ describe('rollup rows with an unparseable count', () => {
     const supabase = makeSupabase([
       { workflow_id: 'wf-1', field_path: 'f', day: '2026-01-01', ran_count: '10', present_count: '3' },
     ])
-    await expect(runFieldPresenceDeadCheck(supabase as never)).resolves.toBeUndefined()
+    await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
+  })
+})
+
+// Phase 4 (#423): the three-way verdict a live alert needs.
+//
+// A live alert cannot read "no drought hit" as "healthy". Tier-1 judges TODAY's
+// cumulative rate, and today resets at UTC midnight, so at 00:30 a field that is
+// still completely dead has too few runs to judge and produces no hit. Treating
+// that as healthy would fire an all-clear over an ongoing outage every single
+// night, which is worse than never announcing recovery at all (L98, L11).
+describe('classifyDrought', () => {
+  const DAYS5 = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+  const T = '2026-06-29'
+  const verdictFor = (rows: PresenceRow[], field: string, today = T) =>
+    classifyDrought(rows, today).find((s) => s.field_path === field)?.verdict
+
+  function stable(field: string, todayRan: number, todayPresent: number): PresenceRow[] {
+    return [
+      ...DAYS5.map((d) => row('wf1', field, d, 100, 100)),
+      row('wf1', field, todayRan === 0 ? T : T, todayRan, todayPresent),
+    ]
+  }
+
+  it('calls a collapsed stable field a drought', () => {
+    expect(verdictFor(stable('scout.final', 500, 0), 'scout.final')).toBe('alerting')
+  })
+
+  it('calls a stable field at its normal rate healthy', () => {
+    expect(verdictFor(stable('scout.final', 500, 500), 'scout.final')).toBe('healthy')
+  })
+
+  it('calls a still-dead field insufficient just after UTC midnight, NOT healthy', () => {
+    // The whole point: 3 runs so far today, all empty. There is no evidence of
+    // recovery here, and calling it healthy would announce an all-clear.
+    expect(verdictFor(stable('scout.final', 3, 0), 'scout.final')).toBe('insufficient')
+  })
+
+  it('calls a field with no row for today insufficient', () => {
+    const rows = DAYS5.map((d) => row('wf1', 'scout.final', d, 100, 100))
+    expect(verdictFor(rows, 'scout.final')).toBe('insufficient')
+  })
+
+  it('calls a variable no-bid field insufficient even at 0% today', () => {
+    // It can never page, so it must never announce a recovery either.
+    const rows = [
+      ...DAYS5.map((d) => row('wf1', 'bid.amount', d, 100, 40)),
+      row('wf1', 'bid.amount', T, 500, 0),
+    ]
+    expect(verdictFor(rows, 'bid.amount')).toBe('insufficient')
+  })
+})
+
+describe('classifyDead', () => {
+  const verdictFor = (rows: PresenceRow[], field: string) =>
+    classifyDead(rows).find((s) => s.field_path === field)?.verdict
+
+  it('calls a never-resolving field with enough runs dead', () => {
+    expect(verdictFor([row('wf1', 'f', '2026-06-28', 25000, 0)], 'f')).toBe('alerting')
+  })
+
+  it('calls a field under the run floor insufficient, not healthy', () => {
+    expect(verdictFor([row('wf1', 'f', '2026-06-28', DMR - 1, 0)], 'f')).toBe('insufficient')
+  })
+
+  it('calls a field that started resolving healthy', () => {
+    expect(verdictFor([row('wf1', 'f', '2026-06-28', 25000, 24000)], 'f')).toBe('healthy')
+  })
+})
+
+// Phase 4 (#423): the alerting itself. Everything below drives the real runner
+// against doubles, because the rules that matter here (dedupe, cooldown only on
+// delivery, the org gate, silence, and never announcing a recovery this run
+// could not establish) live in the runner and not in the pure predicates.
+describe('field-presence alerting', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C-default', volume_alerts_enabled: true }
+  const WF = {
+    id: 'wf-1',
+    name: 'Main Flow',
+    organization_id: 'org-1',
+    slack_channel: null,
+  }
+
+  /** Rows for one field: five perfect baseline days, then a collapsed today. */
+  function collapsedToday(field: string, todayRan: number, todayPresent: number, today: string): unknown[] {
+    const days = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+    return [
+      ...days.map((d) => ({ workflow_id: 'wf-1', field_path: field, day: d, ran_count: 100, present_count: 100 })),
+      { workflow_id: 'wf-1', field_path: field, day: today, ran_count: todayRan, present_count: todayPresent },
+    ]
+  }
+
+  function makeSupabase(rollup: unknown[], silences: unknown[] = [], workflows: unknown[] = [WF]) {
+    return {
+      from: (table: string) => {
+        const data =
+          table === 'workflows' ? workflows
+            : table === 'field_presence_daily' ? rollup
+              : table === 'field_presence_silences' ? silences
+                : []
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+    }
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(postMessage).mockResolvedValue('ts-1')
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  it('pages once for a collapsed field and names the field and both rates', async () => {
+    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).toContain('scout.final')
+    expect(text).toContain('Main Flow')
+    expect(text).toContain('100.0%')
+    expect(text).toContain('0.0%')
+  })
+
+  it('does not page twice for the same field while the cooldown holds', async () => {
+    const kv = makeKv()
+    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
+    await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT start the cooldown when the send failed, so the next run retries', async () => {
+    // A kicked bot must not buy 12 hours of silence over a field that is still
+    // empty. postMessage returns null when Slack did not accept the message.
+    const kv = makeKv()
+    vi.mocked(postMessage).mockResolvedValueOnce(null)
+    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
+    await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('says nothing when the org has volume alerts switched off', async () => {
+    vi.mocked(getSlackConnection).mockResolvedValue({ ...CONN, volume_alerts_enabled: false } as never)
+    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('says nothing about a silenced field', async () => {
+    const supabase = makeSupabase(
+      collapsedToday('scout.final', 500, 0, today),
+      [{ workflow_id: 'wf-1', field_path: 'scout.final' }],
+    )
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('honours a per-workflow channel override', async () => {
+    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today), [], [
+      { ...WF, slack_channel: 'C-override' },
+    ])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(vi.mocked(postMessage).mock.calls[0][1]).toBe('C-override')
+  })
+
+  it('announces the all-clear once the field is measured healthy again', async () => {
+    const kv = makeKv()
+    const broken = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(broken as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+
+    // Move the incident's running end far enough back that the re-arm window
+    // has elapsed, rather than waiting out real time.
+    kv.store.set('field-presence-drought-active:wf-1 scout.final', new Date(Date.now() - 3600_000).toISOString())
+    const fixed = makeSupabase(collapsedToday('scout.final', 500, 500, today))
+    await runFieldPresenceDroughtCheck(fixed as never, kv, APP_URL)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
+      subject: 'Main Flow scout.final',
+    })
+  })
+
+  it('does NOT announce an all-clear just after UTC midnight while the field is still dead', async () => {
+    // The trap this whole three-way verdict exists for. Today has 3 runs, all
+    // empty: no hit, because there is not enough of today to judge. Reading that
+    // as healthy would send an all-clear over an outage that is still running,
+    // every night, for as long as the field stays broken.
+    const kv = makeKv()
+    const broken = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    await runFieldPresenceDroughtCheck(broken as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+
+    kv.store.set('field-presence-drought-active:wf-1 scout.final', new Date(Date.now() - 3600_000).toISOString())
+    const freshDay = makeSupabase(collapsedToday('scout.final', 3, 0, today))
+    await runFieldPresenceDroughtCheck(freshDay as never, kv, APP_URL)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    // And the incident is still open, so a real recovery can still be announced.
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(true)
+  })
+
+  it('pages for a never-resolving field on the dead check, with its own wording', async () => {
+    const rows = [{ workflow_id: 'wf-1', field_path: 'equifax.links', day: today, ran_count: 25000, present_count: 0 }]
+    await runFieldPresenceDeadCheck(makeSupabase(rows) as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).toContain('equifax.links')
+    expect(text).toContain('never resolved')
+  })
+
+  it('keeps the two tiers on separate incident markers', async () => {
+    // Both tiers can be alerting on the same field at once. If they shared a
+    // cooldown or recovery key, one tier's page would silence the other's and
+    // one tier's all-clear would close the other's incident (L53).
+    const kv = makeKv()
+    const field = 'equifax.links'
+    const deadRows = [{ workflow_id: 'wf-1', field_path: field, day: today, ran_count: 25000, present_count: 0 }]
+    await runFieldPresenceDeadCheck(makeSupabase(deadRows) as never, kv, APP_URL)
+    await runFieldPresenceDroughtCheck(makeSupabase(collapsedToday(field, 500, 0, today)) as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(2)
+    expect(kv.store.has(`field-presence-dead-cooldown:wf-1 ${field}`)).toBe(true)
+    expect(kv.store.has(`field-presence-drought-cooldown:wf-1 ${field}`)).toBe(true)
   })
 })
