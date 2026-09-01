@@ -144,3 +144,58 @@ describe('reference-problem notice contrast', () => {
     expect(contrastRatio(RED_BORDER, RED_50)).toBeLessThan(4.5)
   })
 })
+
+// Unknown reference roots (#400).
+//
+// The founding incident: `{{payload.debt}}` where `{{trigger.payload.debt}}`
+// was meant. The engine resolves only env, trigger, execution and steps, so any
+// other root yields undefined with no error and no retry, and that one typo
+// killed the Eligibility Scout fallback in Main Flow for an extended period.
+describe('unknown reference roots', () => {
+  const validate = (config: Record<string, unknown>) =>
+    validateNodeReferences(NODES, EDGES, 'c', config)
+
+  it('reports a bare payload root', () => {
+    const problems = validate({ body: '{{payload.debt}}' })
+    expect(problems).toHaveLength(1)
+    expect(problems[0].severity).toBe('error')
+    expect(problems[0].message).toContain('payload')
+  })
+
+  it('accepts every root the engine resolves', () => {
+    expect(validate({
+      a: '{{trigger.payload.x}}',
+      b: '{{env.SOME_KEY}}',
+      c: '{{execution.execution_id}}',
+      d: '{{steps.first.output.x}}',
+    })).toEqual([])
+  })
+
+  it('accepts a coalesce between two valid references', () => {
+    expect(validate({ a: '{{steps.first.output.x ?? trigger.payload.y}}' })).toEqual([])
+  })
+
+  it('accepts arithmetic against a number literal', () => {
+    expect(validate({ a: '{{steps.first.output.bid * 0.65}}' })).toEqual([])
+  })
+
+  it('reports the bad half of a coalesce', () => {
+    const problems = validate({ a: '{{steps.first.output.x ?? payload.y}}' })
+    expect(problems).toHaveLength(1)
+    expect(problems[0].reference).toBe('payload')
+  })
+
+  it('says nothing about a literal-only template', () => {
+    // A quoted string or a bare number inside braces is not a reference, and
+    // accusing one would be a false error on a correct template.
+    expect(validate({ a: "{{'Engine'}}", b: '{{42}}' })).toEqual([])
+  })
+
+  it('does not look inside a code node script', () => {
+    expect(validate({ script: 'const x = "{{payload.debt}}"' })).toEqual([])
+  })
+
+  it('reports each distinct bad root once', () => {
+    expect(validate({ a: '{{payload.x}}', b: '{{payload.y}}' })).toHaveLength(1)
+  })
+})

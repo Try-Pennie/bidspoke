@@ -19,7 +19,13 @@
  * engine would accept, which leaves the author stuck against a rule nothing
  * states (L99). Only what is provably wrong is reported.
  */
-import { extractStepChains } from '@bidspoke/references'
+import {
+  ROOT_NAMESPACES,
+  extractStepChains,
+  extractTemplateExpressions,
+  referenceOperands,
+  unknownReferenceRoot,
+} from '@bidspoke/references'
 
 /**
  * The minimum a node has to look like to be validated. Structural rather than
@@ -98,19 +104,31 @@ export function upstreamNamespaces(nodes: RefNode[], edges: RefEdge[], nodeId: s
  * and the live definitions carry exactly that (three `$return_value` mentions,
  * all inside comments).
  */
-function collectChains(value: unknown, into: Set<string>): void {
+function collectChains(value: unknown, into: Set<string>, badRoots: Set<string>): void {
   if (typeof value === 'string') {
     for (const chain of extractStepChains(value)) into.add(chain)
+    // Roots the engine does not resolve (#400). `{{payload.debt}}` where
+    // `{{trigger.payload.debt}}` was meant yields undefined with no error and
+    // no retry, and that one typo killed the Eligibility Scout fallback in Main
+    // Flow for an extended period. Judged through the engine's own expression
+    // grammar so a coalesce, arithmetic and a literal are read as the engine
+    // reads them, rather than accused.
+    for (const expr of extractTemplateExpressions(value)) {
+      for (const operand of referenceOperands(expr)) {
+        const bad = unknownReferenceRoot(operand)
+        if (bad) badRoots.add(bad)
+      }
+    }
     return
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectChains(item, into)
+    for (const item of value) collectChains(item, into, badRoots)
     return
   }
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (k === 'script') continue
-      collectChains(v, into)
+      collectChains(v, into, badRoots)
     }
   }
 }
@@ -140,10 +158,22 @@ export function validateNodeReferences(
   for (const extra of options.extraReachable ?? []) upstream.add(extra)
 
   const chains = new Set<string>()
-  collectChains(config, chains)
+  const badRoots = new Set<string>()
+  collectChains(config, chains, badRoots)
 
   const problems: ReferenceProblem[] = []
   const reported = new Set<string>()
+  for (const root of badRoots) {
+    problems.push({
+      nodeId,
+      namespace: self?.namespace ?? nodeId,
+      reference: root,
+      severity: 'error',
+      message:
+        `${root} is not something this workflow can read. ` +
+        `References start with one of: ${[...ROOT_NAMESPACES].join(', ')}`,
+    })
+  }
   for (const chain of chains) {
     const ns = referencedNamespace(chain)
     if (!ns || reported.has(ns)) continue

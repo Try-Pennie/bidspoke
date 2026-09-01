@@ -145,3 +145,74 @@ function escapeRegex(s: string): string {
 export function stepReferencePattern(namespace: string): RegExp {
   return new RegExp(`\\bsteps\\.${escapeRegex(namespace)}\\b`, 'g')
 }
+
+/**
+ * The expressions inside `{{ }}` in a template string.
+ *
+ * Matches the engine's own two forms: a whole-string single expression, and
+ * inline interpolation within surrounding text. The capture excludes braces so
+ * a concatenation `{{a}}{{b}}` is read as two expressions rather than one
+ * malformed one, exactly as resolveTemplate does.
+ */
+export function extractTemplateExpressions(template: string): string[] {
+  return [...template.matchAll(/\{\{([^{}]+)\}\}/g)].map((m) => m[1].trim()).filter(Boolean)
+}
+
+const ARITHMETIC_OPS = new Set(['*', '/', '+', '-'])
+const NUMBER_LITERAL = /^-?\d+(\.\d+)?$/
+
+/**
+ * The reference operands inside one expression, with literals removed.
+ *
+ * Mirrors resolveExpression's grammar so a validator judges what the engine
+ * judges: `??` splits into fallback operands, and an odd-length list of
+ * whitespace-separated tokens alternating operand and arithmetic operator
+ * splits into its operands. Operators must be whitespace separated because a
+ * payload key can legally contain a dash, so splitting on a bare `-` would
+ * corrupt a plain lookup.
+ */
+export function referenceOperands(expression: string): string[] {
+  const out: string[] = []
+  for (const part of expression.split('??')) {
+    const expr = part.trim()
+    if (!expr) continue
+    const tokens = expr.split(/\s+/)
+    const isArithmetic =
+      tokens.length >= 3 &&
+      tokens.length % 2 === 1 &&
+      tokens.every((t, i) => (i % 2 === 1 ? ARITHMETIC_OPS.has(t) : t.length > 0))
+    if (isArithmetic) {
+      for (let i = 0; i < tokens.length; i += 2) {
+        if (!NUMBER_LITERAL.test(tokens[i])) out.push(tokens[i])
+      }
+      continue
+    }
+    if (NUMBER_LITERAL.test(expr)) continue
+    out.push(expr)
+  }
+  return out
+}
+
+/**
+ * The root of a reference when the engine cannot resolve it, else null.
+ *
+ * A root outside ROOT_NAMESPACES resolves to undefined with no error and no
+ * retry: `{{payload.debt}}` where `{{trigger.payload.debt}}` was meant reads as
+ * an ordinary empty value, and that single typo is what killed the Eligibility
+ * Scout fallback in Main Flow for an extended period.
+ *
+ * Says nothing about a literal. A bare number or a quoted string is not a
+ * reference, and reporting one would be a false accusation on a correct
+ * template.
+ */
+export function unknownReferenceRoot(reference: string): string | null {
+  const expr = reference.trim()
+  if (!expr) return null
+  if (NUMBER_LITERAL.test(expr)) return null
+  if (/^['"`]/.test(expr)) return null
+  // The root ends at the first dot or bracket: `payload[0].x` is rooted at
+  // `payload` just as `payload.x` is.
+  const root = expr.split(/[.[]/)[0].trim()
+  if (!root) return null
+  return isRootNamespace(root) ? null : root
+}
