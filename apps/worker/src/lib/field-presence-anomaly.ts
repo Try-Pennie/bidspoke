@@ -8,6 +8,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
+import { getSlackConnection, postMessage, sendRecoveryAlert } from './slack'
+import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 
 export { MIN_BASELINE_DAYS }
 export const BASELINE_MIN_DAY_RUNS = 10
@@ -246,6 +248,117 @@ export function findDayOneDead(rows: PresenceRow[], thresholds?: PresenceThresho
   return hits
 }
 
+/**
+ * What this run could actually establish about one field (#423).
+ *
+ * A live alert needs three answers, not two. "No hit" is not "healthy": Tier-1
+ * judges TODAY's cumulative rate and today resets at UTC midnight, so at 00:30 a
+ * field that is still completely dead has too few runs to judge and produces no
+ * hit. Collapsing that into "healthy" would fire an all-clear over an ongoing
+ * outage every night (L98, L11). Tier-2 has the same shape below its run floor.
+ *
+ * So `insufficient` means this run could not tell, and nothing is said either
+ * way. Only `healthy` is evidence the condition ended, and only that announces
+ * a recovery.
+ */
+export type FieldVerdict = 'alerting' | 'healthy' | 'insufficient'
+
+export interface FieldState {
+  workflow_id: string
+  field_path: string
+  verdict: FieldVerdict
+  /** Present only on `alerting`, carrying what the page needs to say. */
+  drought?: DroughtHit
+  dead?: DeadHit
+}
+
+/** Tier-1, as a verdict per field rather than only the hits. */
+export function classifyDrought(
+  rows: PresenceRow[],
+  today: string,
+  thresholds?: PresenceThresholds,
+): FieldState[] {
+  const t = resolve(thresholds)
+  const out: FieldState[] = []
+  for (const bucket of groupByField(rows).values()) {
+    const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
+    const todayRow = bucket.find((r) => r.day === today)
+    // No traffic recorded today at all, or not enough of it to judge a rate.
+    if (!todayRow || todayRow.ran_count < t.minTodaySample) {
+      out.push({ ...base, verdict: 'insufficient' })
+      continue
+    }
+    const baselineRates = bucket
+      .filter((r) => r.day < today && r.ran_count >= BASELINE_MIN_DAY_RUNS)
+      .sort((a, b) => a.day.localeCompare(b.day))
+      .slice(-7)
+      .map((r) => dailyRate(r.ran_count, r.present_count))
+    // A field outside the stability gate can never page, so it must never
+    // announce a recovery either: there was no incident to end.
+    if (!isStableBaseline(baselineRates, thresholds)) {
+      out.push({ ...base, verdict: 'insufficient' })
+      continue
+    }
+    const todayRate = dailyRate(todayRow.ran_count, todayRow.present_count)
+    const hit = detectDrought(baselineRates, todayRate, todayRow.ran_count, thresholds)
+    if (hit) {
+      out.push({
+        ...base,
+        verdict: 'alerting',
+        drought: {
+          ...base,
+          mean: hit.mean,
+          stddev: hit.stddev,
+          today_rate: hit.todayRate,
+          today_ran: todayRow.ran_count,
+        },
+      })
+    } else {
+      out.push({ ...base, verdict: 'healthy' })
+    }
+  }
+  return out
+}
+
+/** Tier-2, as a verdict per field rather than only the hits. */
+export function classifyDead(
+  rows: PresenceRow[],
+  thresholds?: PresenceThresholds,
+): FieldState[] {
+  const t = resolve(thresholds)
+  const out: FieldState[] = []
+  for (const bucket of groupByField(rows).values()) {
+    const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
+    let windowRan = 0
+    let windowPresent = 0
+    let everHealthy = false
+    for (const r of bucket) {
+      windowRan += r.ran_count
+      windowPresent += r.present_count
+      if (r.ran_count >= BASELINE_MIN_DAY_RUNS && dailyRate(r.ran_count, r.present_count) >= t.stableMeanMin) {
+        everHealthy = true
+      }
+    }
+    // Too little traffic over the window to call a field dead. This is the
+    // population the design knowingly accepts a detection delay on, and it is
+    // reported as unjudged rather than as fine.
+    if (windowRan < t.deadMinRuns) {
+      out.push({ ...base, verdict: 'insufficient' })
+      continue
+    }
+    if (detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds)) {
+      out.push({
+        ...base,
+        verdict: 'alerting',
+        dead: { ...base, window_ran: windowRan, window_present: windowPresent },
+      })
+    } else {
+      out.push({ ...base, verdict: 'healthy' })
+    }
+  }
+  return out
+}
+
 // Drop any hit whose (workflow_id, field_path) is in the silenced set. The key is
 // `${workflow_id} ${field_path}` (a space separator a field path cannot contain).
 export function excludeSilenced<T extends { workflow_id: string; field_path: string }>(
@@ -271,16 +384,47 @@ async function readSilences(supabase: SupabaseClient, workflowIds: string[]): Pr
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-// Active, non-deleted workflow ids. Log-only runs across all of them (not just
-// Slack-configured orgs) for dark-run coverage; Phase 4 adds org/Slack scoping.
-async function activeWorkflowIds(supabase: SupabaseClient): Promise<string[]> {
+/**
+ * How long a paged (workflow, field) stays deduped.
+ *
+ * Deliberately longer than the 30 minutes the minute-cadence alerts use. A field
+ * drought is a day-scale condition judged against today's cumulative rate, so it
+ * persists for the rest of the day once it starts; at the hourly cadence a 30
+ * minute cooldown would suppress nothing and page every hour about the same
+ * field. Twelve hours caps it at two pages a day per field, and the recovery
+ * all-clear clears the key early when the field genuinely comes back.
+ */
+export const FIELD_COOLDOWN_TTL_SECONDS = 12 * 60 * 60
+
+export interface ActiveWorkflow {
+  id: string
+  name: string
+  organization_id: string
+  slack_channel: string | null
+}
+
+/**
+ * The active, non-deleted workflows.
+ *
+ * THROWS on a read failure rather than returning what it has. An empty list
+ * makes both checks a silent no-op that looks exactly like a healthy sweep, and
+ * that is the shape where the system goes quietest precisely when it can see
+ * least (L98). The cron site logs the throw and the daily heartbeat reports the
+ * absence of a run.
+ */
+async function activeWorkflows(supabase: SupabaseClient): Promise<ActiveWorkflow[]> {
   const { data, error } = await supabase
     .from('workflows')
-    .select('id')
+    .select('id, name, organization_id, slack_channel')
     .eq('is_active', true)
     .is('deleted_at', null)
-  if (error) console.error('[field-presence] workflows read failed:', error)
-  return (data ?? []).map((w) => w.id as string)
+  if (error) throw new Error(`workflows read failed: ${error.message}`)
+  return (data ?? []).map((w) => ({
+    id: w.id as string,
+    name: w.name as string,
+    organization_id: w.organization_id as string,
+    slack_channel: (w.slack_channel as string | null) ?? null,
+  }))
 }
 
 /**
@@ -355,30 +499,265 @@ function count(value: unknown, column: string, row: Record<string, unknown>): nu
   return n
 }
 
-// Tier-1 (hourly). Logs intended pages; sends nothing this phase.
-export async function runFieldPresenceDroughtCheck(supabase: SupabaseClient): Promise<void> {
-  const workflowIds = await activeWorkflowIds(supabase)
-  if (workflowIds.length === 0) return
+/**
+ * The Slack message for a field that stopped carrying a value.
+ *
+ * Says the four things an operator needs before they can act: which workflow,
+ * which field, what changed (its own baseline against today), and where to look.
+ * Returns the message ts, or null when it did not deliver, so the caller can
+ * gate the cooldown on delivery rather than on the attempt.
+ */
+export async function sendFieldDroughtAlert(
+  slack: { bot_token: string },
+  channel: string,
+  workflowName: string,
+  hit: DroughtHit,
+  appUrl: string,
+): Promise<string | null> {
+  const pct = (x: number) => `${(x * 100).toFixed(1)}%`
+  const url = `${appUrl}/workflows/${hit.workflow_id}`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Output Field Stopped', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `In *${workflowName}*, the field \`${hit.field_path}\` normally carries a value on ` +
+          `*${pct(hit.mean)}* of runs. Today it is carrying one on *${pct(hit.today_rate)}* ` +
+          `of ${hit.today_ran} runs.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          'Something downstream reads this field, so those runs are proceeding without it. ' +
+          'The usual causes are an upstream API returning a different shape, or a code node ' +
+          'swallowing an error into an empty result.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow>` } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, `Output field stopped: ${workflowName} ${hit.field_path}`)
+}
+
+/**
+ * The Slack message for a field that has never carried a value.
+ *
+ * Worded differently from the drought on purpose. A drought is "this broke
+ * today"; this is "this has never worked", which usually means the reference
+ * itself is wrong rather than the upstream being down, and the fix is usually to
+ * correct or delete the reference (L11).
+ */
+export async function sendFieldDeadAlert(
+  slack: { bot_token: string },
+  channel: string,
+  workflowName: string,
+  hit: DeadHit,
+  appUrl: string,
+): Promise<string | null> {
+  const url = `${appUrl}/workflows/${hit.workflow_id}`
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Output Field Never Resolves', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `In *${workflowName}*, something reads \`${hit.field_path}\`, and over the last ` +
+          `${DEAD_WINDOW_DAYS} days it carried a value on *${hit.window_present} of ${hit.window_ran}* runs.`,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          'A field that has never resolved usually means the reference path is wrong or has ' +
+          'gone obsolete, rather than an upstream being down. Either correct the path or remove ' +
+          'the reference. If the field is legitimately allowed to be empty, silence it with a ' +
+          'reason so this stops asking.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow>` } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, `Output field never resolves: ${workflowName} ${hit.field_path}`)
+}
+
+/** `${workflow_id} ${field_path}`, the key both the silences and the KV use. */
+function fieldKey(workflowId: string, fieldPath: string): string {
+  return `${workflowId} ${fieldPath}`
+}
+
+interface TierConfig {
+  /** KV/recovery prefix, so the two tiers never share an incident marker (L53). */
+  prefix: string
+  signal: string
+  send: (
+    slack: { bot_token: string },
+    channel: string,
+    workflowName: string,
+    state: FieldState,
+    appUrl: string,
+  ) => Promise<string | null>
+}
+
+/**
+ * Page, dedupe and stand down over a set of per-field verdicts.
+ *
+ * Shared by both tiers because they differ only in how the verdict was reached
+ * and what the message says; the alerting rules (org gate, per-field cooldown,
+ * cooldown only on delivery, all-clear when the field genuinely recovers) are
+ * one implementation rather than a copy each.
+ *
+ * `insufficient` deliberately does nothing at all: it neither pages nor stands
+ * down, because this run could not tell.
+ */
+async function alertOnStates(
+  supabase: SupabaseClient,
+  kv: RecoveryKv,
+  appUrl: string,
+  workflows: ActiveWorkflow[],
+  states: FieldState[],
+  silenced: Set<string>,
+  cfg: TierConfig,
+): Promise<{ paged: number; recovered: number }> {
+  const byId = new Map(workflows.map((w) => [w.id, w]))
+  let paged = 0
+  let recovered = 0
+
+  for (const state of states) {
+    if (state.verdict === 'insufficient') continue
+    const wf = byId.get(state.workflow_id)
+    if (!wf) continue
+    const id = fieldKey(state.workflow_id, state.field_path)
+    const cooldownKey = `${cfg.prefix}-cooldown:${id}`
+
+    // A silenced field is one the author has said may be empty. It must not
+    // page, and it must not announce a recovery either: there is no incident.
+    if (silenced.has(id)) continue
+
+    if (state.verdict === 'healthy') {
+      const did = await announceRecovery(kv, cfg.prefix, id, cooldownKey, async (alertedAt, endedAt) => {
+        const slack = await getSlackConnection(supabase, wf.organization_id)
+        if (!slack || !slack.volume_alerts_enabled) return false
+        return sendRecoveryAlert(slack, wf.slack_channel ?? slack.default_channel, {
+          signal: cfg.signal,
+          subject: `${wf.name} ${state.field_path}`,
+          alertedAt,
+          endedAt,
+          url: `${appUrl}/workflows/${wf.id}`,
+        })
+      })
+      if (did) recovered++
+      continue
+    }
+
+    // Stamp the incident's running end on EVERY alerting tick, before the
+    // cooldown gate, so the all-clear reports how long the field was empty
+    // rather than how long ago we last mentioned it.
+    await markSpikeSeen(kv, cfg.prefix, id)
+    if (await kv.get(cooldownKey)) continue
+
+    const slack = await getSlackConnection(supabase, wf.organization_id)
+    if (!slack || !slack.volume_alerts_enabled) {
+      console.log(`[${cfg.prefix}] no Slack or opted-out org=${wf.organization_id} field=${id}`)
+      continue
+    }
+    const channel = wf.slack_channel ?? slack.default_channel
+    const sent = await cfg.send(slack, channel, wf.name, state, appUrl)
+    // Only start the cooldown once the alert actually delivered: a kicked bot
+    // must not suppress the retry for 12 hours while the field stays empty.
+    if (sent) {
+      await kv.put(cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
+      await markAlerted(kv, cfg.prefix, id)
+      paged++
+    }
+  }
+  return { paged, recovered }
+}
+
+/**
+ * Tier-1 (hourly): a field that normally carries a value has stopped.
+ *
+ * Live since #423. Thresholds were calibrated against 24 days of the dark run
+ * (#432), which produced zero Tier-1 hits, so a page here is not a routine
+ * event.
+ */
+export async function runFieldPresenceDroughtCheck(
+  supabase: SupabaseClient,
+  kv: RecoveryKv,
+  appUrl: string,
+): Promise<void> {
+  const workflows = await activeWorkflows(supabase)
+  if (workflows.length === 0) return
+  const workflowIds = workflows.map((w) => w.id)
   const today = new Date().toISOString().slice(0, 10)
   const since = new Date(Date.now() - (MIN_BASELINE_DAYS + 8) * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
-  const hits = findDroughts(rows, today)
+  const states = classifyDrought(rows, today)
   const silenced = await readSilences(supabase, workflowIds)
-  const visible = excludeSilenced(hits, silenced)
-  for (const h of visible) {
-    console.log(JSON.stringify({ event: 'field_presence_drought', ...h }))
+
+  for (const s of states) {
+    if (s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path))) {
+      console.log(JSON.stringify({ event: 'field_presence_drought', ...s.drought }))
+    }
   }
-  console.log(`[field-presence-drought] checked=${workflowIds.length} workflows hits=${visible.length}`)
+  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+    prefix: 'field-presence-drought',
+    signal: 'output field stopped',
+    send: (slack, channel, name, state, url) =>
+      sendFieldDroughtAlert(slack, channel, name, state.drought as DroughtHit, url),
+  })
+  console.log(
+    `[field-presence-drought] workflows=${workflows.length} ` +
+      `alerting=${states.filter((s) => s.verdict === 'alerting').length} ` +
+      `healthy=${states.filter((s) => s.verdict === 'healthy').length} ` +
+      `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
+      `paged=${paged} recovered=${recovered}`,
+  )
 }
 
-// Tier-2 (daily). Logs the day-one-dead digest as one event; sends nothing.
-export async function runFieldPresenceDeadCheck(supabase: SupabaseClient): Promise<void> {
-  const workflowIds = await activeWorkflowIds(supabase)
-  if (workflowIds.length === 0) return
+/**
+ * Tier-2 (daily): a field that has never carried a value despite many runs.
+ *
+ * Live since #423. On the calibrated ceiling this reports only references that
+ * resolve on literally none of their runs.
+ */
+export async function runFieldPresenceDeadCheck(
+  supabase: SupabaseClient,
+  kv: RecoveryKv,
+  appUrl: string,
+): Promise<void> {
+  const workflows = await activeWorkflows(supabase)
+  if (workflows.length === 0) return
+  const workflowIds = workflows.map((w) => w.id)
   const since = new Date(Date.now() - DEAD_WINDOW_DAYS * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
-  const hits = findDayOneDead(rows)
+  const states = classifyDead(rows)
   const silenced = await readSilences(supabase, workflowIds)
-  const visible = excludeSilenced(hits, silenced)
-  console.log(JSON.stringify({ event: 'field_presence_dead_digest', count: visible.length, fields: visible }))
+
+  const visible = states.filter(
+    (s) => s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path)),
+  )
+  console.log(
+    JSON.stringify({
+      event: 'field_presence_dead_digest',
+      count: visible.length,
+      fields: visible.map((s) => s.dead),
+    }),
+  )
+  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+    prefix: 'field-presence-dead',
+    signal: 'output field never resolves',
+    send: (slack, channel, name, state, url) =>
+      sendFieldDeadAlert(slack, channel, name, state.dead as DeadHit, url),
+  })
+  console.log(
+    `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} ` +
+      `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
+      `paged=${paged} recovered=${recovered}`,
+  )
 }
