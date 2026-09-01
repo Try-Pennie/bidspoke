@@ -86,13 +86,51 @@ const OFFER: ResponseFamily = {
 const BIDDING_FAMILIES = [REJECTION, OFFER]
 
 /**
+ * Main Flow's families (#956), measured 2026-09-01 over its 300 most recent
+ * non-test responses. It is the highest-volume partner-facing workflow we run,
+ * and it was undeclared, so the check covered the workflows least likely to be
+ * edited and missed the one most likely to be.
+ *
+ * Four families, and every one of the 300 measured responses falls into one of
+ * them, with none unmatched. They are ordered because the FIRST family whose
+ * discriminator is present wins, and an offer-wall response also carries
+ * `routingPartner`: putting `routed` first would swallow it and judge it against
+ * the wrong contract.
+ *
+ * What each requires is what the measurement showed is actually invariant for
+ * that family, which is not the same set across families. The offer wall does
+ * NOT require ADV and XBC, because 8 of its 145 responses carry neither, and a
+ * contract that demanded them would fire on ordinary traffic (L48). It requires
+ * the identifiers instead, which is the invariant that matters: the caller can
+ * tie the response back to the lead it sent.
+ */
+const MAIN_FLOW_DEBT_KEYS = ['ADV', 'XBC', 'unsecuredDebtVerified']
+
+const MAIN_FLOW_FAMILIES: ResponseFamily[] = [
+  // 145 of 300. Carries routingPartner too, so it must be matched first.
+  { name: 'offer_wall', discriminator: 'loanOffers', required: ['uuid', 'leadUuid'] },
+  // 67 of 300, all three keys present and non-empty on every one.
+  { name: 'routed', discriminator: 'routingPartner', required: MAIN_FLOW_DEBT_KEYS },
+  // 86 of 300, likewise.
+  { name: 'debt', discriminator: 'debtAmount', required: MAIN_FLOW_DEBT_KEYS },
+  // Only 2 of 300, so this family is declared on a thin sample and is the one
+  // most likely to need revisiting. It is declared rather than left out because
+  // the alternative is that those responses report as `unrecognised` forever,
+  // which would be a standing false alarm rather than an honest gap.
+  { name: 'verified_only', discriminator: 'unsecuredDebtVerified', required: MAIN_FLOW_DEBT_KEYS },
+]
+
+/**
  * Declared per workflow. Seeded from the measured fixture, not from memory.
  *
- * `Bidding - LendSwift` is deliberately absent: it had zero non-test executions
- * carrying a response body in the measurement, so there is nothing to declare a
- * contract from, and guessing one would be inventing the same kind of fiction
- * this file exists to catch. It will report as `undeclared` until it has traffic
- * to measure, which is the honest state.
+ * Five workflows are still absent, and deliberately: `Bidding - LendSwift`,
+ * `Main Flow (v2)`, `Offer Wall by Submission ID`,
+ * `Forms <> Engine <> Data Store (Loan only)` and
+ * `Delegate Gmail Access for Offboarded Agents` each had ZERO non-test
+ * executions over the measurement window, so there is nothing to declare a
+ * contract from. Guessing one would be inventing the same kind of fiction this
+ * file exists to catch. They report as `undeclared` until they have traffic to
+ * measure, which is the honest state and a visible one.
  */
 export const RESPONSE_CONTRACTS: ResponseContract[] = [
   {
@@ -114,6 +152,11 @@ export const RESPONSE_CONTRACTS: ResponseContract[] = [
     workflowId: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914',
     workflowName: 'RML - Bidding Workflow (LendSwift)',
     families: BIDDING_FAMILIES,
+  },
+  {
+    workflowId: '60e2e0bc-5aa2-47db-b333-3a8fe1c62e09',
+    workflowName: 'Main Flow',
+    families: MAIN_FLOW_FAMILIES,
   },
 ]
 

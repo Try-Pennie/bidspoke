@@ -1,43 +1,195 @@
 {
   "provenance": {
-    "note": "Every response body shape the live bidding workflows actually sent, measured from workflow_executions.response_body on 2026-08-21. 300 most recent non-test executions per workflow, grouped by their sorted top-level key set, with exact counts. The declarations in engine/response-contracts.ts are seeded from THIS, not written from memory, because a contract invented at the keyboard is how #926 shipped a guard reading a field nobody sends (L48).",
+    "note": "Every response body shape the live bidding workflows actually sent, measured from workflow_executions.response_body on 2026-08-21. 300 most recent non-test executions per workflow, grouped by their sorted top-level key set, with exact counts. The declarations in engine/response-contracts.ts are seeded from THIS, not written from memory, because a contract invented at the keyboard is how #926 shipped a guard reading a field nobody sends (L48). Main Flow was added on 2026-09-01 by the same method (#956); its six shapes are listed below with their own counts.",
     "measuredAt": "2026-08-21T15:25:00.000Z",
     "method": "300 most recent non-test executions per workflow with a non-null response_body, grouped by sorted top-level keys",
-    "limitation": "300 rows per workflow is a recent slice, not the whole retained window, so a rare response family could be absent. That is why a body matching no declared family is reported as unrecognised rather than treated as a violation: the first thing to check is whether it is a family nobody declared."
+    "limitation": "300 rows per workflow is a recent slice, not the whole retained window, so a rare response family could be absent. That is why a body matching no declared family is reported as unrecognised rather than treated as a violation: the first thing to check is whether it is a family nobody declared.",
+    "mainFlowMeasuredAt": "2026-09-01T19:50:00.000Z"
   },
   "workflows": [
     {
       "workflowId": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
       "name": "Engine Bidding Workflow",
       "shapes": [
-        { "keys": ["lead_id", "reason", "status"], "count": 282 },
-        { "keys": ["offers", "requestId"], "count": 18 }
+        {
+          "keys": [
+            "lead_id",
+            "reason",
+            "status"
+          ],
+          "count": 282
+        },
+        {
+          "keys": [
+            "offers",
+            "requestId"
+          ],
+          "count": 18
+        }
       ]
     },
     {
       "workflowId": "89b1a6af-7e0f-43de-bc66-1e888184551f",
       "name": "Lead Economy - Bidding Workflow",
       "shapes": [
-        { "keys": ["lead_id", "reason", "status"], "count": 276 },
-        { "keys": ["offers", "requestId"], "count": 12 },
-        { "keys": ["lead_id", "reason", "requestId", "status"], "count": 10 },
-        { "keys": ["error", "trace_id"], "count": 2 }
+        {
+          "keys": [
+            "lead_id",
+            "reason",
+            "status"
+          ],
+          "count": 276
+        },
+        {
+          "keys": [
+            "offers",
+            "requestId"
+          ],
+          "count": 12
+        },
+        {
+          "keys": [
+            "lead_id",
+            "reason",
+            "requestId",
+            "status"
+          ],
+          "count": 10
+        },
+        {
+          "keys": [
+            "error",
+            "trace_id"
+          ],
+          "count": 2
+        }
       ]
     },
     {
       "workflowId": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
       "name": "RML - Bidding Workflow (GigFi)",
       "shapes": [
-        { "keys": ["lead_id", "reason", "status"], "count": 209 },
-        { "keys": ["offers", "requestId"], "count": 91 }
+        {
+          "keys": [
+            "lead_id",
+            "reason",
+            "status"
+          ],
+          "count": 209
+        },
+        {
+          "keys": [
+            "offers",
+            "requestId"
+          ],
+          "count": 91
+        }
       ]
     },
     {
       "workflowId": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
       "name": "RML - Bidding Workflow (LendSwift)",
       "shapes": [
-        { "keys": ["lead_id", "reason", "status"], "count": 258 },
-        { "keys": ["offers", "requestId"], "count": 42 }
+        {
+          "keys": [
+            "lead_id",
+            "reason",
+            "status"
+          ],
+          "count": 258
+        },
+        {
+          "keys": [
+            "offers",
+            "requestId"
+          ],
+          "count": 42
+        }
+      ]
+    },
+    {
+      "workflowId": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+      "name": "Main Flow",
+      "shapes": [
+        {
+          "keys": [
+            "ADV",
+            "XBC",
+            "createdAt",
+            "creditCardOffers",
+            "estimatedTotalDebt",
+            "leadUuid",
+            "lifeInsuranceOffers",
+            "lineOfCreditOffers",
+            "loanAmount",
+            "loanOffers",
+            "mortgageOffers",
+            "pendingOriginators",
+            "pendingResponses",
+            "routingPartner",
+            "savingsOffers",
+            "specialOffers",
+            "unsecuredDebtVerified",
+            "uuid"
+          ],
+          "count": 137
+        },
+        {
+          "keys": [
+            "ADV",
+            "XBC",
+            "debtAmount",
+            "unsecuredDebtVerified"
+          ],
+          "count": 86
+        },
+        {
+          "keys": [
+            "ADV",
+            "XBC",
+            "estimatedTotalDebt",
+            "routingPartner",
+            "tripointLeadId",
+            "unsecuredDebtVerified"
+          ],
+          "count": 56
+        },
+        {
+          "keys": [
+            "ADV",
+            "XBC",
+            "estimatedTotalDebt",
+            "routingPartner",
+            "unsecuredDebtVerified"
+          ],
+          "count": 11
+        },
+        {
+          "keys": [
+            "createdAt",
+            "creditCardOffers",
+            "leadUuid",
+            "lifeInsuranceOffers",
+            "lineOfCreditOffers",
+            "loanAmount",
+            "loanOffers",
+            "mortgageOffers",
+            "pendingOriginators",
+            "pendingResponses",
+            "savingsOffers",
+            "specialOffers",
+            "uuid"
+          ],
+          "count": 8
+        },
+        {
+          "keys": [
+            "ADV",
+            "XBC",
+            "unsecuredDebtVerified"
+          ],
+          "count": 2
+        }
       ]
     }
   ],

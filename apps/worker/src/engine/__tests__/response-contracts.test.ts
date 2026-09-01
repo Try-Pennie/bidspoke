@@ -65,7 +65,9 @@ describe('the declarations against the measured shapes', () => {
         if (checkResponseContract(wf.workflowId, body).status !== 'ok') flagged += shape.count
       }
     }
-    // 2 of 1,200: the {error, trace_id} pair, and nothing else.
+    // 2 of 1,500: the {error, trace_id} pair, and nothing else. The total rose
+    // by Main Flow's 300 when it was declared (#956) and the flagged count did
+    // not move, which is the claim that declaration had to earn.
     expect(total).toBeGreaterThan(1000)
     expect(flagged).toBe(2)
   })
