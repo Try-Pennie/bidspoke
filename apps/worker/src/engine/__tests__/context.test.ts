@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { resolveValue, buildContext, recordStepOutput, findUndefinedPaths, warnDroppedBodyFields } from '../context'
+import { resolveValue, buildContext, recordStepOutput, findUndefinedPaths, warnDroppedBodyFields, resolveStepField } from '../context'
 import type { ExecutionContext } from '../../types'
 
 function ctxWith(steps: Record<string, unknown>, env: Record<string, string> = {}): ExecutionContext {
@@ -229,5 +229,48 @@ describe('resolveValue — bracket key lookup', () => {
     const c = buildContext({ tier: 'gold' }, 'test', 'wf', 'trace', {}, 'org')
     recordStepOutput(c, 'rates', { output: { by_tier: { gold: 1.5 } }, status: 'completed' })
     expect(resolveValue('{{steps.rates.by_tier[trigger.payload.tier] * 100}}', c)).toBe(150)
+  })
+})
+
+// The resolver and the field watcher now share one rule for what a path names
+// (#1090, from #433). They disagreed: the resolver stripped only an `output`
+// wrapper, the watcher stripped `$return_value` too, so a reference spelled
+// that way was recorded as PRESENT while resolving to nothing. A detector that
+// reports a field healthy the engine cannot read is the exact failure the
+// silent-output work exists to remove.
+//
+// Widening was the safe direction to converge, and it was measured before being
+// chosen: zero structured references across the ten active workflows use the
+// spelling (the three occurrences are inside code-node scripts, which the
+// sandbox executes and this resolver never sees), and 0 of 1,989,555 step
+// outputs over two days carry a top-level `$return_value` key, which is the one
+// case where widening would read a DIFFERENT field rather than the same one.
+describe('resolveStepField output wrapper (#1090)', () => {
+  const steps = { x: { output: { y: 42 } } } as unknown as Parameters<typeof resolveStepField>[0]
+
+  it('resolves through an output wrapper', () => {
+    expect(resolveStepField(steps, ['x', 'output', 'y'])).toBe(42)
+  })
+
+  it('resolves through a $return_value wrapper, the Pipedream spelling', () => {
+    // The importer rewrites this spelling into `output`, which is the codebase
+    // asserting the two name the same field. An imported definition that still
+    // carries it now resolves instead of silently vanishing.
+    expect(resolveStepField(steps, ['x', '$return_value', 'y'])).toBe(42)
+  })
+
+  it('resolves a bare path with no wrapper', () => {
+    expect(resolveStepField(steps, ['x', 'y'])).toBe(42)
+  })
+
+  it('only strips a wrapper directly after the namespace', () => {
+    // `x.y.output` is a real field called output, not a wrapper, and stripping
+    // it would read the wrong thing.
+    const nested = { x: { output: { y: { output: 7 } } } } as unknown as Parameters<typeof resolveStepField>[0]
+    expect(resolveStepField(nested, ['x', 'y', 'output'])).toBe(7)
+  })
+
+  it('returns the whole output when the path is only the wrapper', () => {
+    expect(resolveStepField(steps, ['x', '$return_value'])).toEqual({ y: 42 })
   })
 })

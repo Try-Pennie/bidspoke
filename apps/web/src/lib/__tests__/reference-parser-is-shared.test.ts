@@ -31,6 +31,11 @@ const PACKAGE_SRC = path.join(REPO_ROOT, 'packages/references/src/index.ts')
 // Every file that parses the reference syntax. Each must get it from the shared
 // package rather than restating it.
 const CONSUMERS = [
+  // The runtime resolver. Added when #1090 converged it on the shared
+  // output-wrapper rule: this file and field-presence.ts are the pair whose
+  // disagreement would let the detector report a field healthy that the engine
+  // cannot read, which is the whole reason the rule has one owner.
+  'apps/worker/src/engine/context.ts',
   'apps/worker/src/engine/watched-fields.ts',
   'apps/worker/src/engine/nodes/code.ts',
   'apps/worker/src/engine/field-presence.ts',

@@ -1,5 +1,6 @@
 import type { ExecutionContext, StepOutput, StepLogEntry } from '../types'
 import { coerceString } from '../lib/coerce'
+import { stripOutputWrapper } from '@bidspoke/references'
 
 export function buildContext(
   triggerPayload: unknown,
@@ -147,7 +148,22 @@ export function resolveStepField(steps: Record<string, StepOutput>, segments: st
   const step = steps[ns]
   if (!step) return undefined
   if (segments.length === 1) return step.output
-  const pathParts = segments[1] === 'output' ? segments.slice(2) : segments.slice(1)
+  // One rule, shared with the field-presence watcher (#1090, from #433). These
+  // disagreed: this resolver stripped only `output`, the watcher stripped
+  // `$return_value` too, so a reference spelled that way was RECORDED as present
+  // while resolving to nothing. A detector reporting a field healthy that the
+  // engine cannot read is the exact failure the silent-output work exists to
+  // remove, and it would have been invisible from either side.
+  //
+  // Widened rather than narrowed because the Pipedream importer rewrites
+  // `$return_value` into `output`, which is the codebase asserting the two name
+  // the same field, and because imported definitions are where that spelling
+  // comes from: widening makes such a reference resolve instead of vanishing.
+  // Measured before choosing: zero live structured references use the spelling,
+  // and 0 of 1,989,555 step outputs over two days carry a top-level
+  // `$return_value` key, which is the only case where this would read a
+  // different field rather than the same one.
+  const pathParts = stripOutputWrapper(segments).slice(1)
   if (pathParts.length === 0) return step.output
   return getPath(step.output, pathParts)
 }
