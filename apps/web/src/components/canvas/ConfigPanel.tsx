@@ -24,6 +24,7 @@ import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
 import { useElapsed } from '@/hooks/useElapsed'
 import JsonTreeView from './JsonTreeView'
+import type { ReferenceProblem } from '@/lib/reference-validation'
 
 interface Props {
   node: Node
@@ -39,6 +40,13 @@ interface Props {
   // once this is true so label edits don't silently break those references.
   namespaceReferenced?: boolean
   readOnly?: boolean
+  /**
+   * Provably broken `steps.*` references on this node (#424), judged by
+   * lib/reference-validation against the whole graph. Passed in rather than
+   * computed here because the judgement needs every node, including the ones
+   * nodeOptions filters out, and a missing node reads as a missing STEP.
+   */
+  referenceProblems?: ReferenceProblem[]
   edges?: { id: string; source: string; target: string; sourceHandle?: string | null }[]
   onEdgesChange?: (add: { id: string; source: string; target: string; sourceHandle: string }[], removeIds: string[]) => void
   canRerun?: boolean
@@ -75,7 +83,7 @@ function clampRetries(raw: string): number {
   return Math.max(0, Math.min(5, n))
 }
 
-export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest, onKeyEditorValidityChange }: Props) {
+export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () => {}, onDuplicate = () => {}, onClose, nodeNamespaces, nodeOptions = [], refs = [], namespaceReferenced = false, readOnly = false, referenceProblems = [], edges = [], onEdgesChange, canRerun = false, onRerun, onRetryFromFailure, onNodeTest, canBuildFromRun = false, defaultTestPayload, width, onResize, workflowId, onRenameRequest, onKeyEditorValidityChange }: Props) {
   const data = node.data as unknown as CanvasNodeData & { executionStep?: ExecutionStep | null }
   const type = node.type as NodeType
   const exec = data.executionStep
@@ -321,6 +329,33 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
       ) : (
       <div className="flex-1 overflow-y-auto text-sm">
       <div className={`p-4 space-y-5 ${readOnly ? 'pointer-events-none' : ''}`}>
+
+        {/* Broken references (#424). Placed above the fields so it is read
+            before the author starts editing, not found afterwards. Only
+            provably wrong references appear here: a step that does not exist,
+            or one that does not run before this one. Nothing is said about the
+            field after the namespace, whose shape is not knowable. */}
+        {referenceProblems.length > 0 && (
+          <div
+            role="alert"
+            data-testid="reference-problems"
+            className="rounded border border-red-500 bg-red-50 px-3 py-2 text-xs text-red-900"
+          >
+            <p className="mb-1 font-semibold">
+              {referenceProblems.length === 1
+                ? 'This step reads something that will always be empty'
+                : `This step reads ${referenceProblems.length} things that will always be empty`}
+            </p>
+            <ul className="list-disc space-y-1 pl-4">
+              {referenceProblems.map((p) => (
+                <li key={p.reference}>{p.message}</li>
+              ))}
+            </ul>
+            <p className="mt-1.5">
+              A reference that cannot resolve is dropped from the request entirely rather than sent empty, so nothing fails and nobody is told.
+            </p>
+          </div>
+        )}
 
         {/* Display name */}
         <Field label="Display name" hint="How this step appears on the canvas. Leave blank to use the step ID.">
@@ -971,6 +1006,13 @@ function CodeConfig({
   config: Record<string, unknown>
   onChange: (patch: Record<string, unknown>) => void
   readOnly?: boolean
+  /**
+   * Provably broken `steps.*` references on this node (#424), judged by
+   * lib/reference-validation against the whole graph. Passed in rather than
+   * computed here because the judgement needs every node, including the ones
+   * nodeOptions filters out, and a missing node reads as a missing STEP.
+   */
+  referenceProblems?: ReferenceProblem[]
 }) {
   const script = (config.script as string | undefined) ?? DEFAULT_SCRIPT
   const propsConfig = (config.props as CodeProp[] | undefined) ?? []
@@ -2500,6 +2542,13 @@ function SalesforceConfig({
   refs: string[]
   reportValidity?: (valid: boolean) => void
   readOnly?: boolean
+  /**
+   * Provably broken `steps.*` references on this node (#424), judged by
+   * lib/reference-validation against the whole graph. Passed in rather than
+   * computed here because the judgement needs every node, including the ones
+   * nodeOptions filters out, and a missing node reads as a missing STEP.
+   */
+  referenceProblems?: ReferenceProblem[]
 }) {
   const operation = (config.operation as string | undefined) ?? 'create'
   const object    = (config.object as string | undefined) ?? ''

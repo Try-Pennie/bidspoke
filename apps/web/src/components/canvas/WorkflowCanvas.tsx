@@ -47,6 +47,7 @@ import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, node
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
 import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, type ValidationError } from '@/lib/workflow-validation'
+import { validateDefinitionReferences, type ReferenceProblem } from '@/lib/reference-validation'
 import { outEdgeForHandle, normalizeHandle, dedupeEdges } from '@/lib/auto-connect'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -1034,6 +1035,31 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     () => (mode === 'edit' ? validateWorkflow(nodes, edges) : new Map()),
     [mode, nodes, edges]
   )
+
+  // Provably broken `steps.*` references, per node (#424). Complementary to the
+  // runtime silent-output detector: that one catches a field that STOPS carrying
+  // a value, this catches one that could never have carried one, because the
+  // step it names does not exist or does not run before the step reading it.
+  // Both resolve to undefined, and undefined is dropped from a request body
+  // rather than sent empty, so nothing fails and nobody is told.
+  //
+  // Computed from the FULL node list, not nodeOptions, which filters out the
+  // trigger and parallel_end nodes. A node missing from the list reads as a
+  // missing STEP, which would be a false error on a correct reference.
+  const referenceProblems: Map<string, ReferenceProblem[]> = useMemo(() => {
+    if (mode !== 'edit') return new Map()
+    const refNodes = nodes.map((n) => {
+      const d = n.data as unknown as CanvasNodeData
+      return { id: n.id, namespace: d.namespace, config: d.config ?? {}, variables: d.variables }
+    })
+    const byNode = new Map<string, ReferenceProblem[]>()
+    for (const p of validateDefinitionReferences(refNodes, edges)) {
+      const list = byNode.get(p.nodeId)
+      if (list) list.push(p)
+      else byNode.set(p.nodeId, [p])
+    }
+    return byNode
+  }, [mode, nodes, edges])
 
   // Mis-wired nodes: two outgoing edges on one handle (#567). The engine follows
   // only the first, so the other target silently never runs. Kept separate from
@@ -3588,6 +3614,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               onDuplicate={handleNodeDuplicate}
               nodeNamespaces={nodeNamespaces}
               nodeOptions={nodeOptions}
+              referenceProblems={referenceProblems.get(selectedNode.id) ?? []}
               refs={refs}
               namespaceReferenced={selectedNamespaceReferenced}
               edges={edges}
@@ -3624,6 +3651,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             onClose={() => setSelectedNodeId(null)}
             nodeNamespaces={nodeNamespaces}
             nodeOptions={nodeOptions}
+            referenceProblems={referenceProblems.get(selectedNode.id) ?? []}
             refs={refs}
             edges={edges}
             width={panelWidths.widthFor(configPanelWidthKind)}
@@ -3661,6 +3689,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
             onClose={() => setSelectedNodeId(null)}
             nodeNamespaces={nodeNamespaces}
             nodeOptions={nodeOptions}
+            referenceProblems={referenceProblems.get(selectedNode.id) ?? []}
             refs={refs}
             edges={edges}
             width={panelWidths.widthFor(configPanelWidthKind)}
