@@ -366,3 +366,52 @@ describe('ConfigPanel: BidGroup offers buyer-eligible partners (#306)', () => {
     )
   })
 })
+
+// Build-time reference validation (#424). The panel is where an author is
+// looking when they write a reference, so it is where a provably broken one has
+// to be said. The judging itself lives in lib/reference-validation and is tested
+// there; this covers only that the panel shows what it is handed and stays quiet
+// otherwise.
+describe('ConfigPanel reference problems', () => {
+  it('shows nothing when there are no problems', () => {
+    renderPanel(nodeOf('webhook'), { referenceProblems: [] })
+    expect(screen.queryByTestId('reference-problems')).toBeNull()
+  })
+
+  it('names the step and says what is wrong', () => {
+    renderPanel(nodeOf('webhook'), {
+      referenceProblems: [
+        {
+          nodeId: 'n1',
+          namespace: 'webhook_1',
+          reference: 'ghost',
+          severity: 'error' as const,
+          message: 'No step named ghost in this workflow',
+        },
+      ],
+    })
+    const box = screen.getByTestId('reference-problems')
+    expect(box.textContent).toContain('No step named ghost in this workflow')
+  })
+
+  it('announces itself, so the message is not sighted-only', () => {
+    renderPanel(nodeOf('webhook'), {
+      referenceProblems: [
+        { nodeId: 'n1', namespace: 'webhook_1', reference: 'ghost', severity: 'error' as const, message: 'No step named ghost in this workflow' },
+      ],
+    })
+    expect(screen.getByTestId('reference-problems').getAttribute('role')).toBe('alert')
+  })
+
+  it('lists every distinct problem rather than only the first', () => {
+    renderPanel(nodeOf('webhook'), {
+      referenceProblems: [
+        { nodeId: 'n1', namespace: 'webhook_1', reference: 'ghost', severity: 'error' as const, message: 'No step named ghost in this workflow' },
+        { nodeId: 'n1', namespace: 'webhook_1', reference: 'sidecar', severity: 'error' as const, message: 'sidecar does not run before this step, so steps.sidecar is always empty here' },
+      ],
+    })
+    const box = screen.getByTestId('reference-problems')
+    expect(box.textContent).toContain('ghost')
+    expect(box.textContent).toContain('sidecar')
+  })
+})
