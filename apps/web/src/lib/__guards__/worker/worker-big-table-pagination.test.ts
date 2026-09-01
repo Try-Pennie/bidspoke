@@ -73,7 +73,13 @@ function walkChain(src: string, from: number): { methods: string[]; end: number 
   return { methods, end: i }
 }
 
-interface Finding { file: string; line: number; table: string; methods: string[] }
+// 'unbounded' = no row-count limiter at all, so the read silently truncates at
+// the 1,000-row cap. 'unordered' = it pages with .range() but declares no
+// ORDER BY, so Postgres recomputes each OFFSET against an independent scan and
+// the pages skip and duplicate rows. The second is the quieter of the two: the
+// read returns a plausible number of rows, just not the right ones.
+type FindingKind = 'unbounded' | 'unordered'
+interface Finding { file: string; line: number; table: string; methods: string[]; kind: FindingKind }
 
 function scanSource(src: string, relPath: string): Finding[] {
   const findings: Finding[] = []
@@ -86,8 +92,18 @@ function scanSource(src: string, relPath: string): Finding[] {
     if (methods.some((x) => WRITE_METHODS.has(x))) return
     // Only `.select()` produces a row list to truncate.
     if (!methods.includes('select')) return
-    // Bounded by a row-count limiter?
-    if (methods.some((x) => BOUND_METHODS.has(x))) return
+    const bounded = methods.some((x) => BOUND_METHODS.has(x))
+    // A .range() read pages, and paging without a stable ORDER BY tears. This is
+    // NOT covered by the boundedness check: .range() satisfies that check while
+    // still returning the wrong rows, which is how the field-presence detector's
+    // reader shipped torn past this very guard (AUD-039, #432). A .limit() or
+    // .single() read takes one page and needs no ordering to be complete.
+    const kind: FindingKind | null = !bounded
+      ? 'unbounded'
+      : methods.includes('range') && !methods.includes('order')
+        ? 'unordered'
+        : null
+    if (kind === null) return
     // Count/head queries return a number, not rows.
     const chainText = src.slice(start, end)
     if (/\bcount\s*:/.test(chainText) || /\bhead\s*:\s*true/.test(chainText)) return
@@ -104,7 +120,7 @@ function scanSource(src: string, relPath: string): Finding[] {
     const stmtText = allLines.slice(li, endLineIdx + 1).join('\n')
     if (/paginate-ok/.test(stmtText)) return
 
-    findings.push({ file: relPath, line: fromLineIdx + 1, table, methods })
+    findings.push({ file: relPath, line: fromLineIdx + 1, table, methods, kind })
   }
 
   // 1. Reads of a known big table named by a string literal.
@@ -235,6 +251,43 @@ describe('each BIG_TABLES entry is load-bearing', () => {
     ).toContain('execution_archive_ids')
   })
 
+  it('a .range() read with no .order() is reported as unordered', () => {
+    // The defect AUD-039 shipped: bounded, so the boundedness check passed, but
+    // paging with no stable order, so the pages skip and duplicate rows.
+    for (const table of BIG_TABLES) {
+      const findings = scanSource(
+        `const { data } = await supabase.from('${table}').select('*').range(0, 999)\n`,
+        'fixture.ts',
+      )
+      expect(findings.map((f) => f.kind), `unordered paged read of ${table} should be reported`).toContain('unordered')
+    }
+  })
+
+  it('a .range() read WITH .order() is not reported', () => {
+    // The positive case above is satisfied by a checker that reports every
+    // .range(), so prove the same fixture goes quiet once it declares an order.
+    for (const table of BIG_TABLES) {
+      const findings = scanSource(
+        `const { data } = await supabase.from('${table}').select('*').order('id').range(0, 999)\n`,
+        'fixture.ts',
+      )
+      expect(findings, `ordered paged read of ${table} should not be reported`).toEqual([])
+    }
+  })
+
+  it('a .limit() read needs no .order()', () => {
+    // Ordering is required for PAGING, not for boundedness: a single-page read
+    // is complete whatever order it comes back in, so requiring .order() there
+    // would be noise that teaches people to add a meaningless sort.
+    for (const table of BIG_TABLES) {
+      const findings = scanSource(
+        `const { data } = await supabase.from('${table}').select('*').limit(100)\n`,
+        'fixture.ts',
+      )
+      expect(findings, `limited read of ${table} should not be reported`).toEqual([])
+    }
+  })
+
   it('a bounded read of the same table is not reported', () => {
     // The positive case above is satisfied by a scanner that reports
     // EVERYTHING, so prove the same fixture goes quiet once it is bounded.
@@ -252,8 +305,12 @@ describe('worker big-table reads are paginated (#115, #185)', () => {
   it('every list read of a large/partitioned table in scheduled/engine code and API routes is bounded or paged', () => {
     const findings = SCAN_DIRS.flatMap((d) => listTsFiles(d)).flatMap(scanFile)
     const report = findings
-      .map((f) => `  ${f.file}:${f.line} — .from('${f.table}').${f.methods.join('.')}() has no .range()/.limit()/.single() and no // paginate-ok`)
+      .map((f) =>
+        f.kind === 'unbounded'
+          ? `  ${f.file}:${f.line} .from('${f.table}').${f.methods.join('.')}(): no .range()/.limit()/.single() and no // paginate-ok`
+          : `  ${f.file}:${f.line} .from('${f.table}').${f.methods.join('.')}(): pages with .range() but declares no .order(), so its pages skip and duplicate rows`,
+      )
       .join('\n')
-    expect(findings, `Unpaginated big-table read(s):\n${report}\n\nUse fetchAllPaged (src/lib/paginate.ts) or add a // paginate-ok comment if the read is bounded another way.`).toEqual([])
+    expect(findings, `Unsafe big-table read(s):\n${report}\n\nUse fetchAllPaged (src/lib/paginate.ts) with a stable .order(), or add a // paginate-ok comment if the read is bounded another way.`).toEqual([])
   })
 })
