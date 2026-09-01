@@ -109,6 +109,11 @@ fieldCoverage.get('/:workflowId', async (c) => {
     workflow_id: workflowId,
     fields,
     unreadable_nodes: map.unreadableNodes,
+    // Nodes that alias a steps reference into a local the scanner could not
+    // follow, so their watched set may be incomplete (#435). Reported
+    // separately from unreadable_nodes because it is a milder statement: the
+    // node IS scanned, some of its reads just cannot be attributed.
+    alias_only_nodes: map.aliasOnlyNodes,
     silences: (silenceRows ?? []).map((s) => ({
       field_path: s.field_path as string,
       reason: s.reason as string,

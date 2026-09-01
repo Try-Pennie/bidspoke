@@ -9,7 +9,7 @@ import { getSlackConnection, postMessage, sendRecoveryAlert } from '../slack'
 import type { PresenceRow } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
-  findDroughts, findDayOneDead, excludeSilenced, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS,
+  findDroughts, findDayOneDead, excludeSilenced, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
   classifyDrought, classifyDead,
 } from '../field-presence-anomaly'
@@ -86,6 +86,24 @@ function row(wf: string, field: string, day: string, ran: number, present: numbe
   return { workflow_id: wf, field_path: field, day, ran_count: ran, present_count: present }
 }
 
+// The dead check needs DEAD_MIN_DAYS distinct days of history before it will
+// judge a field at all, so a fixture about the RUN floor or the RATE has to
+// spread its runs over enough days or it silently becomes a test of the day
+// floor instead. Splits `ran`/`present` evenly across DEAD_MIN_DAYS days.
+function deadDays(wf: string, field: string, ran: number, present: number): PresenceRow[] {
+  const days = ['2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27', '2026-06-28']
+  const used = days.slice(0, DEAD_MIN_DAYS)
+  return used.map((d, i) =>
+    row(
+      wf,
+      field,
+      d,
+      Math.floor(ran / used.length) + (i === 0 ? ran % used.length : 0),
+      Math.floor(present / used.length) + (i === 0 ? present % used.length : 0),
+    ),
+  )
+}
+
 const DAYS = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
 const TODAY = '2026-06-29'
 
@@ -116,27 +134,27 @@ describe('findDroughts', () => {
 
 describe('findDayOneDead', () => {
   it('flags a field with many runs and zero presence, never healthy', () => {
-    const rows = [row('wf2', 'eligibility.final', '2026-06-28', DMR, 0)]
+    const rows = deadDays('wf2', 'eligibility.final', DMR, 0)
     const hits = findDayOneDead(rows)
     expect(hits.map((h) => h.field_path)).toEqual(['eligibility.final'])
   })
 
   it('does not flag a field that was healthy on some day', () => {
     const rows = [
-      row('wf2', 'eligibility.final', '2026-06-27', 100, 100),  // healthy day
-      row('wf2', 'eligibility.final', '2026-06-28', DMR, 0),
+      row('wf2', 'eligibility.final', '2026-06-20', 100, 100),  // healthy day
+      ...deadDays('wf2', 'eligibility.final', DMR, 0),
     ]
     expect(findDayOneDead(rows)).toEqual([])
   })
   it('does not mark everHealthy on a high-rate day with too few runs', () => {
     const rows = [
-      row('wf2', 'eligibility.final', '2026-06-26', 5, 5),      // 100% rate but only 5 runs (< floor) -> must NOT set everHealthy
-      row('wf2', 'eligibility.final', '2026-06-28', 20000, 0),  // large dead day keeps window rate <= DEAD_MAX_RATE
+      row('wf2', 'eligibility.final', '2026-06-20', 5, 5),      // 100% rate but only 5 runs (< floor) -> must NOT set everHealthy
+      ...deadDays('wf2', 'eligibility.final', 60000, 0),        // large dead days keep window rate <= DEAD_MAX_RATE
     ]
     expect(findDayOneDead(rows).map((h) => h.field_path)).toEqual(['eligibility.final'])
   })
   it('does not flag day-one-dead just below the run floor', () => {
-    expect(findDayOneDead([row('wf2', 'eligibility.final', '2026-06-28', DMR - 1, 0)])).toEqual([])
+    expect(findDayOneDead(deadDays('wf2', 'eligibility.final', DMR - 1, 0))).toEqual([])
   })
 })
 
@@ -206,7 +224,7 @@ describe('threshold overrides', () => {
 
   it('findDayOneDead passes thresholds through to the per-field predicate', () => {
     const rows: PresenceRow[] = [
-      { workflow_id: 'w', field_path: 'f', day: '2026-01-01', ran_count: DMR, present_count: 0 },
+      ...deadDays('w', 'f', DMR, 0),
     ]
     expect(findDayOneDead(rows)).toHaveLength(1)
     expect(findDayOneDead(rows, { deadMinRuns: DMR + 1 })).toHaveLength(0)
@@ -449,15 +467,15 @@ describe('classifyDead', () => {
     classifyDead(rows).find((s) => s.field_path === field)?.verdict
 
   it('calls a never-resolving field with enough runs dead', () => {
-    expect(verdictFor([row('wf1', 'f', '2026-06-28', 25000, 0)], 'f')).toBe('alerting')
+    expect(verdictFor(deadDays('wf1', 'f', 25000, 0), 'f')).toBe('alerting')
   })
 
   it('calls a field under the run floor insufficient, not healthy', () => {
-    expect(verdictFor([row('wf1', 'f', '2026-06-28', DMR - 1, 0)], 'f')).toBe('insufficient')
+    expect(verdictFor(deadDays('wf1', 'f', DMR - 1, 0), 'f')).toBe('insufficient')
   })
 
   it('calls a field that started resolving healthy', () => {
-    expect(verdictFor([row('wf1', 'f', '2026-06-28', 25000, 24000)], 'f')).toBe('healthy')
+    expect(verdictFor(deadDays('wf1', 'f', 25000, 24000), 'f')).toBe('healthy')
   })
 })
 
@@ -601,7 +619,7 @@ describe('field-presence alerting', () => {
   })
 
   it('pages for a never-resolving field on the dead check, with its own wording', async () => {
-    const rows = [{ workflow_id: 'wf-1', field_path: 'equifax.links', day: today, ran_count: 25000, present_count: 0 }]
+    const rows = deadDays('wf-1', 'equifax.links', 25000, 0)
     await runFieldPresenceDeadCheck(makeSupabase(rows) as never, makeKv(), APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(1)
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
@@ -615,11 +633,45 @@ describe('field-presence alerting', () => {
     // one tier's all-clear would close the other's incident (L53).
     const kv = makeKv()
     const field = 'equifax.links'
-    const deadRows = [{ workflow_id: 'wf-1', field_path: field, day: today, ran_count: 25000, present_count: 0 }]
+    const deadRows = deadDays('wf-1', field, 25000, 0)
     await runFieldPresenceDeadCheck(makeSupabase(deadRows) as never, kv, APP_URL)
     await runFieldPresenceDroughtCheck(makeSupabase(collapsedToday(field, 500, 0, today)) as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(2)
     expect(kv.store.has(`field-presence-dead-cooldown:wf-1 ${field}`)).toBe(true)
     expect(kv.store.has(`field-presence-drought-cooldown:wf-1 ${field}`)).toBe(true)
+  })
+})
+
+// A newly watched field has no history, and "never resolved over 7 days" is not
+// established by 7 hours of data (#435). #435 added 108 fields to the watched
+// set at once by resolving aliases; on a high-volume workflow each of them
+// clears the 200-run floor within hours, so without a span floor every one of
+// them would have been judged on its first partial day and any that looked
+// empty would have paged on day one. The same applies whenever an author edits
+// a workflow to read a field it did not read before.
+describe('dead check requires enough days, not just enough runs', () => {
+  it('does not call a field dead on a single day of history', () => {
+    const rows = [row('wf1', 'f', '2026-06-28', 25000, 0)]
+    expect(findDayOneDead(rows)).toEqual([])
+    expect(classifyDead(rows)[0].verdict).toBe('insufficient')
+  })
+
+  it('calls it dead once the window spans enough days', () => {
+    const rows = [
+      row('wf1', 'f', '2026-06-26', 9000, 0),
+      row('wf1', 'f', '2026-06-27', 9000, 0),
+      row('wf1', 'f', '2026-06-28', 9000, 0),
+    ]
+    expect(findDayOneDead(rows).map((h) => h.field_path)).toEqual(['f'])
+  })
+
+  it('counts distinct days, not rows', () => {
+    // Two rows for one day is one day of evidence.
+    const rows = [
+      row('wf1', 'f', '2026-06-27', 9000, 0),
+      row('wf1', 'f', '2026-06-27', 9000, 0),
+      row('wf1', 'f', '2026-06-28', 9000, 0),
+    ]
+    expect(findDayOneDead(rows)).toEqual([])
   })
 })
