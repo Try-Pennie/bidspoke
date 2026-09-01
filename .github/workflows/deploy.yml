@@ -78,7 +78,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Test shared packages
-        run: pnpm --filter @bidspoke/uuidv7 test
+        run: |
+          pnpm --filter @bidspoke/references test
+          pnpm --filter @bidspoke/uuidv7 test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the worker guards, which the web leg below
