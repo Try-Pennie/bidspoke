@@ -602,10 +602,27 @@ export async function runUpstreamOutageCheck(
     p_since: new Date(saturationStartMs).toISOString(),
   })
   logReadFailure('failure-saturation', 'execution_counts_per_minute', totalsError)
+  // A count that will not parse makes the WHOLE workflow unjudgeable, not just
+  // that one minute (L50). PostgREST renders a bigint as a string, so these are
+  // parsed, and SKIPPING a bad row would understate the denominator, which
+  // overstates the failure share: the direction that pages a healthy workflow.
+  // Refusing is the fail-safe side, and it is logged so a persistent parse
+  // problem is visible rather than reading as a quiet workflow.
+  const unreadableTotals = new Set<string>()
   for (const r of (totalsData ?? []) as { workflow_id: string; cnt: number | string }[]) {
     const n = Number(r.cnt)
-    if (!Number.isFinite(n)) continue
+    if (!Number.isFinite(n)) {
+      unreadableTotals.add(r.workflow_id)
+      continue
+    }
     runTotals.set(r.workflow_id, (runTotals.get(r.workflow_id) ?? 0) + n)
+  }
+  for (const workflowId of unreadableTotals) {
+    console.error(
+      `[failure-saturation] not judging workflow=${workflowId}: at least one run count in the ` +
+        `window could not be read, so its denominator would be understated and its failure share overstated`,
+    )
+    runTotals.delete(workflowId)
   }
 
   // Partition the failures by org, then group each org's failures by cause.

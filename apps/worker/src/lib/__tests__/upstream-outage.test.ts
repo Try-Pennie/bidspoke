@@ -393,6 +393,58 @@ describe('runUpstreamOutageCheck fires saturation (#1100)', () => {
     expect(kv.store.has('failure-saturation-cooldown:org-1:wf-1')).toBe(true)
   })
 
+  /**
+   * L50. The denominator arrives as a bigint, which PostgREST renders as a
+   * string, so it is parsed. Skipping a row that will not parse UNDERSTATES the
+   * total, and an understated denominator OVERSTATES the failure share, which is
+   * the direction that pages a healthy workflow.
+   *
+   * So a workflow with any unreadable count is refused outright rather than
+   * judged on the rows that happened to parse.
+   */
+  it('refuses to judge a workflow whose run total will not parse, rather than understating it', async () => {
+    const kv = makeKv()
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [{ id: 'wf-1', name: 'Main Flow', organization_id: 'org-1' }],
+      workflow_executions: Array.from({ length: 17 }, () => ({
+        workflow_id: 'wf-1',
+        error_message: 'Salesforce API error (500): boom',
+        started_at: recent(),
+        completed_at: recent(),
+      })),
+      // 400 real runs across two minutes, but one bucket is unreadable. Judged
+      // on the readable 30 alone the share is 17/30 and pages; the truth is
+      // 17/400, which is nowhere near saturated.
+      __runTotals: [
+        { workflow_id: 'wf-1', minute: recent(), cnt: 30 },
+        { workflow_id: 'wf-1', minute: recent(), cnt: 'not-a-number' },
+      ],
+    })
+    await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(sendFailureSaturationAlert).not.toHaveBeenCalled()
+  })
+
+  // The positive control: PostgREST renders bigint as a STRING, so a guard that
+  // refused strings would refuse every real row and the test above would pass
+  // for the wrong reason (L140).
+  it('accepts the string form Postgres actually returns for a count', async () => {
+    const kv = makeKv()
+    const sb = makeSupabase({
+      service_connections: [{ organization_id: 'org-1' }],
+      workflows: [{ id: 'wf-1', name: 'Main Flow', organization_id: 'org-1' }],
+      workflow_executions: Array.from({ length: 17 }, () => ({
+        workflow_id: 'wf-1',
+        error_message: 'Salesforce API error (500): boom',
+        started_at: recent(),
+        completed_at: recent(),
+      })),
+      __runTotals: [{ workflow_id: 'wf-1', minute: recent(), cnt: '19' }],
+    })
+    await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(sendFailureSaturationAlert).toHaveBeenCalledTimes(1)
+  })
+
   it('stays quiet when the failures are scattered over high volume', async () => {
     const kv = makeKv()
     const sb = makeSupabase(saturatedOrg(5, 400))
