@@ -1666,7 +1666,27 @@ export async function sendCircuitAlert(
 export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { signal: string; subject: string; alertedAt: string; endedAt?: string | null; url?: string },
+  payload: {
+    signal: string
+    subject: string
+    alertedAt: string
+    endedAt?: string | null
+    url?: string
+    /**
+     * For a check that judges a TRAILING WINDOW rather than a running total, how
+     * long that window is (#1101).
+     *
+     * Such a check observes the condition once per tick, so the gap between the
+     * first and last alerting tick is not the length of the incident: a one-tick
+     * incident has a gap of zero, and the field presence check would have
+     * reported "under a minute" for the real thirty minute outage of
+     * 2026-09-02. When the observed span is shorter than one window, the notice
+     * reports the window it measured instead of asserting a span it did not
+     * (L11). Omitted by the checks that judge a continuous rate, which keep
+     * reporting their span unchanged.
+     */
+    measuredWindowMinutes?: number
+  },
   now: number = Date.now(),
 ): Promise<boolean> {
   const started = Date.parse(payload.alertedAt)
@@ -1680,6 +1700,22 @@ export async function sendRecoveryAlert(
   // duration rather than something wrong (LESSONS L11, L50).
   const lasted = Number.isFinite(started) ? describeDuration((clearedAt ?? now) - started) : null
 
+  // A windowed check that saw the condition on only one tick knows the incident
+  // happened somewhere inside that window and nothing finer. Reporting the tick
+  // gap there would assert a duration nobody measured, so the window is named
+  // instead.
+  const windowMs = (payload.measuredWindowMinutes ?? 0) * 60 * 1000
+  const spanMs = Number.isFinite(started) ? (clearedAt ?? now) - started : NaN
+  const withinOneWindow = windowMs > 0 && Number.isFinite(spanMs) && spanMs < windowMs
+  const windowWords = withinOneWindow ? describeDuration(windowMs) : null
+
+  const howLong = withinOneWindow && windowWords
+    ? ` and covered the ${windowWords} before it, which is as precisely as this check measures`
+    : lasted ? ` and lasted ${lasted}` : ''
+  const clearing = clearedAt !== null && (withinOneWindow || lasted)
+    ? `, clearing at ${etTime(clearedAt)}.`
+    : '.'
+
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
     {
@@ -1688,9 +1724,7 @@ export async function sendRecoveryAlert(
         type: 'mrkdwn',
         text:
           `*${payload.subject}* is back within normal range. The ${payload.signal} alert fired at ` +
-          `${etTime(started)}` +
-          (lasted ? ` and lasted ${lasted}` : '') +
-          (lasted && clearedAt !== null ? `, clearing at ${etTime(clearedAt)}.` : '.'),
+          `${etTime(started)}${howLong}${clearing}`,
       },
     },
   ]

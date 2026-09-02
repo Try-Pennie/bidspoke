@@ -30,7 +30,43 @@ export const STABLE_MEAN_MIN = 0.90
 export const STABLE_STDDEV_MAX = 0.02
 export const COLLAPSE_K = 4
 export const COLLAPSE_FLOOR = 0.10
-export const MIN_TODAY_SAMPLE = 20
+/**
+ * The collapse floor for a TRAILING WINDOW rate, as against COLLAPSE_FLOOR
+ * which judges a whole day (#1101).
+ *
+ * The two exist side by side because the same field's rate is a much noisier
+ * quantity over an hour than over a day, so a floor calibrated on days is the
+ * wrong floor for a window. Measured 2026-09-02 over 12,292 hour buckets across
+ * 162 stable fields (6 days of `workflow_executions.field_presence`):
+ *
+ *   floor 0.10 (the daily one)  -> 103 buckets qualify, about 17 pages a day
+ *   floor 0.25                  ->   5 buckets qualify, every one a real incident
+ *
+ * The distribution has an empty band that makes 0.25 a measured choice rather
+ * than a taste: the 1st percentile of hourly rates is 0.9048 and the 0.1st is
+ * 0.7932, so normal variation stops just above 0.75, while nothing at all in the
+ * six days fell below 0.50. The three incidents it does catch sit at 0.665,
+ * 0.726 and 0.356 (the last being the 2026-09-02 Main Flow outage this came
+ * from). Re-measure with `npx tsx scripts/diagnose-field-presence.ts` rather
+ * than trusting this comment.
+ *
+ * DELIBERATE BLIND SPOT: a field seeing fewer than MIN_WINDOW_SAMPLE runs an
+ * hour can never be judged on a one hour window, so a total collapse on a quiet
+ * workflow is still only caught by the daily surfaces. The fast path for that is
+ * the per-minute upstream outage check, not this one.
+ */
+export const WINDOW_COLLAPSE_FLOOR = 0.25
+export const MIN_WINDOW_SAMPLE = 20
+/**
+ * The trailing window the Tier-1 alert judges, in minutes.
+ *
+ * One hour, matching the hourly cron that runs the check, so consecutive runs
+ * neither overlap nor leave a gap. Detection speed is therefore unchanged by
+ * #1101: what changes is that the verdict is about a period the check actually
+ * measured, and that a burst can no longer dilute itself out of the reading. The
+ * fast path for a total outage is the per-minute upstream outage check.
+ */
+export const DROUGHT_WINDOW_MINUTES = 60
 export const DEAD_WINDOW_DAYS = 7
 export const DEAD_MIN_RUNS = 200
 // Also calibrated, not chosen (#432). The real 7-day distribution has an empty
@@ -92,7 +128,7 @@ export interface PresenceThresholds {
   stableStddevMax?: number
   collapseK?: number
   collapseFloor?: number
-  minTodaySample?: number
+  minWindowSample?: number
   deadMinRuns?: number
   deadMaxRate?: number
   deadMinDays?: number
@@ -104,7 +140,7 @@ interface ResolvedThresholds {
   stableStddevMax: number
   collapseK: number
   collapseFloor: number
-  minTodaySample: number
+  minWindowSample: number
   deadMinRuns: number
   deadMaxRate: number
   deadMinDays: number
@@ -119,7 +155,7 @@ function resolve(t: PresenceThresholds = {}): ResolvedThresholds {
     stableStddevMax: t.stableStddevMax ?? STABLE_STDDEV_MAX,
     collapseK: t.collapseK ?? COLLAPSE_K,
     collapseFloor: t.collapseFloor ?? COLLAPSE_FLOOR,
-    minTodaySample: t.minTodaySample ?? MIN_TODAY_SAMPLE,
+    minWindowSample: t.minWindowSample ?? MIN_WINDOW_SAMPLE,
     deadMinRuns: t.deadMinRuns ?? DEAD_MIN_RUNS,
     deadMaxRate: t.deadMaxRate ?? DEAD_MAX_RATE,
     deadMinDays: t.deadMinDays ?? DEAD_MIN_DAYS,
@@ -147,7 +183,7 @@ export function detectDrought(
   thresholds?: PresenceThresholds,
 ): { mean: number; stddev: number; todayRate: number } | null {
   const t = resolve(thresholds)
-  if (todayRan < t.minTodaySample) return null
+  if (todayRan < t.minWindowSample) return null
   if (!isStableBaseline(baselineRates, thresholds)) return null
   const m = mean(baselineRates)
   const sd = stddev(baselineRates)
@@ -186,9 +222,27 @@ export interface DroughtHit {
   field_path: string
   mean: number
   stddev: number
-  today_rate: number
-  today_ran: number
+  /** The observed rate over `window_minutes`, not over the calendar day. */
+  window_rate: number
+  window_ran: number
+  /**
+   * How long a period the observed rate covers, so every message built from this
+   * hit states the window it actually measured instead of one inferred from the
+   * check's tick (#1101, L11). 1440 for the daily-rollup surfaces.
+   */
+  window_minutes: number
 }
+
+/** Per-field counts over a trailing window, from the `field_presence_window` RPC. */
+export interface RecentPresence {
+  workflow_id: string
+  field_path: string
+  ran_count: number
+  present_count: number
+}
+
+/** Minutes in the daily-rollup window, for the surfaces still judging a day. */
+export const DAY_WINDOW_MINUTES = 1440
 
 export interface DeadHit {
   workflow_id: string
@@ -232,8 +286,9 @@ export function findDroughts(
         field_path: todayRow.field_path,
         mean: result.mean,
         stddev: result.stddev,
-        today_rate: result.todayRate,
-        today_ran: todayRow.ran_count,
+        window_rate: result.todayRate,
+        window_ran: todayRow.ran_count,
+        window_minutes: DAY_WINDOW_MINUTES,
       })
     }
   }
@@ -294,19 +349,47 @@ export interface FieldState {
   dead?: DeadHit
 }
 
-/** Tier-1, as a verdict per field rather than only the hits. */
+/**
+ * Tier-1, as a verdict per field rather than only the hits.
+ *
+ * The two sides come from different places on purpose (#1101). The BASELINE is
+ * the daily rollup, because "this field is normally always present" is a claim
+ * about days and needs a week of them. The OBSERVED side is a trailing window,
+ * because a burst inside one hour is exactly what the old day-to-date rate could
+ * not see: it healed itself as the denominator grew, so the same failure cleared
+ * with nothing fixed and could not fire at all later in a busy day.
+ *
+ * `baselineRows` may still contain today's partial row; it is excluded from the
+ * baseline by date, so a collapsing day cannot drag its own baseline down to
+ * meet it.
+ *
+ * The floor defaults to WINDOW_COLLAPSE_FLOOR rather than COLLAPSE_FLOOR, since
+ * the quantity being judged is now a window rate. See that constant for the
+ * measurement.
+ */
 export function classifyDrought(
-  rows: PresenceRow[],
-  today: string,
+  baselineRows: PresenceRow[],
+  recent: RecentPresence[],
+  windowMinutes: number,
   thresholds?: PresenceThresholds,
 ): FieldState[] {
-  const t = resolve(thresholds)
+  const withWindowFloor: PresenceThresholds = {
+    collapseFloor: WINDOW_COLLAPSE_FLOOR,
+    ...thresholds,
+  }
+  const t = resolve(withWindowFloor)
+  const recentByField = new Map(recent.map((r) => [`${r.workflow_id} ${r.field_path}`, r]))
   const out: FieldState[] = []
-  for (const bucket of groupByField(rows).values()) {
+  // Every field with a baseline gets a verdict, including the ones with no
+  // traffic in the window: silence there means "could not tell", and it has to
+  // be said rather than left out, or a caller reading the absence of a verdict
+  // as health would announce an all-clear over an ongoing outage (L98).
+  for (const bucket of groupByField(baselineRows).values()) {
     const base = { workflow_id: bucket[0].workflow_id, field_path: bucket[0].field_path }
-    const todayRow = bucket.find((r) => r.day === today)
-    // No traffic recorded today at all, or not enough of it to judge a rate.
-    if (!todayRow || todayRow.ran_count < t.minTodaySample) {
+    const today = todayKey(bucket)
+    const observed = recentByField.get(`${base.workflow_id} ${base.field_path}`)
+    // No traffic in the window at all, or not enough of it to judge a rate.
+    if (!observed || observed.ran_count < t.minWindowSample) {
       out.push({ ...base, verdict: 'insufficient' })
       continue
     }
@@ -317,12 +400,12 @@ export function classifyDrought(
       .map((r) => dailyRate(r.ran_count, r.present_count))
     // A field outside the stability gate can never page, so it must never
     // announce a recovery either: there was no incident to end.
-    if (!isStableBaseline(baselineRates, thresholds)) {
+    if (!isStableBaseline(baselineRates, withWindowFloor)) {
       out.push({ ...base, verdict: 'insufficient' })
       continue
     }
-    const todayRate = dailyRate(todayRow.ran_count, todayRow.present_count)
-    const hit = detectDrought(baselineRates, todayRate, todayRow.ran_count, thresholds)
+    const windowRate = dailyRate(observed.ran_count, observed.present_count)
+    const hit = detectDrought(baselineRates, windowRate, observed.ran_count, withWindowFloor)
     if (hit) {
       out.push({
         ...base,
@@ -331,8 +414,9 @@ export function classifyDrought(
           ...base,
           mean: hit.mean,
           stddev: hit.stddev,
-          today_rate: hit.todayRate,
-          today_ran: todayRow.ran_count,
+          window_rate: hit.todayRate,
+          window_ran: observed.ran_count,
+          window_minutes: windowMinutes,
         },
       })
     } else {
@@ -340,6 +424,21 @@ export function classifyDrought(
     }
   }
   return out
+}
+
+/**
+ * The most recent day present in a field's baseline rows.
+ *
+ * The baseline must exclude the day still in progress, and the caller no longer
+ * passes a date, so it is derived from the rows themselves. Taking the maximum
+ * rather than a clock reading keeps the function pure and keeps the exclusion
+ * correct when the rollup lags, since what matters is which day's row could
+ * still be partial.
+ */
+function todayKey(bucket: PresenceRow[]): string {
+  let max = ''
+  for (const r of bucket) if (r.day > max) max = r.day
+  return max
 }
 
 /** Tier-2, as a verdict per field rather than only the hits. */
@@ -497,6 +596,37 @@ async function readPresenceRows(
 }
 
 /**
+ * Per-field counts over the trailing window, via the `field_presence_window` RPC
+ * (#1101).
+ *
+ * THROWS on a read failure, exactly like readPresenceRows and for the same
+ * reason: a detector judging a window from rows it never saw would call a
+ * healthy field collapsed, and an empty answer is indistinguishable from a field
+ * with no traffic (L215, L211). The caller logs and skips the cycle.
+ */
+async function readPresenceWindow(
+  supabase: SupabaseClient,
+  workflowIds: string[],
+  windowMinutes: number,
+): Promise<RecentPresence[]> {
+  const since = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString()
+  const { data, error } = await supabase.rpc('field_presence_window', {
+    p_workflow_ids: workflowIds,
+    p_since: since,
+  })
+  if (error) {
+    throw new Error(`field_presence_window read failed: ${error.message}`)
+  }
+  const rows = (data ?? []) as Record<string, unknown>[]
+  return rows.map((r) => ({
+    workflow_id: r.workflow_id as string,
+    field_path: r.field_path as string,
+    ran_count: count(r.ran_count, 'ran_count', r),
+    present_count: count(r.present_count, 'present_count', r),
+  }))
+}
+
+/**
  * A rollup count, or a refusal (L50).
  *
  * PostgREST renders a bigint as a string, so `Number()` is the right parse, but
@@ -522,12 +652,34 @@ function count(value: unknown, column: string, row: Record<string, unknown>): nu
 }
 
 /**
+ * The measured window in words, for a message a person reads.
+ *
+ * Exists so the alert and the recovery notice cannot describe the same window
+ * two different ways.
+ */
+export function describeWindow(minutes: number): string {
+  if (minutes % 1440 === 0) {
+    const days = minutes / 1440
+    return days === 1 ? 'day' : `${days} days`
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60
+    return hours === 1 ? 'hour' : `${hours} hours`
+  }
+  return `${minutes} minutes`
+}
+
+/**
  * The Slack message for a field that stopped carrying a value.
  *
  * Says the four things an operator needs before they can act: which workflow,
- * which field, what changed (its own baseline against today), and where to look.
- * Returns the message ts, or null when it did not deliver, so the caller can
- * gate the cooldown on delivery rather than on the attempt.
+ * which field, what changed (its own baseline against the measured window), and
+ * where to look. Returns the message ts, or null when it did not deliver, so the
+ * caller can gate the cooldown on delivery rather than on the attempt.
+ *
+ * The window is named explicitly rather than called "today" (#1101). It used to
+ * report a day-to-date rate while the check ran hourly, which made the reader
+ * infer a period nobody had measured.
  */
 export async function sendFieldDroughtAlert(
   slack: { bot_token: string },
@@ -546,8 +698,8 @@ export async function sendFieldDroughtAlert(
         type: 'mrkdwn',
         text:
           `In *${workflowName}*, the field \`${hit.field_path}\` normally carries a value on ` +
-          `*${pct(hit.mean)}* of runs. Today it is carrying one on *${pct(hit.today_rate)}* ` +
-          `of ${hit.today_ran} runs.`,
+          `*${pct(hit.mean)}* of runs. Over the last ${describeWindow(hit.window_minutes)} it ` +
+          `carried one on *${pct(hit.window_rate)}* of ${hit.window_ran} runs.`,
       },
     },
     {
@@ -617,6 +769,14 @@ interface TierConfig {
   /** KV/recovery prefix, so the two tiers never share an incident marker (L53). */
   prefix: string
   signal: string
+  /**
+   * The window this tier judges, in minutes, so its all-clear reports what was
+   * measured rather than the gap between the check's own ticks (#1101).
+   * Required, not optional: a tier that forgot it would silently go back to
+   * reporting a duration nobody observed, and the compiler is the only thing
+   * that can notice a missing field on a new tier.
+   */
+  measuredWindowMinutes: number
   send: (
     slack: { bot_token: string },
     channel: string,
@@ -671,6 +831,10 @@ async function alertOnStates(
           alertedAt,
           endedAt,
           url: `${appUrl}/workflows/${wf.id}`,
+          // Declared so the all-clear cannot report the gap between hourly ticks
+          // as the length of the incident (#1101). Tier-2 judges whole days and
+          // passes its own window for the same reason.
+          measuredWindowMinutes: cfg.measuredWindowMinutes,
         })
       })
       if (did) recovered++
@@ -716,10 +880,10 @@ export async function runFieldPresenceDroughtCheck(
   const workflows = await activeWorkflows(supabase)
   if (workflows.length === 0) return
   const workflowIds = workflows.map((w) => w.id)
-  const today = new Date().toISOString().slice(0, 10)
   const since = new Date(Date.now() - (MIN_BASELINE_DAYS + 8) * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
-  const states = classifyDrought(rows, today)
+  const recent = await readPresenceWindow(supabase, workflowIds, DROUGHT_WINDOW_MINUTES)
+  const states = classifyDrought(rows, recent, DROUGHT_WINDOW_MINUTES)
   const silenced = await readSilences(supabase, workflowIds)
 
   for (const s of states) {
@@ -730,6 +894,7 @@ export async function runFieldPresenceDroughtCheck(
   const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-drought',
     signal: 'output field stopped',
+    measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
     send: (slack, channel, name, state, url) =>
       sendFieldDroughtAlert(slack, channel, name, state.drought as DroughtHit, url),
   })
@@ -774,6 +939,7 @@ export async function runFieldPresenceDeadCheck(
   const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-dead',
     signal: 'output field never resolves',
+    measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
     send: (slack, channel, name, state, url) =>
       sendFieldDeadAlert(slack, channel, name, state.dead as DeadHit, url),
   })

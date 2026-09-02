@@ -1184,3 +1184,78 @@ describe('sendRecoveryAlert (#253, #814)', () => {
     expect(text).not.toContain('lasted')
   })
 })
+
+/**
+ * #1101. A detector that judges a trailing window observes an incident once per
+ * tick, so the gap between the first and last alerting tick is not the length of
+ * the incident. On an hourly check a one-tick incident has a zero gap, and the
+ * notice would report "under a minute" for the real thirty minute outage of
+ * 2026-09-02 (168 of 261 Main Flow runs, 12:20 to 12:50 UTC).
+ *
+ * That is the same defect in the other direction from the one the issue was
+ * filed about, where the day-to-date rule reported "lasted 1 hour". A duration
+ * nobody measured must not be asserted either way (L11).
+ */
+describe('sendRecoveryAlert on a windowed check', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const slack = { bot_token: 'xoxb-test-token' }
+  const textOf = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+
+  it('reports the measured window, not a zero gap, for a single-tick incident', async () => {
+    await sendRecoveryAlert(
+      slack,
+      'C1',
+      {
+        signal: 'output field stopped',
+        subject: 'Main Flow trades_request.body.pennieLeadCalculations',
+        alertedAt: '2026-09-02T13:00:00Z',
+        endedAt: '2026-09-02T13:00:00Z',
+        measuredWindowMinutes: 60,
+      },
+      Date.parse('2026-09-02T15:00:00Z'),
+    )
+    const text = textOf()
+    expect(text).not.toMatch(/under a minute/)
+    expect(text).toMatch(/hour/)
+  })
+
+  // The control. A genuinely long incident was OBSERVED failing at both ends, so
+  // its span is a real measurement and must still be reported.
+  it('still reports a span longer than one window as a duration', async () => {
+    await sendRecoveryAlert(
+      slack,
+      'C1',
+      {
+        signal: 'output field stopped',
+        subject: 'Main Flow some.field',
+        alertedAt: '2026-09-02T05:00:00Z',
+        endedAt: '2026-09-02T11:00:00Z',
+        measuredWindowMinutes: 60,
+      },
+      Date.parse('2026-09-02T12:00:00Z'),
+    )
+    expect(textOf()).toMatch(/6 hours/)
+  })
+
+  // The other checks pass no window and must be untouched by this.
+  it('leaves a check that declares no window reporting its span as before', async () => {
+    await sendRecoveryAlert(
+      slack,
+      'C1',
+      {
+        signal: 'failure spike',
+        subject: 'Main Flow',
+        alertedAt: '2026-09-02T13:00:00Z',
+        endedAt: '2026-09-02T13:20:00Z',
+      },
+      Date.parse('2026-09-02T14:00:00Z'),
+    )
+    expect(textOf()).toMatch(/20 minutes/)
+  })
+})

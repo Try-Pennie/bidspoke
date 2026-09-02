@@ -67,6 +67,15 @@
     "anon": "denied"
   },
   {
+    "name": "field_presence_window",
+    "args": {
+      "p_workflow_ids": [],
+      "p_since": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Called hourly by the Tier-1 field presence drought check (#1101) for the trailing window it judges. If this is missing the check throws rather than reporting an all-clear, so the failure is loud, but the drought alert stops working entirely until it is restored. Granted to service_role only, so anon must be denied."
+  },
+  {
     "name": "unpaginated_big_tables",
     "args": {
       "p_min_rows": 1000
