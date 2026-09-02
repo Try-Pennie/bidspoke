@@ -421,6 +421,13 @@ export interface FailureSaturationAlertPayload {
  * So this says only what it measured, a share of runs over a window, and names
  * the errors without claiming what they mean. Anything more would be a guess
  * about a cause nothing here identified (L11, and the same complaint as #746).
+ *
+ * Deliberately does NOT ping the channel, unlike the shared-upstream alert it
+ * sits beside. Dan's call on 2026-09-02: the condition is serious but it is
+ * measured at roughly three firings in five days, and an alert that interrupts
+ * everyone at that rate is how a channel gets muted. A test asserts the sibling
+ * alert still pings, so this absence cannot be satisfied by pings breaking
+ * everywhere.
  */
 export async function sendFailureSaturationAlert(
   supabase: SupabaseClient,
@@ -451,7 +458,7 @@ export async function sendFailureSaturationAlert(
       text: {
         type: 'mrkdwn',
         text:
-          `<!here> *${payload.failure_count} of the ${payload.total_count} runs* on *${payload.workflow_name}* ` +
+          `*${payload.failure_count} of the ${payload.total_count} runs* on *${payload.workflow_name}* ` +
           `failed in the last ${payload.window_minutes} minutes, which is ${pct}% of them.`,
       },
     },
