@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
+import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1257,5 +1257,74 @@ describe('sendRecoveryAlert on a windowed check', () => {
       Date.parse('2026-09-02T14:00:00Z'),
     )
     expect(textOf()).toMatch(/20 minutes/)
+  })
+})
+
+/**
+ * The saturation alert's own message (#1100). Dan's call on 2026-09-02: it says
+ * something serious but it is not worth interrupting the whole channel for,
+ * measured at roughly three firings in five days.
+ */
+describe('sendFailureSaturationAlert', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const payload = {
+    workflow_id: 'wf-1',
+    workflow_name: 'Main Flow',
+    failure_count: 17,
+    total_count: 19,
+    window_minutes: 5,
+    error_shapes: [{ sample: 'Salesforce API error (500): boom', count: 17 }],
+    other_shape_count: 0,
+    timestamp: '2026-09-02T12:23:00Z',
+  }
+  const sentText = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+
+  it('does not ping the channel', async () => {
+    await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
+    expect(sentText()).not.toContain('!here')
+  })
+
+  // Not just an absence: the message still has to carry what it measured, or a
+  // builder that produced nothing at all would satisfy the assertion above.
+  it('states how many runs failed out of how many, and over what window', async () => {
+    await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
+    const text = sentText()
+    expect(text).toContain('Main Flow')
+    expect(text).toContain('17 of the 19 runs')
+    expect(text).toContain('5 minutes')
+    expect(text).toContain('Salesforce API error (500)')
+  })
+
+  // It must claim no cause, which is the whole reason this alert is separate
+  // from the cause-keyed one.
+  it('says explicitly that it has not identified a cause', async () => {
+    await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
+    expect(sentText()).toMatch(/not identified a cause|not why/i)
+  })
+
+  // The positive control (L159). The sibling alert in the same file DOES ping
+  // the channel, so an assertion that this one does not would be satisfied by a
+  // change that broke channel pings everywhere.
+  it('while the shared-upstream alert next to it still does ping the channel', async () => {
+    await sendUpstreamOutageAlert(
+      makeSupabase(slackConnection) as never,
+      'org-1',
+      {
+        cause_key: 'salesforce',
+        cause_label: 'Salesforce',
+        failure_count: 12,
+        window_minutes: 1,
+        workflow_names: ['Main Flow'],
+        timestamp: '2026-09-02T12:38:00Z',
+      },
+      'https://app.example.com',
+    )
+    expect(sentText()).toContain('!here')
   })
 })
