@@ -395,6 +395,87 @@ export interface UpstreamOutageAlertPayload {
   timestamp: string
 }
 
+export interface FailureSaturationAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  failure_count: number
+  total_count: number
+  window_minutes: number
+  /** The busiest distinct error shapes, busiest first, so the page names them. */
+  error_shapes?: { sample: string; count: number }[]
+  other_shape_count?: number
+  timestamp: string
+}
+
+/**
+ * Most of a workflow's runs are failing right now (#1100).
+ *
+ * Deliberately NOT a cause alert. The aggregated upstream page needs a
+ * recognised signature and DEFAULT_OUTAGE_THRESHOLD failures inside one minute,
+ * which an absolute count can only see on a busy lane: on 2026-09-02 roughly
+ * every Main Flow lead failed for eighteen minutes before one minute reached
+ * the threshold, and on 2026-09-01 fifty RML LendSwift leads failed over twenty
+ * minutes without ever getting close, carrying an error that is not in the
+ * cause list at all.
+ *
+ * So this says only what it measured, a share of runs over a window, and names
+ * the errors without claiming what they mean. Anything more would be a guess
+ * about a cause nothing here identified (L11, and the same complaint as #746).
+ */
+export async function sendFailureSaturationAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  payload: FailureSaturationAlertPayload,
+  appUrl: string
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+
+  const shapes = payload.error_shapes ?? []
+  const shapesLine = shapes.length > 0
+    ? [
+        '*What they failed on:*',
+        ...shapes.map((sh) => `- ${sh.count} x \`${sh.sample.replace(/`/g, "'")}\``),
+        ...((payload.other_shape_count ?? 0) > 0
+          ? [`- and ${payload.other_shape_count} other error ${payload.other_shape_count === 1 ? 'shape' : 'shapes'}`]
+          : []),
+      ].join('\n')
+    : ''
+  const pct = Math.round((payload.failure_count / payload.total_count) * 100)
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Most Runs Failing', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `<!here> *${payload.failure_count} of the ${payload.total_count} runs* on *${payload.workflow_name}* ` +
+          `failed in the last ${payload.window_minutes} minutes, which is ${pct}% of them.`,
+      },
+    },
+  ]
+  if (shapesLine) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: shapesLine } })
+  blocks.push({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text:
+        'This measures how many runs failed, not why. Start with the errors above and the ' +
+        'affected runs; nothing here has identified a cause.',
+    },
+  })
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Time:* ${when}\n<${appUrl}/workflows/${payload.workflow_id}|Open workflow>` } })
+
+  return (await postMessage(
+    connection.bot_token,
+    connection.default_channel,
+    blocks,
+    `Most runs failing: ${payload.workflow_name}, ${payload.failure_count} of ${payload.total_count} in ${payload.window_minutes}m`
+  )) !== null
+}
+
 // Aggregated shared-upstream outage alert (#331): when a dependency shared by
 // many leads degrades, the per-run pages are suppressed at the engine gate and
 // this fires ONCE per (org, cause) — an @here page because a degraded upstream
