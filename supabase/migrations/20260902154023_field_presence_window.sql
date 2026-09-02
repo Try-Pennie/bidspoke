@@ -56,6 +56,12 @@ $$;
 -- than inherited, because the evidence of a missing REVOKE is an absence
 -- (LESSONS L124), and this function can enumerate every watched field path on
 -- every workflow in one call.
+--
+-- INSUFFICIENT ON ITS OWN, and left here as written so the mistake is legible:
+-- revoking from PUBLIC does not remove Supabase's DEFAULT grant to anon and
+-- authenticated, which is made directly to those roles. Measured minutes after
+-- this was applied, anon could execute it. The explicit revokes are in
+-- 20260902160127_field_presence_window_revoke_anon.sql.
 REVOKE ALL ON FUNCTION field_presence_window(UUID[], TIMESTAMPTZ) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION field_presence_window(UUID[], TIMESTAMPTZ) TO service_role;
 
