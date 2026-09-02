@@ -30,7 +30,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
-import { sendUpstreamOutageAlert } from './slack'
+import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from './slack'
 import { fetchAllPaged } from './paginate'
 
 export interface OutageCause {
@@ -347,6 +347,12 @@ interface FailedRow {
   workflow_id: string
   error_message: string | null
   completed_at: string | null
+  /**
+   * When the run STARTED. Carried because saturation's denominator
+   * (`execution_counts_per_minute`) buckets by started_at, so its numerator has
+   * to as well or the two count different runs (#1100, L16).
+   */
+  started_at?: string | null
   /** Node type of the step that failed, used to attribute generic timeouts (#332). */
   failed_step_type?: string | null
 }
@@ -405,6 +411,127 @@ export function groupOutages(
     .sort((a, b) => b.count - a.count)
 }
 
+// ---------------------------------------------------------------------------
+// Failure saturation (#1100)
+// ---------------------------------------------------------------------------
+
+/**
+ * The share of a window's runs that must have failed before saturation fires,
+ * and the smallest window worth judging.
+ *
+ * MEASURED, not chosen. Over the five days to 2026-09-02 there were 5,238
+ * five-minute buckets holding at least 10 non-test runs. Their failure shares:
+ *
+ *      0%        5,151 buckets
+ *    0 to 5%        28
+ *    5 to 15%       22
+ *   15 to 30%       20
+ *   30 to 50%        5
+ *   50 to 75%        4
+ *   75 to 100%       8
+ *
+ * So 0.5 sits in a genuine gap rather than inside the dense part of the
+ * distribution (L172): the twelve buckets at or above it are three real
+ * incidents and nothing else, and each incident collapses to one page under the
+ * cooldown. Re-measure before moving it, because the shape of that tail is the
+ * whole argument.
+ *
+ * MIN_SATURATION_RUNS exists because a share alone cannot tell 2 of 2 from 200
+ * of 200, and every workflow is briefly at 100% when it has one failing run and
+ * nothing else. Ten runs in five minutes is the same floor the bucket
+ * measurement used, so the distribution above describes exactly the population
+ * this will judge.
+ *
+ * DELIBERATE BLIND SPOT (L308): a workflow that never reaches ten runs in five
+ * minutes can never trip this, so a total outage on a genuinely quiet lane is
+ * still only caught by the absolute count or by a person. Widening the window
+ * would fix that and would also delay every alert, so it is left alone until
+ * something asks for it.
+ */
+export const SATURATION_SHARE = 0.5
+export const MIN_SATURATION_RUNS = 10
+/**
+ * The window saturation is judged over, in minutes.
+ *
+ * Wider than DEFAULT_OUTAGE_WINDOW_MINUTES because the whole point is a lane
+ * whose per-minute count is small: five minutes of Main Flow at 8am is about 35
+ * runs, which clears MIN_SATURATION_RUNS, while one minute is about 7 and does
+ * not. On the 2026-09-02 incident this reaches its verdict around 12:24, against
+ * the 12:38 the absolute count actually managed.
+ */
+export const SATURATION_WINDOW_MINUTES = 5
+
+/**
+ * Whether a window's failures are saturated: enough runs to judge, and at least
+ * SATURATION_SHARE of them failed.
+ *
+ * Returns false rather than throwing on a zero denominator, because an idle
+ * workflow is a normal state and not an error.
+ */
+export function detectFailureSaturation(failed: number, total: number): boolean {
+  if (total < MIN_SATURATION_RUNS) return false
+  if (failed > total) return false
+  return failed / total >= SATURATION_SHARE
+}
+
+/** One workflow whose window is saturated, with what the page needs to say. */
+export interface SaturationGroup {
+  workflowId: string
+  workflowName: string
+  failureCount: number
+  totalCount: number
+  /** The busiest distinct error shapes, busiest first, so the page names them. */
+  shapes: ErrorShape[]
+  otherShapeCount: number
+}
+
+/**
+ * Per-workflow saturation over the window, cause-agnostic.
+ *
+ * The numerator and denominator must describe the SAME population (L16), and
+ * they come from different places: the failures are fetched with a completed_at
+ * floor, while `runTotals` comes from `execution_counts_per_minute`, which
+ * buckets by started_at. So the failures are re-windowed here on STARTED_AT, and
+ * a workflow whose failure count exceeds its run total is REFUSED rather than
+ * reported: that disagreement means the two sides are not describing the same
+ * runs, and a share above 1 is evidence of that rather than a very bad outage
+ * (L340, and clamping it would destroy the only sign anything was wrong).
+ */
+export function groupSaturation(
+  rows: FailedRow[],
+  runTotals: Map<string, number>,
+  workflowNameById: Map<string, string>,
+  windowStartMs: number,
+): SaturationGroup[] {
+  const failuresByWorkflow = new Map<string, (string | null)[]>()
+  for (const r of rows) {
+    if (!r.started_at) continue
+    if (new Date(r.started_at).getTime() < windowStartMs) continue
+    const list = failuresByWorkflow.get(r.workflow_id) ?? []
+    list.push(r.error_message)
+    failuresByWorkflow.set(r.workflow_id, list)
+  }
+
+  const out: SaturationGroup[] = []
+  for (const [workflowId, messages] of failuresByWorkflow) {
+    const total = runTotals.get(workflowId) ?? 0
+    const failed = messages.length
+    if (failed > total) {
+      console.error(
+        `[failure-saturation] refusing workflow=${workflowId}: ${failed} failures against ` +
+          `${total} runs in the window, so the two sources disagree about which runs they cover`,
+      )
+      continue
+    }
+    if (!detectFailureSaturation(failed, total)) continue
+    const name = workflowNameById.get(workflowId)
+    if (!name) continue
+    const { shapes, otherShapeCount } = topErrorShapes(messages)
+    out.push({ workflowId, workflowName: name, failureCount: failed, totalCount: total, shapes, otherShapeCount })
+  }
+  return out.sort((a, b) => b.failureCount - a.failureCount)
+}
+
 /**
  * Aggregated upstream-outage check (#331). Every minute: for each org with Slack
  * connected, count matching failed runs across its active workflows in the
@@ -440,13 +567,19 @@ export async function runUpstreamOutageCheck(
   const orgByWorkflow = new Map(workflows.map((w) => [w.id as string, w.organization_id as string]))
 
   const windowStartMs = now - DEFAULT_OUTAGE_WINDOW_MINUTES * 60 * 1000
+  // Saturation judges a wider window than the cause rule (#1100), so ONE fetch
+  // covers the wider of the two and each detector filters it down. Fetching
+  // twice a minute for two views of the same rows would be the same query run
+  // twice.
+  const saturationStartMs = now - SATURATION_WINDOW_MINUTES * 60 * 1000
+  const fetchFromMs = Math.min(windowStartMs, saturationStartMs)
   const lookbackStart = new Date(now - LOOKBACK_MINUTES * 60 * 1000).toISOString()
-  const windowStart = new Date(windowStartMs).toISOString()
+  const windowStart = new Date(fetchFromMs).toISOString()
 
   const failed = await fetchAllPaged<FailedRow>(
     (from, to) => supabase
       .from('workflow_executions')
-      .select('workflow_id, error_message, completed_at, failed_step_type')
+      .select('workflow_id, error_message, completed_at, started_at, failed_step_type')
       .in('workflow_id', workflowIds)
       .gte('started_at', lookbackStart)
       .gte('completed_at', windowStart)
@@ -459,6 +592,22 @@ export async function runUpstreamOutageCheck(
     'upstream-outage failed query',
   )
 
+  // Run totals for saturation's denominator, from the same started_at basis its
+  // numerator is windowed on. A read failure leaves the map EMPTY, which makes
+  // every workflow's total zero and therefore unjudged: saturation says nothing
+  // rather than accusing a workflow on a denominator it could not read (L215).
+  const runTotals = new Map<string, number>()
+  const { data: totalsData, error: totalsError } = await supabase.rpc('execution_counts_per_minute', {
+    p_workflow_ids: workflowIds,
+    p_since: new Date(saturationStartMs).toISOString(),
+  })
+  logReadFailure('failure-saturation', 'execution_counts_per_minute', totalsError)
+  for (const r of (totalsData ?? []) as { workflow_id: string; cnt: number | string }[]) {
+    const n = Number(r.cnt)
+    if (!Number.isFinite(n)) continue
+    runTotals.set(r.workflow_id, (runTotals.get(r.workflow_id) ?? 0) + n)
+  }
+
   // Partition the failures by org, then group each org's failures by cause.
   const rowsByOrg = new Map<string, FailedRow[]>()
   for (const r of failed) {
@@ -470,6 +619,38 @@ export async function runUpstreamOutageCheck(
   }
 
   for (const [orgId, rows] of rowsByOrg) {
+    // Saturation first: it is the rule that can see a lane whose per-minute
+    // count is too small for the absolute threshold, so it must not be gated on
+    // anything the cause rule decides.
+    for (const sat of groupSaturation(rows, runTotals, nameById, saturationStartMs)) {
+      const satCooldownKey = `failure-saturation-cooldown:${orgId}:${sat.workflowId}`
+      if (await kv.get(satCooldownKey)) continue
+      console.log(
+        `[failure-saturation] org=${orgId} workflow=${sat.workflowId} ` +
+          `${sat.failureCount}/${sat.totalCount} failed in ${SATURATION_WINDOW_MINUTES}m`,
+      )
+      const satSent = await sendFailureSaturationAlert(
+        supabase,
+        orgId,
+        {
+          workflow_id: sat.workflowId,
+          workflow_name: sat.workflowName,
+          failure_count: sat.failureCount,
+          total_count: sat.totalCount,
+          window_minutes: SATURATION_WINDOW_MINUTES,
+          error_shapes: sat.shapes,
+          other_shape_count: sat.otherShapeCount,
+          timestamp: new Date(now).toISOString(),
+        },
+        appUrl,
+      )
+      // Only start the cooldown once it actually delivered, so a kicked bot
+      // retries next minute instead of buying thirty minutes of silence.
+      if (satSent) {
+        await kv.put(satCooldownKey, '1', { expirationTtl: DEFAULT_COOLDOWN_MINUTES * 60 })
+      }
+    }
+
     const groups = groupOutages(rows, nameById, windowStartMs)
     for (const group of groups) {
       if (!detectOutageSpike(group.count, DEFAULT_OUTAGE_THRESHOLD)) continue
