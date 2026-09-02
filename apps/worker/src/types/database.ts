@@ -2080,6 +2080,15 @@ export type Database = {
           workflow_id: string
         }[]
       }
+      field_presence_window: {
+        Args: { p_since: string; p_workflow_ids: string[] }
+        Returns: {
+          field_path: string
+          present_count: number
+          ran_count: number
+          workflow_id: string
+        }[]
+      }
       finalize_unrecoverable_stranded: {
         Args: { p_min_age_hours?: number }
         Returns: number

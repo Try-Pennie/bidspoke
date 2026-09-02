@@ -26,7 +26,8 @@ import {
   DEAD_MIN_RUNS,
   DEAD_WINDOW_DAYS,
   MIN_BASELINE_DAYS,
-  MIN_TODAY_SAMPLE,
+  MIN_WINDOW_SAMPLE,
+  WINDOW_COLLAPSE_FLOOR,
   STABLE_MEAN_MIN,
   STABLE_STDDEV_MAX,
   dailyRate,
@@ -135,11 +136,19 @@ async function main(): Promise<void> {
 
   const days = [...new Set(rows.map((r) => r.day))].sort()
   console.log(`=== field-presence threshold validation ===`)
+  // This sweep drives findDroughts, which judges a whole DAY against the daily
+  // rollup, so its numbers calibrate the daily surfaces (the field coverage UI)
+  // and the stability gate both tiers share. Since #1101 the Tier-1 ALERT judges
+  // a trailing window with WINDOW_COLLAPSE_FLOOR instead, and that floor was
+  // measured against hourly buckets of workflow_executions.field_presence rather
+  // than against this rollup. Do not read a hit count here as what the alert
+  // would have paged on (L107).
   console.log(`window: ${days[0]} .. ${days[days.length - 1]} (${days.length} days, ${rows.length} rollup rows)`)
   console.log(
     `thresholds: MIN_BASELINE_DAYS=${MIN_BASELINE_DAYS} BASELINE_MIN_DAY_RUNS=${BASELINE_MIN_DAY_RUNS} ` +
       `STABLE_MEAN_MIN=${STABLE_MEAN_MIN} STABLE_STDDEV_MAX=${STABLE_STDDEV_MAX} ` +
-      `COLLAPSE_K=${COLLAPSE_K} COLLAPSE_FLOOR=${COLLAPSE_FLOOR} MIN_TODAY_SAMPLE=${MIN_TODAY_SAMPLE} ` +
+      `COLLAPSE_K=${COLLAPSE_K} COLLAPSE_FLOOR=${COLLAPSE_FLOOR} ` +
+      `WINDOW_COLLAPSE_FLOOR=${WINDOW_COLLAPSE_FLOOR} MIN_WINDOW_SAMPLE=${MIN_WINDOW_SAMPLE} ` +
       `DEAD_MIN_RUNS=${DEAD_MIN_RUNS} DEAD_MAX_RATE=${DEAD_MAX_RATE} DEAD_WINDOW_DAYS=${DEAD_WINDOW_DAYS}`,
   )
 
@@ -207,7 +216,8 @@ async function main(): Promise<void> {
     console.log(`  ${day}: ${hits.length} hit(s)`)
     for (const h of hits) {
       console.log(
-        `    ${label(h.workflow_id)}  ${h.field_path}  baseline ${pct(h.mean)} (sd ${h.stddev.toFixed(4)}) -> today ${pct(h.today_rate)} over ${h.today_ran} runs`,
+        `    ${label(h.workflow_id)}  ${h.field_path}  baseline ${pct(h.mean)} (sd ${h.stddev.toFixed(4)}) ` +
+          `-> ${pct(h.window_rate)} over ${h.window_ran} runs in ${h.window_minutes}m`,
       )
     }
   }

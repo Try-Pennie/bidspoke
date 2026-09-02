@@ -6,12 +6,12 @@ vi.mock('../slack', () => ({
   sendRecoveryAlert: vi.fn(),
 }))
 import { getSlackConnection, postMessage, sendRecoveryAlert } from '../slack'
-import type { PresenceRow } from '../field-presence-anomaly'
+import type { PresenceRow, RecentPresence } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
-  findDroughts, findDayOneDead, excludeSilenced, MIN_TODAY_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
+  findDroughts, findDayOneDead, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
-  classifyDrought, classifyDead,
+  classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -54,7 +54,7 @@ describe('detectDrought', () => {
     expect(r!.todayRate).toBe(0)
   })
   it('does NOT fire when today has too few runs', () => {
-    expect(detectDrought(STABLE, 0.0, MIN_TODAY_SAMPLE - 1)).toBeNull()
+    expect(detectDrought(STABLE, 0.0, MIN_WINDOW_SAMPLE - 1)).toBeNull()
   })
   it('does NOT fire for a variable (no-bid) baseline even at 0% today', () => {
     expect(detectDrought([1, 0.2, 0.9, 0.3], 0.0, 100)).toBeNull()
@@ -122,7 +122,7 @@ describe('findDroughts', () => {
 
   it('does not flag when today has too few runs', () => {
     const rows: PresenceRow[] = DAYS.map((d) => row('wf1', 'scout.final', d, 100, 100))
-    rows.push(row('wf1', 'scout.final', TODAY, 5, 0))   // below MIN_TODAY_SAMPLE
+    rows.push(row('wf1', 'scout.final', TODAY, 5, 0))   // below MIN_WINDOW_SAMPLE
     expect(findDroughts(rows, TODAY)).toEqual([])
   })
   it('skips a field that has baseline rows but no row for today', () => {
@@ -350,14 +350,36 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
     await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(/field_presence_daily/)
   })
 
+  // The window read is a second way the drought check can be handed nothing, and
+  // it fails the same way for the same reason (#1101): an empty window is
+  // indistinguishable from every field having no traffic, which the detector
+  // would report as unjudged and which would look exactly like a quiet, healthy
+  // hour (L98, L215).
+  it('drought check rejects when the WINDOW read fails, not just the rollup read', async () => {
+    const supabase = {
+      ...makeSupabase({
+        workflows: activeWorkflows,
+        field_presence_daily: { data: [], error: null },
+        field_presence_silences: { data: [], error: null },
+      }),
+      rpc: () => Promise.resolve({ data: null, error: { message: 'statement timeout' } }),
+    }
+    await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(
+      /field_presence_window/,
+    )
+  })
+
   it('the same doubles succeed when the read works, so the rejection is the error and not the harness', async () => {
     // Positive control: a rejection test passes just as well when the code under
     // test cannot run at all, so prove this fixture reaches a clean finish (L140).
-    const supabase = makeSupabase({
-      workflows: activeWorkflows,
-      field_presence_daily: { data: [], error: null },
-      field_presence_silences: { data: [], error: null },
-    })
+    const supabase = {
+      ...makeSupabase({
+        workflows: activeWorkflows,
+        field_presence_daily: { data: [], error: null },
+        field_presence_silences: { data: [], error: null },
+      }),
+      rpc: () => Promise.resolve({ data: [], error: null }),
+    }
     await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
     await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
   })
@@ -415,50 +437,140 @@ describe('rollup rows with an unparseable count', () => {
 
 // Phase 4 (#423): the three-way verdict a live alert needs.
 //
-// A live alert cannot read "no drought hit" as "healthy". Tier-1 judges TODAY's
-// cumulative rate, and today resets at UTC midnight, so at 00:30 a field that is
-// still completely dead has too few runs to judge and produces no hit. Treating
-// that as healthy would fire an all-clear over an ongoing outage every single
-// night, which is worse than never announcing recovery at all (L98, L11).
+// A live alert cannot read "no drought hit" as "healthy". A window with too
+// little traffic to judge produces no hit, and treating that as healthy would
+// fire an all-clear over an ongoing outage (L98, L11). Since #1101 the observed
+// side is a trailing window rather than the day so far, which removes the UTC
+// midnight version of this trap and leaves the quiet window version.
 describe('classifyDrought', () => {
   const DAYS5 = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
-  const T = '2026-06-29'
-  const verdictFor = (rows: PresenceRow[], field: string, today = T) =>
-    classifyDrought(rows, today).find((s) => s.field_path === field)?.verdict
+  const verdictFor = (rows: PresenceRow[], recent: RecentPresence[], field: string) =>
+    classifyDrought(rows, recent, 60).find((s) => s.field_path === field)?.verdict
 
-  function stable(field: string, todayRan: number, todayPresent: number): PresenceRow[] {
-    return [
-      ...DAYS5.map((d) => row('wf1', field, d, 100, 100)),
-      row('wf1', field, todayRan === 0 ? T : T, todayRan, todayPresent),
-    ]
-  }
+  const baselineFor = (field: string, present = 100) =>
+    DAYS5.map((d) => row('wf1', field, d, 100, present))
+  const window = (field: string, ran: number, present: number): RecentPresence[] => [
+    { workflow_id: 'wf1', field_path: field, ran_count: ran, present_count: present },
+  ]
 
   it('calls a collapsed stable field a drought', () => {
-    expect(verdictFor(stable('scout.final', 500, 0), 'scout.final')).toBe('alerting')
+    expect(verdictFor(baselineFor('scout.final'), window('scout.final', 500, 0), 'scout.final')).toBe('alerting')
   })
 
   it('calls a stable field at its normal rate healthy', () => {
-    expect(verdictFor(stable('scout.final', 500, 500), 'scout.final')).toBe('healthy')
+    expect(verdictFor(baselineFor('scout.final'), window('scout.final', 500, 500), 'scout.final')).toBe('healthy')
   })
 
-  it('calls a still-dead field insufficient just after UTC midnight, NOT healthy', () => {
-    // The whole point: 3 runs so far today, all empty. There is no evidence of
-    // recovery here, and calling it healthy would announce an all-clear.
-    expect(verdictFor(stable('scout.final', 3, 0), 'scout.final')).toBe('insufficient')
+  it('calls a still-dead field insufficient on a quiet window, NOT healthy', () => {
+    // 3 runs in the window, all empty. There is no evidence of recovery here,
+    // and calling it healthy would announce an all-clear over a live outage.
+    expect(verdictFor(baselineFor('scout.final'), window('scout.final', 3, 0), 'scout.final')).toBe('insufficient')
   })
 
-  it('calls a field with no row for today insufficient', () => {
-    const rows = DAYS5.map((d) => row('wf1', 'scout.final', d, 100, 100))
-    expect(verdictFor(rows, 'scout.final')).toBe('insufficient')
+  it('calls a field with no runs in the window insufficient', () => {
+    expect(verdictFor(baselineFor('scout.final'), [], 'scout.final')).toBe('insufficient')
   })
 
-  it('calls a variable no-bid field insufficient even at 0% today', () => {
+  it('calls a variable no-bid field insufficient even at 0% in the window', () => {
     // It can never page, so it must never announce a recovery either.
-    const rows = [
-      ...DAYS5.map((d) => row('wf1', 'bid.amount', d, 100, 40)),
-      row('wf1', 'bid.amount', T, 500, 0),
-    ]
-    expect(verdictFor(rows, 'bid.amount')).toBe('insufficient')
+    expect(verdictFor(baselineFor('bid.amount', 40), window('bid.amount', 500, 0), 'bid.amount')).toBe('insufficient')
+  })
+})
+
+/**
+ * #1101. The drought side judged TODAY's cumulative rate, so a burst inside one
+ * hour healed itself as later good runs arrived, and the recovery notice
+ * reported a duration set by the check's tick rather than by the event.
+ *
+ * Measured on 2026-09-02: Main Flow `trades_request.body.pennieLeadCalculations`
+ * missed 168 of 261 runs in the single hour 12:00 to 13:00 UTC (a Salesforce
+ * Apex deploy broke the trades path from 12:20 to 12:50). The alert fired at
+ * 13:00, then said "back within normal range" at 14:00 because the day's average
+ * had climbed back over the floor, and reported the incident as lasting an hour
+ * against a real outage of thirty minutes.
+ */
+describe('classifyDrought judges a trailing window, not the day so far', () => {
+  const DAYS5 = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+  const FIELD = 'trades_request.body.pennieLeadCalculations'
+  const baseline = () => DAYS5.map((d) => row('wf1', FIELD, d, 3000, 3000))
+  const recent = (ran: number, present: number) => [
+    { workflow_id: 'wf1', field_path: FIELD, ran_count: ran, present_count: present },
+  ]
+  const stateFor = (ran: number, present: number) =>
+    classifyDrought(baseline(), recent(ran, present), 60).find((s) => s.field_path === FIELD)
+
+  // The measured incident hour: 93 of 261 carried a value.
+  it('calls the real collapsed hour a drought', () => {
+    expect(stateFor(261, 93)?.verdict).toBe('alerting')
+  })
+
+  // The defect itself. Under the old rule the day-to-date rate was 1644/1812 =
+  // 90.7% by 14:00, back over the floor with nothing fixed. A window that only
+  // sees the bad hour cannot be diluted by the rest of the day.
+  it('stays alerting while the bad hour is still inside the window, whatever the day total is', () => {
+    // Same bad hour, and a day that has since accumulated thousands of good runs.
+    const rowsWithGoodDay = [...baseline(), row('wf1', FIELD, '2026-06-29', 1812, 1644)]
+    const state = classifyDrought(rowsWithGoodDay, recent(261, 93), 60).find((s) => s.field_path === FIELD)
+    expect(state?.verdict).toBe('alerting')
+  })
+
+  it('calls it healthy only once the window itself is clean', () => {
+    expect(stateFor(200, 200)?.verdict).toBe('healthy')
+  })
+
+  // The window it measured has to reach the alert, or the recovery notice goes
+  // on reporting a duration nobody observed (L11).
+  it('carries the measured window and its counts into the hit', () => {
+    const hit = stateFor(261, 93)?.drought
+    expect(hit?.window_minutes).toBe(60)
+    expect(hit?.window_ran).toBe(261)
+    expect(hit?.window_rate).toBeCloseTo(93 / 261, 4)
+  })
+
+  it('calls a window with too few runs insufficient, not healthy', () => {
+    expect(stateFor(3, 0)?.verdict).toBe('insufficient')
+  })
+
+  it('calls a field with no runs in the window insufficient', () => {
+    expect(classifyDrought(baseline(), [], 60).find((s) => s.field_path === FIELD)?.verdict).toBe(
+      'insufficient',
+    )
+  })
+})
+
+/**
+ * The recalibration that makes the window change safe rather than louder.
+ *
+ * Measured 2026-09-02 over 12,292 hour buckets and 162 stable fields (6 days of
+ * `workflow_executions.field_presence`): hourly rates swing far wider than daily
+ * ones. Keeping the daily 0.10 collapse floor on an hourly window would have
+ * fired on 103 of those buckets, roughly 17 pages a day. At a 0.25 floor only 5
+ * buckets qualify and every one of them is a genuine incident, and nothing
+ * normal in the six days went below 0.50 at all.
+ */
+describe('the window collapse floor is wider than the daily one', () => {
+  const DAYS5 = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+  const F = 'gen_vantage_score'
+  const baseline = DAYS5.map((d) => row('wf1', F, d, 3000, 3000))
+  const at = (rate: number) =>
+    classifyDrought(baseline, [
+      { workflow_id: 'wf1', field_path: F, ran_count: 1000, present_count: Math.round(1000 * rate) },
+    ], 60).find((s) => s.field_path === F)?.verdict
+
+  // The lowest hourly rate in six days that was NOT an incident sat at 0.7932
+  // (the 0.1st percentile). It must not page, or the change trades a misleading
+  // alert for a noisy one.
+  it('does not page on the widest normal hourly swing measured', () => {
+    expect(at(0.7932)).toBe('healthy')
+  })
+
+  it('pages on the worst real incident hour measured', () => {
+    // RML LendSwift, 2026-09-01 09:00 UTC: 123 of 185.
+    expect(at(0.665)).toBe('alerting')
+  })
+
+  it('the window floor is wider than the daily floor it replaced', () => {
+    expect(WINDOW_COLLAPSE_FLOOR).toBeGreaterThan(COLLAPSE_FLOOR)
   })
 })
 
@@ -492,21 +604,50 @@ describe('field-presence alerting', () => {
     slack_channel: null,
   }
 
-  /** Rows for one field: five perfect baseline days, then a collapsed today. */
-  function collapsedToday(field: string, todayRan: number, todayPresent: number, today: string): unknown[] {
+  /**
+   * Rows for one field: five perfect baseline days, then the trailing window's
+   * own counts.
+   *
+   * Since #1101 the observed side no longer comes from the rollup, so the last
+   * pair is returned separately as the window rather than appended as a partial
+   * day. The baseline day for `today` is still included, because the detector
+   * has to keep excluding a partial day from its own baseline and a fixture
+   * without one could not show that.
+   */
+  function collapsedWindow(
+    field: string,
+    windowRan: number,
+    windowPresent: number,
+    today: string,
+  ): { rollup: unknown[]; window: unknown[] } {
     const days = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
-    return [
-      ...days.map((d) => ({ workflow_id: 'wf-1', field_path: field, day: d, ran_count: 100, present_count: 100 })),
-      { workflow_id: 'wf-1', field_path: field, day: today, ran_count: todayRan, present_count: todayPresent },
-    ]
+    return {
+      rollup: [
+        ...days.map((d) => ({ workflow_id: 'wf-1', field_path: field, day: d, ran_count: 100, present_count: 100 })),
+        { workflow_id: 'wf-1', field_path: field, day: today, ran_count: 100, present_count: 100 },
+      ],
+      window: [
+        { workflow_id: 'wf-1', field_path: field, ran_count: windowRan, present_count: windowPresent },
+      ],
+    }
   }
 
-  function makeSupabase(rollup: unknown[], silences: unknown[] = [], workflows: unknown[] = [WF]) {
+  /**
+   * A plain array is a rollup with no window, which is what the dead check needs
+   * (it judges whole days and never reads the window). The drought check passes
+   * the pair.
+   */
+  function makeSupabase(
+    fixture: { rollup: unknown[]; window: unknown[] } | unknown[],
+    silences: unknown[] = [],
+    workflows: unknown[] = [WF],
+  ) {
+    const f = Array.isArray(fixture) ? { rollup: fixture, window: [] } : fixture
     return {
       from: (table: string) => {
         const data =
           table === 'workflows' ? workflows
-            : table === 'field_presence_daily' ? rollup
+            : table === 'field_presence_daily' ? f.rollup
               : table === 'field_presence_silences' ? silences
                 : []
         const chain: unknown = new Proxy({}, {
@@ -516,6 +657,13 @@ describe('field-presence alerting', () => {
           },
         })
         return chain
+      },
+      // The trailing window arrives through the field_presence_window RPC. The
+      // name is asserted rather than ignored, so a rename cannot silently leave
+      // the detector reading an empty window and calling everything unjudged.
+      rpc: (name: string) => {
+        if (name !== 'field_presence_window') throw new Error(`unexpected rpc: ${name}`)
+        return Promise.resolve({ data: f.window, error: null })
       },
     }
   }
@@ -530,7 +678,7 @@ describe('field-presence alerting', () => {
   })
 
   it('pages once for a collapsed field and names the field and both rates', async () => {
-    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(1)
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
@@ -542,7 +690,7 @@ describe('field-presence alerting', () => {
 
   it('does not page twice for the same field while the cooldown holds', async () => {
     const kv = makeKv()
-    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
     await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(1)
@@ -553,7 +701,7 @@ describe('field-presence alerting', () => {
     // empty. postMessage returns null when Slack did not accept the message.
     const kv = makeKv()
     vi.mocked(postMessage).mockResolvedValueOnce(null)
-    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
     await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(2)
@@ -561,14 +709,14 @@ describe('field-presence alerting', () => {
 
   it('says nothing when the org has volume alerts switched off', async () => {
     vi.mocked(getSlackConnection).mockResolvedValue({ ...CONN, volume_alerts_enabled: false } as never)
-    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
     expect(postMessage).not.toHaveBeenCalled()
   })
 
   it('says nothing about a silenced field', async () => {
     const supabase = makeSupabase(
-      collapsedToday('scout.final', 500, 0, today),
+      collapsedWindow('scout.final', 500, 0, today),
       [{ workflow_id: 'wf-1', field_path: 'scout.final' }],
     )
     await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
@@ -576,7 +724,7 @@ describe('field-presence alerting', () => {
   })
 
   it('honours a per-workflow channel override', async () => {
-    const supabase = makeSupabase(collapsedToday('scout.final', 500, 0, today), [], [
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
       { ...WF, slack_channel: 'C-override' },
     ])
     await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
@@ -585,14 +733,14 @@ describe('field-presence alerting', () => {
 
   it('announces the all-clear once the field is measured healthy again', async () => {
     const kv = makeKv()
-    const broken = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const broken = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(broken as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(1)
 
     // Move the incident's running end far enough back that the re-arm window
     // has elapsed, rather than waiting out real time.
     kv.store.set('field-presence-drought-active:wf-1 scout.final', new Date(Date.now() - 3600_000).toISOString())
-    const fixed = makeSupabase(collapsedToday('scout.final', 500, 500, today))
+    const fixed = makeSupabase(collapsedWindow('scout.final', 500, 500, today))
     await runFieldPresenceDroughtCheck(fixed as never, kv, APP_URL)
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
@@ -606,12 +754,12 @@ describe('field-presence alerting', () => {
     // as healthy would send an all-clear over an outage that is still running,
     // every night, for as long as the field stays broken.
     const kv = makeKv()
-    const broken = makeSupabase(collapsedToday('scout.final', 500, 0, today))
+    const broken = makeSupabase(collapsedWindow('scout.final', 500, 0, today))
     await runFieldPresenceDroughtCheck(broken as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(1)
 
     kv.store.set('field-presence-drought-active:wf-1 scout.final', new Date(Date.now() - 3600_000).toISOString())
-    const freshDay = makeSupabase(collapsedToday('scout.final', 3, 0, today))
+    const freshDay = makeSupabase(collapsedWindow('scout.final', 3, 0, today))
     await runFieldPresenceDroughtCheck(freshDay as never, kv, APP_URL)
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
     // And the incident is still open, so a real recovery can still be announced.
@@ -635,7 +783,7 @@ describe('field-presence alerting', () => {
     const field = 'equifax.links'
     const deadRows = deadDays('wf-1', field, 25000, 0)
     await runFieldPresenceDeadCheck(makeSupabase(deadRows) as never, kv, APP_URL)
-    await runFieldPresenceDroughtCheck(makeSupabase(collapsedToday(field, 500, 0, today)) as never, kv, APP_URL)
+    await runFieldPresenceDroughtCheck(makeSupabase(collapsedWindow(field, 500, 0, today)) as never, kv, APP_URL)
     expect(postMessage).toHaveBeenCalledTimes(2)
     expect(kv.store.has(`field-presence-dead-cooldown:wf-1 ${field}`)).toBe(true)
     expect(kv.store.has(`field-presence-drought-cooldown:wf-1 ${field}`)).toBe(true)
