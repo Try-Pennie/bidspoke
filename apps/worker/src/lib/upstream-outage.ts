@@ -242,6 +242,42 @@ const OUR_CALL_PATTERN_SIGNALS = [
   '429',
 ]
 
+/**
+ * Signals that the failure came from OUR OWN code or configuration running
+ * INSIDE the vendor's platform, not from the vendor being unwell (#1099).
+ *
+ * Salesforce returns HTTP 500 for an exception raised by our own Apex, so the
+ * status code carries no information about Salesforce's health. On 2026-09-02 a
+ * change set deployed at 12:20:05 UTC made `LeadTriggerHandler.buildSubmission`
+ * write `Submission__c.RevolvingCreditLimit__c`, a formula field, and 168 Main
+ * Flow runs failed over the next thirty minutes while the alert told the team to
+ * check the Salesforce status page. Salesforce was entirely healthy.
+ *
+ * These have to be checked BEFORE the vendor-health signals, because the same
+ * message satisfies both: the '(5' in VENDOR_HEALTH_SIGNALS matches
+ * `Salesforce API error (500)` regardless of what the 500 carries.
+ *
+ * Each entry is a signature only an in-platform failure of ours produces. Kept
+ * narrow deliberately (L104): the messages this must NOT capture are a governor
+ * rejection, a 503, and a timeout, none of which name a class, a trigger or a
+ * validation rule.
+ */
+const OUR_OWN_CODE_SIGNALS = [
+  // Apex or a validation rule refused the write. Both are our own metadata.
+  'cannot_insert_update_activate_entity',
+  'field_custom_validation_exception',
+  // An Apex exception type, and the stack frame format Apex reports them in.
+  'system.sobjectexception',
+  'system.dmlexception',
+  'system.nullpointerexception',
+  'system.queryexception',
+  'system.limitexception',
+  // A field the schema does not allow us to write, which is a formula field or
+  // a field-level-security setting, never a vendor incident.
+  'is not editable',
+  'is not writeable',
+]
+
 /** Signals that the vendor itself is unwell. */
 const VENDOR_HEALTH_SIGNALS = ['(5', 'service unavailable', 'bad gateway', 'gateway timeout', 'timed out', 'abort']
 
@@ -254,6 +290,13 @@ const VENDOR_HEALTH_SIGNALS = ['(5', 'service unavailable', 'bad gateway', 'gate
  * status page for 31 runs rejected by Salesforce's concurrency governor, which
  * is a fact about our own volume. So a limit or throttle signal now points at the
  * call pattern instead.
+ *
+ * On 2026-09-02 it did it again in the other direction (#1099): a Salesforce 500
+ * wrapping an exception from our own Apex trigger matched the '(5' vendor-health
+ * signal, so the alert sent the reader to Salesforce's status page for a fault
+ * that a change set deployed sixteen seconds earlier had caused. So a signature
+ * naming our own class, trigger or validation rule now points at recent deploys,
+ * and is tested first because the same message satisfies the vendor-health rule.
  *
  * Judged on the DOMINANT shape only. A minority governor rejection among mostly
  * timeouts must not claim a concurrency problem. With nothing to judge, it names
@@ -270,6 +313,14 @@ export function describeHowToCheck(causeLabel: string, shapes: ErrorShape[]): st
     return (
       `The dominant error is a limit or governor rejection, which is about our own call pattern and volume ` +
       `rather than ${causeLabel} being down. Check concurrent in-flight calls and recent volume first.`
+    )
+  }
+  if (OUR_OWN_CODE_SIGNALS.some((sig) => lower.includes(sig))) {
+    return (
+      `The dominant error was raised by our own code or configuration running inside ${causeLabel}, ` +
+      `not by ${causeLabel} being unwell, so checking their health will not explain it. Look at what ` +
+      `was deployed there recently (in Salesforce, the Setup Audit Trail plus the Apex class and field ` +
+      `definitions the error names) and review the affected runs.`
     )
   }
   if (VENDOR_HEALTH_SIGNALS.some((sig) => lower.includes(sig))) {

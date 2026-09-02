@@ -44,6 +44,19 @@ const CODE_500 = (id: string) =>
 const TIMEOUT = 'Step timed out after 30000ms (in-flight upstream call canceled via abort signal)'
 const SF_5XX = 'Salesforce API error (503): Service Unavailable'
 
+// Measured from prod on 2026-09-02 (#1099), shortened but otherwise as it
+// arrived. A change set deployed at 12:20:05 UTC made LeadTriggerHandler write
+// Submission__c.RevolvingCreditLimit__c, which is a formula field, so every
+// Lead AfterUpdate threw and 168 Main Flow runs failed in thirty minutes.
+// Salesforce returns 500 for a failure raised by OUR OWN Apex, so the status
+// code alone says nothing about the vendor's health. The record id is real in
+// shape and arbitrary in value.
+const SF_APEX_500 =
+  'Salesforce API error (500): {"error":"An error occurred: Update failed. First exception on row 0 ' +
+  'with id 00QUi00000sy8BhMAI; first error: CANNOT_INSERT_UPDATE_ACTIVATE_ENTITY, LeadTrigger: ' +
+  'execution of AfterUpdate caused by: System.SObjectException: Field RevolvingCreditLimit__c is not ' +
+  'editable Class.LeadTriggerHandler.buildSubmission: line 346, column 1", "statusCode":"500"}'
+
 describe('normalizeErrorShape', () => {
   it('collapses messages that differ only by a lead id', () => {
     const a = normalizeErrorShape(CODE_500('1d1926c6-5cb1-420f-8bd2-d7992d320372'))
@@ -172,6 +185,40 @@ describe('describeHowToCheck', () => {
     const { shapes } = topErrorShapes([SF_GOVERNOR, TIMEOUT, TIMEOUT, TIMEOUT])
     expect(shapes[0].sample).toContain('timed out')
     expect(describeHowToCheck('Salesforce', shapes)).not.toMatch(/concurrent/i)
+  })
+
+  // #1099. The deriver already exists to stop a wrong steer, and it gave one
+  // anyway: VENDOR_HEALTH_SIGNALS matches on '(5', which a Salesforce 500 has
+  // whether the 500 came from Salesforce being unwell or from our own Apex
+  // throwing inside it. Those have opposite remedies: one is waiting on a
+  // vendor, the other is a deploy somebody made minutes ago.
+  it('points at our own recent Salesforce change when the 500 carries an Apex exception', () => {
+    const { shapes } = topErrorShapes([SF_APEX_500, SF_APEX_500, SF_APEX_500])
+    const advice = describeHowToCheck('Salesforce', shapes)
+
+    expect(advice).toMatch(/deploy|change set|audit trail/i)
+    expect(advice).not.toMatch(/status page/i)
+  })
+
+  // The positive control for the case above (L159). A test that only asserts
+  // the status-page sentence is ABSENT is satisfied by a deriver that never
+  // produces it at all, so the genuine outage case has to still work in the
+  // same suite.
+  it('still points at vendor health for a 500 that carries no Apex signature', () => {
+    const { shapes } = topErrorShapes(['Salesforce API error (500): Internal Server Error'])
+    const advice = describeHowToCheck('Salesforce', shapes)
+
+    expect(advice).toMatch(/status page|health/i)
+    expect(advice).not.toMatch(/deploy|change set/i)
+  })
+
+  // Judged on the dominant shape only, like every other branch here. A single
+  // Apex rejection among mostly real timeouts must not send the reader hunting
+  // for a deploy that has nothing to do with it.
+  it('does not blame a deploy when the Apex error is the minority shape', () => {
+    const { shapes } = topErrorShapes([SF_APEX_500, TIMEOUT, TIMEOUT, TIMEOUT])
+    expect(shapes[0].sample).toContain('timed out')
+    expect(describeHowToCheck('Salesforce', shapes)).not.toMatch(/deploy|change set/i)
   })
 })
 
