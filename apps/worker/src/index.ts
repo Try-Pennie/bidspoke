@@ -340,7 +340,19 @@ export default {
           const { checkExecutionRetention } = await import('./lib/retention-check')
           const r = await checkExecutionRetention(env, supabase)
           if (r.alerted) console.error(`[retention-check] ${r.differences.length} differences`)
-        })().catch((e) => console.error('[retention-check] failed:', e)),
+        })().catch(async (e) => {
+          // Alerted, not just logged. Every failure path inside the check already
+          // speaks for itself; anything that escapes to here is a way of failing
+          // nobody anticipated, which is precisely the kind that would otherwise
+          // stay invisible for as long as it lasted (L13). The batch heartbeat
+          // above covers the check never RUNNING, not it dying halfway.
+          console.error('[retention-check] failed:', e)
+          const detail = `the execution retention check itself failed: ${formatErr(e)}`
+          await notifyExportFailure(supabase, 'execution-retention-drift', [detail], env.IDEMPOTENCY).catch((e2) =>
+            // The alerter is the thing that failed. Nothing left but the log.
+            console.error('[retention-check] could not alert about its own failure:', e2),
+          )
+        }),
       )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
