@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionRecord, updateExecutionRecord, NO_ROW_MATCHED_CODE } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord, NO_ROW_MATCHED_CODE, UPDATE_RETRY_DELAYS_MS } from '../step-logger'
+import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from '../../lib/stranded-executions'
+
+// Total wall-clock the finalize ladder spans before it gives up.
+const ladderSpanMs = () => UPDATE_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Regression guard for the 2026-06-10 incident: the nightly partition purge
@@ -247,7 +251,10 @@ describe('updateExecutionRecord: missing base row (#487)', () => {
     try {
       const { client } = updateClientWith({ error: { code: 'PGRST002', message: 'schema cache' } }, { data: [] })
       const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
-      await vi.advanceTimersByTimeAsync(8000)
+      // Derived from the ladder itself, never a literal: a hardcoded advance
+      // silently stops covering the ladder the moment the ladder changes, and
+      // the test then hangs or passes for the wrong reason.
+      await vi.advanceTimersByTimeAsync(ladderSpanMs() + 1_000)
       const error = await p
       expect(error?.code).toBe('PGRST002')
     } finally {
@@ -399,5 +406,48 @@ describe('flushStepLogs stamping', () => {
     expect(insert).toHaveBeenCalledWith([
       expect.objectContaining({ workflow_id: 'wf-1', is_test: false, step_namespace: 'equifax' }),
     ])
+  })
+})
+
+// #1113: on 2026-09-02 Supabase answered the finalize PATCH with an empty-bodied
+// HTTP 500 at 21:32:22, 21:32:24 and 21:32:31 UTC. The ladder was [2s, 5s], so
+// three attempts spanning seven seconds, and it was spent while the wobble was
+// still running. The run stranded, an alert fired, and the row sat at 'running'
+// for 30 minutes waiting for the drain. These retries live in a post-response
+// waitUntil, so the wall-clock they spend costs the lead nothing.
+describe('updateExecutionRecord: the ladder must outlast a real outage (#1113)', () => {
+  // Measured from that incident: first 500 to last 500 was about 90 seconds.
+  const OBSERVED_OUTAGE_MS = 90_000
+
+  it('still lands the finalize when the database is down for the observed outage', async () => {
+    vi.useFakeTimers()
+    try {
+      const startedAtMs = Date.now()
+      const keyedSelect = vi.fn(async () =>
+        Date.now() - startedAtMs < OBSERVED_OUTAGE_MS
+          ? { data: null, error: { code: 'PGRST002', message: 'schema cache' } }
+          : { data: [{ id: 'exec-1' }], error: null },
+      )
+      const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
+      const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: vi.fn().mockResolvedValue({ data: [], error: null }) })
+      const update = vi.fn().mockReturnValue({ eq: eqId })
+      const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+
+      const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
+      await vi.advanceTimersByTimeAsync(ladderSpanMs() + 1_000)
+
+      expect(await p).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The ladder and the strand drain are two mechanisms for one problem, and the
+  // drain is the backstop. If the ladder ever grew past the drain's floor the
+  // drain would start finalizing rows a live retry was still working on, so the
+  // relationship between the two constants is the thing worth asserting, rather
+  // than a ceiling somebody picked.
+  it('gives up well before the strand drain starts finalizing the same row', () => {
+    expect(ladderSpanMs()).toBeLessThan((STRAND_DRAIN_MIN_AGE_MINUTES * 60_000) / 2)
   })
 })
