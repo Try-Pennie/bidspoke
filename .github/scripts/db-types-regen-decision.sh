@@ -44,6 +44,24 @@ DIFF=$(cat)
 # Content lines only: strip the leading +/- but drop the +++/--- file headers.
 CHANGED=$(printf '%s\n' "$DIFF" | grep -E '^[+-]' | grep -Ev '^(\+\+\+|---)' | sed -E 's/^[+-]//')
 
+# COMMENTS ARE STRIPPED BEFORE ANY MATCHING (#614 again, one level down).
+#
+# Reading only the changed lines stopped the gate finding DDL elsewhere in the
+# FILE. It did not stop it finding DDL inside a COMMENT on a changed line, which is
+# the same defect: the guard is satisfied by prose ABOUT the thing rather than the
+# thing (LESSONS L103). The function branch below already stripped comments; the
+# keyword branch did not, so the two halves disagreed about what counted as SQL.
+#
+# Found 2026-09-03 by a migration whose header has to quote `CREATE TABLE` in order
+# to explain the defect it fixes, and which changes no schema shape whatever:
+# constraints do not appear in the generated types, so the demanded regen would
+# have produced an empty diff and the change could not have been made green.
+#
+# Only `--` line comments are stripped, which is every comment in this directory.
+# A `/* */` block would survive, and that is the fail-safe direction: it asks for a
+# regen it may not need rather than waving a real change through.
+CHANGED=$(printf '%s\n' "$CHANGED" | sed -E 's/--.*$//')
+
 if [ -z "$CHANGED" ]; then
   printf 'not-required\n'
   exit 0
