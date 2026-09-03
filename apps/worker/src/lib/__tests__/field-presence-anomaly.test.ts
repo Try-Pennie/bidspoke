@@ -861,6 +861,41 @@ describe('field-presence alerting', () => {
     log.mockRestore()
   })
 
+  /**
+   * The grouped message has to survive the day it matters most. Slack hard
+   * rejects any section block over 3,000 characters, and this file already
+   * handles that elsewhere (truncating at 2,900 in one place, capping lists at
+   * 20 or 30 with "and N more" in four others). An uncapped list would be
+   * rejected on a mass failure, postMessage would return null, no cooldown would
+   * be recorded, and the next run would rebuild the same oversized message and
+   * fail again: silent during exactly the incident it exists to report.
+   */
+  it('caps the list and says how many more, so a mass failure still sends', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => `field.number_${i}`)
+    const supabase = makeSupabase(deadRows(many))
+    await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+
+    const blocks = vi.mocked(postMessage).mock.calls[0][2] as { text?: { text?: string } }[]
+    const longest = Math.max(...blocks.map((b) => (b.text?.text ?? '').length))
+    expect(longest).toBeLessThan(3000)
+
+    const whole = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(whole).toContain('60')
+    expect(whole).toContain('more')
+  })
+
+  it('still names every field when the group is small enough to fit', async () => {
+    // The pairing: a cap that always fired would pass the test above while
+    // hiding fields on an ordinary two-field day.
+    const supabase = makeSupabase(deadRows(['a.one', 'b.two']))
+    await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+    const whole = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(whole).toContain('a.one')
+    expect(whole).toContain('b.two')
+    expect(whole).not.toContain('more_')
+  })
+
   it('honours a per-workflow channel override', async () => {
     const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
       { ...WF, slack_channel: 'C-override' },

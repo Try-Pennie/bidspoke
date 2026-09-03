@@ -749,7 +749,7 @@ export async function sendFieldDroughtAlert(
         emoji: false,
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length) } },
     {
       type: 'section',
       text: {
@@ -766,6 +766,25 @@ export async function sendFieldDroughtAlert(
       ? `Output field stopped: ${fields[0].workflowName} ${fields[0].state.field_path}`
       : `${fields.length} output fields stopped`
   return postMessage(slack.bot_token, channel, blocks, summary)
+}
+
+/**
+ * How many fields a grouped message lists before it says "and N more".
+ *
+ * Slack hard rejects any section block over 3,000 characters, and a grouped
+ * alert is exactly the message that gets long on the worst day. Uncapped, a mass
+ * failure would be refused, no cooldown would be recorded, and every later run
+ * would rebuild the same oversized message: silent during the one incident it
+ * exists to report. Twenty matches the cap the other grouped alerts in
+ * `slack.ts` already use, and at roughly 120 characters a line leaves well over
+ * half the block spare.
+ */
+const MAX_LISTED_FIELDS = 20
+
+/** Renders the capped list plus a tail naming what it left out. */
+function listWithOverflow(lines: string[], total: number): string {
+  if (total <= MAX_LISTED_FIELDS) return lines.join('\n')
+  return `${lines.slice(0, MAX_LISTED_FIELDS).join('\n')}\n_and ${total - MAX_LISTED_FIELDS} more_`
 }
 
 /** One entry in a grouped alert: which workflow, and the verdict for one field. */
@@ -816,7 +835,7 @@ export async function sendFieldDeadAlert(
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: heading } },
-    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length) } },
     {
       type: 'section',
       text: {
