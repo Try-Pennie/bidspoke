@@ -216,3 +216,122 @@ export function unknownReferenceRoot(reference: string): string | null {
   if (!root) return null
   return isRootNamespace(root) ? null : root
 }
+
+/**
+ * Tokens after which a `/` starts a REGEX rather than a division.
+ *
+ * Needed because the comment stripper has to tell `a / b` from `/a\/b/`, and
+ * getting it wrong is not cosmetic: a regex read as division exposes its inner
+ * `//` to the line-comment rule, which then blanks the rest of the line.
+ */
+const REGEX_PRECEDING_PUNCTUATION = new Set('(,=:[!&|?{};+-*%~^<>'.split(''))
+const REGEX_PRECEDING_KEYWORDS = [
+  'return', 'typeof', 'case', 'in', 'of', 'new', 'delete', 'void', 'instanceof', 'do', 'else', 'yield', 'await',
+]
+
+function startsRegex(source: string, slashIndex: number): boolean {
+  const before = source.slice(0, slashIndex).replace(/\s+$/, '')
+  if (before === '') return true
+  if (REGEX_PRECEDING_PUNCTUATION.has(before[before.length - 1])) return true
+  const word = /[A-Za-z_$][\w$]*$/.exec(before)
+  return word !== null && REGEX_PRECEDING_KEYWORDS.includes(word[0])
+}
+
+/**
+ * Blank out `//` and block comments, leaving everything else byte-for-byte.
+ *
+ * Exists because the watched-field derivation ran the chain extractor over raw
+ * script text, so a migration note like
+ *
+ *   // Translates: steps.create_prospect.$return_value.id -> ...output.body.id
+ *
+ * was harvested as a live reference and reported as a field that never resolves
+ * on 481,959 runs, while the real code beside it read the correct path (#1118).
+ *
+ * Two rules follow from the direction of risk. An UNWATCHED field is silent, so
+ * anything this cannot prove is a comment is left alone: a `//` inside a string
+ * or a regex stays, and an unterminated quote swallows the rest rather than
+ * exposing it. And string and template literal CONTENTS are preserved rather
+ * than blanked, because live references really do sit inside template literals
+ * (``redirectUrl + `/${steps.create_prospect.output.body.id}` ``), so blanking
+ * them would unwatch real fields to silence a cosmetic one.
+ *
+ * Comments are replaced with spaces, and their newlines kept, so offsets and
+ * line numbers are unchanged for anything scanning the result positionally.
+ */
+export function stripComments(source: string): string {
+  const blank = (s: string): string => s.replace(/[^\n]/g, ' ')
+  const out: string[] = []
+  let i = 0
+
+  while (i < source.length) {
+    const c = source[i]
+    const next = source[i + 1]
+
+    if (c === '/' && next === '/') {
+      let j = i
+      while (j < source.length && source[j] !== '\n') j++
+      out.push(blank(source.slice(i, j)))
+      i = j
+      continue
+    }
+
+    if (c === '/' && next === '*') {
+      const close = source.indexOf('*/', i + 2)
+      const j = close === -1 ? source.length : close + 2
+      out.push(blank(source.slice(i, j)))
+      i = j
+      continue
+    }
+
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1
+      while (j < source.length) {
+        if (source[j] === '\\') {
+          j += 2
+          continue
+        }
+        if (source[j] === c) {
+          j++
+          break
+        }
+        j++
+      }
+      out.push(source.slice(i, j))
+      i = j
+      continue
+    }
+
+    if (c === '/' && startsRegex(source, i)) {
+      let j = i + 1
+      let inCharacterClass = false
+      let closed = false
+      while (j < source.length) {
+        const d = source[j]
+        if (d === '\\') {
+          j += 2
+          continue
+        }
+        if (d === '\n') break // unterminated, so it was not a regex after all
+        if (d === '[') inCharacterClass = true
+        else if (d === ']') inCharacterClass = false
+        else if (d === '/' && !inCharacterClass) {
+          j++
+          closed = true
+          break
+        }
+        j++
+      }
+      if (closed) {
+        out.push(source.slice(i, j))
+        i = j
+        continue
+      }
+    }
+
+    out.push(c)
+    i++
+  }
+
+  return out.join('')
+}

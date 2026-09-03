@@ -723,6 +723,144 @@ describe('field-presence alerting', () => {
     expect(postMessage).not.toHaveBeenCalled()
   })
 
+  /**
+   * #1119. The check judged purely from seven days of history and never asked
+   * whether anything still reads the field, so fixing a reference did not stop
+   * its alert: the rows already written kept firing it until they aged out.
+   * Measured 2026-09-03, after the `equifax_credit_report.data.links` reference
+   * was deleted from Main Flow, the rollup still held 8 days of rows for it
+   * (25,444 runs, 0 present) and the next run would have paged about a field
+   * that no longer existed.
+   *
+   * That punished the correct response and left the message's own "silence it"
+   * escape hatch as the only way to stop it, which is how a channel stops being
+   * read. The filter uses the SAME derivation the capture uses, so the two can
+   * never disagree about what is watched.
+   */
+  const readsField = (field: string) => ({
+    nodes: [{ id: 'n1', namespace: 'n', type: 'webhook', config: { body: `{{steps.${field}}}` } }],
+    edges: [],
+  })
+
+  it('says nothing about a field the definition no longer reads', async () => {
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
+      { ...WF, definition: readsField('something.else') },
+    ])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('still pages for a field the definition does read', async () => {
+    // The pairing. Without it, a filter that dropped everything would pass the
+    // test above while making the whole detector silent.
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
+      { ...WF, definition: readsField('scout.final') },
+    ])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not go silent when a workflow carries no definition to read', async () => {
+    // A workflow whose definition could not be read must not be treated as
+    // reading nothing: that would silence every field on it at once, which is
+    // the same blind-but-green shape the throw on a failed workflows read exists
+    // to prevent (L98).
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [{ ...WF }])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Grouping (#1120). On 2026-09-03 the dead check posted SEVEN separate Slack
+   * messages in a row, one per field, each carrying the same three paragraphs of
+   * advice. A wall of near-identical messages is read as one blur, and the two
+   * that mattered were indistinguishable from the five that did not.
+   *
+   * Grouping is per CHANNEL, not per workflow, because that is the unit a person
+   * actually reads. The per-field cooldown, the silences and the recovery
+   * all-clear are unchanged: only the delivery is collapsed.
+   */
+  function deadRows(fields: string[]) {
+    const days = ['2026-08-27', '2026-08-28', '2026-08-29', '2026-08-30', '2026-08-31']
+    return fields.flatMap((field) =>
+      days.map((day) => ({ workflow_id: 'wf-1', field_path: field, day, ran_count: 500, present_count: 0 })),
+    )
+  }
+
+  it('posts ONE message for several dead fields, naming every one of them', async () => {
+    const supabase = makeSupabase(deadRows(['a.one', 'b.two', 'c.three']))
+    await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).toContain('a.one')
+    expect(text).toContain('b.two')
+    expect(text).toContain('c.three')
+  })
+
+  it('still says how many runs each field was measured over', async () => {
+    // The counts are what make a finding actionable, so collapsing the message
+    // must not collapse the evidence down to a bare list of names.
+    const supabase = makeSupabase(deadRows(['a.one']))
+    await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+    expect(JSON.stringify(vi.mocked(postMessage).mock.calls[0])).toContain('2500')
+  })
+
+  it('leaves a silenced field out of the group entirely', async () => {
+    const supabase = makeSupabase(deadRows(['a.one', 'b.two']), [
+      { workflow_id: 'wf-1', field_path: 'b.two' },
+    ])
+    await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+    expect(text).toContain('a.one')
+    expect(text).not.toContain('b.two')
+  })
+
+  it('does not repeat a field that is still inside its cooldown', async () => {
+    const kv = makeKv()
+    const supabase = makeSupabase(deadRows(['a.one']))
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing at all when every field is inside its cooldown', async () => {
+    // An empty group must not post an empty message.
+    const kv = makeKv()
+    const supabase = makeSupabase(deadRows(['a.one', 'b.two']))
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    vi.mocked(postMessage).mockClear()
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not start a cooldown for any field when the group send failed', async () => {
+    // Same rule the per-field path had: a kicked bot must not buy 12 hours of
+    // silence over fields that are still dead.
+    const kv = makeKv()
+    vi.mocked(postMessage).mockResolvedValueOnce(null)
+    const supabase = makeSupabase(deadRows(['a.one', 'b.two']))
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    await runFieldPresenceDeadCheck(supabase as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('counts workflows whose watched set could not be derived, so a systemic failure is visible', async () => {
+    // L77: the fallback when a definition cannot be read is to keep alerting,
+    // which is the safe direction but also indistinguishable from a healthy run.
+    // If every definition stopped parsing, the #1119 filter would quietly switch
+    // itself off and only per-workflow error lines would say so, so the run's own
+    // summary carries the count.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
+      { ...WF, definition: { nodes: 'not an array' } },
+    ])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    const summary = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[field-presence-drought]'))
+    expect(summary).toContain('unwatchable=1')
+    log.mockRestore()
+  })
+
   it('honours a per-workflow channel override', async () => {
     const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
       { ...WF, slack_channel: 'C-override' },

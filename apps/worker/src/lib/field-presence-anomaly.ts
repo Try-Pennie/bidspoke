@@ -10,6 +10,8 @@ import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
 import { getSlackConnection, postMessage, sendRecoveryAlert } from './slack'
 import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { deriveWatchedFields } from '../engine/watched-fields'
+import type { WorkflowDefinition } from '../types'
 
 export { MIN_BASELINE_DAYS }
 export const BASELINE_MIN_DAY_RUNS = 10
@@ -522,6 +524,47 @@ export interface ActiveWorkflow {
   name: string
   organization_id: string
   slack_channel: string | null
+  /**
+   * The live definition, used to answer whether anything STILL reads a field.
+   * Null when the row carried none, which means "cannot tell" rather than
+   * "reads nothing": see `watchedNow` (#1119).
+   */
+  definition: WorkflowDefinition | null
+}
+
+/**
+ * What each workflow reads RIGHT NOW, or null when that cannot be determined.
+ *
+ * The detector otherwise judges purely from seven days of history, so removing a
+ * reference did not stop its alert: the rows already written kept firing it
+ * until they aged out of the window (#1119). That punishes the correct response
+ * to the alert and leaves "silence it with a reason" as the only way to stop it.
+ *
+ * Derived with `deriveWatchedFields`, the SAME function the capture uses to
+ * decide what to record, so the reader and the writer cannot disagree about what
+ * is watched (L70). A node the derivation bails open on contributes nothing here
+ * AND records nothing there, so the two stay consistent by construction.
+ *
+ * A workflow with no readable definition yields null and is NOT filtered. An
+ * absent definition must not read as "reads nothing", which would silence every
+ * field on that workflow at once and look exactly like a healthy sweep (L98).
+ */
+function watchedNow(workflows: ActiveWorkflow[]): Map<string, Set<string> | null> {
+  const out = new Map<string, Set<string> | null>()
+  for (const wf of workflows) {
+    if (!wf.definition || !Array.isArray(wf.definition.nodes)) {
+      out.set(wf.id, null)
+      continue
+    }
+    try {
+      out.set(wf.id, new Set(deriveWatchedFields(wf.definition)))
+    } catch (err) {
+      // A definition this cannot parse is unknown, never empty.
+      console.error(`[field-presence] watched-set derivation failed for ${wf.id}:`, err)
+      out.set(wf.id, null)
+    }
+  }
+  return out
 }
 
 /**
@@ -536,7 +579,7 @@ export interface ActiveWorkflow {
 async function activeWorkflows(supabase: SupabaseClient): Promise<ActiveWorkflow[]> {
   const { data, error } = await supabase
     .from('workflows')
-    .select('id, name, organization_id, slack_channel')
+    .select('id, name, organization_id, slack_channel, definition')
     .eq('is_active', true)
     .is('deleted_at', null)
   if (error) throw new Error(`workflows read failed: ${error.message}`)
@@ -545,6 +588,7 @@ async function activeWorkflows(supabase: SupabaseClient): Promise<ActiveWorkflow
     name: w.name as string,
     organization_id: w.organization_id as string,
     slack_channel: (w.slack_channel as string | null) ?? null,
+    definition: (w.definition as WorkflowDefinition | null) ?? null,
   }))
 }
 
@@ -684,66 +728,95 @@ export function describeWindow(minutes: number): string {
 export async function sendFieldDroughtAlert(
   slack: { bot_token: string },
   channel: string,
-  workflowName: string,
-  hit: DroughtHit,
+  fields: GroupedField[],
   appUrl: string,
 ): Promise<string | null> {
   const pct = (x: number) => `${(x * 100).toFixed(1)}%`
-  const url = `${appUrl}/workflows/${hit.workflow_id}`
+  const lines = fields.map((f) => {
+    const hit = f.state.drought as DroughtHit
+    return (
+      `*${f.workflowName}* \`${hit.field_path}\` normally carries a value on *${pct(hit.mean)}* ` +
+      `of runs, and carried one on *${pct(hit.window_rate)}* of ${hit.window_ran} runs over the ` +
+      `last ${describeWindow(hit.window_minutes)}  <${appUrl}/workflows/${f.workflowId}|open>`
+    )
+  })
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Output Field Stopped', emoji: false } },
     {
-      type: 'section',
+      type: 'header',
       text: {
-        type: 'mrkdwn',
-        text:
-          `In *${workflowName}*, the field \`${hit.field_path}\` normally carries a value on ` +
-          `*${pct(hit.mean)}* of runs. Over the last ${describeWindow(hit.window_minutes)} it ` +
-          `carried one on *${pct(hit.window_rate)}* of ${hit.window_ran} runs.`,
+        type: 'plain_text',
+        text: fields.length === 1 ? 'Output Field Stopped' : 'Output Fields Stopped',
+        emoji: false,
       },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
         text:
-          'Something downstream reads this field, so those runs are proceeding without it. ' +
+          'Something downstream reads this, so those runs are proceeding without it. ' +
           'The usual causes are an upstream API returning a different shape, or a code node ' +
           'swallowing an error into an empty result.',
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, `Output field stopped: ${workflowName} ${hit.field_path}`)
+  const summary =
+    fields.length === 1
+      ? `Output field stopped: ${fields[0].workflowName} ${fields[0].state.field_path}`
+      : `${fields.length} output fields stopped`
+  return postMessage(slack.bot_token, channel, blocks, summary)
+}
+
+/** One entry in a grouped alert: which workflow, and the verdict for one field. */
+export interface GroupedField {
+  workflowName: string
+  workflowId: string
+  state: FieldState
 }
 
 /**
- * The Slack message for a field that has never carried a value.
+ * The Slack message for fields that have never carried a value.
  *
  * Worded differently from the drought on purpose. A drought is "this broke
  * today"; this is "this has never worked", which usually means the reference
  * itself is wrong rather than the upstream being down, and the fix is usually to
  * correct or delete the reference (L11).
+ *
+ * ONE message for the whole batch (#1120). On 2026-09-03 this posted seven
+ * separate messages in a row, each repeating the same three paragraphs of
+ * advice, and the two findings that mattered were indistinguishable from the
+ * five that did not. The advice is said once, at the end, rather than per field.
  */
 export async function sendFieldDeadAlert(
   slack: { bot_token: string },
   channel: string,
-  workflowName: string,
-  hit: DeadHit,
+  fields: GroupedField[],
   appUrl: string,
 ): Promise<string | null> {
-  const url = `${appUrl}/workflows/${hit.workflow_id}`
+  const lines = fields.map((f) => {
+    const hit = f.state.dead as DeadHit
+    return (
+      `*${f.workflowName}* \`${hit.field_path}\` carried a value on ` +
+      `*${hit.window_present} of ${hit.window_ran}* runs  <${appUrl}/workflows/${f.workflowId}|open>`
+    )
+  })
+  const heading =
+    fields.length === 1
+      ? 'One field is read but has never carried a value over the last ' + `${DEAD_WINDOW_DAYS} days.`
+      : `${fields.length} fields are read but have never carried a value over the last ` +
+        `${DEAD_WINDOW_DAYS} days.`
   const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: 'Output Field Never Resolves', emoji: false } },
     {
-      type: 'section',
+      type: 'header',
       text: {
-        type: 'mrkdwn',
-        text:
-          `In *${workflowName}*, something reads \`${hit.field_path}\`, and over the last ` +
-          `${DEAD_WINDOW_DAYS} days it carried a value on *${hit.window_present} of ${hit.window_ran}* runs.`,
+        type: 'plain_text',
+        text: fields.length === 1 ? 'Output Field Never Resolves' : 'Output Fields Never Resolve',
+        emoji: false,
       },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: heading } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
     {
       type: 'section',
       text: {
@@ -755,9 +828,12 @@ export async function sendFieldDeadAlert(
           'reason so this stops asking.',
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, `Output field never resolves: ${workflowName} ${hit.field_path}`)
+  const summary =
+    fields.length === 1
+      ? `Output field never resolves: ${fields[0].workflowName} ${fields[0].state.field_path}`
+      : `${fields.length} output fields never resolve`
+  return postMessage(slack.bot_token, channel, blocks, summary)
 }
 
 /** `${workflow_id} ${field_path}`, the key both the silences and the KV use. */
@@ -777,11 +853,11 @@ interface TierConfig {
    * that can notice a missing field on a new tier.
    */
   measuredWindowMinutes: number
+  /** Sends ONE message covering every field in a channel's group (#1120). */
   send: (
     slack: { bot_token: string },
     channel: string,
-    workflowName: string,
-    state: FieldState,
+    fields: GroupedField[],
     appUrl: string,
   ) => Promise<string | null>
 }
@@ -797,6 +873,17 @@ interface TierConfig {
  * `insufficient` deliberately does nothing at all: it neither pages nor stands
  * down, because this run could not tell.
  */
+/** A field that has passed every gate and is waiting to be put in a group. */
+interface Pageable {
+  wf: ActiveWorkflow
+  state: FieldState
+  id: string
+  cooldownKey: string
+}
+
+/** What `getSlackConnection` yields, kept local so the group map can be typed. */
+type SlackConnection = { bot_token: string; default_channel: string; volume_alerts_enabled: boolean }
+
 async function alertOnStates(
   supabase: SupabaseClient,
   kv: RecoveryKv,
@@ -805,8 +892,15 @@ async function alertOnStates(
   states: FieldState[],
   silenced: Set<string>,
   cfg: TierConfig,
-): Promise<{ paged: number; recovered: number }> {
+): Promise<{ paged: number; recovered: number; unwatchable: number }> {
   const byId = new Map(workflows.map((w) => [w.id, w]))
+  const watched = watchedNow(workflows)
+  // Counted, not only logged per workflow (L77). Falling back to "do not filter"
+  // is the safe direction, but it is also indistinguishable from a healthy run,
+  // so if every definition stopped parsing the #1119 filter would switch itself
+  // off in silence. The run's own summary line carries the number.
+  const unwatchable = [...watched.values()].filter((set) => set === null).length
+  const pageable: Pageable[] = []
   let paged = 0
   let recovered = 0
 
@@ -820,6 +914,14 @@ async function alertOnStates(
     // A silenced field is one the author has said may be empty. It must not
     // page, and it must not announce a recovery either: there is no incident.
     if (silenced.has(id)) continue
+
+    // A field nothing reads any more is not a field that never resolves, it is
+    // a field that no longer exists, so it neither pages nor stands down for the
+    // same reason (#1119). Only filtered when the watched set is KNOWN: null
+    // means the definition could not be read, and treating that as "reads
+    // nothing" would silence the whole workflow.
+    const stillWatched = watched.get(state.workflow_id)
+    if (stillWatched && !stillWatched.has(state.field_path)) continue
 
     if (state.verdict === 'healthy') {
       const did = await announceRecovery(kv, cfg.prefix, id, cooldownKey, async (alertedAt, endedAt) => {
@@ -847,22 +949,47 @@ async function alertOnStates(
     await markSpikeSeen(kv, cfg.prefix, id)
     if (await kv.get(cooldownKey)) continue
 
-    const slack = await getSlackConnection(supabase, wf.organization_id)
+    pageable.push({ wf, state, id, cooldownKey })
+  }
+
+  // One message per channel rather than one per field (#1120). Every gate above
+  // still runs per field, so a silenced, cooled-down or no-longer-read field is
+  // absent from the group entirely rather than listed and then suppressed.
+  const connections = new Map<string, SlackConnection | null>()
+  const groups = new Map<string, { slack: SlackConnection; channel: string; items: Pageable[] }>()
+  for (const item of pageable) {
+    const org = item.wf.organization_id
+    if (!connections.has(org)) connections.set(org, await getSlackConnection(supabase, org))
+    const slack = connections.get(org) ?? null
     if (!slack || !slack.volume_alerts_enabled) {
-      console.log(`[${cfg.prefix}] no Slack or opted-out org=${wf.organization_id} field=${id}`)
+      console.log(`[${cfg.prefix}] no Slack or opted-out org=${org} field=${item.id}`)
       continue
     }
-    const channel = wf.slack_channel ?? slack.default_channel
-    const sent = await cfg.send(slack, channel, wf.name, state, appUrl)
-    // Only start the cooldown once the alert actually delivered: a kicked bot
-    // must not suppress the retry for 12 hours while the field stays empty.
-    if (sent) {
-      await kv.put(cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
-      await markAlerted(kv, cfg.prefix, id)
+    const channel = item.wf.slack_channel ?? slack.default_channel
+    const key = `${org}:${channel}`
+    const group = groups.get(key)
+    if (group) group.items.push(item)
+    else groups.set(key, { slack, channel, items: [item] })
+  }
+
+  for (const group of groups.values()) {
+    const fields: GroupedField[] = group.items.map((i) => ({
+      workflowName: i.wf.name,
+      workflowId: i.wf.id,
+      state: i.state,
+    }))
+    const sent = await cfg.send(group.slack, group.channel, fields, appUrl)
+    // Only start the cooldowns once the alert actually delivered: a kicked bot
+    // must not suppress the retry for 12 hours while the fields stay empty. It
+    // is all or nothing per group, because one message covers all of them.
+    if (!sent) continue
+    for (const item of group.items) {
+      await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
+      await markAlerted(kv, cfg.prefix, item.id)
       paged++
     }
   }
-  return { paged, recovered }
+  return { paged, recovered, unwatchable }
 }
 
 /**
@@ -891,19 +1018,18 @@ export async function runFieldPresenceDroughtCheck(
       console.log(JSON.stringify({ event: 'field_presence_drought', ...s.drought }))
     }
   }
-  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-drought',
     signal: 'output field stopped',
     measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
-    send: (slack, channel, name, state, url) =>
-      sendFieldDroughtAlert(slack, channel, name, state.drought as DroughtHit, url),
+    send: (slack, channel, fields, url) => sendFieldDroughtAlert(slack, channel, fields, url),
   })
   console.log(
     `[field-presence-drought] workflows=${workflows.length} ` +
       `alerting=${states.filter((s) => s.verdict === 'alerting').length} ` +
       `healthy=${states.filter((s) => s.verdict === 'healthy').length} ` +
       `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered}`,
+      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
   )
 }
 
@@ -936,16 +1062,15 @@ export async function runFieldPresenceDeadCheck(
       fields: visible.map((s) => s.dead),
     }),
   )
-  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-dead',
     signal: 'output field never resolves',
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
-    send: (slack, channel, name, state, url) =>
-      sendFieldDeadAlert(slack, channel, name, state.dead as DeadHit, url),
+    send: (slack, channel, fields, url) => sendFieldDeadAlert(slack, channel, fields, url),
   })
   console.log(
     `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} ` +
       `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered}`,
+      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
   )
 }

@@ -322,3 +322,112 @@ describe('alias resolution', () => {
     expect(map.fields.find((f) => f.path === 'scout.final')?.source).toBe('code')
   })
 })
+
+/**
+ * #1118. On 2026-09-03 the day-one-dead check paged seven times, and five of the
+ * seven were fields nothing reads. The watched set is derived by running the
+ * chain extractor over raw text, so it harvested paths out of places that never
+ * execute. Each mechanism below is measured from the live workflows, and each
+ * phantom was reported as "never resolves" on hundreds of thousands of runs.
+ *
+ * The direction of risk is asymmetric and decides every choice here: an
+ * unwatched field is SILENT, which this module calls the dangerous direction, so
+ * each test that removes a phantom is paired with one asserting a real reference
+ * of the same shape survives. Without that pairing, a fix that watched nothing
+ * at all would pass every removal test.
+ */
+describe('watched fields are not harvested from comments (#1118)', () => {
+  const codeNode = (script: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def({ nodes: [{ id: 'n1', namespace: 'c', type: 'code', config: { script } } as any] })
+
+  it('ignores a path in a line comment while watching the real read below it', () => {
+    // The exact pair from Engine Bidding's Generate Trades Body. The comment is
+    // a migration note recording a translation that was already done; the real
+    // code uses .output.body.id, and `create_prospect.id` reported 0/481,959.
+    const d = codeNode(
+      '// Translates: steps.create_prospect.$return_value.id -> steps.create_prospect.output.body.id\n' +
+        'const prospectId = steps.create_prospect.output.body.id;\n',
+    )
+    expect(deriveWatchedFields(d)).toEqual(['create_prospect.body.id'])
+  })
+
+  it('ignores a path in a block comment', () => {
+    const d = codeNode('/*\n steps.old.gone\n*/\nconst v = steps.live.here;\n')
+    expect(deriveWatchedFields(d)).toEqual(['live.here'])
+  })
+
+  it('still watches a reference inside a template literal', () => {
+    // Build Response Body:90 really does read the prospect id this way, so a
+    // stripper that blanked string contents would unwatch a money-path field.
+    const d = codeNode('const c = `${base}/${steps.create_prospect.output.body.id}`;\n')
+    expect(deriveWatchedFields(d)).toEqual(['create_prospect.body.id'])
+  })
+
+  it('does not treat a double slash inside a string as starting a comment', () => {
+    const d = codeNode("const u = 'https://x/y'; const v = steps.live.here;\n")
+    expect(deriveWatchedFields(d)).toEqual(['live.here'])
+  })
+
+  it('does not treat a regex literal as a comment', () => {
+    const d = codeNode('const re = /https?:\\/\\//; const v = steps.live.here;\n')
+    expect(deriveWatchedFields(d)).toEqual(['live.here'])
+  })
+})
+
+describe('watched fields are not harvested from free-text node keys (#1118)', () => {
+  it('ignores a path in a node note while watching one in its config', () => {
+    // Main Flow's Mutate BES carries a `note` describing a port that was
+    // considered and not done. `mutate_bes.value` reported 0/25,198 from it.
+    const d = def({
+      nodes: [
+        {
+          id: 'n1',
+          namespace: 'send',
+          type: 'webhook',
+          note: 'downstream would need to be ported as steps.mutate_bes.output.value',
+          config: { body: '{{steps.mutate_bes.output}}' },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toEqual(['mutate_bes'])
+  })
+})
+
+describe('an alias does not invent a field from its own declaration (#1118)', () => {
+  const codeNode = (script: string) =>
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    def({ nodes: [{ id: 'n1', namespace: 'c', type: 'code', config: { script } } as any] })
+
+  it('does not read the declaration itself as a field access', () => {
+    // Lead Economy's Patch Prospect body. `response.body` appears inside the
+    // line that declares `response`, so the resolver invented a second `.body`
+    // and reported it 0/4,789 while the real path ran at 21,849/21,850.
+    const d = codeNode('const response = steps.return_response.output.response.body;\nreturn response.reason;\n')
+    expect(deriveWatchedFields(d)).toEqual([
+      'return_response.response.body',
+      'return_response.response.body.reason',
+    ])
+  })
+
+  it('handles the optional-chained shape too', () => {
+    // Main Flow's Calculate Pull Result No Debt, which invented
+    // ...equifaxUSConsumerCreditReport.code the same way.
+    // The bracket is load-bearing: it ENDS the literal chain at `consumers`, so
+    // what follows is only reachable through the alias. Without it the whole
+    // path is one literal chain and there is no phantom to reproduce.
+    const d = codeNode('const hitCode = steps.eq.output.report?.consumers?.[0]?.hitCode?.code;\nreturn hitCode;\n')
+    expect(deriveWatchedFields(d)).toEqual(['eq.report.consumers'])
+  })
+
+  it('still resolves reads that genuinely go through the alias', () => {
+    // The pairing that stops a fix passing by resolving nothing at all.
+    const d = codeNode('const response = steps.r.output.response.body;\nreturn { a: response.reason, b: response.offers };\n')
+    expect(deriveWatchedFields(d)).toEqual([
+      'r.response.body',
+      'r.response.body.offers',
+      'r.response.body.reason',
+    ])
+  })
+})
