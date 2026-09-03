@@ -845,6 +845,22 @@ describe('field-presence alerting', () => {
     expect(postMessage).toHaveBeenCalledTimes(2)
   })
 
+  it('counts workflows whose watched set could not be derived, so a systemic failure is visible', async () => {
+    // L77: the fallback when a definition cannot be read is to keep alerting,
+    // which is the safe direction but also indistinguishable from a healthy run.
+    // If every definition stopped parsing, the #1119 filter would quietly switch
+    // itself off and only per-workflow error lines would say so, so the run's own
+    // summary carries the count.
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
+      { ...WF, definition: { nodes: 'not an array' } },
+    ])
+    await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+    const summary = log.mock.calls.map((c) => String(c[0])).find((l) => l.includes('[field-presence-drought]'))
+    expect(summary).toContain('unwatchable=1')
+    log.mockRestore()
+  })
+
   it('honours a per-workflow channel override', async () => {
     const supabase = makeSupabase(collapsedWindow('scout.final', 500, 0, today), [], [
       { ...WF, slack_channel: 'C-override' },

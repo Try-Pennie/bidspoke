@@ -892,9 +892,14 @@ async function alertOnStates(
   states: FieldState[],
   silenced: Set<string>,
   cfg: TierConfig,
-): Promise<{ paged: number; recovered: number }> {
+): Promise<{ paged: number; recovered: number; unwatchable: number }> {
   const byId = new Map(workflows.map((w) => [w.id, w]))
   const watched = watchedNow(workflows)
+  // Counted, not only logged per workflow (L77). Falling back to "do not filter"
+  // is the safe direction, but it is also indistinguishable from a healthy run,
+  // so if every definition stopped parsing the #1119 filter would switch itself
+  // off in silence. The run's own summary line carries the number.
+  const unwatchable = [...watched.values()].filter((set) => set === null).length
   const pageable: Pageable[] = []
   let paged = 0
   let recovered = 0
@@ -984,7 +989,7 @@ async function alertOnStates(
       paged++
     }
   }
-  return { paged, recovered }
+  return { paged, recovered, unwatchable }
 }
 
 /**
@@ -1013,7 +1018,7 @@ export async function runFieldPresenceDroughtCheck(
       console.log(JSON.stringify({ event: 'field_presence_drought', ...s.drought }))
     }
   }
-  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-drought',
     signal: 'output field stopped',
     measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
@@ -1024,7 +1029,7 @@ export async function runFieldPresenceDroughtCheck(
       `alerting=${states.filter((s) => s.verdict === 'alerting').length} ` +
       `healthy=${states.filter((s) => s.verdict === 'healthy').length} ` +
       `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered}`,
+      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
   )
 }
 
@@ -1057,7 +1062,7 @@ export async function runFieldPresenceDeadCheck(
       fields: visible.map((s) => s.dead),
     }),
   )
-  const { paged, recovered } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
+  const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-dead',
     signal: 'output field never resolves',
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
@@ -1066,6 +1071,6 @@ export async function runFieldPresenceDeadCheck(
   console.log(
     `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} ` +
       `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered}`,
+      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
   )
 }
