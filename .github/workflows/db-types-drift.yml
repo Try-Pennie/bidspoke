@@ -36,9 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Pinned (#323): `latest` installs whatever CLI shipped that night, a
-      # non-reproducible source of spurious drift failures if the generator's
-      # formatting changes. Bump deliberately and keep gen-db-types.sh in sync.
+      # Pinned (#323) so the install does not resolve the newest release through
+      # the GitHub API, which intermittently rate limits and fails the run.
+      #
+      # It does NOT pin the generator's OUTPUT, and it never could: `gen types
+      # --project-id` asks Supabase's Management API to produce the file, so the
+      # formatting is decided server side. This comment used to claim otherwise,
+      # and on 2026-09-02 this pinned version emitted two different formats three
+      # hours apart on the identical commit (#1105, LESSONS L552). That is why
+      # gen-db-types.sh freezes the boilerplate region instead. Bump deliberately
+      # and keep the two in sync.
       - uses: supabase/setup-cli@v3
         with:
           version: 2.107.0
