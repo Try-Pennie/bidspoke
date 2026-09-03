@@ -804,7 +804,7 @@ jobs:
           case "$DECISION" in
             missing:*)
               ISSUES="${DECISION#missing:}"
-              echo "::error::This pull request's title names #${ISSUES//,/, #} but nothing closes them, so merging would ship the fix and leave the issue open. Add 'Closes #<n>' to the body for each, or 'Refs only: #<n>' if it deliberately does not close one."
+              echo "::error::Issues named in this pull request's title with nothing closing them: #${ISSUES//,/, #}. Merging would ship the work and leave them open. Add 'Closes #<n>' to the body for each, or 'Refs only: #<n>' for any that this pull request deliberately does not finish."
               exit 1
               ;;
           esac
