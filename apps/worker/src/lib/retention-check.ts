@@ -63,10 +63,49 @@ function toObserved(row: RetentionRow): ObservedPurgeJob {
   }
 }
 
+/**
+ * NEVER THROWS. It reports, including about itself.
+ *
+ * Its caller is a `waitUntil` inside `scheduled()`, where the only thing a
+ * rejection can do is reach a `console.error` nobody is watching, and where
+ * failure behaviour is unreachable from any test. So the contract lives here:
+ * every way this can fail resolves to a result whose `alerted` says what
+ * happened. The daily batch's heartbeat covers this check never RUNNING; nothing
+ * else would cover it dying halfway (L13).
+ */
 export async function checkExecutionRetention(
   env: Env,
   supabase: SupabaseClient,
 ): Promise<RetentionCheckResult> {
+  try {
+    return await runCheck(env, supabase)
+  } catch (err) {
+    const detail = `the execution retention check itself failed: ${formatErr(err)}`
+    console.error(`[retention-check] ${detail}`)
+    await alertQuietly(supabase, env, [detail])
+    return { observed: [], differences: [{ code: 'failed', message: detail }], alerted: true }
+  }
+}
+
+/**
+ * Send the alert, and never let the alerter's own failure become the result.
+ *
+ * If Slack is what broke, there is nothing left but the log, and throwing would
+ * replace a reported problem with an unhandled rejection.
+ *
+ * AN EMPTY LIST IS STILL SENT. `notifyExportFailure` treats no errors as the
+ * RECOVERY signal and uses it to clear its alert state, so short-circuiting a
+ * clean run here would leave a resolved drift looking unresolved to the next one.
+ */
+async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
+  try {
+    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY)
+  } catch (err) {
+    console.error('[retention-check] could not send its alert:', formatErr(err))
+  }
+}
+
+async function runCheck(env: Env, supabase: SupabaseClient): Promise<RetentionCheckResult> {
   const { data, error } = await supabase.rpc('execution_purge_retention')
 
   // Both an error and a null payload are unreadable. A null with no error is a
@@ -78,7 +117,7 @@ export async function checkExecutionRetention(
         ? `the execution purge jobs could not be read: ${formatErr(error)}`
         : 'the execution purge jobs could not be read: the function answered with no payload at all'
     const differences = [{ code: 'unreadable', message: detail }]
-    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, [detail], env.IDEMPOTENCY)
+    await alertQuietly(supabase, env, [detail])
     console.error(`[retention-check] ${detail}`)
     return { observed: [], differences, alerted: true }
   }
@@ -86,11 +125,10 @@ export async function checkExecutionRetention(
   const observed = (data as RetentionRow[]).map(toObserved)
   const differences = retentionDifferences(observed, RETENTION_DAYS)
 
-  await notifyExportFailure(
+  await alertQuietly(
     supabase,
-    RETENTION_CHECK_JOB,
+    env,
     differences.map((d) => d.message),
-    env.IDEMPOTENCY,
   )
 
   // Logged on every run including a clean one, so a working check is visible from
