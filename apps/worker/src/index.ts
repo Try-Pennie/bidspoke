@@ -331,6 +331,17 @@ export default {
           if (r.alerted) console.error(`[archive-settings] ${r.differences.length} differences`)
         })().catch((e) => console.error('[archive-settings] failed:', e))
       )
+      // Is the purge still destroying execution data on the schedule the code
+      // believes (#1017)? Its own failure boundary, because a watchdog must not
+      // share the abort behaviour of the work it watches (L71): this failing must
+      // not stop the gate below it from running.
+      ctx.waitUntil(
+        (async () => {
+          const { checkExecutionRetention } = await import('./lib/retention-check')
+          const r = await checkExecutionRetention(env, supabase)
+          if (r.alerted) console.error(`[retention-check] ${r.differences.length} differences`)
+        })().catch((e) => console.error('[retention-check] failed:', e)),
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still

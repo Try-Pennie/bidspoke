@@ -149,5 +149,11 @@
     },
     "anon": "denied",
     "note": "Writes a day's gate measurement (#872). A WRITE, so anon reaching it would let anybody fabricate the numbers that authorise deleting a partition once A5 (#873) lands. Probed against 1970-01-01, a day that can never be a deletion candidate, so a successful probe leaves one inert row rather than corrupting a real day."
+  },
+  {
+    "name": "execution_purge_retention",
+    "args": {},
+    "anon": "denied",
+    "note": "The daily retention drift check (lib/retention-check.ts) calls this to read what the two execution purge cron jobs are actually scheduled at, so a hand change to either can be compared against RETENTION_DAYS (#1017). service_role only: anon and authenticated have no business reading the schedule on which production data is destroyed. If it is missing the check alerts that it could not read, which is deliberate, because reporting no differences from a failed read would make a broken check and a healthy system the same output."
   }
 ]

@@ -12,13 +12,24 @@ vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedVa
 
 import { runArchiveGate, ARCHIVE_GATE_JOB, PROBE_SAMPLE_SIZE, ALERT_WHEN_DAYS_LEFT } from '../archive-gate'
 import { encodeBundle } from '../../archive/bundle'
+import { RETENTION_DAYS } from '../../archive/candidate-days'
 import { notifyExportFailure } from '../export-alerts'
 import type { Env } from '../../index'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 const NOW = new Date('2026-08-22T13:00:00.000Z')
+/**
+ * How many days the gate considers, and which day is the oldest, both DERIVED
+ * from the retention window rather than written out.
+ *
+ * Retention has changed three times in two weeks (7, 14, 21) and is due to change
+ * again. A fixture pinned to one of those fails for a reason that looks like a
+ * defect in the gate rather than a stale expectation (L41).
+ */
+const CANDIDATE_COUNT = RETENTION_DAYS - 1
+const daysBeforeNow = (n: number) => new Date(NOW.getTime() - n * 86400000).toISOString().slice(0, 10)
 /** The oldest candidate day, and therefore the one the urgency rule speaks about. */
-const OLDEST_DAY = '2026-08-16'
+const OLDEST_DAY = daysBeforeNow(CANDIDATE_COUNT)
 const WATERMARK = '2026-08-21T23:00:00.000Z'
 
 const env = { IDEMPOTENCY: undefined } as unknown as Env
@@ -182,9 +193,9 @@ describe('a healthy set of days', () => {
   it('measures every candidate day and finds them all verified', async () => {
     const { summary } = await run({})
 
-    expect(summary.daysConsidered).toBe(6)
-    expect(summary.daysMeasured).toBe(6)
-    expect(summary.daysDeletable).toBe(6)
+    expect(summary.daysConsidered).toBe(CANDIDATE_COUNT)
+    expect(summary.daysMeasured).toBe(CANDIDATE_COUNT)
+    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT)
     expect(summary.failed).toBe(false)
   })
 
@@ -225,7 +236,7 @@ describe('a day whose counts do not reconcile', () => {
     })
 
     expect(resultFor(summary, OLDEST_DAY).refusals.map((r) => r.code)).toEqual(['executions-disagree'])
-    expect(alerted().join(' ')).toMatch(/2026-08-16 is not verified with 1 day left/)
+    expect(alerted().join(' ')).toMatch(new RegExp(`${OLDEST_DAY} is not verified with 1 day left`))
   })
 
   it('records the refusal but stays quiet for a day with plenty of runway', async () => {
@@ -243,7 +254,7 @@ describe('a day whose counts do not reconcile', () => {
   it('does not count a refused day as deletable', async () => {
     const { summary } = await run({ perDay: { [OLDEST_DAY]: facts({ orphanExecutions: 4 }) } })
 
-    expect(summary.daysDeletable).toBe(5)
+    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT - 1)
   })
 })
 
@@ -285,7 +296,7 @@ describe('orphan executions', () => {
     const { summary } = await run({ perDay: { [OLDEST_DAY]: facts({ orphanExecutions: 900 }) } })
 
     const message = resultFor(summary, OLDEST_DAY).refusals.map((r) => r.message).join(' ')
-    expect(message).toMatch(/900 executions on 2026-08-16 have no archived row/)
+    expect(message).toMatch(new RegExp(`900 executions on ${OLDEST_DAY} have no archived row`))
     expect(message).toMatch(/at least 9,900 step rows, counted across 500 of them/)
   })
 })
@@ -340,7 +351,7 @@ describe('a day with genuinely no executions', () => {
 
     expect(resultFor(summary, OLDEST_DAY).refusals).toEqual([])
     expect(resultFor(summary, OLDEST_DAY).measurement?.probeSampled).toBe(0)
-    expect(summary.daysDeletable).toBe(6)
+    expect(summary.daysDeletable).toBe(CANDIDATE_COUNT)
   })
 })
 
@@ -369,12 +380,12 @@ describe('when one day cannot be measured at all', () => {
 
     const summary = await runArchiveGate(env, db.client, { querySnowflake: failing, now: () => NOW })
 
-    expect(summary.daysMeasured).toBe(5)
+    expect(summary.daysMeasured).toBe(CANDIDATE_COUNT - 1)
     expect(summary.failed).toBe(true)
     expect(resultFor(summary, OLDEST_DAY).error).toMatch(/warehouse could not resume/)
     expect(db.recorded.some((r) => r.p_day === OLDEST_DAY)).toBe(false)
     // The day it failed on is the closest to deletion, so it is alerted.
-    expect(alerted().join(' ')).toMatch(/2026-08-16 could not be measured/)
+    expect(alerted().join(' ')).toMatch(new RegExp(`${OLDEST_DAY} could not be measured`))
   })
 
   it('does not fabricate a measurement when the Postgres RPC answers with no row', async () => {

@@ -2080,6 +2080,15 @@ export type Database = {
           workflow_id: string
         }[]
       }
+      execution_purge_retention: {
+        Args: never
+        Returns: {
+          active: boolean
+          command: string
+          jobname: string
+          retention_days: number
+        }[]
+      }
       field_presence_window: {
         Args: { p_since: string; p_workflow_ids: string[] }
         Returns: {

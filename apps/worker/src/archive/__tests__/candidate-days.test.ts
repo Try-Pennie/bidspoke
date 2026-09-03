@@ -9,6 +9,18 @@ import { candidateDays, newestFinishedDay, RETENTION_DAYS } from '../candidate-d
 
 const NOW = new Date('2026-08-22T13:00:00.000Z')
 
+/**
+ * A UTC day N days before NOW.
+ *
+ * The window bounds are DERIVED from RETENTION_DAYS rather than written out, so
+ * changing retention does not require editing dates in here. It has changed three
+ * times in two weeks (7, then 14, then 21), and a fixture pinned to one of them
+ * fails for a reason that looks like a defect in the code under test (L41).
+ */
+function daysBeforeNow(n: number): string {
+  return new Date(NOW.getTime() - n * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
 describe('newestFinishedDay', () => {
   it('is the previous day while the watermark is mid-day', () => {
     // 21 is not finished: the archiver has only reached its 06:00 hour.
@@ -44,7 +56,7 @@ describe('candidateDays', () => {
   it('runs oldest first, so a run that runs out of budget covers the days closest to deletion', () => {
     const days = candidateDays({ watermarkHour: '2026-08-21T23:00:00.000Z', now: NOW })
 
-    expect(days[0]).toBe('2026-08-16')
+    expect(days[0]).toBe(daysBeforeNow(RETENTION_DAYS - 1))
     expect(days[days.length - 1]).toBe('2026-08-21')
   })
 
@@ -55,7 +67,7 @@ describe('candidateDays', () => {
     const days = candidateDays({ watermarkHour: '2026-08-21T23:00:00.000Z', now: NOW })
 
     expect(days).toHaveLength(RETENTION_DAYS - 1)
-    expect(days).not.toContain('2026-08-15')
+    expect(days).not.toContain(daysBeforeNow(RETENTION_DAYS))
   })
 
   it('measures nothing when the archive has not finished a day inside the window', () => {
