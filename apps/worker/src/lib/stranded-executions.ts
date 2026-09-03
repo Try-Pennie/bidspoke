@@ -22,13 +22,17 @@
  * success on a run that never actually served the lead.
  *
  * There IS one precise, workflow-agnostic signal though (#571): the workflow
- * graph itself. If the last-completed step landed on a node with zero outgoing
- * edges (a true graph dead end that exists in the definition), the walk ran to
- * the end of the graph rather than being cut off mid-flight -- real evidence of
- * completion. resolveStrandedExecution uses that when a StrandGraph is supplied
- * (built once per workflow_version and cached across rows) to honestly claim
- * 'completed'; without it, or when the last node is not a dead end, it falls
- * back to the conservative unresolved label below.
+ * graph itself. If a step that finished at the run's final instant landed on a
+ * node with zero outgoing edges (a true graph dead end that exists in the
+ * definition), the walk ran to the end of the graph rather than being cut off
+ * mid-flight -- real evidence of completion. resolveStrandedExecution uses that
+ * when a StrandGraph is supplied (built once per workflow_version and cached
+ * across rows) to honestly claim 'completed'.
+ *
+ * When the graph cannot confirm -- the normal case for a workflow that answers
+ * from inside a code node rather than a terminal node -- it falls back to the
+ * outcome the engine itself recorded on lead_sightings (#1112), a verdict rather
+ * than an inference, and only then to the conservative unresolved label below.
  *
  * Otherwise this mirrors finalize_unrecoverable_stranded's "label honestly,
  * don't guess" precedent: only claim 'failed' with real evidence (a step that
@@ -98,11 +102,42 @@ export function buildStrandGraph(definition: WorkflowDefinition): StrandGraph {
 const UNRESOLVED_MESSAGE =
   '[recovered] execution stranded: isolate evicted before finalize, outcome could not be confirmed'
 const FAILED_NO_MESSAGE_FALLBACK = '[recovered] execution stranded after a failed step'
+// Distinct from FAILED_NO_MESSAGE_FALLBACK: that one had a failed STEP naming the
+// node, this one has only the engine's recorded verdict and no failing step to
+// point at, so the two must not share a message (LESSONS L11).
+const SIGHTING_FAILED_MESSAGE =
+  '[recovered] execution stranded: no failed step recorded, the lead sighting reported outcome=failed'
+
+/**
+ * The engine's OWN verdict for this run, recorded independently of the finalize
+ * write that eviction destroys (#1112). lead_sightings is written at the trigger
+ * boundary and finalized in its own waitUntil block, so it routinely survives
+ * when workflow_executions.sighting_finalize does not (that projection rides in
+ * the lost UPDATE, and is null on every stranded row).
+ *
+ * A null `outcome` means the sighting's own finalize was lost too. That is
+ * missing evidence, not a verdict, and must not be read as one.
+ */
+export interface StrandSightingEvidence {
+  outcome: string | null
+}
+
+// lead_sightings.outcome is a plain text column, so it can hold anything. Only
+// the three values the engine actually writes are a verdict this code can act
+// on; anything else is unreadable evidence, not a lean in either direction, and
+// is treated as absent (LESSONS L257).
+const KNOWN_OUTCOMES = ['successful', 'completed', 'failed'] as const
+type KnownOutcome = (typeof KNOWN_OUTCOMES)[number]
+
+function asKnownOutcome(value: string | null | undefined): KnownOutcome | null {
+  return KNOWN_OUTCOMES.includes(value as KnownOutcome) ? (value as KnownOutcome) : null
+}
 
 export function resolveStrandedExecution(
   steps: StrandStepEvidence[],
   startedAtIso: string,
-  graph?: StrandGraph
+  graph?: StrandGraph,
+  sighting?: StrandSightingEvidence | null
 ): ResolvedStrand {
   const startedAtMs = new Date(startedAtIso).getTime()
 
@@ -114,32 +149,51 @@ export function resolveStrandedExecution(
   const stepsWithCompletion = [...steps]
     .filter((s) => s.completed_at != null)
     .sort((a, b) => new Date(b.completed_at as string).getTime() - new Date(a.completed_at as string).getTime())
-  const lastStep = stepsWithCompletion[0]
 
-  if (lastStep?.status === 'failed') {
-    const completedAtIso = lastStep.completed_at ?? startedAtIso
+  // Every step that finished at the final instant, not one arbitrary winner
+  // (#1112). Two steps completing in the same millisecond is routine here, the
+  // read that produced this list carries no inherent order (L343), and a sort
+  // leaves tied elements in whatever order they arrived. Taking [0] therefore
+  // picked at random among them, which is why the dead-end branch below had
+  // never once fired across 117 recovered rows: on the real Engine workflow the
+  // branch_end and the salesforce step both stamp the same millisecond, and the
+  // salesforce step (which has an outgoing edge) kept winning the coin flip.
+  const lastCompletedAt = stepsWithCompletion[0]?.completed_at ?? null
+  const finalSteps =
+    lastCompletedAt === null ? [] : stepsWithCompletion.filter((s) => s.completed_at === lastCompletedAt)
+
+  // A failure among the tied steps outranks a dead end reached in the same
+  // instant, so a tie can never upgrade a failed walk into a clean completion.
+  const failedStep = finalSteps.find((s) => s.status === 'failed')
+  if (failedStep) {
+    const completedAtIso = failedStep.completed_at ?? startedAtIso
     return {
       status: 'failed',
       outcome: 'failed',
       completed_at: completedAtIso,
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
-      error_message: lastStep.error_message ?? FAILED_NO_MESSAGE_FALLBACK,
-      failed_step_type: lastStep.step_type,
+      error_message: failedStep.error_message ?? FAILED_NO_MESSAGE_FALLBACK,
+      failed_step_type: failedStep.step_type,
     }
   }
 
-  const completedAtIso = lastStep?.completed_at ?? startedAtIso
+  const completedAtIso = lastCompletedAt ?? startedAtIso
 
-  // Graph-confirmed completion (#571): if the last-completed step landed on a
-  // node that exists in the definition and has zero outgoing edges, the walk
-  // reached a true dead end -- it ran to the end of the graph, it wasn't cut
-  // off mid-flight. That is real evidence of completion, so we can honestly
-  // claim 'completed' instead of the conservative unresolved label. The node-id
-  // existence guard matters: a node id absent from the definition also has zero
-  // outgoing edges, but that is missing evidence, not a dead end, so it must not
-  // read as a false completion.
-  const lastNodeId = lastStep?.step_node_id
-  if (graph && lastStep && lastNodeId != null && graph.nodeIds.has(lastNodeId) && (graph.outgoingEdgeCount.get(lastNodeId) ?? 0) === 0) {
+  // Graph-confirmed completion (#571): if any step that finished at the final
+  // instant landed on a node that exists in the definition and has zero outgoing
+  // edges, the walk reached a true dead end -- it ran to the end of the graph, it
+  // wasn't cut off mid-flight. That is real evidence of completion, so we can
+  // honestly claim 'completed' instead of the conservative unresolved label. The
+  // node-id existence guard matters: a node id absent from the definition also
+  // has zero outgoing edges, but that is missing evidence, not a dead end, so it
+  // must not read as a false completion.
+  const deadEndStep = graph
+    ? finalSteps.find((s) => {
+        const nodeId = s.step_node_id
+        return nodeId != null && graph.nodeIds.has(nodeId) && (graph.outgoingEdgeCount.get(nodeId) ?? 0) === 0
+      })
+    : undefined
+  if (graph && deadEndStep) {
     // Mirror the engine's own outcome attribution: 'successful' if the walk
     // passed through a configured success node, else 'completed'.
     const passedThroughSuccessNode = graph.successNamespaces.some((ns) =>
@@ -151,6 +205,23 @@ export function resolveStrandedExecution(
       completed_at: completedAtIso,
       duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
       error_message: null,
+      failed_step_type: null,
+    }
+  }
+
+  // The graph could not confirm, which is the normal case for a workflow that
+  // answers from inside a code node rather than from a terminal node. Fall back
+  // to the outcome the engine itself recorded on the sighting (#1112), which is
+  // a verdict rather than an inference. Only a non-null outcome counts.
+  const sightingOutcome = asKnownOutcome(sighting?.outcome)
+  if (sightingOutcome !== null) {
+    const failed = sightingOutcome === 'failed'
+    return {
+      status: failed ? 'failed' : 'completed',
+      outcome: sightingOutcome,
+      completed_at: completedAtIso,
+      duration_ms: Math.max(0, new Date(completedAtIso).getTime() - startedAtMs),
+      error_message: failed ? SIGHTING_FAILED_MESSAGE : null,
       failed_step_type: null,
     }
   }
@@ -196,6 +267,50 @@ async function loadStrandGraph(supabase: SupabaseClient, versionId: string): Pro
     console.warn('[stranded-executions] malformed definition, skipping graph confirmation', { versionId, error: formatErr(e) })
     return null
   }
+}
+
+/**
+ * Would the sighting change the answer? Only when the cheap evidence already in
+ * hand cannot settle the row, so a run the graph confirms costs no extra read.
+ * Deliberately asks resolveStrandedExecution itself rather than reimplementing
+ * its precedence beside it, which would be a second copy of the rule that drifts
+ * the first time the precedence changes (LESSONS L370).
+ */
+function needsSightingEvidence(
+  steps: StrandStepEvidence[],
+  startedAtIso: string,
+  graph?: StrandGraph,
+): boolean {
+  return resolveStrandedExecution(steps, startedAtIso, graph).error_message === UNRESOLVED_MESSAGE
+}
+
+/**
+ * Reads the engine's own recorded outcome for a stranded run (#1112). Scoped by
+ * the partition key as well as the execution id: lead_sightings is partitioned
+ * monthly on execution_started_at_utc, and a read without it scans every
+ * partition.
+ *
+ * Returns null on any failure or absence, which the resolver treats as missing
+ * evidence rather than a verdict.
+ */
+async function loadSightingOutcome(
+  supabase: SupabaseClient,
+  executionId: string,
+  startedAt: string,
+): Promise<StrandSightingEvidence | null> {
+  const { data, error } = await supabase
+    .from('lead_sightings')
+    .select('outcome')
+    .eq('execution_id', executionId)
+    .eq('execution_started_at_utc', startedAt)
+    .maybeSingle()
+
+  if (error) {
+    console.warn('[stranded-executions] sighting lookup failed', { executionId, error })
+    return null
+  }
+  if (!data) return null
+  return { outcome: (data as { outcome: string | null }).outcome ?? null }
 }
 
 /**
@@ -255,6 +370,13 @@ export async function runReduceFinalizeStrandedExecutions(
       .select('status, step_type, error_message, completed_at, step_node_id, step_namespace')
       .eq('execution_id', exec.id as string)
       .gte('execution_started_at', lookbackStart)
+      // Newest first, for two reasons (#1112). A read with no ORDER BY returns
+      // rows in whatever order the store chose (L343), and steps that share a
+      // completed_at then reached the resolver in an arbitrary order, which is
+      // what let a mid-graph step beat a dead end and mislabel 119 runs. And
+      // because this read is capped, descending keeps the END of the run, which
+      // is where every piece of evidence the resolver uses lives.
+      .order('completed_at', { ascending: false })
       .limit(1000)
 
     if (stepsErr) {
@@ -263,7 +385,16 @@ export async function runReduceFinalizeStrandedExecutions(
       continue
     }
 
-    const resolved = resolveStrandedExecution((steps ?? []) as StrandStepEvidence[], exec.started_at as string, graph)
+    const stepEvidence = (steps ?? []) as StrandStepEvidence[]
+    // The sighting read is a precision boost of last resort, so it is spent only
+    // when the cheaper evidence already on hand cannot settle the row. Like the
+    // graph load above, a failure here degrades to the honest unresolved label
+    // rather than erroring the row.
+    const sighting = needsSightingEvidence(stepEvidence, exec.started_at as string, graph)
+      ? await loadSightingOutcome(supabase, exec.id as string, exec.started_at as string)
+      : null
+
+    const resolved = resolveStrandedExecution(stepEvidence, exec.started_at as string, graph, sighting)
     // onMiss 'warn': a zero-row match here is benign, not an error. The nightly
     // partition purge can drop the row between the scan and this update. It is
     // simply not a repair, so it must not be counted as one (#583).
