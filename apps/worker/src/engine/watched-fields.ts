@@ -3,6 +3,7 @@ import {
   extractStepChains,
   hasDynamicStepsAccess,
   STEP_CHAIN_SOURCE,
+  stripComments,
   stripOutputWrapper,
 } from '@bidspoke/references'
 import type { WorkflowDefinition } from '../types'
@@ -22,9 +23,21 @@ export const extractChains = extractStepChains
 export const normalizeRefSegments = stripOutputWrapper
 export const chainToWatchedField = chainToStepPath
 
+/**
+ * Keys whose value is never a reference, so scanning them invents watched fields.
+ *
+ * `script` is raw code and goes through the bail-open code scanner instead.
+ * The rest are PROSE a person wrote about the node. Main Flow's `Mutate BES`
+ * carries a `note` explaining a port that was considered and not done, and the
+ * path quoted inside that sentence was watched and then paged as a field that
+ * never resolves on 25,198 runs (#1118). A sentence about a path is not a read
+ * of it, and no executable reference can live in these keys, so skipping them
+ * cannot unwatch anything real.
+ */
+const NON_REFERENCE_KEYS = new Set(['script', 'note', 'label', 'description'])
+
 // Recursively walk any value; for every string, add each chain's canonical
-// watched field to `into`. Object keys named `script` are skipped (those are raw
-// code and go through the bail-open code scanner instead of the structured path).
+// watched field to `into`. Keys in NON_REFERENCE_KEYS are skipped.
 export function collectStructuredRefs(value: unknown, into: Set<string>): void {
   if (typeof value === 'string') {
     for (const chain of extractChains(value)) into.add(chainToWatchedField(chain))
@@ -36,7 +49,7 @@ export function collectStructuredRefs(value: unknown, into: Set<string>): void {
   }
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === 'script') continue
+      if (NON_REFERENCE_KEYS.has(k)) continue
       collectStructuredRefs(v, into)
     }
   }
@@ -50,11 +63,43 @@ const ALIAS_RE = new RegExp(
   'g',
 )
 
+/**
+ * Where the declaration STATEMENT ends, which is not where the chain match ends.
+ *
+ * The chain stops at a bracket, so `const hitCode = steps.a.b?.[0]?.hitCode?.code`
+ * matches only as far as `b`, leaving `hitCode?.code` in the same statement to be
+ * read as a use of the local being declared. Ending at the terminator covers the
+ * whole initialiser, including one wrapped over several lines, which is exactly
+ * the shape Main Flow's Calculate Pull Result No Debt is written in.
+ *
+ * Falls back to the end of the line when there is no semicolon, so a genuine read
+ * on the NEXT line is still seen. A comma declaration (`const a = steps.x.y, b =
+ * a.z`) has its second read skipped, which under-derives by one field in a shape
+ * that does not appear in any live workflow.
+ */
+function declarationEnd(script: string, chainEnd: number): number {
+  const semicolon = script.indexOf(';', chainEnd)
+  const newline = script.indexOf('\n', chainEnd)
+  if (semicolon !== -1 && (newline === -1 || semicolon < newline)) return semicolon
+  if (newline !== -1) return newline
+  return script.length
+}
+
+interface AliasDeclaration {
+  local: string
+  base: string
+  /** Where the declaration itself sits, so its own text is not read as a use. */
+  start: number
+  end: number
+}
+
 /** Every `local = <steps chain>` declaration in the script, in source order. */
-function aliasDeclarations(script: string): { local: string; base: string }[] {
+function aliasDeclarations(script: string): AliasDeclaration[] {
   return [...script.matchAll(ALIAS_RE)].map((m) => ({
     local: m[1],
     base: chainToWatchedField(m[2]),
+    start: m.index ?? 0,
+    end: declarationEnd(script, (m.index ?? 0) + m[0].length),
   }))
 }
 
@@ -84,12 +129,27 @@ function aliasIsStable(script: string, local: string): boolean {
  * that can never resolve on any run, and the day-one-dead check would then page
  * about a field that does not exist. Deciding it syntactically rather than from
  * a list of known method names means it holds for methods nobody listed (L217).
+ *
+ * The declaration's OWN span is skipped for the same reason (#1118). Naming a
+ * local after the field it holds is the obvious way to write this, and then the
+ * local's name appears inside the path it is being assigned:
+ *
+ *   const response = steps.return_response.output.response.body
+ *
+ * Scanning the whole script found `response.body` inside that very line and
+ * invented `return_response.response.body.body`, which was paged as never
+ * resolving on 4,789 runs while the real path ran at 21,849 of 21,850. Measured
+ * with a control: renaming the local made the phantom disappear, so the cause is
+ * the name and not the shape of the value.
  */
-function aliasFieldReads(script: string, local: string, base: string): string[] {
+function aliasFieldReads(script: string, declaration: AliasDeclaration): string[] {
+  const { local, base, start, end } = declaration
   const re = new RegExp(`\\b${local}(?:\\s*\\?\\.\\s*|\\s*\\.\\s*)([A-Za-z_$][\\w$]*)`, 'g')
   const out: string[] = []
   for (const m of script.matchAll(re)) {
-    const after = script.slice(m.index + m[0].length)
+    const at = m.index ?? 0
+    if (at >= start && at < end) continue
+    const after = script.slice(at + m[0].length)
     if (/^\s*\(/.test(after)) continue
     out.push(`${base}.${m[1]}`)
   }
@@ -118,17 +178,24 @@ export interface CodeRefResult {
  * An alias that cannot be resolved is REPORTED rather than guessed at, so the
  * coverage manifest can say the node may be incomplete.
  */
-export function collectCodeRefs(script: string, into: Set<string>): CodeRefResult {
+export function collectCodeRefs(rawScript: string, into: Set<string>): CodeRefResult {
+  // Comments are not code, so a path written in one is not a read (#1118). Two
+  // migration notes in a single Engine Bidding node were harvested this way and
+  // paged as fields that never resolve on 481,959 and 313,171 runs, while the
+  // real code beside them read the correct paths. Stripping first also means a
+  // commented-out `steps[k]` no longer blinds the whole node.
+  const script = stripComments(rawScript)
+
   if (hasDynamicStepsAccess(script)) return { readable: false, aliasGap: false }
   for (const chain of extractChains(script)) into.add(chainToWatchedField(chain))
 
   let aliasGap = false
-  for (const { local, base } of aliasDeclarations(script)) {
-    if (!aliasIsStable(script, local)) {
+  for (const declaration of aliasDeclarations(script)) {
+    if (!aliasIsStable(script, declaration.local)) {
       aliasGap = true
       continue
     }
-    for (const path of aliasFieldReads(script, local, base)) into.add(path)
+    for (const path of aliasFieldReads(script, declaration)) into.add(path)
   }
   return { readable: true, aliasGap }
 }

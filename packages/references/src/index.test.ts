@@ -12,6 +12,7 @@ import {
   extractTemplateExpressions,
   referenceOperands,
   unknownReferenceRoot,
+  stripComments,
 } from './index'
 
 describe('root namespaces', () => {
@@ -195,5 +196,68 @@ describe('unknownReferenceRoot', () => {
   })
   it('says nothing about a quoted string literal', () => {
     expect(unknownReferenceRoot("'Engine'")).toBeNull()
+  })
+})
+
+/**
+ * #1118. The watched-field derivation ran the chain extractor over raw script
+ * text, so paths written in COMMENTS were harvested as live references and then
+ * paged as fields that never resolve. The two that cost the most were migration
+ * notes in one Engine Bidding node, reported on 481,959 and 313,171 runs.
+ *
+ * Every "leaves it alone" case below is load-bearing rather than defensive: an
+ * unwatched field is silent, so a stripper that over-reaches trades a noisy
+ * false alarm for a blind spot, which is the worse of the two.
+ */
+describe('stripComments', () => {
+  it('removes a line comment', () => {
+    expect(extractStepChains(stripComments('const a = 1; // steps.x.y\n'))).toEqual([])
+  })
+
+  it('removes a block comment spanning lines', () => {
+    expect(extractStepChains(stripComments('/* steps.x.y\n steps.p.q */\nconst b = 2;\n'))).toEqual([])
+  })
+
+  it('removes the migration note that caused the false page, keeping the real read', () => {
+    const src =
+      '// Translates: steps.create_prospect.$return_value.id -> steps.create_prospect.output.body.id\n' +
+      'const id = steps.create_prospect.output.body.id;\n'
+    expect(extractStepChains(stripComments(src))).toEqual(['steps.create_prospect.output.body.id'])
+  })
+
+  it('keeps a reference inside a template literal', () => {
+    const src = 'const c = `${base}/${steps.create_prospect.output.body.id}`;'
+    expect(extractStepChains(stripComments(src))).toEqual(['steps.create_prospect.output.body.id'])
+  })
+
+  it('keeps a double slash inside a single-quoted string', () => {
+    expect(stripComments("const u = 'https://x/y'; const a = 1;")).toContain('https://x/y')
+  })
+
+  it('keeps a double slash inside a double-quoted string', () => {
+    expect(stripComments('const u = "https://x/y";')).toContain('https://x/y')
+  })
+
+  it('does not read division as a comment', () => {
+    expect(extractStepChains(stripComments('const r = a / b; const s = steps.a.b;'))).toEqual(['steps.a.b'])
+  })
+
+  it('does not read a regex containing slashes as a comment', () => {
+    expect(extractStepChains(stripComments('const re = /https?:\\/\\//; const s = steps.a.b;'))).toEqual(['steps.a.b'])
+  })
+
+  it('does not read a regex after return as a comment', () => {
+    expect(extractStepChains(stripComments('return /a\\/\\/b/.test(steps.a.b);'))).toEqual(['steps.a.b'])
+  })
+
+  it('does not let an escaped quote end a string early', () => {
+    expect(extractStepChains(stripComments("const q = 'it\\'s // not'; const s = steps.a.b;"))).toEqual(['steps.a.b'])
+  })
+
+  it('keeps line count and offsets stable, so positional scanning still lines up', () => {
+    const src = 'const a = 1; // x\n/* y\n z */\nconst b = 2;\n'
+    const out = stripComments(src)
+    expect(out.length).toBe(src.length)
+    expect(out.split('\n').length).toBe(src.split('\n').length)
   })
 })
