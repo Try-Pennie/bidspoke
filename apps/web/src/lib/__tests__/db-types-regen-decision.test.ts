@@ -41,6 +41,31 @@ describe('db-types regen decision (#614)', () => {
     expect(decide(`${header}-- which timed out at Postgres's 8s statement_timeout once the table grew\n+-- which timed out at the statement_timeout once the table grew\n`)).toBe('not-required')
   })
 
+  it('does not ask for a regen when an ADDED COMMENT mentions DDL', () => {
+    // The #614 fix stopped the gate reading DDL from elsewhere in the FILE, but
+    // not from a comment on an added LINE, which is the same defect one level
+    // down: the guard is satisfied by prose ABOUT the thing rather than the thing
+    // (LESSONS L103). The function branch of the script already strips comments
+    // before matching; the keyword branch did not.
+    //
+    // Found 2026-09-03 on the migration replay fix, whose explanation of the
+    // defect has to quote `CREATE TABLE` in order to describe it, and which
+    // changes no schema shape at all: constraints are not in the generated types.
+    const diff =
+      `${header}+-- the foreign key INLINE and UNNAMED inside \`CREATE TABLE execution_steps\`, so\n` +
+      `+ALTER TABLE execution_steps ADD CONSTRAINT foo FOREIGN KEY (a) REFERENCES b(c)\n`
+    expect(decide(diff)).toBe('not-required')
+  })
+
+  it('still asks for a regen when real DDL sits beside a comment mentioning DDL', () => {
+    // Stripping comments must not become a way to hide a real change: a diff
+    // carrying both must still fire, or the fix above would be an escape hatch.
+    const diff =
+      `${header}+-- this comment mentions CREATE TABLE purely as prose\n` +
+      `+ALTER TABLE lead_sightings ADD COLUMN foo text\n`
+    expect(decide(diff)).toBe('regen-required')
+  })
+
   it('asks for a regen when a column is added', () => {
     expect(decide(`${header}+ALTER TABLE lead_sightings ADD COLUMN foo text\n`)).toBe('regen-required')
   })
