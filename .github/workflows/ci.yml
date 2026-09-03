@@ -761,3 +761,51 @@ jobs:
             exit 1
           fi
           echo "OK: this commit reached main through a pull request."
+
+  # A pull request must actually CLOSE the issue its title names (#1134).
+  #
+  # This repo's convention names the issue in parentheses, `... (#1017)`, and 191
+  # of 360 merged pull requests do it. A parenthesised mention closes NOTHING:
+  # GitHub acts only on a keyword such as `Closes #1017`. Measured 2026-09-03
+  # across every merged pull request: 119 (34%) carry no keyword at all, and
+  # seven open issues are named in a merged pull request's title with nothing
+  # closing them. #986 and #1017 were two of those, both already shipped, and
+  # they made the "Verified backup before deletion" milestone read as 42 issues
+  # of outstanding work when part of it was done.
+  #
+  # This BLOCKS, unlike the direct-push guard below it, and the difference is
+  # deliberate: that one accuses after a merge so it must stay quiet when
+  # unsure, this one withholds a merge while the author is still here and the
+  # whole remedy is one line in the body. Escape hatch for a deliberate
+  # reference is `Refs only: #875`, honoured per issue rather than per PR.
+  #
+  # Title and body go through `env:` rather than `${{ }}` inside the script, so
+  # a pull request body can never be interpolated into the shell.
+  issue-closure-guard:
+    name: Pull request closes the issue it names
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the title's issues are actually closed
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -uo pipefail
+          DECISION=$(printf '%s' "$PR_BODY" \
+            | bash .github/scripts/issue-closure-decision.sh "$PR_NUMBER" "$PR_TITLE")
+
+          case "$DECISION" in
+            missing:*)
+              ISSUES="${DECISION#missing:}"
+              echo "::error::This pull request's title names #${ISSUES//,/, #} but nothing closes them, so merging would ship the fix and leave the issue open. Add 'Closes #<n>' to the body for each, or 'Refs only: #<n>' if it deliberately does not close one."
+              exit 1
+              ;;
+          esac
+          echo "OK: every issue this title names is closed by a keyword or marked as a reference only."
