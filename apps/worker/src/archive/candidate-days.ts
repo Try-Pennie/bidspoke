@@ -20,15 +20,31 @@ const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 
 /**
- * Days of history the partitions hold.
+ * Days of history the partitions hold: the age at which
+ * `truncate_expired_execution_partitions` destroys a day.
  *
- * Matches the 7 day drop in `20260522000002_daily_partitions_7d_retention.sql`.
- * Stated here rather than inferred, and the gate deliberately measures one day
- * fewer than the retention: the oldest retained day may be dropped at any moment
- * during the run, and a day that vanishes between the Postgres count and the
- * Snowflake count would report a surplus that is an artifact of timing.
+ * TEMPORARILY 21 rather than 7 (migration `20260824000002`), as insurance while
+ * the archive backlog drained with nobody available to react, because deletion is
+ * still not gated on the archive (#873).
+ *
+ * ONE NUMBER, for two purposes that must not diverge: how far back the gate
+ * measures, and how long a day has left. They were one constant by accident and
+ * it was wrong for both at once, then briefly two constants, which is worse. With
+ * two, measuring 7 days while the deadline was 21 put the alert threshold
+ * (`ALERT_WHEN_DAYS_LEFT`, three days before deletion) entirely outside the range
+ * of days that get measured, so the gate could not have alerted about anything,
+ * ever, while every test passed (L174). Measuring the whole retained window makes
+ * that unreachable by construction: every day that still exists is a day the gate
+ * vouches for.
+ *
+ * It must equal what the purge jobs are actually scheduled at, and
+ * `apps/web/src/lib/__guards__/worker/archive-retention-matches-purge.test.ts`
+ * derives that from the migrations and fails when the two differ. It has differed:
+ * this said 7 while the purge ran at 21 from 2026-08-24 until 2026-09-03, so the
+ * gate told the team a day was one night from deletion when it had fifteen
+ * (#1017). The cron is the authority, never this line.
  */
-export const RETENTION_DAYS = 7
+export const RETENTION_DAYS = 21
 
 function dayString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
