@@ -21,11 +21,15 @@ const DAY_MS = 24 * HOUR_MS
 
 /**
  * Days of history the partitions hold: the age at which
- * `truncate_expired_execution_partitions` destroys a day.
+ * `truncate_verified_execution_partitions` destroys a day.
  *
  * TEMPORARILY 21 rather than 7 (migration `20260824000002`), as insurance while
- * the archive backlog drained with nobody available to react, because deletion is
- * still not gated on the archive (#873).
+ * the archive backlog drained with nobody available to react, because deletion
+ * was not gated on the archive. It is now (#873, migration `20260903210000`), and
+ * the backlog is clear: as of 2026-09-03 every day Postgres holds is fully
+ * archived and gate verified, and at retention 7 the gate would authorise 13 days
+ * and refuse none. So the insurance has served its purpose and #1038 is the issue
+ * that puts this back to 7.
  *
  * ONE NUMBER, for two purposes that must not diverge: how far back the gate
  * measures, and how long a day has left. They were one constant by accident and
