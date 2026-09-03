@@ -53,6 +53,12 @@ export interface SnowflakeStatementResponse {
   resultSetMetaData?: {
     numRows?: number
     rowType?: Array<{ name: string; type: string }>
+    /**
+     * One entry per result partition. Partition 0 arrives inline as `data`; the
+     * rest have to be fetched by statement handle. Absent for a result that fits
+     * in one partition (#986).
+     */
+    partitionInfo?: Array<{ rowCount?: number }>
   }
   data?: unknown[][]
   message?: string
@@ -214,9 +220,87 @@ export async function resolveStatementResult(
     const parsed = parseResponse(text)
     const handle = parsed.statementHandle
     if (!handle) throw new Error(`Snowflake returned 202 without a statementHandle: ${text}`)
-    return pollStatement(config, headers, handle, pollOpts)
+    const polled = await pollStatement(config, headers, handle, pollOpts)
+    // The handle we polled with is the fallback, so a terminal body that does not
+    // echo it can still have its later partitions fetched. Anything the body does
+    // carry wins.
+    return assembleResultPartitions(config, headers, { statementHandle: handle, ...polled })
   }
-  return parseResponse(text)
+  return assembleResultPartitions(config, headers, parseResponse(text))
+}
+
+/**
+ * Return the statement's WHOLE result, or refuse (#986).
+ *
+ * Snowflake chunks a large result set into partitions. Partition 0 comes inline
+ * with the statement response and the rest are separate GETs, so reading `data`
+ * alone silently answers with a prefix of the result. Nothing about a prefix
+ * looks wrong: it parses, it has the right columns, and it arrives faster than
+ * the whole thing would (L98).
+ *
+ * The row count is reconciled against `numRows` in BOTH directions of arrival,
+ * the multi-partition fetch and the plain single-partition read, because a
+ * truncation that comes with no `partitionInfo` at all would otherwise pass. Only
+ * a SHORT result is refused: a surplus cannot be truncation, and a DML
+ * statement's result is a one-row count whose `numRows` contract this code does
+ * not own, so refusing on any inequality would risk the export path to catch a
+ * case that carries no data-loss risk.
+ *
+ * A failed partition fetch throws rather than returning what it has. There is no
+ * retry here on purpose: the callers that read multi-row results are scheduled
+ * jobs whose next run measures the same day again, and a partial result that had
+ * been retried into existence is indistinguishable from a complete one.
+ */
+export async function assembleResultPartitions(
+  config: SnowflakeConfig,
+  headers: Record<string, string>,
+  response: SnowflakeStatementResponse,
+): Promise<SnowflakeStatementResponse> {
+  const partitions = response.resultSetMetaData?.partitionInfo
+  const declaredRows = response.resultSetMetaData?.numRows
+  const rows: unknown[][] = [...(response.data ?? [])]
+
+  if (partitions !== undefined && partitions.length > 1) {
+    const handle = response.statementHandle
+    if (!handle) {
+      throw new Error(
+        `Snowflake declared ${partitions.length} result partitions without a statementHandle to fetch them with, ` +
+          `so only the ${rows.length} rows of partition 0 could be read`,
+      )
+    }
+    for (let index = 1; index < partitions.length; index++) {
+      rows.push(...(await fetchPartition(config, headers, handle, index, partitions.length)))
+    }
+  }
+
+  if (typeof declaredRows === 'number' && rows.length < declaredRows) {
+    throw new Error(
+      `Snowflake returned ${rows.length} of the ${declaredRows} rows it declared for this statement, ` +
+        `across ${partitions?.length ?? 1} partition(s), so the result is incomplete`,
+    )
+  }
+
+  return { ...response, data: rows }
+}
+
+async function fetchPartition(
+  config: SnowflakeConfig,
+  headers: Record<string, string>,
+  handle: string,
+  index: number,
+  total: number,
+): Promise<unknown[][]> {
+  const url = `https://${snowflakeHost(config.account)}/api/v2/statements/${handle}?partition=${index}`
+  const res = await fetch(url, { method: 'GET', headers })
+  const text = await res.text()
+  if (!res.ok) {
+    throw new SnowflakeStatementError(
+      `Snowflake returned ${res.status} for partition ${index} of ${total}: ${text}`,
+      res.status,
+      snowflakeErrorCode(text),
+    )
+  }
+  return parseResponse(text).data ?? []
 }
 
 interface PollOptions {

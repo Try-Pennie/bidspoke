@@ -21,6 +21,7 @@ import { runAchieveExport } from '../../lib/achieve-export'
 import { formatErr } from '../../lib/format-error'
 import { runExecutionArchive } from '../../lib/execution-archive'
 import { checkArchiveSettings } from '../../lib/archive-settings-check'
+import { runArchiveGate } from '../../lib/archive-gate'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { canonicalHourStart } from '../../archive/clock'
@@ -484,6 +485,51 @@ admin.post('/archive-settings-check', async (c) => {
       differences: result.differences,
     },
     result.differences.length === 0 ? 200 : 500,
+  )
+})
+
+/**
+ * Runs the deletion gate's measurements now, rather than at 13:00 UTC (#986).
+ *
+ * The same reason `/archive-settings-check` exists: a change to what the gate can
+ * actually see could otherwise only be confirmed by waiting a day. The gate's
+ * payload probe spent its first 16 days reporting every day as missing bundles
+ * because the Snowflake client read only the first partition of a result, and a
+ * daily feedback loop is how a second wrong reading would survive just as long.
+ *
+ * It calls the SAME function the cron calls. A separate probe here would be
+ * evidence about this route.
+ *
+ * ZERO DAYS IS NOT A PASS. The gate considers no days until the archiver has
+ * finished one, and answering 200 for a run that measured nothing is exactly the
+ * shape that makes "everything is verified" and "nothing was looked at" the same
+ * response (L98).
+ */
+admin.post('/archive-gate', async (c) => {
+  const supabase = createSupabaseClient(c.env)
+  const summary = await runArchiveGate(c.env, supabase)
+
+  const days = summary.results.map((r) => ({
+    archiveDay: r.archiveDay,
+    daysLeft: r.daysLeft,
+    verified: r.error === null && r.refusals.length === 0,
+    refusals: r.refusals,
+    error: r.error,
+    probeOk: r.measurement?.probeOk ?? null,
+    probeSampled: r.measurement?.probeSampled ?? null,
+  }))
+  const ok = summary.daysConsidered > 0 && days.every((d) => d.verified)
+
+  return c.json(
+    {
+      ok,
+      daysConsidered: summary.daysConsidered,
+      daysMeasured: summary.daysMeasured,
+      daysVerified: days.filter((d) => d.verified).length,
+      detail: summary.detail,
+      days,
+    },
+    ok ? 200 : 500,
   )
 })
 

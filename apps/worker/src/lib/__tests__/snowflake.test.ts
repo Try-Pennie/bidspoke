@@ -250,3 +250,147 @@ describe('pollStatement', () => {
       .rejects.toThrow(/did not complete after 3 polls/)
   })
 })
+
+/**
+ * Multi-partition result assembly (#986).
+ *
+ * Snowflake splits a large result set into numbered partitions: partition 0
+ * arrives inline with the statement response and the rest have to be fetched by
+ * handle. Reading only partition 0 returns a SUBSET, and a subset of an archive
+ * verification is indistinguishable from a shortfall in the archive itself. That
+ * is not hypothetical. The deletion gate's payload probe asks for 60 compressed
+ * execution bundles at once, and from the day it shipped it reported all 16
+ * consecutive days it measured as missing bundles, while the independent row and
+ * step counts matched Postgres exactly on every one of them (2026-09-03).
+ *
+ * A short read is refused rather than returned, because it is FASTER than a
+ * complete one and so presents as a healthy result (L98, L288).
+ */
+describe('result partition assembly', () => {
+  const meta = (numRows: number, partitionRowCounts?: number[]) => ({
+    numRows,
+    ...(partitionRowCounts === undefined
+      ? {}
+      : { partitionInfo: partitionRowCounts.map((rowCount) => ({ rowCount })) }),
+  })
+
+  it('assembles the rows from every partition, in order', async () => {
+    const spy = mockFetchSequence([
+      { status: 200, body: { data: [['c'], ['d']] } },
+      { status: 200, body: { data: [['e']] } },
+    ])
+    const result = await resolveStatementResult(
+      config,
+      headers,
+      200,
+      JSON.stringify({
+        statementHandle: 'h1',
+        resultSetMetaData: meta(5, [2, 2, 1]),
+        data: [['a'], ['b']],
+      }),
+      fast,
+    )
+    expect(result.data).toEqual([['a'], ['b'], ['c'], ['d'], ['e']])
+    expect(spy).toHaveBeenCalledTimes(2) // partitions 1 and 2, never 0 again
+    expect(String(spy.mock.calls[0]?.[0])).toContain('partition=1')
+    expect(String(spy.mock.calls[1]?.[0])).toContain('partition=2')
+  })
+
+  it('refuses a result that arrives short of the row count Snowflake declared', async () => {
+    mockFetchSequence([{ status: 200, body: { data: [['c']] } }])
+    await expect(
+      resolveStatementResult(
+        config,
+        headers,
+        200,
+        JSON.stringify({
+          statementHandle: 'h1',
+          resultSetMetaData: meta(5, [2, 3]),
+          data: [['a'], ['b']],
+        }),
+        fast,
+      ),
+    ).rejects.toThrow(/3 of the 5 rows/)
+  })
+
+  it('refuses a single-partition result that is short of the declared row count', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { data: [] } }])
+    await expect(
+      resolveStatementResult(
+        config,
+        headers,
+        200,
+        JSON.stringify({ statementHandle: 'h1', resultSetMetaData: meta(5), data: [['a'], ['b']] }),
+        fast,
+      ),
+    ).rejects.toThrow(/2 of the 5 rows/)
+    expect(spy).not.toHaveBeenCalled() // nothing to fetch, and it must not invent a partition
+  })
+
+  it('leaves a complete single-partition result untouched and fetches nothing', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { data: [['should not be fetched']] } }])
+    const result = await resolveStatementResult(
+      config,
+      headers,
+      200,
+      JSON.stringify({ statementHandle: 'h1', resultSetMetaData: meta(2, [2]), data: [['a'], ['b']] }),
+      fast,
+    )
+    expect(result.data).toEqual([['a'], ['b']])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Only a SHORT result is refused. A surplus cannot be truncation, and a DML
+   * statement's result is a one-row count whose numRows this code does not own
+   * the contract for, so refusing on any inequality would risk breaking the
+   * export path to catch a case that carries no data-loss risk.
+   */
+  it('passes through a result that declares no row count, so DML keeps working', async () => {
+    const spy = mockFetchSequence([{ status: 200, body: { data: [['nope']] } }])
+    const result = await resolveStatementResult(
+      config,
+      headers,
+      200,
+      JSON.stringify({ data: [['3', '0']], code: '090001' }),
+      fast,
+    )
+    expect(result.data).toEqual([['3', '0']])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a failed partition fetch instead of returning the rows it did get', async () => {
+    mockFetchSequence([{ status: 500, body: { message: 'internal' } }])
+    await expect(
+      resolveStatementResult(
+        config,
+        headers,
+        200,
+        JSON.stringify({ statementHandle: 'h1', resultSetMetaData: meta(4, [2, 2]), data: [['a'], ['b']] }),
+        fast,
+      ),
+    ).rejects.toThrow(/partition 1 of 2/)
+  })
+
+  it('refuses to report a multi-partition result it has no handle to fetch with', async () => {
+    await expect(
+      resolveStatementResult(
+        config,
+        headers,
+        200,
+        JSON.stringify({ resultSetMetaData: meta(4, [2, 2]), data: [['a'], ['b']] }),
+        fast,
+      ),
+    ).rejects.toThrow(/without a statementHandle/)
+  })
+
+  it('assembles partitions on the polled path too, not only on an immediate 200', async () => {
+    mockFetchSequence([
+      { status: 202, body: {} },
+      { status: 200, body: { statementHandle: 'h1', resultSetMetaData: meta(3, [2, 1]), data: [['a'], ['b']] } },
+      { status: 200, body: { data: [['c']] } },
+    ])
+    const result = await resolveStatementResult(config, headers, 202, JSON.stringify({ statementHandle: 'h1' }), fast)
+    expect(result.data).toEqual([['a'], ['b'], ['c']])
+  })
+})
