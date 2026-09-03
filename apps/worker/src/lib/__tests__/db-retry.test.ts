@@ -9,7 +9,9 @@ import {
   type DbError,
   toThrowable,
   toDbError,
+  normalizeDbError,
 } from '../db-retry'
+import { formatErr } from '../format-error'
 
 describe('withDbRetry', () => {
   it('returns immediately when the op succeeds (no retry)', async () => {
@@ -257,5 +259,59 @@ describe('toDbError', () => {
 
   it('still renders a primitive throw', () => {
     expect(toDbError('db down').message).toBe('db down')
+  })
+})
+
+// #1111: on 2026-09-02 Supabase answered three consecutive finalize PATCHes with
+// HTTP 500, content-length 0 and no content-type. postgrest-js therefore handed
+// back { message: '' } with no code, and the dead-letter alert rendered
+// `Error: {"message":""}` -- naming nothing, while the status code sat unread on
+// the same response. An empty-bodied failure carries its whole diagnosis in the
+// status line, so that is what has to survive into the DbError (LESSONS L520).
+describe('normalizeDbError', () => {
+  it('names the HTTP status when the failed response carried no message', () => {
+    const err = normalizeDbError({ error: { message: '', code: null }, status: 500, statusText: 'Internal Server Error' })
+    expect(err?.message).toContain('500')
+    expect(err?.message).not.toBe('')
+  })
+
+  it('does not render an empty-bodied failure as an empty message object', () => {
+    const err = normalizeDbError({ error: { message: '' }, status: 500 })
+    expect(formatErr(err)).not.toBe('{"message":""}')
+    expect(formatErr(err)).toContain('500')
+  })
+
+  it('keeps a real PostgREST message and code untouched', () => {
+    const err = normalizeDbError({ error: { message: 'schema cache', code: 'PGRST002' }, status: 503 })
+    expect(err?.message).toBe('schema cache')
+    expect(err?.code).toBe('PGRST002')
+  })
+
+  it('returns null when the response carried no error', () => {
+    expect(normalizeDbError({ error: null, status: 200 })).toBeNull()
+  })
+
+  // postgrest-js reports "no code" as an empty string on some failures, which is
+  // not a SQLSTATE and must not be carried as one: isPermanentDbError and the
+  // duplicate check both key on `code`.
+  it('drops an empty-string code rather than carrying it as a SQLSTATE', () => {
+    expect(normalizeDbError({ error: { message: 'boom', code: '' }, status: 500 })?.code).toBeUndefined()
+  })
+
+  // Nothing on the response says what went wrong. Say that, rather than nothing.
+  it('still says something when there is no status either', () => {
+    const err = normalizeDbError({ error: { message: '' } })
+    expect(err?.message.trim()).not.toBe('')
+    expect(formatErr(err)).not.toBe('{"message":""}')
+  })
+})
+
+// The path today's incident actually took: the finalize UPDATE goes through
+// requireRowsAffected, which discarded the response status entirely.
+describe('requireRowsAffected — empty-bodied failure', () => {
+  it('surfaces the HTTP status of a failure whose body named nothing', async () => {
+    const op = () => Promise.resolve({ data: null, error: { message: '', code: null }, status: 500, statusText: 'Internal Server Error' })
+    const { error } = await requireRowsAffected('workflow_executions (id=x)', op)
+    expect(error?.message).toContain('500')
   })
 })
