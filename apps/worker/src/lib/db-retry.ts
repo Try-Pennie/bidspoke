@@ -63,6 +63,59 @@ export function toThrowable(err: DbError): Error {
   return Object.assign(new Error(err.message), { code: err.code })
 }
 
+/**
+ * The shape every PostgREST call resolves to, as far as error reporting cares.
+ * supabase-js puts `status` and `statusText` on the same object as `error`, so
+ * the HTTP status is always available at the moment the error is normalized.
+ */
+export interface PostgrestResultLike {
+  error: { code?: string | null; message?: string | null } | null
+  status?: number
+  statusText?: string
+}
+
+/**
+ * Normalizes a PostgREST result's error into a DbError WITHOUT losing the HTTP
+ * status (#1111).
+ *
+ * A failure that carries no body carries its entire diagnosis in the status
+ * line. On 2026-09-02 Supabase answered three consecutive execution-finalize
+ * PATCHes with HTTP 500, `content-length: 0` and no content-type; postgrest-js
+ * turned that into `{ message: '' }` with no code, and every layer above
+ * faithfully passed the emptiness along until the Slack alert read
+ * `Error: {"message":""}`. The status was sitting unread on the same response
+ * the whole time (LESSONS L520).
+ *
+ * So: keep a real message exactly as PostgREST worded it, and fall back to the
+ * status only when there is nothing else to say. Deliberately assigns NO code in
+ * that fallback, because an HTTP status is not a SQLSTATE and inventing one
+ * would feed isPermanentDbError a value it never classified: a bare 500 is
+ * transient, which is what an absent code already means.
+ */
+export function normalizeDbError(res: PostgrestResultLike): DbError | null {
+  const raw = res.error
+  if (!raw) return null
+
+  // postgrest-js reports "no code" as an empty string on some failures. That is
+  // not a SQLSTATE, and carrying it would make `!!err.code` true for a value
+  // that classifies nothing.
+  const code = typeof raw.code === 'string' && raw.code !== '' ? raw.code : undefined
+  const message = typeof raw.message === 'string' && raw.message.trim() !== '' ? raw.message : undefined
+  if (message) return { code, message }
+
+  return { code, message: describeEmptyFailure(res) }
+}
+
+// Status leads, mirroring format-error.ts's Response rendering, so it survives
+// the head-and-tail truncation the alert applies.
+function describeEmptyFailure(res: PostgrestResultLike): string {
+  if (typeof res.status !== 'number') {
+    return 'Supabase returned an error carrying no message and no HTTP status'
+  }
+  const statusText = typeof res.statusText === 'string' && res.statusText.trim() !== '' ? ` ${res.statusText}` : ''
+  return `Supabase returned HTTP ${res.status}${statusText} with an empty error body`
+}
+
 export function toDbError(e: unknown): DbError {
   const err = e as { code?: unknown; message?: unknown }
   return {
@@ -115,10 +168,23 @@ export interface RequireRowsOptions {
 // caller can retry or answer 500. Collapsing the two is the #303 bug.
 export async function requireRowsAffected<T = unknown>(
   target: string,
-  op: () => PromiseLike<{ data: T[] | null; error: DbError | null }>,
+  // The error is typed as PostgREST words it (a nullable code), not as the
+  // DbError this returns: normalizeDbError is what converts between them, and
+  // declaring the narrower type here would push that conversion onto callers.
+  op: () => PromiseLike<{
+    data: T[] | null
+    error: { code?: string | null; message?: string | null } | null
+    status?: number
+    statusText?: string
+  }>,
   opts: RequireRowsOptions = {},
 ): Promise<{ rows: T[]; error: DbError | null }> {
-  const { data, error } = await op()
+  // `status`/`statusText` are destructured alongside the error because a failure
+  // whose body named nothing carries its whole diagnosis in the status line, and
+  // normalizeDbError is what keeps it (#1111). A real PostgREST message is
+  // passed through untouched.
+  const { data, error: rawError, status, statusText } = await op()
+  const error = normalizeDbError({ error: rawError, status, statusText })
   if (error) return { rows: [], error }
 
   // `rows` is the rows the write touched, so `rows.length` is the count and the

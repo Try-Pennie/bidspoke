@@ -7,6 +7,7 @@ import {
   isNoRowMatchedError,
   requireRowsAffected,
   withDbRetry,
+  normalizeDbError,
   sleep,
   NO_ROW_MATCHED_CODE,
   type DbError,
@@ -55,8 +56,9 @@ async function insertRowsOnce(
   table: string,
   rows: Record<string, unknown>[]
 ): Promise<{ error: DbError | null }> {
-  const { error } = await supabase.from(table).insert(rows)
-  return { error: error ? { code: error.code, message: error.message } : null }
+  // Shares one normalizer with requireRowsAffected so an empty-bodied failure
+  // reports its HTTP status here too, rather than an empty message (#1111).
+  return { error: normalizeDbError(await supabase.from(table).insert(rows)) }
 }
 
 // One update attempt for workflow_executions, keyed by (id, started_at) with an
@@ -115,9 +117,26 @@ export async function writeStepLog(
 // the PostgREST schema-cache reload it triggers can 503 for a few seconds).
 // Lost 8 executions' audit trail on 2026-06-10 and several more on 2026-06-12
 // before this was hardened.
+// These two were re-examined alongside the UPDATE ladder below and deliberately
+// left as they are (#1113), so the difference is a decision rather than an
+// oversight. CREATE runs while the request is still in flight, so its span is
+// bounded by the caller's patience, not by the outage. FLUSH carries step logs,
+// which are tier-1 observability (best-effort by design, see engine/durability.ts):
+// losing one debug row to a long outage is the tolerable outcome the tier exists
+// to name, and it is not worth holding an isolate open for two minutes.
 const CREATE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000]
 const FLUSH_RETRY_DELAYS_MS = [2_000, 5_000]
-const UPDATE_RETRY_DELAYS_MS = [2_000, 5_000]
+// The finalize UPDATE is the only durable record that a lead was served, and it
+// runs in a post-response waitUntil, so the wall-clock this ladder spends costs
+// the lead nothing while giving up early costs a stranded row and a page.
+//
+// Sized against a MEASURED outage rather than a guess (#1113): on 2026-09-02
+// Supabase returned empty-bodied HTTP 500s across roughly 90 seconds, and the
+// old [2s, 5s] ladder was spent seven seconds in. This spans 112 seconds over
+// six attempts, which clears that wobble and still gives up long before the
+// strand drain's 30-minute floor, so the drain stays the backstop rather than
+// racing a retry that is still in flight (asserted in step-logger.test.ts).
+export const UPDATE_RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000]
 
 // Batch-insert an accumulated queue of step logs. Used at end of execution
 // to flush all step logs in a single round-trip instead of one-per-step.
@@ -333,7 +352,21 @@ export async function updateExecutionRecord(
   for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
     const { error } = await updateExecutionOnce(supabase, id, started_at, update)
-    if (!error) return null
+    if (!error) {
+      // An outage the ladder ABSORBED leaves no other trace: the finalize
+      // succeeded, no row stranded, nothing dead-lettered, nothing paged. With a
+      // ladder that now spans two minutes, a database degrading repeatedly would
+      // be invisible for as long as it lasted (LESSONS L77), so say how many
+      // attempts it cost. Mirrors the warn the CREATE ladder already emits.
+      if (attempt > 0) {
+        console.warn('[step-logger] workflow_executions update landed only after retries', {
+          id,
+          attempts: attempt + 1,
+          previous_error: lastError?.message,
+        })
+      }
+      return null
+    }
     // A row that does not exist will not appear by waiting, and schema drift is
     // not fixed by waiting either. Both fail fast.
     if (isNoRowMatchedError(error)) {

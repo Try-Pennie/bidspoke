@@ -213,6 +213,131 @@ describe('resolveStrandedExecution with a workflow graph', () => {
     expect(resolved.failed_step_type).toBe('response')
   })
 
+  // #1112: measured on 2026-09-02. Every one of 117 recovered rows over 14 days
+  // took the honest-unresolved branch and not one took the dead-end branch, so a
+  // signal shipped as the precise one had never fired in production. The cause is
+  // here: two steps routinely complete in the SAME millisecond, the sort by
+  // completed_at leaves them tied, and the winner is whichever order the database
+  // read happened to return (it has no ORDER BY: LESSONS L343). Real run
+  // 01a06408-5e54-71f0-9038-b0badfaf2210 finished with route_response_end (a
+  // branch_end, zero outgoing edges) and patch_prospect (one outgoing edge) both
+  // stamped 21:31:08.966, the salesforce step won the coin flip, and a completed
+  // run was recorded as a failure.
+  //
+  // Reaching a dead end is evidence regardless of which tied step is listed
+  // first, so the answer must not depend on the order at all.
+  describe('steps tied at the same completed_at (#1112)', () => {
+    const tied = '2026-07-01T01:00:13.500Z'
+    const deadEnd = { status: 'completed', step_type: 'branch_end', step_node_id: 'c', step_namespace: 'c', error_message: null, completed_at: tied }
+    const midGraph = { status: 'completed', step_type: 'salesforce', step_node_id: 'b', step_namespace: 'b', error_message: null, completed_at: tied }
+
+    it('marks completed when a tied step landed on a dead end, whichever order the read returned', () => {
+      const graph = buildStrandGraph(makeDefinition())
+      const midGraphFirst = resolveStrandedExecution([midGraph, deadEnd], startedAt, graph)
+      const deadEndFirst = resolveStrandedExecution([deadEnd, midGraph], startedAt, graph)
+
+      expect(midGraphFirst.status).toBe('completed')
+      expect(deadEndFirst.status).toBe('completed')
+      expect(midGraphFirst).toEqual(deadEndFirst)
+    })
+
+    // Conservative direction: a failure among the tied steps outranks a dead end,
+    // so a tie can never upgrade a failed walk into a clean completion.
+    it('still marks failed when one of the tied steps failed', () => {
+      const graph = buildStrandGraph(makeDefinition())
+      const failed = { status: 'failed', step_type: 'salesforce', step_node_id: 'b', step_namespace: 'b', error_message: 'Salesforce 503', completed_at: tied }
+      const resolved = resolveStrandedExecution([deadEnd, failed], startedAt, graph)
+      expect(resolved.status).toBe('failed')
+      expect(resolved.error_message).toBe('Salesforce 503')
+    })
+
+    // A dead end reached EARLIER than the last step is not evidence the walk
+    // finished: something ran after it. Only the final moment counts.
+    it('does not treat a dead end from an earlier moment as proof the walk finished', () => {
+      const graph = buildStrandGraph(makeDefinition())
+      const resolved = resolveStrandedExecution(
+        [
+          { ...deadEnd, completed_at: '2026-07-01T01:00:13.000Z' },
+          { ...midGraph, completed_at: tied },
+        ],
+        startedAt,
+        graph,
+      )
+      expect(resolved.status).toBe('failed')
+      expect(resolved.error_message).toContain('could not be confirmed')
+    })
+  })
+
+  // #1112: when the graph cannot confirm (the walk answered from a node that
+  // still has outgoing edges, which is what the Engine flow does when it responds
+  // from inside a code node), the engine's OWN verdict is already recorded in
+  // lead_sightings.outcome. Real run 01a06409-8452-73c6-a47c-81d5bf4a4345 is
+  // exactly this shape: last step create_prospect, one outgoing edge, sighting
+  // outcome 'completed'.
+  //
+  // Note this cannot read workflow_executions.sighting_finalize instead, even
+  // though that projection exists for the strand drain: it is written by the very
+  // finalize UPDATE that eviction destroys, so it is null on 119 of 119 stranded
+  // rows, i.e. absent for precisely the population it was built to serve.
+  describe('lead_sightings outcome as evidence (#1112)', () => {
+    const midGraphStep = [
+      { status: 'completed', step_type: 'salesforce', step_node_id: 'b', step_namespace: 'b', error_message: null, completed_at: '2026-07-01T01:00:13.500Z' },
+    ]
+
+    it('claims completed when the sighting recorded a non-failed outcome', () => {
+      const resolved = resolveStrandedExecution(midGraphStep, startedAt, buildStrandGraph(makeDefinition()), { outcome: 'completed' })
+      expect(resolved.status).toBe('completed')
+      expect(resolved.outcome).toBe('completed')
+      expect(resolved.error_message).toBeNull()
+    })
+
+    it('carries a successful outcome through rather than flattening it to completed', () => {
+      const resolved = resolveStrandedExecution(midGraphStep, startedAt, undefined, { outcome: 'successful' })
+      expect(resolved.status).toBe('completed')
+      expect(resolved.outcome).toBe('successful')
+    })
+
+    it('marks failed when the sighting recorded a failure, even with no failed step', () => {
+      const resolved = resolveStrandedExecution(midGraphStep, startedAt, undefined, { outcome: 'failed' })
+      expect(resolved.status).toBe('failed')
+      expect(resolved.outcome).toBe('failed')
+    })
+
+    // A sighting whose own finalize was lost carries a null outcome. That is
+    // missing evidence, not a verdict, and must not read as one.
+    it('stays honestly unresolved when the sighting exists but never recorded an outcome', () => {
+      const resolved = resolveStrandedExecution(midGraphStep, startedAt, undefined, { outcome: null })
+      expect(resolved.status).toBe('failed')
+      expect(resolved.outcome).toBeNull()
+      expect(resolved.error_message).toContain('could not be confirmed')
+    })
+
+    // The column is a plain text field, so it can hold anything. A value outside
+    // the three the engine writes is not a verdict this code can interpret, and
+    // guessing which way it leans is how a rejected lead gets recorded as served
+    // (LESSONS L257: listing the bad values admits every one nobody listed).
+    it('does not trust a sighting outcome outside the vocabulary the engine writes', () => {
+      const resolved = resolveStrandedExecution(midGraphStep, startedAt, undefined, { outcome: 'partially_ok' })
+      expect(resolved.status).toBe('failed')
+      expect(resolved.outcome).toBeNull()
+      expect(resolved.error_message).toContain('could not be confirmed')
+    })
+
+    // Concrete evidence outranks a recorded verdict: a step that actually threw
+    // names the failing node and its message, which the sighting cannot.
+    it('prefers a genuinely failed step over the sighting outcome', () => {
+      const resolved = resolveStrandedExecution(
+        [{ status: 'failed', step_type: 'salesforce', step_node_id: 'b', step_namespace: 'b', error_message: 'Salesforce 503', completed_at: '2026-07-01T01:00:13.500Z' }],
+        startedAt,
+        undefined,
+        { outcome: 'completed' },
+      )
+      expect(resolved.status).toBe('failed')
+      expect(resolved.error_message).toBe('Salesforce 503')
+      expect(resolved.failed_step_type).toBe('salesforce')
+    })
+  })
+
   it('falls back to honest-unresolved when no graph is provided (unchanged behavior)', () => {
     const resolved = resolveStrandedExecution(
       [
@@ -242,11 +367,15 @@ function makeSupabase(opts: {
   updateErrorForId?: string | null
   // Ids whose UPDATE matches zero rows (row purged between scan and update).
   updateMatchesNoRowsForId?: string | null
+  sightingsByExecutionId?: Record<string, { outcome: string | null }>
+  sightingError?: { message: string } | null
 }) {
   const updates: { id: string; payload: Record<string, unknown> }[] = []
   const stepLookups: string[] = []
   const stepLimitCalls: number[] = []
+  const stepOrderCalls: { column: string; ascending: boolean }[] = []
   const versionFetches: string[] = []
+  const sightingLookups: { executionId: string; startedAt: string }[] = []
 
   return {
     client: {
@@ -299,18 +428,42 @@ function makeSupabase(opts: {
                 stepLookups.push(id)
                 return {
                   gte: () => ({
-                    // The real query bounds this with .limit(n) -- capture what
-                    // was asked for so callers can assert it's actually applied,
-                    // not just assumed. Only resolving here (not at .gte()) means
-                    // the code under test MUST call .limit() to get any data back.
-                    limit: async (n: number) => {
-                      stepLimitCalls.push(n)
-                      if (opts.stepsError) return { data: null, error: opts.stepsError }
-                      return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
+                    // The real query declares an ORDER BY and bounds the read with
+                    // .limit(n). Neither resolves on its own, so the code under
+                    // test MUST call both to get any data back: a read with no
+                    // ORDER BY returns rows in whatever order the store chose
+                    // (L343), which is what let tied steps decide #1112 at random.
+                    order: (col: string, o?: { ascending?: boolean }) => {
+                      stepOrderCalls.push({ column: col, ascending: o?.ascending !== false })
+                      return {
+                        limit: async (n: number) => {
+                          stepLimitCalls.push(n)
+                          if (opts.stepsError) return { data: null, error: opts.stepsError }
+                          return { data: opts.stepsByExecutionId?.[id] ?? [], error: null }
+                        },
+                      }
                     },
                   }),
                 }
               },
+            }),
+          }
+        }
+        if (table === 'lead_sightings') {
+          return {
+            select: () => ({
+              eq: (_c: string, executionId: string) => ({
+                // The partition key. A sighting read without it scans every
+                // monthly partition.
+                eq: (_c2: string, startedAt: string) => ({
+                  maybeSingle: async () => {
+                    sightingLookups.push({ executionId, startedAt })
+                    if (opts.sightingError) return { data: null, error: opts.sightingError }
+                    const s = opts.sightingsByExecutionId?.[executionId]
+                    return { data: s ?? null, error: null }
+                  },
+                }),
+              }),
             }),
           }
         }
@@ -319,8 +472,10 @@ function makeSupabase(opts: {
     },
     updates,
     stepLimitCalls,
+    stepOrderCalls,
     stepLookups,
     versionFetches,
+    sightingLookups,
   }
 }
 
@@ -504,6 +659,80 @@ describe('runReduceFinalizeStrandedExecutions', () => {
 // A vanished row here is benign, not an error: the nightly partition purge can
 // drop the row between the scan and the update. It just must not be counted as
 // a repair.
+describe('runReduceFinalizeStrandedExecutions: sighting evidence and ordering (#1112)', () => {
+  const startedAt = '2026-07-01T01:00:00.000Z'
+  const midGraphOnly: Record<string, StrandStepEvidence[]> = {
+    'exec-1': [
+      { status: 'completed', step_type: 'salesforce', step_node_id: 'b', step_namespace: 'b', error_message: null, completed_at: '2026-07-01T01:00:02.000Z' },
+    ],
+  }
+
+  // Descending, not ascending: the read is capped at 1000 rows, and every piece
+  // of evidence the resolver uses lives at the END of the run. An ascending cap
+  // would discard exactly the steps that decide the outcome.
+  it('orders the step read newest-first so tied rows cannot arrive in an arbitrary order', async () => {
+    const { client, stepOrderCalls } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: startedAt, workflow_version_id: null }],
+      stepsByExecutionId: midGraphOnly,
+    })
+    await runReduceFinalizeStrandedExecutions(client as never)
+    expect(stepOrderCalls).toContainEqual({ column: 'completed_at', ascending: false })
+  })
+
+  it('finalizes from the sighting outcome when the graph cannot confirm', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: startedAt, workflow_version_id: null }],
+      stepsByExecutionId: midGraphOnly,
+      sightingsByExecutionId: { 'exec-1': { outcome: 'successful' } },
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result.processed).toBe(1)
+    expect(updates[0].payload.status).toBe('completed')
+    expect(updates[0].payload.outcome).toBe('successful')
+  })
+
+  it('scopes the sighting read by the partition key, not the execution id alone', async () => {
+    const { client, sightingLookups } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: startedAt, workflow_version_id: null }],
+      stepsByExecutionId: midGraphOnly,
+      sightingsByExecutionId: { 'exec-1': { outcome: 'completed' } },
+    })
+    await runReduceFinalizeStrandedExecutions(client as never)
+    expect(sightingLookups).toEqual([{ executionId: 'exec-1', startedAt }])
+  })
+
+  // The lookup is a precision boost, exactly like the graph load beside it. A
+  // failure to read it must leave the row honestly unresolved, never error it.
+  it('falls back to honest-unresolved when the sighting read fails, without erroring the row', async () => {
+    const { client, updates } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: startedAt, workflow_version_id: null }],
+      stepsByExecutionId: midGraphOnly,
+      sightingError: { message: 'sighting read failed' },
+    })
+    const result = await runReduceFinalizeStrandedExecutions(client as never)
+    expect(result.errors).toBe(0)
+    expect(result.processed).toBe(1)
+    expect(updates[0].payload.status).toBe('failed')
+    expect(updates[0].payload.error_message).toContain('could not be confirmed')
+  })
+
+  // Graph confirmation is cheaper and already conclusive, so a row it can settle
+  // must not spend a sighting read at all.
+  it('does not read the sighting when the graph already confirmed completion', async () => {
+    const { client, sightingLookups } = makeSupabase({
+      stranded: [{ id: 'exec-1', started_at: startedAt, workflow_version_id: 'v1' }],
+      definitionsByVersionId: { v1: makeDefinition() },
+      stepsByExecutionId: {
+        'exec-1': [
+          { status: 'completed', step_type: 'response', step_node_id: 'c', step_namespace: 'c', error_message: null, completed_at: '2026-07-01T01:00:02.000Z' },
+        ],
+      },
+    })
+    await runReduceFinalizeStrandedExecutions(client as never)
+    expect(sightingLookups).toEqual([])
+  })
+})
+
 describe('runReduceFinalizeStrandedExecutions: zero-row update (#583)', () => {
   const stranded = [{ id: 'exec-gone', started_at: '2026-07-08T02:37:57.000Z' }]
   const steps = {

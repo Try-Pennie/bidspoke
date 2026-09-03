@@ -68,6 +68,22 @@ export function formatErr(e: unknown): string {
       return code ? `${summarized} (${code})` : summarized
     }
 
+    // No usable message. Anything else on the object is worth more than a JSON
+    // rendering of its emptiness, and an object whose ONLY field is a blank
+    // message rendered as the literal `{"message":""}` -- alert text that looks
+    // like data while naming nothing (#1111). Say it has no message instead, and
+    // keep the code, which is the only searchable token such an error carries.
+    const extra = nonEmptyString(obj.details) ?? nonEmptyString(obj.hint)
+    if (extra) {
+      const summarized = summarizeHtmlErrorBody(extra)
+      return code ? `${summarized} (${code})` : summarized
+    }
+    if (code || 'message' in obj) {
+      return code ? `error carried no message (${code})` : 'error carried no message'
+    }
+
+    // A genuinely unrelated object (no message field at all): its own fields are
+    // the most informative thing available.
     try {
       return JSON.stringify(e)
     } catch {

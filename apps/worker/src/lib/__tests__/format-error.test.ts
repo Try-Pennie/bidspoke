@@ -215,3 +215,23 @@ describe('formatErr on a thrown Response (#708)', () => {
     expect(truncateErrorForAlert(formatErr(err))).toContain('503')
   })
 })
+
+// #1111: normalizeDbError now names the HTTP status for an empty-bodied failure,
+// but formatErr is the shared renderer for every error object in the worker, and
+// an object whose message is blank still reached it as the literal
+// `{"message":""}` -- an alert body that names nothing while looking like data.
+// Anything that arrives here without a message must SAY it has no message.
+describe('formatErr: object with a blank message', () => {
+  it('does not render an empty message as a JSON object', () => {
+    expect(formatErr({ message: '' })).not.toBe('{"message":""}')
+  })
+
+  it('says the error carried no message', () => {
+    expect(formatErr({ message: '   ' }).toLowerCase()).toContain('no message')
+  })
+
+  // A code is the only searchable token such an error has; it must survive.
+  it('keeps a code when the message is blank', () => {
+    expect(formatErr({ message: '', code: 'PGRST002' })).toContain('PGRST002')
+  })
+})
