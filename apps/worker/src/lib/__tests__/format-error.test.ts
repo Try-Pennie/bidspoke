@@ -221,7 +221,7 @@ describe('formatErr on a thrown Response (#708)', () => {
 // an object whose message is blank still reached it as the literal
 // `{"message":""}` -- an alert body that names nothing while looking like data.
 // Anything that arrives here without a message must SAY it has no message.
-describe('formatErr — object with a blank message', () => {
+describe('formatErr: object with a blank message', () => {
   it('does not render an empty message as a JSON object', () => {
     expect(formatErr({ message: '' })).not.toBe('{"message":""}')
   })

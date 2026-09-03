@@ -308,7 +308,7 @@ describe('normalizeDbError', () => {
 
 // The path today's incident actually took: the finalize UPDATE goes through
 // requireRowsAffected, which discarded the response status entirely.
-describe('requireRowsAffected — empty-bodied failure', () => {
+describe('requireRowsAffected: empty-bodied failure', () => {
   it('surfaces the HTTP status of a failure whose body named nothing', async () => {
     const op = () => Promise.resolve({ data: null, error: { message: '', code: null }, status: 500, statusText: 'Internal Server Error' })
     const { error } = await requireRowsAffected('workflow_executions (id=x)', op)

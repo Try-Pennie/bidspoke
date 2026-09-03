@@ -352,7 +352,21 @@ export async function updateExecutionRecord(
   for (let attempt = 0; attempt <= UPDATE_RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(UPDATE_RETRY_DELAYS_MS[attempt - 1])
     const { error } = await updateExecutionOnce(supabase, id, started_at, update)
-    if (!error) return null
+    if (!error) {
+      // An outage the ladder ABSORBED leaves no other trace: the finalize
+      // succeeded, no row stranded, nothing dead-lettered, nothing paged. With a
+      // ladder that now spans two minutes, a database degrading repeatedly would
+      // be invisible for as long as it lasted (LESSONS L77), so say how many
+      // attempts it cost. Mirrors the warn the CREATE ladder already emits.
+      if (attempt > 0) {
+        console.warn('[step-logger] workflow_executions update landed only after retries', {
+          id,
+          attempts: attempt + 1,
+          previous_error: lastError?.message,
+        })
+      }
+      return null
+    }
     // A row that does not exist will not appear by waiting, and schema drift is
     // not fixed by waiting either. Both fail fast.
     if (isNoRowMatchedError(error)) {

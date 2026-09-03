@@ -442,6 +442,53 @@ describe('updateExecutionRecord: the ladder must outlast a real outage (#1113)',
     }
   })
 
+  // LESSONS L77: an error classified as survivable must still be countable. The
+  // old seven-second ladder turned a 90 second wobble into a failed finalize and
+  // a page; the new one absorbs it and returns success. That is the point, but it
+  // also means a database degrading for two minutes at a time would now leave no
+  // trace at all, and the widening outage would be invisible for exactly as long
+  // as it lasted. A finalize that needed the ladder says so, mirroring the warn
+  // the CREATE ladder beside it already emits.
+  it('says so when the finalize only landed after burning retries', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      let attempt = 0
+      const keyedSelect = vi.fn(async () =>
+        ++attempt < 3
+          ? { data: null, error: { code: 'PGRST002', message: 'schema cache' } }
+          : { data: [{ id: 'exec-1' }], error: null },
+      )
+      const eqStartedAt = vi.fn().mockReturnValue({ select: keyedSelect })
+      const eqId = vi.fn().mockReturnValue({ eq: eqStartedAt, select: vi.fn().mockResolvedValue({ data: [], error: null }) })
+      const update = vi.fn().mockReturnValue({ eq: eqId })
+      const client = { from: vi.fn().mockReturnValue({ update }) } as unknown as SupabaseClient
+
+      const p = updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)
+      await vi.advanceTimersByTimeAsync(ladderSpanMs() + 1_000)
+      expect(await p).toBeNull()
+
+      const line = warn.mock.calls.find(([m]) => typeof m === 'string' && m.includes('workflow_executions'))
+      expect(line, 'an absorbed outage must leave a trace').toBeDefined()
+      // The count is the measurement: one retry and five are different events.
+      expect(JSON.stringify(line)).toContain('3')
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays silent when the finalize lands on the first attempt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { client } = updateClientWith({ data: [{ id: 'exec-1' }] }, { data: [] })
+      expect(await updateExecutionRecord(client, 'exec-1', '2026-06-11T00:00:00Z', finalize)).toBeNull()
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   // The ladder and the strand drain are two mechanisms for one problem, and the
   // drain is the backstop. If the ladder ever grew past the drain's floor the
   // drain would start finalizing rows a live retry was still working on, so the
