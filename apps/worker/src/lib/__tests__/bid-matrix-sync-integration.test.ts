@@ -70,10 +70,20 @@ function makeSupabase() {
   return { from: () => proxy } as never
 }
 
+// The credentials are resolved through the org env store now, with the Worker env
+// as a per-value fallback (#1174), so the double carries the cache binding that
+// resolution reads. The store lookup returns nothing here and the fallback
+// supplies all three, which is what this test was always exercising: note that
+// production has only CLIENT_SECRET on the Worker env, so an ENV double carrying
+// all three describes a configuration that does not exist.
 const ENV = {
   SALESFORCE_INSTANCE_URL: 'https://sf.example',
   SALESFORCE_CLIENT_ID: 'id',
   SALESFORCE_CLIENT_SECRET: 'secret',
+  // Real base64 of 32 bytes: the loader ENCRYPTS what it caches, so a
+  // placeholder string fails inside crypto rather than in the code under test.
+  SECRET_ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  WORKFLOW_CACHE: { get: async () => null, put: async () => undefined },
 } as never
 
 describe('#182 sync integration', () => {

@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { requireSalesforceCreds } from './salesforce-creds'
 import { parseJson } from './json'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert, sendMatrixSyncFailureAlert } from './slack'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary, MatrixConfigProblems } from './slack'
@@ -136,7 +137,7 @@ export async function syncBidConfig(
   const startedAt = new Date().toISOString()
 
   try {
-    const rows = await querySalesforceMatrixRows(config, env)
+    const rows = await querySalesforceMatrixRows(config, env, supabase)
     const { upserted, deleted, diff, skippedEmptyDelete } = await applyToDb(config, rows, startedAt, supabase)
     const problems = validateSyncedRows(config, rows)
 
@@ -175,17 +176,18 @@ export async function syncBidConfig(
 
 async function querySalesforceMatrixRows(
   config: BidConfigForSync,
-  env: Env
+  env: Env,
+  supabase: SupabaseClient
 ): Promise<SalesforceBidRow[]> {
-  // SF creds are CF secrets; pull them off the env loosely (they aren't typed on Env).
-  const rawEnv = env as unknown as Record<string, string | undefined>
-  const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
-  const clientId = rawEnv.SALESFORCE_CLIENT_ID ?? ''
-  const clientSecret = rawEnv.SALESFORCE_CLIENT_SECRET ?? ''
-
-  if (!instanceUrl || !clientId || !clientSecret) {
-    throw new Error('Salesforce env vars (SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET) are required for matrix sync')
-  }
+  // Resolved in one place (#1174). Two of the three values exist only in the org
+  // env store, so reading them off the Worker env is what made this fail every
+  // hour from 2026-08-22 (#982).
+  const { instanceUrl, clientId, clientSecret } = await requireSalesforceCreds(
+    env,
+    supabase,
+    config.organization_id,
+    'the bid matrix sync',
+  )
 
   const token = await getSalesforceToken(env, config.organization_id, instanceUrl, clientId, clientSecret)
 
