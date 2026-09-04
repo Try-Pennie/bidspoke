@@ -460,7 +460,6 @@ export type Database = {
           orphan_sample_size: number | null
           orphan_step_count_seen: number | null
           pg_execution_count: number | null
-          pg_orphan_step_count: number | null
           pg_step_count: number | null
           probe_failure_reason: string | null
           probe_ok: boolean | null
@@ -480,7 +479,6 @@ export type Database = {
           orphan_sample_size?: number | null
           orphan_step_count_seen?: number | null
           pg_execution_count?: number | null
-          pg_orphan_step_count?: number | null
           pg_step_count?: number | null
           probe_failure_reason?: string | null
           probe_ok?: boolean | null
@@ -500,7 +498,6 @@ export type Database = {
           orphan_sample_size?: number | null
           orphan_step_count_seen?: number | null
           pg_execution_count?: number | null
-          pg_orphan_step_count?: number | null
           pg_step_count?: number | null
           probe_failure_reason?: string | null
           probe_ok?: boolean | null
@@ -2191,6 +2188,31 @@ export type Database = {
         }[]
       }
       user_org_id: { Args: never; Returns: string }
+      verified_day_refusal: {
+        Args: {
+          p_erased_execution_count: number
+          p_incomplete_count: number
+          p_max_measurement_age: unknown
+          p_measured_at: string
+          p_now: string
+          p_orphan_execution_count: number
+          p_pg_execution_count: number
+          p_pg_step_count: number
+          p_probe_ok: boolean
+          p_sf_execution_count: number
+          p_sf_step_count: number
+        }
+        Returns: string
+      }
+      verified_purgeable_days: {
+        Args: {
+          p_max_measurement_age?: unknown
+          p_now?: string
+          p_parent: string
+          p_retention_days: number
+        }
+        Returns: string[]
+      }
       workflow_stats_rollup: {
         Args: { p_org_id: string; p_since: string }
         Returns: {

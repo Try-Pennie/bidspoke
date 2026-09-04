@@ -40,8 +40,18 @@ import {
 /** Rollup refresh functions, and the table each one keys its rows in. */
 const ROLLUP_FUNCTIONS = ['refresh_workflow_stats_daily', 'refresh_field_presence_daily'] as const
 
-/** The procedure whose cron argument is the authoritative raw retention window. */
-const RETENTION_ROUTINE = 'truncate_expired_execution_partitions'
+/**
+ * The JOB whose cron argument is the authoritative raw retention window.
+ *
+ * Keyed on the job name, never on the procedure it calls. This guard used to
+ * name `truncate_expired_execution_partitions`, and #873 repointed the job at
+ * `truncate_verified_execution_partitions` so the deletion consults the archive
+ * first. Nothing about the retention window changed, but the lookup found no job,
+ * `commandArg(undefined) ?? 0` gave a retention of zero, and all three
+ * assertions below failed claiming the raw tables retain nothing. The job name is
+ * the stable identifier and survives the next rename too (L305, L15).
+ */
+const RETENTION_JOB = 'purge-old-execution-partitions'
 
 const migrations = readMigrations()
 const jobs = [...liveCronJobs(migrations).values()]
@@ -63,8 +73,8 @@ describe('rollup refresh: the parse itself', () => {
   })
 
   it('finds the retention window the rollups must not outrun', () => {
-    const purge = jobs.find((j) => commandRoutine(j.command) === RETENTION_ROUTINE)
-    expect(purge, RETENTION_ROUTINE).toBeDefined()
+    const purge = jobs.find((j) => j.name === RETENTION_JOB)
+    expect(purge, RETENTION_JOB).toBeDefined()
     expect(commandArg(purge!.command)).toBeGreaterThan(0)
   })
 })
@@ -110,7 +120,7 @@ describe('rollup refresh: schedules cannot coincide', () => {
 })
 
 describe('rollup refresh: lookback never outruns retention', () => {
-  const purge = jobs.find((j) => commandRoutine(j.command) === RETENTION_ROUTINE)
+  const purge = jobs.find((j) => j.name === RETENTION_JOB)
   const retentionDays = commandArg(purge?.command ?? '') ?? 0
 
   it.each(ROLLUP_FUNCTIONS)('every %s lookback is within raw retention', (fn) => {
