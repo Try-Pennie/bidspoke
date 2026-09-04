@@ -196,6 +196,10 @@ const SIGHTING_COLS: ColSpec[] = [
   { name: 'equifax_score', type: 'number' },
   { name: 'winning_partner_slug', type: 'varchar' },
   { name: 'winning_bid_cents', type: 'number' },
+  // What we quoted the lead's SOURCE, against winning_bid_cents above, which is
+  // what a BUYER offered us. Opposite directions of money, so the pair is the
+  // per-lead margin and neither may be summed as if it were the other.
+  { name: 'quoted_rate_cents', type: 'number' },
   { name: 'partners_attempted', type: 'number' },
   { name: 'partners_responded', type: 'number' },
   { name: 'state', type: 'varchar' },
@@ -214,6 +218,15 @@ const SIGHTING_COLS: ColSpec[] = [
   { name: 'user_ip', type: 'varchar' },
   { name: 'user_agent', type: 'varchar' },
 ]
+
+/**
+ * The sighting column NAMES this export ships, for tests that need to relate a
+ * value the engine records to a value the warehouse receives. Those are two
+ * separate lists in two files, so a column written to Postgres and left out of
+ * here is invisible to every warehouse query and then dropped at the retention
+ * window, with nothing failing in between.
+ */
+export const sightingExportColumns: string[] = SIGHTING_COLS.map((c) => c.name)
 
 const BID_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },

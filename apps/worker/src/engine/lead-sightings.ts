@@ -134,6 +134,7 @@ export interface FinalizeSightingInput {
   partners_responded?: number | null
   reject_reason?: string | null
   outcome?: string | null   // 'successful' | 'completed' | 'failed' — mirrors workflow_executions.outcome
+  quoted_rate_cents?: number | null
 }
 
 // ============================================================
@@ -467,6 +468,10 @@ export async function finalizeSighting(
     partners_responded: fields.partners_responded ?? null,
     reject_reason: fields.reject_reason ?? null,
     outcome: fields.outcome ?? null,
+    // Named here as well as on the computed type: this update lists its columns
+    // explicitly, so a field added only to SightingFinalizeFields is dropped on
+    // the way to the database and every derivation test stays green (L510).
+    quoted_rate_cents: fields.quoted_rate_cents ?? null,
     updated_at: new Date().toISOString(),
   }
 
@@ -657,6 +662,47 @@ export interface SightingFinalizeFields {
   partners_responded: number | null
   reject_reason: string | null
   outcome: 'successful' | 'completed' | 'failed'
+  /**
+   * The rate this run quoted back to the SOURCE that sent the lead, in cents.
+   *
+   * Deliberately not a row in lead_sighting_bids: bid_cents there means what a
+   * BUYER offered us, so putting a cost in it would make every total over that
+   * table add a cost to revenue. Held here beside source_name, which says who
+   * the quote went to, so it generalises to any inbound relationship rather
+   * than being engine-specific (the engine and both RML flows quote one today).
+   *
+   * Null when no offer was quoted, which is a different fact from a quote of
+   * zero, so a zero is recorded as zero.
+   */
+  quoted_rate_cents: number | null
+}
+
+/**
+ * The rate quoted to the lead's source, read from the CODE node that built the
+ * response body.
+ *
+ * Gated on the node TYPE, not on the output shape alone, for the reason
+ * bid-log.ts documents: the `response` node downstream re-emits the same body,
+ * so a shape-only rule reads one quote as two and lets iteration order pick the
+ * winner. A workflow that builds its response entirely inside a response node's
+ * own template carries no producer and honestly reports null.
+ */
+export function extractQuotedRate(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+): number | null {
+  const typeByNamespace = new Map(nodes.map((n) => [n.namespace, n.type as string]))
+  for (const [namespace, step] of Object.entries(steps)) {
+    if (typeByNamespace.get(namespace) !== 'code') continue
+    if (step?.status !== 'completed') continue
+    const body = (step.output as { body?: unknown } | null)?.body
+    const offers = (body as { offers?: unknown } | null)?.offers
+    if (!Array.isArray(offers) || offers.length === 0) continue
+    const rate = (offers[0] as { rate?: unknown } | null)?.rate
+    if (typeof rate !== 'number' || !Number.isFinite(rate)) continue
+    return Math.round(rate * 100)
+  }
+  return null
 }
 
 export function computeSightingFinalize(
@@ -727,6 +773,7 @@ export function computeSightingFinalize(
     partners_responded: bidSummary.responded,
     reject_reason,
     outcome,
+    quoted_rate_cents: extractQuotedRate(steps, nodes),
   }
 }
 
