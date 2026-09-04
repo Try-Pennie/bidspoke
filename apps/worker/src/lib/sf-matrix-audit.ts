@@ -16,6 +16,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { sendMatrixChangeAlert } from './slack'
 import { parseJson } from './json'
 import type { MatrixConfigChange, MatrixRowEdit, MatrixRowSummary } from './slack'
@@ -77,11 +78,15 @@ export interface AuditResult {
 export async function runMatrixAudit(env: Env, supabase: SupabaseClient): Promise<AuditResult> {
   const startedAt = new Date().toISOString()
 
-  const sfRows = await querySalesforceMatrixRows(env)
-  const existing = await readSnapshot(supabase)
+  // Worker-level, so it has no organization of its own: the one holding the
+  // global credentials is resolved from the data (#1174), and a lookup that
+  // cannot name exactly one refuses rather than reading as the wrong tenant.
+  const { orgId, error: orgError } = await resolveSalesforceCredentialOrg(supabase)
+  if (!orgId) throw new Error(`SF audit cannot resolve the Salesforce credential org: ${orgError}`)
+  const { instanceUrl } = await requireSalesforceCreds(env, supabase, orgId, 'the bid matrix audit')
 
-  const rawEnv = env as unknown as Record<string, string | undefined>
-  const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
+  const sfRows = await querySalesforceMatrixRows(env, supabase, orgId)
+  const existing = await readSnapshot(supabase)
   const diff = computeAuditDiff(existing, sfRows)
 
   const result: AuditResult = {
@@ -219,15 +224,17 @@ function identityKey(r: AuditSnapshot): string {
 
 // ── Salesforce ────────────────────────────────────────────────────────────────
 
-async function querySalesforceMatrixRows(env: Env): Promise<SalesforceBidRow[]> {
-  const rawEnv = env as unknown as Record<string, string | undefined>
-  const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
-  const clientId = rawEnv.SALESFORCE_CLIENT_ID ?? ''
-  const clientSecret = rawEnv.SALESFORCE_CLIENT_SECRET ?? ''
-
-  if (!instanceUrl || !clientId || !clientSecret) {
-    throw new Error('SF audit requires SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET')
-  }
+async function querySalesforceMatrixRows(
+  env: Env,
+  supabase: SupabaseClient,
+  orgId: string
+): Promise<SalesforceBidRow[]> {
+  const { instanceUrl, clientId, clientSecret } = await requireSalesforceCreds(
+    env,
+    supabase,
+    orgId,
+    'the bid matrix audit',
+  )
 
   // Audit is a worker-level concern; no per-org token namespacing.
   const token = await getSalesforceToken(env, 'sf-matrix-audit', instanceUrl, clientId, clientSecret)

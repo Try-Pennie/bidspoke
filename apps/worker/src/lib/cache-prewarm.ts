@@ -6,6 +6,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { loadWorkflowDefinition } from '../engine/definition-loader'
 import { loadEnvVars } from './env-loader'
+import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { loadPartnerConstants } from './partner-constants-loader'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import type { Env } from '../index'
@@ -26,24 +27,27 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const orgIds = Array.from(new Set(workflows.map((w) => w.organization_id as string)))
 
-  // SF creds are currently CF secrets (single-tenant). Read once here and pass
-  // to the per-org token warmer below.
-  const rawEnv = env as unknown as Record<string, unknown>
-  const sfInstance = (typeof rawEnv.SALESFORCE_INSTANCE_URL === 'string' ? rawEnv.SALESFORCE_INSTANCE_URL : '').replace(/\/$/, '')
-  const sfClientId = typeof rawEnv.SALESFORCE_CLIENT_ID === 'string' ? rawEnv.SALESFORCE_CLIENT_ID : ''
-  const sfClientSecret = typeof rawEnv.SALESFORCE_CLIENT_SECRET === 'string' ? rawEnv.SALESFORCE_CLIENT_SECRET : ''
-  const canWarmSalesforce = sfInstance !== '' && sfClientId !== '' && sfClientSecret !== ''
+  // The comment that stood here said "SF creds are currently CF secrets
+  // (single-tenant)", and that was measurably wrong: only CLIENT_SECRET is a
+  // Worker secret, so `canWarmSalesforce` was ALWAYS false and the Salesforce
+  // token has never once been prewarmed (#1174). Resolved per organization now,
+  // through the one implementation, because the credentials are per organization.
 
   const perOrg = orgIds.flatMap((orgId) => {
     const tasks: Promise<unknown>[] = [
       loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY).catch(() => undefined),
       loadPartnerConstants(orgId, env.WORKFLOW_CACHE, supabase).catch(() => undefined),
     ]
-    if (canWarmSalesforce) {
-      tasks.push(
-        getSalesforceToken(env, orgId, sfInstance, sfClientId, sfClientSecret).catch(() => undefined)
-      )
-    }
+    // Declines quietly for an organization with no credentials: a prewarm is an
+    // optimisation and must not fail the run, and the jobs that NEED them report
+    // their absence loudly themselves.
+    tasks.push(
+      resolveSalesforceCredsFor(env, supabase, orgId)
+        .then((r) => (r.creds
+          ? getSalesforceToken(env, orgId, r.creds.instanceUrl, r.creds.clientId, r.creds.clientSecret)
+          : undefined))
+        .catch(() => undefined)
+    )
     return tasks
   })
 
@@ -55,6 +59,6 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env): Promi
 
   const durationMs = Date.now() - start
   console.log(
-    `[prewarm] refreshed ${workflows.length} workflow defs, ${orgIds.length} orgs (env + partner constants${canWarmSalesforce ? ' + SF token' : ''}) in ${durationMs}ms`
+    `[prewarm] refreshed ${workflows.length} workflow defs, ${orgIds.length} orgs (env + partner constants + SF token where configured) in ${durationMs}ms`
   )
 }
