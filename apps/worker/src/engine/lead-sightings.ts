@@ -6,7 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
-import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, type ProjectedBidAttempt } from './bid-log'
+import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, type ProjectedBidAttempt } from './bid-log'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -687,6 +687,9 @@ export interface SightingFinalizeFields {
  * winner. A workflow that builds its response entirely inside a response node's
  * own template carries no producer and honestly reports null.
  */
+// The envelopes a quoted body can arrive in, outermost first (#1157).
+const QUOTE_WRAPPER_KEYS = ['response'] as const
+
 export function extractQuotedRate(
   steps: Record<string, StepOutput>,
   nodes: NodeDefinition[],
@@ -695,12 +698,18 @@ export function extractQuotedRate(
   for (const [namespace, step] of Object.entries(steps)) {
     if (typeByNamespace.get(namespace) !== 'code') continue
     if (step?.status !== 'completed') continue
-    const body = (step.output as { body?: unknown } | null)?.body
-    const offers = (body as { offers?: unknown } | null)?.offers
-    if (!Array.isArray(offers) || offers.length === 0) continue
-    const rate = (offers[0] as { rate?: unknown } | null)?.rate
-    if (typeof rate !== 'number' || !Number.isFinite(rate)) continue
-    return Math.round(rate * 100)
+    // Lead Economy's return_response returns the quoted body one level down,
+    // under `response`, so reading only the outer level recorded none of its
+    // quotes (#1157). The outer level is tried first, and the first rate found
+    // is returned, so a node carrying a body at both depths yields one quote.
+    for (const candidate of payloadCandidates(step.output, QUOTE_WRAPPER_KEYS)) {
+      const body = (candidate as { body?: unknown } | null)?.body
+      const offers = (body as { offers?: unknown } | null)?.offers
+      if (!Array.isArray(offers) || offers.length === 0) continue
+      const rate = (offers[0] as { rate?: unknown } | null)?.rate
+      if (typeof rate !== 'number' || !Number.isFinite(rate)) continue
+      return Math.round(rate * 100)
+    }
   }
   return null
 }

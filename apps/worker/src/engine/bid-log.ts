@@ -42,6 +42,24 @@ function bidProducerSteps(
   )
 }
 
+// A producer node does not always return the payload at its TOP level (#1157).
+// Lead Economy's `return_response` wraps Tripoint's response under
+// `tripointResult`, beside the body it quotes back to the source, so both
+// recognizers below found nothing while the node-type gate above passed it:
+// 396 of 2,901 runs in 4 hours carried a Tripoint result and none was recorded.
+//
+// The wrappers to look inside are an explicit ordered list, never a recursive
+// search: a search would also match a copy re-emitted further down the tree,
+// which is the double-count the type gate exists to prevent. Callers take the
+// FIRST match, so a node satisfying a recognizer at two depths yields one row.
+export function payloadCandidates(output: unknown, wrapperKeys: readonly string[]): unknown[] {
+  const candidates: unknown[] = [output]
+  if (typeof output === 'object' && output !== null) {
+    for (const key of wrapperKeys) candidates.push((output as Record<string, unknown>)[key])
+  }
+  return candidates
+}
+
 export interface DerivedBidMeta {
   sighting_id: string
   trace_id: string
@@ -64,6 +82,17 @@ function isTripointBidOutput(output: unknown): output is TripointBidOutput {
   if (typeof output !== 'object' || output === null) return false
   const o = output as Record<string, unknown>
   return 'resultCode' in o && ('qualified' in o || 'skipped' in o || 'createLead' in o)
+}
+
+// The Tripoint payload for a step, at whichever depth this flow returns it:
+// the top level (Engine's `tripoint_ping`) or under `tripointResult` (Lead
+// Economy's `return_response`). Null when the step is not a Tripoint bid.
+const TRIPOINT_WRAPPER_KEYS = ['tripointResult'] as const
+function tripointBidOutput(output: unknown): TripointBidOutput | null {
+  for (const candidate of payloadCandidates(output, TRIPOINT_WRAPPER_KEYS)) {
+    if (isTripointBidOutput(candidate)) return candidate
+  }
+  return null
 }
 
 // RML (LendSwift/GigFi) ping output (#381). The bid is nested two levels deep:
@@ -158,15 +187,16 @@ export function deriveCodeNodeBidAttempts(
       is_test: meta.is_test,
     })
 
-    if (isTripointBidOutput(output)) {
+    const tripoint = tripointBidOutput(output)
+    if (tripoint) {
       // Tripoint's response carries no bid amount (see #349/#354), so bid_cents
       // stays null.
       const base = baseRow('tripoint', null)
-      if (output.skipped === true) {
+      if (tripoint.skipped === true) {
         rows.push({ ...base, classification: null, decline_reason: null, skip_reason: 'skipped' })
         continue
       }
-      const code = Number(output.resultCode)
+      const code = Number(tripoint.resultCode)
       const result = Number.isFinite(code) ? classifyTripointResultCode(code) : 'Fail'
       const declineReason = Number.isFinite(code) ? `result_code_${code}` : null
       if (result === 'Success') {
@@ -227,11 +257,12 @@ export function deriveCodeNodeBidSummary(
   let winnerBidCents: number | null = null
   for (const [namespace, step] of bidProducerSteps(steps, nodes)) {
     const output = step?.output
-    if (isTripointBidOutput(output)) {
-      if (output.skipped === true) continue
+    const tripoint = tripointBidOutput(output)
+    if (tripoint) {
+      if (tripoint.skipped === true) continue
       attempted++
       responded++
-      const code = Number(output.resultCode)
+      const code = Number(tripoint.resultCode)
       if (Number.isFinite(code) && classifyTripointResultCode(code) === 'Success') winner = 'tripoint'
       continue
     }
