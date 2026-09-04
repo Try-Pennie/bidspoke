@@ -2105,6 +2105,7 @@ export type Database = {
         Returns: {
           active: boolean
           failures_in_window: number
+          jobid: number
           jobname: string
           last_failure_at: string
           last_failure_message: string
@@ -2192,7 +2193,7 @@ export type Database = {
         Args: {
           p_erased_execution_count: number
           p_incomplete_count: number
-          p_max_measurement_age: unknown
+          p_max_measurement_age: string
           p_measured_at: string
           p_now: string
           p_orphan_execution_count: number
@@ -2206,7 +2207,7 @@ export type Database = {
       }
       verified_purgeable_days: {
         Args: {
-          p_max_measurement_age?: unknown
+          p_max_measurement_age?: string
           p_now?: string
           p_parent: string
           p_retention_days: number

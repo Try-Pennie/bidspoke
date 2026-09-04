@@ -80,6 +80,14 @@ export function expectedGapMs(schedule: string): number | null {
 
 /** One job's health, as the database reports it. */
 export interface PgCronJob {
+  /**
+   * pg_cron's own identity for this job, and the only field that changes when a
+   * job is rescheduled. `cron.unschedule` plus `cron.schedule` mints a new one
+   * and orphans the old jobid's run history, which is exactly the event the
+   * first-seen grace exists to cover, so everything about "is this job new"
+   * keys on this rather than on anything descriptive (L576).
+   */
+  jobid: number
   jobname: string
   schedule: string
   active: boolean
@@ -96,6 +104,7 @@ export type PgCronStatus =
   | 'stalled'
   | 'never_succeeded'
   | 'awaiting_first_run'
+  | 'unknown_identity'
   | 'unknown_schedule'
   | 'inactive'
 
@@ -109,11 +118,11 @@ export type PgCronStatus =
  * failure window (L36, L160). Keying on the exact timestamp rather than a
  * boolean means a NEW failure always pages: it carries a new time.
  *
- * `firstSeenMs`: when the watcher first saw this job with no success on record,
- * or null when it has no stamp. A rescheduled job gets a new jobid and loses its
- * whole run history, so it reads as never having succeeded until its first slot
- * arrives; the grace period exists so a schedule change working as intended is
- * not paged as a fault.
+ * `firstSeenMs`: when the watcher first saw THIS job, meaning this jobid, with no
+ * success on record, or null when it has no stamp. A rescheduled job gets a new
+ * jobid and loses its whole run history, so it reads as never having succeeded
+ * until its first slot arrives; the grace period exists so a reschedule working
+ * as intended is not paged as a fault.
  *
  * Both are required, not defaulted: null means the watcher knows nothing, and
  * unknown must land on the alerting side (L168).
@@ -188,6 +197,20 @@ export function judgeJob(job: PgCronJob, nowMs: number, ctx: JudgeContext): PgCr
   }
 
   if (job.last_success_at === null) {
+    // The grace below is only worth anything if the stamp it reads belongs to
+    // THIS job, and jobid is what says so. A health read that returned no jobid
+    // is the one window where code can run ahead of its migration; it gets its
+    // own words rather than being reported as a job that never ran, because
+    // those are different causes with different remedies (L11), and it does not
+    // silently receive grace, because unknown lands on the alerting side (L168).
+    if (!Number.isFinite(job.jobid)) {
+      return {
+        jobname: job.jobname,
+        status: 'unknown_identity',
+        detail:
+          'no run on record, and the health read returned no jobid for this job, so a job that was just rescheduled cannot be told apart from one that has never run',
+      }
+    }
     // A job the watcher only recently started seeing without history gets one
     // full staleness window before this pages: a rescheduled job's first slot
     // may simply not have arrived yet. No stamp means no grace.
@@ -241,14 +264,19 @@ const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 const alertedFailureKey = (jobname: string) => `pg-cron-watch:${jobname}:alerted-failure`
 const ALERTED_FAILURE_TTL_SECONDS = 25 * 60 * 60
 
-// When the watcher first saw this job with no success on record. Keyed on the
-// schedule too, so a reschedule (which recreates the job and orphans its run
-// history) starts a fresh grace period. The one shape this misses is a job
-// recreated with an IDENTICAL schedule, which pages immediately; jobid would be
-// the true identity, but pg_cron_health does not return it and one spurious
-// page in that corner is not worth widening the function's contract. 90 days
-// outlives the longest grace in use (a monthly schedule's is ~63 days).
-const firstSeenKey = (jobname: string, schedule: string) => `pg-cron-watch:first-seen:${jobname}:${schedule}`
+// When the watcher first saw this job with no success on record, keyed on the
+// jobid, which is the identity that DISAPPEARS when the job is replaced.
+//
+// It was keyed on jobname plus schedule until #1152, and that is a key more
+// stable than the thing it describes: a migration that changes only a job's
+// COMMAND still recreates it under a new jobid and orphans its run history,
+// while the name and the schedule stay put. The stamp from the previous
+// incarnation was then read as this one's, the grace was judged to have expired
+// weeks ago, and both nightly rollups paged as never having succeeded 30
+// minutes after a healthy deploy (2026-09-04, stamps dated 2026-08-18). L576.
+//
+// 90 days outlives the longest grace in use (a monthly schedule's is ~63 days).
+const firstSeenKey = (jobid: number) => `pg-cron-watch:first-seen:${jobid}`
 const FIRST_SEEN_TTL_SECONDS = 90 * 24 * 60 * 60
 
 /** Statuses that are informational: logged, never paged. */
@@ -316,8 +344,8 @@ async function checkOne(
   if (row.failures_in_window > 0) {
     ctx.alertedFailureAt = await kv.get(alertedFailureKey(row.jobname))
   }
-  if (row.active && row.last_success_at === null) {
-    const key = firstSeenKey(row.jobname, row.schedule)
+  if (row.active && row.last_success_at === null && Number.isFinite(row.jobid)) {
+    const key = firstSeenKey(row.jobid)
     const stamp = await kv.get(key)
     if (stamp === null) {
       await kv.put(key, String(nowMs), { expirationTtl: FIRST_SEEN_TTL_SECONDS })
