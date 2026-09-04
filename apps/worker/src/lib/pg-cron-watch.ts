@@ -97,16 +97,26 @@ export interface PgCronJob {
   last_success_at: string | null
 }
 
-export type PgCronStatus =
-  | 'healthy'
-  | 'failing'
-  | 'recovered'
-  | 'stalled'
-  | 'never_succeeded'
-  | 'awaiting_first_run'
-  | 'unknown_identity'
-  | 'unknown_schedule'
-  | 'inactive'
+/**
+ * Every verdict this check can reach.
+ *
+ * A list rather than a bare union because the alert wording, the quiet set and
+ * the tests all have to agree with it, and each one maintained by hand beside
+ * this would check only what it happens to contain (L41, L96).
+ */
+const ALL_STATUSES = [
+  'healthy',
+  'failing',
+  'recovered',
+  'stalled',
+  'never_succeeded',
+  'awaiting_first_run',
+  'unknown_identity',
+  'unknown_schedule',
+  'inactive',
+] as const
+
+export type PgCronStatus = (typeof ALL_STATUSES)[number]
 
 /**
  * What the watcher remembers between passes, from KV.
@@ -280,7 +290,23 @@ const firstSeenKey = (jobid: number) => `pg-cron-watch:first-seen:${jobid}`
 const FIRST_SEEN_TTL_SECONDS = 90 * 24 * 60 * 60
 
 /** Statuses that are informational: logged, never paged. */
-export const QUIET_STATUSES: ReadonlySet<PgCronStatus> = new Set(['healthy', 'recovered', 'awaiting_first_run'])
+const QUIET = ['healthy', 'recovered', 'awaiting_first_run'] as const
+export type QuietStatus = (typeof QUIET)[number]
+export const QUIET_STATUSES: ReadonlySet<PgCronStatus> = new Set(QUIET)
+
+/**
+ * Every status that actually reaches Slack, derived rather than listed again.
+ *
+ * The alert builder keys its headline and its remedy on the status and falls
+ * back to generic wording for anything absent, so a status added without wording
+ * pages with a headline that says nothing and a remedy pointing at the wrong
+ * place. `Record<AlertingStatus, string>` makes that a compile error, and this
+ * array lets the tests walk the real vocabulary instead of a copy of it (L113).
+ */
+export type AlertingStatus = Exclude<PgCronStatus, QuietStatus>
+export const ALERTING_STATUSES: readonly AlertingStatus[] = ALL_STATUSES.filter(
+  (s): s is AlertingStatus => !QUIET_STATUSES.has(s),
+)
 
 export interface PgCronCheckResult extends PgCronVerdict {
   alerted: boolean

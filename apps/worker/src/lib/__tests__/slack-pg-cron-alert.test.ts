@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendPgCronAlert } from '../slack'
+import { ALERTING_STATUSES } from '../pg-cron-watch'
 
 /**
  * The Slack message for a failing or stalled database job (#770).
@@ -83,7 +84,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
   })
 
   it('names the job and its schedule in every message', async () => {
-    for (const status of ['failing', 'stalled', 'never_succeeded', 'unknown_schedule', 'inactive']) {
+    for (const status of ALERTING_STATUSES) {
       await send(status)
       const body = JSON.stringify(lastPost())
       expect(body, `${status} does not name the job`).toContain('refresh-stats')
@@ -92,9 +93,27 @@ describe('sendPgCronAlert: each status says a different thing', () => {
   })
 
   it('always includes a how-to-fix line', async () => {
-    for (const status of ['failing', 'stalled', 'never_succeeded', 'unknown_schedule', 'inactive']) {
+    for (const status of ALERTING_STATUSES) {
       await send(status)
       expect(JSON.stringify(lastPost()), `${status} has no fix hint`).toContain('How to fix')
+    }
+  })
+
+  it('gives every status that can reach Slack its own headline and its own remedy', async () => {
+    // The alert builder looks its wording up by status and falls back to generic
+    // text for anything absent, so a status added later pages with a headline
+    // that says nothing and a remedy that points at the wrong place (L113).
+    //
+    // The vocabulary is read from the watcher rather than listed again here: a
+    // list maintained by hand beside the thing it mirrors checks only what it
+    // happens to contain, which is how unknown_identity shipped with no wording
+    // at all while every test here stayed green (L41, L96).
+    expect(ALERTING_STATUSES.length, 'no statuses to check, so this would pass vacuously').toBeGreaterThan(4)
+    for (const status of ALERTING_STATUSES) {
+      await send(status)
+      const body = JSON.stringify(lastPost())
+      expect(body, `${status} falls back to the generic headline`).not.toContain('needs attention')
+      expect(body, `${status} falls back to the generic remedy`).not.toContain('read this job in')
     }
   })
 })
