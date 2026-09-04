@@ -107,7 +107,7 @@ describe('revenueUpdates', () => {
 
 import { vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { runTripointRevenueFill, resolveTripointOrg, revenueSoql, indexRevenueRecords, chunk, LOOKBACK_MINUTES } from '../tripoint-revenue-fill'
+import { runTripointRevenueFill, resolveTripointOrg, pickSalesforceCreds, revenueSoql, indexRevenueRecords, chunk, LOOKBACK_MINUTES } from '../tripoint-revenue-fill'
 
 interface DbResponses {
   bids?: { data?: unknown[] | null; error?: { message: string } | null }
@@ -423,5 +423,71 @@ describe('resolveTripointOrg', () => {
     const out = await resolveTripointOrg(client)
     expect(out.orgId).toBeNull()
     expect(out.error).toBe('no_tripoint_partner_config')
+  })
+})
+
+describe('pickSalesforceCreds', () => {
+  // Measured on prod 2026-09-04: all three Salesforce values live in the
+  // environment_variables table (SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID,
+  // SALESFORCE_CLIENT_SECRET), and only CLIENT_SECRET is also a Cloudflare
+  // secret. A reader that consults only the Cloudflare env therefore sees one of
+  // three and refuses, which is what the first version of this job did and what
+  // #982 reports for the hourly matrix sync.
+  const cf = { SALESFORCE_CLIENT_SECRET: 'cf-secret' }
+
+  it('resolves all three from the organization env store', () => {
+    const out = pickSalesforceCreds(
+      { SALESFORCE_INSTANCE_URL: 'https://x.my.salesforce.com', SALESFORCE_CLIENT_ID: 'cid', SALESFORCE_CLIENT_SECRET: 'csec' },
+      {},
+    )
+    expect(out.missing).toEqual([])
+    expect(out.creds).toEqual({ instanceUrl: 'https://x.my.salesforce.com', clientId: 'cid', clientSecret: 'csec' })
+  })
+
+  it('prefers the organization store over the Cloudflare env', () => {
+    // The store is where all three are maintained and is what the engine's
+    // Salesforce steps use successfully, so it wins where both carry a value.
+    const out = pickSalesforceCreds(
+      { SALESFORCE_INSTANCE_URL: 'https://x.my.salesforce.com', SALESFORCE_CLIENT_ID: 'cid', SALESFORCE_CLIENT_SECRET: 'store-secret' },
+      cf,
+    )
+    expect(out.creds?.clientSecret).toBe('store-secret')
+  })
+
+  it('falls back to the Cloudflare env for a value the store does not carry', () => {
+    const out = pickSalesforceCreds(
+      { SALESFORCE_INSTANCE_URL: 'https://x.my.salesforce.com', SALESFORCE_CLIENT_ID: 'cid' },
+      cf,
+    )
+    expect(out.creds?.clientSecret).toBe('cf-secret')
+  })
+
+  it('strips a trailing slash from the instance url', () => {
+    const out = pickSalesforceCreds(
+      { SALESFORCE_INSTANCE_URL: 'https://x.my.salesforce.com/', SALESFORCE_CLIENT_ID: 'cid', SALESFORCE_CLIENT_SECRET: 's' },
+      {},
+    )
+    expect(out.creds?.instanceUrl).toBe('https://x.my.salesforce.com')
+  })
+
+  it('names every value it could not find, rather than only the first', () => {
+    // A message naming one of three sends someone to set one value and hit the
+    // same error twice more.
+    const out = pickSalesforceCreds({}, {})
+    expect(out.creds).toBeNull()
+    expect(out.missing).toEqual([
+      'SALESFORCE_INSTANCE_URL',
+      'SALESFORCE_CLIENT_ID',
+      'SALESFORCE_CLIENT_SECRET',
+    ])
+  })
+
+  it('treats an empty string as missing rather than as a credential', () => {
+    const out = pickSalesforceCreds(
+      { SALESFORCE_INSTANCE_URL: '', SALESFORCE_CLIENT_ID: 'cid', SALESFORCE_CLIENT_SECRET: 's' },
+      {},
+    )
+    expect(out.creds).toBeNull()
+    expect(out.missing).toEqual(['SALESFORCE_INSTANCE_URL'])
   })
 })

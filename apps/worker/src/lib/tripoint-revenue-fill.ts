@@ -30,6 +30,7 @@ import { formatErr } from './format-error'
 import { requireRowsAffected } from './db-retry'
 import { parseJson } from './json'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { loadEnvVars } from './env-loader'
 import type { Env } from '../index'
 
 export interface FillCandidate {
@@ -346,20 +347,67 @@ async function countExportedUnpriced(
  * leaves its rows for the next run, rather than treating an outage as a set of
  * prospects Salesforce does not have.
  */
+export interface SalesforceCreds {
+  instanceUrl: string
+  clientId: string
+  clientSecret: string
+}
+
+/**
+ * Where the Salesforce credentials actually live, measured rather than assumed.
+ *
+ * All three sit in the environment_variables table, which is what the engine's
+ * Salesforce steps read and why they work thousands of times a day. Only
+ * SALESFORCE_CLIENT_SECRET is ALSO a Cloudflare secret. So a reader that
+ * consults only the Cloudflare env sees one value of three and refuses, which is
+ * what the first version of this job did (measured on prod 2026-09-04) and what
+ * #982 reports for the hourly bid matrix sync.
+ *
+ * The store wins where both carry a value, because it is the copy the engine
+ * uses successfully. Every missing name is reported, not just the first, or
+ * somebody sets one value and meets the same error twice more.
+ */
+export function pickSalesforceCreds(
+  orgVars: Record<string, string>,
+  cfEnv: Record<string, string | undefined>,
+): { creds: SalesforceCreds | null; missing: string[] } {
+  const pick = (key: string): string => {
+    const fromStore = orgVars[key]
+    if (typeof fromStore === 'string' && fromStore.trim()) return fromStore.trim()
+    const fromCf = cfEnv[key]
+    return typeof fromCf === 'string' && fromCf.trim() ? fromCf.trim() : ''
+  }
+
+  const instanceUrl = pick('SALESFORCE_INSTANCE_URL').replace(/\/$/, '')
+  const clientId = pick('SALESFORCE_CLIENT_ID')
+  const clientSecret = pick('SALESFORCE_CLIENT_SECRET')
+
+  const missing: string[] = []
+  if (!instanceUrl) missing.push('SALESFORCE_INSTANCE_URL')
+  if (!clientId) missing.push('SALESFORCE_CLIENT_ID')
+  if (!clientSecret) missing.push('SALESFORCE_CLIENT_SECRET')
+  if (missing.length) return { creds: null, missing }
+
+  return { creds: { instanceUrl, clientId, clientSecret }, missing: [] }
+}
+
 export function salesforceRevenueFetcher(
   env: Env,
   orgId: string,
+  supabase: SupabaseClient,
 ): (prospectIds: string[]) => Promise<SalesforceRevenueRecord[]> {
   return async (prospectIds: string[]) => {
-    const rawEnv = env as unknown as Record<string, string | undefined>
-    const instanceUrl = (rawEnv.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
-    const clientId = rawEnv.SALESFORCE_CLIENT_ID ?? ''
-    const clientSecret = rawEnv.SALESFORCE_CLIENT_SECRET ?? ''
-    if (!instanceUrl || !clientId || !clientSecret) {
+    const orgVars = await loadEnvVars(orgId, env.WORKFLOW_CACHE, supabase, env.SECRET_ENCRYPTION_KEY)
+    const { creds, missing } = pickSalesforceCreds(
+      orgVars,
+      env as unknown as Record<string, string | undefined>,
+    )
+    if (!creds) {
       throw new Error(
-        'Salesforce env vars (SALESFORCE_INSTANCE_URL, SALESFORCE_CLIENT_ID, SALESFORCE_CLIENT_SECRET) are required to fill Tripoint revenue',
+        `Salesforce credentials missing for the Tripoint revenue fill: ${missing.join(', ')} (checked the organization env store and the Worker env)`,
       )
     }
+    const { instanceUrl, clientId, clientSecret } = creds
 
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
     const soql = revenueSoql(prospectIds)
@@ -421,5 +469,5 @@ export async function runTripointRevenueFillForEnv(
       exported_unpriced: 0, errors: [error ?? 'no_tripoint_partner_config'],
     }
   }
-  return runTripointRevenueFill({ supabase, fetchRevenue: salesforceRevenueFetcher(env, orgId) })
+  return runTripointRevenueFill({ supabase, fetchRevenue: salesforceRevenueFetcher(env, orgId, supabase) })
 }
