@@ -244,11 +244,19 @@ const BID_COLS: ColSpec[] = [
   { name: 'duration_ms', type: 'number' },
   { name: 'http_status', type: 'number' },
   { name: 'bid_cents', type: 'number' },
+  // Our ESTIMATE of the lead's value, filled from the Salesforce formula field
+  // ExternalExchangeRevenue__c (#354). Deliberately NOT folded into bid_cents,
+  // which means what a buyer offered us on every row it holds: mixing a
+  // derivation into it would make every warehouse sum part measurement and part
+  // estimate with nothing announcing it. Same reasoning as quoted_rate_cents.
+  { name: 'estimated_revenue_cents', type: 'number' },
   { name: 'classification', type: 'varchar' },
   { name: 'decline_reason', type: 'varchar' },
   { name: 'resolver_type', type: 'varchar' },
   { name: 'skip_reason', type: 'varchar' },
 ]
+
+export const bidExportColumns: string[] = BID_COLS.map((c) => c.name)
 
 // ============================================================
 // Public API

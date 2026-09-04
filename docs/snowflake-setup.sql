@@ -8,6 +8,12 @@
 -- ask the engineer who created bidspoke_service / bidspoke_role).
 -- ============================================================================
 
+-- NOTE: this file is a record, not the authority. Columns have been added to the
+-- live tables without reaching it: quoted_rate_cents (#1158) was live and
+-- exporting while this file did not name it, found on 2026-09-04. Check the live
+-- table before trusting the list below, and add the column here in the same
+-- change that adds it to the export list in apps/worker/src/lib/sightings-export.ts.
+
 USE DATABASE BIDSPOKE;
 USE SCHEMA PUBLIC;
 USE ROLE bidspoke_role;
@@ -53,7 +59,8 @@ CREATE TABLE IF NOT EXISTS lead_sightings (
   outcome                     VARCHAR,                 -- 'successful' | 'completed' | 'failed'
 
   winning_partner_slug        VARCHAR,
-  winning_bid_cents           NUMBER,
+  winning_bid_cents           NUMBER,                  -- what the BUYER offered us
+  quoted_rate_cents           NUMBER,                  -- what we quoted the SOURCE (#1158)
   partners_attempted          NUMBER,
   partners_responded          NUMBER,
 
@@ -100,7 +107,8 @@ CREATE TABLE IF NOT EXISTS lead_sighting_bids (
   duration_ms                 NUMBER,
   http_status                 NUMBER,
 
-  bid_cents                   NUMBER,
+  bid_cents                   NUMBER,                  -- what the BUYER offered us
+  estimated_revenue_cents     NUMBER,                  -- OUR estimate, from Salesforce (#354)
   classification              VARCHAR,
   decline_reason              VARCHAR,
   resolver_type               VARCHAR,
