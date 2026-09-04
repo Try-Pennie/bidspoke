@@ -7,6 +7,7 @@ import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
+import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
@@ -563,6 +564,21 @@ export default {
             }
           })
           .catch((e) => console.error('[workflow-schedule] check failed:', e))
+      )
+    } else if (event.cron === '*/15 * * * *') {
+      // #354: Tripoint's response carries no amount, so its wins had no price at
+      // all. The figure comes from Salesforce afterwards, and this runs every 15
+      // minutes because bid rows reach Snowflake about 57 minutes after the bid
+      // and the purge then deletes them: a value written after that never
+      // reaches the warehouse. `exported_unpriced` is the residual it could not
+      // reach, reported rather than assumed.
+      ctx.waitUntil(
+        runTripointRevenueFillForEnv(supabase, env)
+          .then((r) => {
+            console.log(`[tripoint-revenue] scanned=${r.scanned} filled=${r.filled} unmatched=${r.unmatched} unusable=${r.unusable} no_value=${r.no_value} exported_unpriced=${r.exported_unpriced}`)
+            if (r.errors.length) console.error(`[tripoint-revenue] errors=${r.errors.join(' | ')}`)
+          })
+          .catch((e) => console.error('[tripoint-revenue] fill failed:', e))
       )
     } else if (event.cron === '* * * * *') {
       ctx.waitUntil(

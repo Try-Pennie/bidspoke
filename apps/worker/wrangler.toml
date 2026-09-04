@@ -140,8 +140,20 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    audit, and :37/:47 the sightings export and purges.
 #                                    This job reads execution_steps in bulk, which is the
 #                                    same table the timeout audit's percentile queries hit.
+#   "*/15 * * * *" every 15 min : fill each Tripoint win with what the lead was
+#                                    worth, read back from Salesforce (#354).
+#                                    Frequent NOT because the work is urgent but
+#                                    because of retention: bid rows reach
+#                                    Snowflake about 57 minutes after the bid
+#                                    (measured 2026-09-04) and the purge then
+#                                    deletes the exported row, so a value written
+#                                    after export never reaches the warehouse and
+#                                    is destroyed. A daily job would fill almost
+#                                    nothing anybody could query. About 26 rows
+#                                    and one Salesforce query per run.
+
 [triggers]
-crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "* * * * *"]
 
 # CPU ceiling, stated explicitly rather than inherited (#871).
 #

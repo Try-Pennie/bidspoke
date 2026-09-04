@@ -820,6 +820,7 @@ export type Database = {
           created_at: string
           decline_reason: string | null
           duration_ms: number | null
+          estimated_revenue_cents: number | null
           execution_id: string
           exported_at: string | null
           http_status: number | null
@@ -844,6 +845,7 @@ export type Database = {
           created_at?: string
           decline_reason?: string | null
           duration_ms?: number | null
+          estimated_revenue_cents?: number | null
           execution_id: string
           exported_at?: string | null
           http_status?: number | null
@@ -868,6 +870,7 @@ export type Database = {
           created_at?: string
           decline_reason?: string | null
           duration_ms?: number | null
+          estimated_revenue_cents?: number | null
           execution_id?: string
           exported_at?: string | null
           http_status?: number | null
