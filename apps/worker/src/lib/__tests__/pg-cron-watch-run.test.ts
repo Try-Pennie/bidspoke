@@ -14,7 +14,9 @@ const NOW = Date.parse('2026-08-17T20:00:00.000Z')
 const iso = (ms: number) => new Date(ms).toISOString()
 const HOUR = 3_600_000
 
+let nextJobid = 100
 const healthy = (name: string): PgCronJob => ({
+  jobid: nextJobid++,
   jobname: name,
   schedule: '0 3 * * *',
   active: true,
@@ -152,26 +154,32 @@ describe('runPgCronWatch: a job with no run history yet', () => {
   // A migration that moves a pg_cron job unschedules and reschedules it, which
   // gives it a new jobid and orphans its run history, so the recreated job reads
   // as never having succeeded until its first slot arrives.
-  const fresh: PgCronJob = { ...healthy('refresh-field-presence-daily-full'), schedule: '52 3 * * *', last_success_at: null }
+  const fresh: PgCronJob = {
+    ...healthy('refresh-field-presence-daily-full'),
+    jobid: 46,
+    schedule: '52 3 * * *',
+    last_success_at: null,
+  }
+  const stampKey = (job: PgCronJob) => `pg-cron-watch:first-seen:${job.jobid}`
 
   it('stamps first-seen and stays quiet while the first slot has not had to come', async () => {
     const kv = fakeKv()
     const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
     expect(results[0]?.status).toBe('awaiting_first_run')
     expect(sendPgCronAlert).not.toHaveBeenCalled()
-    expect(kv.store.get(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`)).toBe(String(NOW))
+    expect(kv.store.get(stampKey(fresh))).toBe(String(NOW))
   })
 
   it('keeps the original first-seen stamp on later passes', async () => {
     const kv = fakeKv()
     await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
     await runPgCronWatch(fakeSupabase([fresh]), kv, NOW + HOUR)
-    expect(kv.store.get(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`)).toBe(String(NOW))
+    expect(kv.store.get(stampKey(fresh))).toBe(String(NOW))
   })
 
   it('pages never_succeeded once the job has had a full cadence window and still no success', async () => {
     const kv = fakeKv()
-    kv.store.set(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`, String(NOW - 72 * HOUR))
+    kv.store.set(stampKey(fresh), String(NOW - 72 * HOUR))
     const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
     expect(results[0]?.status).toBe('never_succeeded')
     expect(sendPgCronAlert).toHaveBeenCalled()
@@ -180,9 +188,42 @@ describe('runPgCronWatch: a job with no run history yet', () => {
   it('pages rather than trusting a first-seen stamp it cannot read', async () => {
     // A corrupt stamp must land on the alerting side (L50).
     const kv = fakeKv()
-    kv.store.set(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`, 'garbage')
+    kv.store.set(stampKey(fresh), 'garbage')
     const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
     expect(results[0]?.status).toBe('never_succeeded')
+    expect(sendPgCronAlert).toHaveBeenCalled()
+  })
+
+  it('stays quiet when the job was rescheduled with the same name and the same schedule', async () => {
+    // 2026-09-04 (#1152). A migration changed only the job's COMMAND, which
+    // still unschedules and reschedules it, so the job came back under a new
+    // jobid with its run history orphaned. The stamp from the job's PREVIOUS
+    // incarnation, written 17 days earlier under an identical name and
+    // schedule, said it had been around all along, and both nightly rollups
+    // paged as never having succeeded 30 minutes after a healthy deploy.
+    const kv = fakeKv()
+    // The stamp as the name-and-schedule keying left it: written for the job's
+    // previous incarnation, and indistinguishable from a stamp for this one.
+    kv.store.set(`pg-cron-watch:first-seen:${fresh.jobname}:${fresh.schedule}`, String(NOW - 17 * 24 * HOUR))
+
+    const results = await runPgCronWatch(fakeSupabase([fresh]), kv, NOW)
+
+    expect(results[0]?.status).toBe('awaiting_first_run')
+    expect(sendPgCronAlert).not.toHaveBeenCalled()
+    expect(kv.store.get(stampKey(fresh))).toBe(String(NOW))
+  })
+
+  it('pages when it cannot tell which job this is', async () => {
+    // The one window where the code can run against a pg_cron_health that does
+    // not return jobid: deployed ahead of its migration. Unknown identity means
+    // no grace can be granted, and it says so in its own words rather than
+    // reading as a job that genuinely never ran (L11, L168).
+    const kv = fakeKv()
+    const noIdentity = { ...fresh } as Partial<PgCronJob>
+    delete noIdentity.jobid
+    const results = await runPgCronWatch(fakeSupabase([noIdentity as PgCronJob]), kv, NOW)
+    expect(results[0]?.status).toBe('unknown_identity')
+    expect(results[0]?.detail).toMatch(/jobid/)
     expect(sendPgCronAlert).toHaveBeenCalled()
   })
 })

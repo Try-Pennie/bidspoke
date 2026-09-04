@@ -19,6 +19,7 @@ const DAY = 24 * HOUR
 const NOW = Date.parse('2026-08-17T20:00:00Z')
 
 const job = (over: Partial<PgCronJob> = {}): PgCronJob => ({
+  jobid: 7,
   jobname: 'a-job',
   schedule: '0 3 * * *',
   active: true,
