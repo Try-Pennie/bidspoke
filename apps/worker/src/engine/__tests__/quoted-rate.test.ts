@@ -180,3 +180,75 @@ describe('quoted_rate_cents', () => {
     expect(sightingExportColumns).toContain('quoted_rate_cents')
   })
 })
+
+/**
+ * #1157: the same depth assumption loses Lead Economy's quote.
+ *
+ * Its `return_response` code node returns the quoted body one level down, under
+ * `response`, beside the Tripoint result: `response.body.offers[0].rate` rather
+ * than `body.offers[0].rate`. Measured on prod 2026-09-04, 187 of 396 runs
+ * reaching a Tripoint result quoted a real numeric rate, and over 90 minutes
+ * the recorded quotes were Engine 455, LendSwift 159, GigFi 178, Lead Economy 0.
+ */
+describe('quoted_rate_cents: Lead Economy wraps the body (#1157)', () => {
+  const leNodes = [node('n-resp', 'return_response', 'code')]
+  const leOpts = { ...opts, lastCompletedNamespace: 'return_response', successNamespaces: ['return_response'] }
+
+  function leSteps(body: Record<string, unknown>, isRejected = false): Record<string, StepOutput> {
+    return {
+      return_response: {
+        status: 'completed',
+        output: {
+          continueExecution: false,
+          isRejected,
+          response: { status: 200, body },
+          tripointResult: { createLead: {}, qualified: !isRejected, resultCode: isRejected ? 1009 : 1001 },
+        },
+      },
+    }
+  }
+
+  it('records a rate quoted inside the response envelope', () => {
+    const out = computeSightingFinalize(
+      leSteps({ requestId: 'trace-1', offers: [{ name: 'Pennie', rate: 3.24, product_type: 'installment_loan' }] }),
+      leNodes,
+      leOpts,
+    )
+    expect(out.quoted_rate_cents).toBe(324)
+  })
+
+  it('records nothing for the rejected shape, which carries no offers', () => {
+    const out = computeSightingFinalize(
+      leSteps({ lead_id: 'lead-1', status: 'rejected', reason: 'unqualified_lead' }, true),
+      leNodes,
+      leOpts,
+    )
+    expect(out.quoted_rate_cents).toBeNull()
+  })
+
+  it('reads a body present at the outer level rather than the wrapped one', () => {
+    // One node satisfying the rule at both depths must yield one quote, and the
+    // outer level is the one every other flow uses. The differing rates exist
+    // only to prove which was read.
+    const steps: Record<string, StepOutput> = {
+      return_response: {
+        status: 'completed',
+        output: {
+          body: { offers: [{ rate: 8 }] },
+          response: { status: 200, body: { offers: [{ rate: 99 }] } },
+        },
+      },
+    }
+    expect(computeSightingFinalize(steps, leNodes, leOpts).quoted_rate_cents).toBe(800)
+  })
+
+  it('carries the wrapped quote onto the durable projection', () => {
+    const projection = buildSightingFinalizeProjection(
+      leSteps({ offers: [{ rate: 1.3 }] }),
+      leNodes,
+      leOpts,
+      { sightingId: 'sight-1', isTest: false },
+    )
+    expect(projection?.quoted_rate_cents).toBe(130)
+  })
+})

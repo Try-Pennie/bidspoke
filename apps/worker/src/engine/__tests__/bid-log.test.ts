@@ -275,3 +275,97 @@ describe('pass-through duplication (#640)', () => {
     expect(deriveCodeNodeBidAttempts(s, meta, n)).toEqual([])
   })
 })
+
+// #1157: Lead Economy's producer is `return_response`, a code node, and it does
+// NOT return Tripoint's response at the top level: it wraps it under
+// `tripointResult` beside the body it quotes back to the source. So the flow
+// passed the node-type gate and still recorded nothing, because both
+// recognizers read only the outer level of a node's output.
+//
+// Shape measured on prod 2026-09-04 (396 of 2,901 runs in 4 hours reach a
+// Tripoint result; exactly one step per run carries it, always return_response;
+// zero steps carry a top-level resultCode).
+const leadEconomy = (tripointResult: Record<string, unknown>, body: Record<string, unknown> = {}) =>
+  steps({
+    return_response: {
+      continueExecution: false,
+      isRejected: false,
+      response: { status: 200, body },
+      tripointResult,
+    },
+  })
+
+describe('deriveCodeNodeBidAttempts: Lead Economy nests the payload (#1157)', () => {
+  it('derives an accepted attempt from a payload wrapped in tripointResult', () => {
+    const rows = attemptsOf(leadEconomy({ createLead: { leadId: 'tp-1' }, qualified: true, resultCode: 1001 }))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      partner_slug: 'tripoint',
+      classification: 'accept',
+      skip_reason: null,
+      decline_reason: null,
+      bid_cents: null,
+    })
+  })
+
+  it('derives a rejection from a wrapped non-approved code', () => {
+    const rows = attemptsOf(leadEconomy({ createLead: { leadId: null }, qualified: false, resultCode: 1009 }))
+    expect(rows[0]).toMatchObject({ classification: 'decline', skip_reason: 'rejected', decline_reason: 'result_code_1009' })
+  })
+
+  it('derives a duplicate from a wrapped duplicate code', () => {
+    const rows = attemptsOf(leadEconomy({ createLead: {}, qualified: false, resultCode: 1020 }))
+    expect(rows[0]).toMatchObject({ classification: 'decline', skip_reason: 'duplicate', decline_reason: 'result_code_1020' })
+  })
+
+  it('records ONE attempt when a node carries the payload at both depths', () => {
+    // Reading a second depth must not double count a node that satisfies the
+    // recognizer twice: that would report two bids for one Tripoint call, which
+    // is the failure #640 fixed for pass-through nodes. The differing codes
+    // exist only to prove which depth was read.
+    const rows = attemptsOf(steps({
+      return_response: {
+        qualified: true,
+        resultCode: 1001,
+        createLead: {},
+        tripointResult: { qualified: false, resultCode: 1009, createLead: {} },
+      },
+    }))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ classification: 'accept' })
+  })
+
+  it('still ignores a node whose output has neither depth', () => {
+    expect(attemptsOf(steps({ return_response: { continueExecution: true, response: { status: 204 } } }))).toEqual([])
+  })
+})
+
+describe('deriveCodeNodeBidSummary: Lead Economy nests the payload (#1157)', () => {
+  it('names tripoint the winner from a wrapped approved code', () => {
+    expect(summaryOf(leadEconomy({ createLead: {}, qualified: true, resultCode: 1014 })))
+      .toEqual({ winner_slug: 'tripoint', winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+
+  it('counts the attempt but names no winner from a wrapped rejection', () => {
+    expect(summaryOf(leadEconomy({ createLead: {}, qualified: false, resultCode: 1009 })))
+      .toEqual({ winner_slug: null, winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+
+  it('counts a wrapped payload once, not once per depth', () => {
+    const s = summaryOf(steps({
+      return_response: {
+        qualified: true, resultCode: 1001, createLead: {},
+        tripointResult: { qualified: true, resultCode: 1001, createLead: {} },
+      },
+    }))
+    expect(s).toEqual({ winner_slug: 'tripoint', winner_bid_cents: null, attempted: 1, responded: 1 })
+  })
+})
+
+describe('bidAttemptsForProjection: Lead Economy (#1157)', () => {
+  it('projects the wrapped attempt so a stranded Lead Economy lead keeps its bid', () => {
+    expect(projectionOf(leadEconomy({ createLead: {}, qualified: true, resultCode: 1001 }))).toEqual([
+      { partner_slug: 'tripoint', classification: 'accept', decline_reason: null, skip_reason: null, resolver_type: 'api', bid_cents: null, http_status: null },
+    ])
+  })
+})
