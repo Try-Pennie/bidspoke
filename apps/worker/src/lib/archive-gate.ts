@@ -254,6 +254,12 @@ async function measureDay(
     sfExecutionCount: toNumber(sf[0], 'the Snowflake execution count'),
     sfStepCount: toNumber(sf[1], 'the Snowflake step count'),
     incompleteCount: toNumber(sf[2], 'the Snowflake incomplete count'),
+    // ZERO IS THE TRUE VALUE TODAY, not a placeholder standing in for a reading
+    // nobody took (L168). Nothing writes an abandonment yet, because the amend
+    // pass's IO half is not built, so no execution has been written off and the
+    // count really is zero. When that lands this reads the abandonment ledger,
+    // counted here and passed in exactly as `erased_execution_count` is.
+    abandonedExecutionCount: 0,
     probeSampled: probe.sampled,
     probeOk: probe.ok,
     probeFailureReason: probe.reason,

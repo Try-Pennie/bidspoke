@@ -62,6 +62,23 @@ export interface DayMeasurement {
   hoursExecutionCount: number
   erasedExecutionCount: number
   incompleteCount: number
+  /**
+   * Incomplete rows the amend pass has WRITTEN OFF as never able to finalise
+   * (`archive/amend.ts`): their execution is gone from Postgres, or it was still
+   * non-terminal three days after archiving.
+   *
+   * Subtracted from `incompleteCount` for the same reason an erasure is
+   * subtracted from the execution count: the count is measured from the archive,
+   * the decision is recorded locally, and the two must be reconciled before the
+   * comparison. Without it the wedge only moves, because a row that can never
+   * finalise would refuse its day forever while the alert named a remedy that had
+   * already been tried and abandoned.
+   *
+   * It gets its own number and its own sentence rather than silently lowering the
+   * count, because a written-off row is a real loss of fidelity in the archive and
+   * a day carrying one must not read like a clean day (L11).
+   */
+  abandonedExecutionCount: number
   probeSampled: number
   probeOk: boolean
   probeFailureReason: string | null
@@ -237,18 +254,34 @@ export function refusalsFor(measurement: DayMeasurement | null, ctx: GateContext
     })
   }
 
-  if (measurement.incompleteCount > 0) {
+  // A NON-FINITE abandoned count counts as ZERO, so the refusal still fires.
+  // Not defensive noise: subtracting an absent field gives NaN, `NaN > 0` is
+  // false, and the incomplete refusal therefore vanished entirely rather than
+  // firing. Found by an existing test whose fixture predates this field, which is
+  // the good case; in production the same shape would be a missing column reading
+  // as a clean day. The safe direction is to refuse (L72).
+  const abandoned = Number.isFinite(measurement.abandonedExecutionCount)
+    ? measurement.abandonedExecutionCount
+    : 0
+
+  // Clamped at zero: the two numbers come from different systems read at
+  // different moments, so the archive side can legitimately lag a local write,
+  // and a negative here would print as a count in a message (L11).
+  const outstanding = Math.max(0, measurement.incompleteCount - abandoned)
+
+  if (outstanding > 0) {
     // A real row, but not the finished story of that lead: archived at the
     // deadline while still non-terminal, and the amend pass has not caught up.
     // Deleting the Postgres copy would freeze it that way permanently.
-    const one = measurement.incompleteCount === 1
+    const one = outstanding === 1
     refusals.push({
       code: 'incomplete-rows',
       message:
-        `${n(measurement.incompleteCount)} execution${one ? '' : 's'} archived incomplete on ` +
+        `${n(outstanding)} execution${one ? '' : 's'} archived incomplete on ` +
         `${ctx.archiveDay}, so ${one ? 'its' : 'their'} final state is not in the archive yet`,
     })
   }
+
 
   return refusals
 }
@@ -256,4 +289,35 @@ export function refusalsFor(measurement: DayMeasurement | null, ctx: GateContext
 /** Sugar over `refusalsFor`, so no caller re-derives what "no refusals" means. */
 export function deletable(measurement: DayMeasurement | null, ctx: GateContext): boolean {
   return refusalsFor(measurement, ctx).length === 0
+}
+
+/**
+ * What is worth SAYING about a day that is not a reason to refuse it.
+ *
+ * Kept out of `refusalsFor` deliberately. That function means refusals, and
+ * `deletable` is defined as it returning nothing, so a non-blocking entry added
+ * there would silently block every day that carried one: the opposite of what it
+ * is for, and invisible because the message would read as reasonable.
+ *
+ * Today there is one, and it is the counterpart of the abandonment subtraction.
+ * An execution written off as permanently incomplete no longer refuses its day,
+ * because the amend pass has already decided it can never be corrected and
+ * refusing would name a remedy that has been tried and given up. But it IS a
+ * permanent loss of fidelity in the one artifact whose job is answering what
+ * happened to a lead, so a day carrying one must not read like a clean day
+ * (L11, L152).
+ */
+export function observationsFor(measurement: DayMeasurement | null, ctx: GateContext): DayRefusal[] {
+  if (measurement === null || measurement.abandonedExecutionCount <= 0) return []
+
+  const one = measurement.abandonedExecutionCount === 1
+  return [
+    {
+      code: 'incomplete-written-off',
+      message:
+        `${n(measurement.abandonedExecutionCount)} execution${one ? '' : 's'} on ${ctx.archiveDay} ` +
+        `${one ? 'was' : 'were'} written off as permanently incomplete, so the archive holds ` +
+        `${one ? 'it' : 'them'} without ${one ? 'its' : 'their'} final state`,
+    },
+  ]
 }

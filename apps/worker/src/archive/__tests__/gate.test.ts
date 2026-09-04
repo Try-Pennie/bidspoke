@@ -13,7 +13,7 @@
  * refusal with its own wording.
  */
 import { describe, it, expect } from 'vitest'
-import { refusalsFor, deletable, MEASUREMENT_MAX_AGE_MS, type DayMeasurement } from '../gate'
+import { refusalsFor, deletable, observationsFor, MEASUREMENT_MAX_AGE_MS, type DayMeasurement } from '../gate'
 
 const NOW = new Date('2026-08-22T13:00:00.000Z')
 const DAY = '2026-08-14'
@@ -32,6 +32,7 @@ function clean(over: Partial<DayMeasurement> = {}): DayMeasurement {
     hoursRecorded: 24,
     hoursExecutionCount: 105_412,
     erasedExecutionCount: 0,
+    abandonedExecutionCount: 0,
     incompleteCount: 0,
     probeSampled: 40,
     probeOk: true,
@@ -60,6 +61,13 @@ function codes(m: DayMeasurement | null): string[] {
 
 function messages(m: DayMeasurement | null): string {
   return refusalsFor(m, { archiveDay: DAY, now: NOW })
+    .map((r) => r.message)
+    .join(' | ')
+}
+
+/** Non-blocking observations, which are deliberately NOT refusals. */
+function notes(m: DayMeasurement | null): string {
+  return observationsFor(m, { archiveDay: DAY, now: NOW })
     .map((r) => r.message)
     .join(' | ')
 }
@@ -248,6 +256,63 @@ describe('incomplete rows', () => {
 
   it('pluralises honestly', () => {
     expect(messages(reconciled({ incompleteCount: 3 }))).toMatch(/3 executions archived incomplete/)
+  })
+
+  it('stops counting a row the amend pass has written off', () => {
+    // Otherwise the wedge only moves. An incomplete row that can never finalise
+    // (its execution gone from Postgres, or still non-terminal three days after
+    // archiving) is written off by the amend pass, and if the gate went on
+    // counting it the day would be refused forever exactly as before, with an
+    // alert naming a remedy that has already been tried and given up.
+    //
+    // Subtracted the same way an erasure is (`erasedExecutionCount`), for the
+    // same reason: the count is measured from the archive, the decision is
+    // recorded locally, and the two have to be reconciled before the comparison.
+    const m = reconciled({ incompleteCount: 2, abandonedExecutionCount: 2 })
+
+    expect(codes(m)).toEqual([])
+  })
+
+  it('still refuses the rows that are NOT written off', () => {
+    // The subtraction must not become a blanket excuse: two incomplete, one
+    // written off, one still genuinely pending.
+    const m = reconciled({ incompleteCount: 2, abandonedExecutionCount: 1 })
+
+    expect(codes(m)).toEqual(['incomplete-rows'])
+    expect(messages(m)).toMatch(/1 execution archived incomplete/)
+  })
+
+  it('names the written-off rows separately rather than hiding them', () => {
+    // A written-off row is a real loss of fidelity in the archive, so it is
+    // reported even though it no longer refuses. Silence here would make an
+    // abandoned lead record indistinguishable from a clean day (L11, L152).
+    const m = reconciled({ incompleteCount: 1, abandonedExecutionCount: 1 })
+
+    expect(notes(m)).toMatch(/1 execution.*written off/i)
+    // and it does not refuse
+    expect(codes(m)).toEqual([])
+  })
+
+  it('still refuses when the written-off count is missing entirely', () => {
+    // The trap this is here for: subtracting an absent field gives NaN, and
+    // `NaN > 0` is false, so the refusal disappeared rather than firing. An
+    // unreadable count must never be the thing that authorises a deletion, so a
+    // non-finite value counts as zero written off (L72).
+    const m = reconciled({ incompleteCount: 2 })
+    delete (m as Partial<DayMeasurement>).abandonedExecutionCount
+
+    expect(codes(m)).toEqual(['incomplete-rows'])
+    expect(messages(m)).toMatch(/2 executions archived incomplete/)
+  })
+
+  it('does not go negative when more are written off than measured', () => {
+    // The two numbers come from different systems read at different moments, so
+    // the archive side can legitimately lag a local write. That must read as
+    // nothing outstanding, never as a negative count in a message.
+    const m = reconciled({ incompleteCount: 1, abandonedExecutionCount: 5 })
+
+    expect(codes(m)).toEqual([])
+    expect(messages(m)).not.toMatch(/-\d/)
   })
 })
 
