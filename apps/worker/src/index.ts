@@ -6,6 +6,7 @@ import shadow from './routes/shadow'
 import api from './routes/api/index'
 import { createSupabaseClient } from './lib/supabase'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
+import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
@@ -266,6 +267,15 @@ export default {
       ctx.waitUntil(
         runFieldPresenceDeadCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[field-presence-dead] failed:', e))
+      )
+      // #1157: a bidding workflow whose bid never reaches lead_sighting_bids
+      // succeeds on every run, so the gap shows up only as data that is not
+      // there. Lead Economy sat that way for weeks. Each workflow is judged
+      // against its peers in the same window, because bid rows are purged before
+      // their sightings are and "no bid rows" is otherwise ambiguous.
+      ctx.waitUntil(
+        runBidRecordingCoverageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+          .catch((e) => console.error('[bid-recording] check failed:', e))
       )
       // #744: leads whose email Salesforce rejected are still created, without the
       // address, and the run succeeds. Nothing counted that, so a source sending

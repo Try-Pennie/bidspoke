@@ -2055,6 +2055,17 @@ export type Database = {
       }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
+      bid_recording_coverage: {
+        Args: { p_org_id: string; p_since: string }
+        Returns: {
+          bid_rows: number
+          is_active: boolean
+          sightings: number
+          winners: number
+          workflow_id: string
+          workflow_name: string
+        }[]
+      }
       create_upcoming_daily_partitions: {
         Args: { p_days_ahead?: number }
         Returns: number
