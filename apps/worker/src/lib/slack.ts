@@ -2,6 +2,9 @@
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+// Type only, so this cannot create an import cycle with the watcher that calls
+// sendPgCronAlert: the import is erased at compile time.
+import type { AlertingStatus } from './pg-cron-watch'
 import { coerceString } from './coerce'
 import { parseJson } from './json'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-retry'
@@ -1199,17 +1202,23 @@ export async function sendPgCronAlert(
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
 
-  const headers: Record<string, string> = {
+  // Typed on the vocabulary, not on `string`: a status added to the watcher with
+  // no wording here would otherwise page with the generic headline below and a
+  // remedy pointing at the wrong place, and nothing would say so (L113). That is
+  // what happened to unknown_identity when it was added (#1152).
+  const headers: Record<AlertingStatus, string> = {
     failing: `Database job ${verdict.jobname} is failing`,
     stalled: `Database job ${verdict.jobname} has stopped running`,
     never_succeeded: `Database job ${verdict.jobname} has never succeeded`,
+    unknown_identity: `Cannot tell which database job ${verdict.jobname} is`,
     unknown_schedule: `Cannot tell whether database job ${verdict.jobname} is healthy`,
     inactive: `Database job ${verdict.jobname} is disabled`,
   }
-  const fixes: Record<string, string> = {
+  const fixes: Record<AlertingStatus, string> = {
     failing: `*How to fix:* read the error above. \`cron.job_run_details\` holds the full message and the run history for this job.`,
     stalled: `*How to fix:* check the job is still present and active in \`cron.job\`. A job removed or disabled by a migration produces no failed runs, so its silence is the only signal there is.`,
     never_succeeded: `*How to fix:* the job is scheduled and has not completed successfully in the window. Read its most recent run in \`cron.job_run_details\`.`,
+    unknown_identity: `*How to fix:* \`pg_cron_health\` is not returning this job's \`jobid\`, so a job that was just rescheduled cannot be told apart from one that has never run. Apply the outstanding database migrations, since the worker is running ahead of them.`,
     unknown_schedule: `*How to fix:* the staleness half of this check is not running for this job. Either simplify the schedule or teach \`expectedGapMs\` to read this shape.`,
     inactive: `*How to fix:* re-enable it, or remove it, so a job nobody meant to keep is not left looking scheduled.`,
   }
@@ -1217,7 +1226,7 @@ export async function sendPgCronAlert(
   const blocks = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: headers[verdict.status] ?? `Database job ${verdict.jobname} needs attention`, emoji: false },
+      text: { type: 'plain_text', text: headers[verdict.status as AlertingStatus] ?? `Database job ${verdict.jobname} needs attention`, emoji: false },
     },
     {
       type: 'section',
@@ -1225,7 +1234,7 @@ export async function sendPgCronAlert(
     },
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: fixes[verdict.status] ?? '*How to fix:* read this job in `cron.job_run_details`.' },
+      text: { type: 'mrkdwn', text: fixes[verdict.status as AlertingStatus] ?? '*How to fix:* read this job in `cron.job_run_details`.' },
     },
   ]
   return (await postMessage(
