@@ -220,6 +220,50 @@ export interface WatchedFieldMap {
   aliasOnlyNodes: string[]
 }
 
+/**
+ * Path prefixes a Constants node's own config already guarantees.
+ *
+ * A Constants node merges two sources (engine/nodes/constants.ts): the static
+ * `config.data` a person typed, and partner copy loaded from the database
+ * (`subAccountIdsMap`, `activeBidding`, and the per-partner sell-off and
+ * click-url keys). A key written in the config carries a value on every run by
+ * construction, so recording its presence measures nothing while costing the
+ * daily rollup one expanded row per execution.
+ *
+ * That cost is not theoretical. #435 took the watched set from 17.5 to 34.0
+ * keys per execution, and on 2026-09-03 1,430,834 of the 3,710,468 keys the
+ * rollup expanded were `constants.*`. The refresh went from a 5.9s average
+ * (14.7s worst) to 12.7s (122.0s worst), and one run crossed the 120s
+ * statement timeout.
+ *
+ * The discriminator is the config VALUE, not the node type. A config key set to
+ * null resolves to null on every run, which is a real finding and exactly what
+ * the day-one-dead check exists to report, so a null keeps its watch. Only a
+ * value that is actually there is dropped, because only that one is provably
+ * always present.
+ *
+ * Database-sourced keys are absent from `config.data` and so are never dropped:
+ * a missing sell-off title is a genuine defect the detector should catch.
+ */
+function guaranteedConstantPrefixes(definition: WorkflowDefinition): string[] {
+  const prefixes: string[] = []
+  for (const node of definition.nodes) {
+    if (node.type !== 'constants') continue
+    const data = node.config?.data
+    if (!data || typeof data !== 'object' || Array.isArray(data)) continue
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (value === null || value === undefined) continue
+      prefixes.push(`${node.namespace}.${key}`)
+    }
+  }
+  return prefixes
+}
+
+/** Whether `path` names a guaranteed constant, or a field inside one. */
+function isGuaranteedConstant(path: string, prefixes: string[]): boolean {
+  return prefixes.some((p) => path === p || path.startsWith(`${p}.`))
+}
+
 // Full watched-field map with each field's source and the code nodes whose
 // scripts could not be statically read (bailed open). Structured references win
 // on dedup (higher confidence than a code-scan match). Derived in-engine from the
@@ -241,14 +285,21 @@ export function deriveWatchedFieldMap(definition: WorkflowDefinition): WatchedFi
     else if (aliasGap) aliasOnlyNodes.push(node.namespace)
   }
 
+  // Applied to both sources at the point the map is built, so a dropped field
+  // is absent from the manifest the coverage page renders as well as from the
+  // capture, rather than filtered in one place and not the other.
+  const guaranteed = guaranteedConstantPrefixes(definition)
+
   const fields: WatchedField[] = []
   const seen = new Set<string>()
   for (const path of [...structured].sort()) {
+    if (isGuaranteedConstant(path, guaranteed)) continue
     fields.push({ path, source: 'structured' })
     seen.add(path)
   }
   for (const path of [...code].sort()) {
     if (seen.has(path)) continue
+    if (isGuaranteedConstant(path, guaranteed)) continue
     fields.push({ path, source: 'code' })
     seen.add(path)
   }

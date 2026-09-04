@@ -157,3 +157,145 @@ describe('rollup refresh: outcome is grouped as it is inserted', () => {
     ).toBe(false)
   })
 })
+
+/**
+ * The rollup refreshes own their timeout budget (#1147).
+ *
+ * On 2026-09-03 a refresh-field-presence-daily run was killed at 121.97s by the
+ * CLUSTER default statement_timeout of 120s, inherited because pg_cron runs as
+ * `postgres` and that role carries no override. Nothing in this repo chose 120s,
+ * and #435 had just doubled the work the job does (17.5 to 34.0 watched keys per
+ * execution, so ~3.5M to ~7.1M expanded rows per refresh).
+ *
+ * Two properties are guarded, and the second is the one that is easy to get
+ * wrong in a way that looks right:
+ *
+ *   1. every job driving a rollup refresh sets statement_timeout in its own
+ *      command, so the budget is stated rather than inherited from whatever the
+ *      platform currently defaults to
+ *   2. the budget is set in the CRON COMMAND and never inside the function.
+ *      `SET LOCAL statement_timeout` inside a plpgsql function does not bind the
+ *      running call: the timer is armed when the outer statement begins, so the
+ *      new value applies only to the NEXT statement. Probed against this
+ *      database on 2026-09-04, a function setting it to 1s and then sleeping 3s
+ *      slept the full 3s. In the function body it is a line that reads as a
+ *      safeguard and enforces nothing (LESSONS L188), and no test that merely
+ *      greps for the setting could tell the two placements apart.
+ *
+ * Plus the arithmetic that actually failed: the budget has to cover the
+ * advisory-lock wait AND the work, so a lock wait must not be able to consume
+ * most of it. 60s of wait against a 120s ceiling is what left a p99 of 39s with
+ * nowhere to go.
+ */
+describe('rollup refresh: owns its timeout budget', () => {
+  /** A Postgres timeout literal in milliseconds: '180s', '30s', '250ms', '5000'. */
+  function timeoutMs(literal: string): number {
+    const m = /^(\d+)\s*(ms|s|min)?$/.exec(literal.trim())
+    if (!m) throw new Error(`unparsed timeout literal: ${literal}`)
+    const n = Number(m[1])
+    if (m[2] === 's') return n * 1000
+    if (m[2] === 'min') return n * 60_000
+    return n
+  }
+
+  /** The value a `SET <name> = '<literal>'` in `sql` assigns, or null. */
+  function setting(sql: string, name: string): string | null {
+    const re = new RegExp(`SET\\s+(?:LOCAL\\s+)?${name}\\s*=\\s*'([^']+)'`, 'i')
+    return re.exec(sql)?.[1] ?? null
+  }
+
+  const rollupJobs = ROLLUP_FUNCTIONS.flatMap((fn) => jobsFor(fn))
+
+  it('finds the jobs it is about to judge', () => {
+    // Without this the three assertions below are vacuous on an empty list
+    // (L100, L143), which is exactly how a guard passes hardest when the parse
+    // has broken.
+    expect(rollupJobs.length).toBe(ROLLUP_FUNCTIONS.length * 2)
+  })
+
+  it.each(rollupJobs.map((j) => [j.name, j.command] as const))(
+    '%s states its own statement_timeout',
+    (_name, command) => {
+      const value = setting(command, 'statement_timeout')
+      expect(value, 'no statement_timeout in the cron command').not.toBeNull()
+      expect(timeoutMs(value!)).toBeGreaterThan(0)
+    },
+  )
+
+  it.each(ROLLUP_FUNCTIONS)('%s does not set statement_timeout in its body', (fn) => {
+    // The placement is the whole point: in the body this line is inert.
+    const found = latestRoutineBody(fn, migrations)
+    expect(found).not.toBeNull()
+    expect(
+      setting(found!.body, 'statement_timeout'),
+      `${fn} in ${found!.migration} sets statement_timeout inside the function, ` +
+        'where it does not bind the running call',
+    ).toBeNull()
+  })
+
+  it.each(ROLLUP_FUNCTIONS)('%s leaves most of its budget for the work, not the lock wait', (fn) => {
+    const found = latestRoutineBody(fn, migrations)
+    expect(found).not.toBeNull()
+    const lock = setting(found!.body, 'lock_timeout')
+    expect(lock, `${fn} sets no lock_timeout`).not.toBeNull()
+
+    const budgets = jobsFor(fn).map((j) => {
+      const v = setting(j.command, 'statement_timeout')
+      expect(v, `${j.name} sets no statement_timeout`).not.toBeNull()
+      return timeoutMs(v!)
+    })
+    // A full lock wait must leave at least two thirds of the smallest budget
+    // for the DELETE and the INSERT.
+    expect(
+      timeoutMs(lock!),
+      `${fn} lock wait ${lock} against a ${Math.min(...budgets)}ms budget`,
+    ).toBeLessThanOrEqual(Math.min(...budgets) / 3)
+  })
+
+  /**
+   * A run that spends its ENTIRE budget must still finish inside its own slot.
+   *
+   * This is the relationship the 2026-09-03 failure was on the wrong side of.
+   * The incremental pass fired every 5 minutes while the work grew past a p99
+   * of 39s, and the 120s ceiling had to cover an advisory-lock wait of up to
+   * 60s on top of that. Once a run can outlive its slot, the next one arrives
+   * to find the lock held, waits, and spends its own budget waiting rather than
+   * working, so one slow run turns into a queue of failures rather than a
+   * single late refresh.
+   *
+   * Guarding the RELATIONSHIP rather than the literal cadence means it holds
+   * whichever side someone changes later: dropping the field-presence pass to
+   * every 15 minutes satisfies it, and so would leaving it at 5 minutes with a
+   * smaller budget, but raising a budget past its interval fails (L63, L103).
+   *
+   * The cushion is there because a run killed at its ceiling still has to roll
+   * back its DELETE and drop the advisory lock before the next attempt starts.
+   */
+  const CUSHION_MS = 60_000
+
+  it.each(
+    rollupJobs
+      .filter((j) => /^\*\/\d+$/.test(cronMinute(j.schedule)))
+      .map((j) => [j.name, j.schedule, j.command] as const),
+  )('%s cannot outlive its own slot', (_name, schedule, command) => {
+    const everyNMinutes = Number(/^\*\/(\d+)$/.exec(cronMinute(schedule))![1])
+    const intervalMs = everyNMinutes * 60_000
+    const value = setting(command, 'statement_timeout')
+    expect(value, 'no statement_timeout in the cron command').not.toBeNull()
+    const budgetMs = timeoutMs(value!)
+
+    expect(
+      budgetMs + CUSHION_MS,
+      `a run may spend ${budgetMs}ms of a ${intervalMs}ms slot, leaving under ` +
+        `${CUSHION_MS}ms to roll back and release the lock before the next run`,
+    ).toBeLessThanOrEqual(intervalMs)
+  })
+
+  it('finds at least one every-N-minutes rollup job to judge', () => {
+    // The filter above silently empties if the schedule format changes, and an
+    // empty it.each is green (L100).
+    expect(
+      rollupJobs.filter((j) => /^\*\/\d+$/.test(cronMinute(j.schedule))).length,
+    ).toBeGreaterThan(0)
+  })
+})

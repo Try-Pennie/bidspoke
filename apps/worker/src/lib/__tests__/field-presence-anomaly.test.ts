@@ -996,3 +996,66 @@ describe('dead check requires enough days, not just enough runs', () => {
     expect(findDayOneDead(rows)).toEqual([])
   })
 })
+
+describe("today's rollup row does not feed the drought verdict (#1147)", () => {
+  // The premise the refresh cadence rests on.
+  //
+  // The field-presence incremental rollup dropped from every 5 minutes to every
+  // 15, and what makes that safe is that nothing needs today's rollup row
+  // promptly: the baseline is built from prior COMPLETE days, and the observed
+  // side comes from the trailing-window RPC over workflow_executions (#1101).
+  //
+  // Pinned as behaviour rather than left in a comment, because the cadence is
+  // the kind of premise that expires silently (L316). A change that starts
+  // reading today's rollup counts for the rate fails here, and says that it has
+  // made the refresh interval load-bearing again, instead of turning a slower
+  // refresh into an alert that lags the incident by up to fifteen minutes.
+  const DAYS = ['2026-06-23', '2026-06-24', '2026-06-25', '2026-06-26', '2026-06-27']
+  const TODAY = DAYS[DAYS.length - 1]
+
+  /** A stable five-day bucket whose LAST day (the partial one) is varied. */
+  const rowsWithToday = (todayRan: number, todayPresent: number): PresenceRow[] => [
+    ...DAYS.slice(0, -1).map((d) => row('wf1', 'scout.final', d, 100, 100)),
+    row('wf1', 'scout.final', TODAY, todayRan, todayPresent),
+  ]
+  const win = (ran: number, present: number): RecentPresence[] => [
+    { workflow_id: 'wf1', field_path: 'scout.final', ran_count: ran, present_count: present },
+  ]
+  const verdict = (rows: PresenceRow[], recent: RecentPresence[]) =>
+    classifyDrought(rows, recent, 60).find((s) => s.field_path === 'scout.final')?.verdict
+
+  // A partial row mid-refresh can hold almost anything: nothing yet, a full
+  // healthy day, a collapsed day, or a handful of runs.
+  const PARTIAL_ROWS: ReadonlyArray<readonly [number, number]> = [
+    [0, 0],
+    [100, 100],
+    [100, 0],
+    [5, 5],
+  ]
+
+  it('still calls a collapsed window a drought, whatever today\'s row holds', () => {
+    for (const [ran, present] of PARTIAL_ROWS) {
+      expect(
+        verdict(rowsWithToday(ran, present), win(500, 0)),
+        `today's row ${ran}/${present}`,
+      ).toBe('alerting')
+    }
+  })
+
+  it('still calls a normal window healthy, whatever today\'s row holds', () => {
+    for (const [ran, present] of PARTIAL_ROWS) {
+      expect(
+        verdict(rowsWithToday(ran, present), win(500, 500)),
+        `today's row ${ran}/${present}`,
+      ).toBe('healthy')
+    }
+  })
+
+  it('reads the window and not the rollup, so the two can disagree', () => {
+    // The pairing that stops both assertions above passing on a detector that
+    // ignores every input: a healthy-looking today's row must NOT rescue a
+    // field whose window has collapsed.
+    expect(verdict(rowsWithToday(100, 100), win(500, 0))).toBe('alerting')
+    expect(verdict(rowsWithToday(100, 0), win(500, 500))).toBe('healthy')
+  })
+})

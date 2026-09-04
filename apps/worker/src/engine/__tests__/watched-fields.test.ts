@@ -431,3 +431,86 @@ describe('an alias does not invent a field from its own declaration (#1118)', ()
     ])
   })
 })
+
+describe('a constant that its own config guarantees is not watched (#1147)', () => {
+  // #435 (alias resolution) roughly doubled the watched set, from 17.5 to 34.0
+  // keys per execution, and 1,430,834 of the 3,710,468 keys the rollup expanded
+  // on 2026-09-03 were `constants.*`. A Constants node merges two sources: the
+  // static `config.data` a person typed, and partner copy loaded from the
+  // database. A key written in the node's own config carries a value on every
+  // run by construction, so its presence measures nothing and only costs the
+  // rollup a row per execution. The database-sourced half is the opposite: a
+  // missing sell-off title is a real defect, so those stay watched.
+  //
+  // The discriminator is the config value itself, not the node type, because a
+  // config key set to null is present-but-empty on every run, which is exactly
+  // what the day-one-dead check exists to report.
+  const constantsDef = (data: Record<string, unknown>, script: string) =>
+    def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'constants', type: 'constants', config: { data } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'c', type: 'code', config: { script } } as any,
+      ],
+    })
+
+  it('drops a static config key that is read directly', () => {
+    const d = constantsDef({ logoSrc: '/logo.png' }, 'return steps.constants.output.logoSrc;')
+    expect(deriveWatchedFields(d)).toEqual([])
+  })
+
+  it('drops a static config key read through an alias', () => {
+    // The shape #435 added, and the one that produced the bulk of the growth.
+    const d = constantsDef(
+      { logoSrc: '/logo.png', offerName: 'Pennie' },
+      'const k = steps.constants.output;\nreturn [k.logoSrc, k.offerName];\n',
+    )
+    expect(deriveWatchedFields(d)).toEqual(['constants'])
+  })
+
+  it('keeps a database-sourced constant that is absent from the config', () => {
+    // partnerFlat: loadPartnerConstants writes SofiSellOffOfferTitle from the
+    // partner_configs sell-off columns, so it can genuinely be missing.
+    const d = constantsDef(
+      { logoSrc: '/logo.png' },
+      'return steps.constants.output.SofiSellOffOfferTitle;',
+    )
+    expect(deriveWatchedFields(d)).toEqual(['constants.SofiSellOffOfferTitle'])
+  })
+
+  it('keeps a config key whose value is null, so a dead constant still reports', () => {
+    const d = constantsDef({ logoSrc: null }, 'return steps.constants.output.logoSrc;')
+    expect(deriveWatchedFields(d)).toEqual(['constants.logoSrc'])
+  })
+
+  it('keeps the bare namespace, which measures whether the node ran', () => {
+    const d = constantsDef({ logoSrc: '/logo.png' }, 'return steps.constants.$return_value;')
+    expect(deriveWatchedFields(d)).toEqual(['constants'])
+  })
+
+  it('drops a deeper read into a static config value', () => {
+    const d = constantsDef({ states: ['NY'] }, 'return steps.constants.output.states.length;')
+    expect(deriveWatchedFields(d)).toEqual([])
+  })
+
+  it('leaves a same-named field on a node that is not a Constants node alone', () => {
+    // The pairing that stops the filter being written as a blanket path match.
+    const d = def({
+      nodes: [
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n1', namespace: 'enrich', type: 'code', config: { data: { logoSrc: '/l.png' } } } as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { id: 'n2', namespace: 'c', type: 'code', config: { script: 'return steps.enrich.output.logoSrc;' } } as any,
+      ],
+    })
+    expect(deriveWatchedFields(d)).toContain('enrich.logoSrc')
+  })
+
+  it('reports a dropped static constant as neither structured nor code', () => {
+    // The map is what the coverage manifest renders, so a dropped field must be
+    // gone from it too, not merely absent from the projection.
+    const d = constantsDef({ logoSrc: '/logo.png' }, 'return steps.constants.output.logoSrc;')
+    expect(deriveWatchedFieldMap(d).fields).toEqual([])
+  })
+})
