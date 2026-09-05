@@ -2056,8 +2056,6 @@ export type Database = {
           organization_id: string
         }[]
       }
-      create_monthly_analytics_partitions: { Args: never; Returns: undefined }
-      create_next_month_partitions: { Args: never; Returns: undefined }
       bid_recording_coverage: {
         Args: { p_org_id: string; p_since: string }
         Returns: {
@@ -2069,6 +2067,8 @@ export type Database = {
           workflow_name: string
         }[]
       }
+      create_monthly_analytics_partitions: { Args: never; Returns: undefined }
+      create_next_month_partitions: { Args: never; Returns: undefined }
       create_upcoming_daily_partitions: {
         Args: { p_days_ahead?: number }
         Returns: number
