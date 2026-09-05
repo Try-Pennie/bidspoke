@@ -209,6 +209,17 @@ describe('runTripointRevenueFill', () => {
     expect(ageMinutes).toBe(LOOKBACK_MINUTES)
   })
 
+  it('never asks about a row that already carries a partner-reported bid', async () => {
+    // A measured bid beats a derived estimate, so a row holding one needs no
+    // lookup at all. Measured on prod 2026-09-05: every skipped row was a Main
+    // Flow row, where the bid_group node resolves a real amount and no
+    // Salesforce prospect is created, so the fill was reporting expected
+    // behaviour as a skip on a fifth of its candidates and rising.
+    const db = makeDb({ bids: { data: [] } })
+    await runTripointRevenueFill({ supabase: db.client, fetchRevenue: async () => [], now: () => NOW })
+    expect(db.calls[0].filters).toMatchObject({ 'is.bid_cents': null })
+  })
+
   it('bounds the sighting lookup by its own partition key', async () => {
     // An id-only filter on a partitioned table fans out across every partition.
     const db = makeDb({
