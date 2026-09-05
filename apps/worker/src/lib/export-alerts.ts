@@ -11,7 +11,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendExportFailureAlert } from './slack'
-import { buildFixHint, isTransientExportError } from './export-error-hints'
+import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -76,13 +76,16 @@ export async function notifyExportFailure(
   logReadFailure('export-alerts', 'slack connections', connsError)
   const orgIds = [...new Set((conns ?? []).map((r) => (r as { organization_id: string }).organization_id))]
 
-  // Classify once, not per org: the same errors produce the same advice.
+  // Classify once, not per org: the same errors produce the same advice. The
+  // consequence sentence comes from the same classification (#1180), so the
+  // alert's second sentence and its remedy cannot disagree about what happened.
   const fixHint = buildFixHint(errors)
+  const consequence = buildConsequence(errors)
 
   let delivered = false
   for (const orgId of orgIds) {
     try {
-      if (await sendExportFailureAlert(supabase, orgId, null, { jobName, errors, fixHint, failingSince })) delivered = true
+      if (await sendExportFailureAlert(supabase, orgId, null, { jobName, errors, fixHint, consequence, failingSince })) delivered = true
     } catch (err) {
       console.error(`[export-alerts] alert failed for org ${orgId}:`, err)
     }

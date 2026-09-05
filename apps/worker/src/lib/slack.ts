@@ -1528,7 +1528,7 @@ export async function sendExportFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: { jobName: string; errors: string[]; fixHint?: string; failingSince?: string },
+  payload: { jobName: string; errors: string[]; fixHint?: string; consequence?: string; failingSince?: string },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
@@ -1537,11 +1537,17 @@ export async function sendExportFailureAlert(
   const lines = payload.errors.slice(0, 20).map((line) => `• ${line}`).join('\n')
   // A failed purge means the rows are ALREADY in Snowflake and only the Supabase
   // cleanup is behind; claiming stale analytics for it is false-alarm copy
-  // (2026-07-24). Only an export failure actually leaves analytics behind.
+  // (2026-07-24). Only an export failure actually leaves analytics behind. A
+  // caller that classified the errors may supply the sentence itself (#1180):
+  // the killed-run takeover is neither a purge nor an export, and choosing by
+  // job name told the reader rows were not exported for a job that exports
+  // nothing.
   const isPurge = payload.jobName.toLowerCase().includes('purge')
-  const consequence = isPurge
-    ? 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists:'
-    : 'The affected rows were not exported and will retry on the next run, but analytics in Snowflake are missing them until it succeeds:'
+  const consequence =
+    payload.consequence ??
+    (isPurge
+      ? 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists:'
+      : 'The affected rows were not exported and will retry on the next run, but analytics in Snowflake are missing them until it succeeds:')
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: `${payload.jobName} failed`, emoji: false } },
     {
