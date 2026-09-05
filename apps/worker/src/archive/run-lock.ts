@@ -52,6 +52,21 @@ export const MAX_DEADLINE_AHEAD_MS = 60 * 60 * 1000
 export interface LockStamp {
   startedAt: string
   deadlineAt: string
+  /**
+   * The cron event the holder was invoked for, when it was a cron (#1181).
+   *
+   * Cloudflare re-dispatches a scheduled event whose invocation it terminated,
+   * and the retry carries the same `scheduledTime`. Measured on prod: the
+   * 2026-09-05 00:23:35 run was terminated after 43 seconds and the retry
+   * arrived at 00:24:18, read this lock as held with 9 minutes of deadline
+   * left, and skipped. The same at 2026-08-26 03:23 and 2026-09-01 19:23. So
+   * the platform's own recovery was refused by our lock every time, and the
+   * hours waited a full cadence for the deadline rule to notice.
+   *
+   * Absent for the backlog walk and the admin route, which are not cron
+   * retries and get only the deadline rule.
+   */
+  scheduledFor?: string
 }
 
 export type LockDecision =
@@ -71,14 +86,17 @@ export interface LockDecisionInput {
   now: Date
   /** The budget THIS run would work to, used only to interpret a value that carries no deadline. */
   wallBudgetMs: number
+  /** The cron event THIS invocation is running for, when it is a cron. See LockStamp.scheduledFor. */
+  scheduledFor?: Date
 }
 
 /** The value a run writes when it takes the lock. */
-export function lockValue(startedAt: Date, wallBudgetMs: number): string {
+export function lockValue(startedAt: Date, wallBudgetMs: number, scheduledFor?: Date): string {
   const stamp: LockStamp = {
     startedAt: startedAt.toISOString(),
     deadlineAt: new Date(startedAt.getTime() + wallBudgetMs).toISOString(),
   }
+  if (scheduledFor !== undefined) stamp.scheduledFor = scheduledFor.toISOString()
   return JSON.stringify(stamp)
 }
 
@@ -111,16 +129,19 @@ function readStamp(stored: string, wallBudgetMs: number): LockStamp | null {
   const record = parsed as Record<string, unknown>
   const startedAt = parseTime(record.startedAt)
   const deadlineAt = parseTime(record.deadlineAt)
+  const scheduledFor = parseTime(record.scheduledFor)
   if (startedAt === null) return null
-  return {
+  const stamp: LockStamp = {
     startedAt: new Date(startedAt).toISOString(),
     deadlineAt:
       deadlineAt === null ? new Date(startedAt + wallBudgetMs).toISOString() : new Date(deadlineAt).toISOString(),
   }
+  if (scheduledFor !== null) stamp.scheduledFor = new Date(scheduledFor).toISOString()
+  return stamp
 }
 
 export function decideLock(input: LockDecisionInput): LockDecision {
-  const { stored, now, wallBudgetMs } = input
+  const { stored, now, wallBudgetMs, scheduledFor } = input
   if (stored === null || stored.length === 0) return { action: 'take' }
 
   const stamp = readStamp(stored, wallBudgetMs)
@@ -137,6 +158,29 @@ export function decideLock(input: LockDecisionInput): LockDecision {
   const startedMs = Date.parse(stamp.startedAt)
   const deadlineMs = Date.parse(stamp.deadlineAt)
   const heldForMs = nowMs - startedMs
+
+  // Checked BEFORE the deadline, because it is the one case where the deadline
+  // says nothing. The runtime only retries a scheduled event after the attempt
+  // before it has ended, so a lock carrying this invocation's own scheduled time
+  // was written by an attempt that is no longer running, however fresh it looks.
+  // Both sides have to name an event: a stamp with none (the previous version's
+  // format) and an invocation with none (the backlog walk, the admin route) fall
+  // through to the deadline rule, which is what they had before (#1181).
+  if (
+    scheduledFor !== undefined &&
+    stamp.scheduledFor !== undefined &&
+    Date.parse(stamp.scheduledFor) === scheduledFor.getTime()
+  ) {
+    return {
+      action: 'take-over',
+      heldForMs,
+      overdueByMs: null,
+      reason:
+        `this invocation is a retry of the same scheduled event (${stamp.scheduledFor}), whose earlier attempt ` +
+        `took the lock ${Math.round(heldForMs / 1000)} seconds ago; the platform only retries after that attempt ` +
+        'has ended, so it was killed rather than still working',
+    }
+  }
 
   if (deadlineMs - nowMs > MAX_DEADLINE_AHEAD_MS) {
     return {

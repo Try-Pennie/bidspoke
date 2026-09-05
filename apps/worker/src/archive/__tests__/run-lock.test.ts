@@ -150,3 +150,65 @@ describe('lockValue', () => {
     expect(stored.deadlineAt).toBe('2026-08-21T17:33:00.000Z')
   })
 })
+
+describe('a retry of the same scheduled event (#1181)', () => {
+  // Cloudflare re-dispatches a cron whose invocation it terminated. Measured on
+  // prod: 2026-08-26 03:23 (retry 03:26), 2026-09-01 19:23 (retry 19:24) and
+  // 2026-09-05 00:23 (retry 00:24). Each retry arrived inside the dead run's
+  // deadline, read the lock as held, and skipped, so the platform's own recovery
+  // was thrown away and the hours waited for the next cadence.
+  //
+  // The retry carries the same scheduledTime as the attempt it replaces, and the
+  // runtime only retries after that attempt has ended. So a lock stamped with
+  // THIS invocation's scheduled time was written by an attempt that is no
+  // longer running, whatever its deadline says.
+  const SCHEDULED = at('2026-09-05T00:23:00.000Z')
+  const KILLED_AT = at('2026-09-05T00:23:35.000Z')
+  const RETRY_AT = at('2026-09-05T00:24:18.000Z')
+
+  it('takes over a lock stamped with its own scheduled time, even inside the deadline', () => {
+    const stored = lockValue(KILLED_AT, WALL_BUDGET_MS, SCHEDULED)
+    const d = decideLock({ stored, now: RETRY_AT, wallBudgetMs: WALL_BUDGET_MS, scheduledFor: SCHEDULED })
+
+    expect(d.action).toBe('take-over')
+    if (d.action !== 'take-over') throw new Error('unreachable')
+    expect(d.heldForMs).toBe(43 * 1000)
+    // Its own wording (L11): a retry is not a deadline overrun, and the alert
+    // reader has to be able to tell the two apart.
+    expect(d.reason).toMatch(/retry of the same scheduled event/)
+    expect(d.reason).not.toMatch(/past its own deadline/)
+  })
+
+  it('still skips when the holder was taken for a DIFFERENT scheduled event inside its deadline', () => {
+    // The negative control: the takeover must key on the event, not merely on a
+    // scheduled time being present. A run for the previous hour still inside its
+    // budget is a live run.
+    const stored = lockValue(KILLED_AT, WALL_BUDGET_MS, at('2026-09-04T23:23:00.000Z'))
+    const d = decideLock({ stored, now: RETRY_AT, wallBudgetMs: WALL_BUDGET_MS, scheduledFor: SCHEDULED })
+
+    expect(d.action).toBe('skip')
+  })
+
+  it('still skips when this invocation has no scheduled time, whatever the stamp carries', () => {
+    // The backlog walk and the admin route are not cron retries and pass none.
+    const stored = lockValue(KILLED_AT, WALL_BUDGET_MS, SCHEDULED)
+    const d = decideLock({ stored, now: RETRY_AT, wallBudgetMs: WALL_BUDGET_MS })
+
+    expect(d.action).toBe('skip')
+  })
+
+  it('still skips a stamp that carries no scheduled time, which is what production writes today', () => {
+    // During the deploy gap the retry reads a stamp the previous version wrote.
+    // Nothing in it can prove the holder dead, so the deadline rule stands.
+    const stored = lockValue(KILLED_AT, WALL_BUDGET_MS)
+    const d = decideLock({ stored, now: RETRY_AT, wallBudgetMs: WALL_BUDGET_MS, scheduledFor: SCHEDULED })
+
+    expect(d.action).toBe('skip')
+  })
+
+  it('round-trips the scheduled time through the stamp', () => {
+    const stored = JSON.parse(lockValue(KILLED_AT, WALL_BUDGET_MS, SCHEDULED)) as Record<string, string>
+
+    expect(stored.scheduledFor).toBe('2026-09-05T00:23:00.000Z')
+  })
+})

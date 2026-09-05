@@ -143,6 +143,18 @@ export interface ArchiveDeps {
    * redoing its first hours forever (#1019).
    */
   alreadyRecorded?: ReadonlySet<string>
+
+  /**
+   * The cron event this invocation is running for (#1181).
+   *
+   * Stamped into the run lock so a platform retry of the same event, which
+   * carries the same scheduled time and only arrives after the previous attempt
+   * ended, can recognise its dead predecessor's lock and proceed at once instead
+   * of waiting for the deadline rule an hour later. Only the hourly cron passes
+   * it. The backlog walk and the admin route are not retries of anything and
+   * leave it undefined, so they get exactly the deadline rule they had.
+   */
+  scheduledFor?: Date
 }
 
 /**
@@ -250,6 +262,7 @@ export async function runExecutionArchive(
     stored: await env.IDEMPOTENCY.get(RUN_LOCK_KEY),
     now: startedAt,
     wallBudgetMs: WALL_TIME_BUDGET_MS,
+    scheduledFor: deps.scheduledFor,
   })
   if (lock.action === 'skip') {
     // The age travels with the message. A bare "locked" is what made a killed
@@ -293,7 +306,7 @@ export async function runExecutionArchive(
       )
     }
   }
-  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, WALL_TIME_BUDGET_MS), {
+  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, WALL_TIME_BUDGET_MS, deps.scheduledFor), {
     expirationTtl: RUN_LOCK_TTL_SECONDS,
   })
 

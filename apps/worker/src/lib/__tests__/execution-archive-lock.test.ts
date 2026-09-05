@@ -201,3 +201,68 @@ describe('a free lock (#954)', () => {
     expect(alertNames()).not.toContain(ARCHIVE_JOB_NAMES.killed)
   })
 })
+
+describe('a cron retry arriving inside its killed predecessor\'s deadline (#1181)', () => {
+  // The 2026-09-05 00:23 case: killed after 43 seconds, retried at 00:24:18,
+  // and the retry skipped because the dead run's lock was 1 minute old with 9
+  // minutes of deadline left. The hours then waited for the 01:23 run.
+  const SCHEDULED = new Date('2026-09-05T00:23:00.000Z')
+
+  async function runRetry(storedScheduledFor: Date | undefined, ownScheduledFor: Date | undefined) {
+    const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG })
+    const kv = makeKV()
+    const killedAt = new Date(NOW.getTime() - 43 * 1000)
+    await kv.put(RUN_LOCK_KEY, lockValue(killedAt, WALL_TIME_BUDGET_MS, storedScheduledFor))
+    const sent: ArchiveRow[] = []
+    const env = { IDEMPOTENCY: kv, SSN_HASH_PEPPER: 'test-pepper' } as unknown as Env
+    const summary = await runExecutionArchive(env, double.client, {
+      sendBatch: async (rows) => { sent.push(...rows) },
+      now: () => NOW,
+      scheduledFor: ownScheduledFor,
+    })
+    return { summary, sent }
+  }
+
+  it('proceeds and does the work, instead of waiting for the next cadence', async () => {
+    const { summary, sent } = await runRetry(SCHEDULED, SCHEDULED)
+
+    expect(summary.skipped).toBeUndefined()
+    expect(summary.executionsArchived).toBe(1)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('reports the kill, in the retry\'s own words', async () => {
+    await runRetry(SCHEDULED, SCHEDULED)
+
+    const killed = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_JOB_NAMES.killed)
+    expect(killed, 'a retry taking over its predecessor\'s lock must be reported').toBeDefined()
+    expect(String((killed as unknown[])[2])).toMatch(/retry of the same scheduled event/)
+  })
+
+  it('still skips when the lock belongs to a different scheduled event', async () => {
+    // Positive and negative in one fixture (L159): the same seeded lock, the
+    // same age, only the event identity differs.
+    const { summary, sent } = await runRetry(new Date('2026-09-04T23:23:00.000Z'), SCHEDULED)
+
+    expect(summary.skipped).toBe('locked')
+    expect(sent).toEqual([])
+    expect(alertNames()).not.toContain(ARCHIVE_JOB_NAMES.killed)
+  })
+
+  it('stamps its own scheduled time into the lock it writes, so its own retry can recognise it', async () => {
+    const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG })
+    const kv = makeKV()
+    const puts: string[] = []
+    const original = kv.put.bind(kv)
+    kv.put = (async (key: string, value: string, opts?: unknown) => {
+      if (key === RUN_LOCK_KEY) puts.push(value)
+      return original(key, value, opts as never)
+    }) as typeof kv.put
+    const env = { IDEMPOTENCY: kv, SSN_HASH_PEPPER: 'test-pepper' } as unknown as Env
+
+    await runExecutionArchive(env, double.client, { sendBatch: async () => {}, now: () => NOW, scheduledFor: SCHEDULED })
+
+    expect(puts).toHaveLength(1)
+    expect((JSON.parse(puts[0]) as { scheduledFor?: string }).scheduledFor).toBe(SCHEDULED.toISOString())
+  })
+})
