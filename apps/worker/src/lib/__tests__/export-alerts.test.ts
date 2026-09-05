@@ -225,3 +225,32 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     )
   })
 })
+
+describe('the consequence sentence travels with the classification (#1180)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const KILLED =
+    'the previous run has held the lock for 60 minutes, past its own deadline and the 5 minute grace, ' +
+    'so it was killed rather than still working. This run is proceeding; the work its predecessor did not finish is simply unarchived.'
+
+  it('hands the killed-run consequence and hint to the alert', async () => {
+    // Derived once, next to the hint, from the same classification. Left to the
+    // alert renderer, the sentence is chosen by job name alone and says rows were
+    // not exported for a job that exports nothing.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    await notifyExportFailure(makeSupabase(['org-1']), 'execution-archive-killed', [KILLED])
+
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.consequence).toBeDefined()
+    expect(payload.consequence).not.toContain('not exported')
+    expect(payload.fixHint).not.toContain('Snowflake availability')
+  })
+
+  it('hands no consequence for an ordinary export failure, so the renderer keeps its default', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['Snowflake 401: JWT token is invalid'])
+
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.consequence).toBeUndefined()
+  })
+})

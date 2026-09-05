@@ -16,7 +16,7 @@
  *     a similar-looking number.
  */
 import { describe, it, expect } from 'vitest'
-import { classifyExportError, buildFixHint, isTransientExportError, GENERIC_FIX_HINT } from '../export-error-hints'
+import { classifyExportError, buildFixHint, buildConsequence, isTransientExportError, GENERIC_FIX_HINT } from '../export-error-hints'
 
 describe('classifyExportError', () => {
   it('classifies a Postgres statement timeout as database congestion', () => {
@@ -192,5 +192,71 @@ describe('a Worker secret that is not set', () => {
 
     expect(hint).toContain('wrangler secret put')
     expect(hint).not.toContain(GENERIC_FIX_HINT)
+  })
+})
+
+describe('a killed archive invocation (#1180)', () => {
+  // The verbatim takeover wording from decideLock, both the deadline form and
+  // the cron retry form (#1181). On 2026-09-05 the alert carrying the first of
+  // these ended with "Check Snowflake availability and the export credentials",
+  // and its header said rows were not exported. Nothing about a killed run
+  // involves Snowflake, credentials, or rows this run failed to export.
+  const DEADLINE_FORM =
+    'the previous run has held the lock for 60 minutes, past its own deadline and the 5 minute grace, ' +
+    'so it was killed rather than still working. This run is proceeding; the work its predecessor did not finish is simply unarchived.'
+  const RETRY_FORM =
+    'this invocation is a retry of the same scheduled event (2026-09-05T00:23:00.000Z), whose earlier attempt ' +
+    'took the lock 43 seconds ago; the platform only retries after that attempt has ended, so it was killed rather than ' +
+    'still working. This run is proceeding; the work its predecessor did not finish is simply unarchived.'
+  const UNREADABLE_FORM =
+    'the previous run lock could not be read, so it is presumed left behind by a killed run. This run is proceeding; ' +
+    'the work its predecessor did not finish is simply unarchived.'
+
+  it.each([DEADLINE_FORM, RETRY_FORM, UNREADABLE_FORM])('recognises the takeover wording: %s', (msg) => {
+    expect(classifyExportError(msg)).toBe('archive_run_killed')
+  })
+
+  it('does not read an ordinary export failure as a killed run', () => {
+    // Negative control in the same fixture shape: the word "run" alone is not
+    // the signature.
+    expect(classifyExportError('bids export: Snowflake 503: connection termination on the next run')).not.toBe('archive_run_killed')
+  })
+
+  it('says what was measured and that nothing is lost, and sends nobody to Snowflake', () => {
+    const hint = buildFixHint([DEADLINE_FORM])
+    expect(hint).toContain('took over')
+    expect(hint.toLowerCase()).toContain('nothing is lost')
+    expect(hint).toContain('Cloudflare')
+    expect(hint).not.toContain('Snowflake availability')
+    expect(hint).not.toContain('credential')
+    expect(hint).not.toContain(GENERIC_FIX_HINT)
+  })
+
+  it('pages on the first occurrence rather than being held as transient', () => {
+    // A kill is a statement about an invocation that is already over. Holding
+    // it for a second consecutive failure would hide every isolated kill, and
+    // the clean run that would clear the marker never calls this path at all.
+    expect(isTransientExportError(DEADLINE_FORM)).toBe(false)
+  })
+})
+
+describe('buildConsequence (#1180)', () => {
+  const KILLED =
+    'the previous run has held the lock for 60 minutes, past its own deadline and the 5 minute grace, ' +
+    'so it was killed rather than still working. This run is proceeding; the work its predecessor did not finish is simply unarchived.'
+
+  it('states the consequence of a killed run in its own words', () => {
+    const consequence = buildConsequence([KILLED])
+    expect(consequence).toBeDefined()
+    expect(consequence).not.toContain('not exported')
+    expect(consequence?.toLowerCase()).toContain('archiving')
+  })
+
+  it('leaves an ordinary export failure to the caller\'s default wording', () => {
+    expect(buildConsequence(['bids export: Snowflake 503: connection termination'])).toBeUndefined()
+  })
+
+  it('leaves a mixed batch to the default, rather than letting one class speak for all', () => {
+    expect(buildConsequence([KILLED, 'bids export: Snowflake 503: connection termination'])).toBeUndefined()
   })
 })

@@ -568,6 +568,22 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(text).not.toContain('Check Snowflake availability')
   })
 
+  it('renders a caller-supplied consequence instead of claiming rows were not exported (#1180)', async () => {
+    // The 2026-09-05 killed-run alert: the job exports nothing itself, and the
+    // run posting it is the one archiving what its predecessor left.
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'execution-archive-killed',
+      errors: ['the previous run has held the lock for 60 minutes, past its own deadline and the 5 minute grace, so it was killed rather than still working.'],
+      consequence: 'This run took over and is archiving the hours its predecessor left:',
+      fixHint: 'Nothing is lost.',
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('is archiving the hours its predecessor left')
+    expect(text).not.toContain('not exported')
+    expect(text).not.toContain('missing them')
+  })
+
   it('falls back to the generic fix line when no hint is supplied', async () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'x', errors: ['boom'],

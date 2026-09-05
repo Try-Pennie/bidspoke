@@ -22,6 +22,7 @@ export type ExportErrorClass =
   | 'snowflake_schema'
   | 'supabase_permission'
   | 'platform_limit'
+  | 'archive_run_killed'
   | 'unknown'
 
 export const GENERIC_FIX_HINT =
@@ -46,6 +47,24 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
     'Supabase denied the export role. Check the RLS policy and the table grants for the service role.',
   platform_limit:
     "The Worker hit Cloudflare's per invocation subrequest ceiling while draining a backlog. There is no action to take: the run stopped cleanly and the next run continues from where it left off.",
+  archive_run_killed:
+    'The previous archive invocation was terminated by the platform before it could release its lock; its job_runs row has no ending. Nothing is lost: the run that posted this took over and is archiving the hours it left, so the archive is at most one hour later than usual. No action for a single occurrence. If it repeats several times a day, read the Cloudflare cron events for bidspoke-worker (Workers and Pages, bidspoke-worker, Settings, Trigger Events) and the invocation statuses under Metrics, which name the termination.',
+}
+
+/**
+ * The sentence between "reported N errors" and the error list, for the classes
+ * where the renderer's default would be false (#1180).
+ *
+ * The renderer chooses its default by job NAME alone: a purge gets "the rows are
+ * already exported", everything else gets "the rows were not exported and
+ * analytics are missing them". The killed-run takeover is neither. It exports
+ * nothing itself, and the run posting it is the one archiving what its
+ * predecessor left, so on 2026-09-05 the alert claimed missing analytics for an
+ * event that had none. Classes not listed here keep the renderer's default.
+ */
+const CONSEQUENCES: Partial<Record<Exclude<ExportErrorClass, 'unknown'>, string>> = {
+  archive_run_killed:
+    'The run posting this took over the lock and is archiving the hours its predecessor left, so nothing is missing from Snowflake beyond one hour of delay:',
 }
 
 // Order matters. Two collisions make a naive code match wrong:
@@ -64,6 +83,13 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
   // more, next to the words) so an ordinary sentence containing "is not set"
   // cannot claim a secret is missing.
   { cls: 'missing_credential', test: /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+ is not set\b/ },
+  // The archive's own takeover wording, from decideLock in archive/run-lock.ts:
+  // both the deadline form and the cron retry form end "killed rather than still
+  // working", and the unreadable stamp form says "left behind by a killed run".
+  // Matched on those phrases rather than on the word "killed" alone, so a
+  // Snowflake or Postgres message that happens to say a statement was killed
+  // does not claim this class.
+  { cls: 'archive_run_killed', test: /killed rather than still working|left behind by a killed run/ },
   { cls: 'db_congestion', test: /\b57014\b|statement timeout/i },
   { cls: 'platform_limit', test: /too many subrequests|subrequest limit/i },
   {
@@ -118,4 +144,21 @@ export function buildFixHint(errors: string[]): string {
   if (seen.has('unknown')) lines.push(GENERIC_FIX_HINT)
 
   return lines.length > 0 ? lines.join('\n') : GENERIC_FIX_HINT
+}
+
+/**
+ * The consequence sentence for a batch of errors, or undefined to keep the
+ * renderer's default.
+ *
+ * Only when EVERY error is one class and that class has its own sentence. A
+ * mixed batch gets the default rather than letting one class speak for errors
+ * of another kind, because the sentence introduces the whole list.
+ */
+export function buildConsequence(errors: string[]): string | undefined {
+  if (errors.length === 0) return undefined
+  const classes = new Set(errors.map(classifyExportError))
+  if (classes.size !== 1) return undefined
+  const [only] = classes
+  if (only === 'unknown') return undefined
+  return CONSEQUENCES[only]
 }
