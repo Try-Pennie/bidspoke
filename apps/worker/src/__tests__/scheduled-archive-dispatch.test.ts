@@ -208,3 +208,20 @@ describe('the scheduled handler', () => {
     expect(typeof deps?.sendBatch).toBe('function')
   })
 })
+
+describe('the archive cron passes its scheduled time through (#1181)', () => {
+  // Cloudflare retries a terminated cron with the same scheduledTime. The lock's
+  // retry rule keys on that value, so the wiring has to hand it over, or the
+  // rule is present in the code and absent from production (L3).
+  it('hands the event\'s scheduled time to the archive run', async () => {
+    const waited: Promise<unknown>[] = []
+    const scheduledTime = Date.parse('2026-09-05T00:23:00.000Z')
+
+    worker.scheduled({ cron: '23 * * * *', scheduledTime } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.all(waited)
+
+    const deps = runExecutionArchive.mock.calls[0][2] as { scheduledFor?: Date }
+    expect(deps.scheduledFor).toBeInstanceOf(Date)
+    expect(deps.scheduledFor?.toISOString()).toBe('2026-09-05T00:23:00.000Z')
+  })
+})

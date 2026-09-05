@@ -443,6 +443,9 @@ export default {
           const { sendArchiveBatch } = await import('./lib/execution-archive-send')
           return runExecutionArchive(env, supabase, {
             sendBatch: (rows) => sendArchiveBatch(env, rows),
+            // The event identity, so a platform retry of this cron can take over
+            // the lock its terminated predecessor left (#1181).
+            scheduledFor: new Date(event.scheduledTime),
           })
         })().catch((e) => console.error('[execution-archive] failed:', e))
       )
