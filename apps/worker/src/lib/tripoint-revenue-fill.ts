@@ -202,6 +202,14 @@ export async function runTripointRevenueFill(deps: FillDeps): Promise<FillSummar
     .eq('partner_slug', 'tripoint')
     .eq('is_winner', true)
     .is('estimated_revenue_cents', null)
+    // A row already carrying a partner-reported amount needs no estimate: a
+    // measured bid beats a derived one. Main Flow resolves a real bid through
+    // its bid_group node and creates no Salesforce prospect, so without this
+    // every one of its winners became a candidate, found no prospect, and was
+    // reported as a skip. Measured 2026-09-05: 39 of 39 Main Flow winners
+    // against 0 of 282 for the two flows this job exists for, and the skip
+    // count had climbed to 19 of 58 per run.
+    .is('bid_cents', null)
     .is('exported_at', null)
     .gte('attempted_at_utc', since)
     .limit(MAX_ROWS_PER_RUN)
@@ -331,6 +339,9 @@ async function countExportedUnpriced(
     .eq('partner_slug', 'tripoint')
     .eq('is_winner', true)
     .is('estimated_revenue_cents', null)
+    // Same population as the candidate read above, or the residual reports rows
+    // this job would never have filled anyway.
+    .is('bid_cents', null)
     .not('exported_at', 'is', null)
     .gte('attempted_at_utc', since)
 
