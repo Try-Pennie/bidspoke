@@ -30,7 +30,6 @@ import { runSightingsExport, runSightingsPurge } from './lib/sightings-export'
 import { runAchieveExport } from './lib/achieve-export'
 import { prewarmKvCaches } from './lib/cache-prewarm'
 import { syncAllSalesforceConfigs } from './lib/bid-matrix-sync'
-import { runMatrixAudit } from './lib/sf-matrix-audit'
 import { runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck } from './lib/field-presence-anomaly'
 import { isCustomEndpointHost, handleCustomEndpoint } from './routes/custom-endpoint'
 
@@ -466,10 +465,16 @@ export default {
           .then((r) => console.log(`[bid-matrix-sync] ${r.successes.length} succeeded, ${r.failures.length} failed`))
           .catch((e) => console.error('[bid-matrix-sync] failed:', e))
       )
+      // Watched, because the audit failed every hour for at least four months
+      // with nothing but this console line to show for it (#982). The wrapper
+      // alerts on a throw and on an empty read, and never throws itself.
       ctx.waitUntil(
-        runMatrixAudit(env, supabase)
-          .then((r) => console.log(`[sf-matrix-audit] fetched=${r.rows_fetched} added=${r.rows_added} edited=${r.rows_edited} removed=${r.rows_removed} alerted=${r.alerted}`))
-          .catch((e) => console.error('[sf-matrix-audit] failed:', e))
+        (async () => {
+          const { runMatrixAuditWatched } = await import('./lib/matrix-audit-health')
+          const w = await runMatrixAuditWatched(env, supabase)
+          const r = w.result
+          if (w.ok && r) console.log(`[sf-matrix-audit] fetched=${r.rows_fetched} added=${r.rows_added} edited=${r.rows_edited} removed=${r.rows_removed} alerted=${r.alerted}`)
+        })().catch((e) => console.error('[sf-matrix-audit] failed:', e))
       )
       ctx.waitUntil(
         runFieldPresenceDroughtCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
