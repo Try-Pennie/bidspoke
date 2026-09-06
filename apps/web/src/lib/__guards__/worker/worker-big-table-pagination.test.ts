@@ -42,6 +42,11 @@ const BIG_TABLES = [
   // volume (20260820000001). Not partitioned on purpose, so the completeness
   // test above cannot reach it; the daily runtime guard flagged it instead.
   'execution_archive_ids',
+  // The archive's per-hour ledger: 24 rows a day, never pruned, so it crosses
+  // the cap within weeks of being created. Its reads are bounded by a date
+  // window or by one day's 24 hours, which this scan cannot see, so each one
+  // carries a paginate-ok saying so (#1191).
+  'execution_archive_hours',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
