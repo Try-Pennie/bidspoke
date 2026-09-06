@@ -9,12 +9,17 @@
  *
  * IT IS AN ESTIMATE AND IS NAMED AS ONE. `Prospect__c.ExternalExchangeRevenue__c`
  * is a Salesforce FORMULA field (`IsCalculated: true`), derived from the
- * prospect's debt rather than reported by Tripoint, and it disagrees with
- * Bidspoke's own Tripoint pricing by about 10% (#1166). So it goes in
- * `estimated_revenue_cents`, never in `bid_cents`, which means what a buyer
- * offered us on every row it holds. Sharing that column would make every later
- * sum part measurement and part estimate with nothing announcing it, which is
- * the reasoning that kept the quoted rate out of it too (#1158).
+ * prospect's debt rather than reported by Tripoint: 0.001 of debt from $10,000
+ * to $19,999 and 0.0016 from $20,000, for leads that came from an external
+ * partner (Engine, AmOne, Lead Economy). That is a different rule from the one
+ * Bidspoke prices Main Flow leads on, and deliberately so: Main Flow leads are
+ * booked through `Lead.ExternalRevenue__c` (0.0009 to $12,499, 0.0012 above),
+ * which `tripoint-pricing-check.ts` compares Bidspoke's config against daily
+ * (#1166). So it goes in `estimated_revenue_cents`, never in `bid_cents`, which
+ * means what a buyer offered us on every row it holds. Sharing that column would
+ * make every later sum part measurement and part estimate with nothing
+ * announcing it, which is the reasoning that kept the quoted rate out of it too
+ * (#1158).
  *
  * WHY IT RUNS EVERY 15 MINUTES rather than daily. Bid rows reach Snowflake about
  * 57 minutes after the bid (measured 2026-09-04, average over a 24 hour window),
