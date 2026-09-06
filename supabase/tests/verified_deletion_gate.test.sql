@@ -42,6 +42,17 @@
 --   truncate against real partitions   5 of 5 as expected, the refused day KEPT its row
 --   drop against real partitions       5 of 5 as expected, the non-empty one REFUSED
 --
+-- RESULTS, MEASURED 2026-09-06 on branch emqdbtmnnaaeudmrhkex (#1196), with the
+-- branch holding the gate as shipped first (parts 1 and 2 reproduced the lists
+-- above exactly; part 2b failed on the missing column, its RED), then migration
+-- 20260906200000 applied:
+--   parts 1, 2, 2b                     passed
+--   truncate                           emptied 08-30, 08-31, 09-01, stamped exactly those three
+--   drop, run at 2026-09-10 04:00      with every reading stale, dropped the two empty stamped
+--                                      shells, refused the non-empty one, kept 08-29 and 09-02
+--   mutation: stamp clause removed     part 2b fails on 'a step day was refused although its
+--                                      predecessor was stamped', so the assertion bites the rule
+--
 -- PRE-FLIGHT against production, read only, same date:
 --   at retention 21 (live)   0 days expired, so the ungated job is deleting nothing
 --   at retention 7 (#1038)   13 days expired, 13 verified, 0 refused, 1,064,596 executions freed
@@ -190,6 +201,59 @@ BEGIN
 END $$;
 
 -- ==================================================================
+-- Part 2b. The real cron instant, and the stamp (#1196).
+-- ==================================================================
+-- The gate measures at 13:00 UTC and the purge runs at 03:30 UTC. At retention 7,
+-- day 2026-07-30 is first eligible on the night of 2026-08-07, so the readings the
+-- purge can see are the ones taken on 08-06 (14.5 hours old) or 08-05 (38.5
+-- hours old). July dates, so Part 3's fixture below is left exactly as Part 2 set it. Both are in the fixture at once (L159): the pass and the refusal
+-- are decided at the SAME instant, so an always-empty list cannot satisfy this.
+DELETE FROM public.execution_archive_days WHERE archive_day BETWEEN '2026-07-28' AND '2026-07-31';
+INSERT INTO public.execution_archive_days
+  (archive_day, pg_execution_count, erased_execution_count, sf_execution_count,
+   pg_step_count, sf_step_count, orphan_execution_count, probe_ok, incomplete_count, measured_at)
+VALUES
+  ('2026-07-29', 100, 0, 100, 1000, 1000, 0, TRUE, 0, '2026-08-05T13:00:00Z'),  -- 38.5 h at the cron
+  ('2026-07-30', 100, 0, 100, 1000, 1000, 0, TRUE, 0, '2026-08-06T13:00:00Z');  -- 14.5 h at the cron
+
+DO $$
+DECLARE
+  v_cron TIMESTAMPTZ := '2026-08-07T03:30:00Z';
+  v_age  INTERVAL := '36 hours';
+  v_exec DATE[];
+  v_step DATE[];
+  v_fail TEXT[] := '{}';
+BEGIN
+  v_exec := verified_purgeable_days(7, 'workflow_executions', v_age, v_cron);
+  v_step := verified_purgeable_days(7, 'execution_steps', v_age, v_cron);
+
+  -- measured at 13:00 the day before the purge: fresh, in the list
+  IF NOT ('2026-07-30'::date = ANY(v_exec)) THEN v_fail := array_append(v_fail, 'a day measured 14.5 hours before the purge was not authorised'); END IF;
+  -- measured a day earlier: stale, excluded. This is the reading the old window left every day with.
+  IF '2026-07-29'::date = ANY(v_exec) THEN v_fail := array_append(v_fail, 'a day measured 38.5 hours before the purge was authorised despite the 36 hour bound'); END IF;
+  -- the step day needs its predecessor, which is stale and unstamped
+  IF '2026-07-30'::date = ANY(v_step) THEN v_fail := array_append(v_fail, 'a step day was allowed while its predecessor was stale and unstamped'); END IF;
+
+  -- Now the predecessor carries the stamp the truncate writes when it empties a
+  -- day's execution partition after a fresh verification. Its measurement is as
+  -- stale as before; the stamp is what changes.
+  UPDATE public.execution_archive_days SET executions_truncated_at = '2026-08-06T03:30:00Z' WHERE archive_day = '2026-07-29';
+  v_exec := verified_purgeable_days(7, 'workflow_executions', v_age, v_cron);
+  v_step := verified_purgeable_days(7, 'execution_steps', v_age, v_cron);
+
+  IF NOT ('2026-07-30'::date = ANY(v_step)) THEN v_fail := array_append(v_fail, 'a step day was refused although its predecessor was stamped as truncated after verification'); END IF;
+  -- a stamped day is verified for the execution parent too, which is what lets the Sunday reaper drop its empty shell
+  IF NOT ('2026-07-29'::date = ANY(v_exec)) THEN v_fail := array_append(v_fail, 'a stamped day was not treated as verified for the execution parent'); END IF;
+
+  IF array_length(v_fail, 1) > 0 THEN
+    RAISE EXCEPTION E'verified_purgeable_days at the cron instant:\n  %', array_to_string(v_fail, E'\n  ');
+  END IF;
+  RAISE NOTICE 'part 2b: the cron instant accepts the 14.5 hour reading, refuses the 38.5 hour one, and the stamp admits the step day';
+END $$;
+-- Tidy, so the stamped July day cannot leak into a later part's day list.
+DELETE FROM public.execution_archive_days WHERE archive_day BETWEEN '2026-07-28' AND '2026-07-31';
+
+-- ==================================================================
 -- Part 3. The procedures, against real partitions holding real rows.
 -- ==================================================================
 DROP TABLE IF EXISTS public.t_gate_execs CASCADE;
@@ -235,6 +299,19 @@ BEGIN
     v_fail := array_append(v_fail, '2026-09-02 is inside retention and should be untouched');
   END IF;
 
+  -- #1196: every day whose execution partition was emptied carries the stamp, at
+  -- the procedure's own p_now, and nothing else does. The stamp is what lets the
+  -- next night's step partition go once this day's reading has aged out.
+  IF (SELECT count(*) FROM public.execution_archive_days
+      WHERE archive_day IN ('2026-08-30', '2026-08-31', '2026-09-01')
+        AND executions_truncated_at = '2026-09-03T12:00:00Z') <> 3 THEN
+    v_fail := array_append(v_fail, 'the emptied days were not all stamped executions_truncated_at at the run instant');
+  END IF;
+  IF (SELECT count(*) FROM public.execution_archive_days
+      WHERE archive_day IN ('2026-08-29', '2026-09-02') AND executions_truncated_at IS NOT NULL) <> 0 THEN
+    v_fail := array_append(v_fail, 'a day that was refused or inside retention was stamped as truncated');
+  END IF;
+
   IF array_length(v_fail, 1) > 0 THEN
     RAISE EXCEPTION E'truncate_verified_execution_partitions:\n  %', array_to_string(v_fail, E'\n  ');
   END IF;
@@ -243,6 +320,7 @@ END $$;
 
 -- ==================================================================
 -- Part 4. #1014: the reaper refuses a partition that still holds rows.
+--         #1196: and it drops stamped shells whose readings have gone stale.
 -- ==================================================================
 -- Put a row back into a VERIFIED day's partition, so the drop meets a partition
 -- the gate cleared but which is not empty. The procedure it replaced selected
@@ -250,23 +328,29 @@ END $$;
 -- had deliberately spared.
 INSERT INTO public.t_gate_execs VALUES (99, '2026-08-30T05:00:00Z');
 
+-- Run a WEEK after every measurement above. The real reaper runs on Sunday
+-- against shells emptied up to seven nights earlier, whose readings are all past
+-- the 36 hour bound, so before #1196 it could never drop anything. At this
+-- instant the stamp the truncate wrote in part 3 is the only thing that can
+-- authorise a drop, and 2026-09-02, never truncated and never stamped, is now
+-- past retention too and must stay.
 CALL public.drop_verified_execution_partitions(
-  1, 't_gate_steps_absent', 't_gate_execs', interval '36 hours', '2026-09-03T12:00:00Z');
+  1, 't_gate_steps_absent', 't_gate_execs', interval '36 hours', '2026-09-10T04:00:00Z');
 
 DO $$
 DECLARE v_fail TEXT[] := '{}';
 BEGIN
-  -- NEGATIVE: verified, past retention, and NOT empty, so refused.
+  -- NEGATIVE: stamped, past retention, and NOT empty, so refused.
   IF to_regclass('public.t_gate_execs_2026_08_30') IS NULL THEN
     v_fail := array_append(v_fail, 'a partition that still held rows was dropped: the emptiness check did not hold');
   END IF;
   -- POSITIVE, in the same run, or the refusal above is satisfied by the procedure
-  -- dropping nothing at all.
+  -- dropping nothing at all. Only the stamp can have authorised these.
   IF to_regclass('public.t_gate_execs_2026_08_31') IS NOT NULL THEN
-    v_fail := array_append(v_fail, 'an empty verified partition was not dropped');
+    v_fail := array_append(v_fail, 'an empty stamped partition was not dropped although its measurement was stale');
   END IF;
   IF to_regclass('public.t_gate_execs_2026_09_01') IS NOT NULL THEN
-    v_fail := array_append(v_fail, 'an empty verified partition was not dropped');
+    v_fail := array_append(v_fail, 'an empty stamped partition was not dropped although its measurement was stale');
   END IF;
   -- never a candidate, and it must still hold its data rather than merely exist
   IF to_regclass('public.t_gate_execs_2026_08_29') IS NULL THEN
@@ -274,15 +358,19 @@ BEGIN
   ELSIF (SELECT count(*) FROM public.t_gate_execs_2026_08_29) <> 1 THEN
     v_fail := array_append(v_fail, 'the refused day 2026-08-29 survived as an empty shell, so its data went anyway');
   END IF;
+  -- unstamped and stale: past retention at this instant, yet not verified, so kept with its row
   IF to_regclass('public.t_gate_execs_2026_09_02') IS NULL THEN
-    v_fail := array_append(v_fail, '2026-09-02 is inside retention and was dropped');
+    v_fail := array_append(v_fail, '2026-09-02 was never truncated or stamped and its stale reading must not authorise a drop');
+  ELSIF (SELECT count(*) FROM public.t_gate_execs_2026_09_02) <> 1 THEN
+    v_fail := array_append(v_fail, '2026-09-02 lost its row');
   END IF;
 
   IF array_length(v_fail, 1) > 0 THEN
     RAISE EXCEPTION E'drop_verified_execution_partitions:\n  %', array_to_string(v_fail, E'\n  ');
   END IF;
-  RAISE NOTICE 'part 4: the reaper dropped the empty shells and refused the one still holding rows';
+  RAISE NOTICE 'part 4: the reaper dropped the stamped empty shells at a stale instant and refused the one still holding rows';
 END $$;
 
 -- Tidy the fixture, so a branch reused for another run starts clean.
 DROP TABLE IF EXISTS public.t_gate_execs CASCADE;
+DELETE FROM public.execution_archive_days WHERE archive_day BETWEEN '2026-08-28' AND '2026-09-03';

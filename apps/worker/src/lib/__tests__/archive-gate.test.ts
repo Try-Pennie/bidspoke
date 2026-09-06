@@ -26,10 +26,15 @@ const NOW = new Date('2026-08-22T13:00:00.000Z')
  * again. A fixture pinned to one of those fails for a reason that looks like a
  * defect in the gate rather than a stale expectation (L41).
  */
-const CANDIDATE_COUNT = RETENTION_DAYS - 1
+const CANDIDATE_COUNT = RETENTION_DAYS + 1
 const daysBeforeNow = (n: number) => new Date(NOW.getTime() - n * 86400000).toISOString().slice(0, 10)
-/** The oldest candidate day, and therefore the one the urgency rule speaks about. */
+/**
+ * The oldest candidate day: one past retention, so the purge should already have
+ * taken it. It is measured so a missed night is caught rather than stranded.
+ */
 const OLDEST_DAY = daysBeforeNow(CANDIDATE_COUNT)
+/** The day whose partition the 03:30 UTC purge takes tonight: the last reading it sees is this run's. */
+const DUE_TONIGHT = daysBeforeNow(RETENTION_DAYS)
 const WATERMARK = '2026-08-21T23:00:00.000Z'
 
 const env = { IDEMPOTENCY: undefined } as unknown as Env
@@ -69,7 +74,15 @@ function facts(over: Partial<DayFacts> = {}): DayFacts {
  * `perDay` lets one day differ from the rest, which is how each refusal is
  * produced without spoiling the others.
  */
-function supabaseDouble(opts: { watermark: string | null; base: DayFacts; perDay?: Record<string, DayFacts> }) {
+function supabaseDouble(opts: {
+  watermark: string | null
+  base: DayFacts
+  perDay?: Record<string, DayFacts>
+  /** Days the purge has already emptied and stamped `executions_truncated_at`. */
+  stamped?: string[]
+  /** Make the stamped-days read fail, as a Postgres error would. */
+  stampedReadError?: string
+}) {
   const recorded: Array<Record<string, unknown>> = []
   const factsFor = (day: string) => opts.perDay?.[day] ?? opts.base
 
@@ -83,6 +96,15 @@ function supabaseDouble(opts: { watermark: string | null; base: DayFacts; perDay
             data: opts.watermark === null ? null : { watermark_hour: opts.watermark },
             error: null,
           }),
+        // The stamped-days read: `.in('archive_day', days).not('executions_truncated_at', 'is', null)`.
+        in: () => ({
+          not: () =>
+            Promise.resolve(
+              opts.stampedReadError !== undefined
+                ? { data: null, error: { message: opts.stampedReadError } }
+                : { data: (opts.stamped ?? []).map((d) => ({ archive_day: d })), error: null },
+            ),
+        }),
       }
       return chain
     },
@@ -159,12 +181,16 @@ async function run(opts: {
   base?: DayFacts
   perDay?: Record<string, DayFacts>
   bundles?: Map<string, { wire: string; traceId: string | null }>
+  stamped?: string[]
+  stampedReadError?: string
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
     watermark: opts.watermark === undefined ? WATERMARK : opts.watermark,
     base,
     perDay: opts.perDay,
+    stamped: opts.stamped,
+    stampedReadError: opts.stampedReadError,
   })
   const bundles = opts.bundles ?? new Map([['e-1', { wire: await bundleFor('e-1', 2), traceId: 't-1' }]])
   const sf = snowflakeDouble(db.factsFor, bundles)
@@ -230,13 +256,30 @@ describe('a healthy set of days', () => {
 })
 
 describe('a day whose counts do not reconcile', () => {
-  it('refuses it and alerts when it is close to deletion', async () => {
+  it('refuses it and alerts when the purge takes it tonight', async () => {
+    const { summary } = await run({
+      perDay: { [DUE_TONIGHT]: facts({ sfExecutions: 2 }) },
+    })
+
+    expect(resultFor(summary, DUE_TONIGHT).refusals.map((r) => r.code)).toEqual(['executions-disagree'])
+    expect(alerted().join(' ')).toMatch(
+      new RegExp(`${DUE_TONIGHT} is not verified and its partition is due at the next 03:30 UTC purge`),
+    )
+  })
+
+  it('says so when a day is past retention and the purge did not take it', async () => {
+    // The purge ran last night and left this day's rows behind, whatever the
+    // reason. That is the schedule failing to enforce retention, which is the
+    // failure that went unnoticed for two nights before #1196, so it is named as
+    // such rather than as a negative number of days left.
     const { summary } = await run({
       perDay: { [OLDEST_DAY]: facts({ sfExecutions: 2 }) },
     })
 
-    expect(resultFor(summary, OLDEST_DAY).refusals.map((r) => r.code)).toEqual(['executions-disagree'])
-    expect(alerted().join(' ')).toMatch(new RegExp(`${OLDEST_DAY} is not verified with 1 day left`))
+    expect(resultFor(summary, OLDEST_DAY).daysLeft).toBeLessThan(0)
+    expect(alerted().join(' ')).toMatch(
+      new RegExp(`${OLDEST_DAY} is past retention and the purge did not take it: .*executions`),
+    )
   })
 
   it('records the refusal but stays quiet for a day with plenty of runway', async () => {
@@ -255,6 +298,36 @@ describe('a day whose counts do not reconcile', () => {
     const { summary } = await run({ perDay: { [OLDEST_DAY]: facts({ orphanExecutions: 4 }) } })
 
     expect(summary.daysDeletable).toBe(CANDIDATE_COUNT - 1)
+  })
+})
+
+describe('a day the purge has already emptied', () => {
+  it('is skipped, not measured, and raises nothing', async () => {
+    // Its execution partition is empty, so measuring it would read zero
+    // executions against the archive's full count and refuse as a surplus, on a
+    // day whose deletion has already happened. The stamp is the record that it
+    // did, so the gate leaves it alone.
+    const { summary, recorded } = await run({ stamped: [OLDEST_DAY] })
+
+    expect(summary.daysConsidered).toBe(CANDIDATE_COUNT)
+    expect(summary.daysStamped).toBe(1)
+    expect(summary.daysMeasured).toBe(CANDIDATE_COUNT - 1)
+    expect(summary.results.some((r) => r.archiveDay === OLDEST_DAY)).toBe(false)
+    expect(recorded.some((r) => r.p_day === OLDEST_DAY)).toBe(false)
+    expect(alerted()).toEqual([])
+  })
+
+  it('treats a failed stamped-days read as a failed run, not as no days stamped', async () => {
+    // An empty answer here would measure every stamped day, refuse each as a
+    // surplus and alert on all of them, about deletions that already happened.
+    // So the read failing is the run failing (L215, L98).
+    const { summary, recorded } = await run({ stampedReadError: 'connection reset' })
+
+    expect(summary.failed).toBe(true)
+    expect(summary.daysMeasured).toBe(0)
+    expect(summary.results).toEqual([])
+    expect(recorded).toEqual([])
+    expect(alerted().join(' ')).toMatch(/the stamped days could not be read: .*connection reset/)
   })
 })
 

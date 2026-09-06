@@ -10,10 +10,16 @@
  * genuine, correct shortfall that clears itself later, which is exactly the
  * shape that teaches everyone to ignore the gate.
  *
- * OLDEST: a day whose Postgres partition has already been dropped counts zero
+ * OLDEST: a day whose Postgres partition has already been truncated counts zero
  * executions while the archive still holds them all, so it would refuse forever
  * with `executions-surplus` and never be clearable. Measurement therefore stops
- * at the retention boundary.
+ * one day past the retention boundary, and it must REACH the boundary: the purge
+ * runs at 03:30 UTC on the morning after a day's last day inside retention, and
+ * this gate runs at 13:00 UTC, so the day aged RETENTION_DAYS is measured 14.5
+ * hours before it is deleted. Stopping one day short left that reading 38.5
+ * hours old at the purge, past the staleness bound, so every eligible day was
+ * refused and the schedule never deleted anything (#1196). The one extra day is
+ * for a day the purge missed; a day it TOOK is stamped and skipped by the caller.
  */
 
 const HOUR_MS = 60 * 60 * 1000
@@ -88,7 +94,12 @@ export function candidateDays(input: { watermarkHour: string | null; now: Date }
   if (newest === null) return []
 
   const todayMs = dayStartMs(dayString(input.now.getTime()))
-  const oldestAllowedMs = todayMs - (RETENTION_DAYS - 1) * DAY_MS
+  // One day PAST the boundary as well: a day the purge should have taken last
+  // night but did not (a lock timeout, a stale reading, a gate pass that died) is
+  // measured again and taken tonight instead of being stranded for good. The
+  // caller skips any candidate the purge has stamped as truncated, since that one
+  // would count zero executions against the archive's full count.
+  const oldestAllowedMs = todayMs - (RETENTION_DAYS + 1) * DAY_MS
   const newestMs = dayStartMs(newest)
 
   const days: string[] = []
