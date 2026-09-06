@@ -85,7 +85,7 @@ database. Every lead's full payload passes through `trigger_payload`,
 social security numbers, names, addresses and credit reports.
 
 **Retention: 7 days, by partition truncation.** Daily partitions;
-`purge-old-execution-partitions` calls `truncate_expired_execution_partitions(7)`
+`purge-old-execution-partitions` calls `truncate_verified_execution_partitions(7)`
 at 03:30 UTC. Measured on 2026-08-17: the oldest live partition was
 `execution_steps_2026_08_09`, so the true maximum age is about 8 days.
 

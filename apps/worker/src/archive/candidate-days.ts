@@ -23,13 +23,11 @@ const DAY_MS = 24 * HOUR_MS
  * Days of history the partitions hold: the age at which
  * `truncate_verified_execution_partitions` destroys a day.
  *
- * TEMPORARILY 21 rather than 7 (migration `20260824000002`), as insurance while
- * the archive backlog drained with nobody available to react, because deletion
- * was not gated on the archive. It is now (#873, migration `20260903210000`), and
- * the backlog is clear: as of 2026-09-03 every day Postgres holds is fully
- * archived and gate verified, and at retention 7 the gate would authorise 13 days
- * and refuse none. So the insurance has served its purpose and #1038 is the issue
- * that puts this back to 7.
+ * 7 is the designed window. It ran at 14 and then 21 from 2026-08-23 to
+ * 2026-09-06 (migrations `20260823000002`, `20260824000002`) as insurance while
+ * the archive backlog drained and deletion was not yet gated on the archive; the
+ * gate shipped (#873, migration `20260903210000`) and #1038 put it back once every
+ * retained day showed 24 archived hours (migration `20260906180000`).
  *
  * ONE NUMBER, for two purposes that must not diverge: how far back the gate
  * measures, and how long a day has left. They were one constant by accident and
@@ -48,7 +46,7 @@ const DAY_MS = 24 * HOUR_MS
  * gate told the team a day was one night from deletion when it had fifteen
  * (#1017). The cron is the authority, never this line.
  */
-export const RETENTION_DAYS = 21
+export const RETENTION_DAYS = 7
 
 function dayString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
