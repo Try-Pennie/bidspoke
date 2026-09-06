@@ -199,7 +199,7 @@ export const BACKLOG_STATE_KEY = 'execution-archive:backlog-state'
  * Postgres no longer holds simply drops out of the answer, which costs one cheap
  * query and cannot silently exclude anything (#1017).
  */
-const LOOKBACK_DAYS = 14
+export const LOOKBACK_DAYS = 14
 
 function dayString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
@@ -255,6 +255,10 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
     recordedHoursByDay: async () => {
       const todayMs = Date.parse(`${dayString(now().getTime())}T00:00:00.000Z`)
       const from = dayString(todayMs - LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
+      // paginate-ok: bounded by the date window to LOOKBACK_DAYS * 24 rows, one per
+      // archived hour. archive-backlog-run.test.ts pins that product under the
+      // PostgREST cap, because past it this read would truncate silently and
+      // finished hours would read as missing (#1191).
       const { data, error } = await supabase
         .from('execution_archive_hours')
         .select('hour_start')

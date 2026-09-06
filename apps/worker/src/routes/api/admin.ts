@@ -396,6 +396,7 @@ async function recordedHoursAmong(
   supabase: ReturnType<typeof createSupabaseClient>,
   hours: string[],
 ): Promise<Set<string>> {
+  // paginate-ok: bounded to the hours asked about, which is one day's 24 (#1191).
   const { data, error } = await supabase
     .from('execution_archive_hours')
     .select('hour_start')

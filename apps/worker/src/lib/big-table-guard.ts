@@ -35,6 +35,11 @@ export const KNOWN_BIG_TABLES = new Set([
   'field_presence_daily',
   'workflow_stats_daily',
   'execution_archive_ids',
+  // The per-hour ledger of the execution archive, 24 rows a day and never pruned
+  // (#1191). Its reads are bounded by a date window or by the 24 hours of one
+  // day, not by a page. No apostrophes in this comment: the mirror test in
+  // apps/web reads every quoted string inside this literal as a table name.
+  'execution_archive_hours',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads

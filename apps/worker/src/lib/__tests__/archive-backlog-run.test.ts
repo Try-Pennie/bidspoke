@@ -13,7 +13,8 @@
  * backlog still needs a deliberate push.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { runArchiveBacklog } from '../archive-backlog-run'
+import { LOOKBACK_DAYS, runArchiveBacklog } from '../archive-backlog-run'
+import { PAGE_SIZE } from '../paginate'
 import { MAX_NO_PROGRESS_ATTEMPTS, SET_ASIDE_MS, emptyBacklogState, type BacklogState } from '../../archive/backlog'
 
 const NOW = new Date('2026-08-23T18:00:00.000Z')
@@ -237,5 +238,20 @@ describe('runArchiveBacklog', () => {
 
     await expect(runArchiveBacklog(d.injected)).rejects.toThrow(/KV unavailable/)
     expect(d.written).toBe(false)
+  })
+})
+
+describe('the recorded-hours read stays under the PostgREST cap (#1191)', () => {
+  // recordedHoursByDay reads one row per archived hour across LOOKBACK_DAYS, with
+  // no page size: its bound is the date window. PostgREST answers at most
+  // PAGE_SIZE rows to such a read and says nothing about the rest, so past that
+  // point finished hours would read as missing and the walk would go back over
+  // days already archived. The lookback was widened from 7 to 14 as a temporary
+  // measure (#1038), and this is what stops the next widening from crossing the
+  // line unnoticed (L188).
+  it('LOOKBACK_DAYS worth of hours is well inside one PostgREST page', () => {
+    const rows = LOOKBACK_DAYS * 24
+    const maxDays = Math.floor((PAGE_SIZE - 1) / 24)
+    expect(rows, `${LOOKBACK_DAYS} days is ${rows} hourly rows; the cap is ${PAGE_SIZE}, so the lookback must stay at or below ${maxDays} days, or the read must page`).toBeLessThan(PAGE_SIZE)
   })
 })
