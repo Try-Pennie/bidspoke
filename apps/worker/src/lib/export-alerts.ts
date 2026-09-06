@@ -29,11 +29,31 @@ export const EXPORT_ALERT_BACKSTOP_TTL_SECONDS = 8 * 60 * 60
 // first clean run.
 export const EXPORT_ALERT_PENDING_TTL_SECONDS = 26 * 60 * 60
 
+/**
+ * What the alert should say happened, and what to do, when the caller knows
+ * better than the message classifier.
+ *
+ * The classifier below reads export error TEXT, and every scheduled check
+ * borrows this alerter, so a check whose messages it does not recognise used
+ * to be told "the rows were not exported, check Snowflake" whatever it was
+ * about. On 2026-09-06 the Tripoint pricing check paged with exactly that under
+ * a pricing disagreement (#1166). A check about settings, not rows, supplies
+ * both sentences itself; the classification is only for the export jobs whose
+ * failures it was written from (#542).
+ */
+export interface AlertRemedy {
+  /** The sentence between "reported N errors" and the list. */
+  consequence: string
+  /** The "How to fix" line. */
+  fixHint: string
+}
+
 export async function notifyExportFailure(
   supabase: SupabaseClient,
   jobName: string,
   errors: string[],
   kv?: KvLike,
+  remedy?: AlertRemedy,
 ): Promise<void> {
   const stateKey = `export-alert-state:${jobName}`
   const pendingKey = `export-alert-pending:${jobName}`
@@ -79,8 +99,8 @@ export async function notifyExportFailure(
   // Classify once, not per org: the same errors produce the same advice. The
   // consequence sentence comes from the same classification (#1180), so the
   // alert's second sentence and its remedy cannot disagree about what happened.
-  const fixHint = buildFixHint(errors)
-  const consequence = buildConsequence(errors)
+  const fixHint = remedy?.fixHint ?? buildFixHint(errors)
+  const consequence = remedy?.consequence ?? buildConsequence(errors)
 
   let delivered = false
   for (const orgId of orgIds) {

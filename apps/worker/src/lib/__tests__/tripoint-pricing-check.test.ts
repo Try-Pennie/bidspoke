@@ -62,6 +62,22 @@ beforeEach(() => {
 })
 
 describe('checkTripointPricing', () => {
+  it('tells the reader what to do about a pricing disagreement, not to check Snowflake', async () => {
+    // The shared alerter's default wording is written for the export jobs. A
+    // pricing alert that ends "check Snowflake availability and the export
+    // credentials" sends whoever reads it to the wrong product (L399).
+    const db = supabaseDouble({ data: { bid_resolver_config: config(0.0013) } })
+
+    await checkTripointPricing(env, db.client, { readFormula: async () => LEAD_FORMULA })
+
+    const remedy = vi.mocked(notifyExportFailure).mock.calls[0][4] as { consequence: string; fixHint: string } | undefined
+    expect(remedy).toBeDefined()
+    expect(remedy?.consequence).not.toMatch(/exported|Snowflake/i)
+    expect(remedy?.fixHint).toMatch(/Partners/)
+    expect(remedy?.fixHint).toMatch(/Tripoint/)
+    expect(remedy?.fixHint).not.toMatch(/Snowflake availability|export credentials/i)
+  })
+
   it('is silent, and still reports a clean run to the alerter, when both rules agree', async () => {
     const db = supabaseDouble({ data: { bid_resolver_config: config(0.0012) } })
 

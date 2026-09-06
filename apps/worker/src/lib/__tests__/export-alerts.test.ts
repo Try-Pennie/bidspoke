@@ -42,6 +42,26 @@ function makeKv(initial: Record<string, string> = {}) {
 describe('notifyExportFailure', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  it('carries a remedy the caller supplies instead of classifying the message as an export error', async () => {
+    // Every scheduled check borrows this alerter, and one whose message the
+    // classifier does not recognise used to be told "rows were not exported,
+    // check Snowflake", whatever it was actually about. On 2026-09-06 the
+    // Tripoint pricing check paged with exactly that text under a pricing
+    // disagreement, and Dan asked what he was supposed to do about it.
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const remedy = {
+      consequence: 'Bidspoke and Salesforce disagree on a Tripoint price; nothing was exported or retried:',
+      fixHint: 'Open Partners, Tripoint, and set the tier to what the Salesforce formula books.',
+    }
+
+    await notifyExportFailure(makeSupabase(['org-1']), 'tripoint-pricing-drift', ['Bidspoke prices the high band at 0.0013 of debt, Salesforce books 0.0012'], undefined, remedy)
+
+    const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
+    expect(payload.consequence).toBe(remedy.consequence)
+    expect(payload.fixHint).toBe(remedy.fixHint)
+    expect(payload.fixHint).not.toContain('Snowflake')
+  })
+
   it('does nothing (no Slack lookup) when there are no errors', async () => {
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings export', [])
