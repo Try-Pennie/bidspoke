@@ -20,7 +20,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { parseJson } from './json'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
@@ -33,6 +33,24 @@ import {
 import type { Env } from '../index'
 
 export const TRIPOINT_PRICING_JOB = 'tripoint-pricing-drift'
+
+/**
+ * What the alert says, in the vocabulary of the place the reader will act
+ * (L399). The shared alerter's default sentences are about exported rows and
+ * Snowflake, and this check has neither: it compares two settings. True for
+ * every line this check can send, because each line names which case it is.
+ */
+export const TRIPOINT_PRICING_REMEDY: AlertRemedy = {
+  consequence:
+    "Bidspoke's Tripoint price and the Salesforce revenue formula were compared and either disagree or " +
+    'could not be compared. This is about two settings, not data: nothing was sent anywhere and nothing is missing. ' +
+    'The lines below say which case this is:',
+  fixHint:
+    'A multiplier or boundary that disagrees: open Partners, Tripoint, and set the tier-based multiplier to what ' +
+    'the Salesforce formula books, or have the formula changed, whichever is the wrong one. A formula that could ' +
+    'not be read or recognised: the check itself needs attention (the Worker\'s Salesforce credentials, its Tooling ' +
+    'API access, or a rewritten formula); run POST /api/admin/tripoint-pricing-check to see the current answer.',
+}
 
 /** The Salesforce field whose formula books Main Flow Tripoint revenue. */
 export const LEAD_REVENUE_FIELD = { object: 'Lead', developerName: 'ExternalRevenue' } as const
@@ -78,7 +96,7 @@ export async function checkTripointPricing(
  */
 async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
   try {
-    await notifyExportFailure(supabase, TRIPOINT_PRICING_JOB, messages, env.IDEMPOTENCY)
+    await notifyExportFailure(supabase, TRIPOINT_PRICING_JOB, messages, env.IDEMPOTENCY, TRIPOINT_PRICING_REMEDY)
   } catch (err) {
     console.error('[tripoint-pricing] could not send its alert:', formatErr(err))
   }
