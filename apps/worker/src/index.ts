@@ -353,6 +353,17 @@ export default {
           if (r.alerted) console.error(`[retention-check] ${r.differences.length} differences`)
         })().catch((e) => console.error('[retention-check] failed:', e)),
       )
+      // Does Bidspoke still price a Tripoint lead the way Salesforce books it
+      // (#1166)? Two hand-edited settings in two products, and the high band read
+      // 0.0013 in one and 0.0012 in the other for three months with nothing
+      // comparing them. Its own failure boundary, like the check above (L71).
+      ctx.waitUntil(
+        (async () => {
+          const { checkTripointPricing } = await import('./lib/tripoint-pricing-check')
+          const r = await checkTripointPricing(env, supabase)
+          if (r.alerted) console.error(`[tripoint-pricing] ${r.differences.length} differences`)
+        })().catch((e) => console.error('[tripoint-pricing] failed:', e)),
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still

@@ -22,6 +22,7 @@ import { formatErr } from '../../lib/format-error'
 import { runExecutionArchive } from '../../lib/execution-archive'
 import { checkArchiveSettings } from '../../lib/archive-settings-check'
 import { runArchiveGate } from '../../lib/archive-gate'
+import { checkTripointPricing } from '../../lib/tripoint-pricing-check'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { canonicalHourStart } from '../../archive/clock'
@@ -529,6 +530,33 @@ admin.post('/archive-gate', async (c) => {
       daysVerified: days.filter((d) => d.verified).length,
       detail: summary.detail,
       days,
+    },
+    ok ? 200 : 500,
+  )
+})
+
+/**
+ * Compares Bidspoke's Tripoint price with the Salesforce revenue formula now
+ * (#1166), rather than waiting for the 13:00 UTC cron.
+ *
+ * The first thing anyone needs to know after this check ships is whether the
+ * Worker's connected app can read the Tooling API at all, and a day is too long
+ * to wait for that answer. It calls the SAME function the cron calls.
+ *
+ * A DISAGREEMENT OR AN UNREAD FORMULA IS NOT 200. Both mean Bidspoke is bidding a
+ * price nobody has confirmed Salesforce will book, and a caller reading only the
+ * status must not be able to take that for agreement (L98).
+ */
+admin.post('/tripoint-pricing-check', async (c) => {
+  const supabase = createSupabaseClient(c.env)
+  const result = await checkTripointPricing(c.env, supabase)
+  const ok = result.salesforce !== null && result.differences.length === 0
+  return c.json(
+    {
+      ok,
+      salesforce: result.salesforce,
+      differences: result.differences,
+      notes: result.notes,
     },
     ok ? 200 : 500,
   )

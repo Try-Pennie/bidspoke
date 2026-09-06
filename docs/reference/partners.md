@@ -62,6 +62,17 @@ finalDebt > 12499 ? finalDebt * steps.constants.output.tripointHi
                   : finalDebt * steps.constants.output.tripointLo
 ```
 
+The live Tripoint config uses the declarative `tiered_multiplier` form of the same
+rule: `default_multiplier` up to `tiers[0].above`, `tiers[0].multiplier` above it.
+Salesforce books the revenue for the same leads through the formula behind
+`Lead.ExternalRevenue__c`, and the two are edited by hand in two products. A daily
+check (`tripoint-pricing-check.ts`, alert name `tripoint-pricing-drift`, 13:00 UTC)
+reads that formula through the Tooling API and reports any boundary or multiplier
+the two disagree on, and separately refuses when the formula cannot be read or has
+changed shape. `POST /api/admin/tripoint-pricing-check` runs it on demand. The one
+standing difference it notes without alerting: Salesforce books nothing below
+$10,000 of debt, and Bidspoke has no debt floor.
+
 ### Matrix resolver
 
 `bid_resolver_type: 'matrix'`. The bid is looked up from a two-dimensional bid matrix. `bid_resolver_config` must contain:
