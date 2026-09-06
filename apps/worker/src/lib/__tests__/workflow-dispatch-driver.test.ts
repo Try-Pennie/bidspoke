@@ -32,7 +32,7 @@ const ago = (ms: number) => new Date(NOW - ms).toISOString()
 
 describe('decideDue: when the worker should step in', () => {
   it('dispatches when the last qualifying run is older than the cadence', () => {
-    const lookup = { ok: true as const, lastRunIso: ago(5 * HOUR), conclusions: ['success'] }
+    const lookup = { ok: true as const, lastRunIso: ago(5 * HOUR), conclusions: ['success'], manualPassIso: null }
     expect(decideDue(lookup, NOW, HOUR).act).toBe('dispatch')
   })
 
@@ -40,12 +40,12 @@ describe('decideDue: when the worker should step in', () => {
     // The driver is a backstop, not a replacement. If GitHub starts delivering
     // the cron again, this must go quiet on its own rather than doubling every
     // run for ever.
-    const lookup = { ok: true as const, lastRunIso: ago(10 * 60 * 1000), conclusions: ['success'] }
+    const lookup = { ok: true as const, lastRunIso: ago(10 * 60 * 1000), conclusions: ['success'], manualPassIso: null }
     expect(decideDue(lookup, NOW, HOUR).act).toBe('wait')
   })
 
   it('dispatches when GitHub has no qualifying run on record at all', () => {
-    const lookup = { ok: true as const, lastRunIso: null, conclusions: [] }
+    const lookup = { ok: true as const, lastRunIso: null, conclusions: [], manualPassIso: null }
     expect(decideDue(lookup, NOW, HOUR).act).toBe('dispatch')
   })
 
@@ -63,7 +63,7 @@ describe('decideDue: when the worker should step in', () => {
     // Date.parse yields NaN here, and NaN compares false against every
     // threshold, so an unguarded comparison would silently land on "wait": the
     // one answer this must never give without having measured it (L50).
-    const lookup = { ok: true as const, lastRunIso: 'not a date', conclusions: [] }
+    const lookup = { ok: true as const, lastRunIso: 'not a date', conclusions: [], manualPassIso: null }
     expect(decideDue(lookup, NOW, HOUR).act).toBe('unknown')
   })
 })

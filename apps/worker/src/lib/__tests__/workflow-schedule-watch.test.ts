@@ -47,13 +47,19 @@ const ok = (lastRunIso: string | null): ScheduleLookup => ({
   ok: true,
   lastRunIso,
   conclusions: lastRunIso === null ? [] : ['success'],
+  manualPassIso: null,
 })
 
 /** A readable answer whose most recent runs concluded as given, newest first. */
-const ranWith = (lastRunIso: string, conclusions: (string | null)[]): ScheduleLookup => ({
+const ranWith = (
+  lastRunIso: string,
+  conclusions: (string | null)[],
+  manualPassIso: string | null = null,
+): ScheduleLookup => ({
   ok: true,
   lastRunIso,
   conclusions,
+  manualPassIso,
 })
 
 describe('evaluateSchedule: the settled states', () => {
@@ -268,7 +274,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'schedule' }],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'] })
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], manualPassIso: null })
     expect(String(fetchMock.mock.calls[0][0])).toContain('deploy-drift.yml')
   })
 
@@ -288,7 +294,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       ],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'] })
+    expect(result).toEqual({ ok: true, lastRunIso: '2026-08-17T11:17:00Z', conclusions: ['success'], manualPassIso: null })
   })
 
   it('still ignores a dispatch a PERSON started, so a manual press cannot mask a dead schedule', async () => {
@@ -313,7 +319,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       workflow_runs: [{ created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'workflow_dispatch', display_title: 'Deploy Drift (manual)' }],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
   })
 
   it('builds the failure streak only from qualifying runs', async () => {
@@ -353,7 +359,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
 
   it('reports a confirmed empty list as a real absence', async () => {
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', runs({ workflow_runs: [] }))
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
   })
 
   it('reports runs that carry no trigger at all as unreadable, not as an absence', async () => {
@@ -382,7 +388,7 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
       ],
     })
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
-    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [] })
+    expect(result).toEqual({ ok: true, lastRunIso: null, conclusions: [], manualPassIso: null })
   })
 
   it('reports a non-200 as a failed lookup, naming the status', async () => {
@@ -450,12 +456,132 @@ describe('evaluateSchedule: an unreadable timestamp must not pass (L50)', () => 
     // the timestamp today, but this function is exported and its type accepts any
     // lookup, so the fail-safe belongs at the comparison as well.
     const v = evaluateSchedule(
-      { ok: true, lastRunIso: 'yesterday afternoon', conclusions: ['success'] },
+      { ok: true, lastRunIso: 'yesterday afternoon', conclusions: ['success'], manualPassIso: null },
       NOW,
       4 * HOUR,
     )
     expect(v.status).toBe('unreadable')
     expect(v.ageMs).toBeNull()
     expect(v.detail).toContain('yesterday afternoon')
+  })
+})
+
+describe('evaluateSchedule: a later run started by hand clears a failing streak (#1188)', () => {
+  // On 2026-09-05 db-types-drift.yml failed twice on its schedule, the cause was
+  // fixed and a manual run of the identical job passed at 16:57 UTC. The watch
+  // could not see that pass and posted "keeps failing" eight hours after the fix,
+  // pointing the reader at a most recent run that was green. Excluding manual
+  // runs is right for "is the schedule alive" and wrong for "is it still
+  // failing": those are two questions, and one filter was answering both (L342).
+  it('stands down from failing when a manual run passed after the failures', () => {
+    const verdict = evaluateSchedule(
+      ranWith('2026-08-17T11:17:00Z', ['failure', 'failure'], '2026-08-17T11:40:00Z'),
+      NOW,
+      4 * HOUR,
+    )
+    expect(verdict.status).toBe('healthy')
+    // The run log must be able to tell this from an ordinary healthy reading (L11).
+    expect(verdict.detail).toContain('2 scheduled runs failed')
+    expect(verdict.detail).toContain('2026-08-17T11:40:00Z')
+  })
+
+  it('still reports failing when no manual run has passed since', () => {
+    const verdict = evaluateSchedule(ranWith('2026-08-17T11:17:00Z', ['failure', 'failure'], null), NOW, 4 * HOUR)
+    expect(verdict.status).toBe('failing')
+  })
+
+  it('does not let a manual pass revive a schedule that has stopped firing', () => {
+    // Staleness is the question the manual exclusion exists for, and it is
+    // judged first. A person pressing Run must not make a dead cron read as alive.
+    const verdict = evaluateSchedule(
+      ranWith('2026-08-16T11:17:00Z', ['failure', 'failure'], '2026-08-17T11:40:00Z'),
+      NOW,
+      4 * HOUR,
+    )
+    expect(verdict.status).toBe('stale')
+  })
+})
+
+describe('lookupLastScheduledRun: which manual pass counts as clearing a failure (#1188)', () => {
+  const access = { ok: true as const, repo: 'Try-Pennie/bidspoke', token: 'tok', tokenVar: 'GITHUB_TOKEN' as const }
+  const runs = (body: unknown) => vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 200 }))
+  const failed = (created_at: string) => ({ created_at, conclusion: 'failure', event: 'schedule', head_branch: 'main' })
+  // `null` rather than `undefined` for the unreadable branch: an explicit
+  // undefined argument would take the default, and JSON would drop the field.
+  const manual = (created_at: string, conclusion: string, head_branch: string | null = 'main') => ({
+    created_at,
+    conclusion,
+    event: 'workflow_dispatch',
+    display_title: 'DB Types Drift (manual)',
+    head_branch,
+  })
+
+  it('reports a manual pass that is later than the newest failure and on its branch', async () => {
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [manual('2026-08-17T11:40:00Z', 'success'), failed('2026-08-17T11:17:00Z'), failed('2026-08-17T09:00:00Z')] }),
+    )
+    expect(result).toEqual({
+      ok: true,
+      lastRunIso: '2026-08-17T11:17:00Z',
+      conclusions: ['failure', 'failure'],
+      manualPassIso: '2026-08-17T11:40:00Z',
+    })
+  })
+
+  it('ignores a manual pass that predates the failures', async () => {
+    // Passing before the thing broke is no evidence about the break.
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [failed('2026-08-17T11:17:00Z'), failed('2026-08-17T09:00:00Z'), manual('2026-08-17T08:00:00Z', 'success')] }),
+    )
+    expect(result.ok === true && result.manualPassIso).toBeNull()
+  })
+
+  it('ignores a manual pass on a different branch', async () => {
+    // Run workflow can be pointed at any branch. A pass on a feature branch says
+    // nothing about main, which is where the schedule runs.
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [manual('2026-08-17T11:40:00Z', 'success', 'fix/something'), failed('2026-08-17T11:17:00Z'), failed('2026-08-17T09:00:00Z')] }),
+    )
+    expect(result.ok === true && result.manualPassIso).toBeNull()
+  })
+
+  it('ignores a manual pass whose branch cannot be read, so an unreadable field fails towards speaking', async () => {
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [manual('2026-08-17T11:40:00Z', 'success', null), failed('2026-08-17T11:17:00Z'), failed('2026-08-17T09:00:00Z')] }),
+    )
+    expect(result.ok === true && result.manualPassIso).toBeNull()
+  })
+
+  it('a later manual FAILURE neither clears nor extends the streak', async () => {
+    // Manual runs were never counted as failures, and a person experimenting on a
+    // branch must not accuse the schedule. The streak is still the two scheduled runs.
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [manual('2026-08-17T11:40:00Z', 'failure'), failed('2026-08-17T11:17:00Z'), failed('2026-08-17T09:00:00Z')] }),
+    )
+    expect(result).toEqual({
+      ok: true,
+      lastRunIso: '2026-08-17T11:17:00Z',
+      conclusions: ['failure', 'failure'],
+      manualPassIso: null,
+    })
+  })
+
+  it('reports no manual pass when nothing scheduled has failed, even if a person ran it', async () => {
+    const result = await lookupLastScheduledRun(
+      access,
+      'db-types-drift.yml',
+      runs({ workflow_runs: [manual('2026-08-17T11:40:00Z', 'success'), { created_at: '2026-08-17T11:17:00Z', conclusion: 'success', event: 'schedule', head_branch: 'main' }] }),
+    )
+    expect(result.ok === true && result.manualPassIso).toBeNull()
   })
 })

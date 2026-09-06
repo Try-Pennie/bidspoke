@@ -23,9 +23,11 @@
  * accusation about a workflow that is running fine (L119). They are separate
  * states here, and only a confirmed-empty answer accuses.
  *
- * The lookup asks for SCHEDULED runs only. Counting a manual dispatch would let
- * someone running the workflow by hand mask a cron that has been dead for weeks,
- * which is the one situation this exists for.
+ * The lookup counts SCHEDULED runs only, plus the worker's own driven dispatches.
+ * Counting a manual dispatch would let someone running the workflow by hand mask
+ * a cron that has been dead for weeks, which is the one situation this exists
+ * for. The one thing a manual run may do is CLEAR a failing streak, by passing
+ * later on the same branch (#1188); it can never make the schedule read as alive.
  *
  * A run that FIRED and FAILED is the same silence wearing a different hat (#844).
  * The first version read `created_at` and nothing else, so a nightly job failing
@@ -132,13 +134,33 @@ export type ScheduleStatus = 'healthy' | 'stale' | 'never_ran' | 'failing' | 'mi
  * cleanly.
  */
 export type ScheduleLookup =
-  | { ok: true; lastRunIso: string | null; conclusions: (string | null)[] }
+  | {
+      ok: true
+      lastRunIso: string | null
+      conclusions: (string | null)[]
+      /**
+       * When the newest failed qualifying run has since been followed by a run
+       * a PERSON started that passed, on the same branch: that run's created_at.
+       * Null when there is no such pass, or nothing qualifying has failed.
+       *
+       * Manual runs are excluded from `lastRunIso` and `conclusions` so a press
+       * of Run workflow cannot make a dead schedule read as alive. That is the
+       * right answer to "is the schedule alive" and the wrong answer to "is it
+       * still failing" (#1188): the same job passing later, whoever started it,
+       * is proof the failure is not persisting, and without this the watch went
+       * on reporting a fixed failure for eight hours (L342).
+       */
+      manualPassIso: string | null
+    }
   | { ok: false; reason: string; missing?: boolean }
 
 export interface ScheduleVerdict {
   status: ScheduleStatus
   ageMs: number | null
-  /** Why, for the alert body. Empty for the settled states. */
+  /**
+   * Why, for the alert body. Empty for a plain healthy reading; a healthy
+   * reading that stood down from a failing streak says so here.
+   */
   detail: string
 }
 
@@ -206,6 +228,17 @@ export function evaluateSchedule(
   }
   const streak = failureStreak(lookup.conclusions)
   if (streak >= FAILING_STREAK) {
+    if (lookup.manualPassIso !== null) {
+      // A later pass of the identical job on the same branch is proof the failure
+      // is not persisting, whoever pressed the button (#1188). Healthy, but the
+      // detail says why, so the run log can tell this from an ordinary clean
+      // reading (L11).
+      return {
+        status: 'healthy',
+        ageMs,
+        detail: `the last ${streak} scheduled runs failed, but a run started by hand passed at ${lookup.manualPassIso}, so the failure is not persisting`,
+      }
+    }
     return { status: 'failing', ageMs, detail: `the last ${streak} scheduled runs failed` }
   }
   return { status: 'healthy', ageMs, detail: '' }
@@ -394,7 +427,7 @@ export async function lookupLastScheduledRun(
   // GitHub confirming there are zero runs is a real, complete answer, and has to
   // be returned before the shape check below: an empty list trivially satisfies
   // "no run named its trigger" and would otherwise be reported as unreadable.
-  if (runs.length === 0) return { ok: true, lastRunIso: null, conclusions: [] }
+  if (runs.length === 0) return { ok: true, lastRunIso: null, conclusions: [], manualPassIso: null }
 
   // A page of runs where not one names its trigger is an API shape we cannot
   // read, not a workflow that never ran. Without this, GitHub dropping the
@@ -410,7 +443,7 @@ export async function lookupLastScheduledRun(
   // runs IS a real absence: reading the newest run anyway would count a manual
   // press as the schedule being alive.
   const qualifying = runs.filter(isQualifyingRun)
-  if (qualifying.length === 0) return { ok: true, lastRunIso: null, conclusions: [] }
+  if (qualifying.length === 0) return { ok: true, lastRunIso: null, conclusions: [], manualPassIso: null }
 
   const createdAt = (qualifying[0] as { created_at?: unknown }).created_at
   if (typeof createdAt !== 'string' || Number.isNaN(Date.parse(createdAt))) {
@@ -420,7 +453,46 @@ export async function lookupLastScheduledRun(
     const c = (run as { conclusion?: unknown }).conclusion
     return typeof c === 'string' ? c : null
   })
-  return { ok: true, lastRunIso: createdAt, conclusions }
+  return { ok: true, lastRunIso: createdAt, conclusions, manualPassIso: manualPassSince(runs, qualifying) }
+}
+
+const readString = (run: unknown, field: string): string | null => {
+  const v = (run as Record<string, unknown> | null)?.[field]
+  return typeof v === 'string' ? v : null
+}
+
+/**
+ * The newest run a PERSON started that passed after the newest failed qualifying
+ * run, on that run's branch, or null (#1188).
+ *
+ * Three refusals, each because the alternative clears a failure on evidence that
+ * says nothing about it: a pass OLDER than the failure predates the break; a pass
+ * on ANOTHER branch (Run workflow can target any branch) says nothing about the
+ * branch the schedule runs on; and a run whose branch or timestamp cannot be read
+ * is not evidence at all, so it fails towards speaking (L42). A manual FAILURE is
+ * ignored exactly as before: manual runs never counted towards the streak, and a
+ * person experimenting must not accuse the schedule.
+ */
+function manualPassSince(runs: unknown[], qualifying: unknown[]): string | null {
+  const newestFailed = qualifying.find((run) => {
+    const c = readString(run, 'conclusion')
+    return c !== null && FAILED_CONCLUSIONS.has(c)
+  })
+  if (newestFailed === undefined) return null
+  const failedAt = Date.parse(readString(newestFailed, 'created_at') ?? '')
+  const failedBranch = readString(newestFailed, 'head_branch')
+  if (Number.isNaN(failedAt) || failedBranch === null) return null
+
+  const qualifyingSet = new Set(qualifying)
+  for (const run of runs) {
+    if (qualifyingSet.has(run)) continue
+    if (readString(run, 'conclusion') !== 'success') continue
+    if (readString(run, 'head_branch') !== failedBranch) continue
+    const at = readString(run, 'created_at')
+    if (at === null || !(Date.parse(at) > failedAt)) continue
+    return at
+  }
+  return null
 }
 
 /**
