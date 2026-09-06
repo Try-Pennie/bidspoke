@@ -451,6 +451,7 @@ export type Database = {
         Row: {
           archive_day: string
           erased_execution_count: number | null
+          executions_truncated_at: string | null
           first_measured_at: string | null
           hours_execution_count: number | null
           hours_recorded: number | null
@@ -470,6 +471,7 @@ export type Database = {
         Insert: {
           archive_day: string
           erased_execution_count?: number | null
+          executions_truncated_at?: string | null
           first_measured_at?: string | null
           hours_execution_count?: number | null
           hours_recorded?: number | null
@@ -489,6 +491,7 @@ export type Database = {
         Update: {
           archive_day?: string
           erased_execution_count?: number | null
+          executions_truncated_at?: string | null
           first_measured_at?: string | null
           hours_execution_count?: number | null
           hours_recorded?: number | null

@@ -109,8 +109,9 @@ describe('the archive gate agrees with the purge about retention', () => {
     const alertWhen = alertThresholdDays()
 
     // The oldest day the gate measures, in days of age. candidateDays walks back
-    // RETENTION_DAYS - 1, deliberately one short of the boundary.
-    const oldestMeasuredAge = retention - 1
+    // RETENTION_DAYS: the day is measured at 13:00 UTC and truncated at 03:30 the
+    // next morning, so this is the last reading the purge sees (#1196).
+    const oldestMeasuredAge = retention
     // The youngest age at which a refusal is alerted rather than only recorded.
     const youngestAlertedAge = retention - alertWhen
 

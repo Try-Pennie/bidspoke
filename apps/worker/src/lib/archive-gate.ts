@@ -77,6 +77,8 @@ export interface GateDayResult {
 
 export interface GateRunSummary {
   daysConsidered: number
+  /** Candidates the purge has already emptied and stamped, so they were not measured. */
+  daysStamped: number
   daysMeasured: number
   daysDeletable: number
   results: GateDayResult[]
@@ -290,12 +292,34 @@ export async function runArchiveGate(
   if (progress.error) {
     const detail = `the archive watermark could not be read: ${formatErr(progress.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
-    return { daysConsidered: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail }
+    return { daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail }
   }
   const stored = (progress.data as { watermark_hour?: unknown } | null)?.watermark_hour
   const watermarkHour = typeof stored === 'string' ? stored : null
 
-  const days = candidateDays({ watermarkHour, now })
+  const candidates = candidateDays({ watermarkHour, now })
+
+  // A day the purge has already emptied is stamped `executions_truncated_at` in
+  // the same transaction as the TRUNCATE (#1196). Measuring it again would read
+  // zero executions against the archive's full count and refuse as a surplus,
+  // about a deletion that has already happened. So stamped candidates are
+  // skipped, and the stamp itself is what keeps them verified for the step rule
+  // and the reaper. A failed read here is a failed run, not an empty set: an
+  // empty set would measure every stamped day and alert on each (L98).
+  const stampedRead = await supabase
+    .from('execution_archive_days')
+    .select('archive_day')
+    .in('archive_day', candidates)
+    .not('executions_truncated_at', 'is', null)
+  if (stampedRead.error) {
+    const detail = `the stamped days could not be read: ${formatErr(stampedRead.error)}`
+    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
+    return { daysConsidered: candidates.length, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail }
+  }
+  const stamped = new Set(
+    ((stampedRead.data as Array<{ archive_day: unknown }> | null) ?? []).map((r) => String(r.archive_day)),
+  )
+  const days = candidates.filter((d) => !stamped.has(d))
   const results: GateDayResult[] = []
 
   for (const day of days) {
@@ -346,16 +370,33 @@ export async function runArchiveGate(
   const urgent = results.filter(
     (r) => r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null),
   )
-  const errors = urgent.map((r) =>
-    r.error !== null
-      ? `${r.archiveDay} could not be measured (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} before its partition is dropped): ${r.error}`
-      : `${r.archiveDay} is not verified with ${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left: ${r.refusals.map((x) => x.message).join('; ')}`,
-  )
+  const errors = urgent.map((r) => {
+    const why = r.error !== null ? r.error : r.refusals.map((x) => x.message).join('; ')
+    // Three situations, three sentences, because each asks for something
+    // different (L11): a day with runway can wait for the amend pass; a day due
+    // tonight needs a re-archive or a resolved refusal today; a day PAST
+    // retention means last night's purge ran and left its rows behind, which is
+    // the schedule failing to enforce retention at all, and it stayed silent for
+    // two nights before #1196.
+    if (r.daysLeft < 0) {
+      return r.error !== null
+        ? `${r.archiveDay} could not be measured, and it is past retention with the purge not having taken it: ${why}`
+        : `${r.archiveDay} is past retention and the purge did not take it: ${why}`
+    }
+    if (r.daysLeft === 0) {
+      return r.error !== null
+        ? `${r.archiveDay} could not be measured and its partition is due at the next 03:30 UTC purge: ${why}`
+        : `${r.archiveDay} is not verified and its partition is due at the next 03:30 UTC purge: ${why}`
+    }
+    return r.error !== null
+      ? `${r.archiveDay} could not be measured (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} before its partition is dropped): ${why}`
+      : `${r.archiveDay} is not verified with ${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left: ${why}`
+  })
   await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY)
 
   const detail =
-    `measured ${measured.length} of ${days.length} candidate days, ` +
-    `${deletableDays.length} verified, ${urgent.length} urgent`
+    `measured ${measured.length} of ${candidates.length} candidate days ` +
+    `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${urgent.length} urgent`
   console.log(`[archive-gate] ${detail}`)
   for (const r of results) {
     if (r.error !== null) console.error(`[archive-gate] ${r.archiveDay}: ${r.error}`)
@@ -365,7 +406,8 @@ export async function runArchiveGate(
   }
 
   return {
-    daysConsidered: days.length,
+    daysConsidered: candidates.length,
+    daysStamped: stamped.size,
     daysMeasured: measured.length,
     daysDeletable: deletableDays.length,
     results,
