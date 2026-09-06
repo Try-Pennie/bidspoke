@@ -45,8 +45,12 @@ export function retentionDays(): number {
   for (const file of migrationFiles()) {
     const sql = readFileSync(path.join(MIGRATIONS, file), 'utf8')
     // Only the form used inside a cron.schedule body counts as setting the live
-    // window; a one-off manual CALL in a backfill migration does not.
-    for (const m of sql.matchAll(/'(?:CALL\s+)?(?:truncate|drop)_expired_execution_partitions(?:_safe)?\((\d+)\)'/g)) {
+    // window; a one-off manual CALL in a backfill migration does not. Both the
+    // ungated `_expired_` procedures and the gated `_verified_` ones (#873) count:
+    // until this read the gated form it took its number from the last ungated
+    // schedule, which was 21 only by coincidence, so a gated reschedule to any
+    // other number would have gone unread here (L96).
+    for (const m of sql.matchAll(/'(?:CALL\s+)?(?:truncate|drop)_(?:expired|verified)_execution_partitions(?:_safe)?\((\d+)\)'/g)) {
       found = parseDays(m[1], `retention argument in ${file}`)
     }
   }
@@ -168,16 +172,15 @@ describe('the day-count parser', () => {
 })
 
 describe('the retention window itself', () => {
-  it('is the 21 days the purge actually runs at', () => {
+  it('is the 7 days the purge actually runs at', () => {
     // Pinned so a change to retention is a deliberate act that updates this
     // line, rather than something the guard silently absorbs.
     //
-    // TEMPORARILY 21 (2026-08-24, migration 20260824000002): roughly 119 hours
-    // across 2026-08-17 to 08-23 were still unarchived with nobody available to
-    // intervene, and deletion is not gated on the archive yet (#873), so a stalled
-    // backlog walk would delete unbacked-up days with no alert at all. Back to 7
-    // once every day the database holds shows 24 archived hours.
-    expect(retentionDays()).toBe(21)
+    // 7 is the designed window. It was 14 and then 21 from 2026-08-23 to
+    // 2026-09-06 as insurance while the archive backlog drained and deletion was
+    // not yet gated on the archive; #873 shipped the gate on 2026-09-04 and #1038
+    // put the window back once every retained day showed 24 archived hours.
+    expect(retentionDays()).toBe(7)
   })
 
   it('is the same number the UI quotes to people', () => {
@@ -191,7 +194,7 @@ describe('the retention window itself', () => {
   it('is not contradicted by the whole migration corpus mentioning a longer one', () => {
     // A sanity check on the derivation: if a LATER migration schedules a purge
     // at a different number, retentionDays must have picked that one up.
-    const scheduled = [...allSql().matchAll(/'(?:CALL\s+)?(?:truncate|drop)_expired_execution_partitions(?:_safe)?\((\d+)\)'/g)].map(
+    const scheduled = [...allSql().matchAll(/'(?:CALL\s+)?(?:truncate|drop)_(?:expired|verified)_execution_partitions(?:_safe)?\((\d+)\)'/g)].map(
       (m) => Number(m[1]),
     )
     expect(scheduled.length).toBeGreaterThan(0)

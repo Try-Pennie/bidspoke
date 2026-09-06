@@ -28,7 +28,7 @@ is not deleted until the question it asks has been answered (see Unresolved).
 
 | What | Mechanism | Backup |
 |---|---|---|
-| `workflow_executions`, `execution_steps` | `purge-old-execution-partitions`, 03:30 UTC, `truncate_expired_execution_partitions(7)` | **none** |
+| `workflow_executions`, `execution_steps` | `purge-old-execution-partitions`, 03:30 UTC, `truncate_verified_execution_partitions(7)` | Snowflake execution archive; deletion refused for any day the gate has not verified (#873) |
 | `lead_sightings`, `lead_sighting_bids` | `purgeOldExported` after Snowflake export | Snowflake |
 | `achieve_evaluations` | purge 24h after export | Snowflake |
 | 12 config tables | hard `DELETE` from the API, no undo | **none** |
