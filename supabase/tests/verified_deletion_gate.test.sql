@@ -53,6 +53,19 @@
 --   mutation: stamp clause removed     part 2b fails on 'a step day was refused although its
 --                                      predecessor was stamped', so the assertion bites the rule
 --
+-- RESULTS, MEASURED 2026-09-07 on branch vxgsdctshwalvkdfgjmy (#1204), with the
+-- branch holding the 20260906200000 procedures first: part 3b's first run failed on
+-- '07-15 was not stamped when its step partition was emptied' (its RED, the exact
+-- production failure of that morning), then migration 20260907150000 applied:
+--   part 3b                            passed both runs: stamped at the first deletion,
+--                                      completed three days later on a stale reading,
+--                                      the unstamped stale day kept
+--   parts 2, 3, 4                      re-passed unchanged with the new procedure
+--   also caught here                   the first draft of 20260907150000 used CREATE OR REPLACE
+--                                      with a new parameter list, which ADDS an overload and made
+--                                      the routine name ambiguous; the migration now drops the
+--                                      old signature first
+--
 -- PRE-FLIGHT against production, read only, same date:
 --   at retention 21 (live)   0 days expired, so the ungated job is deleting nothing
 --   at retention 7 (#1038)   13 days expired, 13 verified, 0 refused, 1,064,596 executions freed
@@ -317,6 +330,90 @@ BEGIN
   END IF;
   RAISE NOTICE 'part 3: truncate acted on the verified days and spared the refused one';
 END $$;
+
+-- ==================================================================
+-- Part 3b. #1204: a run that dies between the step loop and the execution
+--          loop must not strand the day.
+-- ==================================================================
+-- The first unaided run (2026-09-07 03:30) truncated 08-30's steps and then
+-- lost a 2 second lock race on its executions. Re-measured, the day refused
+-- (`probe-failed`: the probe reads live steps, which were gone), so its
+-- executions could never be authorised again and 08-31's steps were blocked
+-- behind it. The stamp must therefore be written at the FIRST irreversible
+-- action, so a partial run is completed by the next one instead of stranded.
+--
+-- July dates, so Part 2's fixture and Part 4 below are untouched.
+DELETE FROM public.execution_archive_days WHERE archive_day BETWEEN '2026-07-13' AND '2026-07-16';
+INSERT INTO public.execution_archive_days
+  (archive_day, pg_execution_count, erased_execution_count, sf_execution_count,
+   pg_step_count, sf_step_count, orphan_execution_count, probe_ok, incomplete_count, measured_at)
+VALUES
+  ('2026-07-14', 100, 0, 100, 1000, 1000, 0, TRUE, 0, '2026-07-16T13:00:00Z'),  -- verified, fresh at the first run
+  ('2026-07-15', 100, 0, 100, 1000, 1000, 0, TRUE, 0, '2026-07-16T13:00:00Z');  -- verified, fresh at the first run
+
+-- A step fixture holding only 07-15 (07-14's steps are imagined already gone),
+-- and an execution fixture holding both days.
+DROP TABLE IF EXISTS public.t_gate_steps CASCADE;
+CREATE TABLE public.t_gate_steps (id INT, started_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (started_at);
+CREATE TABLE public.t_gate_steps_2026_07_15 PARTITION OF public.t_gate_steps
+  FOR VALUES FROM ('2026-07-15 00:00:00+00') TO ('2026-07-16 00:00:00+00');
+INSERT INTO public.t_gate_steps VALUES (1, '2026-07-15T05:00:00Z');
+DROP TABLE IF EXISTS public.t_gate_execs2 CASCADE;
+CREATE TABLE public.t_gate_execs2 (id INT, started_at TIMESTAMPTZ NOT NULL) PARTITION BY RANGE (started_at);
+CREATE TABLE public.t_gate_execs2_2026_07_14 PARTITION OF public.t_gate_execs2
+  FOR VALUES FROM ('2026-07-14 00:00:00+00') TO ('2026-07-15 00:00:00+00');
+CREATE TABLE public.t_gate_execs2_2026_07_15 PARTITION OF public.t_gate_execs2
+  FOR VALUES FROM ('2026-07-15 00:00:00+00') TO ('2026-07-16 00:00:00+00');
+INSERT INTO public.t_gate_execs2 VALUES (1, '2026-07-14T05:00:00Z'), (1, '2026-07-15T05:00:00Z');
+
+-- FIRST RUN, fresh: the step loop runs; the execution parent does not exist, which
+-- stands in for the run dying (or losing its lock) before the execution loop.
+CALL public.truncate_verified_execution_partitions(
+  1, 't_gate_steps', 't_gate_execs2_absent', interval '36 hours', '2026-07-17T03:30:00Z');
+
+DO $$
+DECLARE v_fail TEXT[] := '{}';
+BEGIN
+  IF (SELECT count(*) FROM public.t_gate_steps_2026_07_15) <> 0 THEN
+    v_fail := array_append(v_fail, '07-15 steps were verified and should have been emptied');
+  END IF;
+  -- THE ASSERTION THAT MATTERS: the day is stamped by its first deletion, not its last.
+  IF (SELECT executions_truncated_at FROM public.execution_archive_days WHERE archive_day = '2026-07-15') IS DISTINCT FROM '2026-07-17T03:30:00Z'::timestamptz THEN
+    v_fail := array_append(v_fail, '07-15 was not stamped when its step partition was emptied, so a run that dies here strands the day');
+  END IF;
+  IF (SELECT executions_truncated_at FROM public.execution_archive_days WHERE archive_day = '2026-07-14') IS NOT NULL THEN
+    v_fail := array_append(v_fail, '07-14 had no partition emptied and must not be stamped');
+  END IF;
+  IF array_length(v_fail, 1) > 0 THEN
+    RAISE EXCEPTION E'truncate, first run of a partial day:\n  %', array_to_string(v_fail, E'\n  ');
+  END IF;
+END $$;
+
+-- SECOND RUN, three days later: every reading is stale. Only the stamp can
+-- authorise anything, and it must authorise exactly the day whose deletion began.
+CALL public.truncate_verified_execution_partitions(
+  1, 't_gate_steps_absent', 't_gate_execs2', interval '36 hours', '2026-07-20T03:30:00Z');
+
+DO $$
+DECLARE v_fail TEXT[] := '{}';
+BEGIN
+  -- POSITIVE: the stamped day's executions go despite the stale reading.
+  IF (SELECT count(*) FROM public.t_gate_execs2_2026_07_15) <> 0 THEN
+    v_fail := array_append(v_fail, '07-15 executions were not emptied on the next run although the day was stamped');
+  END IF;
+  -- NEGATIVE, same run (L159): an unstamped day with a stale reading is kept.
+  IF (SELECT count(*) FROM public.t_gate_execs2_2026_07_14) <> 1 THEN
+    v_fail := array_append(v_fail, '07-14 was never stamped and its stale reading must not authorise a truncate');
+  END IF;
+  IF array_length(v_fail, 1) > 0 THEN
+    RAISE EXCEPTION E'truncate, completing a partial day:\n  %', array_to_string(v_fail, E'\n  ');
+  END IF;
+  RAISE NOTICE 'part 3b: a partial run stamps at its first deletion and the next run completes the day';
+END $$;
+
+DROP TABLE IF EXISTS public.t_gate_steps CASCADE;
+DROP TABLE IF EXISTS public.t_gate_execs2 CASCADE;
+DELETE FROM public.execution_archive_days WHERE archive_day BETWEEN '2026-07-13' AND '2026-07-16';
 
 -- ==================================================================
 -- Part 4. #1014: the reaper refuses a partition that still holds rows.
