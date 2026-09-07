@@ -10,6 +10,7 @@ import {
   runHeartbeatChecks,
   writeHeartbeat,
   writeHeartbeatCompleted,
+  completedWatchKey,
   heartbeatKey,
   completedKey,
   firstSeenKey,
@@ -163,6 +164,8 @@ describe('runHeartbeatChecks: a run that started and never finished (#985)', () 
       ...allFresh(NOW),
       // Started well past its allowance, never completed. This is the 08-22 shape.
       [heartbeatKey(archive.id)]: iso(NOW - archive.maxRunMs - 5 * 60_000),
+      // The check has watched for this job's completions since the day before.
+      [completedWatchKey(archive.id)]: iso(NOW - 24 * H),
     })
     const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
 
@@ -187,5 +190,48 @@ describe('runHeartbeatChecks: a run that started and never finished (#985)', () 
 
     expect(results.find((x) => x.jobId === archive.id)!.status).toBe('healthy')
     expect(vi.mocked(sendCronHeartbeatAlert)).not.toHaveBeenCalled()
+  })
+})
+
+describe('runHeartbeatChecks: runs that predate the completed stamp (#1207)', () => {
+  it('does not alert on a run that started before the check first looked for completions, and records that it is now looking', async () => {
+    const archive = cronJob('execution-archive')
+    const started = NOW - archive.maxRunMs - 5 * 60_000
+    // No completed stamp and no watch marker: the first check after the deploy
+    // that introduced completed stamps. Five jobs looked exactly like this on
+    // 2026-09-07 and were all reported as killed.
+    const kv = fakeKv({ ...allFresh(NOW), [heartbeatKey(archive.id)]: iso(started) })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+
+    const r = results.find((x) => x.jobId === archive.id)!
+    expect(r.status).toBe('healthy')
+    expect(sendCronHeartbeatAlert).not.toHaveBeenCalled()
+    expect(kv.store.get(completedWatchKey(archive.id))).toBe(iso(NOW))
+  })
+
+  it('alerts on the next run that starts after watching began and never completes', async () => {
+    const archive = cronJob('execution-archive')
+    const watching = NOW - 3 * H
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [completedWatchKey(archive.id)]: iso(watching),
+      [heartbeatKey(archive.id)]: iso(watching + H),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+
+    expect(results.find((x) => x.jobId === archive.id)!.status).toBe('vanished')
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not move the watch marker once it exists', async () => {
+    const archive = cronJob('execution-archive')
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [completedWatchKey(archive.id)]: iso(NOW - 3 * H),
+      [heartbeatKey(archive.id)]: iso(NOW - 60_000),
+    })
+    await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+
+    expect(kv.store.get(completedWatchKey(archive.id))).toBe(iso(NOW - 3 * H))
   })
 })
