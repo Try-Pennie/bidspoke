@@ -60,8 +60,11 @@ describe('evaluateHeartbeat with a completed stamp', () => {
     ).toBe('healthy')
   })
 
+  // The check has been looking for completions since long before these runs.
+  const WATCHING_SINCE = iso(NOW - 24 * H)
+
   it('reports vanished when a run started past its allowance and nothing completed', () => {
-    const v = evaluateHeartbeat(iso(NOW - 45 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN)
+    const v = evaluateHeartbeat(iso(NOW - 45 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN, WATCHING_SINCE)
     expect(v.status).toBe('vanished')
     expect(v.ageMs).toBe(45 * 60 * 1000)
   })
@@ -69,8 +72,26 @@ describe('evaluateHeartbeat with a completed stamp', () => {
   it('reports vanished when the only completed stamp belongs to an earlier run', () => {
     // The previous run finished; this one started 45 minutes ago and did not.
     const started = NOW - 45 * 60 * 1000
-    const v = evaluateHeartbeat(iso(started), null, NOW, STALE_THRESHOLD_MS, iso(started - 3 * H), MAX_RUN)
+    const v = evaluateHeartbeat(iso(started), null, NOW, STALE_THRESHOLD_MS, iso(started - 3 * H), MAX_RUN, WATCHING_SINCE)
     expect(v.status).toBe('vanished')
+  })
+
+  it('does not judge a run that started before the check began watching for completions (#1207)', () => {
+    // The run began on code that never wrote a completed stamp, so its absence
+    // says nothing about the run. On 2026-09-07 five such runs were reported as
+    // killed minutes after the completed stamp first shipped.
+    const started = NOW - 45 * 60 * 1000
+    const v = evaluateHeartbeat(iso(started), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN, iso(started + 60_000))
+    expect(v.status).toBe('healthy')
+  })
+
+  it('judges a run that started at or after the moment watching began', () => {
+    const started = NOW - 45 * 60 * 1000
+    expect(evaluateHeartbeat(iso(started), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN, iso(started)).status).toBe('vanished')
+  })
+
+  it('never reports vanished when nothing records that completions were being watched', () => {
+    expect(evaluateHeartbeat(iso(NOW - 45 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN, null).status).toBe('healthy')
   })
 
   it('still reports stale, not vanished, when the last start is itself past the staleness threshold', () => {

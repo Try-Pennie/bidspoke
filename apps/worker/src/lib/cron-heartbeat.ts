@@ -25,6 +25,13 @@
  * allowance is its own verdict, `vanished`, with its own remedy: a killed or hung
  * run is a different problem from a trigger that never fired (L11, L98).
  *
+ * A started stamp can only be judged against completions the check was LOOKING
+ * FOR when the run began (#1207). The check records when it first found a job's
+ * completed stamp missing, and a run that started before that marker is not
+ * judged: it ran on code that never wrote completions, so their absence says
+ * nothing about it. Minutes after the completed stamp first shipped
+ * (2026-09-07), every job's last pre-deploy run was reported as killed (L599).
+ *
  * Limitation (unchanged): this lives in the same worker as the crons it watches,
  * so it catches a watched cron going dark while the minute cron still runs.
  * Total worker death would also silence this check -- that case needs an
@@ -137,6 +144,8 @@ export function cronJob(id: string): CronJob {
 
 export const heartbeatKey = (id: string) => `cron-heartbeat:${id}`
 export const completedKey = (id: string) => `cron-heartbeat:${id}:completed`
+/** When the check first looked for this job's completed stamp and found none. */
+export const completedWatchKey = (id: string) => `cron-heartbeat:${id}:completed-watch`
 export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
 const cooldownKey = (id: string) => `cron-heartbeat:${id}:alerted`
 
@@ -153,9 +162,11 @@ export interface HeartbeatVerdict {
  * Pure freshness decision.
  * - started present and strictly older than staleMs: stale (the trigger stopped
  *   firing; that remedy takes precedence over anything about the last run).
- * - started present, no completion at or after it, and the run is past its
- *   allowance: vanished (the run was killed or is hung).
- * - started present otherwise: healthy (completed, or still inside its allowance).
+ * - started present, no completion at or after it, the run is past its
+ *   allowance, and it started at or after completions were being watched for:
+ *   vanished (the run was killed or is hung).
+ * - started present otherwise: healthy (completed, still inside its allowance,
+ *   or begun before anything could have recorded its completion).
  * - started absent: never_ran if it was first seen longer ago than staleMs,
  *   otherwise pending (fresh deploy grace, or nothing recorded yet).
  * The completion and allowance arguments are optional so the four-argument form
@@ -168,6 +179,7 @@ export function evaluateHeartbeat(
   staleMs: number,
   lastCompleted: string | null = null,
   maxRunMs: number | null = null,
+  watchingSince: string | null = null,
 ): HeartbeatVerdict {
   if (lastRan) {
     const startedMs = Date.parse(lastRan)
@@ -176,7 +188,9 @@ export function evaluateHeartbeat(
     if (maxRunMs !== null && ageMs > maxRunMs) {
       const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
       const finished = Number.isFinite(completedMs) && completedMs >= startedMs
-      if (!finished) return { status: 'vanished', ageMs }
+      const watchingMs = watchingSince ? Date.parse(watchingSince) : NaN
+      const judged = Number.isFinite(watchingMs) && startedMs >= watchingMs
+      if (!finished && judged) return { status: 'vanished', ageMs }
     }
     return { status: 'healthy', ageMs }
   }
@@ -227,7 +241,14 @@ async function checkJob(
   const lastRan = await kv.get(heartbeatKey(job.id))
   const firstSeen = await kv.get(firstSeenKey(job.id))
   const lastCompleted = await kv.get(completedKey(job.id))
-  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs)
+  let watchingSince = await kv.get(completedWatchKey(job.id))
+  if (!watchingSince) {
+    // First look for this job's completions: runs already under way are not
+    // judged against a stamp nothing was writing when they began (#1207).
+    watchingSince = new Date(nowMs).toISOString()
+    await kv.put(completedWatchKey(job.id), watchingSince)
+  }
+  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs, watchingSince)
 
   if (verdict.status === 'pending') {
     if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
