@@ -264,17 +264,22 @@ describe('the completed heartbeat stamp (#985)', () => {
   })
 
   it('stamps the daily batch completed only once every one of its checks has settled', async () => {
-    let gateDone = false
-    runArchiveGate.mockImplementation(() => new Promise((resolve) => setTimeout(() => { gateDone = true; resolve({ daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: false, detail: 't' }) }, 20)))
-    let doneBeforeGate: boolean | null = null
-    writeHeartbeatCompleted.mockImplementation(async (_kv: unknown, id: string) => { if (id === 'daily-1300') doneBeforeGate = !gateDone })
+    // The gate is held open by the test itself rather than by a timer, so the
+    // assertion is about ordering, not about how fast this machine is (L290).
+    let finishGate!: (summary: unknown) => void
+    runArchiveGate.mockImplementation(() => new Promise((resolve) => { finishGate = resolve }))
     const waited: Promise<unknown>[] = []
 
     worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    // One turn of the event loop, so every check that CAN settle has done so
+    // while the gate is still running.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(writeHeartbeatCompleted, 'completed was stamped while the gate was still running').not.toHaveBeenCalledWith(expect.anything(), 'daily-1300')
+
+    finishGate({ daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: false, detail: 't' })
     await Promise.allSettled(waited)
 
     expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'daily-1300')
-    expect(doneBeforeGate, 'completed was stamped while the gate was still running').toBe(false)
   })
 
   it('stamps every other watched job completed from its own cron', async () => {
