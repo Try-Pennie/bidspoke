@@ -15,6 +15,16 @@
  * "a cron silently stopped mattering" failure this switch exists to catch, so
  * the switch is now a registry any cron can join.
  *
+ * TWO STAMPS, NOT ONE (#985). The started stamp alone can only catch a cron that
+ * never FIRED. On 2026-08-22 the execution archive was killed by the platform
+ * (exceededMemory) at 16:23, 17:23 and 18:23 UTC; each run stamped "started"
+ * first and died before any summary or alert ran, and this check reported the
+ * archive healthy through a three hour outage that a person found on a dashboard.
+ * A run now also stamps "completed" once its work has settled, success or handled
+ * failure alike, and a started stamp with no completion inside the job's run
+ * allowance is its own verdict, `vanished`, with its own remedy: a killed or hung
+ * run is a different problem from a trigger that never fired (L11, L98).
+ *
  * Limitation (unchanged): this lives in the same worker as the crons it watches,
  * so it catches a watched cron going dark while the minute cron still runs.
  * Total worker death would also silence this check -- that case needs an
@@ -24,7 +34,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert } from './slack'
 
-const H = 60 * 60 * 1000
+const MIN = 60 * 1000
+const H = 60 * MIN
 
 export interface CronJob {
   /** Stable id; forms the KV keys. NEVER rename a live one (resets its state). */
@@ -35,6 +46,12 @@ export interface CronJob {
   triggerCron: string
   /** Age past which the job is declared dark. Above the cadence, with slack. */
   staleMs: number
+  /**
+   * How long one run may take before a started stamp with no completion is
+   * declared vanished. Below the cadence, or the next run's start would mask it,
+   * and below staleMs, or stale would always be reported first.
+   */
+  maxRunMs: number
   /** What stops working while this job is dark (for the alert body). */
   dependents: string
 }
@@ -48,6 +65,8 @@ export const CRON_JOBS: CronJob[] = [
     triggerCron: '0 13 * * *',
     // 24h cadence, 2h slack.
     staleMs: 26 * H,
+    // A dozen parallel checks, each seconds; the slowest measured is the gate.
+    maxRunMs: 30 * MIN,
     dependents:
       'volume-anomaly, field-presence, email-drop-rate, secret-drift, required-secrets, big-table-guard, drain-stall, archive-gate, archive-settings, archive-identities',
   },
@@ -57,6 +76,7 @@ export const CRON_JOBS: CronJob[] = [
     triggerCron: '15 8 * * *',
     // 24h cadence, 2h slack, matching the other daily job.
     staleMs: 26 * H,
+    maxRunMs: 30 * MIN,
     dependents:
       'nothing is checking whether any step timeout is configured below the duration that step actually takes',
   },
@@ -66,6 +86,8 @@ export const CRON_JOBS: CronJob[] = [
     triggerCron: '37 */2 * * *',
     // 2h cadence, 1h slack -- one skipped run trips it without flapping.
     staleMs: 3 * H,
+    // The export's own wall-time budget is 12 minutes.
+    maxRunMs: 30 * MIN,
     dependents: 'finalized lead sightings are no longer being exported to Snowflake',
   },
   {
@@ -74,6 +96,7 @@ export const CRON_JOBS: CronJob[] = [
     triggerCron: '47 1-23/2 * * *',
     // 2h cadence (odd hours), 1h slack.
     staleMs: 3 * H,
+    maxRunMs: 30 * MIN,
     dependents:
       'exported lead_sightings rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
   },
@@ -86,6 +109,10 @@ export const CRON_JOBS: CronJob[] = [
     // mechanism that already covers every other cron and there is no second
     // list to drift (#871).
     staleMs: 2 * H,
+    // The archive caps itself at one hour of CPU per run and a killed run is
+    // exactly the case this exists for (2026-08-22), so the allowance is just
+    // under the hourly cadence.
+    maxRunMs: 50 * MIN,
     dependents:
       'workflow_executions and execution_steps are no longer being copied to Snowflake, so the 7-day purge would delete rows with no backup',
   },
@@ -96,6 +123,7 @@ export const CRON_JOBS: CronJob[] = [
     // 2h cadence (even hours), 1h slack. Its own cron so a large sightings purge
     // cannot exhaust one invocation's subrequest budget and starve it (2026-07-10).
     staleMs: 3 * H,
+    maxRunMs: 30 * MIN,
     dependents:
       'exported lead_sighting_bids rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
   },
@@ -108,12 +136,13 @@ export function cronJob(id: string): CronJob {
 }
 
 export const heartbeatKey = (id: string) => `cron-heartbeat:${id}`
+export const completedKey = (id: string) => `cron-heartbeat:${id}:completed`
 export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
 const cooldownKey = (id: string) => `cron-heartbeat:${id}:alerted`
 
 const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
 
-export type HeartbeatStatus = 'healthy' | 'stale' | 'never_ran' | 'pending'
+export type HeartbeatStatus = 'healthy' | 'stale' | 'never_ran' | 'pending' | 'vanished'
 
 export interface HeartbeatVerdict {
   status: HeartbeatStatus
@@ -122,19 +151,34 @@ export interface HeartbeatVerdict {
 
 /**
  * Pure freshness decision.
- * - heartbeat present: healthy unless strictly older than staleMs (then stale).
- * - heartbeat absent: never_ran if it was first seen longer ago than staleMs,
+ * - started present and strictly older than staleMs: stale (the trigger stopped
+ *   firing; that remedy takes precedence over anything about the last run).
+ * - started present, no completion at or after it, and the run is past its
+ *   allowance: vanished (the run was killed or is hung).
+ * - started present otherwise: healthy (completed, or still inside its allowance).
+ * - started absent: never_ran if it was first seen longer ago than staleMs,
  *   otherwise pending (fresh deploy grace, or nothing recorded yet).
+ * The completion and allowance arguments are optional so the four-argument form
+ * keeps its meaning for callers that have no completed stamp.
  */
 export function evaluateHeartbeat(
   lastRan: string | null,
   firstSeen: string | null,
   nowMs: number,
   staleMs: number,
+  lastCompleted: string | null = null,
+  maxRunMs: number | null = null,
 ): HeartbeatVerdict {
   if (lastRan) {
-    const ageMs = nowMs - Date.parse(lastRan)
-    return { status: ageMs > staleMs ? 'stale' : 'healthy', ageMs }
+    const startedMs = Date.parse(lastRan)
+    const ageMs = nowMs - startedMs
+    if (ageMs > staleMs) return { status: 'stale', ageMs }
+    if (maxRunMs !== null && ageMs > maxRunMs) {
+      const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
+      const finished = Number.isFinite(completedMs) && completedMs >= startedMs
+      if (!finished) return { status: 'vanished', ageMs }
+    }
+    return { status: 'healthy', ageMs }
   }
   if (firstSeen) {
     const ageMs = nowMs - Date.parse(firstSeen)
@@ -143,13 +187,26 @@ export function evaluateHeartbeat(
   return { status: 'pending', ageMs: null }
 }
 
-/** Called by a watched cron on each run to stamp "last ran". */
+/** Called by a watched cron when it dispatches, to stamp "started". */
 export async function writeHeartbeat(
   kv: KVNamespace,
   jobId: string,
   nowMs: number = Date.now(),
 ): Promise<void> {
   await kv.put(heartbeatKey(jobId), new Date(nowMs).toISOString())
+}
+
+/**
+ * Called by a watched cron once its work has SETTLED, success or handled failure
+ * alike, to stamp "completed". A failure the job caught and alerted is a finished
+ * run; only a run the platform killed or that hung never writes this (#985).
+ */
+export async function writeHeartbeatCompleted(
+  kv: KVNamespace,
+  jobId: string,
+  nowMs: number = Date.now(),
+): Promise<void> {
+  await kv.put(completedKey(jobId), new Date(nowMs).toISOString())
 }
 
 export interface HeartbeatCheckResult {
@@ -169,7 +226,8 @@ async function checkJob(
 ): Promise<HeartbeatCheckResult> {
   const lastRan = await kv.get(heartbeatKey(job.id))
   const firstSeen = await kv.get(firstSeenKey(job.id))
-  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs)
+  const lastCompleted = await kv.get(completedKey(job.id))
+  const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs)
 
   if (verdict.status === 'pending') {
     if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
@@ -179,7 +237,7 @@ async function checkJob(
     return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
   }
 
-  // stale or never_ran -- alert once per per-job cooldown window.
+  // stale, never_ran or vanished -- alert once per per-job cooldown window.
   if (await kv.get(cooldownKey(job.id))) {
     return { jobId: job.id, status: verdict.status, alerted: false, ageMs: verdict.ageMs }
   }

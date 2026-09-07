@@ -18,7 +18,7 @@ import { runRequiredEnvVarsCheck } from './lib/required-env-vars'
 import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
-import { writeHeartbeat, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
@@ -228,6 +228,16 @@ export default {
   fetch: app.fetch.bind(app),
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): void {
     const supabase = createSupabaseClient(env)
+    // Stamps a watched job "completed" once its work has SETTLED, whichever way
+    // it settled (#985). The work's own handler owns logging and alerting; this
+    // only records that the run reached its end. It is deliberately not chained
+    // after that handler, because a failure alert that itself throws would then
+    // skip the stamp and read as a vanished run (L514).
+    const completeAfter = (work: Promise<unknown>, jobId: string): Promise<void> =>
+      work
+        .catch((e) => console.error(`[${jobId}] failed past its own handler:`, e))
+        .then(() => writeHeartbeatCompleted(env.IDEMPOTENCY, jobId))
+        .catch((e) => console.error(`[cron-heartbeat] ${jobId} completed write failed:`, e))
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
         runAchieveExport(supabase, env)
@@ -250,21 +260,30 @@ export default {
         writeHeartbeat(env.IDEMPOTENCY, 'timeout-audit')
           .catch((e) => console.error('[cron-heartbeat] timeout-audit write failed:', e))
       )
-      ctx.waitUntil(
+      ctx.waitUntil(completeAfter(
         runTimeoutAuditCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
-          .catch((e) => console.error('[timeout-audit] check failed:', e))
-      )
+          .catch((e) => console.error('[timeout-audit] check failed:', e)),
+        'timeout-audit',
+      ))
     } else if (event.cron === '0 13 * * *') {
       // Dead-man's-switch heartbeat: stamp that this batch dispatched (#358).
       ctx.waitUntil(
         writeHeartbeat(env.IDEMPOTENCY, 'daily-1300')
           .catch((e) => console.error('[cron-heartbeat] daily write failed:', e))
       )
-      ctx.waitUntil(
+      // Every check in this batch is tracked so the batch can stamp "completed"
+      // only once all of them have settled (#985). Each keeps its own failure
+      // boundary; a check that rejects is still a settled check.
+      const dailyWork: Promise<unknown>[] = []
+      const track = (p: Promise<unknown>): void => {
+        dailyWork.push(p)
+        ctx.waitUntil(p)
+      }
+      track(
         runVolumeAnomalyCheck(supabase)
           .catch((e) => console.error('[volume-anomaly] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runFieldPresenceDeadCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[field-presence-dead] failed:', e))
       )
@@ -273,43 +292,43 @@ export default {
       // there. Lead Economy sat that way for weeks. Each workflow is judged
       // against its peers in the same window, because bid rows are purged before
       // their sightings are and "no bid rows" is otherwise ambiguous.
-      ctx.waitUntil(
+      track(
         runBidRecordingCoverageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
           .catch((e) => console.error('[bid-recording] check failed:', e))
       )
       // #744: leads whose email Salesforce rejected are still created, without the
       // address, and the run succeeds. Nothing counted that, so a source sending
       // damaged addresses in bulk was invisible.
-      ctx.waitUntil(
+      track(
         runEmailDropRateCheck(supabase, env.IDEMPOTENCY)
           .catch((e) => console.error('[email-drop-rate] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runSecretDriftCheck(supabase, env)
           .then((r) => console.log(`[secret-drift] checked=${r.checked} missing=${r.missing} alerted=${r.alerted}`))
           .catch((e) => console.error('[secret-drift] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runRequiredSecretsCheck(supabase, env)
           .then((r) => { if (r.missing.length) console.error(`[required-secrets] MISSING=${r.missing.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[required-secrets] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runRequiredEnvVarsCheck(supabase, env)
           .then((r) => { if (r.missing.length) console.error(`[required-env-vars] MISSING=${r.missing.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[required-env-vars] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runSecretDecryptHealthCheck(supabase, env)
           .then((r) => { if (r.undecryptable) console.error(`[secret-decrypt-health] undecryptable=${r.undecryptable} alerted=${r.alerted}`) })
           .catch((e) => console.error('[secret-decrypt-health] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runBigTableGuard(supabase, env.IDEMPOTENCY)
           .then((r) => { if (r.offenders.length) console.log(`[big-table-guard] offenders=${r.offenders.join(',')} alerted=${r.alerted}`) })
           .catch((e) => console.error('[big-table-guard] check failed:', e))
       )
-      ctx.waitUntil(
+      track(
         runDrainStallCheck(supabase, env.IDEMPOTENCY)
           .then((r) => { if (r.stranded > 0) console.log(`[drain-stall] stranded=${r.stranded} alerted=${r.alerted}`) })
           .catch((e) => console.error('[drain-stall] check failed:', e))
@@ -321,7 +340,7 @@ export default {
       // a missing grant fails loudly on the first run, an excessive one never
       // surfaces because nothing ever attempts what it should not be allowed to
       // do (L503).
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkArchiveIdentities } = await import('./lib/archive-identity-check')
           const r = await checkArchiveIdentities(env, supabase)
@@ -334,7 +353,7 @@ export default {
       // was recorded as a measured fact, was wrong for days, and was caught only
       // because somebody happened to probe. A setting whose value carries the
       // guarantee is asserted on a schedule, not audited at change time (L502).
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkArchiveSettings } = await import('./lib/archive-settings-check')
           const r = await checkArchiveSettings(env, supabase)
@@ -345,7 +364,7 @@ export default {
       // believes (#1017)? Its own failure boundary, because a watchdog must not
       // share the abort behaviour of the work it watches (L71): this failing must
       // not stop the gate below it from running.
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkExecutionRetention } = await import('./lib/retention-check')
           const r = await checkExecutionRetention(env, supabase)
@@ -356,7 +375,7 @@ export default {
       // (#1166)? Two hand-edited settings in two products, and the high band read
       // 0.0013 in one and 0.0012 in the other for three months with nothing
       // comparing them. Its own failure boundary, like the check above (L71).
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkTripointPricing } = await import('./lib/tripoint-pricing-check')
           const r = await checkTripointPricing(env, supabase)
@@ -368,13 +387,14 @@ export default {
       // deletion until A5 (#873). Daily, because it re-measures every day still
       // inside the 7 day retention window and the staleness limit is one cadence
       // plus slack.
-      ctx.waitUntil(
+      track(
         (async () => {
           const { runArchiveGate } = await import('./lib/archive-gate')
           const r = await runArchiveGate(env, supabase)
           console.log(`[archive-gate] ${r.detail}`)
         })().catch((e) => console.error('[archive-gate] failed:', e))
       )
+      ctx.waitUntil(completeAfter(Promise.allSettled(dailyWork), 'daily-1300'))
     } else if (event.cron === '37 */2 * * *') {
       // Lead sightings export runs every 2 hours in its own invocation so it gets a
       // full per-run subrequest budget. One run drains ~50K rows (the platform
@@ -389,7 +409,7 @@ export default {
         writeHeartbeat(env.IDEMPOTENCY, 'sightings-export')
           .catch((e) => console.error('[cron-heartbeat] export write failed:', e))
       )
-      ctx.waitUntil(
+      ctx.waitUntil(completeAfter(
         runSightingsExport(supabase, env)
           .then((s) => {
             console.log('[sightings-export]', JSON.stringify(s))
@@ -398,8 +418,9 @@ export default {
           .catch((e) => {
             console.error('[sightings-export] failed:', e)
             return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY)
-          })
-      )
+          }),
+        'sightings-export',
+      ))
     } else if (event.cron === '47 1-23/2 * * *') {
       // Its own invocation, so the purge gets its own wall-time budget. Sharing the
       // export's budget let a growing export starve it to zero rows deleted,
@@ -413,7 +434,7 @@ export default {
         writeHeartbeat(env.IDEMPOTENCY, 'sightings-purge')
           .catch((e) => console.error('[cron-heartbeat] purge write failed:', e))
       )
-      ctx.waitUntil(
+      ctx.waitUntil(completeAfter(
         runSightingsPurge(supabase, Date.now, undefined, ['lead_sightings'])
           .then((s) => {
             console.log('[sightings-purge]', JSON.stringify(s))
@@ -422,8 +443,9 @@ export default {
           .catch((e) => {
             console.error('[sightings-purge] failed:', e)
             return notifyExportFailure(supabase, 'Lead sightings purge', [formatErr(e)], env.IDEMPOTENCY)
-          })
-      )
+          }),
+        'sightings-purge',
+      ))
     } else if (event.cron === '47 0-22/2 * * *') {
       // Bids purge on the even hours, its own invocation so it never shares a
       // subrequest budget with the sightings purge (see the odd-hour block above).
@@ -431,7 +453,7 @@ export default {
         writeHeartbeat(env.IDEMPOTENCY, 'sighting-bids-purge')
           .catch((e) => console.error('[cron-heartbeat] bids purge write failed:', e))
       )
-      ctx.waitUntil(
+      ctx.waitUntil(completeAfter(
         runSightingsPurge(supabase, Date.now, undefined, ['lead_sighting_bids'])
           .then((s) => {
             console.log('[sighting-bids-purge]', JSON.stringify(s))
@@ -440,13 +462,17 @@ export default {
           .catch((e) => {
             console.error('[sighting-bids-purge] failed:', e)
             return notifyExportFailure(supabase, 'Lead sighting bids purge', [formatErr(e)], env.IDEMPOTENCY)
-          })
-      )
+          }),
+        'sighting-bids-purge',
+      ))
     } else if (event.cron === '23 * * * *') {
       // Execution archive to Snowflake (#871, Phase A3). SHADOW: it writes the
       // archive and its own bookkeeping, and changes nothing about what any job
       // deletes. Both destructive jobs stay untouched until A5 (#873).
-      ctx.waitUntil(
+      // Started before the work, completed after it settles: a run the platform
+      // kills writes the first and never the second, which is what the heartbeat
+      // check reads as vanished (#985).
+      ctx.waitUntil(completeAfter(
         (async () => {
           await writeHeartbeat(env.IDEMPOTENCY, 'execution-archive')
           const { runExecutionArchive } = await import('./lib/execution-archive')
@@ -457,8 +483,9 @@ export default {
             // the lock its terminated predecessor left (#1181).
             scheduledFor: new Date(event.scheduledTime),
           })
-        })().catch((e) => console.error('[execution-archive] failed:', e))
-      )
+        })().catch((e) => console.error('[execution-archive] failed:', e)),
+        'execution-archive',
+      ))
     } else if (event.cron === '0 * * * *') {
       ctx.waitUntil(
         syncAllSalesforceConfigs(env, supabase)
@@ -629,7 +656,7 @@ export default {
         runHeartbeatChecks(supabase, env.IDEMPOTENCY)
           .then((rs) => {
             for (const r of rs) {
-              if (r.status === 'stale' || r.status === 'never_ran') {
+              if (r.status === 'stale' || r.status === 'never_ran' || r.status === 'vanished') {
                 console.error(`[cron-heartbeat] ${r.jobId} ${r.status} ageMs=${r.ageMs} alerted=${r.alerted}`)
               }
             }

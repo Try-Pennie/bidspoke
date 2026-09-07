@@ -9,7 +9,9 @@ import { sendCronHeartbeatAlert } from '../slack'
 import {
   runHeartbeatChecks,
   writeHeartbeat,
+  writeHeartbeatCompleted,
   heartbeatKey,
+  completedKey,
   firstSeenKey,
   CRON_JOBS,
   cronJob,
@@ -142,5 +144,48 @@ describe('runHeartbeatChecks', () => {
     )
     expect(res.find((r) => r.jobId === 'daily-1300')?.alerted).toBe(true)
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('writeHeartbeatCompleted (#985)', () => {
+  it('records the completion under its own per-job key, leaving the started stamp alone', async () => {
+    const kv = fakeKv({ [heartbeatKey('execution-archive')]: iso(NOW - 60_000) })
+    await writeHeartbeatCompleted(kv, 'execution-archive', NOW)
+    expect(kv.store.get(completedKey('execution-archive'))).toBe(iso(NOW))
+    expect(kv.store.get(heartbeatKey('execution-archive'))).toBe(iso(NOW - 60_000))
+  })
+})
+
+describe('runHeartbeatChecks: a run that started and never finished (#985)', () => {
+  it('alerts vanished for the job whose run is past its allowance without a completion', async () => {
+    const archive = cronJob('execution-archive')
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      // Started well past its allowance, never completed. This is the 08-22 shape.
+      [heartbeatKey(archive.id)]: iso(NOW - archive.maxRunMs - 5 * 60_000),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+
+    const r = results.find((x) => x.jobId === archive.id)!
+    expect(r.status).toBe('vanished')
+    expect(r.alerted).toBe(true)
+    expect(vi.mocked(sendCronHeartbeatAlert)).toHaveBeenCalledWith(
+      expect.anything(), 'org-1', expect.objectContaining({ id: archive.id }), 'vanished', expect.any(Number),
+    )
+    expect(results.filter((x) => x.jobId !== archive.id).every((x) => x.status === 'healthy')).toBe(true)
+  })
+
+  it('stays healthy when that same run has a completed stamp after its start', async () => {
+    const archive = cronJob('execution-archive')
+    const started = NOW - archive.maxRunMs - 5 * 60_000
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(archive.id)]: iso(started),
+      [completedKey(archive.id)]: iso(started + 20 * 60_000),
+    })
+    const results = await runHeartbeatChecks(fakeSupabase([{ organization_id: 'org-1' }]), kv, NOW)
+
+    expect(results.find((x) => x.jobId === archive.id)!.status).toBe('healthy')
+    expect(vi.mocked(sendCronHeartbeatAlert)).not.toHaveBeenCalled()
   })
 })

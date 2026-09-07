@@ -1150,12 +1150,41 @@ export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
   job: { label: string; triggerCron: string; dependents: string },
-  status: 'stale' | 'never_ran',
+  status: 'stale' | 'never_ran' | 'vanished',
   ageMs: number | null,
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
   const hours = ageMs === null ? null : Math.round(ageMs / 3_600_000)
+  const minutes = ageMs === null ? null : Math.round(ageMs / 60_000)
+  // A run that started and never finished is a different failure from a
+  // trigger that never fired, with a different place to look (#985), so it
+  // gets its own header, sentence and remedy rather than the "is dark" ones.
+  if (status === 'vanished') {
+    const blocks = [
+      { type: 'header', text: { type: 'plain_text', text: `${job.label} started and never finished`, emoji: false } },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `The ${job.label} cron (\`${job.triggerCron}\`) started a run ~${minutes} minutes ago and has not completed it. The platform most likely killed the invocation (out of memory or CPU) or it is hung. Until a run completes: ${job.dependents}.`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*How to fix:* read the termination reason in Cloudflare: Workers and Pages > bidspoke-worker > Settings > Trigger Events, and the invocation statuses under Metrics (exceededMemory, exceededCpu). The next scheduled run tries again on its own; if the same run keeps vanishing, its work needs bounding or splitting, and nothing it was meant to do has happened since the time above.`,
+        },
+      },
+    ]
+    return (await postMessage(
+      connection.bot_token,
+      connection.default_channel,
+      blocks,
+      `${job.label} started and never finished (vanished)`,
+    )) !== null
+  }
   const when =
     status === 'never_ran'
       ? `has not run since it was first observed${hours === null ? '' : ` ~${hours}h ago`}`
