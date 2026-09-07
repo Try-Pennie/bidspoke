@@ -36,6 +36,7 @@ const runArchiveGate = vi.fn().mockResolvedValue({
   detail: 'test',
 })
 const writeHeartbeat = vi.fn().mockResolvedValue(undefined)
+const writeHeartbeatCompleted = vi.fn().mockResolvedValue(undefined)
 
 vi.mock('../lib/execution-archive', () => ({
   runExecutionArchive: (...args: unknown[]) => runExecutionArchive(...args),
@@ -55,6 +56,7 @@ vi.mock('../lib/archive-identity-check', () => ({
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
   writeHeartbeat: (...args: unknown[]) => writeHeartbeat(...args),
+  writeHeartbeatCompleted: (...args: unknown[]) => writeHeartbeatCompleted(...args),
   runHeartbeatChecks: vi.fn().mockResolvedValue(undefined),
 }))
 vi.mock('../lib/supabase', () => ({
@@ -81,7 +83,11 @@ function ctxWith(waited: Promise<unknown>[]): ExecutionContext {
 
 beforeEach(() => {
   runExecutionArchive.mockClear()
+  runExecutionArchive.mockResolvedValue({
+    stop: 'caught-up', failed: false, hoursArchived: 0, hoursEmpty: 0, executionsArchived: 0, executionsRefused: 0, hoursBehind: 0, detail: 'test',
+  })
   writeHeartbeat.mockClear()
+  writeHeartbeatCompleted.mockClear()
   runArchiveGate.mockClear()
   checkArchiveSettings.mockClear()
   checkArchiveIdentities.mockClear()
@@ -223,5 +229,73 @@ describe('the archive cron passes its scheduled time through (#1181)', () => {
     const deps = runExecutionArchive.mock.calls[0][2] as { scheduledFor?: Date }
     expect(deps.scheduledFor).toBeInstanceOf(Date)
     expect(deps.scheduledFor?.toISOString()).toBe('2026-09-05T00:23:00.000Z')
+  })
+})
+
+/**
+ * The completed stamp (#985). A run that stamps only "started" reads as healthy
+ * when the platform kills it a minute later, which is what hid a three hour
+ * archive outage on 2026-08-22. So every watched job stamps "completed" once its
+ * work has settled, and the order and the failure path are asserted here against
+ * the real handler rather than assumed.
+ */
+describe('the completed heartbeat stamp (#985)', () => {
+  it('stamps the archive completed after its work resolves, and only after it started', async () => {
+    const order: string[] = []
+    writeHeartbeat.mockImplementation(async (_kv: unknown, id: string) => { order.push(`started:${id}`) })
+    writeHeartbeatCompleted.mockImplementation(async (_kv: unknown, id: string) => { order.push(`completed:${id}`) })
+    runExecutionArchive.mockImplementation(async () => { order.push('archive'); return { stop: 'caught-up', failed: false, hoursArchived: 0, hoursEmpty: 0, executionsArchived: 0, executionsRefused: 0, hoursBehind: 0, detail: 'test' } })
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.allSettled(waited)
+
+    expect(order).toEqual(['started:execution-archive', 'archive', 'completed:execution-archive'])
+  })
+
+  it('still stamps the archive completed when its work rejects: a handled failure is a finished run', async () => {
+    runExecutionArchive.mockRejectedValue(new Error('snowflake down'))
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
+    await Promise.allSettled(waited)
+
+    expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'execution-archive')
+  })
+
+  it('stamps the daily batch completed only once every one of its checks has settled', async () => {
+    // The gate is held open by the test itself rather than by a timer, so the
+    // assertion is about ordering, not about how fast this machine is (L290).
+    let finishGate!: (summary: unknown) => void
+    runArchiveGate.mockImplementation(() => new Promise((resolve) => { finishGate = resolve }))
+    const waited: Promise<unknown>[] = []
+
+    worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    // One turn of the event loop, so every check that CAN settle has done so
+    // while the gate is still running.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(writeHeartbeatCompleted, 'completed was stamped while the gate was still running').not.toHaveBeenCalledWith(expect.anything(), 'daily-1300')
+
+    finishGate({ daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: false, detail: 't' })
+    await Promise.allSettled(waited)
+
+    expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'daily-1300')
+  })
+
+  it('stamps every other watched job completed from its own cron', async () => {
+    for (const [cron, id] of [
+      ['15 8 * * *', 'timeout-audit'],
+      ['37 */2 * * *', 'sightings-export'],
+      ['47 1-23/2 * * *', 'sightings-purge'],
+      ['47 0-22/2 * * *', 'sighting-bids-purge'],
+    ] as const) {
+      writeHeartbeatCompleted.mockClear()
+      const waited: Promise<unknown>[] = []
+
+      worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
+      await Promise.allSettled(waited)
+
+      expect(writeHeartbeatCompleted, `${cron} did not complete ${id}`).toHaveBeenCalledWith(expect.anything(), id)
+    }
   })
 })

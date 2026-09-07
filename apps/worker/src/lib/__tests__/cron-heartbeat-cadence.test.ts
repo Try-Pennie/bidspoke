@@ -52,6 +52,17 @@ describe('every registered cron job', () => {
     }
   })
 
+  it('declares how long one run may take, shorter than its cadence and its staleness threshold (#985)', () => {
+    // A run allowance at or above the cadence could never distinguish a run
+    // that vanished from the next run starting; one above the staleness
+    // threshold would be reported as stale first and never as vanished.
+    for (const job of CRON_JOBS) {
+      expect(job.maxRunMs, job.id).toBeGreaterThan(0)
+      expect(job.maxRunMs, `${job.id} allowance vs cadence`).toBeLessThan(cadenceOf(job.triggerCron))
+      expect(job.maxRunMs, `${job.id} allowance vs staleness`).toBeLessThan(job.staleMs)
+    }
+  })
+
   it('says what stops working while it is dark, so the alert is actionable', () => {
     for (const job of CRON_JOBS) {
       expect(job.dependents.length, `${job.id} has no dependents line`).toBeGreaterThan(20)

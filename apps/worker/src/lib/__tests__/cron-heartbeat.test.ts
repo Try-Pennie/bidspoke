@@ -38,3 +38,49 @@ describe('evaluateHeartbeat', () => {
     expect(STALE_THRESHOLD_MS).toBeGreaterThan(24 * H)
   })
 })
+
+/**
+ * A run that started and never finished (#985).
+ *
+ * The started stamp alone can only catch a cron that never FIRED. On 2026-08-22
+ * the archive was killed by the platform three hours running, each run stamping
+ * "started" first, and the check reported it healthy throughout. The completed
+ * stamp and a per-job run allowance make that visible as its own verdict.
+ */
+describe('evaluateHeartbeat with a completed stamp', () => {
+  const MAX_RUN = 30 * 60 * 1000
+
+  it('is healthy while a recent run is still inside its allowance, even with no completed stamp yet', () => {
+    expect(evaluateHeartbeat(iso(NOW - 10 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN).status).toBe('healthy')
+  })
+
+  it('is healthy when the latest run completed after it started', () => {
+    expect(
+      evaluateHeartbeat(iso(NOW - 2 * H), null, NOW, STALE_THRESHOLD_MS, iso(NOW - 2 * H + 60_000), MAX_RUN).status,
+    ).toBe('healthy')
+  })
+
+  it('reports vanished when a run started past its allowance and nothing completed', () => {
+    const v = evaluateHeartbeat(iso(NOW - 45 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN)
+    expect(v.status).toBe('vanished')
+    expect(v.ageMs).toBe(45 * 60 * 1000)
+  })
+
+  it('reports vanished when the only completed stamp belongs to an earlier run', () => {
+    // The previous run finished; this one started 45 minutes ago and did not.
+    const started = NOW - 45 * 60 * 1000
+    const v = evaluateHeartbeat(iso(started), null, NOW, STALE_THRESHOLD_MS, iso(started - 3 * H), MAX_RUN)
+    expect(v.status).toBe('vanished')
+  })
+
+  it('still reports stale, not vanished, when the last start is itself past the staleness threshold', () => {
+    // A job that has not fired for a day is dark in the old sense; that verdict
+    // and its remedy (the trigger, the deploy) take precedence.
+    const v = evaluateHeartbeat(iso(NOW - 27 * H), null, NOW, STALE_THRESHOLD_MS, null, MAX_RUN)
+    expect(v.status).toBe('stale')
+  })
+
+  it('keeps the old four-argument behaviour when no allowance is given', () => {
+    expect(evaluateHeartbeat(iso(NOW - 45 * 60 * 1000), null, NOW, STALE_THRESHOLD_MS).status).toBe('healthy')
+  })
+})
