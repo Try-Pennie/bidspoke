@@ -187,6 +187,24 @@ export default function PartnersPage() {
                             inactive
                           </span>
                         )}
+                        {/*
+                          #1035. The save-time credential check (#416) rendered only
+                          inside this partner's own form, so it reached only someone
+                          who had already opened it. Here it is on the row a person
+                          scanning the list passes.
+
+                          Not a nested control: the whole row is one button, so an
+                          interactive marker would be invalid markup and would steal
+                          the click that opens the partner. The icon carries the full
+                          message as text (sr-only) so a screen reader gets the
+                          reason, and as a title so a pointer does on hover.
+                        */}
+                        {partner.credential_warning && (
+                          <span className="flex-shrink-0 text-amber-600" title={partner.credential_warning}>
+                            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span className="sr-only">{partner.credential_warning}</span>
+                          </span>
+                        )}
                       </div>
                       <p className="mt-0.5 truncate font-mono text-xs text-gray-500">{partner.slug}</p>
                     </div>
