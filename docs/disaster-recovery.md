@@ -111,6 +111,35 @@ Everything here is redeployable from git — no data loss, since state lives in 
 2. **Special case — `SECRET_ENCRYPTION_KEY`:** rotating it breaks "reveal" for env-var secrets created before the rotation (users see "rotate to enable reveal" until they re-save). See CLAUDE.md.
 3. **Special case — `SSN_HASH_PEPPER`:** changing it changes the peppered SSN hash, breaking person-dedup continuity for `lead_sightings`. Treat as effectively immutable; escrow it.
 
+## Cloudflare log access IS partner API key access (#958)
+
+Measured 2026-09-09 against production, and recorded here because the belief was
+previously unverified and the question would otherwise be re-opened from scratch.
+
+The `Workers trace events` stream carries `event.request.headers` on every
+request event, with values intact. `x-api-key` is among them, so **every partner
+webhook API key in `API_KEY_MAP` is readable in plain text by anyone who can tail
+the worker or read Workers Logs for this account.** Header values were proved to
+survive verbatim using a throwaway probe header, so no real key had to be read to
+establish it. `cf-connecting-ip`, the consumer's IP address, is in the same
+stream.
+
+Two consequences for anyone working from this runbook:
+
+1. Treat Cloudflare log access as equivalent to holding every partner key. Grant
+   it on that basis, and if it is ever granted to someone who should not hold the
+   keys, the keys are compromised and rotating them is the remedy.
+2. A `wrangler tail` capture written to a file is a file full of live partner
+   credentials. Delete it when finished. Never attach one to an issue, a PR or a
+   support ticket.
+
+**What is not yet established** is whether the account's Logpush jobs (#1007,
+#1008) carry these header fields to their destinations, one of which is the
+external vendor Better Stack. That depends on each job's configured field list,
+which no credential this codebase can reach is able to read (#1010). Until that
+is answered, treat it as unknown rather than as safe: an unread field list and a
+field list known to exclude headers look identical from here.
+
 ## Secret inventory (and the escrow gap)
 
 The authoritative live list is `wrangler secret list --name bidspoke-worker`. Worker secrets are **not escrowed** today — losing the worker without a copy means re-obtaining each from its origin. Categories (re-provision source in parentheses):
