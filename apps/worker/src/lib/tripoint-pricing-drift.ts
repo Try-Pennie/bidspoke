@@ -88,8 +88,19 @@ interface BidspokeTier {
   multiplier: number
 }
 
-/** The one-tier shape Bidspoke's Tripoint config has, or null for anything else. */
-function readSingleTier(cfg: Record<string, unknown>): { tier: BidspokeTier; defaultMultiplier: number } | null {
+/**
+ * The one-tier shape Bidspoke's Tripoint config has, or null for anything else.
+ *
+ * `floor` has three states, and they must stay three: a number is a declared
+ * floor (0 included, which is a real answer meaning every lead is worth bidding
+ * on), `undefined` is no floor declared, and an unparseable value is the whole
+ * config being unreadable. Folding the third into the second would report a
+ * typo as the safe default and the comparison would say the two rules merely
+ * cannot be compared on that point (L622).
+ */
+function readSingleTier(
+  cfg: Record<string, unknown>,
+): { tier: BidspokeTier; defaultMultiplier: number; floor: number | undefined } | null {
   if (cfg.pricing_mode !== 'tiered_multiplier') return null
   if (!Array.isArray(cfg.tiers) || cfg.tiers.length !== 1) return null
   const t = cfg.tiers[0] as Record<string, unknown> | null
@@ -97,7 +108,14 @@ function readSingleTier(cfg: Record<string, unknown>): { tier: BidspokeTier; def
   const multiplier = Number(t?.multiplier)
   const defaultMultiplier = Number(cfg.default_multiplier)
   if (![above, multiplier, defaultMultiplier].every(Number.isFinite)) return null
-  return { tier: { above, multiplier }, defaultMultiplier }
+
+  let floor: number | undefined
+  if (cfg.min_source_value !== undefined && cfg.min_source_value !== null) {
+    const parsed = Number(cfg.min_source_value)
+    if (!Number.isFinite(parsed)) return null
+    floor = parsed
+  }
+  return { tier: { above, multiplier }, defaultMultiplier, floor }
 }
 
 /** People read these, so no floating point tails and thousands separators on debts. */
@@ -156,15 +174,27 @@ export function tripointPricingDifferences(
     })
   }
 
-  // Bidspoke has no debt floor: its default multiplier applies all the way down.
-  // Salesforce books nothing below the floor. That is a difference in what the
-  // two systems can express, not a number that drifted, so it is a note.
-  notes.push({
-    code: 'floor-not-modelled',
-    message:
-      `Salesforce books no Tripoint revenue below $${dollars(salesforce.floor)} of debt; Bidspoke has no ` +
-      `debt floor and bids ${rate(cfg.defaultMultiplier)} of debt there`,
-  })
+  // The floor (#1199). Three outcomes, matching the three states the config can
+  // be in. No floor declared stays a NOTE rather than a difference: it is a gap
+  // in what Bidspoke can express, not a number that drifted, and paging daily on
+  // it would teach everyone to skip the whole check (L36). A declared floor that
+  // disagrees IS drift and is reported as one. A floor that agrees says nothing,
+  // which is the point of making it expressible at all.
+  if (cfg.floor === undefined) {
+    notes.push({
+      code: 'floor-not-modelled',
+      message:
+        `Salesforce books no Tripoint revenue below $${dollars(salesforce.floor)} of debt; Bidspoke has no ` +
+        `debt floor and bids ${rate(cfg.defaultMultiplier)} of debt there`,
+    })
+  } else if (cfg.floor !== salesforce.floor) {
+    differences.push({
+      code: 'floor-disagrees',
+      message:
+        `Bidspoke stops bidding Tripoint below $${dollars(cfg.floor)} of debt, Salesforce books nothing ` +
+        `below $${dollars(salesforce.floor)}`,
+    })
+  }
 
   return { differences, notes }
 }

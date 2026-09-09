@@ -7,6 +7,7 @@ import type { ExecutionContext, NodeDefinition, StepOutput } from '../types'
 import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from '../lib/db-retry'
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, type ProjectedBidAttempt } from './bid-log'
+import { resolveValue } from './context'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -135,6 +136,12 @@ export interface FinalizeSightingInput {
   reject_reason?: string | null
   outcome?: string | null   // 'successful' | 'completed' | 'failed' — mirrors workflow_executions.outcome
   quoted_rate_cents?: number | null
+  /**
+   * The lead's debt as the pricing saw it (#1169). Omitted from the UPDATE when
+   * absent rather than written as null, because the insert may already have set
+   * it from the payload and finalize must not blank a real value.
+   */
+  external_debt?: number | null
 }
 
 // ============================================================
@@ -472,6 +479,12 @@ export async function finalizeSighting(
     // explicitly, so a field added only to SightingFinalizeFields is dropped on
     // the way to the database and every derivation test stays green (L510).
     quoted_rate_cents: fields.quoted_rate_cents ?? null,
+    // Spread, not a plain key: an absent debt must leave whatever the insert
+    // wrote alone. Writing `?? null` here would blank a real value every time a
+    // run had no bid group to read the figure from (#1169).
+    ...(fields.external_debt === null || fields.external_debt === undefined
+      ? {}
+      : { external_debt: fields.external_debt }),
     updated_at: new Date().toISOString(),
   }
 
@@ -690,25 +703,125 @@ export interface SightingFinalizeFields {
 // The envelopes a quoted body can arrive in, outermost first (#1157).
 const QUOTE_WRAPPER_KEYS = ['response'] as const
 
-export function extractQuotedRate(
+/** One code node found to be quoting a rate, and the cents it quoted. */
+export interface QuoteProducer {
+  namespace: string
+  cents: number
+}
+
+export interface ExtractQuotedRateOpts {
+  /**
+   * Called when MORE THAN ONE producer quoted a rate, with every one of them.
+   * The value is refused in that case, and this is what tells a refusal apart
+   * from an honest "nothing quoted": both are null in the column, and without
+   * this they would be the same event (#1162, L11, L622).
+   */
+  onAmbiguous?: (producers: QuoteProducer[]) => void
+}
+
+/**
+ * Every code node in this run that quoted a rate back to the source.
+ *
+ * A node carrying the body at more than one depth counts ONCE: the depths are an
+ * ordered list and the first match for a namespace wins, which is the same rule
+ * bid-log.ts applies for the same reason (a copy re-emitted further down the tree
+ * is not a second quote).
+ */
+function quoteProducers(
   steps: Record<string, StepOutput>,
   nodes: NodeDefinition[],
-): number | null {
+): QuoteProducer[] {
   const typeByNamespace = new Map(nodes.map((n) => [n.namespace, n.type as string]))
+  const found: QuoteProducer[] = []
   for (const [namespace, step] of Object.entries(steps)) {
     if (typeByNamespace.get(namespace) !== 'code') continue
     if (step?.status !== 'completed') continue
     // Lead Economy's return_response returns the quoted body one level down,
     // under `response`, so reading only the outer level recorded none of its
-    // quotes (#1157). The outer level is tried first, and the first rate found
-    // is returned, so a node carrying a body at both depths yields one quote.
+    // quotes (#1157). The outer level is tried first.
     for (const candidate of payloadCandidates(step.output, QUOTE_WRAPPER_KEYS)) {
       const body = (candidate as { body?: unknown } | null)?.body
       const offers = (body as { offers?: unknown } | null)?.offers
       if (!Array.isArray(offers) || offers.length === 0) continue
       const rate = (offers[0] as { rate?: unknown } | null)?.rate
       if (typeof rate !== 'number' || !Number.isFinite(rate)) continue
-      return Math.round(rate * 100)
+      found.push({ namespace, cents: Math.round(rate * 100) })
+      break  // this namespace has quoted; deeper copies are the same quote
+    }
+  }
+  return found
+}
+
+/**
+ * The rate quoted back to the lead's source, in cents, or null.
+ *
+ * Refuses when two code nodes both quote (#1162). Before this the function
+ * returned whichever came first out of `Object.entries`, so the value was decided
+ * by insertion order rather than by any rule. That is safe only while every
+ * quoting workflow happens to have exactly one producer, which is a property of
+ * the workflows and not of this function: an author splitting or adding a response
+ * builder would have got a silently WRONG money figure, which looks exactly like a
+ * right one. Refusing makes the surprise visible instead.
+ */
+export function extractQuotedRate(
+  steps: Record<string, StepOutput>,
+  nodes: NodeDefinition[],
+  opts: ExtractQuotedRateOpts = {},
+): number | null {
+  const producers = quoteProducers(steps, nodes)
+  if (producers.length === 1) return producers[0].cents
+  if (producers.length > 1) {
+    opts.onAmbiguous?.(producers)
+    return null
+  }
+  return null
+}
+
+/**
+ * The keys a bid_group context map may use for the lead's debt, in order.
+ *
+ * `finalDebt` is what the live Main Flow declares and what the Tripoint partner
+ * config reads as `context.finalDebt`, verified against the definition fixture
+ * at apps/web/src/lib/__tests__/fixtures/main-flow.json. The others are here
+ * because the map is authored per workflow and nothing constrains the spelling;
+ * a workflow using none of them records no debt, which is the state this whole
+ * function exists to end, so a new one belongs on this list rather than in a
+ * second extractor somewhere else.
+ */
+const DEBT_CONTEXT_KEYS = ['finalDebt', 'final_debt', 'debt', 'externalDebt'] as const
+
+/**
+ * The lead's debt figure, as the pricing itself saw it.
+ *
+ * #1169: this was read from the trigger payload at
+ * `financialInformation.externalDebtAmount` and was null on all 110,900 sightings
+ * measured over 24 hours on 2026-09-04, because no live source sends that path.
+ * The debt is computed by a step, not supplied by the caller.
+ *
+ * A bid_group node's `context` map is where the number is named: it is resolved
+ * once at group entry and is what a partner formula reads as `context.finalDebt`
+ * when it prices the lead. Resolving the same template here with the same
+ * `resolveValue` the engine uses means there is one definition of where the debt
+ * comes from, so this cannot drift away from what was actually charged (L70).
+ *
+ * Returns a whole number (the column is INTEGER) or null. Zero is a real answer
+ * and is returned as 0, never folded into null: a lead with no debt is exactly
+ * the lead that must not be bid on.
+ */
+export function extractExternalDebt(
+  ctx: ExecutionContext,
+  nodes: NodeDefinition[],
+): number | null {
+  for (const node of nodes) {
+    if (node.type !== 'bid_group') continue
+    const contextConfig = (node.config as { context?: unknown } | undefined)?.context
+    if (!contextConfig || typeof contextConfig !== 'object') continue
+    for (const key of DEBT_CONTEXT_KEYS) {
+      const template = (contextConfig as Record<string, unknown>)[key]
+      if (template === undefined) continue
+      const value = asNumber(resolveValue(template, ctx))
+      if (value === null) continue
+      return Math.round(value)
     }
   }
   return null
@@ -722,6 +835,8 @@ export function computeSightingFinalize(
     walkStatus: number
     executionStatus: string   // 'completed' | 'failed'
     successNamespaces: string[]
+    /** Forwarded to extractQuotedRate so a refused ambiguous quote is reported (#1162). */
+    onAmbiguousQuote?: (producers: QuoteProducer[]) => void
   },
 ): SightingFinalizeFields {
   const finalNs = opts.lastCompletedNamespace
@@ -782,7 +897,7 @@ export function computeSightingFinalize(
     partners_responded: bidSummary.responded,
     reject_reason,
     outcome,
-    quoted_rate_cents: extractQuotedRate(steps, nodes),
+    quoted_rate_cents: extractQuotedRate(steps, nodes, { onAmbiguous: opts.onAmbiguousQuote }),
   }
 }
 

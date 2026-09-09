@@ -35,6 +35,7 @@ import {
   recordBidAttempt,
   computeSightingFinalize,
   buildSightingFinalizeProjection,
+  extractExternalDebt,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
@@ -756,6 +757,17 @@ export async function executeWorkflow(
             walkStatus,
             executionStatus,
             successNamespaces,
+            // A refused ambiguous quote is null in the column exactly like a run
+            // that quoted nothing, so the only thing that tells them apart is this
+            // line naming every producer that claimed the money field (#1162).
+            onAmbiguousQuote: (producers) => log({
+              event: 'quoted_rate_ambiguous',
+              trace_id: traceId,
+              workflow_id: ctx.trigger.workflow_id,
+              execution_id: executionId,
+              producers,
+              error_message: `Quoted rate refused: ${producers.length} code nodes quoted a rate (${producers.map((p) => p.namespace).join(', ')})`,
+            }),
           })
 
           // Code-node bidding flows (e.g. the Engine Bidding Workflow's
@@ -789,6 +801,11 @@ export async function executeWorkflow(
             execution_ended_at_utc: completedAtDate,
             duration_ms: durationMs,
             ...sf,
+            // The lead's debt as the pricing itself saw it, read from the
+            // bid_group context map the partner formulas resolve (#1169). Not a
+            // payload field: the column was null on every row because it was
+            // read from a path no live source sends.
+            external_debt: extractExternalDebt(ctx, definition.nodes),
           }, outcomeDeps)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))

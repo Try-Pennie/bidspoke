@@ -14,6 +14,7 @@ import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
 import { ExpandableError } from '@/components/ExpandableError'
 import { BackToTop } from '@/components/BackToTop'
 import { useExecution } from '@/hooks/useExecution'
+import { LeadMargin } from './LeadMargin'
 import { STATUS_STYLES, ExecutionStatusBadge } from '@/components/ExecutionStatusBadge'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
@@ -769,6 +770,13 @@ export default function ExecutionDetailPage() {
                 <JsonBlock value={execution.trigger_payload} />
               </div>
             </div>
+
+            {/* What the lead earned: the buyer's bid beside the rate we quoted
+                its source, and the difference (#1160). Placed above the bid
+                attempts because it is the outcome those attempts produced, and
+                it renders for code node bidding flows too, which have no bid
+                group step at all. */}
+            <LeadMargin economics={execution.lead_economics ?? null} />
 
             {/* Bid group summary — surfaced above the steps so "why no bid?" is one click away */}
             {(() => {

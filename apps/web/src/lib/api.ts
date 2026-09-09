@@ -625,6 +625,19 @@ export const api = {
           outcome: string | null
           source: string
         }>
+        /**
+         * What this lead earned (#1160), read from its lead_sightings row.
+         *
+         * Null when there is no sighting at all, which is a real and ordinary
+         * state: executions are kept 7 days and lead_sightings about two, so an
+         * execution in that gap has no record rather than a zero.
+         */
+        lead_economics: {
+          quoted_rate_cents: number | null
+          winning_bid_cents: number | null
+          margin_cents: number | null
+          winning_partner_slug: string | null
+        } | null
         steps: Array<{
           id: string
           step_namespace: string

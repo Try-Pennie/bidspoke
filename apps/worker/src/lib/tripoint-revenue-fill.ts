@@ -21,6 +21,11 @@
  * announcing it, which is the reasoning that kept the quoted rate out of it too
  * (#1158).
  *
+ * That the two populations are priced on different rules is a recorded decision,
+ * not drift: docs/adr/0010-engine-and-main-flow-price-tripoint-differently.md
+ * (#1178). Never average or compare Tripoint figures across the two flows
+ * without saying which rule produced each.
+ *
  * WHY IT RUNS EVERY 15 MINUTES rather than daily. Bid rows reach Snowflake about
  * 57 minutes after the bid (measured 2026-09-04, average over a 24 hour window),
  * and the purge then deletes the exported row, so a value written after export
