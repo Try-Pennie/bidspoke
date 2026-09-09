@@ -28,7 +28,9 @@ export async function GET(request: Request) {
   // caller-supplied value back in under a different name.
 
   if (code) {
-    const cookieStore = cookies()
+    // Next 15 made cookies() async. Awaited once here so both closures below
+    // see the resolved store rather than the promise.
+    const cookieStore = await cookies()
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
