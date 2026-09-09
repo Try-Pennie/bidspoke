@@ -328,7 +328,7 @@ executions.get('/:id', async (c) => {
   // reference_supabase_in_single_id_defeats_partition_pruning for the related
   // gotcha on the list endpoint.
   const execStartedAt = execution.started_at
-  const [stepsRes, childrenRes] = await Promise.all([
+  const [stepsRes, childrenRes, sightingRes] = await Promise.all([
     // paginate-ok: one execution's steps (tens of rows, well under the cap)
     supabase
       .from('execution_steps')
@@ -343,6 +343,20 @@ executions.get('/:id', async (c) => {
       .eq('parent_execution_id', id)
       .gte('started_at', execStartedAt)
       .order('started_at', { ascending: true }),
+    // The two halves of the per-lead margin (#1160): what a buyer paid us and
+    // what we quoted the source that sent the lead. They live on the sighting,
+    // not the execution.
+    //
+    // `execution_started_at_utc` is the table's partition key and is stamped
+    // from the same instant as the execution's own started_at, so naming it
+    // prunes to one partition instead of scanning every month.
+    // paginate-ok: at most one sighting per execution
+    supabase
+      .from('lead_sightings')
+      .select('quoted_rate_cents, winning_bid_cents, winning_partner_slug')
+      .eq('execution_id', id)
+      .eq('execution_started_at_utc', execStartedAt)
+      .maybeSingle(),
   ])
   const t2 = Date.now()
 
@@ -374,8 +388,31 @@ executions.get('/:id', async (c) => {
   }
   const t3 = Date.now()
 
+  // A sighting that is simply GONE is not the same as a lead that earned
+  // nothing: executions are kept 7 days and lead_sightings roughly two, so an
+  // execution in that gap legitimately has no row. Null says "not recorded";
+  // an object full of nulls says "recorded, and there was no money" (L11).
+  const sighting = sightingRes.data as {
+    quoted_rate_cents: number | null
+    winning_bid_cents: number | null
+    winning_partner_slug: string | null
+  } | null
+  const leadEconomics = sighting
+    ? {
+        quoted_rate_cents: sighting.quoted_rate_cents ?? null,
+        winning_bid_cents: sighting.winning_bid_cents ?? null,
+        // Only a difference between two KNOWN numbers is a margin. Treating an
+        // absent quote as zero would report the whole bid as profit.
+        margin_cents:
+          typeof sighting.winning_bid_cents === 'number' && typeof sighting.quoted_rate_cents === 'number'
+            ? sighting.winning_bid_cents - sighting.quoted_rate_cents
+            : null,
+        winning_partner_slug: sighting.winning_partner_slug ?? null,
+      }
+    : null
+
   return c.json(
-    { ...execution, steps, child_executions: childrenRes.data ?? [] },
+    { ...execution, steps, child_executions: childrenRes.data ?? [], lead_economics: leadEconomics },
     200,
     { 'Server-Timing': `auth;dur=${t1 - t0},parallel;dur=${t2 - t1},inherit;dur=${t3 - t2}` }
   )
