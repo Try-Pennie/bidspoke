@@ -87,4 +87,23 @@ describe('checkLogpush', () => {
     expect(r.differences.join(' ').toLowerCase()).toContain('personal data')
     expect(r.alerted).toBe(true)
   })
+
+  // L50: Date.parse returns NaN on an unparseable string, and `now - NaN > threshold`
+  // is FALSE, so a job with a corrupt last_complete lands on the HEALTHY side of
+  // the staleness test. A monitoring check that fails open is worse than none,
+  // because it reports the thing it is watching as fine.
+  it('does not report a job as healthy when its last_complete cannot be parsed', async () => {
+    const body = liveBody()
+    body.result[0].last_complete = 'not a date'
+    const r = await checkLogpush({}, supabase, { fetchJobs: async () => body, now: NOW })
+    expect(r.alerted).toBe(true)
+    expect(r.differences.join(' ').toLowerCase()).toContain('last_complete')
+  })
+
+  it('treats a missing last_complete as never delivered, which is its own message', async () => {
+    const body = liveBody()
+    delete (body.result[0] as { last_complete?: unknown }).last_complete
+    const r = await checkLogpush({}, supabase, { fetchJobs: async () => body, now: NOW })
+    expect(r.differences.join(' ').toLowerCase()).toContain('never')
+  })
 })

@@ -30,6 +30,7 @@ function observed(over: Partial<ObservedLogpush['jobs'][number]> = {}): Observed
         enabled: true,
         fieldNames: [...EXPECTED[0].fieldNames],
         lastCompleteMs: Date.parse('2026-09-09T16:45:00Z'),
+        lastCompleteRaw: '2026-09-09T16:45:00Z',
         ...over,
       },
     ],
@@ -48,7 +49,8 @@ describe('logpushDifferences', () => {
     const o = observed()
     o.jobs.push({
       id: 999, name: 'someone-elses-job', destinationHost: 'logs.vendor.example',
-      dataset: 'workers_trace_events', enabled: true, fieldNames: ['ScriptName'], lastCompleteMs: NOW,
+      dataset: 'workers_trace_events', enabled: true, fieldNames: ['ScriptName'],
+      lastCompleteMs: NOW, lastCompleteRaw: '2026-09-09T17:00:00Z',
     })
     const d = logpushDifferences(o, EXPECTED, NOW)
     expect(d.join(' ')).toContain('logs.vendor.example')
@@ -58,7 +60,8 @@ describe('logpushDifferences', () => {
     const o = observed()
     o.jobs.push({
       id: 999, name: 'someone-elses-job', destinationHost: 'logs.vendor.example',
-      dataset: 'workers_trace_events', enabled: true, fieldNames: ['Logs'], lastCompleteMs: NOW,
+      dataset: 'workers_trace_events', enabled: true, fieldNames: ['Logs'],
+      lastCompleteMs: NOW, lastCompleteRaw: '2026-09-09T17:00:00Z',
     })
     const d = logpushDifferences(o, EXPECTED, NOW).join(' ')
     expect(d).toContain('Logs')
@@ -92,14 +95,31 @@ describe('logpushDifferences', () => {
 
   it('reports a job that has stopped delivering', () => {
     const stale = Date.parse('2026-09-08T00:00:00Z')
-    const d = logpushDifferences(observed({ lastCompleteMs: stale }), EXPECTED, NOW).join(' ')
+    const d = logpushDifferences(
+      observed({ lastCompleteMs: stale, lastCompleteRaw: '2026-09-08T00:00:00Z' }),
+      EXPECTED, NOW,
+    ).join(' ')
     expect(d.toLowerCase()).toContain('delivered')
+  })
+
+  // L50: NaN compares false against every threshold, so an unparseable
+  // timestamp would land on the healthy side and report a dead job as fine.
+  it('reports an unparseable last_complete rather than treating the job as fresh', () => {
+    const d = logpushDifferences(
+      observed({ lastCompleteMs: null, lastCompleteRaw: 'not a date' }),
+      EXPECTED, NOW,
+    ).join(' ')
+    expect(d).toContain('not a date')
+    expect(d.toLowerCase()).toContain('unknown')
   })
 
   // A job that has NEVER delivered is the #1008 shape, and it must not read the
   // same as one that delivered recently.
   it('reports a job that has never delivered at all', () => {
-    const d = logpushDifferences(observed({ lastCompleteMs: null }), EXPECTED, NOW).join(' ')
+    const d = logpushDifferences(
+      observed({ lastCompleteMs: null, lastCompleteRaw: null }),
+      EXPECTED, NOW,
+    ).join(' ')
     expect(d.toLowerCase()).toContain('never')
   })
 
