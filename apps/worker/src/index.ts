@@ -373,7 +373,7 @@ export default {
       // list is checked as well as the destination set, because the destination
       // never changed and the field list is what did the harm. Its own failure
       // boundary (L71).
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkLogpush } = await import('./lib/logpush-check')
           const r = await checkLogpush(env, supabase)
@@ -385,7 +385,7 @@ export default {
       // that stream is exportable off-platform, so a print is an egress. Scans
       // the live definitions rather than the repo, because definitions live in
       // the database and are edited on the canvas. Its own failure boundary (L71).
-      ctx.waitUntil(
+      track(
         (async () => {
           const { checkPayloadPrints } = await import('./lib/payload-print-check')
           const r = await checkPayloadPrints(env, supabase)
