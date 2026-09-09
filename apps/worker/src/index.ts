@@ -92,6 +92,11 @@ export interface Env {
   // Cloudflare API — for syncing secrets (PRD 12.3)
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
+  // Logpush destination check (#1010). Optional: the check reports its own
+  // absence rather than failing, so the worker runs without it. Note it carries
+  // Logs EDIT, because Cloudflare's Logpush API requires write permission even
+  // for a GET; read-only is not available for that API.
+  CLOUDFLARE_LOGS_TOKEN?: string
 
   // Env var secret encryption — AES-GCM key, base64-encoded 32 bytes
   // Generate: openssl rand -base64 32 | wrangler secret put SECRET_ENCRYPTION_KEY
@@ -359,6 +364,21 @@ export default {
           const r = await checkArchiveSettings(env, supabase)
           if (r.alerted) console.error(`[archive-settings] ${r.differences.length} differences`)
         })().catch((e) => console.error('[archive-settings] failed:', e))
+      )
+      // Where do this account's production logs actually go (#1010)? The
+      // account is SHARED with other Pennie projects, so a destination can be
+      // added by somebody who has never heard of Bidspoke, and one was: an
+      // external vendor received applicant SSNs through the `Logs` field for
+      // months before anybody could read the configuration (#1007). The field
+      // list is checked as well as the destination set, because the destination
+      // never changed and the field list is what did the harm. Its own failure
+      // boundary (L71).
+      ctx.waitUntil(
+        (async () => {
+          const { checkLogpush } = await import('./lib/logpush-check')
+          const r = await checkLogpush(env, supabase)
+          if (r.alerted) console.error(`[logpush-check] ${r.differences.length} differences`)
+        })().catch((e) => console.error('[logpush-check] failed:', e))
       )
       // Is the purge still destroying execution data on the schedule the code
       // believes (#1017)? Its own failure boundary, because a watchdog must not

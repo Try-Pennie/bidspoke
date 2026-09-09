@@ -24,6 +24,7 @@ export const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   SUPABASE_SECRET_KEY: 'block',
   API_KEY_MAP: 'block',
   CLOUDFLARE_API_TOKEN: 'block',
+  CLOUDFLARE_LOGS_TOKEN: 'block',
   CLOUDFLARE_ACCOUNT_ID: 'block',
   SECRET_ENCRYPTION_KEY: 'block',
   SSN_HASH_PEPPER: 'block',
