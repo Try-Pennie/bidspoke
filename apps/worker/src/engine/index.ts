@@ -35,6 +35,7 @@ import {
   recordBidAttempt,
   computeSightingFinalize,
   buildSightingFinalizeProjection,
+  extractExternalDebt,
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, type OutcomeAlertDeps } from './durability'
@@ -800,6 +801,11 @@ export async function executeWorkflow(
             execution_ended_at_utc: completedAtDate,
             duration_ms: durationMs,
             ...sf,
+            // The lead's debt as the pricing itself saw it, read from the
+            // bid_group context map the partner formulas resolve (#1169). Not a
+            // payload field: the column was null on every row because it was
+            // read from a path no live source sends.
+            external_debt: extractExternalDebt(ctx, definition.nodes),
           }, outcomeDeps)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))

@@ -40,6 +40,10 @@ vi.mock('../lead-sightings', () => ({
   extractSightingFields: vi.fn().mockReturnValue({}),
   extractPersonFields: vi.fn().mockReturnValue(null),
   computeSightingFinalize: vi.fn().mockReturnValue({}),
+  // The engine reads the lead's debt off the bid_group context at finalize
+  // (#1169). This mock enumerates the module's exports by hand, so an omission
+  // here is a TypeError inside the finalize waitUntil, not a missing value.
+  extractExternalDebt: vi.fn().mockReturnValue(null),
   buildSightingFinalizeProjection: vi.fn().mockReturnValue({}),
   finalizeSighting: vi.fn(),
   recordBidAttempt: vi.fn(),
