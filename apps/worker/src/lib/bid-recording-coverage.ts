@@ -29,6 +29,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { formatErr } from './format-error'
+import {
+  decideRatioCollapse,
+  appendReading,
+  COLLAPSE_FACTOR,
+  type RatioHistory,
+} from './bid-ratio-collapse'
 
 export interface BidCoverageRow {
   workflow_id: string
@@ -248,6 +254,19 @@ async function checkOrg(
     return
   }
 
+  // The ratio check runs on the SAME proven-retained rows (#1168), and runs
+  // whether or not the total-silence check found anything: a workflow can be
+  // recording far too few while every other one is fine.
+  //
+  // Its OWN failure boundary (L73). The two answer different questions, and this
+  // half touches KV while the other does not, so a KV outage must not swallow
+  // the total-silence alert on its way past.
+  try {
+    await checkRatios(supabase, kv, orgId, rows, appUrl)
+  } catch (e) {
+    console.error(`[bid-recording] event=bid_ratio_check_failed org=${orgId} error=${formatErr(e)}`)
+  }
+
   if (!decision.alert) return
 
   const slack = await getSlackConnection(supabase, orgId)
@@ -295,3 +314,115 @@ async function checkOrg(
     }
   }
 }
+
+// ── Far too few, not only none (#1168) ────────────────────────────────────────
+
+/** One KV entry per organization, holding every workflow's recent ratios. */
+const historyKey = (orgId: string) => `bid-ratio-history:${orgId}`
+
+/** No expiry: the history IS the baseline, and losing it makes the check inert
+ *  for MIN_BASELINE_SAMPLES runs with nothing saying why. */
+async function readHistories(kv: KvLike, orgId: string): Promise<Record<string, RatioHistory>> {
+  const raw = await kv.get(historyKey(orgId))
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    // Every reading is re-validated on the way out of storage. A value that is
+    // not a finite number would make the median NaN, and NaN compares false
+    // against every threshold, so the check would read as working while being
+    // unable to fire (L50). Non-numbers are dropped, which shortens the history
+    // and leaves the workflow unbaselined rather than judged against nonsense.
+    const out: Record<string, RatioHistory> = {}
+    for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const ratios = (entry as { ratios?: unknown } | null)?.ratios
+      if (!Array.isArray(ratios)) continue
+      const clean = ratios.filter((r): r is number => typeof r === 'number' && Number.isFinite(r))
+      if (clean.length !== ratios.length) {
+        console.error(
+          `[bid-recording] event=bid_ratio_history_dropped_readings org=${orgId} workflow=${id} dropped=${ratios.length - clean.length}`,
+        )
+      }
+      out[id] = { ratios: clean }
+    }
+    return out
+  } catch {
+    // A corrupt entry must not take the check down. It rebuilds from the next
+    // run, and the loss is loud rather than silent.
+    console.error(`[bid-recording] event=bid_ratio_history_unreadable org=${orgId}`)
+    return {}
+  }
+}
+
+/**
+ * Judge each workflow's bid-rows-per-sighting ratio against its own history.
+ *
+ * Runs on rows the caller has already proven retained, which is what makes the
+ * ratio trustworthy: a drained window would understate every workflow at once.
+ */
+async function checkRatios(
+  supabase: SupabaseClient,
+  kv: KvLike,
+  orgId: string,
+  rows: BidCoverageRow[],
+  appUrl?: string,
+): Promise<void> {
+  const histories = await readHistories(kv, orgId)
+  const decision = decideRatioCollapse(rows, histories)
+
+  console.log(
+    `[bid-recording] event=bid_ratio_checked org=${orgId} judged=${rows.length} collapsed=${decision.collapsed.length} unbaselined=${decision.unbaselined.length}`,
+  )
+
+  // Store this run's readings before alerting, so a Slack failure cannot cost
+  // the baseline as well as the notification.
+  const next: Record<string, RatioHistory> = { ...histories }
+  for (const r of decision.readings) next[r.workflow_id] = appendReading(next[r.workflow_id], r.ratio)
+  try {
+    await kv.put(historyKey(orgId), JSON.stringify(next))
+  } catch (e) {
+    console.error(`[bid-recording] event=bid_ratio_history_write_failed org=${orgId} error=${formatErr(e)}`)
+  }
+
+  if (decision.collapsed.length === 0) return
+
+  const slack = await getSlackConnection(supabase, orgId)
+  if (!slack || !slack.volume_alerts_enabled) return
+
+  for (const c of decision.collapsed) {
+    const key = `bid-ratio-alert:${orgId}:${c.workflow_id}`
+    if (await kv.get(key)) continue
+
+    const pct = (n: number) => `${Math.round(n * 100)}%`
+    const link = appUrl ? `\n\n<${appUrl}/workflows/${c.workflow_id}|Open the workflow>` : ''
+    const text = [
+      `*${c.workflow_name}*`,
+      '',
+      `This workflow recorded ${c.bid_rows} bids across ${c.sightings} leads in the last ${WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} bids were expected.`,
+      '',
+      'The runs are succeeding and most of the bid history is still there, so nothing else will report this. The usual cause is one partner or one branch dropping out of the recording while the rest carries on.',
+    ].join('\n')
+
+    const blocks = [
+      { type: 'header', text: { type: 'plain_text', text: 'A bidding workflow is recording far fewer bids than usual' } },
+      { type: 'section', text: { type: 'mrkdwn', text: text + link } },
+    ]
+
+    try {
+      const sent = await postMessage(
+        slack.bot_token,
+        slack.default_channel,
+        blocks,
+        `Bids down to ${pct(c.ratio)}: ${c.workflow_name}`,
+      )
+      if (sent) await kv.put(key, '1', { expirationTtl: COOLDOWN_SECONDS })
+      else console.error(`[bid-recording] event=bid_ratio_alert_not_sent workflow=${c.workflow_name}`)
+    } catch (e) {
+      console.error(
+        `[bid-recording] event=bid_ratio_alert_send_failed workflow=${c.workflow_name} error=${formatErr(e)}`,
+      )
+    }
+  }
+}
+
+export { COLLAPSE_FACTOR }
