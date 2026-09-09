@@ -507,9 +507,68 @@ admin.post('/archive-settings-check', async (c) => {
  * shape that makes "everything is verified" and "nothing was looked at" the same
  * response (L98).
  */
+/**
+ * A DAY, or nothing. Refuses anything it cannot use rather than dropping it and
+ * running the default six minute pass (L320).
+ */
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/
+
+function parseRestrictDays(
+  body: Record<string, unknown>,
+): { ok: true; value: { from?: string; to?: string; limit?: number } | undefined } | { ok: false; error: string } {
+  const restrict: { from?: string; to?: string; limit?: number } = {}
+  for (const key of ['from', 'to'] as const) {
+    const raw = body[key]
+    if (raw === undefined || raw === null) continue
+    if (typeof raw !== 'string' || !DAY_RE.test(raw) || Number.isNaN(Date.parse(`${raw}T00:00:00.000Z`))) {
+      return { ok: false, error: `${key} must be a YYYY-MM-DD date, got ${JSON.stringify(raw)}` }
+    }
+    restrict[key] = raw
+  }
+  if (body.limit !== undefined && body.limit !== null) {
+    const limit = body.limit
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1) {
+      return { ok: false, error: `limit must be a whole number of days, at least 1, got ${JSON.stringify(limit)}` }
+    }
+    restrict.limit = limit
+  }
+  if (restrict.from !== undefined && restrict.to !== undefined && restrict.from > restrict.to) {
+    return { ok: false, error: `from (${restrict.from}) is after to (${restrict.to})` }
+  }
+  return { ok: true, value: Object.keys(restrict).length === 0 ? undefined : restrict }
+}
+
 admin.post('/archive-gate', async (c) => {
+  // A full pass is about six minutes, 18 seconds per populated day, and this
+  // route does its work inside the request. A caller whose client gives up first
+  // kills the run partway, so it accepts a range and can be driven in chunks
+  // that fit inside that client's timeout (#1129). The run record the pass opens
+  // is returned either way, so a caller that DOES die can still look up what
+  // happened rather than being left with nothing.
+  let body: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = await c.req.json()
+    if (parsed !== null && typeof parsed === 'object') body = parsed as Record<string, unknown>
+  } catch {
+    // No body at all is the ordinary full pass, unchanged.
+  }
+  const restrict = parseRestrictDays(body)
+  if (!restrict.ok) return c.json({ error: restrict.error }, 400)
+
   const supabase = createSupabaseClient(c.env)
-  const summary = await runArchiveGate(c.env, supabase)
+  let summary: Awaited<ReturnType<typeof runArchiveGate>>
+  try {
+    summary = await runArchiveGate(c.env, supabase, { restrictDays: restrict.value })
+  } catch (err) {
+    // A range naming no candidate day is the caller asking for something this
+    // pass cannot do, which is a 400 about their request rather than a 500 about
+    // the server (L11).
+    // formatErr, never String(err): a plain Supabase or PostgREST error renders
+    // as "[object Object]" and blanks the message it is being matched on.
+    const message = formatErr(err)
+    if (/no candidate day/i.test(message)) return c.json({ error: message }, 400)
+    throw err
+  }
 
   const days = summary.results.map((r) => ({
     archiveDay: r.archiveDay,
@@ -525,7 +584,9 @@ admin.post('/archive-gate', async (c) => {
   return c.json(
     {
       ok,
+      runId: summary.runId,
       daysConsidered: summary.daysConsidered,
+      daysAvailable: summary.daysAvailable,
       daysMeasured: summary.daysMeasured,
       daysVerified: days.filter((d) => d.verified).length,
       detail: summary.detail,

@@ -61,10 +61,14 @@ async function makeApp() {
   return api
 }
 
-function post(app: { request: Function }) {
+function post(app: { request: Function }, body?: unknown) {
   return app.request(
     '/admin/archive-gate',
-    { method: 'POST', headers: { Authorization: 'Bearer tok' } },
+    {
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    },
     testEnv,
     mockCtx,
   )
@@ -173,5 +177,85 @@ describe('POST /admin/archive-gate', () => {
 
     expect(res.status).toBe(401)
     expect(runArchiveGate).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * Driving it in chunks (#1129).
+ *
+ * A full pass takes about six minutes and this route did all of it inside the
+ * request, so a two minute client timeout on 2026-09-03 killed the run after 8
+ * of 20 days, at the exact second the caller died. No response was returned, so
+ * the caller learned nothing.
+ */
+describe('POST /admin/archive-gate with a day range', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>,
+    )
+    vi.mocked(runArchiveGate).mockResolvedValue(
+      summary([day('2026-08-28')], { daysAvailable: 20, runId: 'run-7' }) as unknown as GateSummary,
+    )
+    app = await makeApp()
+  })
+
+  it('passes the range through to the gate', async () => {
+    await post(app, { from: '2026-08-28', to: '2026-08-29', limit: 2 })
+
+    expect(runArchiveGate).toHaveBeenCalledTimes(1)
+    const deps = vi.mocked(runArchiveGate).mock.calls[0][2]
+    expect(deps?.restrictDays).toEqual({ from: '2026-08-28', to: '2026-08-29', limit: 2 })
+  })
+
+  it('says how many days it could have measured, so a chunk is visibly a chunk', async () => {
+    const res = await post(app, { limit: 1 })
+    const body = (await res.json()) as { daysConsidered: number; daysAvailable: number; runId: string }
+    expect(body.daysConsidered).toBe(1)
+    expect(body.daysAvailable).toBe(20)
+  })
+
+  it('returns the run record id, so a caller whose client dies can look up the ending', async () => {
+    const res = await post(app, { limit: 1 })
+    const body = (await res.json()) as { runId: string }
+    expect(body.runId).toBe('run-7')
+  })
+
+  it('runs the whole pass when no range is given', async () => {
+    await post(app)
+    expect(vi.mocked(runArchiveGate).mock.calls[0][2]?.restrictDays).toBeUndefined()
+  })
+
+  it('REFUSES a malformed date rather than silently running everything', async () => {
+    // A tool handed a target it cannot use must refuse, never fall back to its
+    // default scope (L320). Here the fallback is a six minute pass, so a typo in
+    // a date would silently do the expensive thing the caller was avoiding.
+    const res = await post(app, { from: 'last tuesday' })
+    expect(res.status).toBe(400)
+    expect(runArchiveGate).not.toHaveBeenCalled()
+    expect(String(((await res.json()) as { error: string }).error)).toMatch(/from/i)
+  })
+
+  it('REFUSES a limit that is not a positive whole number', async () => {
+    for (const limit of [0, -3, 2.5, 'all']) {
+      vi.clearAllMocks()
+      const res = await post(app, { limit })
+      expect(res.status, `limit ${JSON.stringify(limit)} was accepted`).toBe(400)
+      expect(runArchiveGate).not.toHaveBeenCalled()
+    }
+  })
+
+  it('answers 400, not 500, when the range names no day the gate is considering', async () => {
+    // The gate throws for this, and a throw would otherwise surface as a server
+    // error about nothing being wrong with the server.
+    vi.mocked(runArchiveGate).mockRejectedValue(
+      new Error('the requested range matched no candidate day: the gate is considering 2026-08-20 to 2026-09-01'),
+    )
+    const res = await post(app, { from: '2019-01-01', to: '2019-01-02' })
+    expect(res.status).toBe(400)
+    expect(String(((await res.json()) as { error: string }).error)).toContain('no candidate day')
   })
 })
