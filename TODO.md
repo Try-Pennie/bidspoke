@@ -204,7 +204,7 @@
 ### 3.5 Long-Term Retention
 - [x] Configure Cloudflare Logpush (export to R2 or Snowflake)
 - [x] Wire cold-tier purge to only delete after Logpush archival confirmed
-- [ ] **Test:** Verify archived logs are queryable in R2/Snowflake by trace_id. **UNCHECKED 2026-08-23 (#1008).** The R2 Logpush job (`bidspoke-worker-logs`) shows no activity in 24 hours while a second job on the same dataset delivered 7,960 records, so this box and the dashboard cannot both be current.
+- [ ] **Test:** Verify archived logs are queryable in R2/Snowflake by trace_id. **MEASURED FALSE 2026-09-09 (#1008).** The `bidspoke-logs` R2 bucket holds 2 objects totalling 96 bytes, unchanged across four sampled windows spanning June, July, August and September, while the Better Stack job on the same dataset delivered 7,960 records in 24 hours. The R2 Logpush job reports Pushing and has delivered nothing for at least three months, so no R2 log archive exists to query.
 
 ### 3.6 Volume Anomaly Alerts
 - [x] Implement baseline volume tracking and anomaly detection
