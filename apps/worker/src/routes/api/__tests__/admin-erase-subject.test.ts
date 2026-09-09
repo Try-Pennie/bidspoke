@@ -64,6 +64,9 @@ function post(app: { request: Function }, body: Record<string, unknown>, env: En
   )
 }
 
+// These were written when every call to this route deleted. The route now
+// previews unless told otherwise (#823), so they pass dryRun: false explicitly
+// rather than silently testing a preview under names that say "erases".
 describe('POST /admin/erase-subject', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
@@ -79,7 +82,7 @@ describe('POST /admin/erase-subject', () => {
   })
 
   it('erases, and returns what was measured per target', async () => {
-    const res = await post(app, { ssn: SSN, reason: 'subject request' })
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     expect(res.status).toBe(200)
     const body = (await res.json()) as Record<string, unknown>
@@ -91,7 +94,7 @@ describe('POST /admin/erase-subject', () => {
     // The audit row has to identify the request without storing the value it is
     // about (L19). A row carrying the SSN would put it back in Postgres, in a
     // table nothing in this milestone purges.
-    await post(app, { ssn: SSN, reason: 'subject request' })
+    await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     const call = vi.mocked(writeAuditLog).mock.calls[0]
     const serialised = JSON.stringify(call)
@@ -110,7 +113,7 @@ describe('POST /admin/erase-subject', () => {
       summary: 'PARTIAL: lead_sightings failed',
     } as unknown as Awaited<ReturnType<typeof eraseSubject>>)
 
-    const res = await post(app, { ssn: SSN, reason: 'subject request' })
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     expect(res.status).toBe(500)
     expect((await res.json() as { status: string }).status).toBe('partial')
@@ -126,7 +129,7 @@ describe('POST /admin/erase-subject', () => {
       summary: 'no rows matched in any target',
     } as unknown as Awaited<ReturnType<typeof eraseSubject>>)
 
-    const res = await post(app, { ssn: SSN, reason: 'subject request' })
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     expect(res.status).toBe(200)
     expect((await res.json() as { status: string }).status).toBe('no-rows-matched')
@@ -141,7 +144,7 @@ describe('POST /admin/erase-subject', () => {
       executionIds: [],
     } as unknown as Awaited<ReturnType<typeof eraseSubject>>)
 
-    await post(app, { ssn: SSN, reason: 'subject request' })
+    await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     expect(writeAuditLog).toHaveBeenCalledTimes(1)
   })
@@ -166,7 +169,7 @@ describe('POST /admin/erase-subject', () => {
   it('refuses to run at all without the pepper, rather than covering less than it claims', async () => {
     // Without it the secondary resolver is absent, so the erasure would silently
     // miss every execution whose sighting row has already been purged.
-    const res = await post(app, { ssn: SSN, reason: 'subject request' }, {
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: false }, {
       SUPABASE_JWKS_URL: 'https://fake.jwks',
     } as unknown as Env)
 
@@ -177,16 +180,67 @@ describe('POST /admin/erase-subject', () => {
   it('requires a valid token like every other admin route', async () => {
     vi.mocked(verifyJwt).mockRejectedValue(new Error('bad token'))
 
-    const res = await post(app, { ssn: SSN, reason: 'subject request' })
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     expect(res.status).toBe(401)
     expect(eraseSubject).not.toHaveBeenCalled()
   })
 
   it('scopes the erasure to the caller\'s own organization', async () => {
-    await post(app, { ssn: SSN, reason: 'subject request' })
+    await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
 
     const request = vi.mocked(eraseSubject).mock.calls[0][2]
     expect(request.organizationId).toBe('org-abc')
+  })
+})
+
+// #823. Erasure DELETES (Dan, 2026-09-09) and this route is the only way to
+// invoke it, so the dry run has to be reachable from here or it does not exist
+// in practice. The default is the SAFE one: forgetting the flag must preview,
+// never destroy, because a gate's default has to be its off value (L72).
+describe('POST /admin/erase-subject dry run', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase() as never)
+    vi.mocked(eraseSubject).mockResolvedValue(ERASED as never)
+    app = await makeApp()
+  })
+
+  it('previews by default, so a caller who forgets the flag deletes nothing', async () => {
+    await post(app, { ssn: SSN, reason: 'subject request' })
+    expect(vi.mocked(eraseSubject).mock.calls[0][2]).toMatchObject({ dryRun: true })
+  })
+
+  it('deletes only when the caller says so explicitly', async () => {
+    await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
+    expect(vi.mocked(eraseSubject).mock.calls[0][2]).toMatchObject({ dryRun: false })
+  })
+
+  it('refuses a dryRun that is not a boolean rather than guessing', async () => {
+    const res = await post(app, { ssn: SSN, reason: 'subject request', dryRun: 'no' })
+    expect(res.status).toBe(400)
+  })
+
+  // A dry run that wrote "subject_erased" would tell a later reader the person
+  // was erased when nothing was removed, which is worse than no audit row.
+  it('does not audit a preview as an erasure', async () => {
+    await post(app, { ssn: SSN, reason: 'subject request' })
+    const calls = vi.mocked(writeAuditLog).mock.calls
+    expect(calls.every((c) => c[4] !== 'subject_erased')).toBe(true)
+  })
+
+  it('still audits a real erasure as one', async () => {
+    await post(app, { ssn: SSN, reason: 'subject request', dryRun: false })
+    const calls = vi.mocked(writeAuditLog).mock.calls
+    expect(calls.some((c) => c[4] === 'subject_erased')).toBe(true)
+  })
+
+  it('says in the response that it was a preview', async () => {
+    const res = await post(app, { ssn: SSN, reason: 'subject request' })
+    const body = (await res.json()) as { dryRun?: boolean }
+    expect(body.dryRun).toBe(true)
   })
 })

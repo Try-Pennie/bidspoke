@@ -581,8 +581,8 @@ admin.post('/tripoint-pricing-check', async (c) => {
 admin.post('/erase-subject', async (c) => {
   const { orgId, email } = c.get('user')
   const body = await c.req
-    .json<{ ssn?: unknown; reason?: unknown }>()
-    .catch(() => ({}) as { ssn?: unknown; reason?: unknown })
+    .json<{ ssn?: unknown; reason?: unknown; dryRun?: unknown }>()
+    .catch(() => ({}) as { ssn?: unknown; reason?: unknown; dryRun?: unknown })
 
   if (typeof body.ssn !== 'string' || body.ssn.replace(/\D/g, '').length !== 9) {
     return c.json({ error: 'ssn must be a nine digit social security number' }, 400)
@@ -593,6 +593,18 @@ admin.post('/erase-subject', async (c) => {
   if (typeof body.reason !== 'string' || body.reason.trim().length === 0) {
     return c.json({ error: 'reason is required, and is recorded against the erasure' }, 400)
   }
+  // DEFAULTS TO A PREVIEW. Erasure deletes production consumer data with no
+  // undo, so forgetting this flag must remove nothing: a gate's default has to
+  // be its off value (L72). Deleting requires saying so.
+  //
+  // Refused rather than coerced when it is present and not a boolean, because
+  // `dryRun: "false"` is truthy and would preview when the caller plainly meant
+  // to delete, and `dryRun: 0` would delete when they meant to preview. Either
+  // way a guess here is the wrong one.
+  if (body.dryRun !== undefined && typeof body.dryRun !== 'boolean') {
+    return c.json({ error: 'dryRun must be true or false' }, 400)
+  }
+  const dryRun = body.dryRun !== false
 
   const pepper = c.env.SSN_HASH_PEPPER
   if (typeof pepper !== 'string' || pepper.length === 0) {
@@ -607,6 +619,7 @@ admin.post('/erase-subject', async (c) => {
     reason: body.reason,
     organizationId: orgId,
     requestedBy: email ?? 'unknown',
+    dryRun,
   })
 
   await writeAuditLog(
@@ -614,10 +627,14 @@ admin.post('/erase-subject', async (c) => {
     orgId,
     'archive_erasure',
     await hashSsn(body.ssn, pepper),
-    'subject_erased',
+    // A preview is not an erasure. Auditing one as `subject_erased` would tell
+    // a later reader the person's data was removed when nothing was touched,
+    // which is worse than no row at all.
+    dryRun ? 'subject_erasure_previewed' : 'subject_erased',
     email ?? 'unknown',
     {
       reason: body.reason,
+      dry_run: dryRun,
       status: result.verdict.status,
       executions: result.executionIds.length,
       per_target: Object.fromEntries(result.outcomes.map((o) => [o.target, o.error ?? o.rowsDeleted])),
@@ -625,7 +642,7 @@ admin.post('/erase-subject', async (c) => {
   )
 
   return c.json(
-    { status: result.verdict.status, summary: result.summary, outcomes: result.outcomes },
+    { status: result.verdict.status, dryRun, summary: result.summary, outcomes: result.outcomes },
     result.verdict.status === 'partial' ? 500 : 200,
   )
 })
