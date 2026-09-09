@@ -1442,6 +1442,42 @@ export type Database = {
           },
         ]
       }
+      purge_run_log: {
+        Row: {
+          archive_day: string | null
+          id: number
+          job: string
+          outcome: string
+          parent: string | null
+          partition_name: string | null
+          reason: string | null
+          recorded_at: string
+          run_id: string
+        }
+        Insert: {
+          archive_day?: string | null
+          id?: never
+          job: string
+          outcome: string
+          parent?: string | null
+          partition_name?: string | null
+          reason?: string | null
+          recorded_at?: string
+          run_id: string
+        }
+        Update: {
+          archive_day?: string | null
+          id?: never
+          job?: string
+          outcome?: string
+          parent?: string | null
+          partition_name?: string | null
+          reason?: string | null
+          recorded_at?: string
+          run_id?: string
+        }
+        Relationships: []
+      }
       service_connections: {
         Row: {
           auth_type: string
@@ -2104,6 +2140,17 @@ export type Database = {
           command: string
           jobname: string
           retention_days: number
+        }[]
+      }
+      expired_day_verdicts: {
+        Args: {
+          p_max_measurement_age?: string
+          p_now?: string
+          p_retention_days: number
+        }
+        Returns: {
+          archive_day: string
+          refusal: string
         }[]
       }
       field_presence_window: {
