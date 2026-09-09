@@ -64,7 +64,10 @@ function snowflakeDouble(opts: {
     if (statement.startsWith('SELECT DISTINCT')) {
       return { data: opts.resolved ?? [['e-1', '2026-08-20']] }
     }
-    const table = /DELETE FROM (\S+)/.exec(statement)?.[1] ?? ''
+    // Answers a DELETE's row count and a dry run's SELECT COUNT the same way,
+    // from the same table name, so a test cannot assert against a double that
+    // understands only one of the two forms (#823).
+    const table = /(?:DELETE|SELECT COUNT\(\*\)) FROM (\S+)/.exec(statement)?.[1] ?? ''
     const key = table.split('.').pop()?.toLowerCase() ?? ''
     return { data: [[String(opts.deleted?.[key] ?? 1)]] }
   }
@@ -243,3 +246,65 @@ describe('a delete whose row count cannot be read', () => {
     expect(result.outcomes[0].error).toMatch(/no readable row count/)
   })
 })
+
+// #823. Erasure DELETES (Dan, 2026-09-09), which makes a dry run the gate rather
+// than a nicety: this is production consumer data with no undo. The dry run must
+// resolve the subject exactly as the real run does, report what it WOULD remove,
+// and issue nothing destructive.
+describe('eraseSubject dry run', () => {
+  const DRY = { ...REQUEST, dryRun: true }
+
+  it('issues no DELETE at all', async () => {
+    const sf = snowflakeDouble({ deleted: { execution_archive: 3, lead_sightings: 2, lead_sighting_bids: 5 } })
+    await eraseSubject(env, supabaseDouble().client, DRY, { query: sf.query })
+    expect(sf.statements.filter((s) => /^\s*DELETE/i.test(s))).toEqual([])
+  })
+
+  it('counts through the same predicate the real run would delete through', async () => {
+    const sf = snowflakeDouble({})
+    await eraseSubject(env, supabaseDouble().client, DRY, { query: sf.query })
+    const counts = sf.statements.filter((s) => /^SELECT COUNT/i.test(s))
+    // One per Snowflake target: the archive, sightings, bids.
+    expect(counts.length).toBeGreaterThanOrEqual(3)
+    expect(counts.some((s) => s.includes('LEAD_SIGHTINGS') && s.includes("'123-45-6789'"))).toBe(true)
+  })
+
+  it('reports what it would remove, per target', async () => {
+    const sf = snowflakeDouble({ deleted: { execution_archive: 3, lead_sightings: 2, lead_sighting_bids: 5 } })
+    const r = await eraseSubject(env, supabaseDouble({ auditDeleted: 4 }).client, DRY, { query: sf.query })
+    const by = Object.fromEntries(r.outcomes.map((o) => [o.target, o.rowsDeleted]))
+    expect(by.execution_archive).toBe(3)
+    expect(by.lead_sightings).toBe(2)
+    expect(by.lead_sighting_bids).toBe(5)
+  })
+
+  // A dry run that recorded an erasure would make the archive gate subtract rows
+  // that are still there, and nothing would ever put them back.
+  it('writes no erasure record and deletes no audit rows', async () => {
+    const db = supabaseDouble({ auditDeleted: 4 })
+    await eraseSubject(env, db.client, DRY, { query: snowflakeDouble({}).query })
+    expect(db.writes.filter((w) => w.op === 'delete')).toEqual([])
+    expect(db.writes.filter((w) => w.op === 'upsert')).toEqual([])
+  })
+
+  it('says in its summary that nothing was removed', async () => {
+    const r = await eraseSubject(env, supabaseDouble().client, DRY, { query: snowflakeDouble({}).query })
+    expect(r.summary.toLowerCase()).toContain('dry run')
+  })
+
+  // The failure this whole issue exists to prevent: a run that could not resolve
+  // the subject must not read as "nothing to erase".
+  it('reports every target as unknown when the subject cannot be resolved', async () => {
+    const sf = snowflakeDouble({ failOn: /SELECT DISTINCT/ })
+    const r = await eraseSubject(env, supabaseDouble().client, DRY, { query: sf.query })
+    expect(r.outcomes.every((o) => o.rowsDeleted === null)).toBe(true)
+    expect(r.outcomes.every((o) => o.error !== null)).toBe(true)
+  })
+
+  it('a real run still deletes, so the flag defaults off', async () => {
+    const sf = snowflakeDouble({})
+    await eraseSubject(env, supabaseDouble().client, REQUEST, { query: sf.query })
+    expect(sf.statements.some((s) => /^\s*DELETE/i.test(s))).toBe(true)
+  })
+})
+
