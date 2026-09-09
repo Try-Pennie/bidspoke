@@ -380,6 +380,18 @@ export default {
           if (r.alerted) console.error(`[logpush-check] ${r.differences.length} differences`)
         })().catch((e) => console.error('[logpush-check] failed:', e))
       )
+      // Which code nodes print a whole object into the log stream (#1230)? The
+      // platform captures console output before any redaction of ours runs, and
+      // that stream is exportable off-platform, so a print is an egress. Scans
+      // the live definitions rather than the repo, because definitions live in
+      // the database and are edited on the canvas. Its own failure boundary (L71).
+      ctx.waitUntil(
+        (async () => {
+          const { checkPayloadPrints } = await import('./lib/payload-print-check')
+          const r = await checkPayloadPrints(env, supabase)
+          if (r.alerted) console.error(`[payload-print-check] ${r.findings.length} findings`)
+        })().catch((e) => console.error('[payload-print-check] failed:', e))
+      )
       // Is the purge still destroying execution data on the schedule the code
       // believes (#1017)? Its own failure boundary, because a watchdog must not
       // share the abort behaviour of the work it watches (L71): this failing must
