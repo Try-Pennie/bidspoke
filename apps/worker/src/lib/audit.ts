@@ -32,6 +32,9 @@ export type AuditAction =
   | 'field_silence_set'
   | 'field_silence_cleared'
   | 'subject_erased'
+  // A dry run of an erasure. Distinct from subject_erased because nothing was
+  // removed, and a reader must not take one for the other (#823).
+  | 'subject_erasure_previewed'
 
 /**
  * How long to wait between audit-write attempts (#277).
