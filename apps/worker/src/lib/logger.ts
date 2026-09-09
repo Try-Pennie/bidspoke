@@ -24,6 +24,10 @@ export type LogEvent =
   | 'circuit_breaker_record_failed'
   | 'idempotency_hit'
   | 'idempotency_derive_empty'
+  // Two code nodes both quoted a rate back to the source, so the value was refused
+  // rather than guessed by insertion order (#1162). A money field: the refusal has
+  // to be visible, or it is indistinguishable from a run that quoted nothing.
+  | 'quoted_rate_ambiguous'
 
 export interface LogFields {
   event: LogEvent
