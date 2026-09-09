@@ -493,11 +493,19 @@ export async function executePartnerBidNode(
     // multiplying consumption: each failed attempt refunds before withRetry
     // re-runs this node and reserves a fresh slot (#68).
     if (refundCap) await refundCap()
+    // A fault in OUR configuration (a declared credential that is unset or blank)
+    // is not an upstream outage, so it must not count toward the breaker's error
+    // threshold. Charging it there opens the breaker after
+    // `circuit_error_threshold` leads and turns every later one into a generic
+    // 'circuit_open' skip, burying the precise "missing credential" reason #411
+    // added. The condition is "we caused it", not "it is permanent": a permanent
+    // 4xx from the partner is real upstream signal and still counts (#417).
+    const isConfigFault = err instanceof PartnerApiError && err.isConfigError
     // Await the error record so the count durably lands (with retry) — a dropped
     // record-error is the dangerous case: the breaker fails to OPEN on a real
     // outage. This is the terminal error path (the node rethrows below), so the
     // extra round-trip is off the live winning-bid path (#129).
-    if (cb) {
+    if (cb && !isConfigFault) {
       const outcome = await recordBreakerOutcome(ctx, p.slug, 'error', () => cb.recordError({
         error_threshold: p.circuit_error_threshold,
         window_seconds: p.circuit_window_seconds,

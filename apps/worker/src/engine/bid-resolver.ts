@@ -209,10 +209,15 @@ async function callBidApi(
       // a generic transient with no hint that the real cause is a missing credential
       // (#411). Fail loudly instead: a distinct, permanent (retry can't help) error
       // that names the missing key, and skip the doomed call.
+      //
+      // Marked isConfigError so the circuit breaker does not count it (#417): the
+      // partner is not down, we are misconfigured, and charging the breaker for our
+      // own fault opens it and re-buries this message behind 'circuit_open'.
       const credErr = new PartnerApiError(
         `Partner ${partner.slug} requires credential '${partner.cf_secret_key}' but it is missing or blank`,
         'permanent',
         false,
+        true,
       ) as PartnerApiError & { resolved_input?: Record<string, unknown> }
       credErr.resolved_input = {
         endpoint: partner.api_endpoint,
