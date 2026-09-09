@@ -13,7 +13,7 @@
  * backlog still needs a deliberate push.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { LOOKBACK_DAYS, runArchiveBacklog } from '../archive-backlog-run'
+import { LOOKBACK_DAYS, runArchiveBacklog, backlogDeps } from '../archive-backlog-run'
 import { PAGE_SIZE } from '../paginate'
 import { MAX_NO_PROGRESS_ATTEMPTS, SET_ASIDE_MS, emptyBacklogState, type BacklogState } from '../../archive/backlog'
 
@@ -253,5 +253,71 @@ describe('the recorded-hours read stays under the PostgREST cap (#1191)', () => 
     const rows = LOOKBACK_DAYS * 24
     const maxDays = Math.floor((PAGE_SIZE - 1) / 24)
     expect(rows, `${LOOKBACK_DAYS} days is ${rows} hourly rows; the cap is ${PAGE_SIZE}, so the lookback must stay at or below ${maxDays} days, or the read must page`).toBeLessThan(PAGE_SIZE)
+  })
+})
+
+/**
+ * The wiring, not just the helper (#1025).
+ *
+ * `backlogDeps` had no test at all, so the walk's answer to "which days does
+ * Postgres still hold" was only ever exercised through a double that replaced
+ * it. Sharing the reader with the deletion gate is worth nothing if the walk's
+ * copy asks a different window (L3).
+ */
+describe('backlogDeps asks Postgres the window the walk needs', () => {
+  function heldDouble(holds: string[]) {
+    const asked: Array<{ gte: string; lt: string }> = []
+    const client = {
+      from() {
+        let gte = ''
+        let lt = ''
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          maybeSingle: () => Promise.resolve({ data: null, error: null }),
+          gte: (_c: string, v: string) => { gte = v; return chain },
+          lt: (_c: string, v: string) => { lt = v; return chain },
+          limit: () => {
+            asked.push({ gte, lt })
+            return Promise.resolve({ data: holds.includes(gte.slice(0, 10)) ? [{ id: 'e' }] : [], error: null })
+          },
+        }
+        return chain
+      },
+    }
+    return { client, asked }
+  }
+
+  it('covers LOOKBACK_DAYS back to today, inclusive at both ends', async () => {
+    const { client, asked } = heldDouble([])
+    const deps = backlogDeps(
+      {} as unknown as Parameters<typeof backlogDeps>[0],
+      client as unknown as Parameters<typeof backlogDeps>[1],
+      async () => ({ hoursArchived: 0, executionsArchived: 0, failed: false, detail: '' }) as never,
+    )
+    await deps.daysHeldInPostgres()
+
+    // The window is what matters: one query per day, oldest first, and the
+    // number of them is the lookback plus today.
+    expect(asked).toHaveLength(LOOKBACK_DAYS + 1)
+    const days = asked.map((a) => a.gte.slice(0, 10))
+    expect(days[days.length - 1]).toBe(new Date().toISOString().slice(0, 10))
+    expect(new Set(days).size).toBe(days.length)
+    // Each question is bounded to its own day, so it touches one partition.
+    for (const a of asked) {
+      const span = Date.parse(a.lt) - Date.parse(a.gte)
+      expect(span).toBe(24 * 60 * 60 * 1000)
+    }
+  })
+
+  it('returns only the days that hold something', async () => {
+    const today = new Date().toISOString().slice(0, 10)
+    const { client } = heldDouble([today])
+    const deps = backlogDeps(
+      {} as unknown as Parameters<typeof backlogDeps>[0],
+      client as unknown as Parameters<typeof backlogDeps>[1],
+      async () => ({ hoursArchived: 0, executionsArchived: 0, failed: false, detail: '' }) as never,
+    )
+    expect(await deps.daysHeldInPostgres()).toEqual([today])
   })
 })
