@@ -25,6 +25,7 @@ import { ARCHIVE_STREAM } from './execution-archive'
 import { decodeBundle } from '../archive/bundle'
 import { candidateDays, RETENTION_DAYS } from '../archive/candidate-days'
 import { refusalsFor, type DayMeasurement, type DayRefusal } from '../archive/gate'
+import { startJobRun, finishJobRun, type JobRunEnding } from './job-run-record'
 import type { Env } from '../index'
 
 export const ARCHIVE_GATE_JOB = 'execution-archive-gate'
@@ -271,7 +272,59 @@ function daysLeftFor(day: string, now: Date): number {
   return RETENTION_DAYS - ageDays
 }
 
+/**
+ * Runs one gate pass, recording that it ran (#1137).
+ *
+ * The record is opened BEFORE any measurement and closed in a `finally`, which
+ * is the whole mechanism rather than tidiness: a pass killed partway leaves a
+ * row with no ending, and that absence does not expire the way the KV heartbeat
+ * does. Until this, the gate was the one archive job writing nothing to
+ * `job_runs` (measured on production 2026-09-03: 422 rows, one job name), so a
+ * pass cut short by a disconnecting caller (#1129) was indistinguishable from a
+ * clean one, and days carrying readings six days apart all read as measured.
+ *
+ * The ending carries days measured out of days attempted, so a partial pass
+ * reads as partial rather than as a smaller clean one, and it has its own
+ * outcome for the same reason (L11).
+ */
 export async function runArchiveGate(
+  env: Env,
+  supabase: SupabaseClient,
+  deps: GateDeps = {},
+): Promise<GateRunSummary> {
+  const runRecord = await startJobRun(supabase, ARCHIVE_GATE_JOB)
+  let ending: JobRunEnding = {
+    outcome: 'threw',
+    detail: 'the pass threw before it could report an outcome',
+  }
+  try {
+    const summary = await gatePass(env, supabase, deps)
+    ending = {
+      // Three outcomes, because they ask for three different things: nothing,
+      // a look at the days that failed, and a look at why the pass could not
+      // start at all.
+      outcome: summary.results.length === 0 && summary.failed ? 'failed' : summary.failed ? 'partial' : 'ok',
+      detail: summary.detail,
+      summary: {
+        daysConsidered: summary.daysConsidered,
+        daysStamped: summary.daysStamped,
+        daysMeasured: summary.daysMeasured,
+        daysDeletable: summary.daysDeletable,
+        daysErrored: summary.results.filter((r) => r.error !== null).length,
+        daysRefused: summary.results.filter((r) => r.error === null && r.refusals.length > 0).length,
+      },
+    }
+    return summary
+  } finally {
+    // In the finally so a pass that THREW is still distinguishable from one that
+    // was killed: the first has an ending saying it threw, the second has none
+    // at all. Closing cannot fail the pass, because a bookkeeping write must not
+    // replace an error already unwinding.
+    await finishJobRun(supabase, runRecord, ending)
+  }
+}
+
+async function gatePass(
   env: Env,
   supabase: SupabaseClient,
   deps: GateDeps = {},
