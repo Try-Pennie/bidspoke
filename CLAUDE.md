@@ -128,6 +128,9 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY` |
 | Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads this repo's Actions history for the scheduled-workflow watch, #842, and dispatches those workflows, #1058, so it needs Actions read AND write), `ANTHROPIC_API_KEY` (changelog drafting) |
 
+### Cloudflare log access is partner API key access (#958)
+The `Workers trace events` stream carries request headers with values intact, `X-API-Key` included, so anyone who can `wrangler tail` this worker or read Workers Logs can read every partner webhook key. Measured 2026-09-09. Grant log access on that basis, and delete any tail capture you write to a file: it is a file full of live partner credentials. Whether the Logpush jobs forward those header fields to their destinations, one of which is an external vendor, is not yet established (#1007, #1010). Full note in [docs/disaster-recovery.md](./docs/disaster-recovery.md).
+
 Two secrets cannot be re-derived if lost and must be escrowed (#384): `SSN_HASH_PEPPER` (changing it breaks person dedup) and `SECRET_ENCRYPTION_KEY` (for old reveals).
 
 ### Rotating `SECRET_ENCRYPTION_KEY`
