@@ -82,20 +82,60 @@ function supabaseDouble(opts: {
   stamped?: string[]
   /** Make the stamped-days read fail, as a Postgres error would. */
   stampedReadError?: string
+  /** Make one day's measurement write fail, so a pass is partial rather than clean. */
+  recordErrorFor?: string
+  /** Make the watermark read THROW, which is the only way to reach the finally. */
+  watermarkThrows?: string
 }) {
   const recorded: Array<Record<string, unknown>> = []
   const factsFor = (day: string) => opts.perDay?.[day] ?? opts.base
+  /**
+   * Everything the run did, in the order it did it (#1137).
+   *
+   * The order is the assertion, not decoration: the whole value of the record is
+   * that a run killed mid pass leaves a row with no ending, and that only holds
+   * if the row is OPENED before any measurement happens. A test that checked
+   * only which calls were made would pass on a version that opened the row at
+   * the end, which records nothing about a kill.
+   */
+  const events: string[] = []
+  const jobRuns: Array<{ op: 'insert' | 'close'; row: Record<string, unknown> }> = []
 
   const client = {
-    from() {
+    from(table: string) {
+      if (table === 'job_runs') {
+        const chain: Record<string, unknown> = {
+          insert(row: Record<string, unknown>) {
+            events.push(`job_runs.insert:${String(row.job)}`)
+            jobRuns.push({ op: 'insert', row })
+            return chain
+          },
+          update(row: Record<string, unknown>) {
+            events.push('job_runs.close')
+            jobRuns.push({ op: 'close', row })
+            return chain
+          },
+          select: () => chain,
+          eq: () => chain,
+          // The insert reads its new id back through `single`, and the close
+          // reads the row it touched as an array, because a zero row UPDATE
+          // reports error null and would otherwise pass (#583).
+          single: () => Promise.resolve({ data: { id: 'gate-run-1' }, error: null }),
+          then: (res: (v: unknown) => unknown) =>
+            Promise.resolve({ data: [{ id: 'gate-run-1' }], error: null }).then(res),
+        }
+        return chain
+      }
       const chain: Record<string, unknown> = {
         select: () => chain,
         eq: () => chain,
-        maybeSingle: () =>
-          Promise.resolve({
+        maybeSingle: () => {
+          if (opts.watermarkThrows !== undefined) throw new Error(opts.watermarkThrows)
+          return Promise.resolve({
             data: opts.watermark === null ? null : { watermark_hour: opts.watermark },
             error: null,
-          }),
+          })
+        },
         // The stamped-days read: `.in('archive_day', days).not('executions_truncated_at', 'is', null)`.
         in: () => ({
           not: () =>
@@ -132,14 +172,18 @@ function supabaseDouble(opts: {
         return Promise.resolve({ data: f.sample, error: null })
       }
       if (name === 'record_archive_day_measurement') {
+        events.push(`measure:${day}`)
         recorded.push(args)
+        if (opts.recordErrorFor === day) {
+          return Promise.resolve({ data: null, error: { message: 'recording blew up' } })
+        }
         return Promise.resolve({ data: null, error: null })
       }
       throw new Error(`unexpected rpc ${name}`)
     },
   } as unknown as SupabaseClient
 
-  return { client, recorded, factsFor }
+  return { client, recorded, factsFor, events, jobRuns }
 }
 
 /** A Snowflake double answering both statement shapes from the same day facts. */
@@ -183,6 +227,8 @@ async function run(opts: {
   bundles?: Map<string, { wire: string; traceId: string | null }>
   stamped?: string[]
   stampedReadError?: string
+  recordErrorFor?: string
+  watermarkThrows?: string
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -191,11 +237,13 @@ async function run(opts: {
     perDay: opts.perDay,
     stamped: opts.stamped,
     stampedReadError: opts.stampedReadError,
+    recordErrorFor: opts.recordErrorFor,
+    watermarkThrows: opts.watermarkThrows,
   })
   const bundles = opts.bundles ?? new Map([['e-1', { wire: await bundleFor('e-1', 2), traceId: 't-1' }]])
   const sf = snowflakeDouble(db.factsFor, bundles)
   const summary = await runArchiveGate(env, db.client, { querySnowflake: sf.query, now: () => NOW })
-  return { summary, recorded: db.recorded, statements: sf.statements }
+  return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
 }
 
 function alerted(): string[] {
@@ -476,5 +524,95 @@ describe('when one day cannot be measured at all', () => {
 
     expect(summary.daysMeasured).toBe(0)
     expect(resultFor(summary, OLDEST_DAY).error).toMatch(/not the same as a day of no executions/)
+  })
+})
+
+/**
+ * The gate's own run record (#1137).
+ *
+ * The gate is the job whose output authorises destroying a day of execution
+ * data, and until this it was the one archive job leaving no durable trace of
+ * having run: measured on production 2026-09-03, `job_runs` held exactly one job
+ * name across its whole 422 row history, `execution-archive`. Its only liveness
+ * signal was a KV heartbeat carrying a time and no outcome, so a pass cut short
+ * partway (#1129) was indistinguishable from a clean one, and days carrying
+ * readings six days apart all read as measured.
+ */
+describe('the gate records that it ran', () => {
+  it('opens its run record BEFORE measuring anything, so a killed pass leaves no ending', async () => {
+    const { events } = await run({})
+    // The order is the whole mechanism. Opened late, a run killed mid pass
+    // leaves no row at all, which reads exactly like a run that never started.
+    expect(events[0]).toBe(`job_runs.insert:${ARCHIVE_GATE_JOB}`)
+    expect(events.filter((e) => e.startsWith('measure:')).length).toBeGreaterThan(0)
+    expect(events.indexOf('job_runs.close')).toBeGreaterThan(events.lastIndexOf(`measure:${OLDEST_DAY}`))
+  })
+
+  it('closes it with what the pass actually achieved, not merely that it finished', async () => {
+    const { jobRuns, summary } = await run({})
+    const close = jobRuns.find((r) => r.op === 'close')
+    expect(close, 'the run record was never closed').toBeDefined()
+    expect(close!.row.finished_at).toEqual(expect.any(String))
+    expect(close!.row.outcome).toBe('ok')
+
+    // Days measured out of days attempted, so a partial pass is visible AS
+    // partial. A bare "it finished" cannot distinguish the two.
+    const written = close!.row.summary as Record<string, unknown>
+    expect(written.daysConsidered).toBe(summary.daysConsidered)
+    expect(written.daysMeasured).toBe(summary.daysMeasured)
+    expect(written.daysDeletable).toBe(summary.daysDeletable)
+    expect(written.daysStamped).toBe(summary.daysStamped)
+  })
+
+  it('says a pass was partial when a day could not be measured', async () => {
+    const { jobRuns, summary } = await run({ recordErrorFor: OLDEST_DAY })
+    const close = jobRuns.find((r) => r.op === 'close')
+    // Its own outcome, not 'ok' with a smaller number buried in the summary. A
+    // run that measured 20 of 21 days and one that measured 21 must not read the
+    // same from outside (L11).
+    expect(close!.row.outcome).toBe('partial')
+    const written = close!.row.summary as Record<string, unknown>
+    expect(written.daysMeasured).toBe(summary.daysMeasured)
+    expect(written.daysMeasured).toBeLessThan(Number(written.daysConsidered) - summary.daysStamped)
+  })
+
+  it('closes the record on the early return when the stamped days cannot be read', async () => {
+    // An exit path that RETURNS rather than throws. It gives up before a single
+    // day is considered, and it is the path a Postgres error takes, so an
+    // unclosed row here would read as a killed run for a reason that is nothing
+    // of the sort.
+    const { jobRuns } = await run({ watermark: null, stampedReadError: 'postgres said no' })
+    const close = jobRuns.find((r) => r.op === 'close')
+    expect(close, 'the early return left the run record open').toBeDefined()
+    expect(close!.row.outcome).toBe('failed')
+    expect(String(close!.row.detail)).toContain('postgres said no')
+  })
+
+  it('closes the record when the pass THROWS, and still raises the error', async () => {
+    // The test that actually proves the `finally`, which the returning paths
+    // above cannot: cleanup written after the last `return` closes those too, so
+    // they pass on a version with no finally at all (L515). Only a throw
+    // separates the two, and a throw is what a Postgres client failure is.
+    const db = supabaseDouble({
+      watermark: WATERMARK,
+      base: facts(),
+      watermarkThrows: 'the connection went away mid pass',
+    })
+    const sf = snowflakeDouble(db.factsFor, new Map())
+    await expect(
+      runArchiveGate(env, db.client, { querySnowflake: sf.query, now: () => NOW }),
+    ).rejects.toThrow('the connection went away mid pass')
+
+    const close = db.jobRuns.find((r) => r.op === 'close')
+    expect(close, 'a pass that threw left its run record open, so it reads as killed').toBeDefined()
+    // Its own outcome. A pass that threw and a pass that was killed must not
+    // read the same, or the record cannot answer the question it exists for.
+    expect(close!.row.outcome).toBe('threw')
+  })
+
+  it('records exactly one run, so a pass cannot report itself twice', async () => {
+    const { jobRuns } = await run({})
+    expect(jobRuns.filter((r) => r.op === 'insert')).toHaveLength(1)
+    expect(jobRuns.filter((r) => r.op === 'close')).toHaveLength(1)
   })
 })
