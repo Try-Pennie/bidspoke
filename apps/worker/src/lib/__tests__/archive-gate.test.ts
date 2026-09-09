@@ -10,7 +10,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedValue(undefined) }))
 
-import { runArchiveGate, ARCHIVE_GATE_JOB, PROBE_SAMPLE_SIZE, ALERT_WHEN_DAYS_LEFT } from '../archive-gate'
+import {
+  runArchiveGate,
+  ARCHIVE_GATE_JOB,
+  PROBE_SAMPLE_SIZE,
+  ALERT_WHEN_DAYS_LEFT,
+  GATE_SUBREQUEST_SHARE,
+  costWarnings,
+} from '../archive-gate'
 import { encodeBundle } from '../../archive/bundle'
 import { RETENTION_DAYS } from '../../archive/candidate-days'
 import { notifyExportFailure } from '../export-alerts'
@@ -753,5 +760,104 @@ describe('the gate notices a day Postgres holds that it is not considering', () 
     })
     expect(summary.daysBeneathTheGate).toEqual([])
     expect(summary.daysMeasured).toBe(CANDIDATE_COUNT)
+  })
+})
+
+/**
+ * What one pass costs, measured rather than estimated (#1127).
+ *
+ * The gate runs inside the shared `0 13 * * *` invocation and the platform's
+ * subrequest ceiling is per invocation, so the gate spending all of it starves
+ * whatever runs beside it. The window is derived from RETENTION_DAYS, which has
+ * changed three times in a fortnight, so the cost moves with a constant somebody
+ * else edits. Recording it on every run rather than measuring it once means the
+ * answer is a query rather than a sentence anybody has to maintain (L316).
+ */
+describe('the gate reports what it cost', () => {
+  it('counts every outbound call it issued, not a figure derived from the day count', async () => {
+    // Counted where each call is issued. A budget that counts only some of its
+    // consumers reports headroom while the limit is breached (#965), so this
+    // compares against what the doubles actually SAW.
+    const seen: string[] = []
+    const { summary, statements } = await run({
+      daysHeld: async (range) => {
+        seen.push(`${range.from}..${range.to}`)
+        return []
+      },
+    })
+
+    expect(summary.cost.snowflakeStatements).toBe(statements.length)
+    // Three per measured day (two RPCs plus the measurement write), the watermark
+    // read, the stamped read, and one existence query per day of the beneath check.
+    const beneathQueries = summary.cost.postgresCalls - (3 * summary.daysMeasured + 2)
+    expect(beneathQueries).toBeGreaterThan(0)
+    expect(summary.cost.subrequests).toBe(summary.cost.snowflakeStatements + summary.cost.postgresCalls)
+    expect(seen).toHaveLength(1)
+  })
+
+  it('reports cost per day, so a change in the window is separable from a change in the work', async () => {
+    const { summary } = await run({})
+    expect(summary.cost.subrequestsPerDay).toBe(
+      Math.round(summary.cost.subrequests / summary.daysMeasured),
+    )
+    expect(summary.cost.msPerDay).toEqual(expect.any(Number))
+  })
+
+  it('reports no per-day figure at all when nothing was measured, rather than zero', async () => {
+    // Zero would read as "each day was free", which is a measurement nobody took
+    // (L90). Null says there was nothing to divide by.
+    const { summary } = await run({ watermark: null })
+    expect(summary.daysMeasured).toBe(0)
+    expect(summary.cost.msPerDay).toBeNull()
+    expect(summary.cost.subrequestsPerDay).toBeNull()
+  })
+
+  it('records the cost on the run, so the headroom question is a query', async () => {
+    const { jobRuns } = await run({})
+    const written = (jobRuns.find((r) => r.op === 'close')!.row.summary as Record<string, unknown>)
+      .cost as Record<string, unknown>
+    expect(written.subrequests).toEqual(expect.any(Number))
+    expect(written.durationMs).toEqual(expect.any(Number))
+  })
+
+  it('says so when a pass outgrows its share of the shared invocation', () => {
+    // Driven from a literal, because no fixture can push a real pass over the
+    // line: its cost is set by RETENTION_DAYS and a fixed lookback. A test
+    // written against the run would have passed whichever side it landed on,
+    // which is what the first draft of this did (L1).
+    const over = {
+      durationMs: 1000,
+      subrequests: GATE_SUBREQUEST_SHARE + 1,
+      snowflakeStatements: 1,
+      postgresCalls: GATE_SUBREQUEST_SHARE,
+      msPerDay: 50,
+      subrequestsPerDay: 15,
+    }
+    const said = costWarnings(over, 20)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toMatch(/own cron/)
+    expect(said[0]).toContain(String(GATE_SUBREQUEST_SHARE + 1))
+    expect(said[0]).toContain('15 per day across 20 days')
+  })
+
+  it('says nothing at the threshold itself, so the ordinary run is silent', () => {
+    const at = {
+      durationMs: 1000,
+      subrequests: GATE_SUBREQUEST_SHARE,
+      snowflakeStatements: 1,
+      postgresCalls: GATE_SUBREQUEST_SHARE - 1,
+      msPerDay: 50,
+      subrequestsPerDay: 15,
+    }
+    expect(costWarnings(at, 20)).toEqual([])
+  })
+
+  it('a real pass stays well inside the share, which is the finding #1127 asked for', () => {
+    // The measurement the issue wanted, kept as an assertion rather than a
+    // sentence with a date on it: at the retention in force it costs this, and
+    // if retention changes this fails rather than going quietly stale.
+    return run({}).then(({ summary }) => {
+      expect(summary.cost.subrequests).toBeLessThan(GATE_SUBREQUEST_SHARE)
+    })
   })
 })
