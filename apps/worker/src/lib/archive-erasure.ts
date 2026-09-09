@@ -43,6 +43,19 @@ export interface ErasureRequest {
   reason: string
   organizationId: string
   requestedBy: string
+  /**
+   * Report what would be removed and remove nothing (#823).
+   *
+   * Erasure DELETES (Dan, 2026-09-09) on production consumer data with no undo,
+   * so this is the gate rather than a convenience. It resolves the subject by
+   * exactly the same query the real run uses, and counts through exactly the
+   * same predicate, because a dry run that matched a different set than the run
+   * it is previewing is worse than none.
+   *
+   * Defaults off: a caller that forgets it deletes, which is the behaviour that
+   * already existed.
+   */
+  dryRun?: boolean
 }
 
 export interface ErasureResult {
@@ -90,6 +103,18 @@ export function rowsAffected(response: SnowflakeStatementResponse): number | nul
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * One target's work, as `FROM <table> WHERE <predicate>` fragments.
+ *
+ * The fragment is built once and rendered as a DELETE or a SELECT COUNT, so the
+ * dry run cannot match a different set than the run it previews. Rewriting a
+ * finished DELETE into a count with string surgery would be the version of this
+ * that silently diverges.
+ */
+function renderStatements(fragments: string[], dryRun: boolean): string[] {
+  return fragments.map((f) => (dryRun ? `SELECT COUNT(*) ${f}` : `DELETE ${f}`))
+}
+
 async function deleteTarget(
   target: TargetOutcome['target'],
   statements: string[],
@@ -125,7 +150,13 @@ export async function eraseSubject(
   request: ErasureRequest,
   deps: ErasureDeps = {},
 ): Promise<ErasureResult> {
-  const query = deps.query ?? ((statement: string) => executeStatement(archiveConfig(env, 'eraser'), statement))
+  const dryRun = request.dryRun === true
+  // A dry run reads. Using the eraser identity for it would mean every preview
+  // was performed by the one credential in the account that can destroy the
+  // archive, so it borrows the reader.
+  const query =
+    deps.query ??
+    ((statement: string) => executeStatement(archiveConfig(env, dryRun ? 'reader' : 'eraser'), statement))
   const spellings = ssnSpellings(request.ssn)
 
   // RESOLVE FIRST, and from two directions.
@@ -175,32 +206,36 @@ export async function eraseSubject(
         'execution_archive',
         executionIds.length === 0
           ? []
-          : chunk(executionIds, IDS_PER_STATEMENT).map(
+          : renderStatements(chunk(executionIds, IDS_PER_STATEMENT).map(
               (ids) =>
-                `DELETE FROM ${ARCHIVE} WHERE execution_id IN (${quotedList(ids)})` +
+                `FROM ${ARCHIVE} WHERE execution_id IN (${quotedList(ids)})` +
                 // A pruning hint only. The id list is the correctness bound, and
                 // the day list comes from the same rows, so it can never exclude
                 // one the ids would include.
                 (days.length > 0 ? ` AND archive_day IN (${quotedList(days)})` : ''),
-            ),
+            ), dryRun),
         query,
       ),
     )
     outcomes.push(
       await deleteTarget(
         'lead_sightings',
-        [`DELETE FROM ${SIGHTINGS} WHERE ssn IN (${quotedList(spellings)})`],
+        renderStatements([`FROM ${SIGHTINGS} WHERE ssn IN (${quotedList(spellings)})`], dryRun),
         query,
       ),
     )
     outcomes.push(
       await deleteTarget(
         'lead_sighting_bids',
-        [`DELETE FROM ${SIGHTING_BIDS} WHERE ssn IN (${quotedList(spellings)})`],
+        renderStatements([`FROM ${SIGHTING_BIDS} WHERE ssn IN (${quotedList(spellings)})`], dryRun),
         query,
       ),
     )
-    outcomes.push(await deleteAuditRows(supabase, request.organizationId, executionIds))
+    outcomes.push(
+      dryRun
+        ? { target: 'audit_log', rowsDeleted: 0, error: null }
+        : await deleteAuditRows(supabase, request.organizationId, executionIds),
+    )
   }
 
   // WRITTEN WHATEVER THE OUTCOME, and before the day's Postgres partition is
@@ -208,13 +243,21 @@ export async function eraseSubject(
   // then failed to record it would make the gate report a shortfall it can never
   // clear: re-running the archiver re-inserts nothing, because the rows were
   // deliberately destroyed.
-  await recordErasures(supabase, executionIds, days, request.reason)
+  // NOT on a dry run. A recorded erasure makes the archive gate subtract rows
+  // that are still there, and nothing puts them back: re-running the archiver
+  // re-inserts nothing, because the gate believes they were deliberately
+  // destroyed.
+  if (!dryRun) await recordErasures(supabase, executionIds, days, request.reason)
 
   const verdict = erasureVerdict(outcomes)
   return {
     verdict,
     outcomes,
-    summary: erasureSummary(verdict, outcomes, ARCHIVE_UNDO_WINDOW_DAYS),
+    // The dry run says so FIRST. A preview whose summary reads like a completed
+    // erasure is the one way this feature makes things worse than having none.
+    summary:
+      (dryRun ? 'DRY RUN, nothing was removed. ' : '') +
+      erasureSummary(verdict, outcomes, ARCHIVE_UNDO_WINDOW_DAYS),
     executionIds,
   }
 }
