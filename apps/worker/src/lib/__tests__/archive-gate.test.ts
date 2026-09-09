@@ -229,6 +229,7 @@ async function run(opts: {
   stampedReadError?: string
   recordErrorFor?: string
   watermarkThrows?: string
+  restrictDays?: { from?: string; to?: string; limit?: number }
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -242,7 +243,11 @@ async function run(opts: {
   })
   const bundles = opts.bundles ?? new Map([['e-1', { wire: await bundleFor('e-1', 2), traceId: 't-1' }]])
   const sf = snowflakeDouble(db.factsFor, bundles)
-  const summary = await runArchiveGate(env, db.client, { querySnowflake: sf.query, now: () => NOW })
+  const summary = await runArchiveGate(env, db.client, {
+    querySnowflake: sf.query,
+    now: () => NOW,
+    restrictDays: opts.restrictDays,
+  })
   return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
 }
 
@@ -614,5 +619,64 @@ describe('the gate records that it ran', () => {
     const { jobRuns } = await run({})
     expect(jobRuns.filter((r) => r.op === 'insert')).toHaveLength(1)
     expect(jobRuns.filter((r) => r.op === 'close')).toHaveLength(1)
+  })
+})
+
+/**
+ * Driving the gate in chunks that fit inside a request (#1129).
+ *
+ * A full pass takes about six minutes, 18 seconds per populated day across 20
+ * days, and `POST /api/admin/archive-gate` did all of it inside the request. On
+ * 2026-09-03 a two minute client timeout stopped it after 8 of 20 days, at the
+ * exact second the caller was killed. No response was ever returned, so the
+ * caller learned nothing, and the table was left holding some days measured that
+ * run and others carrying readings up to six days old.
+ */
+describe('a caller can restrict the pass to a range of days', () => {
+  it('measures only the days inside the range', async () => {
+    const from = daysBeforeNow(RETENTION_DAYS + 1)
+    const to = daysBeforeNow(RETENTION_DAYS - 1)
+    const { summary, recorded } = await run({ restrictDays: { from, to } })
+
+    const measured = recorded.map((r) => String(r.p_day)).sort()
+    expect(measured).toEqual([from, daysBeforeNow(RETENTION_DAYS), to].sort())
+    // Considered reports what THIS pass attempted, so a chunk does not read as a
+    // full pass that found only three days.
+    expect(summary.daysConsidered).toBe(3)
+  })
+
+  it('a limit takes the OLDEST days, which are the ones closest to deletion', async () => {
+    const { recorded } = await run({ restrictDays: { limit: 2 } })
+    expect(recorded.map((r) => String(r.p_day))).toEqual([
+      daysBeforeNow(CANDIDATE_COUNT),
+      daysBeforeNow(CANDIDATE_COUNT - 1),
+    ])
+  })
+
+  it('reports how many days it could have measured, so a chunk is visibly a chunk', async () => {
+    const { summary } = await run({ restrictDays: { limit: 2 } })
+    expect(summary.daysConsidered).toBe(2)
+    expect(summary.daysAvailable).toBe(CANDIDATE_COUNT)
+  })
+
+  it('an unrestricted pass still measures everything', async () => {
+    const { summary } = await run({})
+    expect(summary.daysConsidered).toBe(CANDIDATE_COUNT)
+    expect(summary.daysAvailable).toBe(CANDIDATE_COUNT)
+  })
+
+  it('REFUSES a range that matches no candidate day rather than measuring them all', async () => {
+    // A tool given a target it cannot use must refuse, never fall back to its
+    // default scope: a silently ignored range makes a run about everything look
+    // exactly like the run about one day that was asked for (L320). This is the
+    // dangerous direction, because the fallback here is a six minute pass.
+    await expect(run({ restrictDays: { from: '2019-01-01', to: '2019-01-02' } })).rejects.toThrow(
+      /no candidate day/i,
+    )
+  })
+
+  it('carries its run record id, so a caller whose client dies can look up what happened', async () => {
+    const { summary } = await run({})
+    expect(summary.runId).toBe('gate-run-1')
   })
 })

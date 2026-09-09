@@ -77,7 +77,12 @@ export interface GateDayResult {
 }
 
 export interface GateRunSummary {
+  /** Days this pass ATTEMPTED. Equals daysAvailable unless the caller restricted it. */
   daysConsidered: number
+  /** Days it could have attempted, so a chunk is visibly a chunk and not a short full pass. */
+  daysAvailable: number
+  /** The job_runs row this pass opened, so a caller whose client dies can look up the ending. */
+  runId: string | null
   /** Candidates the purge has already emptied and stamped, so they were not measured. */
   daysStamped: number
   daysMeasured: number
@@ -91,6 +96,45 @@ export interface GateDeps {
   /** Returns the statement's rows. Injected so a test drives the real logic against real shapes. */
   querySnowflake?: (statement: string) => Promise<unknown[][]>
   now?: () => Date
+  /**
+   * Narrow the pass to a slice of the candidate days (#1129).
+   *
+   * A full pass takes about six minutes and the admin route did all of it inside
+   * the request, so any client that gave up first killed the run partway with no
+   * response and no record of how far it got. A caller can now drive it in
+   * chunks that fit inside its own timeout.
+   *
+   * The scheduled 13:00 run passes nothing and is unaffected: it has no client.
+   */
+  restrictDays?: { from?: string; to?: string; limit?: number }
+}
+
+/**
+ * The slice of `candidates` a caller asked for.
+ *
+ * REFUSES rather than falling back. A range naming no candidate day is a caller
+ * asking for something this pass cannot do, and quietly measuring every day
+ * instead would make a six minute run about everything look exactly like the one
+ * day run that was asked for (L320).
+ */
+export function restrictCandidates(
+  candidates: string[],
+  restrict: { from?: string; to?: string; limit?: number } | undefined,
+): string[] {
+  if (restrict === undefined) return candidates
+  let chosen = candidates
+  if (restrict.from !== undefined) chosen = chosen.filter((d) => d >= (restrict.from as string))
+  if (restrict.to !== undefined) chosen = chosen.filter((d) => d <= (restrict.to as string))
+  // Oldest first, so a limit keeps the days CLOSEST to deletion rather than the
+  // ones with days of slack left. `candidateDays` already orders them that way.
+  if (restrict.limit !== undefined) chosen = chosen.slice(0, restrict.limit)
+  if (chosen.length === 0 && candidates.length > 0) {
+    throw new Error(
+      `the requested range matched no candidate day: the gate is considering ${candidates[0]} to ` +
+        `${candidates[candidates.length - 1]}`,
+    )
+  }
+  return chosen
 }
 
 function toNumber(cell: unknown, what: string): number {
@@ -298,7 +342,7 @@ export async function runArchiveGate(
     detail: 'the pass threw before it could report an outcome',
   }
   try {
-    const summary = await gatePass(env, supabase, deps)
+    const summary = { ...(await gatePass(env, supabase, deps)), runId: runRecord.id }
     ending = {
       // Three outcomes, because they ask for three different things: nothing,
       // a look at the days that failed, and a look at why the pass could not
@@ -345,12 +389,16 @@ async function gatePass(
   if (progress.error) {
     const detail = `the archive watermark could not be read: ${formatErr(progress.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
-    return { daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail }
+    return {
+      daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0,
+      daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
+    }
   }
   const stored = (progress.data as { watermark_hour?: unknown } | null)?.watermark_hour
   const watermarkHour = typeof stored === 'string' ? stored : null
 
-  const candidates = candidateDays({ watermarkHour, now })
+  const available = candidateDays({ watermarkHour, now })
+  const candidates = restrictCandidates(available, deps.restrictDays)
 
   // A day the purge has already emptied is stamped `executions_truncated_at` in
   // the same transaction as the TRUNCATE (#1196). Measuring it again would read
@@ -367,7 +415,10 @@ async function gatePass(
   if (stampedRead.error) {
     const detail = `the stamped days could not be read: ${formatErr(stampedRead.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
-    return { daysConsidered: candidates.length, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail }
+    return {
+      daysConsidered: candidates.length, daysAvailable: available.length, runId: null, daysStamped: 0,
+      daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
+    }
   }
   const stamped = new Set(
     ((stampedRead.data as Array<{ archive_day: unknown }> | null) ?? []).map((r) => String(r.archive_day)),
@@ -460,6 +511,8 @@ async function gatePass(
 
   return {
     daysConsidered: candidates.length,
+    daysAvailable: available.length,
+    runId: null,
     daysStamped: stamped.size,
     daysMeasured: measured.length,
     daysDeletable: deletableDays.length,
