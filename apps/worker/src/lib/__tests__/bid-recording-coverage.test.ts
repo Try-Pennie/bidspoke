@@ -477,3 +477,73 @@ describe('ratio collapse: reached from the scheduled check (#1168)', () => {
     expect(kv.store.has('bid-ratio-history:org-2')).toBe(true)
   })
 })
+
+/**
+ * Two faults the lessons scan caught in the ratio check, both worth a test.
+ *
+ * The ratio check must never be able to take down the total-silence check it
+ * runs beside (L73). They answer different questions and one failing is not a
+ * reason to lose the other, but they now share a handler and the ratio half
+ * touches KV, which the silence half does not.
+ *
+ * And a stored history is parsed from KV, so a value that is not a number must
+ * not reach the comparison (L50). NaN compares false against every threshold, so
+ * a poisoned history would leave the detector reading as working and unable to
+ * fire, which is the exact failure this whole design was shaped to avoid.
+ */
+describe('ratio check failure isolation (#1168)', () => {
+  it('a KV failure in the ratio check does not suppress the silent workflow alert', async () => {
+    const kv = makeKv()
+    // Only the ratio check's OWN key fails. Failing every read would also break
+    // the alert cooldown lookup, which is a separate pre-existing path and not
+    // what this asserts.
+    kv.get.mockImplementation(async (k: string) => {
+      if (k.startsWith('bid-ratio-history:')) throw new Error('KV down')
+      return kv.store.get(k) ?? null
+    })
+    const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
+
+    await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
+
+    // The #1157 alert still goes out: the two checks answer different questions.
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(postMessage.mock.calls[0][2])).toContain('recording no bids')
+  })
+
+  it('a KV write failure does not suppress the silent workflow alert either', async () => {
+    const kv = makeKv()
+    kv.put.mockRejectedValue(new Error('KV write down'))
+    const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
+    await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
+    expect(postMessage).toHaveBeenCalled()
+  })
+})
+
+describe('ratio history that is not numbers (#1168)', () => {
+  it('refuses a history whose readings are not numbers rather than comparing against NaN', async () => {
+    const kv = makeKv()
+    kv.store.set(
+      'bid-ratio-history:org-1',
+      JSON.stringify({ 'wf-le': { ratios: Array.from({ length: MIN_BASELINE_SAMPLES }, () => 'oops') } }),
+    )
+    const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    // Not judged, and specifically not judged as healthy.
+    expect(postMessage).not.toHaveBeenCalled()
+    // And the poisoned entry is replaced by a real reading.
+    const stored = JSON.parse(kv.store.get('bid-ratio-history:org-1')!)
+    expect(stored['wf-le'].ratios).toEqual([0.06])
+  })
+
+  it('ignores a stray non-number among otherwise good readings', async () => {
+    const ratios: unknown[] = Array.from({ length: MIN_BASELINE_SAMPLES }, () => 0.6)
+    ratios[2] = null
+    const kv = makeKv()
+    kv.store.set('bid-ratio-history:org-1', JSON.stringify({ 'wf-le': { ratios } }))
+    const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    // One bad entry leaves too few readings to judge, so it stays quiet rather
+    // than judging against a shorter history than the design requires.
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+})

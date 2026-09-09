@@ -257,7 +257,15 @@ async function checkOrg(
   // The ratio check runs on the SAME proven-retained rows (#1168), and runs
   // whether or not the total-silence check found anything: a workflow can be
   // recording far too few while every other one is fine.
-  await checkRatios(supabase, kv, orgId, rows, appUrl)
+  //
+  // Its OWN failure boundary (L73). The two answer different questions, and this
+  // half touches KV while the other does not, so a KV outage must not swallow
+  // the total-silence alert on its way past.
+  try {
+    await checkRatios(supabase, kv, orgId, rows, appUrl)
+  } catch (e) {
+    console.error(`[bid-recording] event=bid_ratio_check_failed org=${orgId} error=${formatErr(e)}`)
+  }
 
   if (!decision.alert) return
 
@@ -320,7 +328,24 @@ async function readHistories(kv: KvLike, orgId: string): Promise<Record<string, 
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return {}
-    return parsed as Record<string, RatioHistory>
+    // Every reading is re-validated on the way out of storage. A value that is
+    // not a finite number would make the median NaN, and NaN compares false
+    // against every threshold, so the check would read as working while being
+    // unable to fire (L50). Non-numbers are dropped, which shortens the history
+    // and leaves the workflow unbaselined rather than judged against nonsense.
+    const out: Record<string, RatioHistory> = {}
+    for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const ratios = (entry as { ratios?: unknown } | null)?.ratios
+      if (!Array.isArray(ratios)) continue
+      const clean = ratios.filter((r): r is number => typeof r === 'number' && Number.isFinite(r))
+      if (clean.length !== ratios.length) {
+        console.error(
+          `[bid-recording] event=bid_ratio_history_dropped_readings org=${orgId} workflow=${id} dropped=${ratios.length - clean.length}`,
+        )
+      }
+      out[id] = { ratios: clean }
+    }
+    return out
   } catch {
     // A corrupt entry must not take the check down. It rebuilds from the next
     // run, and the loss is loud rather than silent.
