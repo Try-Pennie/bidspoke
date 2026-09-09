@@ -53,9 +53,11 @@ describe('writeAuditLog', () => {
 
   it('does not throw when Supabase returns an error', async () => {
     const sb = makeSupabase({ message: 'connection refused' })
-    // Should resolve without throwing even when the insert fails
+    // Delays injected as zero: this asserts the outcome, not the wait. With the
+    // real ladder the retries outlive the test's own timeout and the failure is
+    // logged during whichever test runs next (L205).
     await expect(
-      writeAuditLog(sb as never, 'org-1', 'workflow', 'wf-1', 'deleted', 'user-1')
+      writeAuditLog(sb as never, 'org-1', 'workflow', 'wf-1', 'deleted', 'user-1', undefined, [0, 0])
     ).resolves.toBeUndefined()
   })
 
@@ -64,7 +66,7 @@ describe('writeAuditLog', () => {
   it('logs (does not silently drop) when the insert fails', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const sb = makeSupabase({ message: 'check constraint violation' })
-    await writeAuditLog(sb as never, 'org-1', 'partner_uuid', 'pu-1', 'created', 'user-1')
+    await writeAuditLog(sb as never, 'org-1', 'partner_uuid', 'pu-1', 'created', 'user-1', undefined, [0, 0])
     expect(errSpy).toHaveBeenCalled()
     const logged = JSON.stringify(errSpy.mock.calls)
     expect(logged).toContain('partner_uuid')
@@ -97,5 +99,88 @@ describe('writeAuditLog', () => {
         writeAuditLog(sb as never, 'org-1', 'workflow', 'wf-1', action, 'user-1')
       ).resolves.toBeUndefined()
     }
+  })
+})
+
+// #277: writeAuditLog was single-attempt, so a transient Supabase failure (the
+// nightly partition purge holding a lock, a statement timeout, a dropped
+// connection) dropped the audit row for good. It logged, which beats silence,
+// but a log line is not an audit trail. The step logger already survives this
+// window; the audit write did not.
+//
+// Delays are injected rather than real, so these assert the ladder without
+// waiting for it.
+describe('writeAuditLog retries', () => {
+  const NO_DELAYS = [0, 0]
+
+  function supabaseReturning(results: Array<{ error: { code?: string; message: string } | null }>) {
+    let call = 0
+    const insert = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(results[Math.min(call++, results.length - 1)]))
+    return { supabase: { from: vi.fn().mockReturnValue({ insert }) }, insert }
+  }
+
+  it('retries a statement timeout and records the row on the second attempt', async () => {
+    const { supabase, insert } = supabaseReturning([
+      { error: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      { error: null },
+    ])
+    await writeAuditLog(
+      supabase as never, 'org-1', 'workflow', 'wf-1', 'deleted', 'user-1', undefined, NO_DELAYS
+    )
+    expect(insert).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not log a failure when a retry succeeds', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { supabase } = supabaseReturning([
+      { error: { code: '57014', message: 'canceling statement due to statement timeout' } },
+      { error: null },
+    ])
+    await writeAuditLog(
+      supabase as never, 'org-1', 'workflow', 'wf-1', 'deleted', 'user-1', undefined, NO_DELAYS
+    )
+    expect(errSpy).not.toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it('stops immediately on a permanent error rather than spending the ladder', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { supabase, insert } = supabaseReturning([
+      { error: { code: '23502', message: 'null value in column violates not-null constraint' } },
+    ])
+    await writeAuditLog(
+      supabase as never, 'org-1', 'workflow', 'wf-1', 'deleted', 'user-1', undefined, NO_DELAYS
+    )
+    expect(insert).toHaveBeenCalledTimes(1)
+    errSpy.mockRestore()
+  })
+
+  it('logs once, and says how many attempts it made, when the ladder is exhausted', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { supabase, insert } = supabaseReturning([
+      { error: { code: '57014', message: 'canceling statement due to statement timeout' } },
+    ])
+    await writeAuditLog(
+      supabase as never, 'org-1', 'partner_config', 'p-9', 'updated', 'user-1', undefined, NO_DELAYS
+    )
+    expect(insert).toHaveBeenCalledTimes(NO_DELAYS.length + 1)
+    expect(errSpy).toHaveBeenCalledTimes(1)
+    const logged = JSON.stringify(errSpy.mock.calls)
+    expect(logged).toContain('partner_config')
+    expect(logged).toContain(String(NO_DELAYS.length + 1))
+    errSpy.mockRestore()
+  })
+
+  it('still resolves rather than throwing when every attempt fails', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { supabase } = supabaseReturning([
+      { error: { code: '57014', message: 'timeout' } },
+    ])
+    await expect(
+      writeAuditLog(supabase as never, 'org-1', 'workflow', 'w-1', 'updated', 'u-1', undefined, NO_DELAYS)
+    ).resolves.toBeUndefined()
+    errSpy.mockRestore()
   })
 })
