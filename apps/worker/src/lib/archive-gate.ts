@@ -607,8 +607,19 @@ async function gatePass(
   // Recorded for every day, alerted only for the days close enough to deletion
   // that somebody has to act. A day one day old refusing for incomplete-rows is
   // normal: the amend pass has a three day floor.
+  // A refusal that CLEARS ITSELF waits for the runway rule: a day refusing for
+  // incomplete-rows one day after it ends is normal, because the amend pass has
+  // a three day floor, and saying so with a fortnight left is noise.
+  //
+  // `never-archived` clears itself never. The hourly walk does not go back for a
+  // day it has passed, so the day stays uncovered until somebody re-archives it,
+  // and it is recoverable only until its partition is purged (#1016). Waiting
+  // for the last three days to mention it spends the runway that makes it
+  // fixable, which is the whole point of reporting it at all.
+  const alwaysReport = (r: GateDayResult): boolean => r.refusals.some((x) => x.code === 'never-archived')
   const urgent = results.filter(
-    (r) => r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null),
+    (r) =>
+      (r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null)) || alwaysReport(r),
   )
   const errors = urgent.map((r) => {
     const why = r.error !== null ? r.error : r.refusals.map((x) => x.message).join('; ')
@@ -627,6 +638,16 @@ async function gatePass(
       return r.error !== null
         ? `${r.archiveDay} could not be measured and its partition is due at the next 03:30 UTC purge: ${why}`
         : `${r.archiveDay} is not verified and its partition is due at the next 03:30 UTC purge: ${why}`
+    }
+    // Its own sentence, leading with what is at risk rather than with a gate
+    // having refused. The two read very differently to somebody deciding whether
+    // to act tonight, and this one is the only state where the archive's promise
+    // is actually being broken (L11).
+    if (alwaysReport(r)) {
+      return (
+        `${why} (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left before its partition is dropped, ` +
+        'after which it is not recoverable)'
+      )
     }
     return r.error !== null
       ? `${r.archiveDay} could not be measured (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} before its partition is dropped): ${why}`

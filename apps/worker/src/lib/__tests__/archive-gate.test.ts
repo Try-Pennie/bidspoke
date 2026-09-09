@@ -861,3 +861,50 @@ describe('the gate reports what it cost', () => {
     })
   })
 })
+
+/**
+ * A day the archive never touched is reported while it is still fixable (#1016).
+ *
+ * The gate alerts on days within ALERT_WHEN_DAYS_LEFT of deletion, which is
+ * right for a refusal that clears itself: a day refusing for incomplete-rows one
+ * day after it ends is normal, because the amend pass has a three day floor.
+ *
+ * `never-archived` does not clear itself. Nothing in the hourly walk goes back
+ * for a day it has passed, so a day with no archived hour stays that way until
+ * somebody re-archives it, and it is recoverable only until its partition is
+ * purged. Waiting for the last three days to say so spends the runway that makes
+ * it fixable.
+ */
+describe('a day with no archived hour at all is reported at once', () => {
+  const alerts = () =>
+    vi.mocked(notifyExportFailure).mock.calls.filter((c) => c[1] === ARCHIVE_GATE_JOB).flatMap((c) => c[2] as string[])
+
+  /** A day with all its runway left, so nothing else would alert about it. */
+  const NOT_URGENT = daysBeforeNow(RETENTION_DAYS - ALERT_WHEN_DAYS_LEFT - 1)
+
+  it('alerts even with the whole retention window left', async () => {
+    await run({ perDay: { [NOT_URGENT]: facts({ hoursRecorded: 0 }) } })
+
+    const said = alerts().filter((m) => m.includes(NOT_URGENT))
+    expect(said, `nothing was said about ${NOT_URGENT}`).toHaveLength(1)
+    expect(said[0]).toMatch(/no hour of/)
+  })
+
+  it('says what is at risk rather than that a gate refused', async () => {
+    await run({ perDay: { [NOT_URGENT]: facts({ hoursRecorded: 0, pgExecutions: 104599 }) } })
+
+    const said = alerts().find((m) => m.includes(NOT_URGENT)) as string
+    // The reader has to be able to act: what is uncovered, how much is in it,
+    // and how long there is to fix it.
+    expect(said).toMatch(/no copy anywhere/)
+    expect(said).toMatch(/104,599/)
+    expect(said).toMatch(/days? left/)
+  })
+
+  it('leaves a refusal that clears itself to the existing runway rule', async () => {
+    // incomplete-rows resolves when the amend pass catches up, so alerting on it
+    // with a fortnight left is noise, and noise is how a panel gets ignored.
+    await run({ perDay: { [NOT_URGENT]: facts({ incomplete: 2 }) } })
+    expect(alerts().filter((m) => m.includes(NOT_URGENT))).toEqual([])
+  })
+})
