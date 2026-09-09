@@ -860,6 +860,20 @@ function debtFromBidGroup(ctx: ExecutionContext, nodes: NodeDefinition[]): numbe
  */
 const DEBT_CODE_NODE_PATHS: readonly (readonly string[])[] = [
   ['ExternalDebtAmount__c'],
+  // The ported flows wrap the trade calculation one level deeper than the
+  // Pipedream source they came from. Verified 2026-09-09 against the live
+  // definitions in the Try-Pennie/bidspoke-workflows backup: both the Engine and
+  // Lead Economy workflows read
+  //   steps.prospect_trades.output.body.tradeCalculations.enrollableDebt
+  // A fallback written without `body` can never fire, and one that never fires
+  // reads exactly like one that was never needed.
+  //
+  // It IS needed: in the live Engine flow ExternalDebtAmount__c is assigned only
+  // inside `if (tripointBid)`, so a run won by any other partner carries no debt
+  // on patch_prospect_body while prospect_trades holds it either way.
+  ['body', 'tradeCalculations', 'enrollableDebt'],
+  // The unwrapped shape the Pipedream source had, kept so a re-port that drops
+  // the wrapper is still covered.
   ['tradeCalculations', 'enrollableDebt'],
 ]
 

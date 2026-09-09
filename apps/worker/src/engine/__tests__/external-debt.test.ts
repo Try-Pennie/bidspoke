@@ -271,3 +271,75 @@ describe('extractExternalDebt: the Engine flow bids from a code node', () => {
     expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(31000)
   })
 })
+
+/**
+ * The fallback path, read from the LIVE definitions rather than the Pipedream
+ * original (#1169 follow-up).
+ *
+ * The ported flows wrap the trade calculation one level deeper than the source
+ * they were ported from. Both the Engine and Lead Economy workflows read
+ *
+ *     steps.prospect_trades.output.body.tradeCalculations.enrollableDebt
+ *
+ * verified 2026-09-09 against the definitions in the Try-Pennie/bidspoke-workflows
+ * backup, which is what production is actually running. A fallback written
+ * without the `body` level can never match, and a fallback that never fires is
+ * indistinguishable from one that was not needed.
+ *
+ * It IS needed. In the live Engine flow `ExternalDebtAmount__c` is assigned only
+ * inside `if (tripointBid)`, so an Engine run won by anyone else carries no debt
+ * on patch_prospect_body at all, while prospect_trades holds it either way.
+ */
+describe('extractExternalDebt: the trade calculation the ported flows actually use', () => {
+  const nodes = [
+    { id: 'n1', namespace: 'prospect_trades', type: 'code', config: {} },
+    { id: 'n2', namespace: 'patch_prospect_body', type: 'code', config: {} },
+  ] as NodeDefinition[]
+
+  it('reads the debt through the body wrapper the live flows use', () => {
+    const steps = {
+      prospect_trades: {
+        status: 'completed',
+        output: { body: { tradeCalculations: { enrollableDebt: 21750 } } },
+      },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(21750)
+  })
+
+  it('covers an Engine run that Tripoint did not win, which carries no ExternalDebtAmount__c', () => {
+    // patch_prospect_body only sets the debt inside the Tripoint branch, so this
+    // is the shape of every Engine run won by another partner.
+    const steps = {
+      prospect_trades: {
+        status: 'completed',
+        output: { body: { tradeCalculations: { enrollableDebt: 15400 } } },
+      },
+      patch_prospect_body: {
+        status: 'completed',
+        output: { BidAmount__c: 12.5, BidStatus__c: 'Bid' },
+      },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(15400)
+  })
+
+  it('still prefers the figure that reached Salesforce when Tripoint did win', () => {
+    const steps = {
+      prospect_trades: {
+        status: 'completed',
+        output: { body: { tradeCalculations: { enrollableDebt: 15400 } } },
+      },
+      patch_prospect_body: {
+        status: 'completed',
+        output: { ExternalPartnerName__c: 'Tripoint', ExternalDebtAmount__c: 15400 },
+      },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(15400)
+  })
+
+  it('still reads an unwrapped trade calculation, which is the shape the source had', () => {
+    const steps = {
+      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 9100 } } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(9100)
+  })
+})
