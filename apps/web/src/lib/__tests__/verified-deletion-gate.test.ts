@@ -162,6 +162,14 @@ describe('the emptiness check the reap job is named for', () => {
     // purely by age and never checked, so it could destroy a full partition the
     // gate had deliberately spared (#1014).
     expect(found!.body).toContain('Refused to drop')
-    expect(found!.body).toMatch(/IF v_has_rows THEN[\s\S]{0,300}CONTINUE;/)
+    // The rule, not the character distance between two lines. Written as a
+    // window of N characters this failed the moment a log write was added
+    // between them, reporting the addition as a missing guard (L518). What has
+    // to hold is that the emptiness branch SKIPS the partition, so the check is
+    // that a CONTINUE appears inside that branch and before the DROP.
+    const branch = /IF v_has_rows THEN([\s\S]*?)\n      END IF;/.exec(found!.body)
+    expect(branch, 'the emptiness branch is gone').not.toBeNull()
+    expect(branch![1], 'the emptiness branch does not skip the partition').toContain('CONTINUE;')
+    expect(found!.body.indexOf('CONTINUE;')).toBeLessThan(found!.body.indexOf('DROP TABLE'))
   })
 })

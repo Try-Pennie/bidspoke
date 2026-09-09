@@ -72,12 +72,34 @@ describe('the reporter and the purge refuse on the same conditions', () => {
 })
 
 describe('the purge is given the measurements it needs to answer them', () => {
+  /**
+   * The arguments the decision is handed, found by FOLLOWING the path the purge
+   * takes rather than by naming the routine that happens to hold the call today.
+   *
+   * `verified_purgeable_days` is what the two destructive procedures call, but
+   * the call to `verified_day_refusal` moved out of it into
+   * `expired_day_verdicts` when the log needed the same enumeration (#1142). A
+   * guard naming one routine reports that move as a missing call, which is the
+   * refactor being reported as a defect (L135, L518).
+   */
   const passedToRefusal = (): string => {
-    const body = latestRoutineBody('verified_purgeable_days')
-    expect(body, 'verified_purgeable_days is not defined in any migration').not.toBeNull()
-    const call = /verified_day_refusal\s*\(([\s\S]*?)\)/.exec(body!.body)
-    expect(call, 'verified_purgeable_days does not call verified_day_refusal').not.toBeNull()
-    return call![1]
+    const seen = new Set<string>()
+    const queue = ['verified_purgeable_days']
+    while (queue.length > 0) {
+      const name = queue.shift() as string
+      if (seen.has(name)) continue
+      seen.add(name)
+      const found = latestRoutineBody(name)
+      expect(found, `${name} is not defined in any migration`).not.toBeNull()
+      const call = /verified_day_refusal\s*\(([\s\S]*?)\n\s*\)/.exec(found!.body)
+      if (call !== null) return call[1]
+      // Follow every public routine this one names, so the decision is found
+      // wherever on the path it lives.
+      for (const m of found!.body.matchAll(/public\.([a-z0-9_]+)\s*\(/g)) queue.push(m[1])
+    }
+    throw new Error(
+      `nothing reachable from verified_purgeable_days calls verified_day_refusal (looked at ${[...seen].join(', ')})`,
+    )
   }
 
   // The three the SQL copy could not answer at all, because the numbers never
