@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { findPayloadPrints, type PayloadPrint } from './payload-print-scan'
 import { notifyExportFailure } from './export-alerts'
 import { formatErr } from './format-error'
+import { isAccepted } from './payload-print-baseline'
 
 export const PAYLOAD_PRINT_JOB = 'code-node-payload-prints'
 
@@ -11,7 +12,10 @@ export interface PayloadPrintFinding extends PayloadPrint {
 }
 
 export interface PayloadPrintCheckResult {
+  /** Every site found, accepted or not, so an accepted one is never lost. */
   findings: PayloadPrintFinding[]
+  /** The ones not in the accepted baseline. Only these alert. */
+  newFindings: PayloadPrintFinding[]
   /** Non-empty when the definitions could not be read. Its own condition (L98). */
   unreadable: string[]
   alerted: boolean
@@ -77,9 +81,13 @@ export async function checkPayloadPrints(
     )
   }
 
+  const newFindings = findings.filter(
+    (f) => !isAccepted({ workflow: f.workflowName, namespace: f.namespace, identifier: f.identifier }),
+  )
+
   const messages = [
     ...unreadable.map((u) => `Code node log scan could not run, so nothing below is known: ${u}`),
-    ...findings.map(
+    ...newFindings.map(
       (f) =>
         `${f.workflowName} / ${f.namespace} prints the whole of \`${f.identifier}\` to the log. ` +
         'Console output is captured by the platform before any redaction of ours runs and is ' +
@@ -92,9 +100,12 @@ export async function checkPayloadPrints(
     ((m: string[]) => notifyExportFailure(supabase, PAYLOAD_PRINT_JOB, m, env.IDEMPOTENCY as never))
   await notify(messages)
 
+  // Both counts are logged: the accepted ones going quiet in Slack must not also
+  // go quiet here, or the debt becomes invisible rather than deferred.
   console.log(
-    `[payload-print-check] findings=${String(findings.length)} unreadable=${String(unreadable.length)}`,
+    `[payload-print-check] findings=${String(findings.length)} ` +
+      `new=${String(newFindings.length)} unreadable=${String(unreadable.length)}`,
   )
 
-  return { findings, unreadable, alerted: messages.length > 0 }
+  return { findings, newFindings, unreadable, alerted: messages.length > 0 }
 }
