@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
-import { redactPii, parsePiiFields } from './pii-redactor'
+import { redactPii, parsePiiFields, redactPiiInLogMessage } from './pii-redactor'
 import {
   isPermanentDbError,
   isDuplicateError,
@@ -89,6 +89,15 @@ async function updateExecutionOnce(
   return { error: second.error }
 }
 
+// #1214: `logs` is `{ level, message, ts }[]` and `message` is a string, so the
+// field walk that covers `input` and `output` cannot reach inside it. Applied
+// at both write sites, because a scrub on one of two writers is not a scrub.
+function redactLogs(logs: StepLogLine[] | undefined, piiFields: string[]): StepLogLine[] | undefined {
+  if (logs === undefined) return undefined
+  if (piiFields.length === 0) return logs
+  return logs.map((line) => ({ ...line, message: redactPiiInLogMessage(line.message, piiFields) }))
+}
+
 export async function writeStepLog(
   supabase: SupabaseClient,
   entry: StepLogEntry,
@@ -99,6 +108,7 @@ export async function writeStepLog(
     ...entry,
     input: redactPii(entry.input, piiFields),
     output: redactPii(entry.output, piiFields),
+    ...(entry.logs === undefined ? {} : { logs: redactLogs(entry.logs, piiFields) }),
   }
   const { error } = await supabase.from('execution_steps').insert(row)
   if (error) {
@@ -157,6 +167,7 @@ export async function flushStepLogs(
     ...(meta ? { workflow_id: meta.workflowId, is_test: meta.isTest } : {}),
     input: redactPii(entry.input, piiFields),
     output: redactPii(entry.output, piiFields),
+    ...(entry.logs === undefined ? {} : { logs: redactLogs(entry.logs, piiFields) }),
   }))
 
   // Retry the batch on transient errors (schema-cache reload / partition-lock

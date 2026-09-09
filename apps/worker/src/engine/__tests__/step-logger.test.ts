@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createExecutionRecord, updateExecutionRecord, NO_ROW_MATCHED_CODE, UPDATE_RETRY_DELAYS_MS } from '../step-logger'
+import { createExecutionRecord, updateExecutionRecord, flushStepLogs, NO_ROW_MATCHED_CODE, UPDATE_RETRY_DELAYS_MS } from '../step-logger'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from '../../lib/stranded-executions'
 
 // Total wall-clock the finalize ladder spans before it gives up.
@@ -496,5 +496,75 @@ describe('updateExecutionRecord: the ladder must outlast a real outage (#1113)',
   // than a ceiling somebody picked.
   it('gives up well before the strand drain starts finalizing the same row', () => {
     expect(ladderSpanMs()).toBeLessThan((STRAND_DRAIN_MIN_AGE_MINUTES * 60_000) / 2)
+  })
+})
+
+// #1214: a code node that PRINTS the payload it is about to send put the
+// applicant's SSN into execution_steps.logs, a column the redactor never
+// touched, and the execution archive carries that column for 13 months. These
+// drive the real writers against a recording double and assert on the row that
+// would actually be inserted.
+describe('flushStepLogs redaction of the logs column', () => {
+  const ssn = '123-45-6789'
+  const entryWithSsnInLogs = () => ({
+    execution_id: 'exec-1',
+    step_namespace: 'pennie_or_eligibility',
+    step_type: 'code',
+    status: 'success',
+    started_at: '2026-09-09T12:00:00Z',
+    input: { social_security_number: ssn },
+    output: { ok: true },
+    logs: [
+      {
+        level: 'log' as const,
+        message: `Sending body to Eligibility Scout: {"first_name":"Alice","social_security_number":"${ssn}"}`,
+        ts: '2026-09-09T12:00:01Z',
+      },
+      { level: 'log' as const, message: 'Scout responded 200', ts: '2026-09-09T12:00:02Z' },
+    ],
+  })
+
+  function recordingClient() {
+    const rows: Record<string, unknown>[][] = []
+    const insert = vi.fn().mockImplementation((r: Record<string, unknown>[]) => {
+      rows.push(r)
+      return Promise.resolve({ error: null })
+    })
+    const client = { from: vi.fn().mockReturnValue({ insert }) } as unknown as SupabaseClient
+    return { client, rows }
+  }
+
+  it('scrubs a listed field out of a log line when redaction is configured', async () => {
+    const { client, rows } = recordingClient()
+    await flushStepLogs(client, [entryWithSsnInLogs()] as never, 'social_security_number')
+    const written = JSON.stringify(rows[0])
+    expect(written).not.toContain(ssn)
+  })
+
+  it('leaves the rest of the line, and the unlisted lines, intact', async () => {
+    const { client, rows } = recordingClient()
+    await flushStepLogs(client, [entryWithSsnInLogs()] as never, 'social_security_number')
+    const logs = (rows[0][0] as { logs: Array<{ message: string }> }).logs
+    expect(logs).toHaveLength(2)
+    expect(logs[0].message).toContain('Sending body to Eligibility Scout:')
+    expect(logs[0].message).toContain('Alice')
+    expect(logs[1].message).toBe('Scout responded 200')
+  })
+
+  // The state ADR 0006 deliberately ships in: no fields listed, nothing
+  // redacted anywhere. Asserted so the mechanism cannot start scrubbing on its
+  // own without that decision being reversed on purpose.
+  it('leaves logs untouched when no fields are configured', async () => {
+    const { client, rows } = recordingClient()
+    await flushStepLogs(client, [entryWithSsnInLogs()] as never, '')
+    const logs = (rows[0][0] as { logs: Array<{ message: string }> }).logs
+    expect(logs[0].message).toContain(ssn)
+  })
+
+  it('does not fail a step whose logs are absent', async () => {
+    const { client, rows } = recordingClient()
+    const noLogs = { ...entryWithSsnInLogs(), logs: undefined }
+    await flushStepLogs(client, [noLogs] as never, 'social_security_number')
+    expect((rows[0][0] as { logs?: unknown }).logs).toBeUndefined()
   })
 })

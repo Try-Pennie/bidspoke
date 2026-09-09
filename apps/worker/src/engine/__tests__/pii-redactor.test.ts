@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { redactPii, parsePiiFields } from '../pii-redactor'
+import { redactPii, parsePiiFields, redactPiiInLogMessage } from '../pii-redactor'
 
 describe('redactPii', () => {
   describe('empty fields list', () => {
@@ -114,5 +114,49 @@ describe('parsePiiFields', () => {
 
   it('handles a single field', () => {
     expect(parsePiiFields('ssn')).toEqual(['ssn'])
+  })
+})
+
+// #1214: the redactor reached `input` and `output` only, so a code node that
+// PRINTS the payload put the SSN in `execution_steps.logs`, a column nothing
+// scrubbed, and from there into the 13 month execution archive. A log line is a
+// string, so the field list cannot walk it; these cover scrubbing the JSON
+// embedded in one.
+describe('redactPiiInLogMessage', () => {
+  const scoutLine =
+    'Sending body to Eligibility Scout: {"first_name":"Alice","social_security_number":"123-45-6789","zip":"11201"}'
+
+  it('redacts a listed field inside the JSON embedded in a log line', () => {
+    const out = redactPiiInLogMessage(scoutLine, ['social_security_number'])
+    expect(out).not.toContain('123-45-6789')
+    expect(out).toContain('[REDACTED]')
+  })
+
+  it('keeps the human prefix and the unlisted fields of that line', () => {
+    const out = redactPiiInLogMessage(scoutLine, ['social_security_number'])
+    expect(out).toContain('Sending body to Eligibility Scout:')
+    expect(out).toContain('Alice')
+    expect(out).toContain('11201')
+  })
+
+  it('returns the line unchanged when the fields list is empty', () => {
+    expect(redactPiiInLogMessage(scoutLine, [])).toBe(scoutLine)
+  })
+
+  it('returns a line carrying no JSON unchanged', () => {
+    const plain = 'Scout responded 200 in 412ms'
+    expect(redactPiiInLogMessage(plain, ['social_security_number'])).toBe(plain)
+  })
+
+  it('leaves a line whose braces are not valid JSON untouched rather than mangling it', () => {
+    const notJson = 'matched rule {score > 700 and state in (NY, NJ)}'
+    expect(redactPiiInLogMessage(notJson, ['social_security_number'])).toBe(notJson)
+  })
+
+  it('redacts a nested listed field, so a wrapped payload is not a way past it', () => {
+    const nested = 'POST body {"applicant":{"ssn":"999-88-7777"},"amount":5000}'
+    const out = redactPiiInLogMessage(nested, ['ssn'])
+    expect(out).not.toContain('999-88-7777')
+    expect(out).toContain('5000')
   })
 })
