@@ -46,7 +46,7 @@ function Figure({ label, cents, tone }: { label: string; cents: number | null; t
       {cents === null ? (
         // Not a zero: a figure nobody recorded and a figure that was zero are
         // different facts, and only one of them means the lead earned nothing.
-        <p className="mt-0.5 font-mono text-sm text-gray-500">Not recorded</p>
+        <p className="mt-0.5 font-mono text-sm text-gray-600">Not recorded</p>
       ) : (
         <p
           className={`mt-0.5 font-mono text-sm ${

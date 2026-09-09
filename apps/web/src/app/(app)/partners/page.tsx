@@ -200,7 +200,7 @@ export default function PartnersPage() {
                           reason, and as a title so a pointer does on hover.
                         */}
                         {partner.credential_warning && (
-                          <span className="flex-shrink-0 text-amber-600" title={partner.credential_warning}>
+                          <span className="flex-shrink-0 text-amber-700" title={partner.credential_warning}>
                             <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
                             <span className="sr-only">{partner.credential_warning}</span>
                           </span>
