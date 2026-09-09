@@ -343,3 +343,66 @@ describe('extractExternalDebt: the trade calculation the ported flows actually u
     expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(9100)
   })
 })
+
+/**
+ * The durable projection carries the debt too (#1212).
+ *
+ * A lead whose isolate is evicted mid-run is recovered later by the strand drain
+ * from workflow_executions.sighting_finalize. A field on the live finalize but
+ * missing from that projection comes back null for exactly the population that
+ * had trouble, and nothing reports it: two of the live flows genuinely carry no
+ * debt, so a null is a legitimate value and an absent one looks identical.
+ */
+import { buildSightingFinalizeProjection, computeSightingFinalize } from '../lead-sightings'
+
+const finalizeOpts = {
+  lastCompletedNamespace: 'respond',
+  walkStatus: 200,
+  executionStatus: 'completed' as const,
+  successNamespaces: ['respond'],
+}
+
+describe('external_debt on the strand projection (#1212)', () => {
+  it('is carried onto the projection a stranded lead is recovered from', () => {
+    const projection = buildSightingFinalizeProjection(
+      {}, [], { ...finalizeOpts, externalDebt: 24500 },
+      { sightingId: 'sight-1', isTest: false },
+    )
+    expect(projection?.external_debt).toBe(24500)
+  })
+
+  it('carries a zero debt as 0 rather than losing it to a falsy check', () => {
+    const projection = buildSightingFinalizeProjection(
+      {}, [], { ...finalizeOpts, externalDebt: 0 },
+      { sightingId: 'sight-1', isTest: false },
+    )
+    expect(projection?.external_debt).toBe(0)
+  })
+
+  it('is null when the run resolved no debt, which is a legitimate value', () => {
+    const projection = buildSightingFinalizeProjection(
+      {}, [], finalizeOpts,
+      { sightingId: 'sight-1', isTest: false },
+    )
+    expect(projection?.external_debt).toBeNull()
+  })
+
+  it('the live finalize and the projection agree on the same input', () => {
+    // They are two readers of one derivation. If they can disagree, a stranded
+    // lead recovers a different figure from the one it would have had.
+    const live = computeSightingFinalize({}, [], { ...finalizeOpts, externalDebt: 18250 })
+    const projected = buildSightingFinalizeProjection(
+      {}, [], { ...finalizeOpts, externalDebt: 18250 },
+      { sightingId: 'sight-1', isTest: false },
+    )
+    expect(projected?.external_debt).toBe(live.external_debt)
+  })
+
+  it('is not projected for a test run, which must never reach the drain', () => {
+    const projection = buildSightingFinalizeProjection(
+      {}, [], { ...finalizeOpts, externalDebt: 24500 },
+      { sightingId: 'sight-1', isTest: true },
+    )
+    expect(projection).toBeUndefined()
+  })
+})

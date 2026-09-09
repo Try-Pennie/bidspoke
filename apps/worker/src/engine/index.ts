@@ -586,7 +586,16 @@ export async function executeWorkflow(
         const sightingFinalize = buildSightingFinalizeProjection(
           ctx.steps,
           definition.nodes,
-          { lastCompletedNamespace: finalNodeNamespace, walkStatus, executionStatus, successNamespaces },
+          {
+            lastCompletedNamespace: finalNodeNamespace,
+            walkStatus,
+            executionStatus,
+            successNamespaces,
+            // Carried onto the durable projection so a stranded lead recovers its
+            // debt rather than coming back with every other field intact and this
+            // one silently null (#1212).
+            externalDebt: extractExternalDebt(ctx, definition.nodes),
+          },
           { sightingId, isTest: options.isTest },
         )
         // Phase 0 (#419): dark field-presence capture. Behind a default-off
@@ -757,6 +766,7 @@ export async function executeWorkflow(
             walkStatus,
             executionStatus,
             successNamespaces,
+            externalDebt: extractExternalDebt(ctx, definition.nodes),
             // A refused ambiguous quote is null in the column exactly like a run
             // that quoted nothing, so the only thing that tells them apart is this
             // line naming every producer that claimed the money field (#1162).
@@ -800,12 +810,9 @@ export async function executeWorkflow(
             execution_finished_at_et: completedAtDate,
             execution_ended_at_utc: completedAtDate,
             duration_ms: durationMs,
+            // ...sf now carries external_debt (#1212), so it is not repeated here:
+            // one derivation reaches both the live finalize and the projection.
             ...sf,
-            // The lead's debt as the pricing itself saw it, read from the
-            // bid_group context map the partner formulas resolve (#1169). Not a
-            // payload field: the column was null on every row because it was
-            // read from a path no live source sends.
-            external_debt: extractExternalDebt(ctx, definition.nodes),
           }, outcomeDeps)
         })
         .catch((e) => console.error('[lead-sightings] finalize failed:', e))
