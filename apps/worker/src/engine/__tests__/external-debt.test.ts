@@ -168,3 +168,106 @@ describe('external_debt reaches the database (#1169)', () => {
     expect(sightingExportColumns).toContain('external_debt')
   })
 })
+
+/**
+ * The Engine flow, which is where nearly all the volume is (#1169 follow-up).
+ *
+ * Only Main Flow bids through a bid_group. The Engine Bidding Workflow bids
+ * Tripoint from a CODE node, so it has no context map to read and recorded no
+ * debt at all, which is 48,518 of the 49,311 Tripoint attempts in the 7 days to
+ * 2026-09-04. Filling the column on Main Flow alone leaves it filled on about
+ * two percent of the traffic while reading as done.
+ *
+ * The paths are taken from the Engine flow's own Pipedream source
+ * (docs/reference/engine-bidding-pipedream.json), not guessed. Its
+ * patch_prospect_body step builds
+ *
+ *     requestBody["ExternalDebtAmount__c"] =
+ *       steps.prospect_trades.$return_value.tradeCalculations.enrollableDebt
+ *
+ * and the importer rewrites `$return_value` to `output`. ExternalDebtAmount__c
+ * is preferred over the raw enrollableDebt because it is the number that
+ * actually reached Salesforce, and Salesforce is what prices the revenue on it.
+ *
+ * The RML flows are deliberately NOT covered: their source carries no debt
+ * figure at all (the only "debt" in it is the loan purpose debt_consolidation),
+ * so null is the correct answer for them rather than a gap.
+ */
+describe('extractExternalDebt: the Engine flow bids from a code node', () => {
+  const engineNodes = [
+    { id: 'n1', namespace: 'prospect_trades', type: 'code', config: {} },
+    { id: 'n2', namespace: 'patch_prospect_body', type: 'code', config: {} },
+    { id: 'n3', namespace: 'tripoint_ping', type: 'code', config: {} },
+  ] as NodeDefinition[]
+
+  it('reads the debt that reached Salesforce', () => {
+    const steps = {
+      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500, BidStatus__c: 'Bid' } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(24500)
+  })
+
+  it('falls back to the trade calculation the figure is derived from', () => {
+    const steps = {
+      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 18250 } } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(18250)
+  })
+
+  it('prefers the figure sent to Salesforce when both are present', () => {
+    // They are normally the same number, one copied from the other. When they
+    // differ, the one Salesforce priced revenue on is the one worth recording.
+    const steps = {
+      prospect_trades: { status: 'completed', output: { tradeCalculations: { enrollableDebt: 18250 } } },
+      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBe(24500)
+  })
+
+  it('records a rejected Engine run with no debt as null', () => {
+    // The rejected branch builds a body with no debt field at all.
+    const steps = {
+      patch_prospect_body: { status: 'completed', output: { BidStatus__c: 'Rejected', RejectionReason__c: 'x' } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
+  })
+
+  it('ignores a non-code node carrying the same field name', () => {
+    const nodes = [{ id: 'n1', namespace: 'sf_patch', type: 'salesforce', config: {} }] as NodeDefinition[]
+    const steps = {
+      sf_patch: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBeNull()
+  })
+
+  it('ignores a failed step', () => {
+    const steps = {
+      patch_prospect_body: { status: 'failed', output: { ExternalDebtAmount__c: 24500 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), engineNodes)).toBeNull()
+  })
+
+  it('an RML shaped run records no debt, which is correct rather than a gap', () => {
+    // Loan amount and income, no debt anywhere. Recording null here is the right
+    // answer, so this asserts the absence deliberately rather than by omission.
+    const nodes = [{ id: 'n1', namespace: 'build_response', type: 'code', config: {} }] as NodeDefinition[]
+    const steps = {
+      build_response: { status: 'completed', output: { loanAmount: 15000, annualIncome: 80000 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBeNull()
+  })
+
+  it('the bid group context still wins when a workflow has both', () => {
+    // Main Flow must not change behaviour: the context map is what its pricing
+    // reads, so it stays the first source consulted.
+    const nodes = [
+      ...engineNodes,
+      { id: 'n4', namespace: 'bid_race', type: 'bid_group', config: { context: { finalDebt: '{{steps.elig.output.final}}' } } },
+    ] as NodeDefinition[]
+    const steps = {
+      elig: { status: 'completed', output: { final: 31000 } },
+      patch_prospect_body: { status: 'completed', output: { ExternalDebtAmount__c: 24500 } },
+    } as unknown as Record<string, StepOutput>
+    expect(extractExternalDebt(ctxWith(steps), nodes)).toBe(31000)
+  })
+})

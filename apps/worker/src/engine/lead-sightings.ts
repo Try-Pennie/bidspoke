@@ -812,6 +812,13 @@ export function extractExternalDebt(
   ctx: ExecutionContext,
   nodes: NodeDefinition[],
 ): number | null {
+  const fromGroup = debtFromBidGroup(ctx, nodes)
+  if (fromGroup !== null) return fromGroup
+  return debtFromCodeNode(ctx, nodes)
+}
+
+/** Main Flow: the bid_group context map its partner formulas resolve. */
+function debtFromBidGroup(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {
   for (const node of nodes) {
     if (node.type !== 'bid_group') continue
     const contextConfig = (node.config as { context?: unknown } | undefined)?.context
@@ -822,6 +829,58 @@ export function extractExternalDebt(
       const value = asNumber(resolveValue(template, ctx))
       if (value === null) continue
       return Math.round(value)
+    }
+  }
+  return null
+}
+
+/**
+ * The paths a CODE node carries the debt on, most authoritative first.
+ *
+ * Only Main Flow bids through a bid_group. The Engine Bidding Workflow bids
+ * Tripoint from a code node, and it is where nearly all the volume is: 48,518 of
+ * the 49,311 Tripoint attempts in the 7 days to 2026-09-04. Reading the context
+ * map alone therefore filled the column on about two percent of the traffic
+ * while reading as done.
+ *
+ * Taken from the Engine flow's own source (docs/reference/engine-bidding-pipedream.json),
+ * whose patch_prospect_body step builds
+ *
+ *   requestBody["ExternalDebtAmount__c"] =
+ *     steps.prospect_trades.$return_value.tradeCalculations.enrollableDebt
+ *
+ * with the importer rewriting `$return_value` to `output`.
+ * `ExternalDebtAmount__c` comes first because it is the number that actually
+ * reached Salesforce, and Salesforce is what prices the revenue on it. They are
+ * normally the same figure, one copied from the other.
+ *
+ * The RML flows are deliberately absent: their source carries no debt at all
+ * (the only "debt" in it is the loan purpose debt_consolidation), so null is the
+ * right answer for them rather than a gap to be closed.
+ */
+const DEBT_CODE_NODE_PATHS: readonly (readonly string[])[] = [
+  ['ExternalDebtAmount__c'],
+  ['tradeCalculations', 'enrollableDebt'],
+]
+
+function debtFromCodeNode(ctx: ExecutionContext, nodes: NodeDefinition[]): number | null {
+  // Gate on the node TYPE, the same invariant bid-log.ts applies: only a code
+  // node produces these, and a shape-only rule would also match any later node
+  // the object travelled through.
+  const codeNamespaces = new Set(
+    nodes.filter((n) => n.type === 'code').map((n) => n.namespace),
+  )
+  for (const path of DEBT_CODE_NODE_PATHS) {
+    for (const [namespace, step] of Object.entries(ctx.steps)) {
+      if (!codeNamespaces.has(namespace)) continue
+      if (step?.status !== 'completed') continue
+      let cur: unknown = step.output
+      for (const part of path) {
+        if (cur === null || typeof cur !== 'object') { cur = undefined; break }
+        cur = (cur as Record<string, unknown>)[part]
+      }
+      const value = asNumber(cur)
+      if (value !== null) return Math.round(value)
     }
   }
   return null
