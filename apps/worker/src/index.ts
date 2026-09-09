@@ -389,7 +389,7 @@ export default {
         (async () => {
           const { checkPayloadPrints } = await import('./lib/payload-print-check')
           const r = await checkPayloadPrints(env, supabase)
-          if (r.alerted) console.error(`[payload-print-check] ${r.findings.length} findings`)
+          if (r.alerted) console.error(`[payload-print-check] ${r.newFindings.length} new findings`)
         })().catch((e) => console.error('[payload-print-check] failed:', e))
       )
       // Is the purge still destroying execution data on the schedule the code

@@ -90,4 +90,72 @@ describe('checkPayloadPrints', () => {
     })
     expect(rec.sent.flat()).toEqual([])
   })
+
+// The nine sites live in production today (#1214). Alerting on them daily until
+// the canvas work lands would put a standing, unactionable finding in front of
+// whoever reads the alert, which is what teaches people to skip the whole alert
+// (L36, L269). They are accepted as a baseline so the check reports only what is
+// NEW, and the baseline is the list of what is owed rather than a way of
+// forgetting it.
+describe('the accepted baseline', () => {
+  const known = {
+    id: 'w1',
+    name: 'Main Flow',
+    definition: {
+      nodes: [
+        { id: 'n1', namespace: 'pennie_or_eligibility', type: 'code', config: { script: 'console.log(JSON.stringify(result));' } },
+      ],
+    },
+  }
+
+  it('does not alert on a site that is already accepted', async () => {
+    const rec = recordingNotify()
+    const r = await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => [known],
+      notify: rec.notify,
+    })
+    expect(r.alerted).toBe(false)
+    expect(rec.sent.flat()).toEqual([])
+  })
+
+  it('still counts an accepted site as a finding, so it is never lost', async () => {
+    const r = await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => [known],
+      notify: async () => {},
+    })
+    expect(r.findings).toHaveLength(1)
+    expect(r.newFindings).toEqual([])
+  })
+
+  it('alerts on a NEW site in a workflow that already has accepted ones', async () => {
+    const rec = recordingNotify()
+    const withNew = {
+      ...known,
+      definition: {
+        nodes: [
+          ...known.definition.nodes,
+          { id: 'n2', namespace: 'brand_new_node', type: 'code', config: { script: 'console.log(JSON.stringify(applicant));' } },
+        ],
+      },
+    }
+    const r = await checkPayloadPrints({}, supabase, { readWorkflows: async () => withNew ? [withNew] : [], notify: rec.notify })
+    expect(r.newFindings).toHaveLength(1)
+    expect(rec.sent.flat().join(' ')).toContain('brand_new_node')
+    expect(rec.sent.flat().join(' ')).not.toContain('pennie_or_eligibility')
+  })
+
+  it('alerts when the same node starts printing a DIFFERENT value', async () => {
+    const rec = recordingNotify()
+    const changed = {
+      ...known,
+      definition: {
+        nodes: [
+          { id: 'n1', namespace: 'pennie_or_eligibility', type: 'code', config: { script: 'console.log(JSON.stringify(applicant));' } },
+        ],
+      },
+    }
+    const r = await checkPayloadPrints({}, supabase, { readWorkflows: async () => [changed], notify: rec.notify })
+    expect(r.newFindings).toHaveLength(1)
+  })
+})
 })
