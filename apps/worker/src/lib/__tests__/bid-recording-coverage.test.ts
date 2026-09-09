@@ -227,6 +227,18 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks() })
 
+/**
+ * Keys written by the ALERT cooldown, ignoring the ratio baseline (#1168).
+ *
+ * These assertions are about whether a cooldown was set, and the same KV now
+ * carries the per-workflow ratio history, which is written on every run by
+ * design. Asserting on "put was never called" would fail on that unrelated
+ * write, so the question is asked precisely instead of broadly.
+ */
+function cooldownPuts(kv: ReturnType<typeof makeKv>): string[] {
+  return kv.put.mock.calls.map((c) => c[0] as string).filter((k) => !k.startsWith('bid-ratio-history:'))
+}
+
 describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
   it('posts once, naming the workflow and its lead volume', async () => {
     const kv = makeKv()
@@ -324,7 +336,7 @@ describe('runBidRecordingCoverageCheck: failure paths (#1157)', () => {
     const kv = makeKv()
     const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
-    expect(kv.put).not.toHaveBeenCalled()
+    expect(cooldownPuts(kv)).toEqual([])
     await runBidRecordingCoverageCheck(db.client, kv)
     expect(postMessage).toHaveBeenCalledTimes(2)
   })
@@ -334,6 +346,134 @@ describe('runBidRecordingCoverageCheck: failure paths (#1157)', () => {
     const kv = makeKv()
     const db = makeSupabase({ rpc: () => ({ data: SILENT, error: null }) })
     await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
-    expect(kv.put).not.toHaveBeenCalled()
+    expect(cooldownPuts(kv)).toEqual([])
+  })
+})
+
+/**
+ * The ratio collapse check, driven through the real scheduled entry point (#1168).
+ *
+ * The pure decision is tested in bid-ratio-collapse.test.ts. What these assert is
+ * that it is actually REACHED and that its history survives between runs, which
+ * is the failure mode a detector like this really has: a module nothing calls
+ * and a baseline that never accumulates both look exactly like a quiet system.
+ */
+import { MIN_BASELINE_SAMPLES } from '../bid-ratio-collapse'
+
+/** Engine proving the window, plus a workflow whose ratio has halved. */
+const HALVED = [
+  { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, winners: 300 },
+  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 60, winners: 20 },
+]
+/** The same two, both recording normally. */
+const BOTH_NORMAL = [
+  HALVED[0],
+  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 600, winners: 200 },
+]
+
+/** Run the check `n` times on a healthy fixture so a baseline accumulates. */
+async function buildBaseline(kv: ReturnType<typeof makeKv>, n: number) {
+  for (let i = 0; i < n; i++) {
+    const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+  }
+}
+
+describe('ratio collapse: reached from the scheduled check (#1168)', () => {
+  it('says nothing on the first run, because there is no baseline yet', async () => {
+    const kv = makeKv()
+    const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('records a reading on that first run, so a baseline can accumulate', async () => {
+    const kv = makeKv()
+    const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    const stored = JSON.parse(kv.store.get('bid-ratio-history:org-1')!)
+    expect(stored['wf-le'].ratios).toEqual([0.6])
+  })
+
+  it('alerts once a workflow with a baseline halves its ratio', async () => {
+    const kv = makeKv()
+    await buildBaseline(kv, MIN_BASELINE_SAMPLES)
+    postMessage.mockClear()
+
+    const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const [, , blocks] = postMessage.mock.calls[0]
+    const text = JSON.stringify(blocks)
+    expect(text).toContain('Lead Economy')
+    expect(text).toContain('far fewer bids than usual')
+    // The numbers a person needs to act, not just a percentage.
+    expect(text).toContain('60 bids across 1000 leads')
+  })
+
+  it('stays quiet when a workflow with a baseline is recording normally', async () => {
+    const kv = makeKv()
+    await buildBaseline(kv, MIN_BASELINE_SAMPLES)
+    postMessage.mockClear()
+
+    const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('does not repeat the alert while the fault persists', async () => {
+    const kv = makeKv()
+    await buildBaseline(kv, MIN_BASELINE_SAMPLES)
+    postMessage.mockClear()
+
+    for (let i = 0; i < 3; i++) {
+      const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+      await runBidRecordingCoverageCheck(db.client, kv)
+    }
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not let a sustained fault become the new baseline', async () => {
+    // If a collapsed reading were stored, the median would walk down until the
+    // broken rate read as healthy and the alarm switched itself off.
+    const kv = makeKv()
+    await buildBaseline(kv, MIN_BASELINE_SAMPLES)
+    for (let i = 0; i < MIN_BASELINE_SAMPLES; i++) {
+      const db = makeSupabase({ rpc: () => ({ data: HALVED, error: null }) })
+      await runBidRecordingCoverageCheck(db.client, kv)
+    }
+    const stored = JSON.parse(kv.store.get('bid-ratio-history:org-1')!)
+    expect(stored['wf-le'].ratios.every((r: number) => r === 0.6)).toBe(true)
+  })
+
+  it('does not alert when the window was never proven retained', async () => {
+    // A drained window understates every workflow at once, so judging ratios
+    // there would accuse all of them.
+    const kv = makeKv()
+    await buildBaseline(kv, MIN_BASELINE_SAMPLES)
+    postMessage.mockClear()
+
+    const db = makeSupabase({ rpc: () => ({ data: DRAINED, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+  })
+
+  it('survives a corrupt history rather than taking the check down', async () => {
+    const kv = makeKv()
+    kv.store.set('bid-ratio-history:org-1', 'not json')
+    const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
+    // And it rebuilds from this run rather than staying broken.
+    const stored = JSON.parse(kv.store.get('bid-ratio-history:org-1')!)
+    expect(stored['wf-le'].ratios).toEqual([0.6])
+  })
+
+  it('keeps each organization history separate', async () => {
+    const kv = makeKv()
+    const db = makeSupabase({ orgs: ['org-1', 'org-2'], rpc: () => ({ data: BOTH_NORMAL, error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(kv.store.has('bid-ratio-history:org-1')).toBe(true)
+    expect(kv.store.has('bid-ratio-history:org-2')).toBe(true)
   })
 })
