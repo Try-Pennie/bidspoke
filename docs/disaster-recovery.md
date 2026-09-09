@@ -132,6 +132,43 @@ To close this gap:
 3. Grant the restore operators / on-call access to that vault and note its location here.
 4. Re-confirm on each quarterly restore drill that the escrowed copy is current (new secrets get added over time).
 
+## Configuration that exists only in a dashboard (#1011)
+
+Everything below is live, load bearing, and mentioned in no executable file. Each can be
+changed by one person in a browser with no review and no record. This list is the output of
+one pass, not a set of fixes: individual items become their own issues.
+
+The pass was prompted by Logpush being invisible to the compliance milestone for weeks
+(#1007). That was structural rather than an oversight: the enumeration of where identity data
+lands was built by reading the codebase, and no audit done that way can find configuration
+that lives in a browser.
+
+**The account is shared.** `bidspoke-worker` runs in the Pennie Cloudflare account alongside
+other Pennie projects (of the 15 KV namespaces on the account, 7 belong to Bidspoke and the
+rest to other work). Anything scoped to the ACCOUNT rather than to the worker is therefore
+not Bidspoke's alone: someone configuring another project can change what happens to
+Bidspoke's data without touching this repository or knowing Bidspoke exists. Account scoped
+Logpush is the clearest case and is the likeliest explanation for how the Better Stack
+destination arrived.
+
+| What | Touches customer data | Would anything notice a change | Declarable in the repo |
+|---|---|---|---|
+| Logpush job to Better Stack (1740821, `Workers trace events`, account scoped) | Yes. The dataset carries request headers verbatim, `x-api-key` included, measured on #958. Whether this job's field list includes them is unknown and unreadable today | No | Partly. #1010 adds a token and a committed expectation |
+| Logpush job to R2 `bidspoke-worker-logs` (1564508, same dataset) | Intended to. In fact it has delivered nothing since at least June, measured on #1008 | No | Partly, same as above |
+| R2 bucket `bidspoke-logs` and any lifecycle or retention rule on it | Intended to hold worker logs. Currently 2 objects, 96 bytes | No | Yes. Noted as dashboard configured at `apps/worker/wrangler.toml:177` |
+| Worker route `*.trypennie.dev/*` to `bidspoke-worker` | Yes. It is the ingress for partner lead traffic | Partly. `SELF_CHECK_URL` probes `hook.trypennie.dev` | Not today. `apps/worker/wrangler.toml:86` records that the CI token lacks Zone Workers Routes Edit, so declaring it would fail the deploy |
+| Bypass route `bidspoke.trypennie.dev/*` protecting Pages from the worker | No, but its loss takes the app down | No | Same constraint as above |
+| Wildcard DNS `*` CNAME to `bidspoke-worker.workers.dev` on the `trypennie.dev` zone | Yes, same ingress | No | Same constraint as above |
+| Supabase Auth redirect URL allowlist | No, but it decides who can complete a sign in | No | Yes |
+| Supabase backup tier and PITR window | It is the recovery path for all of it | No. #43 wants an alert on a change | Not directly, but readable and assertable |
+| Cloudflare Pages project settings and build environment variables for `apps/web` | Indirectly | Partly, a bad value fails the build | Yes |
+| Snowflake grants and Time Travel retention | Yes, the archive is 13 months of unredacted identity data | **Yes**, verified daily by #914 and #980 | Already partly, `docs/snowflake-archive-setup.sql` |
+
+The Snowflake row is the model for the rest: it is the only entry whose current value is
+re-established on a schedule rather than remembered, and it got that way by a check that
+attempts the thing and reports an unreadable answer as its own condition rather than as
+health.
+
 ## Why a CLI-role query timeout will NOT prevent a `db push` outage (#397, closed)
 
 A natural reaction to the 2026-06-26 outage is "put a `statement_timeout` on the `cli_login_postgres` role so a runaway CLI query self-aborts." We investigated and **closed #397 without doing this**, because the live config disproves the premise:
