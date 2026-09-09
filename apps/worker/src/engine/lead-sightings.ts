@@ -688,6 +688,15 @@ export interface SightingFinalizeFields {
    * zero, so a zero is recorded as zero.
    */
   quoted_rate_cents: number | null
+  /**
+   * The lead's debt as the pricing saw it (#1169). Carried here, and not only on
+   * FinalizeSightingInput, so the durable projection onto
+   * workflow_executions.sighting_finalize holds it too and a stranded lead is
+   * recovered with it rather than silently null (#1212). The strand-drain
+   * contract guard requires the recovery SQL to read every key in this interface,
+   * so the two cannot drift apart.
+   */
+  external_debt: number | null
 }
 
 /**
@@ -910,6 +919,12 @@ export function computeSightingFinalize(
     successNamespaces: string[]
     /** Forwarded to extractQuotedRate so a refused ambiguous quote is reported (#1162). */
     onAmbiguousQuote?: (producers: QuoteProducer[]) => void
+    /**
+     * The debt, already resolved by the caller via extractExternalDebt (#1212).
+     * Passed in rather than computed here because resolving it needs the whole
+     * execution context, which this pure function deliberately does not take.
+     */
+    externalDebt?: number | null
   },
 ): SightingFinalizeFields {
   const finalNs = opts.lastCompletedNamespace
@@ -971,6 +986,7 @@ export function computeSightingFinalize(
     reject_reason,
     outcome,
     quoted_rate_cents: extractQuotedRate(steps, nodes, { onAmbiguous: opts.onAmbiguousQuote }),
+    external_debt: opts.externalDebt ?? null,
   }
 }
 
@@ -997,6 +1013,8 @@ export function buildSightingFinalizeProjection(
     walkStatus: number
     executionStatus: string
     successNamespaces: string[]
+    /** Carried onto the projection so a stranded lead recovers its debt (#1212). */
+    externalDebt?: number | null
   },
   gate: { sightingId: string | null | undefined; isTest: boolean | undefined },
 ): (SightingFinalizeFields & { bid_attempts: ProjectedBidAttempt[] }) | undefined {
