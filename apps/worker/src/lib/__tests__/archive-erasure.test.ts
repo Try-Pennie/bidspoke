@@ -39,6 +39,10 @@ function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = 
         eq() { return chain },
         in() { return chain },
         select() { return chain },
+        // The Postgres resolve reads through fetchAllPaged, so the chain has to
+        // answer these even though this double resolves no sightings.
+        order() { return chain },
+        range() { return chain },
         then(res: (v: unknown) => unknown) {
           // Only audit_log answers with rows here. The Postgres sightings tables
           // are a different path with a different shape, and answering them with
@@ -81,6 +85,8 @@ function pgDouble(opts: {
         delete() { q.op = 'delete'; return chain },
         upsert(rows: unknown) { q.op = 'upsert'; q.filters.push(rows); return chain },
         in(col: string, vals: unknown) { q.filters.push(['in', col, vals]); return chain },
+        order(col: string) { q.filters.push(['order', col]); return chain },
+        range(from: number, to: number) { q.filters.push(['range', from, to]); return chain },
         eq(col: string, v: unknown) { q.filters.push(['eq', col, v]); return chain },
         gte(col: string, v: unknown) { q.filters.push(['gte', col, v]); return chain },
         lte(col: string, v: unknown) { q.filters.push(['lte', col, v]); return chain },
@@ -88,8 +94,17 @@ function pgDouble(opts: {
           const err = opts.resolveError ?? null
           let data: unknown[] = []
           if (err === null) {
-            if (table === 'lead_sightings') data = opts.sightings ?? []
-            else if (table === 'lead_sighting_bids') data = opts.bids ?? [{ id: 'b-1', attempted_at_utc: '2026-09-01T00:05:00Z' }]
+            // Answer the FIRST page only. fetchAllPaged keeps asking until a
+            // short page comes back, so a double that returned the same rows
+            // forever would spin rather than fail, which is the worse failure.
+            const range = q.filters.find((f) => Array.isArray(f) && f[0] === 'range') as
+              | [string, number, number]
+              | undefined
+            const firstPage = range === undefined || range[1] === 0
+            if (firstPage) {
+              if (table === 'lead_sightings') data = opts.sightings ?? []
+              else if (table === 'lead_sighting_bids') data = opts.bids ?? [{ id: 'b-1', attempted_at_utc: '2026-09-01T00:05:00Z' }]
+            }
           }
           return Promise.resolve({ data, error: err }).then(res)
         },

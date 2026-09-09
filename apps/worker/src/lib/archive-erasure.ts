@@ -14,6 +14,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { requireRowsAffected, isNoRowMatchedError } from './db-retry'
+import { fetchAllPaged } from './paginate'
 import { executeStatement, escapeSqlLiteral, type SnowflakeStatementResponse } from './snowflake'
 import {
   archiveConfig,
@@ -298,15 +299,24 @@ async function erasePostgresSightings(
 
   let sightings: Array<{ id: string; execution_started_at_utc: string }>
   try {
-    const { data, error } = (await supabase
-      .from('lead_sightings')
-      .select('id, execution_started_at_utc')
-      .in('ssn', spellings)) as unknown as {
-      data: Array<{ id: string; execution_started_at_utc: string }> | null
-      error: unknown
-    }
-    if (error !== null && error !== undefined) throw new Error(formatErr(error))
-    sightings = data ?? []
+    // PAGED, and this is not a performance note. PostgREST caps a read at 1,000
+    // rows, so an unpaged select would have seen the first 1,000 sightings of a
+    // subject who has more, deleted those, and reported the erasure complete.
+    // A silent partial erasure is the exact failure this whole path exists to
+    // prevent. Ordered by id so the pages cannot repeat or skip rows.
+    sightings = await fetchAllPaged<{ id: string; execution_started_at_utc: string }>(
+      (from, to) =>
+        supabase
+          .from('lead_sightings')
+          .select('id, execution_started_at_utc')
+          .in('ssn', spellings)
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<{
+          data: unknown[] | null
+          error: { message: string } | null
+        }>,
+      'pg_lead_sightings resolve',
+    )
   } catch (err) {
     // Unknown, not zero. A resolve that failed and a subject with no Postgres
     // rows are different facts, and only one of them means there is nothing to
@@ -330,15 +340,21 @@ async function erasePostgresSightings(
 
   // BIDS FIRST.
   try {
-    const { data, error } = (await supabase
-      .from('lead_sighting_bids')
-      .select('id, attempted_at_utc')
-      .in('sighting_id', ids)) as unknown as {
-      data: Array<{ id: string; attempted_at_utc: string }> | null
-      error: unknown
-    }
-    if (error !== null && error !== undefined) throw new Error(formatErr(error))
-    const bids = data ?? []
+    // Paged for the same reason as the sightings above: a subject with more than
+    // 1,000 bid rows would otherwise have had the rest left behind.
+    const bids = await fetchAllPaged<{ id: string; attempted_at_utc: string }>(
+      (from, to) =>
+        supabase
+          .from('lead_sighting_bids')
+          .select('id, attempted_at_utc')
+          .in('sighting_id', ids)
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<{
+          data: unknown[] | null
+          error: { message: string } | null
+        }>,
+      'pg_lead_sighting_bids resolve',
+    )
     if (bids.length === 0 || dryRun) {
       outcomes.push({ target: 'pg_lead_sighting_bids', rowsDeleted: bids.length, error: null })
     } else {
