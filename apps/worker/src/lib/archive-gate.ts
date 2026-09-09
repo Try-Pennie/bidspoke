@@ -21,10 +21,10 @@ import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
 import { executeStatement, escapeSqlLiteral } from './snowflake'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
-import { ARCHIVE_STREAM } from './execution-archive'
+import { ARCHIVE_STREAM, SUBREQUEST_BUDGET } from './execution-archive'
 import { decodeBundle } from '../archive/bundle'
 import { candidateDays, RETENTION_DAYS } from '../archive/candidate-days'
-import { daysHeldInPostgres, daysBeneathTheGate } from '../archive/days-held'
+import { daysHeldInPostgres, daysBeneathTheGate, daysBetween } from '../archive/days-held'
 import { LOOKBACK_DAYS } from './archive-backlog-run'
 import { refusalsFor, type DayMeasurement, type DayRefusal } from '../archive/gate'
 import { startJobRun, finishJobRun, type JobRunEnding } from './job-run-record'
@@ -68,6 +68,42 @@ export const PROBE_SAMPLE_SIZE = 60
  */
 export const ALERT_WHEN_DAYS_LEFT = 3
 
+/**
+ * Outbound calls one gate pass may issue before it says so (#1127).
+ *
+ * The gate shares the `0 13 * * *` invocation with the other daily jobs, and the
+ * platform's subrequest ceiling is per invocation, so the gate spending all of it
+ * starves whatever runs beside it. `SUBREQUEST_BUDGET` (900) is what the archive
+ * holds itself to for a whole invocation; a third of it is the gate's share of a
+ * shared one.
+ *
+ * It WARNS rather than stopping. Truncating the pass at a ceiling would leave the
+ * days it did not reach unmeasured while the run still read as complete, which is
+ * the failure #1129 and #1137 exist to remove. A pass that costs too much is a
+ * scheduling decision for a person (split it onto its own cron, the way the
+ * sightings export and purge already are), not something to take silently.
+ */
+export const GATE_SUBREQUEST_SHARE = Math.floor(SUBREQUEST_BUDGET / 3)
+
+/**
+ * What to say about a pass that costs too much, or nothing at all.
+ *
+ * Pure and exported so the threshold can be driven from a literal and watched to
+ * fire. Reached through the real run it cannot be: the pass's cost is set by
+ * RETENTION_DAYS and a fixed lookback, so no fixture can push it over the line,
+ * and a test written against the run would pass whichever side it landed on (L1).
+ */
+export function costWarnings(cost: GateRunCost, daysMeasured: number): string[] {
+  if (cost.subrequests <= GATE_SUBREQUEST_SHARE) return []
+  // Named as a scheduling problem, because that is the remedy: nothing about the
+  // archive is broken, the pass has simply outgrown a shared invocation.
+  return [
+    `the gate pass issued ${cost.subrequests} outbound calls, past its ${GATE_SUBREQUEST_SHARE} share of the ` +
+      `shared 13:00 invocation (${cost.subrequestsPerDay ?? 0} per day across ${daysMeasured} days), so it ` +
+      `should move to its own cron before it starves whatever runs beside it`,
+  ]
+}
+
 export interface GateDayResult {
   archiveDay: string
   measurement: DayMeasurement | null
@@ -78,7 +114,32 @@ export interface GateDayResult {
   error: string | null
 }
 
+/**
+ * What one pass cost, measured rather than estimated (#1127).
+ *
+ * The gate runs inside the shared `0 13 * * *` invocation, and a per invocation
+ * subrequest ceiling is shared by everything in it. The window is derived from
+ * RETENTION_DAYS, which has changed three times in a fortnight (7, 14, 21, and
+ * back to 7), so the cost moves with a constant somebody else edits.
+ *
+ * Recorded on every run rather than measured once into a comment, because a
+ * number with a date on it reads as MORE trustworthy the older it gets, and this
+ * one expires the next time retention moves (L316). The answer to "is there
+ * headroom" is a query against job_runs, not a sentence anybody has to maintain.
+ */
+export interface GateRunCost {
+  durationMs: number
+  /** Every outbound call this pass issued, which is what the ceiling counts. */
+  subrequests: number
+  snowflakeStatements: number
+  postgresCalls: number
+  /** Cost per day measured, so a change in the window is separable from a change in the work (L323). */
+  msPerDay: number | null
+  subrequestsPerDay: number | null
+}
+
 export interface GateRunSummary {
+  cost: GateRunCost
   /**
    * Days Postgres holds that are OLDER than anything this pass considered.
    *
@@ -273,11 +334,13 @@ async function runProbe(
 }
 
 async function measureDay(
+  countPostgres: () => void,
   supabase: SupabaseClient,
   day: string,
   query: (statement: string) => Promise<unknown[][]>,
   now: Date,
 ): Promise<DayMeasurement> {
+  countPostgres()
   const pg = await supabase.rpc('archive_day_measurements', { p_day: day })
   if (pg.error) throw new Error(`the Postgres measurement failed: ${formatErr(pg.error)}`)
   const pgRow = (pg.data as Array<Record<string, unknown>> | null)?.[0]
@@ -293,6 +356,7 @@ async function measureDay(
     throw new Error('the Snowflake count returned no row, which is not the same as a count of zero')
   }
 
+  countPostgres()
   const probeSample = await supabase.rpc('archive_day_probe_sample', {
     p_day: day,
     p_sample_size: PROBE_SAMPLE_SIZE,
@@ -374,6 +438,8 @@ export async function runArchiveGate(
         daysDeletable: summary.daysDeletable,
         daysErrored: summary.results.filter((r) => r.error !== null).length,
         daysRefused: summary.results.filter((r) => r.error === null && r.refusals.length > 0).length,
+        daysBeneathTheGate: summary.daysBeneathTheGate,
+        cost: summary.cost,
       },
     }
     return summary
@@ -392,13 +458,35 @@ async function gatePass(
   deps: GateDeps = {},
 ): Promise<GateRunSummary> {
   const now = (deps.now ?? (() => new Date()))()
-  const query =
+  const startedMs = Date.now()
+  // Counted where each call is ISSUED, never derived afterwards from the day
+  // count. A budget that counts only some of its consumers reports headroom
+  // while the limit is breached, which this codebase has already been bitten by
+  // (#965).
+  const used = { snowflake: 0, postgres: 0 }
+  const rawQuery =
     deps.querySnowflake ??
     (async (statement: string) => {
       const response = await executeStatement(archiveConfig(env, 'reader'), statement)
       return response.data ?? []
     })
+  const query = async (statement: string): Promise<unknown[][]> => {
+    used.snowflake += 1
+    return rawQuery(statement)
+  }
+  const costNow = (daysMeasured: number): GateRunCost => {
+    const subrequests = used.snowflake + used.postgres
+    return {
+      durationMs: Date.now() - startedMs,
+      subrequests,
+      snowflakeStatements: used.snowflake,
+      postgresCalls: used.postgres,
+      msPerDay: daysMeasured > 0 ? Math.round((Date.now() - startedMs) / daysMeasured) : null,
+      subrequestsPerDay: daysMeasured > 0 ? Math.round(subrequests / daysMeasured) : null,
+    }
+  }
 
+  used.postgres += 1
   const progress = await supabase
     .from('execution_archive_progress')
     .select('watermark_hour')
@@ -408,6 +496,7 @@ async function gatePass(
     const detail = `the archive watermark could not be read: ${formatErr(progress.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
     return {
+      cost: costNow(0),
       daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0, daysBeneathTheGate: [],
       daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
     }
@@ -435,7 +524,10 @@ async function gatePass(
     // gate, and a watchdog that shares the abort behaviour of the work it watches
     // takes the work down with it (L71).
     try {
-      beneath = daysBeneathTheGate(await readHeld({ from, to: oldestConsidered }), available)
+      const held = await readHeld({ from, to: oldestConsidered })
+      // One existence query per day in the window, issued by the shared reader.
+      used.postgres += daysBetween(from, oldestConsidered).length
+      beneath = daysBeneathTheGate(held, available)
     } catch (err) {
       console.error(`[archive-gate] could not check for days beneath the gate: ${formatErr(err)}`)
     }
@@ -448,6 +540,7 @@ async function gatePass(
   // skipped, and the stamp itself is what keeps them verified for the step rule
   // and the reaper. A failed read here is a failed run, not an empty set: an
   // empty set would measure every stamped day and alert on each (L98).
+  used.postgres += 1
   const stampedRead = await supabase
     .from('execution_archive_days')
     .select('archive_day')
@@ -457,6 +550,7 @@ async function gatePass(
     const detail = `the stamped days could not be read: ${formatErr(stampedRead.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
     return {
+      cost: costNow(0),
       daysConsidered: candidates.length, daysAvailable: available.length, runId: null, daysStamped: 0,
       daysBeneathTheGate: beneath, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
     }
@@ -470,7 +564,8 @@ async function gatePass(
   for (const day of days) {
     const daysLeft = daysLeftFor(day, now)
     try {
-      const measurement = await measureDay(supabase, day, query, now)
+      const measurement = await measureDay(() => { used.postgres += 1 }, supabase, day, query, now)
+      used.postgres += 1
       const record = await supabase.rpc('record_archive_day_measurement', {
         p_day: day,
         p_pg_execution_count: measurement.pgExecutionCount,
@@ -547,12 +642,22 @@ async function gatePass(
         `the purge deletes on schedule`,
     )
   }
+  const cost = costNow(measured.length)
+  errors.push(...costWarnings(cost, measured.length))
   await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY)
 
   const detail =
     `measured ${measured.length} of ${candidates.length} candidate days ` +
     `(${stamped.size} already emptied and skipped), ${deletableDays.length} verified, ${urgent.length} urgent`
   console.log(`[archive-gate] ${detail}`)
+  // Printed as well as recorded, so a run being watched live shows its cost
+  // without a query, and recorded as well as printed, because stdout reaches its
+  // reader only while the work runs where somebody is looking (L325).
+  console.log(
+    `[archive-gate] cost: ${cost.durationMs} ms, ${cost.subrequests} subrequests ` +
+      `(snowflake ${cost.snowflakeStatements}, postgres ${cost.postgresCalls}), ` +
+      `${cost.msPerDay ?? 0} ms and ${cost.subrequestsPerDay ?? 0} calls per day measured`,
+  )
   for (const r of results) {
     if (r.error !== null) console.error(`[archive-gate] ${r.archiveDay}: ${r.error}`)
     else if (r.refusals.length > 0) {
@@ -561,6 +666,7 @@ async function gatePass(
   }
 
   return {
+    cost,
     daysConsidered: candidates.length,
     daysAvailable: available.length,
     runId: null,
