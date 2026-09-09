@@ -30,6 +30,7 @@
 -- ASSERTIONS USE `IS DISTINCT FROM`, NEVER `<>`. Measured on 2026-09-03: with the
 -- decision function mutated to always return NULL, the worst possible mutant
 -- because every day is then authorised for deletion, `v_got <> 'executions-short'`
+-- (the code #1143 renamed to `executions-disagree`)
 -- evaluates to NULL, a plpgsql IF does not fire on NULL, and the whole suite
 -- passed. The exact trap the function under test exists to guard against was
 -- reproduced inside its own test, and only a mutation run exposed it. With the
@@ -66,6 +67,18 @@
 --                                      the routine name ambiguous; the migration now drops the
 --                                      old signature first
 --
+-- CHANGED 2026-09-09 for #1143, NOT YET RUN. Part 1 grew from 13 cases to 21 and
+-- every call now passes by name through a `pg_temp.refusal` wrapper holding one
+-- good day as its defaults. The eight new cases cover the three conditions the
+-- SQL copy could not answer (hours-missing, late-executions,
+-- probe-sampled-nothing), the empty day that must stay exempt from the last of
+-- them, their three NULL guards, and the precedence of hours-missing over a step
+-- disagreement. Part 1b asserts the eleven argument arity is gone. None of this
+-- has been executed against a database yet: it needs a throwaway branch, and
+-- until that run happens the only thing standing behind #1143 is the CI guard
+-- `apps/web/src/lib/__tests__/gate-copies-agree.test.ts`, which compares the two
+-- vocabularies and cannot execute either of them.
+--
 -- PRE-FLIGHT against production, read only, same date:
 --   at retention 21 (live)   0 days expired, so the ungated job is deleting nothing
 --   at retention 7 (#1038)   13 days expired, 13 verified, 0 refused, 1,064,596 executions freed
@@ -75,90 +88,201 @@
 -- ==================================================================
 -- Part 1. The decision, from literals. No tables involved.
 -- ==================================================================
+-- EVERY CASE NAMES ITS ARGUMENTS. The decision took eleven positional arguments
+-- until #1143 and now takes fourteen, and a positional call is exactly the shape
+-- that goes silently wrong when a parameter is inserted in the middle (L237).
+-- The wrapper below holds one good day as its defaults and each case overrides
+-- only the value it is about, so a case reads as the thing it tests rather than
+-- as a row of numbers. The wrapper passes by name too, so it cannot itself be
+-- the thing that transposes two arguments.
+CREATE OR REPLACE FUNCTION pg_temp.refusal(
+  p_pg_execution_count     BIGINT      DEFAULT 100,
+  p_erased_execution_count BIGINT      DEFAULT 0,
+  p_sf_execution_count     BIGINT      DEFAULT 100,
+  p_pg_step_count          BIGINT      DEFAULT 1000,
+  p_sf_step_count          BIGINT      DEFAULT 1000,
+  p_orphan_execution_count BIGINT      DEFAULT 0,
+  p_hours_recorded         BIGINT      DEFAULT 24,
+  p_hours_execution_count  BIGINT      DEFAULT 100,
+  p_probe_ok               BOOLEAN     DEFAULT TRUE,
+  p_probe_sampled          INTEGER     DEFAULT 60,
+  p_incomplete_count       BIGINT      DEFAULT 0,
+  p_measured_at            TIMESTAMPTZ DEFAULT '2026-09-03T11:00:00Z',
+  p_now                    TIMESTAMPTZ DEFAULT '2026-09-03T12:00:00Z',
+  p_max_measurement_age    INTERVAL    DEFAULT '36 hours'
+) RETURNS TEXT LANGUAGE sql AS $wrap$
+  SELECT public.verified_day_refusal(
+    p_pg_execution_count     => p_pg_execution_count,
+    p_erased_execution_count => p_erased_execution_count,
+    p_sf_execution_count     => p_sf_execution_count,
+    p_pg_step_count          => p_pg_step_count,
+    p_sf_step_count          => p_sf_step_count,
+    p_orphan_execution_count => p_orphan_execution_count,
+    p_hours_recorded         => p_hours_recorded,
+    p_hours_execution_count  => p_hours_execution_count,
+    p_probe_ok               => p_probe_ok,
+    p_probe_sampled          => p_probe_sampled,
+    p_incomplete_count       => p_incomplete_count,
+    p_measured_at            => p_measured_at,
+    p_now                    => p_now,
+    p_max_measurement_age    => p_max_measurement_age
+  );
+$wrap$;
+
 DO $$
 DECLARE
   v_fail  TEXT[] := '{}';
   v_ran   INTEGER := 0;
-  v_now   TIMESTAMPTZ := '2026-09-03T12:00:00Z';
-  v_age   INTERVAL := '36 hours';
+  v_stale TIMESTAMPTZ := '2026-08-28T12:00:00Z';  -- 6 days before p_now
   v_got   TEXT;
+
 BEGIN
   -- a complete, fresh, agreeing day verifies
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal();
   IF v_got IS NOT NULL THEN v_fail := array_append(v_fail, format('case 1: a good day should verify, got %L', v_got)); END IF;
 
   -- fewer executions in the archive than Postgres held
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 99, 1000, 1000, 0, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'executions-short' THEN v_fail := array_append(v_fail, format('case 2: expected executions-short, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_sf_execution_count => 99);
+  IF v_got IS DISTINCT FROM 'executions-disagree' THEN v_fail := array_append(v_fail, format('case 2: expected executions-disagree, got %L', v_got)); END IF;
 
   -- MORE in the archive than Postgres held. Its own code: this is how a shortened
   -- retention shows up, and it is not a shortfall.
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 101, 1000, 1000, 0, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal(p_sf_execution_count => 101);
   IF v_got IS DISTINCT FROM 'executions-surplus' THEN v_fail := array_append(v_fail, format('case 3: expected executions-surplus, got %L', v_got)); END IF;
 
   -- steps disagree while executions match. The steps are the bulk of the data, so
   -- this must refuse on its own rather than be protected by proxy.
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 999, 0, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'steps-short' THEN v_fail := array_append(v_fail, format('case 4: expected steps-short, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_sf_step_count => 999);
+  IF v_got IS DISTINCT FROM 'steps-disagree' THEN v_fail := array_append(v_fail, format('case 4: expected steps-disagree, got %L', v_got)); END IF;
 
   -- steps whose execution was never archived have no copy anywhere
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 3, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal(p_orphan_execution_count => 3);
   IF v_got IS DISTINCT FROM 'orphan-executions' THEN v_fail := array_append(v_fail, format('case 5: expected orphan-executions, got %L', v_got)); END IF;
 
   -- counts agree and the payload probe failed. Matching counts are satisfied by
   -- 100,000 truncated or corrupt blobs, which is why the probe exists.
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, FALSE, 0, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal(p_probe_ok => FALSE);
   IF v_got IS DISTINCT FROM 'probe-failed' THEN v_fail := array_append(v_fail, format('case 6: expected probe-failed, got %L', v_got)); END IF;
 
   -- rows archived at the deadline while still non-terminal
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, TRUE, 2, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal(p_incomplete_count => 2);
   IF v_got IS DISTINCT FROM 'incomplete-rows' THEN v_fail := array_append(v_fail, format('case 7: expected incomplete-rows, got %L', v_got)); END IF;
 
   -- #1137: complete, correct, and too OLD to authorise a deletion now
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, TRUE, 0, v_now - interval '6 days', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'measurement-stale' THEN v_fail := array_append(v_fail, format('case 8: expected measurement-stale, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_measured_at => v_stale);
+  IF v_got IS DISTINCT FROM 'stale-measurement' THEN v_fail := array_append(v_fail, format('case 8: expected stale-measurement, got %L', v_got)); END IF;
 
   -- an erasure legitimately lowers the archive side and must NOT read as a
   -- shortfall, or a correct erasure blocks its day forever while the refusal
   -- names a remedy that cannot restore deliberately destroyed rows
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 5, 95, 1000, 1000, 0, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
+  v_got := pg_temp.refusal(p_erased_execution_count => 5, p_sf_execution_count => 95);
   IF v_got IS NOT NULL THEN v_fail := array_append(v_fail, format('case 9: erasures should be accounted for, got %L', v_got)); END IF;
 
   -- A NULL input is NOT a pass. This is the shape that left pg_orphan_step_count
   -- NULL on every production row while still reading like one of the conditions.
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, NULL, 0, v_now - interval '1 hour', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'unmeasured' THEN v_fail := array_append(v_fail, format('case 10: a NULL probe result must refuse, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_probe_ok => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 10: a NULL probe result must refuse, got %L', v_got)); END IF;
 
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, NULL, TRUE, 0, v_now - interval '1 hour', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'unmeasured' THEN v_fail := array_append(v_fail, format('case 11: a NULL orphan count must refuse, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_orphan_execution_count => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 11: a NULL orphan count must refuse, got %L', v_got)); END IF;
 
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 100, 1000, 1000, 0, TRUE, 0, NULL, v_now, v_age);
-  IF v_got IS DISTINCT FROM 'unmeasured' THEN v_fail := array_append(v_fail, format('case 12: a NULL measured_at must refuse, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_measured_at => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 12: a NULL measured_at must refuse, got %L', v_got)); END IF;
 
   -- when a reading is BOTH stale and disagreeing, staleness is reported: the
   -- numbers cannot be trusted, and the disagreement may already be repaired
   v_ran := v_ran + 1;
-  v_got := verified_day_refusal(100, 0, 90, 1000, 1000, 0, TRUE, 0, v_now - interval '6 days', v_now, v_age);
-  IF v_got IS DISTINCT FROM 'measurement-stale' THEN v_fail := array_append(v_fail, format('case 13: staleness outranks a stale disagreement, got %L', v_got)); END IF;
+  v_got := pg_temp.refusal(p_sf_execution_count => 90, p_measured_at => v_stale);
+  IF v_got IS DISTINCT FROM 'stale-measurement' THEN v_fail := array_append(v_fail, format('case 13: staleness outranks a stale disagreement, got %L', v_got)); END IF;
+
+  -- ----------------------------------------------------------------
+  -- #1143. The three conditions the reporter had and this did not.
+  -- ----------------------------------------------------------------
+
+  -- An hour the archiver never recorded. The day is not finished, so nothing
+  -- about it has been counted in full.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_hours_recorded => 23);
+  IF v_got IS DISTINCT FROM 'hours-missing' THEN v_fail := array_append(v_fail, format('case 14: expected hours-missing, got %L', v_got)); END IF;
+
+  -- Missing hours outrank a step disagreement, because pg_step_count is SUMMED
+  -- from those hours: reporting the shortfall would name a quantity measured over
+  -- a fraction of the day rather than the hour that is actually absent.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_hours_recorded => 20, p_sf_step_count => 1);
+  IF v_got IS DISTINCT FROM 'hours-missing' THEN v_fail := array_append(v_fail, format('case 15: hours-missing must outrank steps-disagree, got %L', v_got)); END IF;
+
+  -- Two independent Postgres counts of one population disagree, which happens
+  -- only when executions arrived after their hour had been archived. Every hour
+  -- reconciled at the time it ran, so nothing else would notice.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_hours_execution_count => 99);
+  IF v_got IS DISTINCT FROM 'late-executions' THEN v_fail := array_append(v_fail, format('case 16: expected late-executions, got %L', v_got)); END IF;
+
+  -- A probe that examined nothing is not a probe that passed. probe_ok is TRUE
+  -- here, which is exactly how this escaped: the old CASE asked only that.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_probe_sampled => 0);
+  IF v_got IS DISTINCT FROM 'probe-sampled-nothing' THEN v_fail := array_append(v_fail, format('case 17: expected probe-sampled-nothing, got %L', v_got)); END IF;
+
+  -- A genuinely empty day is exempt: there is nothing to sample and its zero is
+  -- honest. Without this the rule above would block every quiet day forever.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(
+    p_pg_execution_count => 0, p_sf_execution_count => 0,
+    p_pg_step_count => 0, p_sf_step_count => 0,
+    p_hours_execution_count => 0, p_probe_sampled => 0
+  );
+  IF v_got IS NOT NULL THEN v_fail := array_append(v_fail, format('case 18: an empty day should verify, got %L', v_got)); END IF;
+
+  -- The three new inputs are NULL guarded like every other. Without this, three
+  -- valued logic makes `p_hours_recorded < 24` neither true nor false and the
+  -- CASE falls through to verified on a reading nobody took.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_hours_recorded => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 19: a NULL hours_recorded must refuse, got %L', v_got)); END IF;
+
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_hours_execution_count => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 20: a NULL hours_execution_count must refuse, got %L', v_got)); END IF;
+
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_probe_sampled => NULL);
+  IF v_got IS DISTINCT FROM 'never-measured' THEN v_fail := array_append(v_fail, format('case 21: a NULL probe_sampled must refuse, got %L', v_got)); END IF;
 
   IF array_length(v_fail, 1) > 0 THEN
     RAISE EXCEPTION E'verified_day_refusal: % of % cases failed\n  %',
       array_length(v_fail, 1), v_ran, array_to_string(v_fail, E'\n  ');
   END IF;
-  IF v_ran <> 13 THEN RAISE EXCEPTION 'expected 13 decision cases, ran %', v_ran; END IF;
+  IF v_ran <> 21 THEN RAISE EXCEPTION 'expected 21 decision cases, ran %', v_ran; END IF;
   RAISE NOTICE 'part 1: % of % decision cases passed', v_ran, v_ran;
+END $$;
+
+-- The eleven argument signature must be GONE, not merely superseded: Postgres
+-- overloads on arity, so the old one would still be callable and would still
+-- authorise a deletion without the three conditions above (#1143).
+DO $$
+DECLARE v_n INTEGER;
+BEGIN
+  SELECT count(*) INTO v_n
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public' AND p.proname = 'verified_day_refusal';
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION 'expected exactly one verified_day_refusal, found % (a weaker arity is still callable)', v_n;
+  END IF;
+  RAISE NOTICE 'part 1b: exactly one verified_day_refusal exists';
 END $$;
 
 -- ==================================================================

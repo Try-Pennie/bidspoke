@@ -89,6 +89,13 @@ export function liveCronJobs(migrations: MigrationFile[] = readMigrations()): Ma
  * The body of the newest CREATE [OR REPLACE] FUNCTION/PROCEDURE for `name`,
  * scoped to that one definition so a match elsewhere in a large migration
  * cannot answer for it (LESSONS L135).
+ *
+ * The opening delimiter is whatever dollar quote the routine actually uses, not
+ * `$$`. Postgres allows any tag, and the deletion gate's own routines are
+ * written `AS $function$`. Reading only `$$` did not fail loudly on those: it
+ * found the next `$$` belonging to some LATER routine in the same file and
+ * returned a body from the wrong definition, or none at all, so a guard built on
+ * it passed while inspecting nothing (#1143, L98).
  */
 export function latestRoutineBody(
   name: string,
@@ -102,11 +109,15 @@ export function latestRoutineBody(
   for (const { name: migration, sql } of migrations) {
     for (const m of sql.matchAll(header)) {
       const from = m.index ?? 0
-      const open = sql.indexOf('$$', from)
-      if (open === -1) continue
-      const close = sql.indexOf('$$', open + 2)
+      // The first dollar quote after the header opens the body; its own tag
+      // closes it. An empty tag is the ordinary `$$` case.
+      const open = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(from))
+      if (open === null) continue
+      const tag = open[0]
+      const bodyStart = from + (open.index ?? 0) + tag.length
+      const close = sql.indexOf(tag, bodyStart)
       if (close === -1) continue
-      found = { body: sql.slice(open + 2, close), migration }
+      found = { body: sql.slice(bodyStart, close), migration }
     }
   }
   return found

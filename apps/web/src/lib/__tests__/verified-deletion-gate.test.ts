@@ -113,16 +113,35 @@ describe('the fixture seam cannot leave production ungated', () => {
     // obvious way (`NOT probe_ok`), three valued logic makes an unmeasured day
     // fall through to verified and authorise a deletion from a reading nobody
     // took. Asserting the guard's presence in source is weak, so the real
-    // coverage is the 13 case behavioural run; this only stops the branch being
-    // deleted wholesale.
-    const body = migrations
-      .filter((m) => m.sql.includes('verified_day_refusal'))
-      .map((m) => m.sql)
-      .join('\n')
-    expect(body).toContain("THEN 'unmeasured'")
-    expect(body).toContain('p_probe_ok IS NULL')
-    expect(body).toContain('p_measured_at IS NULL')
-    expect(body).toContain('p_orphan_execution_count IS NULL')
+    // coverage is the behavioural run against a database; this only stops the
+    // branch being deleted wholesale.
+    //
+    // Read from the NEWEST definition, not from every migration that mentions
+    // the routine. Joining them all let a superseded definition answer for the
+    // live one, so this kept passing on `THEN 'unmeasured'` after #1143 renamed
+    // that code, which is a guard defending a version nothing runs (L336).
+    const found = latestRoutineBody('verified_day_refusal')
+    expect(found, 'verified_day_refusal is not defined in any migration').not.toBeNull()
+    const body = found!.body
+    expect(body).toContain("THEN 'never-measured'")
+    // Every input the decision reads, so a parameter added without a NULL guard
+    // is caught rather than falling through to verified.
+    for (const parameter of [
+      'p_pg_execution_count',
+      'p_erased_execution_count',
+      'p_sf_execution_count',
+      'p_pg_step_count',
+      'p_sf_step_count',
+      'p_orphan_execution_count',
+      'p_hours_recorded',
+      'p_hours_execution_count',
+      'p_probe_ok',
+      'p_probe_sampled',
+      'p_incomplete_count',
+      'p_measured_at',
+    ]) {
+      expect(body, `${parameter} has no NULL guard`).toContain(`${parameter} IS NULL`)
+    }
   })
 
   it('the abandoned orphan column is dropped, so it cannot be wired up by mistake', () => {
