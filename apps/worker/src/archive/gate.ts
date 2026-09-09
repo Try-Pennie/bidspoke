@@ -129,11 +129,34 @@ export function refusalsFor(measurement: DayMeasurement | null, ctx: GateContext
     ]
   }
 
-  // Its own refusal and its own early return, because pgStepCount is SUMMED
-  // from these hours: with hours missing, every count below is measured over a
-  // fraction of the day and would report a step shortfall of unexplained size
-  // rather than the hour that is actually absent (L11).
-  if (measurement.hoursRecorded < HOURS_IN_A_DAY) {
+  // A day with nothing in it has no hours to record and nothing to lose, so its
+  // zero is honest and it is verified rather than refused. Without this every
+  // quiet day refuses forever on hours it was never going to have, and once it
+  // ages past the window that could re-measure it, that refusal is permanent and
+  // strands the next day's step partition with it (#1249, L98).
+  if (measurement.hoursRecorded === 0 && measurement.pgExecutionCount === 0) {
+    // Falls through to the count comparisons below, which an empty day passes.
+  } else if (measurement.hoursRecorded === 0) {
+    // Its own code, its own remedy (#1016). Between 2026-08-16 and 2026-08-21 the
+    // archive covered zero days while Postgres held all six, and nothing
+    // reported it: the archiver was running normally on current hours the whole
+    // time, so it was neither stalled nor failing, it was simply never asked
+    // about the older days. Some hours missing is a re-archive of the gap; NO
+    // hours is a day the walk has never reached, and the wording says what is
+    // about to be lost rather than that a gate is refusing.
+    return [
+      {
+        code: 'never-archived',
+        message:
+          `no hour of ${ctx.archiveDay} has been archived at all, so the ${n(measurement.pgExecutionCount)} ` +
+          'executions Postgres still holds for it have no copy anywhere, and only until its partition is purged',
+      },
+    ]
+  } else if (measurement.hoursRecorded < HOURS_IN_A_DAY) {
+    // Its own refusal and its own early return, because pgStepCount is SUMMED
+    // from these hours: with hours missing, every count below is measured over a
+    // fraction of the day and would report a step shortfall of unexplained size
+    // rather than the hour that is actually absent (L11).
     return [
       {
         code: 'hours-missing',

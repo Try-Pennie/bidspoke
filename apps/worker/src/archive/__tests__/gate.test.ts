@@ -177,6 +177,48 @@ describe('a day the archiver has not finished', () => {
   it('accepts a full 24, so the check is not simply always refusing', () => {
     expect(codes(reconciled({ hoursRecorded: 24 }))).toEqual([])
   })
+
+  /**
+   * A day the archive never touched is not a day it covered badly (#1016).
+   *
+   * Between 2026-08-16 and 2026-08-21 the archive covered zero days while
+   * Postgres held all six, and nothing reported it: the archiver was running
+   * normally on current hours the whole time, so it was neither stalled nor
+   * failing. It was simply never asked about the older days.
+   *
+   * The two states need different responses. Some hours archived and some
+   * missing is a re-archive of the gap. NO hours archived, while Postgres holds
+   * a full day of executions, is a day the walk has never reached, and it is
+   * recoverable only until the partition is purged.
+   */
+  it('names a day with no archived hour at all as never archived, not as short', () => {
+    const m = reconciled({ hoursRecorded: 0, pgExecutionCount: 104_599 })
+
+    expect(codes(m)).toEqual(['never-archived'])
+    expect(messages(m)).toMatch(/no hour of 2026-08-14 has been archived at all/)
+    // The message is about data about to be lost, not about a gate refusing:
+    // it names what Postgres is holding that nothing else has a copy of.
+    expect(messages(m)).toMatch(/104,599 executions/)
+  })
+
+  it('still says short when SOME hours are there', () => {
+    expect(codes(reconciled({ hoursRecorded: 1, pgExecutionCount: 104_599 }))).toEqual(['hours-missing'])
+  })
+
+  it('does not call an EMPTY day never archived, because there was nothing to archive', () => {
+    // A day with no executions has no hours to record and nothing to lose. Its
+    // zero is honest, and accusing it would fire on every quiet day (L98).
+    const m = reconciled({
+      hoursRecorded: 0,
+      pgExecutionCount: 0,
+      sfExecutionCount: 0,
+      pgStepCount: 0,
+      sfStepCount: 0,
+      hoursExecutionCount: 0,
+      probeSampled: 0,
+    })
+    expect(codes(m)).toEqual([])
+  })
 })
 
 describe('executions written after their hour was archived', () => {
