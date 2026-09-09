@@ -6,7 +6,7 @@
  * missing key. But that throw still flowed through the partner-bid catch, which
  * records a breaker error before rethrowing, so after `circuit_error_threshold`
  * such failures the breaker opened and every later lead skipped the partner as
- * 'circuit_open' — re-burying the precise reason #411 surfaced.
+ * 'circuit_open', re-burying the precise reason #411 surfaced.
  *
  * The discriminating condition is "the fault is in our config", not "the error is
  * permanent": a permanent 4xx from the partner is still a real upstream signal and
@@ -105,7 +105,7 @@ describe('partner bid: a config error must not trip the circuit breaker (#417)',
   })
 
   it('POSITIVE CONTROL: a permanent 4xx from the partner still records a breaker error', async () => {
-    // A permanent partner rejection is genuine upstream signal — it must keep counting.
+    // A permanent partner rejection is genuine upstream signal, so it must keep counting.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response('nope', { status: 403, headers: { 'Content-Type': 'text/plain' } }),
     ))

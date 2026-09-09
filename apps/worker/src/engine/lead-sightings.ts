@@ -700,7 +700,7 @@ export interface ExtractQuotedRateOpts {
   /**
    * Called when MORE THAN ONE producer quoted a rate, with every one of them.
    * The value is refused in that case, and this is what tells a refusal apart
-   * from an honest "nothing quoted" — both are null in the column, and without
+   * from an honest "nothing quoted": both are null in the column, and without
    * this they would be the same event (#1162, L11, L622).
    */
   onAmbiguous?: (producers: QuoteProducer[]) => void

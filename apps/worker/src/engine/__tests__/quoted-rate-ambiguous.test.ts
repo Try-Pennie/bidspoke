@@ -10,7 +10,7 @@
  * This is a money field. A second producer (an author splitting a response builder,
  * or adding one) would make it silently WRONG rather than absent, and a wrong rate
  * looks exactly like a right one. So: exactly one producer yields a value, more than
- * one refuses, and the refusal is reported rather than swallowed — a null that means
+ * one refuses, and the refusal is reported rather than swallowed. A null that means
  * "two producers disagreed" must be distinguishable from a null that means "nothing
  * quoted" (L622, L11), and the callback is what carries that difference out.
  */
