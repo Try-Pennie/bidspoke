@@ -25,6 +25,8 @@ export const ERASURE_TARGETS = [
   'execution_archive',
   'lead_sightings',
   'lead_sighting_bids',
+  'pg_lead_sightings',
+  'pg_lead_sighting_bids',
   'audit_log',
 ] as const
 
