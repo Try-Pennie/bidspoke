@@ -79,6 +79,16 @@ function AccessDeniedContent() {
           Try again in a moment. If it keeps happening, tell the systems team that the access check is
           failing, not that you were denied.
         </p>
+        {/*
+          Deliberately an anchor, not next/link. This control exists to RETRY an
+          access check that could not be reached, and only a full document load
+          re-runs the middleware gate. A client side navigation would move the
+          person without re-asking the question, so they would land back here or,
+          worse, past a gate that never ran. Next 15's eslint-config enforces
+          next/link for internal hrefs, which is right everywhere the navigation
+          is ordinary and wrong here.
+        */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
         <a
           href="/workflows"
           className="block w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-center text-sm font-medium text-gray-700 shadow-sm hover:bg-beige"
