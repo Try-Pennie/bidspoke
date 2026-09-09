@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { eraseSubject, ssnSpellings, rowsAffected } from '../archive-erasure'
+import { ERASURE_TARGETS } from '../../archive/erasure'
 import type { Env } from '../../index'
 import type { SnowflakeStatementResponse } from '../snowflake'
 
@@ -39,9 +40,16 @@ function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = 
         in() { return chain },
         select() { return chain },
         then(res: (v: unknown) => unknown) {
+          // Only audit_log answers with rows here. The Postgres sightings tables
+          // are a different path with a different shape, and answering them with
+          // audit-shaped rows made this fixture mean something nobody chose
+          // (pgDouble is what exercises them).
+          const isAudit = table === 'audit_log'
           return Promise.resolve({
-            data: Array.from({ length: opts.auditDeleted ?? 0 }, (_, i) => ({ id: `a-${i}` })),
-            error: opts.auditError ?? null,
+            data: isAudit
+              ? Array.from({ length: opts.auditDeleted ?? 0 }, (_, i) => ({ id: `a-${i}` }))
+              : [],
+            error: isAudit ? (opts.auditError ?? null) : null,
           }).then(res)
         },
       }
@@ -49,6 +57,47 @@ function supabaseDouble(opts: { auditDeleted?: number; auditError?: unknown } = 
     },
   } as unknown as SupabaseClient
   return { client, writes }
+}
+
+interface PgQuery { table: string; op: string; filters: unknown[] }
+
+/**
+ * Records every table, operation and filter the Postgres path builds, so the
+ * assertions are about the statements actually issued rather than about which
+ * functions were called.
+ */
+function pgDouble(opts: {
+  sightings?: Array<{ id: string; execution_started_at_utc: string }>
+  bids?: Array<{ id: string; attempted_at_utc: string }>
+  resolveError?: { message: string } | null
+} = {}) {
+  const queries: PgQuery[] = []
+  const client = {
+    from(table: string) {
+      const q: PgQuery = { table, op: 'select', filters: [] }
+      queries.push(q)
+      const chain: Record<string, unknown> = {
+        select() { return chain },
+        delete() { q.op = 'delete'; return chain },
+        upsert(rows: unknown) { q.op = 'upsert'; q.filters.push(rows); return chain },
+        in(col: string, vals: unknown) { q.filters.push(['in', col, vals]); return chain },
+        eq(col: string, v: unknown) { q.filters.push(['eq', col, v]); return chain },
+        gte(col: string, v: unknown) { q.filters.push(['gte', col, v]); return chain },
+        lte(col: string, v: unknown) { q.filters.push(['lte', col, v]); return chain },
+        then(res: (v: unknown) => unknown) {
+          const err = opts.resolveError ?? null
+          let data: unknown[] = []
+          if (err === null) {
+            if (table === 'lead_sightings') data = opts.sightings ?? []
+            else if (table === 'lead_sighting_bids') data = opts.bids ?? [{ id: 'b-1', attempted_at_utc: '2026-09-01T00:05:00Z' }]
+          }
+          return Promise.resolve({ data, error: err }).then(res)
+        },
+      }
+      return chain
+    },
+  } as unknown as SupabaseClient
+  return { client, queries }
 }
 
 /** Snowflake answers: the resolve SELECT, then a row count per DELETE. */
@@ -99,16 +148,20 @@ describe('rowsAffected', () => {
 })
 
 describe('an erasure that finds the subject', () => {
-  it('deletes from all four targets and reports each count separately', async () => {
+  it('deletes from every target and reports each count separately', async () => {
     const db = supabaseDouble({ auditDeleted: 2 })
     const sf = snowflakeDouble({ deleted: { execution_archive: 3, lead_sightings: 1, lead_sighting_bids: 5 } })
 
     const result = await eraseSubject(env, db.client, REQUEST, { query: sf.query })
 
+    // The Postgres pair report zero here because supabaseDouble resolves no
+    // sightings, which is the honest answer for this fixture rather than a gap.
     expect(result.outcomes.map((o) => [o.target, o.rowsDeleted])).toEqual([
       ['execution_archive', 3],
       ['lead_sightings', 1],
       ['lead_sighting_bids', 5],
+      ['pg_lead_sighting_bids', 0],
+      ['pg_lead_sightings', 0],
       ['audit_log', 2],
     ])
   })
@@ -216,7 +269,9 @@ describe('an erasure where one store fails', () => {
 
     const result = await eraseSubject(env, db.client, REQUEST, { query: sf.query })
 
-    expect(result.outcomes).toHaveLength(4)
+    // Derived from the target list rather than a literal, so adding a target
+    // cannot leave this asserting about a subset of them (L96).
+    expect(result.outcomes).toHaveLength(ERASURE_TARGETS.length)
     expect(result.outcomes.every((o) => o.error !== null)).toBe(true)
   })
 
@@ -308,3 +363,68 @@ describe('eraseSubject dry run', () => {
   })
 })
 
+// #823. The Snowflake copies were always covered; the POSTGRES partitioned
+// tables of the same names were not. They are reached differently: sightings by
+// the indexed `ssn`, and bids by `sighting_id`, because bids has no ssn index
+// and an ssn scan there would cross every partition.
+describe('eraseSubject over the Postgres sightings tables', () => {
+  it('resolves the subject in Postgres by ssn, matching both spellings', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const q = db.queries.find((x) => x.table === 'lead_sightings' && x.op === 'select')
+    expect(q?.filters).toContainEqual(['in', 'ssn', ['123456789', '123-45-6789']])
+  })
+
+  it('deletes the bids by sighting_id, not by ssn', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const del = db.queries.find((x) => x.table === 'lead_sighting_bids' && x.op === 'delete')
+    expect(JSON.stringify(del?.filters)).toContain('sighting_id')
+    expect(JSON.stringify(del?.filters)).not.toContain('"ssn"')
+  })
+
+  // The issue is explicit: without one, a single erasure scans all partitions.
+  it('carries a partition-key predicate on every Postgres statement', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const sight = db.queries.find((x) => x.table === 'lead_sightings' && x.op === 'delete')
+    const bids = db.queries.find((x) => x.table === 'lead_sighting_bids' && x.op === 'delete')
+    expect(JSON.stringify(sight?.filters)).toContain('execution_started_at_utc')
+    expect(JSON.stringify(bids?.filters)).toContain('attempted_at_utc')
+  })
+
+  it('deletes the bids before the sightings they hang off', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const order = db.queries.filter((x) => x.op === 'delete').map((x) => x.table)
+    expect(order.indexOf('lead_sighting_bids')).toBeLessThan(order.indexOf('lead_sightings'))
+  })
+
+  it('reports both Postgres targets as their own outcomes', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const names = r.outcomes.map((o) => o.target)
+    expect(names).toContain('pg_lead_sightings')
+    expect(names).toContain('pg_lead_sighting_bids')
+  })
+
+  it('finding no Postgres rows is zero, not a failure', async () => {
+    const db = pgDouble({ sightings: [] })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const pg = r.outcomes.filter((o) => o.target.startsWith('pg_'))
+    expect(pg.every((o) => o.rowsDeleted === 0 && o.error === null)).toBe(true)
+  })
+
+  it('a failed Postgres resolve reports unknown rather than zero', async () => {
+    const db = pgDouble({ sightings: [], resolveError: { message: 'statement timeout' } })
+    const r = await eraseSubject(env, db.client, REQUEST, { query: snowflakeDouble({}).query })
+    const pg = r.outcomes.filter((o) => o.target.startsWith('pg_'))
+    expect(pg.every((o) => o.rowsDeleted === null && o.error !== null)).toBe(true)
+  })
+
+  it('a dry run issues no Postgres delete', async () => {
+    const db = pgDouble({ sightings: [{ id: 's-1', execution_started_at_utc: '2026-09-01T00:00:00Z' }] })
+    await eraseSubject(env, db.client, { ...REQUEST, dryRun: true }, { query: snowflakeDouble({}).query })
+    expect(db.queries.filter((x) => x.op === 'delete')).toEqual([])
+  })
+})

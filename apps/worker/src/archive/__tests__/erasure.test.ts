@@ -31,7 +31,7 @@ describe('an erasure where everything succeeded', () => {
 
     expect(v.status).toBe('erased')
     if (v.status !== 'erased') throw new Error('unreachable')
-    expect(v.totalRows).toBe(12)
+    expect(v.totalRows).toBe(3 * ERASURE_TARGETS.length)
   })
 
   it('says what it MEASURED, naming the window the rows are still recoverable in', () => {
@@ -85,7 +85,11 @@ describe('an erasure where one target failed', () => {
 
   it('reports every target\'s own count, never one aggregate', () => {
     const outcomes = allDeleted(2)
-    outcomes[3] = { target: 'audit_log', rowsDeleted: null, error: 'gone' }
+    // By NAME, not by index: the target list has grown before and an index
+    // silently pointed at a different target (L237).
+    outcomes[outcomes.findIndex((o) => o.target === 'audit_log')] = {
+      target: 'audit_log', rowsDeleted: null, error: 'gone',
+    }
     const summary = erasureSummary(erasureVerdict(outcomes, NOTHING_UNVERIFIED), outcomes, 30)
 
     for (const target of ERASURE_TARGETS) expect(summary).toContain(target)
@@ -101,7 +105,9 @@ describe('a target that never ran', () => {
 
     expect(v.status).toBe('partial')
     if (v.status !== 'partial') throw new Error('unreachable')
-    expect(v.failed).toEqual(['lead_sighting_bids', 'audit_log'])
+    // Every target the truncated list left out, derived rather than written
+    // down, so this keeps meaning "all of the absent ones" as the list grows.
+    expect(v.failed).toEqual(ERASURE_TARGETS.slice(2))
   })
 })
 
@@ -125,7 +131,7 @@ describe('a target nobody has been able to check', () => {
   it('still reports the rows it did remove, because those are real', () => {
     const summary = erasureSummary(erasureVerdict(allDeleted(3), ['cloudflare_logpush']), allDeleted(3), 30)
 
-    expect(summary).toMatch(/12 rows removed from the live tables/)
+    expect(summary).toMatch(new RegExp(`${String(3 * ERASURE_TARGETS.length)} rows removed from the live tables`))
   })
 
   it('names the two Logpush destinations that actually exist, not a placeholder', () => {
@@ -151,13 +157,21 @@ describe('a target nobody has been able to check', () => {
 })
 
 describe('the enumerated set', () => {
-  it('covers the archive, both sightings tables and the audit rows', () => {
-    // Named here so removing one from the eraser fails a test rather than
-    // quietly narrowing what erasure means.
+  it('covers the archive, both copies of the sightings tables and the audit rows', () => {
+    // Named here, deliberately not derived, so removing one from the eraser
+    // fails a test rather than quietly narrowing what erasure means. This is
+    // the one place the list is spelled out: adding a target has to be a
+    // conscious edit here as well as in the enum.
     expect([...ERASURE_TARGETS]).toEqual([
       'execution_archive',
+      // The Snowflake copies.
       'lead_sightings',
       'lead_sighting_bids',
+      // The Postgres partitioned tables of the same names (#823). Separate
+      // targets because they are reached by different keys through different
+      // credentials, and either can fail without the other.
+      'pg_lead_sightings',
+      'pg_lead_sighting_bids',
       'audit_log',
     ])
   })

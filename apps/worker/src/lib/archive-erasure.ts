@@ -26,6 +26,7 @@ import { hashSsn } from '../engine/persons-crypto'
 import {
   erasureVerdict,
   erasureSummary,
+  ERASURE_TARGETS,
   type TargetOutcome,
   type ErasureVerdict,
 } from '../archive/erasure'
@@ -197,7 +198,7 @@ export async function eraseSubject(
     // Every target is unknown, because nothing could be resolved. Reported as
     // four failures rather than as one, so the response cannot read as "the
     // archive was cleared and the rest matched nothing".
-    for (const target of ['execution_archive', 'lead_sightings', 'lead_sighting_bids', 'audit_log'] as const) {
+    for (const target of ERASURE_TARGETS) {
       outcomes.push({ target, rowsDeleted: null, error: `the subject could not be resolved: ${resolveError}` })
     }
   } else {
@@ -231,6 +232,7 @@ export async function eraseSubject(
         query,
       ),
     )
+    outcomes.push(...(await erasePostgresSightings(supabase, spellings, dryRun)))
     outcomes.push(
       dryRun
         ? { target: 'audit_log', rowsDeleted: 0, error: null }
@@ -270,6 +272,121 @@ export async function eraseSubject(
  * and a target that found nothing are different facts, and the enumerated set
  * has to be complete before A6 makes it non-empty rather than after.
  */
+/**
+ * The POSTGRES `lead_sightings` and `lead_sighting_bids` (#823).
+ *
+ * Distinct from the Snowflake copies above, and reached differently. Sightings
+ * are found by the indexed `ssn`. Bids are found by `sighting_id`, because bids
+ * carries no ssn index and an ssn match there would cross every partition.
+ *
+ * Every statement carries a PARTITION-KEY predicate, derived from the rows
+ * actually found rather than guessed, because a delete without one scans all
+ * partitions on a table that has eight of them.
+ *
+ * Bids go first: they hang off the sightings, and deleting the parents first
+ * would leave nothing to resolve the children by.
+ */
+async function erasePostgresSightings(
+  supabase: SupabaseClient,
+  spellings: string[],
+  dryRun: boolean,
+): Promise<TargetOutcome[]> {
+  const unknown = (why: string): TargetOutcome[] => [
+    { target: 'pg_lead_sighting_bids', rowsDeleted: null, error: why },
+    { target: 'pg_lead_sightings', rowsDeleted: null, error: why },
+  ]
+
+  let sightings: Array<{ id: string; execution_started_at_utc: string }>
+  try {
+    const { data, error } = (await supabase
+      .from('lead_sightings')
+      .select('id, execution_started_at_utc')
+      .in('ssn', spellings)) as unknown as {
+      data: Array<{ id: string; execution_started_at_utc: string }> | null
+      error: unknown
+    }
+    if (error !== null && error !== undefined) throw new Error(formatErr(error))
+    sightings = data ?? []
+  } catch (err) {
+    // Unknown, not zero. A resolve that failed and a subject with no Postgres
+    // rows are different facts, and only one of them means there is nothing to
+    // erase.
+    return unknown(`the Postgres sightings could not be resolved: ${formatErr(err)}`)
+  }
+
+  if (sightings.length === 0) {
+    return [
+      { target: 'pg_lead_sighting_bids', rowsDeleted: 0, error: null },
+      { target: 'pg_lead_sightings', rowsDeleted: 0, error: null },
+    ]
+  }
+
+  const ids = sightings.map((r) => r.id)
+  const stamps = sightings.map((r) => r.execution_started_at_utc).sort()
+  const sightingFrom = stamps[0]
+  const sightingTo = stamps[stamps.length - 1]
+
+  const outcomes: TargetOutcome[] = []
+
+  // BIDS FIRST.
+  try {
+    const { data, error } = (await supabase
+      .from('lead_sighting_bids')
+      .select('id, attempted_at_utc')
+      .in('sighting_id', ids)) as unknown as {
+      data: Array<{ id: string; attempted_at_utc: string }> | null
+      error: unknown
+    }
+    if (error !== null && error !== undefined) throw new Error(formatErr(error))
+    const bids = data ?? []
+    if (bids.length === 0 || dryRun) {
+      outcomes.push({ target: 'pg_lead_sighting_bids', rowsDeleted: bids.length, error: null })
+    } else {
+      const bidStamps = bids.map((b) => b.attempted_at_utc).sort()
+      const { rows, error: delError } = await requireRowsAffected<{ id: string }>(
+        'pg_lead_sighting_bids erasure',
+        () =>
+          supabase
+            .from('lead_sighting_bids')
+            .delete()
+            .in('sighting_id', ids)
+            .gte('attempted_at_utc', bidStamps[0])
+            .lte('attempted_at_utc', bidStamps[bidStamps.length - 1])
+            .select('id'),
+      )
+      if (delError && !isNoRowMatchedError(delError)) throw new Error(formatErr(delError))
+      outcomes.push({ target: 'pg_lead_sighting_bids', rowsDeleted: rows.length, error: null })
+    }
+  } catch (err) {
+    outcomes.push({ target: 'pg_lead_sighting_bids', rowsDeleted: null, error: formatErr(err) })
+  }
+
+  // THEN THE SIGHTINGS.
+  try {
+    if (dryRun) {
+      outcomes.push({ target: 'pg_lead_sightings', rowsDeleted: sightings.length, error: null })
+    } else {
+      const { rows, error } = await requireRowsAffected<{ id: string }>(
+        'pg_lead_sightings erasure',
+        () =>
+          supabase
+            .from('lead_sightings')
+            .delete()
+            .in('ssn', spellings)
+            .gte('execution_started_at_utc', sightingFrom)
+            .lte('execution_started_at_utc', sightingTo)
+            .select('id'),
+      )
+      if (error && !isNoRowMatchedError(error)) throw new Error(formatErr(error))
+      outcomes.push({ target: 'pg_lead_sightings', rowsDeleted: rows.length, error: null })
+    }
+  } catch (err) {
+    outcomes.push({ target: 'pg_lead_sightings', rowsDeleted: null, error: formatErr(err) })
+  }
+
+  return outcomes
+}
+
 async function deleteAuditRows(
   supabase: SupabaseClient,
   organizationId: string,
