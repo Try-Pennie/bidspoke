@@ -387,6 +387,18 @@ interface PricingTier {
   multiplier: number
 }
 
+/**
+ * Exported so the debt floor can be driven directly, with no partner row and no
+ * network. `resolveBid` reaches the same function, so the tests and production
+ * price a lead through one implementation rather than two (L107).
+ */
+export function resolveTieredMultiplierBid(
+  cfg: Record<string, unknown> | null,
+  ctx: ExecutionContext
+): number | null {
+  return evaluateTieredMultiplier(cfg, ctx)
+}
+
 function evaluateTieredMultiplier(
   cfg: Record<string, unknown> | null,
   ctx: ExecutionContext
@@ -399,6 +411,21 @@ function evaluateTieredMultiplier(
 
   const value = coerceNumeric(resolveFormulaPath(sourceField, ctx))
   if (value === null) return null
+
+  // #1199: below `min_source_value` there is no bid at all. Salesforce books
+  // zero Tripoint revenue under $10,000 of debt, and without a floor here
+  // Bidspoke priced that lead anyway and could win the Main Flow race with one
+  // the business books at $0.
+  //
+  // Inclusive, matching the Salesforce rule's `debt >= 10000`. Absent means no
+  // floor, so every partner that never sets one is unaffected. An unreadable
+  // value is treated as absent rather than as a floor of zero or infinity: a
+  // typo must not silently remove the partner from bidding entirely, and the
+  // daily pricing check reports it as unreadable config instead.
+  if (cfg.min_source_value !== undefined && cfg.min_source_value !== null) {
+    const floor = coerceNumeric(cfg.min_source_value)
+    if (floor !== null && value < floor) return null
+  }
 
   const tiers = readTiers(cfg.tiers)
   for (const tier of tiers) {

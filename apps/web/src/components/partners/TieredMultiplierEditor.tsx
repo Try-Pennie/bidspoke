@@ -12,6 +12,12 @@ interface Config {
   source_field: string
   tiers: Tier[]
   default_multiplier: number | null
+  /**
+   * Debt below which the partner does not bid at all (#1199). Null means no
+   * floor, which is not the same rule as a floor of zero, so the two must stay
+   * distinct all the way to the stored config.
+   */
+  min_source_value: number | null
 }
 
 interface Props {
@@ -25,6 +31,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
   const c = readConfig(config)
   const sourceFieldId = useId()
   const defaultMultiplierId = useId()
+  const minimumId = useId()
 
   function patch(next: Partial<Config>) {
     const merged: Config = { ...c, ...next }
@@ -34,6 +41,10 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
       source_field: merged.source_field,
       tiers: merged.tiers,
       default_multiplier: merged.default_multiplier,
+      // Named here as well as on Config: this object is rebuilt from a list of
+      // keys, so a field left off the list is silently dropped by every other
+      // edit on the form (L510).
+      min_source_value: merged.min_source_value,
     })
   }
 
@@ -124,6 +135,24 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
           className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
         />
       </div>
+
+      <div>
+        <label htmlFor={minimumId} className="mb-1 block text-xs font-medium text-gray-600">Minimum value</label>
+        <p className="mb-1.5 text-xs text-gray-500">Below this, no bid is made at all. Leave empty to bid at any value.</p>
+        <input
+          id={minimumId}
+          type="number"
+          value={c.min_source_value ?? ''}
+          onChange={(e) => {
+            const v = e.target.value
+            // Empty means no floor. Zero is a floor of zero, a different rule,
+            // so it must not collapse into the same value (#1199).
+            patch({ min_source_value: v === '' ? null : parseFloat(v) })
+          }}
+          placeholder="none"
+          className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
+        />
+      </div>
     </div>
   )
 }
@@ -146,5 +175,15 @@ function readConfig(raw: Record<string, unknown>): Config {
         : raw.default_multiplier == null
           ? null
           : parseFloat(String(raw.default_multiplier)) || null,
+    min_source_value:
+      typeof raw.min_source_value === 'number'
+        ? raw.min_source_value
+        : raw.min_source_value == null
+          ? null
+          // Number(), not parseFloat() || null: `parseFloat('0') || null` is
+          // null, which would read a declared floor of zero as no floor.
+          : Number.isFinite(Number(raw.min_source_value))
+            ? Number(raw.min_source_value)
+            : null,
   }
 }
