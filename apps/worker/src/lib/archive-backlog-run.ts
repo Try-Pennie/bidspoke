@@ -34,6 +34,7 @@ import {
   type BacklogState,
 } from '../archive/backlog'
 import { newestFinishedDay } from '../archive/candidate-days'
+import { daysHeldInPostgres } from '../archive/days-held'
 import { canonicalHourStart } from '../archive/clock'
 import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
@@ -228,28 +229,15 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
       return typeof raw === 'string' ? raw : null
     },
 
-    // Asked one day at a time, because the answer that matters is "does Postgres
-    // still hold anything for this day", and each query carries the partition key
-    // so it touches one partition rather than scanning every one.
+    // ONE method for this question, shared with the deletion gate (#1025). The
+    // walk asked the data while the gate computed its list arithmetically, and
+    // the two agreed only while somebody kept them agreeing.
     daysHeldInPostgres: async () => {
       const todayMs = Date.parse(`${dayString(now().getTime())}T00:00:00.000Z`)
-      const days: string[] = []
-      for (let i = LOOKBACK_DAYS; i >= 0; i--) {
-        const day = dayString(todayMs - i * 24 * 60 * 60 * 1000)
-        const next = dayString(todayMs - (i - 1) * 24 * 60 * 60 * 1000)
-        const { data, error } = await supabase
-          .from('workflow_executions')
-          .select('id')
-          .gte('started_at', `${day}T00:00:00.000Z`)
-          .lt('started_at', `${next}T00:00:00.000Z`)
-          .limit(1)
-        // THROWS rather than treating the day as absent. Read "absent" as "gone"
-        // and the walk quietly stops considering a day that is still rescuable,
-        // which is the failure this job exists to prevent (L215).
-        if (error) throw new Error(`checking whether Postgres still holds ${day} failed: ${formatErr(error)}`)
-        if ((data ?? []).length > 0) days.push(day)
-      }
-      return days
+      return daysHeldInPostgres(supabase, {
+        from: dayString(todayMs - LOOKBACK_DAYS * 24 * 60 * 60 * 1000),
+        to: dayString(todayMs),
+      })
     },
 
     recordedHoursByDay: async () => {

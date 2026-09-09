@@ -24,6 +24,8 @@ import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from '
 import { ARCHIVE_STREAM } from './execution-archive'
 import { decodeBundle } from '../archive/bundle'
 import { candidateDays, RETENTION_DAYS } from '../archive/candidate-days'
+import { daysHeldInPostgres, daysBeneathTheGate } from '../archive/days-held'
+import { LOOKBACK_DAYS } from './archive-backlog-run'
 import { refusalsFor, type DayMeasurement, type DayRefusal } from '../archive/gate'
 import { startJobRun, finishJobRun, type JobRunEnding } from './job-run-record'
 import type { Env } from '../index'
@@ -77,6 +79,14 @@ export interface GateDayResult {
 }
 
 export interface GateRunSummary {
+  /**
+   * Days Postgres holds that are OLDER than anything this pass considered.
+   *
+   * The gate decides which days are safe to delete, so a day outside its view is
+   * one it can never vouch for while the purge takes it on schedule. Empty is
+   * the healthy answer and the ordinary one.
+   */
+  daysBeneathTheGate: string[]
   /** Days this pass ATTEMPTED. Equals daysAvailable unless the caller restricted it. */
   daysConsidered: number
   /** Days it could have attempted, so a chunk is visibly a chunk and not a short full pass. */
@@ -107,6 +117,14 @@ export interface GateDeps {
    * The scheduled 13:00 run passes nothing and is unaffected: it has no client.
    */
   restrictDays?: { from?: string; to?: string; limit?: number }
+  /**
+   * Which days Postgres still holds, asked rather than computed (#1025).
+   *
+   * Injected so a test drives the real comparison without a second database
+   * double. The default is the same reader the backlog walk uses, which is the
+   * point: one method for this question rather than two that happen to coincide.
+   */
+  daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
 }
 
 /**
@@ -390,7 +408,7 @@ async function gatePass(
     const detail = `the archive watermark could not be read: ${formatErr(progress.error)}`
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
     return {
-      daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0,
+      daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0, daysBeneathTheGate: [],
       daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
     }
   }
@@ -399,6 +417,29 @@ async function gatePass(
 
   const available = candidateDays({ watermarkHour, now })
   const candidates = restrictCandidates(available, deps.restrictDays)
+
+  // Ask the data as well as the arithmetic. The two answers to "which days
+  // exist" were derived by different methods and agreed only while somebody kept
+  // them agreeing: on 2026-08-23 the retention constant said 7 while the purge
+  // jobs said 9, and the two lists began on different days (#1025). Compared
+  // against the FULL candidate list, never the restricted chunk, or every chunk
+  // would report the days outside it as missing.
+  let beneath: string[] = []
+  if (available.length > 0) {
+    const oldestConsidered = available[0]
+    const from = new Date(Date.parse(`${oldestConsidered}T00:00:00.000Z`) - LOOKBACK_DAYS * 86400000)
+      .toISOString()
+      .slice(0, 10)
+    const readHeld = deps.daysHeld ?? ((range: { from: string; to: string }) => daysHeldInPostgres(supabase, range))
+    // A failed read here must not fail the pass: this is a comparison ABOUT the
+    // gate, and a watchdog that shares the abort behaviour of the work it watches
+    // takes the work down with it (L71).
+    try {
+      beneath = daysBeneathTheGate(await readHeld({ from, to: oldestConsidered }), available)
+    } catch (err) {
+      console.error(`[archive-gate] could not check for days beneath the gate: ${formatErr(err)}`)
+    }
+  }
 
   // A day the purge has already emptied is stamped `executions_truncated_at` in
   // the same transaction as the TRUNCATE (#1196). Measuring it again would read
@@ -417,7 +458,7 @@ async function gatePass(
     await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
     return {
       daysConsidered: candidates.length, daysAvailable: available.length, runId: null, daysStamped: 0,
-      daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
+      daysBeneathTheGate: beneath, daysMeasured: 0, daysDeletable: 0, results: [], failed: true, detail,
     }
   }
   const stamped = new Set(
@@ -496,6 +537,16 @@ async function gatePass(
       ? `${r.archiveDay} could not be measured (${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} before its partition is dropped): ${why}`
       : `${r.archiveDay} is not verified with ${r.daysLeft} day${r.daysLeft === 1 ? '' : 's'} left: ${why}`
   })
+  if (beneath.length > 0) {
+    // Its own sentence, because the remedy differs from a refusal: these days are
+    // not unverified, they are outside the gate's view entirely, so no
+    // re-archive of a considered day can clear it (L11).
+    errors.push(
+      `Postgres still holds ${beneath.length} day${beneath.length === 1 ? '' : 's'} older than anything the gate ` +
+        `considers (${beneath.join(', ')}), so nothing vouches for ${beneath.length === 1 ? 'it' : 'them'} while ` +
+        `the purge deletes on schedule`,
+    )
+  }
   await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY)
 
   const detail =
@@ -513,6 +564,7 @@ async function gatePass(
     daysConsidered: candidates.length,
     daysAvailable: available.length,
     runId: null,
+    daysBeneathTheGate: beneath,
     daysStamped: stamped.size,
     daysMeasured: measured.length,
     daysDeletable: deletableDays.length,

@@ -230,6 +230,7 @@ async function run(opts: {
   recordErrorFor?: string
   watermarkThrows?: string
   restrictDays?: { from?: string; to?: string; limit?: number }
+  daysHeld?: (range: { from: string; to: string }) => Promise<string[]>
 }) {
   const base = opts.base ?? facts()
   const db = supabaseDouble({
@@ -247,6 +248,7 @@ async function run(opts: {
     querySnowflake: sf.query,
     now: () => NOW,
     restrictDays: opts.restrictDays,
+    daysHeld: opts.daysHeld,
   })
   return { summary, recorded: db.recorded, statements: sf.statements, events: db.events, jobRuns: db.jobRuns }
 }
@@ -678,5 +680,78 @@ describe('a caller can restrict the pass to a range of days', () => {
   it('carries its run record id, so a caller whose client dies can look up what happened', async () => {
     const { summary } = await run({})
     expect(summary.runId).toBe('gate-run-1')
+  })
+})
+
+/**
+ * Asking the data as well as the arithmetic (#1025).
+ *
+ * The backlog walk asks Postgres which days it still holds; the gate computed
+ * its list from the retention constant. On 2026-08-23 the constant said 7 while
+ * the purge jobs said 9, so the two lists began on different days and nothing
+ * compared them. The gate decides which days are safe to delete, so a day
+ * outside its view is one it can never vouch for while the purge takes it.
+ */
+describe('the gate notices a day Postgres holds that it is not considering', () => {
+  const alerts = () =>
+    vi.mocked(notifyExportFailure).mock.calls.filter((c) => c[1] === ARCHIVE_GATE_JOB).flatMap((c) => c[2] as string[])
+
+  it('names it, in the summary and in the alert', async () => {
+    const stranded = daysBeforeNow(CANDIDATE_COUNT + 4)
+    const { summary } = await run({ daysHeld: async () => [stranded] })
+
+    expect(summary.daysBeneathTheGate).toEqual([stranded])
+    const said = alerts().filter((m) => m.includes(stranded))
+    expect(said).toHaveLength(1)
+    // Its own sentence, because no re-archive of a considered day can clear it:
+    // the day is outside the gate's view rather than unverified (L11).
+    expect(said[0]).toMatch(/older than anything the gate considers/)
+  })
+
+  it('says nothing on the healthy day, which is every day', async () => {
+    const { summary } = await run({ daysHeld: async () => [] })
+    expect(summary.daysBeneathTheGate).toEqual([])
+    expect(alerts().filter((m) => /older than anything/.test(m))).toEqual([])
+  })
+
+  it('asks about the days BELOW its oldest candidate, not the ones above', async () => {
+    const asked: Array<{ from: string; to: string }> = []
+    await run({
+      daysHeld: async (range) => {
+        asked.push(range)
+        return []
+      },
+    })
+    expect(asked).toHaveLength(1)
+    expect(asked[0].to).toBe(daysBeforeNow(CANDIDATE_COUNT))
+    expect(asked[0].from < asked[0].to).toBe(true)
+  })
+
+  it('compares against the FULL candidate list, not the chunk it was asked for', async () => {
+    // Otherwise every chunked call reports the days outside its own slice as
+    // stranded, which is the check accusing on its own argument.
+    // The chunk must NOT start at the oldest candidate, or the two lists have the
+    // same first element and the fixture cannot tell them apart. The first draft
+    // of this test used `limit: 1` and passed against both readings.
+    const chunkStart = daysBeforeNow(CANDIDATE_COUNT - 3)
+    const insideAvailableBelowChunk = daysBeforeNow(CANDIDATE_COUNT - 1)
+    const { summary } = await run({
+      restrictDays: { from: chunkStart },
+      daysHeld: async () => [insideAvailableBelowChunk],
+    })
+    expect(insideAvailableBelowChunk < chunkStart).toBe(true)
+    expect(summary.daysBeneathTheGate).toEqual([])
+  })
+
+  it('does not fail the pass when the check itself cannot read', async () => {
+    // A watchdog must not share the abort behaviour of the work it watches, or
+    // an incidental failure takes the work down with it (L71).
+    const { summary } = await run({
+      daysHeld: async () => {
+        throw new Error('postgres said no')
+      },
+    })
+    expect(summary.daysBeneathTheGate).toEqual([])
+    expect(summary.daysMeasured).toBe(CANDIDATE_COUNT)
   })
 })
