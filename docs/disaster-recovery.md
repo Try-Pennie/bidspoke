@@ -124,6 +124,19 @@ survive verbatim using a throwaway probe header, so no real key had to be read t
 establish it. `cf-connecting-ip`, the consumer's IP address, is in the same
 stream.
 
+**It is also applicant PII access, and that is the larger fact.** The same stream
+carries the `Logs` field, every `console.log` a Worker emits, and the Main Flow
+prints the full applicant before calling Eligibility Scout: SSN, date of birth,
+name and address, on roughly 180 runs a day. So anyone who can tail this worker
+can read consumer identity data live, not only partner credentials.
+
+Masking those prints was considered and **deliberately declined** on 2026-09-09
+(#1214), because the external egress had been closed by narrowing the Logpush
+field list (#1007) and what remains is inside our own systems, which ADR 0006
+allows and which was reaffirmed the same day. That decision is sound, and it is
+what makes this permanent rather than a gap awaiting a fix. Grant log access on
+that basis.
+
 Two consequences for anyone working from this runbook:
 
 1. Treat Cloudflare log access as equivalent to holding every partner key. Grant
