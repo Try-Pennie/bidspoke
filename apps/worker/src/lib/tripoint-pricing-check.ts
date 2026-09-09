@@ -17,6 +17,14 @@
  * fetched, or that has changed into a shape this cannot read, has not been
  * compared, and answering "no differences" there would make a broken check and
  * agreement the same output (L98, L11).
+ *
+ * IT COMPARES THE MAIN FLOW RULE ONLY, DELIBERATELY. The Engine Bidding
+ * Workflow prices the same partner on a different basis (a lookup table in its
+ * own patch_prospect_body code node, booking through
+ * Prospect__c.ExternalExchangeRevenue__c), and that difference is intended
+ * rather than drift: see docs/adr/0010-engine-and-main-flow-price-tripoint-differently.md
+ * (#1178). This check is silent about the Engine rule because Bidspoke holds no
+ * copy of it to compare against.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
