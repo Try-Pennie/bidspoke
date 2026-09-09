@@ -92,6 +92,8 @@ export async function checkLogpush(
       observed.jobs = body.result.map((j): ObservedLogpushJob => {
         const oo = (j.output_options ?? {}) as { field_names?: unknown }
         const last = j.last_complete
+        const lastRaw = typeof last === 'string' ? last : null
+        const parsed = lastRaw === null ? null : Date.parse(lastRaw)
         return {
           id: Number(j.id),
           name: asText(j.name),
@@ -99,7 +101,10 @@ export async function checkLogpush(
           dataset: asText(j.dataset),
           enabled: j.enabled === true,
           fieldNames: Array.isArray(oo.field_names) ? oo.field_names.map(String) : [],
-          lastCompleteMs: typeof last === 'string' ? Date.parse(last) : null,
+          // Never let NaN reach a comparison: it compares false against every
+          // threshold and lands on the permissive side (L50).
+          lastCompleteMs: parsed === null || Number.isNaN(parsed) ? null : parsed,
+          lastCompleteRaw: lastRaw,
         }
       })
     }

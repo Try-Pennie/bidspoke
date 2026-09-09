@@ -23,8 +23,19 @@ export interface ObservedLogpushJob {
   dataset: string
   enabled: boolean
   fieldNames: string[]
-  /** Epoch ms of the last successful push, or null if it has never completed one. */
+  /**
+   * Epoch ms of the last successful push, or null when there is no usable one.
+   * Null covers two different situations, which `lastCompleteRaw` separates.
+   */
   lastCompleteMs: number | null
+  /**
+   * What the API actually reported, or null when it reported nothing.
+   *
+   * Needed because `Date.parse` yields NaN on a bad string and `now - NaN > x`
+   * is FALSE, so an unparseable timestamp would otherwise land on the healthy
+   * side of the staleness test and report a dead job as fine (L50).
+   */
+  lastCompleteRaw: string | null
 }
 
 export interface ObservedLogpush {
@@ -100,9 +111,16 @@ export function logpushDifferences(
     }
 
     if (got.enabled) {
-      if (got.lastCompleteMs === null) {
+      if (got.lastCompleteRaw === null) {
         out.push(
           `Logpush job ${want.name} is enabled and has never completed a push, so it is delivering nothing.`,
+        )
+      } else if (got.lastCompleteMs === null) {
+        // Distinct from never having delivered: the API said something and we
+        // could not read it, which is a different remedy (L11).
+        out.push(
+          `Logpush job ${want.name} reported a last_complete of "${got.lastCompleteRaw}", ` +
+            'which is not a date, so whether it is still delivering is unknown.',
         )
       } else if (nowMs - got.lastCompleteMs > DELIVERY_STALE_MS) {
         const hours = Math.floor((nowMs - got.lastCompleteMs) / (60 * 60 * 1000))
