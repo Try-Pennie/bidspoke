@@ -11,9 +11,9 @@
  *    and this report exists because every individual signal read green for
  *    nineteen hours while the archive did nothing (L215, L98).
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { archiveHealth, ARCHIVE_JOBS } from '../archive-health'
+import { archiveHealth, hoursBehindWatermark, ARCHIVE_JOBS } from '../archive-health'
 import type { Env } from '../../index'
 
 const NOW = new Date('2026-09-10T12:00:00.000Z')
@@ -161,5 +161,40 @@ describe('archiveHealth', () => {
     expect('error' in health.watermark).toBe(true)
     expect('error' in health.jobs).toBe(false)
     expect(health.lock).toEqual({ held: false, value: null })
+  })
+})
+
+/**
+ * The lag reader, which the repair decides on (#1032).
+ *
+ * Null is the fail-safe answer and the repair refuses on it. That is right, and
+ * it is also why the CAUSE has to survive: a repair refused because the
+ * database was unreachable and one refused because the archive has never run
+ * both arrive as null, and only the log tells them apart (L11).
+ */
+describe('hoursBehindWatermark', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('reports whole hours behind', async () => {
+    const db = supabaseDouble(HEALTHY)
+    expect(await hoursBehindWatermark(db.client, NOW)).toBe(2)
+  })
+
+  it('answers null, not zero, when there is no watermark to read', async () => {
+    // Zero would mean "keeping up perfectly", which is the one answer that
+    // makes the repair proceed (L215).
+    const db = supabaseDouble({ ...HEALTHY, execution_archive_progress: { rows: [] } })
+    expect(await hoursBehindWatermark(db.client, NOW)).toBeNull()
+  })
+
+  it('answers null AND says why when the read itself fails', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const db = supabaseDouble({
+      ...HEALTHY,
+      execution_archive_progress: { error: { message: 'statement timeout' } },
+    })
+
+    expect(await hoursBehindWatermark(db.client, NOW)).toBeNull()
+    expect(logged.mock.calls.flat().join(' ')).toMatch(/statement timeout/)
   })
 })

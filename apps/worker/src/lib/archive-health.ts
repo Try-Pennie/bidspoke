@@ -156,7 +156,12 @@ export async function hoursBehindWatermark(
 ): Promise<number | null> {
   try {
     return (await readWatermark(supabase, now)).hoursBehind
-  } catch {
+  } catch (err) {
+    // Null is the fail-safe answer and the caller refuses on it, but the reason
+    // must not vanish with the value: a repair refused because the database was
+    // unreachable and one refused because the archive has never run both arrive
+    // as null, and only the log says which (L11).
+    console.error(`[archive-health] could not read how far behind the archive is: ${formatErr(err)}`)
     return null
   }
 }
