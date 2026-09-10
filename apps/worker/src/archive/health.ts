@@ -19,20 +19,21 @@
  * or a warehouse.
  */
 import { RETENTION_DAYS } from './candidate-days'
+import { CRON_RUN_BUDGET } from './deadline'
 
 /** Hours in a day the archive expects to have recorded once a day is finished. */
 export const HOURS_IN_A_DAY = 24
 
 /**
- * How much ground the backlog walk gains per hour of real time.
+ * How much ground the archive gains per hour of real time.
  *
- * The walk archives at most MAX_HOURS_PER_RUN hours per hourly run, so it gains
- * that many hours minus the one that just elapsed. Recorded here as the number
- * the projection uses rather than re-derived, because it is what decides
- * whether a manual push is needed (#1041 is the issue about the number itself
- * being too small).
+ * A run archives at most `CRON_RUN_BUDGET.maxHours` on an hourly cron, so it
+ * gains that many hours minus the one that just elapsed. DERIVED rather than
+ * written, because the two have to move together: at a cap of 2 this was 1, the
+ * archive held station and could never catch up, and a projection carrying a
+ * hardcoded 1 would go on saying so after the cap was raised (#1041).
  */
-export const HOURS_GAINED_PER_HOUR = 1
+export const HOURS_GAINED_PER_HOUR = Math.max(0, CRON_RUN_BUDGET.maxHours - 1)
 
 export interface DayCoverage {
   day: string

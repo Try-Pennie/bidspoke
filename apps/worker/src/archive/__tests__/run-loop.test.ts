@@ -440,3 +440,95 @@ describe('a repair that is bigger than one run (#1019)', () => {
     expect(r.alreadyDone).toEqual([])
   })
 })
+
+/**
+ * The budget reserves room for the hour it is about to start (#953).
+ *
+ * The check used to be `now >= deadline`, which stops a run only once the
+ * budget is already gone. An hour runs to completion once begun, so a run at
+ * 590 seconds of a 600 second budget started another hour and overshot by that
+ * hour's entire cost. Measured over 14 days of production run records: the
+ * three runs that archived two hours took 372, 578 and 646 seconds against a
+ * 600 second budget.
+ *
+ * Overshooting is not tidiness. The margin between the budget and the
+ * platform's 15 minute cron ceiling is what stops the isolate being KILLED, and
+ * a killed run writes no record, closes nothing and sends no alert (L98).
+ */
+describe('the wall budget reserves room for the next hour', () => {
+  /** A clock the test moves, so an hour can be made to cost what it likes. */
+  function movingClock(startMs: number) {
+    let atMs = startMs
+    return {
+      now: () => new Date(atMs),
+      advance: (ms: number) => { atMs += ms },
+      get atMs() { return atMs },
+    }
+  }
+
+  /** Deps whose every archived hour costs `hourCostMs` of wall time. */
+  function depsCostingPerHour(hourCostMs: number, budgetMs: number, clock: ReturnType<typeof movingClock>) {
+    const base = deps()
+    return {
+      ...base,
+      now: clock.now,
+      streamHour: async (...args: Parameters<typeof base.streamHour>) => {
+        const out = await base.streamHour(...args)
+        clock.advance(hourCostMs)
+        return out
+      },
+      budget: {
+        maxHours: 100,
+        deadlineAt: clock.atMs + budgetMs,
+        subrequestsLeft: () => 1000,
+      },
+    } as typeof base
+  }
+
+  it('always attempts a first hour, however little budget is left', async () => {
+    // A run that cannot afford one hour has nothing to offer, so the reserve
+    // must never stop a run before it has done anything.
+    const clock = movingClock(NOW.getTime())
+    const deps = depsCostingPerHour(300_000, 60_000, clock)
+
+    const result = await runArchive(deps)
+
+    expect(result.hoursArchived).toBeGreaterThanOrEqual(1)
+  })
+
+  it('stops rather than starting an hour it cannot finish inside the budget', async () => {
+    // 350s hours against a 600s budget: one fits, a second would end at 700s.
+    const clock = movingClock(NOW.getTime())
+    const deps = depsCostingPerHour(350_000, 600_000, clock)
+
+    const result = await runArchive(deps)
+
+    expect(result.stop).toBe('wall-time')
+    expect(result.hoursArchived).toBe(1)
+    // The elapsed time never passes the budget, which is the property that
+    // keeps the run inside the platform's ceiling.
+    expect(clock.atMs - NOW.getTime()).toBeLessThanOrEqual(600_000)
+  })
+
+  it('says how much was left and what an hour costs, so the stop is diagnosable', async () => {
+    const clock = movingClock(NOW.getTime())
+    const deps = depsCostingPerHour(350_000, 600_000, clock)
+
+    const result = await runArchive(deps)
+
+    expect(result.detail).toMatch(/350s/)
+    expect(result.detail).toMatch(/less than/)
+  })
+
+  it('keeps going while the remaining budget still covers an hour', async () => {
+    // 100s hours against a 600s budget: five fit, and the sixth is refused
+    // with 100s left rather than started and overrun.
+    const clock = movingClock(NOW.getTime())
+    const deps = depsCostingPerHour(100_000, 600_000, clock)
+
+    const result = await runArchive(deps)
+
+    expect(result.hoursArchived).toBeGreaterThan(1)
+    expect(clock.atMs - NOW.getTime()).toBeLessThanOrEqual(600_000)
+  })
+})

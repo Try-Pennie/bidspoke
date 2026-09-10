@@ -14,6 +14,7 @@ import {
   coverageFor,
   nightsUntilPurge,
   purgeDateFor,
+  HOURS_GAINED_PER_HOUR,
   HOURS_IN_A_DAY,
 } from '../health'
 
@@ -143,15 +144,36 @@ describe('backlogFrom', () => {
   })
 
   it('calls an exact tie a miss, because the two ways of being wrong are not equal', () => {
-    // 2026-09-03 has 1 night left and is short all 24 hours. The walk gains at
-    // most 24 in that time, so it arrives exactly on the deadline. Reporting
+    // A day short by exactly what the walk can gain before it dies. Reporting
     // that as "it clears" means nobody pushes and the day is destroyed if
-    // anything at all goes slowly; reporting it as a miss costs one
-    // unnecessary push (L648).
-    const backlog = backlogFrom(coverage({ '2026-09-03': 0 }), NOW)
+    // anything at all goes slowly; reporting it as a miss costs one unnecessary
+    // push (L648).
+    //
+    // The shortfall is DERIVED from the gain rate rather than written as 24,
+    // because the two move together: when the per-run cap rose the rate rose
+    // with it, and a hardcoded figure here would have stopped describing a tie
+    // and started describing a comfortable win (#1041).
+    // One night of gain is now MORE than a single day holds, so the tie takes
+    // several fully missing days. 2026-09-03 is the day with exactly one night
+    // left, and each day after it adds another 24 hours of shortfall.
+    const nightsLeft = 1
+    const exactlyWhatItCanGain = nightsLeft * 24 * HOURS_GAINED_PER_HOUR
+    const daysNeeded = exactlyWhatItCanGain / HOURS_IN_A_DAY
+    expect(Number.isInteger(daysNeeded), 'the tie needs whole days to be exact').toBe(true)
 
-    expect(backlog.nightsUntilOldestPurged).toBe(1)
-    expect(backlog.hoursOutstanding).toBe(24)
+    const empty: Record<string, number> = {}
+    for (let i = 0; i < daysNeeded; i++) {
+      const day = new Date(Date.parse('2026-09-03T00:00:00.000Z') + i * 86_400_000)
+      empty[day.toISOString().slice(0, 10)] = 0
+    }
+    const backlog = backlogFrom(coverage(empty), NOW)
+
+    expect(backlog.oldestDayOutstanding).toBe('2026-09-03')
+    expect(backlog.nightsUntilOldestPurged).toBe(nightsLeft)
+    // A real tie, not an approximation: outstanding equals exactly what the
+    // walk can gain in the time left. If it were not, this would be testing a
+    // comfortable win or an obvious loss rather than the boundary (L159).
+    expect(backlog.hoursOutstanding).toBe(exactlyWhatItCanGain)
     expect(backlog.clearsBeforeOldestIsPurged).toBe(false)
   })
 

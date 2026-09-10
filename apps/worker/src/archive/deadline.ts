@@ -81,7 +81,35 @@ export interface RunBudget {
   maxHours: number
 }
 
-export const CRON_RUN_BUDGET: RunBudget = { wallMs: 10 * 60 * 1000, maxHours: 2 }
+/**
+ * The scheduled run's budget.
+ *
+ * WHAT WAS WRONG. `maxHours` was 2 against a 600 second wall budget, so the
+ * archive gained at most ONE hour of ground per hour of real time: it could
+ * hold station and never catch up (#1041). The cap was 2 for a good reason,
+ * which is the rule the test below still enforces: an hour costs up to 257
+ * seconds, so three of them do not fit in 600 and a cap the clock stops before
+ * it can be reached is not a cap, it is a number that reads like the control
+ * while the control is somewhere else (L109).
+ *
+ * SO THE WALL BUDGET IS WHAT MOVED, not the cap alone. The platform's cron
+ * ceiling is 15 minutes and the budget was using 10 of them. The other 5 were
+ * margin against OVERSHOOT: an hour runs to completion once begun, so a run
+ * could start one at 590 seconds and end far past its budget. Measured over 14
+ * days of run records, the three runs that archived two hours took 372, 578 and
+ * 646 seconds against that 600 second budget.
+ *
+ * The run loop now RESERVES room for the hour it is about to start, sized from
+ * the slowest hour that run has already completed (#953), so a run cannot
+ * overshoot and the margin no longer has to absorb one. 13 minutes leaves 2
+ * minutes to the ceiling, and three worst-case hours (771 seconds) fit inside
+ * it, so the cap is reachable and remains a real control.
+ *
+ * The effect on catch-up: three hours per hourly run is two hours of ground per
+ * hour of real time, against one before. A day of backlog drains in about
+ * twelve hours rather than never.
+ */
+export const CRON_RUN_BUDGET: RunBudget = { wallMs: 13 * 60 * 1000, maxHours: 3 }
 
 export const REQUEST_RUN_BUDGET: RunBudget = {
   // Under the 218 second kill, with room for one hour at its measured cost.

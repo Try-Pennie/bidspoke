@@ -113,7 +113,7 @@ describe('a lock held by a run that is genuinely alive (#954)', () => {
     const { summary } = await runWithLock(live)
 
     expect(summary.detail).toMatch(/held the run lock for 3 minutes/)
-    expect(summary.detail).toMatch(/7 minutes inside its own deadline/)
+    expect(summary.detail).toMatch(new RegExp(`${Math.round(WALL_TIME_BUDGET_MS / 60000) - 3} minutes inside its own deadline`))
   })
 
   it('raises no killed alert, so the alert means what it says', async () => {

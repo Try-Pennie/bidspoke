@@ -64,15 +64,21 @@ export const ARCHIVE_STREAM = 'executions'
  * fire: a cap the clock reaches first is not a cap, it is a number that reads
  * like the control while the control is somewhere else.
  *
- * At two hours per hourly run the archive still gains an hour of ground per hour
- * of real time, so a backlog drains, just at half the rate the old comment
- * implied. Raising this requires raising WALL_TIME_BUDGET_MS with it, and a test
- * asserts the two agree.
+ * At two hours per hourly run the archive gained only an HOUR of ground per hour
+ * of real time, so it held station and never caught up (#1041). Raising this
+ * requires raising the wall budget with it, and a test asserts the two agree.
+ *
+ * BOTH NOW LIVE ON `CRON_RUN_BUDGET` (archive/deadline.ts), beside the REQUEST
+ * budget they have to be told apart from (#1048), and both were raised together
+ * once the run loop stopped being able to overshoot: 3 hours inside 13 minutes,
+ * which is two hours of ground per hour. These two names are kept as the
+ * derived reading, never a second copy, because two constants for one meaning
+ * leave every reader of the older one answering a superseded question (L428).
  */
-export const MAX_HOURS_PER_RUN = 2
+export const MAX_HOURS_PER_RUN = CRON_RUN_BUDGET.maxHours
 
 /** Wall-clock budget for one run, inside the platform's cron limit. */
-export const WALL_TIME_BUDGET_MS = 10 * 60 * 1000
+export const WALL_TIME_BUDGET_MS = CRON_RUN_BUDGET.wallMs
 
 /**
  * Two overlapping invocations would both drain and both send, doubling the
