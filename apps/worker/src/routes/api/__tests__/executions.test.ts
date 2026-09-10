@@ -613,9 +613,13 @@ describe('archived lineage on the detail route (#874)', () => {
     })
 
     const res = await request(app, 'GET', '/executions/exec-old')
-    const body = await res.json() as { child_executions: Array<{ id: string }> }
-    expect(body.child_executions).toHaveLength(1)
-    expect(body.child_executions[0].id).toBe('child-1')
+    const body = await res.json() as Record<string, unknown>
+    const children = body.child_executions as Array<{ id: string }>
+    expect(children).toHaveLength(1)
+    expect(children[0].id).toBe('child-1')
+    // A list that WAS established carries no doubt marker, so an empty one
+    // beside it genuinely means none.
+    expect(body.child_executions_unavailable).toBeUndefined()
   })
 
   it('still serves the execution when the children lookup cannot be answered', async () => {
@@ -636,5 +640,8 @@ describe('archived lineage on the detail route (#874)', () => {
     expect(res.status).toBe(200)
     const body = await res.json() as Record<string, unknown>
     expect(body.id).toBe('exec-old')
+    // But it must SAY it could not tell. An empty list alone would read as
+    // "nothing was ever re-run from this", which nothing established.
+    expect(body.child_executions_unavailable).toBe(true)
   })
 })

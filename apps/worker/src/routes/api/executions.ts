@@ -355,10 +355,14 @@ executions.get('/:id', async (c) => {
 
     // A replay or resume can be created any day the parent is still readable,
     // so it lands on its own archive day and the parent's own narrow window
-    // never finds it. An unreachable read answers with no children rather than
-    // failing the whole page: the execution itself is already in hand, and one
-    // wrong "nothing was re-run from this" is better handled by saying nothing
-    // than by refusing the run the person asked for.
+    // never finds it.
+    //
+    // An unreachable read does NOT fail the whole page: the execution itself is
+    // already in hand, and refusing it because a secondary lookup failed would
+    // withhold what the person asked for. But it must not answer with an empty
+    // list either, because an empty list says "nothing was ever re-run from
+    // this", which is a claim this read never established (L10, L11). It says
+    // it could not tell, and the page says so too.
     const archivedChildren = await readArchivedChildren(c.env, {
       parentExecutionId: id,
       parentDay: archived.archiveDay,
@@ -370,6 +374,7 @@ executions.get('/:id', async (c) => {
         ...archived.execution,
         steps: archivedSteps,
         child_executions: archivedChildren.kind === 'ok' ? archivedChildren.children : [],
+        ...(archivedChildren.kind === 'ok' ? {} : { child_executions_unavailable: true as const }),
         // Per-lead economics live on the sighting, which is kept for about two
         // days, so an archived run never has one. Null is "not recorded",
         // which is exactly right here.
