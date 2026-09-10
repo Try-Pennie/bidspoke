@@ -53,10 +53,37 @@ const CLEAN = {
  */
 let recordedHours: string[] | null = null
 
-function makeSupabase() {
+/**
+ * How far behind the live archive is, for the yield rule (#1032). Default is a
+ * healthy lag, because that is the ordinary case every other test here means.
+ *
+ * Reset in a top-level beforeEach rather than per describe: a test that sets it
+ * to null leaks that into every later block otherwise, and the symptom lands
+ * far away as an unrelated assertion (L205).
+ */
+const HEALTHY_LAG = () => new Date(Date.now() - 2 * 3_600_000).toISOString()
+let watermarkHour: string | null = HEALTHY_LAG()
+
+beforeEach(() => {
+  watermarkHour = HEALTHY_LAG()
+})
+
+function makeSupabase(hourRows?: Array<{ hour_start: string }>) {
   return {
     from: (table: string) =>
-      table === 'execution_archive_hours'
+      table === 'execution_archive_progress'
+        ? {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({
+                    data: watermarkHour === null ? null : { watermark_hour: watermarkHour },
+                    error: null,
+                  }),
+              }),
+            }),
+          }
+        : table === 'execution_archive_hours'
         ? {
             select: () => ({
               in: (_col: string, hours: string[]) =>
@@ -64,9 +91,11 @@ function makeSupabase() {
                   // Postgres shape, NOT the ISO the caller asked with: a route
                   // that compares these raw finds no match, silently redoes
                   // everything, and the treadmill comes back with no symptom.
-                  data: (recordedHours ?? hours).map((h) => ({
-                    hour_start: h.replace('T', ' ').replace('.000Z', '+00'),
-                  })),
+                  data:
+                    hourRows ??
+                    (recordedHours ?? hours).map((h) => ({
+                      hour_start: h.replace('T', ' ').replace('.000Z', '+00'),
+                    })),
                   error: null,
                 }),
             }),
@@ -287,22 +316,78 @@ describe('reading Postgres timestamps back', () => {
     ]) {
       vi.mocked(runExecutionArchive).mockClear()
       recordedHours = null
-      const supa = {
-        from: (table: string) =>
-          table === 'execution_archive_hours'
-            ? { select: () => ({ in: () => Promise.resolve({ data: [{ hour_start: rendering }], error: null }) }) }
-            : ({} as Record<string, unknown>),
-        rpc: (name: string) =>
-          name === 'auth_user_with_allowlist'
-            ? Promise.resolve({ data: [{ ...testUser, allowed: true }], error: null })
-            : Promise.resolve({ data: [], error: null }),
-      }
-      vi.mocked(createSupabaseClient).mockReturnValue(supa as unknown as ReturnType<typeof createSupabaseClient>)
+      // The shared double, given this rendering, rather than a second one
+      // written inline: a second copy answers a different set of tables and
+      // drifts from the real client exactly where nobody is looking (L52).
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase([{ hour_start: rendering }]) as unknown as ReturnType<typeof createSupabaseClient>
+      )
 
       await post(app, { day: DAY })
 
       const deps = vi.mocked(runExecutionArchive).mock.calls[0][2] as { alreadyRecorded?: ReadonlySet<string> }
       expect([...(deps.alreadyRecorded ?? [])], `"${rendering}" was not recognised as hour 00`).toEqual([dayHours[0]])
     }
+  })
+})
+
+/**
+ * The repair yields to the live archive (#1027, #1032).
+ *
+ * They take the same lock. On 2026-08-23 a script drove this route every three
+ * minutes for three hours, every hourly run answered skipped-locked, and the
+ * live watermark sat still for 3.6 hours while the standstill alert blamed
+ * Snowflake, which was fine.
+ */
+describe('POST /api/admin/re-archive yields to the live archive', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload as never)
+    vi.mocked(runExecutionArchive).mockResolvedValue(CLEAN as never)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    app = await makeApp()
+  })
+
+  it('runs normally while the archive is keeping up', async () => {
+    const res = await post(app, { hour: SETTLED_HOUR })
+
+    expect(res.status).not.toBe(409)
+    expect(vi.mocked(runExecutionArchive)).toHaveBeenCalled()
+  })
+
+  it('refuses BEFORE taking the lock when the archive has lost ground', async () => {
+    watermarkHour = new Date(Date.now() - 9 * 3_600_000).toISOString()
+
+    const res = await post(app, { hour: SETTLED_HOUR })
+
+    expect(res.status).toBe(409)
+    // Refusing after the work started would have already displaced the hours
+    // the refusal exists to protect (L667).
+    expect(vi.mocked(runExecutionArchive)).not.toHaveBeenCalled()
+    const body = await res.json() as { error: string; hoursBehind: number }
+    expect(body.hoursBehind).toBeGreaterThan(4)
+    expect(body.error).toContain('hours behind')
+  })
+
+  it('refuses when it cannot tell how far behind the archive is', async () => {
+    watermarkHour = null
+
+    const res = await post(app, { hour: SETTLED_HOUR })
+
+    expect(res.status).toBe(409)
+    expect(vi.mocked(runExecutionArchive)).not.toHaveBeenCalled()
+  })
+
+  it('goes ahead when the caller forces it in that request', async () => {
+    watermarkHour = new Date(Date.now() - 40 * 3_600_000).toISOString()
+
+    const res = await post(app, { hour: SETTLED_HOUR, force: true })
+
+    expect(res.status).not.toBe(409)
+    expect(vi.mocked(runExecutionArchive)).toHaveBeenCalled()
   })
 })
