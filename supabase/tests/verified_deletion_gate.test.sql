@@ -1,10 +1,29 @@
 -- Behavioural tests for the execution deletion gate (#873, #1014, #1137).
 --
--- WHERE THIS RUNS. Against a THROWAWAY Supabase branch, never against production
--- and never against any database holding real executions. The procedures under
--- test empty and drop partitions, and no rollback can undo them here: they COMMIT
--- after each partition on purpose, to release the lock, so a wrapping transaction
--- is not available as isolation. The isolation is the DATABASE.
+-- WHERE THIS RUNS, and it is not all one answer (#1252).
+--
+-- PART 1 RUNS READ ONLY AGAINST PRODUCTION, and should. `verified_day_refusal`
+-- is IMMUTABLE, takes only scalars and touches no table, so every decision case
+-- in part 1 is a pure function call: it reads nothing, writes nothing, and can
+-- be evaluated as one SELECT against the live database. Verified that way on
+-- 2026-09-10 while shipping #1249, all cases passing, including the four added
+-- for it.
+--
+-- That matters because the branch instruction below is why these cases had gone
+-- unrun: a branch is a cost, a setup step and a memory note about migrations
+-- failing on it, so the cheap thing to do was skip the file entirely. The most
+-- valuable half of it never needed one.
+--
+-- A MUTATION CHECK IS ALSO POSSIBLE READ ONLY: define the broken version of the
+-- rule as a `pg_temp` function and evaluate the same cases against it in the
+-- same statement. `pg_temp` is per session and touches nothing shared, so the
+-- case can be SEEN to fail without altering the live routine (L1).
+--
+-- EVERYTHING FROM PART 2 ON NEEDS A THROWAWAY BRANCH, never production and never
+-- any database holding real executions. Those procedures empty and drop
+-- partitions, and no rollback can undo them here: they COMMIT after each
+-- partition on purpose, to release the lock, so a wrapping transaction is not
+-- available as isolation. The isolation is the DATABASE.
 --
 -- Create one with the Supabase MCP `create_branch` (about $0.013 an hour, deleted
 -- afterwards), or any empty Postgres 17 with pg_cron. Then run this file top to
