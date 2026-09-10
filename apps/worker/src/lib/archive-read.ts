@@ -536,7 +536,12 @@ export async function searchArchive(
       source: textCell(row[6]),
     }))
 
-    const blindWorkflows = ssn ? await workflowsWithoutSightings(supabase, opts.orgId) : []
+    // A trace id reaches every archived run, so nothing is blind to it and the
+    // lookup is not even made.
+    const blind = ssn
+      ? await workflowsWithoutSightings(supabase, opts.orgId)
+      : { names: [], measured: true }
+    const blindWorkflows = blind.names
 
     // The audit row records that a search HAPPENED and by which kind of term.
     // The term itself is deliberately absent: writing an SSN here would copy
@@ -555,10 +560,12 @@ export async function searchArchive(
       kind: 'ok',
       results,
       coverage: {
-        complete: blindWorkflows.length === 0,
+        complete: blind.measured && blindWorkflows.length === 0,
         blindWorkflows,
-        note:
-          blindWorkflows.length === 0
+        note: !blind.measured
+          ? `Which workflows this search cannot see could not be checked, so treat an empty ` +
+            `result as undecided rather than as this person never being seen.`
+          : blindWorkflows.length === 0
             ? null
             : `This search finds a person through their recorded lead sightings. ` +
               `${blindWorkflows.join(' and ')} ${blindWorkflows.length === 1 ? 'does' : 'do'} not record them, ` +
@@ -583,9 +590,9 @@ export async function searchArchive(
 async function workflowsWithoutSightings(
   supabase: SupabaseClient,
   orgId: string,
-): Promise<string[]> {
+): Promise<{ names: string[]; measured: boolean }> {
   // paginate-ok: one organization's workflows, tens of rows
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('workflows')
     .select('name')
     .eq('organization_id', orgId)
@@ -593,7 +600,14 @@ async function workflowsWithoutSightings(
     .eq('is_active', true)
     .is('deleted_at', null)
     .order('name', { ascending: true })
-  return ((data ?? []) as Array<{ name: unknown }>)
+  // A FAILED read is not "no blind workflows". Returning an empty list here
+  // would flip the caveat off, and off is the direction that makes the search
+  // claim a completeness nothing established (L215, L11). The caller reports
+  // that it could not tell instead.
+  if (error) return { names: [], measured: false }
+
+  const names = ((data ?? []) as Array<{ name: unknown }>)
     .map((row) => (typeof row.name === 'string' ? row.name : null))
     .filter((name): name is string => name !== null)
+  return { names, measured: true }
 }

@@ -31,7 +31,7 @@ const env = {
 interface Audited { entityType: string; action: string; changes?: Record<string, unknown> }
 
 /** Answers the blind-workflow lookup from the workflows table, as the real one does. */
-function supabaseDouble(blindNames: string[]) {
+function supabaseDouble(blindNames: string[], failLookup = false) {
   return {
     from() {
       const chain: Record<string, unknown> = {
@@ -41,8 +41,8 @@ function supabaseDouble(blindNames: string[]) {
         order() { return chain },
         then(res: (v: unknown) => unknown) {
           return Promise.resolve({
-            data: blindNames.map((name) => ({ name })),
-            error: null,
+            data: failLookup ? null : blindNames.map((name) => ({ name })),
+            error: failLookup ? { message: 'statement timeout' } : null,
           }).then(res)
         },
       }
@@ -196,6 +196,24 @@ describe('searchArchive by SSN', () => {
     // identity into it would copy the PII into a second, longer lived place.
     expect(JSON.stringify(audits[0])).not.toContain('123-45-6789')
     expect(audits[0].changes?.by).toBe('ssn')
+  })
+})
+
+describe('searchArchive when it cannot establish its own coverage', () => {
+  it('does not claim complete coverage when the blind-workflow lookup fails', async () => {
+    const { deps } = makeDeps([[]])
+
+    const result = await searchArchive(
+      env, supabaseDouble([], true), { ssn: '123-45-6789', orgId: ORG, readBy: READER }, deps
+    )
+
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    // An empty blind list from a FAILED read looks identical to a genuinely
+    // empty one, and treating it as empty flips the caveat off in the one
+    // direction that makes the search overstate what it knows (L215).
+    expect(result.coverage.complete).toBe(false)
+    expect(result.coverage.note).toContain('could not be checked')
   })
 })
 
