@@ -24,6 +24,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { utcDayFromUuidV7 } from '@bidspoke/uuidv7'
+import { RETENTION_DAYS } from '../archive/candidate-days'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
 import { executeStatement, type SnowflakeStatementResponse, type SnowflakeConfig } from './snowflake'
 import { decodeBundle } from '../archive/bundle'
@@ -82,6 +83,20 @@ function neighbouringDays(day: string): [string, string, string] {
   const at = Date.parse(`${day}T00:00:00.000Z`)
   const asDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
   return [asDay(at - 86_400_000), day, asDay(at + 86_400_000)]
+}
+
+/**
+ * One text cell, or null.
+ *
+ * Deliberately NOT `String(cell)`: the SQL API is typed `unknown[][]`, and
+ * String() on an object yields the literal "[object Object]", which then
+ * renders on the page as though it were the value. A cell that is not already
+ * text is not a value this can report, so it reports nothing.
+ */
+function textCell(cell: unknown): string | null {
+  if (typeof cell === 'string') return cell
+  if (typeof cell === 'number' || typeof cell === 'bigint') return String(cell)
+  return null
 }
 
 /**
@@ -222,4 +237,181 @@ export async function readArchivedExecution(
     archiveDay: day_,
     archivedIncomplete: asBoolean(incomplete),
   }
+}
+
+/**
+ * Child runs (a replay or a resume) whose parent is this execution (#874).
+ *
+ * WHY THIS IS BOUNDED THE WAY IT IS. A child can be created at any time while
+ * the parent is still readable, so it can land on a later day than the parent
+ * and is not found by the parent's own three day window. The bound runs from
+ * the parent's day to that day plus the retention window plus one, because a
+ * child cannot be created from a parent Postgres no longer holds. RETENTION_DAYS
+ * is the shared constant the purge itself uses rather than a literal, so
+ * changing retention moves this with it.
+ */
+export async function readArchivedChildren(
+  env: Env,
+  opts: { parentExecutionId: string; parentDay: string; orgId: string; deadlineMs?: number },
+  deps: ArchiveReadDeps = {},
+): Promise<
+  | { kind: 'ok'; children: Array<Record<string, unknown>> }
+  | { kind: 'unavailable'; waitingFor: string; detail: string }
+> {
+  const execute = deps.execute ?? executeStatement
+  const sleep = deps.sleep ?? defaultSleep
+  const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
+
+  const at = Date.parse(`${opts.parentDay}T00:00:00.000Z`)
+  const lastDay = new Date(at + (RETENTION_DAYS + 1) * 86_400_000).toISOString().slice(0, 10)
+
+  const statement =
+    `SELECT execution_id, started_at_utc, status, outcome, source ` +
+    `FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+    `WHERE parent_execution_id = ? AND archive_day BETWEEN ?::DATE AND ?::DATE ` +
+    `AND organization_id = ? ORDER BY started_at_utc ASC`
+
+  let response: SnowflakeStatementResponse
+  try {
+    const raced = await Promise.race([
+      execute(archiveConfig(env, 'reader'), statement, [
+        opts.parentExecutionId,
+        opts.parentDay,
+        lastDay,
+        opts.orgId,
+      ]).then((r) => ({ timedOut: false as const, response: r })),
+      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
+    ])
+    if (raced.timedOut) {
+      return {
+        kind: 'unavailable',
+        waitingFor: ARCHIVE_READ_WAITING_FOR,
+        detail: `the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`,
+      }
+    }
+    response = raced.response
+  } catch (err) {
+    return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
+  }
+
+  const children = (response.data ?? []).map((row) => ({
+    id: textCell(row[0]) ?? '',
+    started_at: textCell(row[1]),
+    status: textCell(row[2]),
+    outcome: textCell(row[3]),
+    source: textCell(row[4]),
+  }))
+  return { kind: 'ok', children }
+}
+
+/**
+ * The completed steps a resumed execution inherits from an ARCHIVED parent.
+ *
+ * Without this a live child whose parent has aged into the archive renders with
+ * its upstream steps missing, which reads as "those steps never ran" rather
+ * than "those steps ran, on the run this one resumed from". That is a wrong
+ * statement about what happened, not a gap.
+ *
+ * Returns the parent's completed steps, or `unavailable` so the caller can say
+ * the parent could not be reached rather than silently showing fewer steps.
+ */
+export async function readArchivedParentSteps(
+  env: Env,
+  supabase: SupabaseClient,
+  opts: { parentExecutionId: string; orgId: string; readBy: string; deadlineMs?: number },
+  deps: ArchiveReadDeps = {},
+): Promise<
+  | { kind: 'ok'; steps: Array<Record<string, unknown>> }
+  | { kind: 'not-found' }
+  | { kind: 'unavailable'; waitingFor: string; detail: string }
+> {
+  const parent = await readArchivedExecution(
+    env,
+    supabase,
+    {
+      executionId: opts.parentExecutionId,
+      orgId: opts.orgId,
+      readBy: opts.readBy,
+      deadlineMs: opts.deadlineMs,
+    },
+    deps,
+  )
+  if (parent.kind !== 'found') return parent
+
+  const steps = parent.steps
+    .filter((s) => (s as { status?: unknown }).status === 'completed')
+    .map((s) => ({
+      ...(s as Record<string, unknown>),
+      inherited_from_execution_id: opts.parentExecutionId,
+    }))
+  return { kind: 'ok', steps }
+}
+
+/**
+ * One step, from an archived execution's bundle or from its parent's (#874).
+ *
+ * TWO BUNDLES, IN ORDER, and the order is the whole point. The lazy step route
+ * looks a step up by its own id and ignores the execution in the path,
+ * precisely so a resumed run can load a step whose row lives on the run it
+ * resumed from. So this cannot read one bundle: it resolves the named
+ * execution's, and when the step is not in it and that execution resumed from
+ * another, follows resumed_from_execution_id to the parent's.
+ *
+ * The three outcomes stay distinct. A step that is genuinely nowhere is
+ * `not-found`. A step that may sit on a parent nobody could reach is
+ * `unavailable`, because answering "no such step" there would be a claim this
+ * read never established, on a page that has already drawn the step as
+ * completed.
+ */
+export async function findArchivedStep(
+  env: Env,
+  supabase: SupabaseClient,
+  opts: { executionId: string; stepId: string; orgId: string; readBy: string; deadlineMs?: number },
+  deps: ArchiveReadDeps = {},
+): Promise<
+  | { kind: 'found'; step: Record<string, unknown> }
+  | { kind: 'not-found' }
+  | { kind: 'unavailable'; waitingFor: string; detail: string }
+> {
+  const own = await readArchivedExecution(
+    env,
+    supabase,
+    { executionId: opts.executionId, orgId: opts.orgId, readBy: opts.readBy, deadlineMs: opts.deadlineMs },
+    deps,
+  )
+  if (own.kind === 'unavailable') return own
+  if (own.kind === 'not-found') return { kind: 'not-found' }
+
+  const mine = stepById(own.steps, opts.stepId)
+  if (mine) return { kind: 'found', step: mine }
+
+  const resumedFrom = own.execution.resumed_from_execution_id
+  if (typeof resumedFrom !== 'string' || resumedFrom.length === 0) return { kind: 'not-found' }
+
+  const parent = await readArchivedExecution(
+    env,
+    supabase,
+    { executionId: resumedFrom, orgId: opts.orgId, readBy: opts.readBy, deadlineMs: opts.deadlineMs },
+    deps,
+  )
+  if (parent.kind === 'unavailable') return parent
+  if (parent.kind === 'not-found') return { kind: 'not-found' }
+
+  const inherited = stepById(parent.steps, opts.stepId)
+  if (!inherited) return { kind: 'not-found' }
+  return {
+    kind: 'found',
+    step: { ...inherited, inherited_from_execution_id: resumedFrom },
+  }
+}
+
+/** The step with this id, without the execution_id the route does not return. */
+function stepById(steps: unknown[], stepId: string): Record<string, unknown> | null {
+  for (const candidate of steps) {
+    const step = candidate as Record<string, unknown>
+    if (step.id !== stepId) continue
+    const { execution_id: _omit, ...rest } = step
+    return rest
+  }
+  return null
 }

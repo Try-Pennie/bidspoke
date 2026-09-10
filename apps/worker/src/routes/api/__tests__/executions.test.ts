@@ -18,7 +18,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
-import { readArchivedExecution } from '../../../lib/archive-read'
+import { readArchivedExecution, readArchivedChildren, readArchivedParentSteps } from '../../../lib/archive-read'
 import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
@@ -74,6 +74,8 @@ describe('GET /executions', () => {
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
+    vi.mocked(readArchivedChildren).mockResolvedValue({ kind: 'ok', children: [] })
+    vi.mocked(readArchivedParentSteps).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
   })
 
@@ -574,5 +576,65 @@ describe('GET /executions/step-duration-stats — org check precedes cache', () 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ p50: 42 })
     expect(cacheGet).toHaveBeenCalled()
+  })
+})
+
+describe('archived lineage on the detail route (#874)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload as never)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
+    vi.mocked(readArchivedChildren).mockResolvedValue({ kind: 'ok', children: [] })
+    vi.mocked(readArchivedParentSteps).mockResolvedValue({ kind: 'not-found' })
+    app = await makeApp()
+  })
+
+  const archivedParent = {
+    kind: 'found' as const,
+    execution: { id: 'exec-old', workflow_id: 'wf-1', status: 'completed' },
+    steps: [],
+    archiveDay: '2026-03-04',
+    archivedIncomplete: false,
+  }
+
+  it('lists the replay and resume runs created from an archived execution', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue(archivedParent)
+    vi.mocked(readArchivedChildren).mockResolvedValue({
+      kind: 'ok',
+      children: [{ id: 'child-1', status: 'completed', source: 'replay', started_at: null, outcome: null }],
+    })
+
+    const res = await request(app, 'GET', '/executions/exec-old')
+    const body = await res.json() as { child_executions: Array<{ id: string }> }
+    expect(body.child_executions).toHaveLength(1)
+    expect(body.child_executions[0].id).toBe('child-1')
+  })
+
+  it('still serves the execution when the children lookup cannot be answered', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue(archivedParent)
+    vi.mocked(readArchivedChildren).mockResolvedValue({
+      kind: 'unavailable', waitingFor: 'the execution archive', detail: 'no answer',
+    })
+
+    // The run itself is already in hand. Refusing the whole page because a
+    // secondary lookup failed would withhold what the person asked for.
+    const res = await request(app, 'GET', '/executions/exec-old')
+    expect(res.status).toBe(200)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.id).toBe('exec-old')
   })
 })
