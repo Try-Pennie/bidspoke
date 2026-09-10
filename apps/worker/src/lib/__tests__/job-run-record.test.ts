@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { startJobRun, finishJobRun } from '../job-run-record'
+import { startJobRun, finishJobRun, withJobRun } from '../job-run-record'
 
 interface Recorded { table: string; op: string; row: Record<string, unknown> }
 
@@ -147,5 +147,66 @@ describe('finishJobRun', () => {
     const handle = await startJobRun(db.client, 'execution-archive')
 
     await expect(finishJobRun(db.client, handle, { outcome: 'caught-up' })).resolves.toBeUndefined()
+  })
+})
+
+/**
+ * One wrapper for "open a run record, do the work, always close it" (#1251).
+ *
+ * Four archive jobs need the same three steps in the same order, and the
+ * ordering is load bearing: the ending must be written in a `finally`, or a run
+ * that THREW becomes indistinguishable from one the platform killed, which is
+ * the single distinction this record exists to make. Written out at each site
+ * that is four chances to get the `finally` wrong, and the one that gets it
+ * wrong is silent (L613).
+ */
+describe('withJobRun', () => {
+  it('records the start, runs the work, and closes with the ending the caller derived', async () => {
+    const { client, writes } = supabaseDouble()
+
+    const result = await withJobRun(client, 'a-job', async () => 'the answer', (value) => ({
+      outcome: 'ok',
+      summary: { value },
+    }))
+
+    expect(result).toBe('the answer')
+    expect(writes.find((w) => w.op === 'insert')?.row).toMatchObject({ job: 'a-job' })
+    const close = writes.find((w) => w.op === 'update')
+    expect(close?.row).toMatchObject({ outcome: 'ok', summary: { value: 'the answer' } })
+  })
+
+  it('closes with an ending that says it threw, and lets the error through', async () => {
+    const { client, writes } = supabaseDouble()
+
+    await expect(
+      withJobRun(client, 'a-job', async () => { throw new Error('the work failed') }, () => ({ outcome: 'ok' }))
+    ).rejects.toThrow('the work failed')
+
+    // The row is CLOSED, saying it threw. A run with NO ending means the
+    // platform killed it, and conflating the two destroys the distinction this
+    // record exists for.
+    const close = writes.find((w) => w.op === 'update')
+    expect(close?.row).toMatchObject({ outcome: 'threw' })
+  })
+
+  it('does not let a failure to derive the ending swallow the work\'s own error', async () => {
+    const { client } = supabaseDouble()
+
+    await expect(
+      withJobRun(
+        client,
+        'a-job',
+        async () => { throw new Error('the work failed') },
+        () => { throw new Error('the summary blew up') },
+      )
+    ).rejects.toThrow('the work failed')
+  })
+
+  it('does not fail the work when the record cannot be opened', async () => {
+    const { client } = supabaseDouble({ id: null })
+
+    // A bookkeeping row must never be able to stop the job it describes.
+    const result = await withJobRun(client, 'a-job', async () => 'done', () => ({ outcome: 'ok' }))
+    expect(result).toBe('done')
   })
 })

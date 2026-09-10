@@ -18,6 +18,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { withJobRun } from './job-run-record'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, SnowflakeStatementError, type SnowflakeStatementResponse } from './snowflake'
 import {
@@ -219,6 +220,28 @@ async function observe(
 }
 
 export async function checkArchiveIdentities(
+  env: Env,
+  supabase: SupabaseClient,
+  deps: IdentityCheckDeps = {},
+): Promise<IdentityCheckResult> {
+  // See the note on the settings check: a check whose only liveness sign is an
+  // alert cannot be told apart from one that died (#1251).
+  return withJobRun(
+    supabase,
+    ARCHIVE_IDENTITY_JOB,
+    () => identityPass(env, supabase, deps),
+    (result) => ({
+      outcome: result.findings.length === 0 ? 'ok' : 'findings',
+      detail:
+        result.findings.length === 0
+          ? undefined
+          : `${result.findings.length} identity finding${result.findings.length === 1 ? '' : 's'}`,
+      summary: { findings: result.findings.length, alerted: result.alerted },
+    }),
+  )
+}
+
+async function identityPass(
   env: Env,
   supabase: SupabaseClient,
   deps: IdentityCheckDeps = {},

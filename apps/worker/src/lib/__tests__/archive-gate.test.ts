@@ -465,6 +465,28 @@ describe('the payload probe', () => {
     expect(resultFor(summary, OLDEST_DAY).measurement?.probeSampled).toBe(1)
   })
 
+  it('says how many bundles are missing, not only the first one', async () => {
+    // One missing out of four reads as a data problem; three out of four reads
+    // as the day never having been sent. Sixteen consecutive days of alerts
+    // could not tell those apart (#1128).
+    const sample = [
+      { execution_id: 'e-1', trace_id: 't-1', step_count: 2 },
+      { execution_id: 'e-2', trace_id: 't-2', step_count: 2 },
+      { execution_id: 'e-3', trace_id: 't-3', step_count: 2 },
+      { execution_id: 'e-4', trace_id: 't-4', step_count: 2 },
+    ]
+    const bundles = new Map([['e-2', { wire: await bundleFor('e-2', 2), traceId: 't-2' }]])
+    const { summary } = await run({
+      perDay: { [OLDEST_DAY]: facts({ sample }) },
+      bundles,
+    })
+
+    const reason = resultFor(summary, OLDEST_DAY).measurement?.probeFailureReason ?? ''
+    expect(reason).toMatch(/3 of the 4/)
+    // Still names one, so somebody has an id to go and look at.
+    expect(reason).toMatch(/e-1|e-3|e-4/)
+  })
+
   it('fails the day when the bundle belongs to a different execution', async () => {
     const bundles = new Map([['e-1', { wire: await bundleFor('someone-else', 2), traceId: 't-1' }]])
     const { summary } = await run({ bundles })
