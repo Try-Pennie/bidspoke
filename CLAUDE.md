@@ -125,7 +125,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Encryption / PII | `SECRET_ENCRYPTION_KEY` (env-var reveal), `SSN_HASH_PEPPER` (person dedup — effectively immutable) |
 | Snowflake export | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | Salesforce | `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
-| Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY` |
+| Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY`, `FFN_PARTNER_KEY` (shared with Achieve, matched by their firewall Skip rule; see disaster-recovery.md) |
 | Optional (feature-gated) | `GITHUB_TOKEN` (workflow backup), `GITHUB_ACTIONS_TOKEN` (reads this repo's Actions history for the scheduled-workflow watch, #842, and dispatches those workflows, #1058, so it needs Actions read AND write), `ANTHROPIC_API_KEY` (changelog drafting) |
 
 ### Cloudflare log access is partner API key access (#958)

@@ -73,6 +73,23 @@ export const REQUIRED_PARTNER_SECRETS = [
   'SALESFORCE_CLIENT_SECRET',
   'EQUIFAX_PASSWORD',
   'TRIPOINT_PROXY_SECRET',
+  // The shared key FFN's firewall Skip rule matches on, sent by both the Achieve
+  // Offers node and the Eligibility Scout code node (see engine/nodes/ffn-identity.ts).
+  // Listed here and not with the feature-gated partners above because the Scout call
+  // is on the live Main Flow path: unset, that path stays blocked, and the only thing
+  // that reports it is a field-presence alert four days later, naming a symptom.
+  //
+  // Read what this actually measures before trusting it. This guard checks the WORKER
+  // BINDING, and the Achieve node reads the DB copy (`ctx.env`, loaded per org by
+  // env-loader). They are two copies of one value, written together by the
+  // Environment Variables page (a secret row there is stored AND pushed to the
+  // binding by setCfSecret), which is why the binding is a usable proxy at all. So it
+  // catches the case that actually happens, nobody ever created it, and it is blind
+  // to the DB row being deleted or blanked while the binding survives, which is the
+  // direction that breaks the node silently. Nothing covers that today: the
+  // required-env-vars guard (#394) reads `is_secret=false` rows only and cannot see
+  // this one. Tracked in #1263.
+  'FFN_PARTNER_KEY',
 ] as const
 
 /** Required secrets (core + partner) that are absent, empty, or whitespace-only, in declared order. */
