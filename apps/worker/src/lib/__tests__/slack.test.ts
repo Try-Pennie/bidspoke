@@ -1386,6 +1386,27 @@ describe('sendGroupedRecoveryAlert', () => {
     expect(text.match(/"Recovered"/g)?.length).toBe(1)
   })
 
+  // The line cap was sized for the page's 120 character lines (L81: size a
+  // batch in the unit the limit is expressed in). An all-clear line is nearly
+  // three times longer, so twenty of them would be refused by Slack, never
+  // settle, and be rebuilt identically on every tick.
+  it('keeps the section under Slack\'s 3,000 character block limit however many subjects recovered', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      ...items[0],
+      subject: `RML - Bidding Workflow (LendSwift) ping_lendswift.data.data.field_${i}`,
+      url: 'https://bidspoke.trypennie.dev/workflows/e1b810da-16c0-49eb-bf12-ba1c9b67c914',
+    }))
+    await sendGroupedRecoveryAlert(
+      slack,
+      'C1',
+      { signal: 'output field stopped', measuredWindowMinutes: 60, items: many },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    expect(section.length).toBeLessThanOrEqual(3000)
+    expect(section).toMatch(/and \d+ more/)
+  })
+
   it('reports a delivery failure so the caller keeps every incident open', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
     const ok = await sendGroupedRecoveryAlert(
