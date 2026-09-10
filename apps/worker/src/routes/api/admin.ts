@@ -25,7 +25,8 @@ import { runArchiveGate } from '../../lib/archive-gate'
 import { checkTripointPricing } from '../../lib/tripoint-pricing-check'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
-import { archiveHealth } from '../../lib/archive-health'
+import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
+import { mayRepairRun } from '../../archive/repair-priority'
 import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
@@ -415,11 +416,37 @@ async function recordedHoursAmong(
 }
 
 admin.post('/re-archive', async (c) => {
-  const body = await c.req.json<{ hour?: unknown; day?: unknown }>().catch(() => ({}))
+  const body = await c.req
+    .json<{ hour?: unknown; day?: unknown; force?: unknown }>()
+    .catch(() => ({}) as { hour?: unknown; day?: unknown; force?: unknown })
   const request = parseReArchiveRequest(body, new Date())
   if (!request.ok) return c.json({ error: request.reason }, 400)
 
   const supabase = createSupabaseClient(c.env)
+
+  // THE REPAIR YIELDS TO THE LIVE ARCHIVE (#1027, #1032).
+  //
+  // This route takes the same run lock the hourly archive takes and holds it
+  // for 80 to 320 seconds. On 2026-08-23 a script drove it every three minutes
+  // for three hours; every hourly run answered `skipped-locked`, the live
+  // watermark sat at 15:00 UTC, and the standstill alert fired blaming
+  // Snowflake, which was fine. The archive was starving itself with its own
+  // repair.
+  //
+  // Refused BEFORE the lock is taken, not after: a refusal that happens once
+  // the work is under way has already displaced the hours it was meant to
+  // protect (L667).
+  const watermarkHoursBehind = await hoursBehindWatermark(supabase, new Date())
+  const verdict = mayRepairRun({
+    hoursBehind: watermarkHoursBehind,
+    force: body.force === true,
+  })
+  if (!verdict.allowed) {
+    return c.json(
+      { error: verdict.reason, hoursBehind: watermarkHoursBehind, hours: request.hours },
+      409,
+    )
+  }
 
   // A day is a repair of what is missing, so what is already there is left alone.
   // A named hour is a deliberate redo, so nothing is skipped.

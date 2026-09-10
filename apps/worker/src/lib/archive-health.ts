@@ -141,6 +141,26 @@ async function lastRunPerJob(supabase: SupabaseClient): Promise<JobLastRun[]> {
   return rows
 }
 
+/**
+ * How far behind the live archive is, in whole hours, or null when that cannot
+ * be established.
+ *
+ * Exported because two things now need it and a second copy would drift: this
+ * report, and the repair's decision about whether to stand aside (#1032). Null
+ * is "could not tell", never zero, because a caller that reads a failed lookup
+ * as "keeping up" proceeds on an assumption nobody measured (L215).
+ */
+export async function hoursBehindWatermark(
+  supabase: SupabaseClient,
+  now: Date,
+): Promise<number | null> {
+  try {
+    return (await readWatermark(supabase, now)).hoursBehind
+  } catch {
+    return null
+  }
+}
+
 async function readWatermark(
   supabase: SupabaseClient,
   now: Date,
