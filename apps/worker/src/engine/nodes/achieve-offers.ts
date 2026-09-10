@@ -49,7 +49,7 @@ import { isShadowDryRun, shadowAchieveStub } from '../shadow'
 import { parseJsonSafe } from '../../lib/json'
 import { screenLead } from './achieve-screen'
 import { resolveAchieveEndpoint } from './achieve-endpoint'
-import { ffnIdentityHeaders } from './ffn-identity'
+import { achieveIdentityHeaders } from './achieve-identity'
 
 export interface AchieveOffersConfig {
   wait_for_offers?: boolean
@@ -269,10 +269,10 @@ export async function executeAchieveOffersNode(
       headers: {
         'Content-Type': 'application/json',
         Authorization: 'Basic ' + btoa(`${username}:${password}`),
-        // Without these the call is refused by FFN's firewall before it reaches
-        // Achieve, for what another Workers tenant did with the shared egress
-        // address we all leave from. See ffn-identity.ts.
-        ...ffnIdentityHeaders(ctx.env),
+        // Without these the call is refused by Achieve's firewall before it reaches
+        // their API, for what another Workers tenant did with the shared egress
+        // address we all leave from. See achieve-identity.ts.
+        ...achieveIdentityHeaders(ctx.env),
       },
       body: JSON.stringify(request),
       signal: controller.signal,
