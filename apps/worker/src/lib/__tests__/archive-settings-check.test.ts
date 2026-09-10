@@ -23,6 +23,7 @@ vi.mock('../export-alerts', () => ({ notifyExportFailure: vi.fn().mockResolvedVa
 import {
   checkArchiveSettings,
   ARCHIVE_SETTINGS_JOB,
+  DECLARED_SNOWFLAKE_ACCOUNT,
   EXPECTED_EXTRA_COLUMNS,
 } from '../archive-settings-check'
 import { ARCHIVE_UNDO_WINDOW_DAYS } from '../archive-snowflake'
@@ -74,6 +75,7 @@ function run(
     schema?: Answer
     database?: Answer
     columns?: Answer
+    account?: Answer
   } = {},
 ) {
   const answers = {
@@ -81,13 +83,18 @@ function run(
     schema: opts.schema ?? retention(ARCHIVE_UNDO_WINDOW_DAYS),
     database: opts.database ?? retention(ARCHIVE_UNDO_WINDOW_DAYS),
     columns: opts.columns ?? columnsResponse(ALL_COLUMNS),
+    // The account the archive setup was applied to, so the ordinary case here
+    // is a check reading the RIGHT account (#1052).
+    account: opts.account ?? ({ data: [[DECLARED_SNOWFLAKE_ACCOUNT]] } as SnowflakeStatementResponse),
   }
 
   return checkArchiveSettings(env, supabase, {
     query: async (statement: string) => {
       issued.push(statement)
       const upper = statement.toUpperCase()
-      const answer = upper.includes('INFORMATION_SCHEMA.COLUMNS')
+      const answer = upper.includes('CURRENT_ACCOUNT')
+        ? answers.account
+        : upper.includes('INFORMATION_SCHEMA.COLUMNS')
         ? answers.columns
         : upper.includes('INFORMATION_SCHEMA.TABLES')
           ? answers.table
@@ -295,5 +302,62 @@ describe('when a read fails', () => {
     })
 
     expect(result.differences.map((d) => d.code)).toEqual(['unreadable', 'columns-missing'])
+  })
+})
+
+/**
+ * Which account these readings came from (#1052).
+ *
+ * Every reading in this check is a statement ABOUT an account, and nothing
+ * asserted which one. A rotated secret, a restored config or a second account
+ * would leave the daily check reporting a healthy retention window and a
+ * correct column set belonging to somewhere the archive is not being written,
+ * which is the most reassuring possible way to be wrong (L58).
+ */
+describe('the account these checks are reading', () => {
+  it('says nothing when it is the account the setup was applied to', async () => {
+    const result = await run()
+
+    expect(result.differences.map((d) => d.code)).not.toContain('wrong-account')
+    expect(result.observed.account).toBe(DECLARED_SNOWFLAKE_ACCOUNT)
+  })
+
+  it('reports a different account, and says it invalidates the readings below', async () => {
+    const result = await run({
+      account: { data: [['SOMEWHERE_ELSE']] } as SnowflakeStatementResponse,
+    })
+
+    const wrong = result.differences.find((d) => d.code === 'wrong-account')
+    expect(wrong).toBeDefined()
+    expect(wrong?.message).toContain('SOMEWHERE_ELSE')
+    expect(wrong?.message).toContain(DECLARED_SNOWFLAKE_ACCOUNT)
+    // The point of reporting it at all: a healthy looking window from the wrong
+    // account is worse than an unreadable one.
+    expect(wrong?.message).toMatch(/rather than the archive|including any that look healthy/)
+  })
+
+  it('reports it FIRST, ahead of the settings it would invalidate', async () => {
+    const result = await run({
+      account: { data: [['SOMEWHERE_ELSE']] } as SnowflakeStatementResponse,
+      table: retention(1),
+    })
+
+    expect(result.differences[0].code).toBe('wrong-account')
+    expect(result.differences.length).toBeGreaterThan(1)
+  })
+
+  it('reports an unreadable account rather than assuming it is the right one', async () => {
+    const result = await run({ account: new Error('refused') })
+
+    expect(result.observed.account).toBeNull()
+    expect(result.differences.map((d) => d.code)).toContain('unreadable')
+  })
+
+  it('does not lose the other readings when the account read fails', async () => {
+    // Read last on purpose: a failure here must not cost the settings above it.
+    const result = await run({ account: new Error('refused') })
+
+    expect(result.observed.retentionDays).toBe(ARCHIVE_UNDO_WINDOW_DAYS)
+    expect(result.observed.columns).not.toBeNull()
   })
 })

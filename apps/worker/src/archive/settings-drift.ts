@@ -36,12 +36,25 @@ export interface ObservedSettings {
   surroundingRetentionDays: { level: string; days: number | null }[]
   /** Columns the table actually has, or null if the read failed. */
   columns: string[] | null
+  /**
+   * The Snowflake account these reads actually reached, or null if unreadable.
+   *
+   * Every archive check trusts that SNOWFLAKE_ACCOUNT names the account the
+   * setup SQL was run against, and nothing asserted it. If the two diverge,
+   * through a rotated secret, a restored config or a second account, this check
+   * would report a healthy retention window and a correct column set belonging
+   * to somewhere the archive is not being written, which is the most
+   * reassuring possible way to be wrong (#1052, L58).
+   */
+  account: string | null
   /** Why a reading is null, when it is. */
   unreadable: string[]
 }
 
 export interface DeclaredSettings {
   retentionDays: number
+  /** The account ADR 0009 recorded the setup as applied to, measured 2026-08-20. */
+  account: string
   /** Columns the writer names in its INSERT. Every one must exist or every send fails. */
   requiredColumns: string[]
   /**
@@ -74,6 +87,19 @@ export function settingsDifferences(
     // could not read the setting has established nothing, and reporting nothing
     // is what makes an unverified guarantee look verified (L98, L11).
     differences.push({ code: 'unreadable', message: `a setting could not be read: ${reason}` })
+  }
+
+  // FIRST, because every other reading in this check is a statement ABOUT an
+  // account, and a reading from the wrong one is not a smaller finding than a
+  // wrong retention window: it invalidates all of them at once.
+  if (observed.account !== null && observed.account !== declared.account) {
+    differences.push({
+      code: 'wrong-account',
+      message:
+        `these checks are reading Snowflake account ${observed.account}, not ${declared.account}, which ` +
+        'is the account the archive setup was applied to. Every other reading below describes that ' +
+        'account rather than the archive, including any that look healthy',
+    })
   }
 
   if (observed.retentionDays !== null && observed.retentionDays !== declared.retentionDays) {
