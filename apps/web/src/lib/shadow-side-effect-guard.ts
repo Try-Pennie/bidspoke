@@ -27,10 +27,10 @@ export const SHADOW_EXEMPT_NODES = [
   'achieve-credit-report',
   'achieve-screen',
   'achieve-endpoint',
-  // Same shape: builds the two headers that identify us to FFN's firewall from an env
+  // Same shape: builds the two headers that identify us to Achieve's firewall from an env
   // value and returns them. It reaches nothing outside the isolate, and the node that
   // sends them (achieve-offers) carries the shadow guard.
-  'ffn-identity',
+  'achieve-identity',
 ]
 
 // Tokens that mark a node as shadow-aware (it short-circuits its side effects).

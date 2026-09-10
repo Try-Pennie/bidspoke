@@ -73,8 +73,8 @@ export const REQUIRED_PARTNER_SECRETS = [
   'SALESFORCE_CLIENT_SECRET',
   'EQUIFAX_PASSWORD',
   'TRIPOINT_PROXY_SECRET',
-  // The shared key FFN's firewall Skip rule matches on, sent by both the Achieve
-  // Offers node and the Eligibility Scout code node (see engine/nodes/ffn-identity.ts).
+  // The shared key Achieve's firewall Skip rule matches on, sent by both the Achieve
+  // Offers node and the Eligibility Scout code node (see engine/nodes/achieve-identity.ts).
   // Listed here and not with the feature-gated partners above because the Scout call
   // is on the live Main Flow path: unset, that path stays blocked, and the only thing
   // that reports it is a field-presence alert four days later, naming a symptom.
@@ -89,7 +89,7 @@ export const REQUIRED_PARTNER_SECRETS = [
   // direction that breaks the node silently. Nothing covers that today: the
   // required-env-vars guard (#394) reads `is_secret=false` rows only and cannot see
   // this one. Tracked in #1263.
-  'FFN_PARTNER_KEY',
+  'ACHIEVE_PARTNER_KEY',
 ] as const
 
 /** Required secrets (core + partner) that are absent, empty, or whitespace-only, in declared order. */

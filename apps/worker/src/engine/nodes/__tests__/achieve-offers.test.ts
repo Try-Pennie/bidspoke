@@ -131,15 +131,15 @@ describe('executeAchieveOffersNode', () => {
     expect(body.partner_lead_id).toBe('a04Ui00000I6lTKIAZ')
   })
 
-  // FFN's Cloudflare firewall blocks Cloudflare's shared Workers egress address,
+  // Achieve's Cloudflare firewall blocks Cloudflare's shared Workers egress address,
   // which every Workers tenant shares, so our requests are refused for what other
   // tenants do with it. Achieve's Skip rule is keyed on these headers, so a call
   // that omits them is blocked before it reaches them (measured 2026-09-05 to 09-10).
-  it('identifies us to FFN so their Skip rule can let the call through', async () => {
+  it('identifies us to Achieve so their Skip rule can let the call through', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, FFN_PARTNER_KEY: 'a-shared-secret' } })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_PARTNER_KEY: 'a-shared-secret' } })
     )
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const headers = init.headers as Record<string, string>

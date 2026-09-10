@@ -84,14 +84,14 @@ describe('findMissingRequiredSecrets', () => {
   })
 
   // Not a feature-gated partner value: the Eligibility Scout call runs on live
-  // traffic (roughly 180 leads a day) and, since FFN's firewall started refusing
+  // traffic (roughly 180 leads a day) and, since Achieve's firewall started refusing
   // Cloudflare's shared Workers address, cannot get through without this key. An
   // unset key means that path stays blocked, which the field-presence check only
   // reports four days later and as a symptom, so it is named here directly.
-  it('requires the FFN identifying key that unblocks the live Scout and Achieve calls', () => {
-    expect(REQUIRED_PARTNER_SECRETS).toContain('FFN_PARTNER_KEY')
-    expect(findMissingRequiredSecrets({ ...fullSecretEnv(), FFN_PARTNER_KEY: '' } as unknown as Env))
-      .toEqual(['FFN_PARTNER_KEY'])
+  it('requires the Achieve identifying key that unblocks the live Scout and Achieve calls', () => {
+    expect(REQUIRED_PARTNER_SECRETS).toContain('ACHIEVE_PARTNER_KEY')
+    expect(findMissingRequiredSecrets({ ...fullSecretEnv(), ACHIEVE_PARTNER_KEY: '' } as unknown as Env))
+      .toEqual(['ACHIEVE_PARTNER_KEY'])
   })
 
   it('does not require feature-gated partner secrets (Achieve, Scout)', () => {
