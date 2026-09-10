@@ -27,6 +27,7 @@ import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
 import { mayRepairRun } from '../../archive/repair-priority'
+import { REQUEST_RUN_BUDGET } from '../../archive/deadline'
 import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
@@ -457,6 +458,14 @@ admin.post('/re-archive', async (c) => {
     sendBatch: (rows) => sendArchiveBatch(c.env, rows),
     hours: request.hours,
     alreadyRecorded,
+    // THIS IS A FETCH HANDLER, not the cron (#1048). The run's default budget
+    // is sized inside the platform's CRON limit, and inheriting it here meant
+    // committing to work this context cannot finish: measured 2026-08-24, the
+    // request was killed at 218 seconds with Cloudflare 1102 partway through
+    // its second hour, while the scheduled run did two comparable hours in 390
+    // seconds the same night. A run killed by the platform writes no record and
+    // sends no alert, so it always ended in the least informative way available.
+    budget: REQUEST_RUN_BUDGET,
   })
 
   // A run that could not take the lock did NO work, and answering 200 with a

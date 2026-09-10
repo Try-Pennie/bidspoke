@@ -31,6 +31,7 @@ import {
 } from '../archive/run-loop'
 import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
 import { decideLock, lockValue } from '../archive/run-lock'
+import { CRON_RUN_BUDGET, type RunBudget } from '../archive/deadline'
 import { startJobRun, finishJobRun, ARCHIVE_JOB_RUN } from './job-run-record'
 import type { Env } from '../index'
 
@@ -120,6 +121,21 @@ export interface ArchiveRow {
 export interface ArchiveDeps {
   sendBatch: (rows: ArchiveRow[]) => Promise<void>
   now?: () => Date
+  /**
+   * How long this run may take and how many hours it may commit to (#1048).
+   *
+   * Defaults to the CRON budget, which is what every scheduled caller wants and
+   * what this has always used. It exists because `POST /api/admin/re-archive`
+   * runs the same archive from a FETCH HANDLER, which has far less room, and it
+   * inherited a budget whose own comment says it is sized inside the cron
+   * limit. Measured 2026-08-24: that request was killed at 218 seconds partway
+   * through its second hour, while the scheduled run did two comparable hours
+   * in 390 seconds the same night.
+   *
+   * A run that commits to work its context cannot finish always ends in a
+   * platform kill, which writes no record and sends no alert.
+   */
+  budget?: RunBudget
   /**
    * Named UTC hours to re-archive instead of following the watermark (#976).
    *
@@ -241,6 +257,10 @@ export async function runExecutionArchive(
   deps: ArchiveDeps,
 ): Promise<ArchiveRunSummary> {
   const now = deps.now ?? ((): Date => new Date())
+  // Defaults to the cron budget, which is what every scheduled caller wants.
+  // Only the admin re-archive route, which runs in a fetch handler, passes its
+  // own (#1048).
+  const budget = deps.budget ?? CRON_RUN_BUDGET
 
   // Checked before anything is read or locked. A missing pepper is not a per
   // execution problem: it would write a null resolver for EVERY row of the
@@ -264,7 +284,7 @@ export async function runExecutionArchive(
   const lock = decideLock({
     stored: await env.IDEMPOTENCY.get(RUN_LOCK_KEY),
     now: startedAt,
-    wallBudgetMs: WALL_TIME_BUDGET_MS,
+    wallBudgetMs: budget.wallMs,
     scheduledFor: deps.scheduledFor,
   })
   if (lock.action === 'skip') {
@@ -310,7 +330,7 @@ export async function runExecutionArchive(
       )
     }
   }
-  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, WALL_TIME_BUDGET_MS, deps.scheduledFor), {
+  await env.IDEMPOTENCY.put(RUN_LOCK_KEY, lockValue(startedAt, budget.wallMs, deps.scheduledFor), {
     expirationTtl: RUN_LOCK_TTL_SECONDS,
   })
 
@@ -394,7 +414,7 @@ export async function runExecutionArchive(
      */
     let executionsWithNoSsn = 0
 
-    const deadline = startedAt.getTime() + WALL_TIME_BUDGET_MS
+    const deadline = startedAt.getTime() + budget.wallMs
 
     const pipeline: RunDeps = {
       now,
@@ -511,7 +531,7 @@ export async function runExecutionArchive(
         await refusals.add(refusalRow(executionId, dayById.get(executionId) ?? '', reason, now()))
       },
       budget: {
-        maxHours: MAX_HOURS_PER_RUN,
+        maxHours: budget.maxHours,
         deadlineAt: deadline,
         subrequestsLeft: () => SUBREQUEST_BUDGET - totalUsed(),
       },

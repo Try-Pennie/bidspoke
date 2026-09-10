@@ -361,3 +361,59 @@ describe('the account these checks are reading', () => {
     expect(result.observed.columns).not.toBeNull()
   })
 })
+
+/**
+ * The check stops itself before the shared invocation is stopped for it (#1053).
+ *
+ * It issues five statements in sequence and each can wake a suspended warehouse
+ * and wait on it. It SHARES its daily invocation with the identity check and
+ * the deletion gate, so a slow Snowflake morning could push the whole
+ * invocation past its ceiling and get it killed. A killed invocation writes no
+ * record and sends no alert, which is indistinguishable from a morning where
+ * everything was fine, and it is quiet precisely on the days the archive is
+ * least healthy (L98).
+ */
+describe('the settings check bounds its time in Snowflake', () => {
+  /** A sleep that fires at once, so the deadline case costs nothing (L524). */
+  const expireNow = () => Promise.resolve()
+
+  it('reports what it could not establish, rather than being killed mid-statement', async () => {
+    const result = await checkArchiveSettings(env, supabase, {
+      // A statement that never returns, which is what a suspended warehouse
+      // looks like from here.
+      query: () => new Promise<never>(() => {}),
+      sleep: expireNow,
+    })
+
+    // Unreadable, not healthy. The check did not establish the thing it was
+    // asked about, and saying nothing would make an unverified guarantee look
+    // verified.
+    expect(result.differences.map((d) => d.code)).toContain('unreadable')
+    expect(result.differences.map((d) => d.message).join(' ')).toMatch(/budget/)
+  })
+
+  it('does not spend the budget again on every statement', async () => {
+    // Five statements each given the full deadline would still add up past the
+    // shared invocation's ceiling, which is the thing that gets the morning
+    // killed. One budget across all of them.
+    let calls = 0
+    const result = await checkArchiveSettings(env, supabase, {
+      query: () => {
+        calls += 1
+        return new Promise<never>(() => {})
+      },
+      sleep: expireNow,
+    })
+
+    // The first statement consumes the budget; the rest report it as spent
+    // rather than each waiting again.
+    expect(calls).toBe(1)
+    expect(result.differences.filter((d) => d.code === 'unreadable').length).toBeGreaterThan(1)
+  })
+
+  it('leaves a fast morning completely unaffected', async () => {
+    // A deadline that never fires must not change the ordinary result.
+    const result = await run()
+    expect(result.differences).toEqual([])
+  })
+})
