@@ -2,12 +2,19 @@
  * The archive run loop (#871, Phase A3).
  *
  * Drains hours until something stops it, and REPORTS which thing stopped it.
+ *
  * One hour per invocation would be a permanent lag rather than a temporary one:
- * the cron is hourly, so a run that gains one hour of ground per hour of real
- * time can never recover from an outage, and nothing would look broken. Every
- * run would report success and the watermark would advance every hour; the only
- * symptom would be the deletion gate refusing days whose hours were never
- * reached, arriving weeks later and reading as a counting problem.
+ * the cron is hourly, so a run that archives exactly one hour per hour of real
+ * time gains nothing and a backlog never shrinks. Nothing would look broken.
+ * Every run would report success and the watermark would advance every hour;
+ * the only symptom would be the deletion gate refusing days whose hours were
+ * never reached, arriving weeks later and reading as a counting problem.
+ *
+ * That is the argument for archiving MORE than one hour. It is not an argument
+ * about any particular cap, and this comment used to run the two together by
+ * saying a cap of two could never recover. Simulated against this very loop
+ * (drain.test.ts, #876), a cap of two clears three days of backlog in 142 runs
+ * and a cap of three in 47. Both recover. Only one hour per run does not.
  */
 import { formatErr } from '../lib/format-error'
 import { nextHourToArchive } from './clock'

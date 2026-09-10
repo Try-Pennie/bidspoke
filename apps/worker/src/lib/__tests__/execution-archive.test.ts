@@ -216,9 +216,44 @@ describe('run budgets', () => {
     expect(SLICE_SIZE).toBeLessThan(3575)
   })
 
-  it('keeps a full run inside the declared CPU ceiling with margin', () => {
-    const measuredCpuMsPerHour = 4375 * 0.8
-    expect(MAX_HOURS_PER_RUN * measuredCpuMsPerHour).toBeLessThan(30_000 / 2)
+  // THE CPU QUESTION (#876, Phase A8): does a CATCH-UP run fit in the declared
+  // ceiling, not just an ordinary one?
+  //
+  // This used to price a run as MAX_HOURS_PER_RUN times an hour of 4,375
+  // executions, a mean measured when it was written. That is the same defect as
+  // the wall-time one below, one function apart, and it was found by sweeping
+  // for a second instance of the class immediately after fixing the first
+  // (L387): at the busiest measured hour of 9,716 executions, three hours is
+  // 23.3 seconds against a 30 second ceiling, and the guard passed only because
+  // its volume figure was stale.
+  //
+  // DERIVED FROM WHAT ACTUALLY BINDS instead. CPU and wall time both scale with
+  // the number of executions a run gets through, so the wall budget is already
+  // a ceiling on executions, and pricing CPU from it keeps the two in step
+  // however the cap or the volume moves. No hours term appears, deliberately:
+  // an hour is not a fixed quantity of work.
+  const CPU_MS_PER_BUNDLE = 0.8 // ADR 0009, p50 0.799 across stringify, gzip, base64 and verify
+  const DECLARED_CPU_CEILING_MS = 30_000 // wrangler.toml [limits] cpu_ms
+
+  it('keeps even a full catch-up run inside the declared CPU ceiling', () => {
+    // The most executions any run can reach: its whole wall budget spent at the
+    // p95 cost of an execution.
+    const mostExecutionsPerRun = WALL_TIME_BUDGET_MS / MEASURED_P95_MS_PER_EXECUTION
+    const cpuMs = mostExecutionsPerRun * CPU_MS_PER_BUNDLE
+
+    // Half the ceiling, so the margin absorbs a bundle that costs its p99
+    // rather than its p50. Measured 2026-09-10 this is about 10.3 seconds.
+    expect(cpuMs).toBeLessThan(DECLARED_CPU_CEILING_MS / 2)
+  })
+
+  it('has the wall budget, not the hour cap, bounding the work a run can do', () => {
+    // States the relationship the guard above depends on. If the cap ever
+    // became the binding limit, CPU would scale with it again and the
+    // derivation would be measuring the wrong thing (L63).
+    const mostExecutionsPerRun = WALL_TIME_BUDGET_MS / MEASURED_P95_MS_PER_EXECUTION
+    const capWouldAllow = MAX_HOURS_PER_RUN * MEASURED_BUSIEST_HOUR_EXECUTIONS
+
+    expect(mostExecutionsPerRun).toBeLessThan(capWouldAllow)
   })
 
   // WHAT AN HOUR COSTS, measured over 163 single-hour production runs in the 7

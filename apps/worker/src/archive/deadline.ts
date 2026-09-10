@@ -125,8 +125,17 @@ export interface RunBudget {
  * ages, so both it and its successors are re-takeable with
  * supabase/tests/measure-archive-hour-cost.sql (L316, L354).
  *
- * The effect on catch-up: 36 hours of ground per real day, against roughly 18
- * before, so a full day of backlog drains in about 16 hours rather than never.
+ * The effect on catch-up, SIMULATED against the real run loop rather than
+ * argued (drain.test.ts, #876): a day of backlog clears in 15 to 16 hours and
+ * three days in 46, against 45 to 47 and 142 under the budget this replaced.
+ *
+ * That is a threefold improvement and it also CORRECTS the claim this change
+ * was originally made on. The old cap was said to gain exactly one hour per
+ * hour and so to be unable ever to close a gap. It could: at a quiet hour it
+ * archived two while one accrued, which is ground gained, just slowly. The
+ * honest case for the change is the ratio, which is large enough without
+ * overstating it (L440).
+ *
  * Ground is gained overnight and barely at all at peak, which is worth knowing
  * before promising a drain time for a backlog that forms in the afternoon.
  *

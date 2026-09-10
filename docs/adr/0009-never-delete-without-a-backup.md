@@ -197,6 +197,93 @@ The measurement is committed at `apps/worker/src/archive/fixtures/cost-settlemen
 and enforced by `archive/__tests__/cost-settlement.test.ts`, so neither the amend
 pass nor the gate can be built on the assumption that a cost always arrives.
 
+## Phase A8: the drain, the CPU and the pruning (measured 2026-09-10)
+
+A8 exists so that no destructive job depends on a mechanism nobody has watched
+work. Two of its three tests are now answered. The third cannot be answered yet,
+and saying which is which is the point of recording them.
+
+### The catch-up path had never run in production
+
+Measured over 21 days of `job_runs`: since 2026-08-27 the archive has run exactly
+24 times a day, archived exactly 24 hours a day, and reported `hoursBehind` of 0
+on every run. It has never been behind.
+
+So the multi-hour loop and the overshoot reserve, which are the whole of the
+catch-up mechanism, had never once executed against real traffic. Code that has
+never run is not code anybody has evidence about, and waiting for a genuine
+backlog means waiting for the incident the mechanism exists to survive.
+
+A deliberate outage on production was rejected as the way to produce one: the
+deletion gate reads what the archive recorded, so a three day gap in the archive
+is a three day hold on the thing protecting the partitions.
+
+### The drain test, simulated against the real run loop
+
+`archive/__tests__/drain.test.ts` drives the actual `runArchive`, with its actual
+budget, readiness rule and reserve, against a synthetic backlog. Only the COST of
+the work is simulated, priced from production: 60.8 ms per execution at the p95,
+against the measured hourly volume curve, whose busiest hour is six times its
+quietest.
+
+| backlog | cleared in (13 min, cap 3) | cleared in (10 min, cap 2) |
+|---|---|---|
+| 1 day | 15 to 16 hours | 45 to 47 hours |
+| 3 days | 46 hours | 141 to 143 hours |
+
+**A8's question is answered: the archive clears a three day outage in about two
+days, unaided.**
+
+It also corrects the claim the cadence change was originally made on. The old cap
+was said to gain exactly one hour per hour and so to be unable ever to close a
+gap. It could: at a quiet hour it archived two while one accrued, which is ground
+gained, just slowly. The honest case for the change is a threefold improvement,
+which needs no overstating.
+
+The figures depend on the shape of the day, so both an evening and a dawn start
+are measured. An outage noticed during the working day restarts into the
+expensive hours, which is the worse case and the likelier one.
+
+### The CPU test, and a stale guard it uncovered
+
+The guard that claimed to answer this priced a run as the hour cap times an hour
+of 4,375 executions, a mean measured when it was written. At the busiest measured
+hour of 9,716, three hours is 23.3 seconds of CPU against a 30 second ceiling: it
+passed only because its volume figure had aged.
+
+It is now derived from the limit that actually binds. CPU and wall time both
+scale with the number of executions a run gets through, so the wall budget is
+already a ceiling on executions:
+
+    most executions per run = 780,000 ms / 60.8 ms = 12,829
+    CPU                     = 12,829 x 0.8 ms      = 10.3 seconds
+
+**About 34% of the declared 30 second ceiling, with the margin absorbing bundles
+that cost their p99 rather than their p50.** No hours term appears, deliberately,
+because an hour is not a fixed quantity of work. A companion assertion pins the
+relationship this rests on, so if the cap ever became the binding limit the
+derivation fails rather than quietly measuring the wrong thing.
+
+### The pruning test cannot be run yet, and must not be reported as passing
+
+A8 asks for `SYSTEM$CLUSTERING_INFORMATION` on `EXECUTION_ARCHIVE` and a timed
+cold point lookup against a day roughly 12 months old.
+
+**There is no such day.** The archive began writing in August 2026, so its oldest
+partition is about one month old. A lookup against the oldest data available
+measures a table of a different size and age than the one the question is about,
+and would produce a reassuring number that answers nothing (L246, L248).
+
+This is a finding rather than an omission, and it has a consequence worth stating
+plainly: the pruning question stays open until the archive is old enough to ask
+it, so anything citing A8 as complete is citing two of three tests. What can be
+done in the meantime is to re-take the reading periodically as the table grows,
+rather than once at 12 months when it is too late to choose a clustering key
+cheaply.
+
+Re-take the volume and cost figures with
+`supabase/tests/measure-archive-hour-cost.sql`.
+
 ## Two defects found by running the measurement, both of the class this milestone removes
 
 Recorded because they are the argument for the principle, not incidental.
