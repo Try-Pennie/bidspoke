@@ -1,6 +1,7 @@
 // Slack alert sender — Block Kit messages for workflow failures and circuit breaker events
 // Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
 
+import { listWithOverflow } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
 // Type only, so this cannot create an import cycle with the watcher that calls
 // sendPgCronAlert: the import is erased at compile time.
@@ -1799,6 +1800,77 @@ export async function sendCircuitAlert(
   await postMessage(connection.bot_token, channel, blocks, fallback)
 }
 
+/** One recovered subject: what paged, when, and where to look. */
+export interface RecoveredSubject {
+  subject: string
+  alertedAt: string
+  endedAt?: string | null
+  url?: string
+}
+
+/** The rules every all-clear sentence follows, single or grouped. */
+export interface RecoveryWording {
+  signal: string
+  /**
+   * For a check that judges a TRAILING WINDOW rather than a running total, how
+   * long that window is (#1101).
+   *
+   * Such a check observes the condition once per tick, so the gap between the
+   * first and last alerting tick is not the length of the incident: a one-tick
+   * incident has a gap of zero, and the field presence check would have
+   * reported "under a minute" for the real thirty minute outage of
+   * 2026-09-02. When the observed span is shorter than one window, the notice
+   * reports the window it measured instead of asserting a span it did not
+   * (L11). Omitted by the checks that judge a continuous rate, which keep
+   * reporting their span unchanged.
+   */
+  measuredWindowMinutes?: number
+}
+
+/**
+ * The sentence an all-clear says about one subject, in Slack mrkdwn.
+ *
+ * One builder for the single and the grouped notice, so the two cannot describe
+ * the same incident two different ways.
+ */
+function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now: number): string {
+  const started = Date.parse(item.alertedAt)
+  // The all-clear waits out a re-arm window before it is sent (#814), so the
+  // duration is measured to the LAST OBSERVED FAILURE. Measuring to now would
+  // add the whole quiet window to every reported outage. Falls back to now when
+  // no end was recorded, and then claims nothing about when it cleared.
+  const ended = item.endedAt ? Date.parse(item.endedAt) : NaN
+  const clearedAt = Number.isFinite(ended) ? ended : null
+  // An unparseable marker must not render "NaN minutes"; say nothing about the
+  // duration rather than something wrong (LESSONS L11, L50).
+  const lasted = Number.isFinite(started) ? describeDuration((clearedAt ?? now) - started) : null
+
+  // A windowed check that saw the condition on only one tick knows the incident
+  // happened somewhere inside that window and nothing finer. Reporting the tick
+  // gap there would assert a duration nobody measured, so the window is named
+  // instead.
+  const windowMs = (wording.measuredWindowMinutes ?? 0) * 60 * 1000
+  const spanMs = Number.isFinite(started) ? (clearedAt ?? now) - started : NaN
+  const withinOneWindow = windowMs > 0 && Number.isFinite(spanMs) && spanMs < windowMs
+  const windowWords = withinOneWindow ? describeDuration(windowMs) : null
+
+  // Inside one window there is no observed END either (#1268): the last tick the
+  // condition was seen on is the tick that paged, so "clearing at" would name
+  // the moment the alert fired as the moment the outage ended. On 2026-09-10 that
+  // told the reader a LendSwift outage cleared at 6:01 AM while the ping API
+  // went on failing until 6:52. What the check DID observe is that the condition
+  // had passed by the tick that announced this, so that is what it says.
+  const howLong = withinOneWindow && windowWords
+    ? ` and covered the ${windowWords} before it, which is as precisely as this check measures. ` +
+      `It had passed by ${etTime(now)}.`
+    : lasted
+      ? ` and lasted ${lasted}${clearedAt !== null ? `, clearing at ${etTime(clearedAt)}` : ''}.`
+      : '.'
+
+  const link = item.url ? `  <${item.url}|open>` : ''
+  return `*${item.subject}* is back within normal range. The ${wording.signal} alert fired at ${etTime(started)}${howLong}${link}`
+}
+
 /**
  * The all-clear for a rate-aggregated alert (#253).
  *
@@ -1815,73 +1887,44 @@ export async function sendCircuitAlert(
 export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: {
-    signal: string
-    subject: string
-    alertedAt: string
-    endedAt?: string | null
-    url?: string
-    /**
-     * For a check that judges a TRAILING WINDOW rather than a running total, how
-     * long that window is (#1101).
-     *
-     * Such a check observes the condition once per tick, so the gap between the
-     * first and last alerting tick is not the length of the incident: a one-tick
-     * incident has a gap of zero, and the field presence check would have
-     * reported "under a minute" for the real thirty minute outage of
-     * 2026-09-02. When the observed span is shorter than one window, the notice
-     * reports the window it measured instead of asserting a span it did not
-     * (L11). Omitted by the checks that judge a continuous rate, which keep
-     * reporting their span unchanged.
-     */
-    measuredWindowMinutes?: number
-  },
+  payload: RecoveredSubject & RecoveryWording,
   now: number = Date.now(),
 ): Promise<boolean> {
-  const started = Date.parse(payload.alertedAt)
-  // The all-clear waits out a re-arm window before it is sent (#814), so the
-  // duration is measured to the LAST OBSERVED FAILURE. Measuring to now would
-  // add the whole quiet window to every reported outage. Falls back to now when
-  // no end was recorded, and then claims nothing about when it cleared.
-  const ended = payload.endedAt ? Date.parse(payload.endedAt) : NaN
-  const clearedAt = Number.isFinite(ended) ? ended : null
-  // An unparseable marker must not render "NaN minutes"; say nothing about the
-  // duration rather than something wrong (LESSONS L11, L50).
-  const lasted = Number.isFinite(started) ? describeDuration((clearedAt ?? now) - started) : null
-
-  // A windowed check that saw the condition on only one tick knows the incident
-  // happened somewhere inside that window and nothing finer. Reporting the tick
-  // gap there would assert a duration nobody measured, so the window is named
-  // instead.
-  const windowMs = (payload.measuredWindowMinutes ?? 0) * 60 * 1000
-  const spanMs = Number.isFinite(started) ? (clearedAt ?? now) - started : NaN
-  const withinOneWindow = windowMs > 0 && Number.isFinite(spanMs) && spanMs < windowMs
-  const windowWords = withinOneWindow ? describeDuration(windowMs) : null
-
-  const howLong = withinOneWindow && windowWords
-    ? ` and covered the ${windowWords} before it, which is as precisely as this check measures`
-    : lasted ? ` and lasted ${lasted}` : ''
-  const clearing = clearedAt !== null && (withinOneWindow || lasted)
-    ? `, clearing at ${etTime(clearedAt)}.`
-    : '.'
-
+  const { url, ...item } = payload
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
-    {
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text:
-          `*${payload.subject}* is back within normal range. The ${payload.signal} alert fired at ` +
-          `${etTime(started)}${howLong}${clearing}`,
-      },
-    },
+    { type: 'section', text: { type: 'mrkdwn', text: recoverySentence(item, payload, now) } },
   ]
-  if (payload.url) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.url}|Open workflow >` } })
+  if (url) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${url}|Open workflow >` } })
   }
 
   return (await postMessage(slack.bot_token, channel, blocks, `Recovered: ${payload.subject}`)) !== null
+}
+
+/**
+ * One all-clear covering every subject that recovered on the same tick (#1267).
+ *
+ * The field presence page is one message per channel (#1120), and its all-clear
+ * was still one per field, so an outage that emptied four sibling fields at
+ * once was announced over in four near-identical messages. This is the page's
+ * mirror: one message, one line per subject, the same sentence rules as the
+ * single notice. Returns whether it delivered, so the caller settles every
+ * incident in the group or none of them.
+ */
+export async function sendGroupedRecoveryAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: RecoveryWording & { items: RecoveredSubject[] },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const lines = payload.items.map((item) => recoverySentence(item, payload, now))
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, payload.items.length) } },
+  ]
+  const fallback = `Recovered: ${payload.items.map((i) => i.subject).join(', ')}`
+  return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
 }
 
 /** A duration in plain words. Rounded, because nobody acts on the seconds. */

@@ -98,6 +98,64 @@ export async function markSpikeSeen(
   })
 }
 
+/** What an all-clear has to say: when the incident was first paged and when it was last seen. */
+export interface RecoveryDue {
+  alertedAt: string
+  endedAt: string | null
+}
+
+/**
+ * Whether an all-clear is OWED for `id` right now, and if so what it says.
+ *
+ * Null when nothing was paged, or while the condition is still inside its
+ * re-arm window: one quiet tick is not an ended incident (#814). Reads only,
+ * never writes, because the caller has not delivered anything yet. It is one
+ * half of `announceRecovery`, split out (#1267) so a check that sends ONE
+ * all-clear covering several ids can ask this per id and settle them together
+ * once that one message lands.
+ */
+export async function recoveryDue(
+  kv: RecoveryKv,
+  prefix: string,
+  id: string,
+  opts: { now?: number; rearmMinutes?: number } = {},
+): Promise<RecoveryDue | null> {
+  const alertedAt = await kv.get(recoveryKey(prefix, id))
+  if (!alertedAt) return null
+
+  const now = opts.now ?? Date.now()
+  const rearmMs = (opts.rearmMinutes ?? RECOVERY_REARM_MINUTES) * 60 * 1000
+  const active = await kv.get(activeKey(prefix, id))
+  const lastSpike = active ? Date.parse(active) : NaN
+
+  // Still inside the re-arm window: the condition is quiet, not over. Hold BOTH
+  // keys, so a relapse continues this incident instead of opening a new one, and
+  // keep the cooldown so the relapse stays deduped against the same page.
+  if (Number.isFinite(lastSpike) && now - lastSpike < rearmMs) return null
+
+  // An unparseable or absent running end must not hold the all-clear forever
+  // (a marker written by an older deploy has no companion key), and must not be
+  // guessed at either: say nothing about when it cleared (LESSONS L11).
+  const endedAt = Number.isFinite(lastSpike) ? new Date(lastSpike).toISOString() : null
+  return { alertedAt, endedAt }
+}
+
+/**
+ * Close the incident for `id` once its all-clear has DELIVERED: the marker, the
+ * running end and the cooldown all go, so the next genuine spike pages at once.
+ * The other half of `announceRecovery` (#1267). Never call it on a failed send.
+ */
+export async function settleRecovery(
+  kv: RecoveryKv,
+  prefix: string,
+  id: string,
+  cooldownKey: string,
+): Promise<void> {
+  await kv.delete(recoveryKey(prefix, id))
+  await kv.delete(activeKey(prefix, id))
+  await kv.delete(cooldownKey)
+}
+
 /**
  * Call on a HEALTHY check. If we previously paged for `id`, send the all-clear
  * and clear both keys. Returns whether an all-clear was delivered.
@@ -123,36 +181,18 @@ export async function announceRecovery(
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
   opts: { now?: number; rearmMinutes?: number } = {},
 ): Promise<boolean> {
-  const key = recoveryKey(prefix, id)
-  const alertedAt = await kv.get(key)
-  if (!alertedAt) return false
+  const due = await recoveryDue(kv, prefix, id, opts)
+  if (!due) return false
 
-  const now = opts.now ?? Date.now()
-  const rearmMs = (opts.rearmMinutes ?? RECOVERY_REARM_MINUTES) * 60 * 1000
-  const active = await kv.get(activeKey(prefix, id))
-  const lastSpike = active ? Date.parse(active) : NaN
-
-  // Still inside the re-arm window: the condition is quiet, not over. Hold BOTH
-  // keys, so a relapse continues this incident instead of opening a new one, and
-  // keep the cooldown so the relapse stays deduped against the same page.
-  if (Number.isFinite(lastSpike) && now - lastSpike < rearmMs) return false
-
-  // An unparseable or absent running end must not hold the all-clear forever
-  // (a marker written by an older deploy has no companion key), and must not be
-  // guessed at either: say nothing about when it cleared (LESSONS L11).
-  const endedAt = Number.isFinite(lastSpike) ? new Date(lastSpike).toISOString() : null
-
-  let delivered = false
+  let delivered: boolean
   try {
-    delivered = await send(alertedAt, endedAt)
+    delivered = await send(due.alertedAt, due.endedAt)
   } catch (err) {
     console.error(`[alert-recovery] ${prefix} all-clear failed for ${id}:`, err)
     return false
   }
   if (!delivered) return false
 
-  await kv.delete(key)
-  await kv.delete(activeKey(prefix, id))
-  await kv.delete(cooldownKey)
+  await settleRecovery(kv, prefix, id, cooldownKey)
   return true
 }
