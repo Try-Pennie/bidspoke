@@ -3,11 +3,12 @@
 export const runtime = 'edge'
 
 import { useEffect, useState } from 'react'
+import { useElapsed } from '@/hooks/useElapsed'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { ArrowLeft, LayoutTemplate, CheckCircle, RefreshCw, Copy, Check, AlertTriangle, ChevronRight } from 'lucide-react'
+import { ArrowLeft, LayoutTemplate, CheckCircle, RefreshCw, Copy, Check, AlertTriangle, ChevronRight, Archive } from 'lucide-react'
 import { formatDatetime, formatLogTime } from '@/lib/dates'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { ExecutionNotFoundNotice } from '@/components/ExecutionNotFoundNotice'
@@ -545,7 +546,19 @@ export default function ExecutionDetailPage() {
   const workflowId = params.id as string
   const executionId = params.executionId as string
 
-  const { execution, loading, error, notFound } = useExecution(executionId)
+  const { execution, loading, error, notFound, archiveUnavailable, reload } = useExecution(executionId)
+  // An archived run is served from Snowflake, which has to resume a warehouse
+  // before it can answer, so this is the load that can take seconds rather than
+  // milliseconds. The elapsed count is what makes "still working" visibly
+  // different from "hung" (#492).
+  const elapsedSeconds = useElapsed(loading)
+  // True as soon as we know the run is an archived one, which includes the
+  // case where the archive could not be reached: the read only reached the
+  // archive at all because recent history had already missed.
+  // Boolean(), not `!== null`: undefined is also "no archive failure", and
+  // writing it as a null check made every run look archived to any caller whose
+  // result did not carry the field at all (L550).
+  const isArchived = execution?.archived === true || Boolean(archiveUnavailable)
   const [copied, setCopied] = useState(false)
 
   async function copyReport() {
@@ -579,7 +592,12 @@ export default function ExecutionDetailPage() {
       <div className="p-8">
         <div className="mb-6 flex items-center justify-between">
           <Link
-            href={`/workflows/${workflowId}?execution=${executionId}`}
+            /* An archived run must not open the canvas overlay. The overlay maps
+               recorded steps onto the CURRENT graph, so a run from months ago
+               would be drawn against a workflow that has been edited many times
+               since: not a stale picture, a fabricated one. Archived goes to the
+               workflow itself, without the ?execution= that opens the overlay. */
+            href={isArchived ? `/workflows/${workflowId}` : `/workflows/${workflowId}?execution=${executionId}`}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-graphite"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -594,18 +612,30 @@ export default function ExecutionDetailPage() {
               {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
               {copied ? 'Copied' : 'Copy report'}
             </button>
-            <Link
-              href={`/workflows/${workflowId}?execution=${executionId}`}
-              className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
-            >
-              <LayoutTemplate className="h-3.5 w-3.5" />
-              View on canvas
-            </Link>
+            {/* Hidden, not disabled, for an archived run. The banner below says
+                why, so its absence reads as deliberate rather than broken. */}
+            {!isArchived && (
+              <Link
+                href={`/workflows/${workflowId}?execution=${executionId}`}
+                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-beige"
+              >
+                <LayoutTemplate className="h-3.5 w-3.5" />
+                View on canvas
+              </Link>
+            )}
           </div>
         </div>
 
         {loading && (
           <div className="space-y-6">
+            {/* A skeleton alone looks identical whether the read is progressing,
+                queued behind a warehouse resume, or dead. After a couple of
+                seconds this says which. */}
+            {elapsedSeconds >= 2 && (
+              <p role="status" className="text-xs text-gray-600">
+                Fetching from the archive, {elapsedSeconds}s
+              </p>
+            )}
             <div className="flex items-start justify-between">
               <div className="space-y-2">
                 <Skeleton className="h-7 w-48" />
@@ -644,7 +674,26 @@ export default function ExecutionDetailPage() {
           </div>
         )}
 
-        {error && (notFound ? (
+        {error && archiveUnavailable && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-graphite">
+            <p className="font-medium">This run is archived, and the archive did not answer</p>
+            <p className="mt-1 text-gray-700">
+              The run was not found in recent history, so it was looked for in {archiveUnavailable.waitingFor}.
+              That read did not complete: {archiveUnavailable.detail}.
+            </p>
+            <p className="mt-1 text-gray-700">
+              This does not mean the run never happened. Nothing has been deleted. Try again in a moment.
+            </p>
+            <button
+              onClick={reload}
+              className="mt-3 rounded-lg border border-amber-400 bg-white px-3 py-1.5 text-xs font-medium text-graphite hover:bg-amber-100"
+            >
+              Try again
+            </button>
+          </div>
+        )}
+
+        {error && !archiveUnavailable && (notFound ? (
           <ExecutionNotFoundNotice
             executionId={executionId}
             action={
@@ -671,8 +720,36 @@ export default function ExecutionDetailPage() {
                 <h1 className="text-3xl font-bold text-graphite">Execution detail</h1>
                 <p className="mt-1 font-mono text-xs text-gray-500">{execution.id}</p>
               </div>
-              <ExecutionStatusBadge status={execution.status} startedAt={execution.started_at} />
+              <ExecutionStatusBadge status={execution.status} startedAt={execution.started_at} live={!isArchived} />
             </div>
+
+            {/* Archived banner (#874). Says where the record came from, and says
+                that the canvas is unavailable, so the missing control above
+                reads as a decision rather than a fault (L10, L11). */}
+            {isArchived && (
+              <div className="rounded-xl border border-gray-300 bg-beige p-4">
+                <div className="flex items-start gap-2">
+                  <Archive className="mt-0.5 h-4 w-4 flex-shrink-0 text-gray-600" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-600">Archived run</p>
+                    <p className="mt-1 text-sm text-graphite">
+                      This run is older than recent history keeps, so it was read from the archive
+                      {execution.archive_day ? ` for ${execution.archive_day}` : ''}. Everything below is the
+                      record as it was archived.
+                    </p>
+                    {execution.archived_incomplete && (
+                      <p className="mt-1 text-sm text-graphite">
+                        The run was still going when it was archived, so its record may be missing later steps.
+                      </p>
+                    )}
+                    <p className="mt-1 text-sm text-gray-700">
+                      The canvas is not available for archived runs: it would draw this run against the workflow as
+                      it stands today, which has been edited since.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Degraded explainer — the lead was served, but a post-response writeback failed (#310) */}
             {execution.status === 'degraded' && (

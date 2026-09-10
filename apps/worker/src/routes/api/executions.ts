@@ -7,6 +7,7 @@ import { executeWorkflow } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
+import { readArchivedExecution } from '../../lib/archive-read'
 
 type Variables = AuthVariables
 
@@ -294,7 +295,7 @@ function subtypeRequired(nodeType: string): boolean {
 // payloads (Equifax response, SF blobs) added up to multi-MB responses on
 // every click before this — see TODO 4.x notes.
 executions.get('/:id', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const summary = c.req.query('summary') === '1'
   const supabase = createSupabaseClient(c.env)
@@ -313,7 +314,57 @@ executions.get('/:id', async (c) => {
 
   const blocked = dbErrorUnlessNotFound(c, error)
   if (blocked) return blocked
-  if (!execution) return c.json({ error: 'Execution not found' }, 404)
+
+  // Past the seven day retention the row is gone from Postgres and a verified
+  // copy is in the archive, so "not in Postgres" is not the same as "never
+  // ran" (#874). The archive answers three ways and each gets its own reply:
+  // the execution, a 503 saying the archive could not be reached, or the same
+  // 404 the live path gives.
+  if (!execution) {
+    const archived = await readArchivedExecution(c.env, supabase, {
+      executionId: id,
+      orgId,
+      readBy: userId,
+    })
+    if (archived.kind === 'unavailable') {
+      // NOT a 404. Telling an operator a lead never ran, when the only thing
+      // that happened is that a warehouse was asleep, is the failure this
+      // separate state exists to prevent.
+      return c.json(
+        {
+          error: 'Archive temporarily unavailable',
+          waiting_for: archived.waitingFor,
+          detail: archived.detail,
+        },
+        503,
+      )
+    }
+    if (archived.kind === 'not-found') return c.json({ error: 'Execution not found' }, 404)
+
+    const archivedSteps = summary
+      ? archived.steps.map((step) => {
+          const { input: _i, output: _o, logs: _l, ...rest } = step as Record<string, unknown>
+          return rest
+        })
+      : archived.steps
+
+    return c.json(
+      {
+        ...archived.execution,
+        steps: archivedSteps,
+        // Child runs and per-lead economics are not in this slice. Empty and
+        // null are what the live path already answers when there are none, so
+        // the page needs no new branch for them.
+        child_executions: [],
+        lead_economics: null,
+        archived: true,
+        archive_day: archived.archiveDay,
+        archived_incomplete: archived.archivedIncomplete,
+      },
+      200,
+      { 'Server-Timing': `auth;dur=${t1 - t0}` },
+    )
+  }
 
   const stepColumns = summary
     ? 'id, step_namespace, step_type, step_node_id, parallel_group_id, status, error_message, error_type, retries_used, started_at, completed_at, duration_ms, step_order'

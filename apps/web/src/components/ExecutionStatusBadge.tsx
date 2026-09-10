@@ -31,10 +31,20 @@ function formatElapsed(totalSeconds: number): string {
  * this resolves the raw status into a display status that ticks: a running run
  * shows live elapsed ("Running · 12s") so it reads as still-alive (#492 rule),
  * and once it has run past the stall threshold it converts to "Stalled" (#477).
+ *
+ * `live` is false for an ARCHIVED run (#874). Elapsed here is measured against
+ * the current clock, so a run archived months ago that was still going when the
+ * archive took it rendered "Stalled, 274075m", a number that grows for ever and
+ * describes nothing (L74). An archived run is finished being observed, so it
+ * shows its status and no clock.
  */
-export function ExecutionStatusBadge({ status, startedAt }: { status: string; startedAt: string }) {
+export function ExecutionStatusBadge({
+  status,
+  startedAt,
+  live = true,
+}: { status: string; startedAt: string; live?: boolean }) {
   const startedAtMs = new Date(startedAt).getTime()
-  const isRunning = status === 'running'
+  const isRunning = status === 'running' && live
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -46,7 +56,7 @@ export function ExecutionStatusBadge({ status, startedAt }: { status: string; st
 
   const display = resolveExecutionStatus(status, startedAtMs, isRunning ? now : startedAtMs)
   const s = STATUS_STYLES[display] ?? STATUS_STYLES.unknown
-  const showElapsed = display === 'running' || display === 'stalled'
+  const showElapsed = live && (display === 'running' || display === 'stalled')
   const elapsedSeconds = Math.max(0, Math.floor((now - startedAtMs) / 1000))
 
   return (
