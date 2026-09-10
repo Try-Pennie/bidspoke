@@ -122,8 +122,11 @@ function snowflakeDouble(opts: {
   failOn?: RegExp
 } = {}) {
   const statements: string[] = []
-  const query = async (statement: string): Promise<SnowflakeStatementResponse> => {
+  /** Every statement WITH the values it bound, so a test can assert on both halves. */
+  const bound: Array<{ sql: string; bindings: unknown[] }> = []
+  const query = async (statement: string, bindings?: unknown[]): Promise<SnowflakeStatementResponse> => {
     statements.push(statement)
+    bound.push({ sql: statement, bindings: bindings ?? [] })
     if (opts.failOn?.test(statement)) throw new Error('warehouse suspended')
     if (statement.startsWith('SELECT DISTINCT')) {
       return { data: opts.resolved ?? [['e-1', '2026-08-20']] }
@@ -135,7 +138,7 @@ function snowflakeDouble(opts: {
     const key = table.split('.').pop()?.toLowerCase() ?? ''
     return { data: [[String(opts.deleted?.[key] ?? 1)]] }
   }
-  return { statements, query }
+  return { statements, bound, query }
 }
 
 describe('ssnSpellings', () => {
@@ -204,7 +207,52 @@ describe('an erasure that finds the subject', () => {
 
     const resolve = sf.statements[0]
     expect(resolve).toMatch(/LEAD_SIGHTINGS WHERE ssn IN/)
-    expect(resolve).toMatch(/ssn_hash = '/)
+    expect(resolve).toMatch(/ssn_hash = \?/)
+  })
+
+  it('never puts the subject’s SSN into the SQL text, on any statement', async () => {
+    // The property, rather than the escaping that used to defend it (#1006).
+    // This file DELETEs from three tables on a caller supplied value, and the
+    // correctness of an escaped form rests on every future edit remembering to
+    // call the helper. Binding removes the class.
+    const db = supabaseDouble()
+    const sf = snowflakeDouble()
+
+    await eraseSubject(env, db.client, REQUEST, { query: sf.query })
+
+    const digits = REQUEST.ssn.replace(/\D/g, '')
+    for (const { sql } of sf.bound) {
+      expect(sql, `the SSN reached the SQL text of: ${sql}`).not.toContain(digits)
+      expect(sql).not.toContain(REQUEST.ssn)
+    }
+  })
+
+  it('binds both spellings of the SSN as values', async () => {
+    const db = supabaseDouble()
+    const sf = snowflakeDouble()
+
+    await eraseSubject(env, db.client, REQUEST, { query: sf.query })
+
+    const digits = REQUEST.ssn.replace(/\D/g, '')
+    const dashed = `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`
+    // Both spellings, because matching one would leave rows behind and still
+    // report an erasure, which is the failure this phase exists to prevent.
+    expect(sf.bound[0].bindings).toEqual(expect.arrayContaining([digits, dashed]))
+  })
+
+  it('binds one value per placeholder, on every statement it issues', async () => {
+    // A count mismatch is the way a bound statement goes wrong, and it fails at
+    // the warehouse rather than here, so it is worth asserting directly.
+    const db = supabaseDouble()
+    const sf = snowflakeDouble({ resolved: [['e-1', '2026-08-20'], ['e-2', '2026-08-21']] })
+
+    await eraseSubject(env, db.client, REQUEST, { query: sf.query })
+
+    for (const { sql, bindings } of sf.bound) {
+      expect(sql.split('?').length - 1, `placeholders did not match bindings for: ${sql}`).toBe(
+        bindings.length,
+      )
+    }
   })
 
   it('records the erasure so the deletion gate can subtract it', async () => {
@@ -331,12 +379,27 @@ describe('eraseSubject dry run', () => {
   })
 
   it('counts through the same predicate the real run would delete through', async () => {
-    const sf = snowflakeDouble({})
-    await eraseSubject(env, supabaseDouble().client, DRY, { query: sf.query })
-    const counts = sf.statements.filter((s) => /^SELECT COUNT/i.test(s))
+    // The point of a dry run is that it previews the REAL predicate, so this
+    // compares the two rather than reading either one on its own. It used to
+    // assert the SSN appeared in the COUNT's text, which stopped being possible
+    // once the values were bound (#1006); the property it was after is stronger
+    // when stated as an equality between the two runs.
+    const preview = snowflakeDouble({})
+    await eraseSubject(env, supabaseDouble().client, DRY, { query: preview.query })
+
+    const real = snowflakeDouble({})
+    await eraseSubject(env, supabaseDouble().client, REQUEST, { query: real.query })
+
+    const previewed = preview.bound
+      .filter((b) => /^SELECT COUNT/i.test(b.sql))
+      .map((b) => ({ sql: b.sql.replace(/^SELECT COUNT\(\*\) /, ''), bindings: b.bindings }))
+    const deleted = real.bound
+      .filter((b) => /^DELETE/i.test(b.sql))
+      .map((b) => ({ sql: b.sql.replace(/^DELETE /, ''), bindings: b.bindings }))
+
     // One per Snowflake target: the archive, sightings, bids.
-    expect(counts.length).toBeGreaterThanOrEqual(3)
-    expect(counts.some((s) => s.includes('LEAD_SIGHTINGS') && s.includes("'123-45-6789'"))).toBe(true)
+    expect(previewed.length).toBeGreaterThanOrEqual(3)
+    expect(previewed).toEqual(deleted)
   })
 
   it('reports what it would remove, per target', async () => {

@@ -15,7 +15,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { requireRowsAffected, isNoRowMatchedError } from './db-retry'
 import { fetchAllPaged } from './paginate'
-import { executeStatement, escapeSqlLiteral, type SnowflakeStatementResponse } from './snowflake'
+import { executeStatement, type SnowflakeStatementResponse } from './snowflake'
 import {
   archiveConfig,
   ARCHIVE_DATABASE,
@@ -87,8 +87,23 @@ export function ssnSpellings(ssn: string): string[] {
   return [digits, `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`]
 }
 
-function quotedList(values: string[]): string {
-  return values.map((v) => `'${escapeSqlLiteral(v)}'`).join(',')
+/**
+ * One `?` per value, for a bound IN list.
+ *
+ * BOUND, not interpolated. This file DELETES from three tables on a
+ * caller-supplied SSN, and the identity check issues its own DELETE as the one
+ * credential in the account that can destroy archived rows. Escaping is correct
+ * today and its correctness rests on every future edit remembering to call the
+ * helper; binding removes the class rather than defending against it (#1006).
+ */
+function placeholders(values: readonly unknown[]): string {
+  return values.map(() => '?').join(',')
+}
+
+/** A statement and the values it binds, so the two cannot be paired wrongly. */
+interface BoundStatement {
+  sql: string
+  bindings: unknown[]
 }
 
 /**
@@ -113,19 +128,22 @@ export function rowsAffected(response: SnowflakeStatementResponse): number | nul
  * finished DELETE into a count with string surgery would be the version of this
  * that silently diverges.
  */
-function renderStatements(fragments: string[], dryRun: boolean): string[] {
-  return fragments.map((f) => (dryRun ? `SELECT COUNT(*) ${f}` : `DELETE ${f}`))
+function renderStatements(fragments: BoundStatement[], dryRun: boolean): BoundStatement[] {
+  return fragments.map((f) => ({
+    sql: dryRun ? `SELECT COUNT(*) ${f.sql}` : `DELETE ${f.sql}`,
+    bindings: f.bindings,
+  }))
 }
 
 async function deleteTarget(
   target: TargetOutcome['target'],
-  statements: string[],
-  query: (statement: string) => Promise<SnowflakeStatementResponse>,
+  statements: BoundStatement[],
+  query: (statement: string, bindings?: unknown[]) => Promise<SnowflakeStatementResponse>,
 ): Promise<TargetOutcome> {
   let total = 0
   try {
     for (const statement of statements) {
-      const rows = rowsAffected(await query(statement))
+      const rows = rowsAffected(await query(statement.sql, statement.bindings))
       if (rows === null) {
         throw new Error('the delete reported no readable row count, so what it removed is unknown')
       }
@@ -158,7 +176,8 @@ export async function eraseSubject(
   // archive, so it borrows the reader.
   const query =
     deps.query ??
-    ((statement: string) => executeStatement(archiveConfig(env, dryRun ? 'reader' : 'eraser'), statement))
+    ((statement: string, bindings?: unknown[]) =>
+      executeStatement(archiveConfig(env, dryRun ? 'reader' : 'eraser'), statement, bindings))
   const spellings = ssnSpellings(request.ssn)
 
   // RESOLVE FIRST, and from two directions.
@@ -171,9 +190,13 @@ export async function eraseSubject(
   // Together they cover an execution whose sighting row has already been purged
   // AND one whose payload carried no readable SSN.
   const pepper = env.SSN_HASH_PEPPER
-  const resolvers = [`execution_id IN (SELECT execution_id FROM ${SIGHTINGS} WHERE ssn IN (${quotedList(spellings)}))`]
+  const resolvers = [
+    `execution_id IN (SELECT execution_id FROM ${SIGHTINGS} WHERE ssn IN (${placeholders(spellings)}))`,
+  ]
+  const resolveBindings: unknown[] = [...spellings]
   if (typeof pepper === 'string' && pepper.length > 0) {
-    resolvers.push(`ssn_hash = '${escapeSqlLiteral(await hashSsn(spellings[0], pepper))}'`)
+    resolvers.push('ssn_hash = ?')
+    resolveBindings.push(await hashSsn(spellings[0], pepper))
   }
 
   let executionIds: string[] = []
@@ -182,6 +205,7 @@ export async function eraseSubject(
   try {
     const found = await query(
       `SELECT DISTINCT execution_id, archive_day FROM ${ARCHIVE} WHERE ${resolvers.join(' OR ')}`,
+      resolveBindings,
     )
     for (const row of found.data ?? []) {
       if (typeof row[0] === 'string') executionIds.push(row[0])
@@ -209,12 +233,15 @@ export async function eraseSubject(
         executionIds.length === 0
           ? []
           : renderStatements(chunk(executionIds, IDS_PER_STATEMENT).map(
-              (ids) =>
-                `FROM ${ARCHIVE} WHERE execution_id IN (${quotedList(ids)})` +
-                // A pruning hint only. The id list is the correctness bound, and
-                // the day list comes from the same rows, so it can never exclude
-                // one the ids would include.
-                (days.length > 0 ? ` AND archive_day IN (${quotedList(days)})` : ''),
+              (ids) => ({
+                sql:
+                  `FROM ${ARCHIVE} WHERE execution_id IN (${placeholders(ids)})` +
+                  // A pruning hint only. The id list is the correctness bound, and
+                  // the day list comes from the same rows, so it can never exclude
+                  // one the ids would include.
+                  (days.length > 0 ? ` AND archive_day IN (${placeholders(days)})` : ''),
+                bindings: days.length > 0 ? [...ids, ...days] : [...ids],
+              }),
             ), dryRun),
         query,
       ),
@@ -222,14 +249,20 @@ export async function eraseSubject(
     outcomes.push(
       await deleteTarget(
         'lead_sightings',
-        renderStatements([`FROM ${SIGHTINGS} WHERE ssn IN (${quotedList(spellings)})`], dryRun),
+        renderStatements(
+          [{ sql: `FROM ${SIGHTINGS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
+          dryRun,
+        ),
         query,
       ),
     )
     outcomes.push(
       await deleteTarget(
         'lead_sighting_bids',
-        renderStatements([`FROM ${SIGHTING_BIDS} WHERE ssn IN (${quotedList(spellings)})`], dryRun),
+        renderStatements(
+          [{ sql: `FROM ${SIGHTING_BIDS} WHERE ssn IN (${placeholders(spellings)})`, bindings: [...spellings] }],
+          dryRun,
+        ),
         query,
       ),
     )
