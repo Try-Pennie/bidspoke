@@ -28,6 +28,7 @@ import {
 import { ARCHIVE_BACKLOG_REMEDY } from '../archive-backlog-run'
 import { ARCHIVE_GATE_REMEDY, ARCHIVE_GATE_UNREADABLE_REMEDY } from '../archive-gate'
 import { ARCHIVE_IDENTITY_REMEDY } from '../archive-identity-check'
+import { ARCHIVE_INDEX_REMEDY } from '../archive-index-check'
 import { ARCHIVE_SETTINGS_REMEDY } from '../archive-settings-check'
 import { ARCHIVE_STANDSTILL_REMEDY } from '../archive-standstill'
 import { LOGPUSH_CHECK_REMEDY } from '../logpush-check'
@@ -47,6 +48,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
   ['archive gate', ARCHIVE_GATE_REMEDY],
   ['archive gate unreadable', ARCHIVE_GATE_UNREADABLE_REMEDY],
+  ['archive read index', ARCHIVE_INDEX_REMEDY],
   ['archive identities', ARCHIVE_IDENTITY_REMEDY],
   ['archive settings', ARCHIVE_SETTINGS_REMEDY],
   ['archive standstill', ARCHIVE_STANDSTILL_REMEDY],
