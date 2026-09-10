@@ -29,6 +29,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { withJobRun } from './job-run-record'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, type SnowflakeStatementResponse } from './snowflake'
 import {
@@ -137,6 +138,30 @@ async function readRetention(
 }
 
 export async function checkArchiveSettings(
+  env: Env,
+  supabase: SupabaseClient,
+  deps: SettingsCheckDeps = {},
+): Promise<SettingsCheckResult> {
+  // Its own run record, so a pass the platform killed is distinguishable from
+  // one that had nothing to say. Before this its only liveness sign was an
+  // alert, and a check that dies silently reads exactly like a check that
+  // passed (#1251, L98).
+  return withJobRun(
+    supabase,
+    ARCHIVE_SETTINGS_JOB,
+    () => settingsPass(env, supabase, deps),
+    (result) => ({
+      outcome: result.differences.length === 0 ? 'ok' : 'differences',
+      detail:
+        result.differences.length === 0
+          ? undefined
+          : `${result.differences.length} setting${result.differences.length === 1 ? '' : 's'} differ from what the archive expects`,
+      summary: { differences: result.differences.length, alerted: result.alerted },
+    }),
+  )
+}
+
+async function settingsPass(
   env: Env,
   supabase: SupabaseClient,
   deps: SettingsCheckDeps = {},

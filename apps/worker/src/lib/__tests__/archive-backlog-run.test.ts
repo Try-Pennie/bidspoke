@@ -13,6 +13,7 @@
  * backlog still needs a deliberate push.
  */
 import { describe, it, expect, vi } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { LOOKBACK_DAYS, runArchiveBacklog, backlogDeps } from '../archive-backlog-run'
 import { PAGE_SIZE } from '../paginate'
 import { MAX_NO_PROGRESS_ATTEMPTS, SET_ASIDE_MS, emptyBacklogState, type BacklogState } from '../../archive/backlog'
@@ -43,6 +44,28 @@ function scatteredHours(day: string, count: number): string[] {
   return Array.from({ length: count }, (_, i) => new Date(start + ((i * 2) % 24) * 3600000).toISOString())
 }
 
+/**
+ * The smallest client that records what the run record wrote, so a test can see
+ * that the walk opened a row and closed it with an outcome.
+ */
+function jobRunRecorder(rows: Array<Record<string, unknown>>): SupabaseClient {
+  return {
+    from() {
+      const chain: Record<string, unknown> = {
+        insert(row: Record<string, unknown>) { rows.push({ op: 'insert', ...row }); return chain },
+        update(row: Record<string, unknown>) { rows.push({ op: 'update', ...row }); return chain },
+        eq() { return chain },
+        select() { return chain },
+        single() { return Promise.resolve({ data: { id: 'run-1' }, error: null }) },
+        then(res: (v: unknown) => unknown) {
+          return Promise.resolve({ data: [{ id: 'run-1' }], error: null }).then(res)
+        },
+      }
+      return chain
+    },
+  } as unknown as SupabaseClient
+}
+
 function deps(h: Harness = {}) {
   const held = h.held ?? ['2026-08-16', '2026-08-17']
   const counts = { ...(h.recorded ?? {}) }
@@ -53,12 +76,17 @@ function deps(h: Harness = {}) {
   // what was PERSISTED instead of on what the run happened to return.
   let state: BacklogState = h.state ?? emptyBacklogState()
   const wrote = { any: false }
+  const jobRuns: Array<Record<string, unknown>> = []
 
   const harness = {
     runs,
     get state() { return state },
     get written() { return wrote.any },
+    jobRuns,
     injected: {
+      // A real recording client, so the run record this walk now opens and
+      // closes is exercised rather than stubbed away (#1251).
+      supabase: jobRunRecorder(jobRuns),
       readState: async () => state,
       writeState: async (next: BacklogState) => {
         wrote.any = true

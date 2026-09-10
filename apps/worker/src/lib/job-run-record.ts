@@ -96,3 +96,48 @@ export async function finishJobRun(
 }
 
 export const ARCHIVE_JOB_RUN = 'execution-archive'
+
+/**
+ * Opens a run record, runs the work, and ALWAYS closes the record (#1251).
+ *
+ * Four archive jobs need these three steps in the same order, and the order is
+ * load bearing rather than stylistic: the ending has to be written in a
+ * `finally`, because a run that THREW and a run the platform KILLED are told
+ * apart only by whether an ending exists at all. Hand written at four sites,
+ * that is four chances to put the close on the success path, and the site that
+ * gets it wrong reports nothing (L613, L515).
+ *
+ * `endingOf` derives the ending from the work's own result, so each job says
+ * what its outcome means without repeating the wrapping. It is called inside a
+ * try of its own: a summary that throws must not replace the work's result, and
+ * must never replace an error already unwinding.
+ *
+ * The work receives the handle, because a job whose result is read by somebody
+ * else (the gate's summary, so a caller whose client dies can look the run up)
+ * has to be able to report which row it is.
+ */
+export async function withJobRun<T>(
+  supabase: SupabaseClient,
+  job: string,
+  work: (handle: JobRunHandle) => Promise<T>,
+  endingOf: (result: T) => JobRunEnding,
+): Promise<T> {
+  const handle = await startJobRun(supabase, job)
+  let ending: JobRunEnding = {
+    outcome: 'threw',
+    detail: 'the run threw before it could report an outcome',
+  }
+  try {
+    const result = await work(handle)
+    try {
+      ending = endingOf(result)
+    } catch (err) {
+      // The work succeeded; only the description of it failed. Say so rather
+      // than leaving the default, which would read as the work having thrown.
+      ending = { outcome: 'ok', detail: `the run finished, but its summary could not be built: ${formatErr(err)}` }
+    }
+    return result
+  } finally {
+    await finishJobRun(supabase, handle, ending)
+  }
+}

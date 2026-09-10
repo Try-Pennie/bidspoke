@@ -27,7 +27,7 @@ import { candidateDays, RETENTION_DAYS } from '../archive/candidate-days'
 import { daysHeldInPostgres, daysBeneathTheGate, daysBetween } from '../archive/days-held'
 import { LOOKBACK_DAYS } from './archive-backlog-run'
 import { refusalsFor, type DayMeasurement, type DayRefusal } from '../archive/gate'
-import { startJobRun, finishJobRun, type JobRunEnding } from './job-run-record'
+import { withJobRun } from './job-run-record'
 import type { Env } from '../index'
 
 /**
@@ -335,11 +335,34 @@ async function runProbe(
     byId.set(id, { traceId: typeof row[1] === 'string' ? row[1] : null, wire: String(row[2]) })
   }
 
+  // MISSING IS COUNTED ACROSS THE WHOLE SAMPLE before anything else (#1128).
+  //
+  // Returning on the first absent id made every alert read "no bundle at all
+  // for <one id>" whether 1 of 60 or 59 of 60 were gone. Those are different
+  // situations asking for different work: a handful missing is a data problem,
+  // nearly all missing is a day that was never sent. Sixteen consecutive days
+  // of alerts carried the same sentence and none of them said which it was
+  // (L11).
+  //
+  // The content checks below stay first-fail, because each of those describes
+  // one bundle's own corruption rather than a quantity, and decoding the whole
+  // sample to count them would cost the run's budget for no better answer.
+  const missing = sample.filter((expected) => !byId.has(expected.execution_id))
+  if (missing.length > 0) {
+    const one = missing.length === 1
+    return {
+      sampled: sample.length,
+      ok: false,
+      reason: one
+        ? `no bundle at all for ${missing[0].execution_id}, of the ${sample.length} sampled`
+        : `${missing.length} of the ${sample.length} sampled executions have no bundle at all, ` +
+          `starting with ${missing[0].execution_id}`,
+    }
+  }
+
   for (const expected of sample) {
     const found = byId.get(expected.execution_id)
-    if (found === undefined) {
-      return { sampled: sample.length, ok: false, reason: `no bundle at all for ${expected.execution_id}` }
-    }
+    if (found === undefined) continue
     let bundle
     try {
       bundle = await decodeBundle(found.wire)
@@ -470,14 +493,14 @@ export async function runArchiveGate(
   supabase: SupabaseClient,
   deps: GateDeps = {},
 ): Promise<GateRunSummary> {
-  const runRecord = await startJobRun(supabase, ARCHIVE_GATE_JOB)
-  let ending: JobRunEnding = {
-    outcome: 'threw',
-    detail: 'the pass threw before it could report an outcome',
-  }
-  try {
-    const summary = { ...(await gatePass(env, supabase, deps)), runId: runRecord.id }
-    ending = {
+  // The wrapper owns opening the record, the `finally`, and the killed-versus-
+  // threw distinction that rests on it. This pass only says what its own
+  // outcome means (#1251).
+  return withJobRun(
+    supabase,
+    ARCHIVE_GATE_JOB,
+    async (handle) => ({ ...(await gatePass(env, supabase, deps)), runId: handle.id }),
+    (summary) => ({
       // Three outcomes, because they ask for three different things: nothing,
       // a look at the days that failed, and a look at why the pass could not
       // start at all.
@@ -493,15 +516,8 @@ export async function runArchiveGate(
         daysBeneathTheGate: summary.daysBeneathTheGate,
         cost: summary.cost,
       },
-    }
-    return summary
-  } finally {
-    // In the finally so a pass that THREW is still distinguishable from one that
-    // was killed: the first has an ending saying it threw, the second has none
-    // at all. Closing cannot fail the pass, because a bookkeeping write must not
-    // replace an error already unwinding.
-    await finishJobRun(supabase, runRecord, ending)
-  }
+    }),
+  )
 }
 
 async function gatePass(

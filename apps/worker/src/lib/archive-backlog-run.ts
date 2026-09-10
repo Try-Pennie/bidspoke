@@ -36,6 +36,7 @@ import {
 import { newestFinishedDay } from '../archive/candidate-days'
 import { daysHeldInPostgres } from '../archive/days-held'
 import { canonicalHourStart } from '../archive/clock'
+import { withJobRun } from './job-run-record'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import type { Env } from '../index'
@@ -55,6 +56,14 @@ export interface BacklogRunSummary {
 }
 
 export interface BacklogDeps {
+  /**
+   * Where the run record is written (#1251).
+   *
+   * REQUIRED rather than optional, because an optional one is a caller that
+   * silently records nothing, and "recorded nothing" is exactly what a killed
+   * run looks like (L168).
+   */
+  supabase: SupabaseClient
   now: () => Date
   /** The archive watermark, so a day still in flight is left to the hourly run. */
   readWatermark: () => Promise<string | null>
@@ -96,6 +105,29 @@ export interface BacklogDeps {
 }
 
 export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSummary> {
+  // Its own run record, so a walk the platform killed part way through is
+  // distinguishable from one that found nothing to do. Those two look identical
+  // from outside otherwise, and this walk is the repair, so a silently dead one
+  // is the worst of the three archive jobs to lose (#1251).
+  return withJobRun(
+    deps.supabase,
+    ARCHIVE_BACKLOG_RUN_JOB,
+    () => backlogPass(deps),
+    (summary) => ({
+      outcome: summary.day === null ? 'nothing-to-do' : summary.progressed ? 'progressed' : 'no-progress',
+      detail: summary.detail,
+      summary: {
+        day: summary.day,
+        hoursRecorded: summary.hoursRecorded,
+        setAside: summary.setAside,
+      },
+    }),
+  )
+}
+
+export const ARCHIVE_BACKLOG_RUN_JOB = 'execution-archive-backlog'
+
+async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
   const watermark = await deps.readWatermark()
   if (watermark === null) {
     // No watermark means the archive has never run. There is no backlog to speak
@@ -235,6 +267,7 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
   const now = () => new Date()
 
   return {
+    supabase,
     now,
     readWatermark: async () => {
       const { data, error } = await supabase
