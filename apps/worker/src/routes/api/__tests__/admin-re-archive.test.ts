@@ -24,6 +24,7 @@ vi.mock('../../../lib/execution-archive-send')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { runExecutionArchive } from '../../../lib/execution-archive'
+import { CRON_RUN_BUDGET, REQUEST_RUN_BUDGET } from '../../../archive/deadline'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -389,5 +390,47 @@ describe('POST /api/admin/re-archive yields to the live archive', () => {
 
     expect(res.status).not.toBe(409)
     expect(vi.mocked(runExecutionArchive)).toHaveBeenCalled()
+  })
+})
+
+/**
+ * The re-archive runs to the budget its CONTEXT allows (#1048).
+ *
+ * This route is a fetch handler and the archive's default budget is sized
+ * inside the platform's CRON limit. Measured 2026-08-24: the request was killed
+ * at 218 seconds with Cloudflare 1102 partway through its second hour, while
+ * the scheduled run did two comparable hours in 390 seconds the same night. A
+ * run killed by the platform writes no record and sends no alert, so it ended
+ * in the least informative way available, every time.
+ */
+describe('POST /api/admin/re-archive sizes its run for a request', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload as never)
+    vi.mocked(runExecutionArchive).mockResolvedValue(CLEAN as never)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase() as unknown as ReturnType<typeof createSupabaseClient>
+    )
+  })
+
+  it('passes the request budget rather than inheriting the cron one', async () => {
+    const app = await makeApp()
+    await post(app, { hour: SETTLED_HOUR })
+
+    const deps = vi.mocked(runExecutionArchive).mock.calls[0][2] as { budget?: { wallMs: number; maxHours: number } }
+    expect(deps.budget).toEqual(REQUEST_RUN_BUDGET)
+  })
+
+  it('commits to at most one hour, and stops before the observed kill', async () => {
+    // Named against the measurements rather than restating the constant, so a
+    // future edit that raises either one past what the context allows fails
+    // here instead of in production (L63).
+    expect(REQUEST_RUN_BUDGET.maxHours).toBe(1)
+    // An hour of real data costs 202 to 257 seconds, and the request context
+    // was killed at 218. One hour is the most it can honestly promise, and the
+    // wall budget has to stop the run before the platform does.
+    expect(REQUEST_RUN_BUDGET.wallMs).toBeLessThan(218_000)
+    expect(REQUEST_RUN_BUDGET.wallMs).toBeLessThan(CRON_RUN_BUDGET.wallMs)
+    expect(REQUEST_RUN_BUDGET.maxHours).toBeLessThan(CRON_RUN_BUDGET.maxHours)
   })
 })

@@ -30,6 +30,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { withJobRun } from './job-run-record'
+import { withDeadline } from '../archive/deadline'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, type SnowflakeStatementResponse } from './snowflake'
 import {
@@ -74,6 +75,25 @@ export const ARCHIVE_SETTINGS_REMEDY: AlertRemedy = {
  */
 export const DECLARED_SNOWFLAKE_ACCOUNT = 'JYC55588'
 
+/**
+ * How long this check may spend in Snowflake in total (#1053).
+ *
+ * It issues five statements in sequence and each can wake a suspended warehouse
+ * and wait on it. Nothing capped the total, and the check SHARES its daily
+ * invocation with the identity check and the deletion gate, so a slow Snowflake
+ * morning could push the whole invocation past its ceiling and get it killed.
+ *
+ * A killed invocation writes no record and sends no alert, which is
+ * indistinguishable from a morning where everything was fine (L98). The failure
+ * mode is quiet precisely on the days the archive is least healthy, which is
+ * the shape this milestone exists to remove.
+ *
+ * Two minutes leaves the rest of the shared invocation its room. Reaching it is
+ * reported as an unreadable setting, which is what it is: the check did not
+ * establish the thing it was asked about.
+ */
+export const SETTINGS_CHECK_DEADLINE_MS = 2 * 60 * 1000
+
 export const ARCHIVE_SETTINGS_JOB = 'execution-archive-settings'
 
 /**
@@ -93,6 +113,10 @@ export interface SettingsCheckResult {
 
 export interface SettingsCheckDeps {
   query?: (statement: string) => Promise<SnowflakeStatementResponse>
+  /** Total time in Snowflake before the check reports what it could not read (#1053). */
+  deadlineMs?: number
+  /** Injected so a test of the deadline is instant rather than a real wait (L524). */
+  sleep?: (ms: number) => Promise<void>
 }
 
 /** Reads one cell of one row by its column NAME, or null when the shape is not what was expected. */
@@ -178,8 +202,37 @@ async function settingsPass(
   supabase: SupabaseClient,
   deps: SettingsCheckDeps = {},
 ): Promise<SettingsCheckResult> {
-  const query =
+  const rawQuery =
     deps.query ?? ((statement: string) => executeStatement(archiveConfig(env, 'reader'), statement))
+
+  // ONE deadline across every statement, not one each (#1053). Five statements
+  // each given their own would still add up past the shared invocation's
+  // ceiling, which is the thing that gets the whole morning killed.
+  const startedAt = Date.now()
+  const deadlineMs = deps.deadlineMs ?? SETTINGS_CHECK_DEADLINE_MS
+  // Once the budget has actually been HIT, it is spent, and the remaining
+  // statements say so rather than each starting a fresh wait. Elapsed time
+  // alone is not enough to know that: the wait that consumed the budget is
+  // still in flight, so the clock has not necessarily moved past it yet.
+  let spent = false
+  const query = async (statement: string): Promise<SnowflakeStatementResponse> => {
+    const remaining = deadlineMs - (Date.now() - startedAt)
+    if (spent || remaining <= 0) {
+      throw new Error(
+        `the archive settings check ran out of its ${Math.round(deadlineMs / 1000)} second budget in ` +
+          'Snowflake before this statement, so this setting was not established',
+      )
+    }
+    const raced = await withDeadline(remaining, () => rawQuery(statement), { sleep: deps.sleep })
+    if (raced.timedOut) {
+      spent = true
+      throw new Error(
+        `the archive settings check ran out of its ${Math.round(deadlineMs / 1000)} second budget in ` +
+          'Snowflake while waiting on this statement, so this setting was not established',
+      )
+    }
+    return raced.value
+  }
 
   const observed: ObservedSettings = {
     retentionDays: null,
