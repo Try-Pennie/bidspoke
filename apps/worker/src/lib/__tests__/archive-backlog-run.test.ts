@@ -349,3 +349,49 @@ describe('backlogDeps asks Postgres the window the walk needs', () => {
     expect(await deps.daysHeldInPostgres()).toEqual([today])
   })
 })
+
+/**
+ * A run that dies inside the archive work still counts against the day (#1039).
+ *
+ * The count used to be persisted only after `reArchiveDay` returned, so an
+ * invocation killed during it wrote nothing at all. The case the set-aside
+ * exists for is a day the walk cannot finish, and the likeliest reason is that
+ * its hours are too large for one invocation, which shows up as the invocation
+ * being killed. Two runs on 2026-08-23 took the lock and never closed their row.
+ */
+describe('a run that never returns from the archive work', () => {
+  it('has already persisted the attempt before the work starts', async () => {
+    const d = deps({ recorded: { '2026-08-16': 4 } })
+    // Nothing after reArchiveDay runs, which is what a killed invocation looks
+    // like from the state's point of view.
+    d.injected.reArchiveDay = vi.fn(async () => {
+      throw new Error('the platform terminated this invocation')
+    })
+
+    await expect(runArchiveBacklog(d.injected)).rejects.toThrow('terminated')
+
+    // The count is there. Before this it was zero, so a day that killed every
+    // run was never set aside and blocked every day behind it.
+    expect(d.state.noProgress['2026-08-16']).toBe(1)
+  })
+
+  it('accumulates across successive killed runs, until the day is set aside', async () => {
+    const kill = () => {
+      const d = deps({ recorded: { '2026-08-16': 4 } })
+      d.injected.reArchiveDay = vi.fn(async () => {
+        throw new Error('the platform terminated this invocation')
+      })
+      return d
+    }
+
+    let carried = { noProgress: {}, setAsideUntil: {} } as Record<string, Record<string, number>>
+    for (let i = 0; i < 3; i++) {
+      const d = kill()
+      d.injected.readState = async () => carried as never
+      await expect(runArchiveBacklog(d.injected)).rejects.toThrow('terminated')
+      carried = d.state as never
+    }
+
+    expect(carried.noProgress['2026-08-16']).toBe(3)
+  })
+})
