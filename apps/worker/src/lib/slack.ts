@@ -18,19 +18,8 @@ import type { ErrorType } from '../types'
 import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
 import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
-export interface SlackConnection {
-  bot_token: string
-  default_channel: string
-  workspace_name?: string
-  volume_alerts_enabled: boolean
-  matrix_alerts_enabled: boolean
-  config_alerts_enabled: boolean
-  /** GitHub workflow-backup-failure alerts (#206). Own toggle so muting config
-   *  noise doesn't silently disable this data-safety alert (#223). */
-  backup_alerts_enabled: boolean
-  /** Optional dedicated channel for matrix-change alerts. Falls back to default_channel when null. */
-  matrix_alerts_channel: string | null
-}
+import { parseSlackConnection, type SlackConnection } from './slack-connection'
+export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
   workflow_id: string
@@ -97,22 +86,7 @@ export async function getSlackConnection(
     }
   }
 
-  if (!data?.config) return null
-  const cfg = data.config as Record<string, unknown>
-  const botToken = typeof cfg.bot_token === 'string' ? cfg.bot_token : null
-  const defaultChannel = typeof cfg.default_channel === 'string' ? cfg.default_channel : null
-  if (!botToken || !defaultChannel) return null
-  return {
-    bot_token: botToken,
-    default_channel: defaultChannel,
-    workspace_name: typeof cfg.workspace_name === 'string' ? cfg.workspace_name : undefined,
-    // Default true so existing connections keep alerting; opt-out only.
-    volume_alerts_enabled: cfg.volume_alerts_enabled !== false,
-    matrix_alerts_enabled: cfg.matrix_alerts_enabled !== false,
-    config_alerts_enabled: cfg.config_alerts_enabled !== false,
-    backup_alerts_enabled: cfg.backup_alerts_enabled !== false,
-    matrix_alerts_channel: typeof cfg.matrix_alerts_channel === 'string' && cfg.matrix_alerts_channel ? cfg.matrix_alerts_channel : null,
-  }
+  return parseSlackConnection(data?.config)
 }
 
 // ── Alert senders ─────────────────────────────────────────────────────────────
@@ -1884,6 +1858,41 @@ function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now:
  * recovery marker on true, so a kicked bot retries rather than leaving the page
  * as the last word.
  */
+/**
+ * Bidspoke cannot read its own database (#1297). Posted by the minute cliff
+ * check from the last-good Slack connection in KV, because the token's home is
+ * the database that cannot be read. Returns the message ts, or null when Slack
+ * refused, so the caller can gate its cooldown on delivery.
+ */
+export async function sendDatabaseUnreachableAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { what: string; error: string; appUrl: string },
+): Promise<string | null> {
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Bidspoke cannot read its database', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `<!here> The minute volume check could not read *${payload.what}* from Supabase: \`${truncateErrorForAlert(payload.error)}\`. ` +
+          'While this lasts, leads that reach the worker are being refused with 503 and nothing that counts executions can see the drop. ' +
+          'The volume cliff alerts will only fire once the database is readable again, and they will then report the outage as a caller stopping, which it is not.',
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*How to fix:* check <https://status.supabase.com|status.supabase.com> and the project\'s database health in the Supabase dashboard. Nothing on the worker needs restarting; it recovers on its own when the database answers. An all-clear follows here once this check can read again.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
+}
+
 export async function sendRecoveryAlert(
   slack: { bot_token: string },
   channel: string,
