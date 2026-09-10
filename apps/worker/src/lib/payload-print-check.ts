@@ -122,7 +122,7 @@ export async function checkPayloadPrints(
 
   const notify =
     deps.notify ??
-    ((m: string[], remedy?: AlertRemedy) =>
+    ((m: string[], remedy: AlertRemedy = PAYLOAD_PRINT_REMEDY) =>
       notifyExportFailure(supabase, PAYLOAD_PRINT_JOB, m, env.IDEMPOTENCY as never, remedy))
   await notify(messages, PAYLOAD_PRINT_REMEDY)
 

@@ -37,7 +37,7 @@ import { newestFinishedDay } from '../archive/candidate-days'
 import { daysHeldInPostgres } from '../archive/days-held'
 import { canonicalHourStart } from '../archive/clock'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import type { Env } from '../index'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -186,6 +186,24 @@ export async function runArchiveBacklog(deps: BacklogDeps): Promise<BacklogRunSu
   }
 }
 
+/**
+ * The backlog walk sets a day aside after repeated runs that record nothing.
+ * Nothing was exported and nothing failed loudly: the day simply has no backup
+ * and a deadline, which is the whole point of saying so (2026-09-10).
+ */
+export const ARCHIVE_BACKLOG_REMEDY: AlertRemedy = {
+  consequence:
+    'The backlog walk has given up on a day for now and moved to older ones. That day is partly ' +
+    'archived, the rest of it has no backup anywhere, and its Postgres partition is deleted on the ' +
+    'retention schedule whether or not it is archived. This is a deadline, not an outage:',
+  fixHint:
+    'Re-archive the named day with POST /api/admin/re-archive and a day of YYYY-MM-DD, which fills only ' +
+    'the missing hours. Read the quoted last run detail and the [archive-backlog] logs to see why the ' +
+    'hours are not being recorded. After that day is purged the hours cannot be recovered.',
+  headlineVerb: 'set a day aside',
+  itemNoun: { one: 'day', many: 'days' },
+}
+
 export const ARCHIVE_BACKLOG_JOB = 'execution-archive-backlog'
 
 /** Where the walk's memory of attempts lives between invocations (#1021). */
@@ -295,7 +313,7 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
     },
 
     alertSetAside: async (message: string) => {
-      await notifyExportFailure(supabase, ARCHIVE_BACKLOG_JOB, [message], env.IDEMPOTENCY)
+      await notifyExportFailure(supabase, ARCHIVE_BACKLOG_JOB, [message], env.IDEMPOTENCY, ARCHIVE_BACKLOG_REMEDY)
     },
   }
 }

@@ -18,7 +18,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, escapeSqlLiteral } from './snowflake'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
 import { ARCHIVE_STREAM, SUBREQUEST_BUDGET } from './execution-archive'
@@ -29,6 +29,42 @@ import { LOOKBACK_DAYS } from './archive-backlog-run'
 import { refusalsFor, type DayMeasurement, type DayRefusal } from '../archive/gate'
 import { startJobRun, finishJobRun, type JobRunEnding } from './job-run-record'
 import type { Env } from '../index'
+
+/**
+ * The gate's end of pass report: days whose Postgres rows are about to be
+ * deleted without a verified copy. It RAN correctly, so it did not fail, and
+ * what it lists are findings rather than errors (2026-09-10).
+ */
+export const ARCHIVE_GATE_REMEDY: AlertRemedy = {
+  consequence:
+    'The deletion gate finished its pass and found days whose rows are due to be destroyed without a ' +
+    'verified backup. Nothing has been lost yet and nothing was exported anywhere. Each line names a ' +
+    'day and its deadline:',
+  fixHint:
+    'For a day that is unverified or never archived, re-archive it with POST /api/admin/re-archive and a ' +
+    'day of YYYY-MM-DD, before the next 03:30 UTC purge drops its partition. For a day past retention ' +
+    'that the purge did not take, the purge schedule itself is not enforcing retention, so check the ' +
+    'scheduled jobs in Postgres. Re-run the pass on demand with POST /api/admin/archive-gate.',
+  headlineVerb: 'found days at risk',
+  itemNoun: { one: 'finding', many: 'findings' },
+}
+
+/**
+ * The gate could not read what it needs, so it aborted having verified nothing.
+ * A separate condition from the report above: an empty report and a pass that
+ * never happened must not read the same (L98).
+ */
+export const ARCHIVE_GATE_UNREADABLE_REMEDY: AlertRemedy = {
+  consequence:
+    'The deletion gate could not read what it needs and abandoned its pass, so nothing was verified this ' +
+    'time and no day is vouched for. The purge still runs on its own schedule:',
+  fixHint:
+    'The line below names the read that failed. Fix that read against Supabase, then re-run the pass ' +
+    'with POST /api/admin/archive-gate rather than waiting for tomorrow, because a day can fall past its ' +
+    'deadline in between.',
+  headlineVerb: 'could not run',
+  itemNoun: { one: 'reason', many: 'reasons' },
+}
 
 export const ARCHIVE_GATE_JOB = 'execution-archive-gate'
 
@@ -494,7 +530,7 @@ async function gatePass(
     .maybeSingle()
   if (progress.error) {
     const detail = `the archive watermark could not be read: ${formatErr(progress.error)}`
-    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
+    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY, ARCHIVE_GATE_UNREADABLE_REMEDY)
     return {
       cost: costNow(0),
       daysConsidered: 0, daysAvailable: 0, runId: null, daysStamped: 0, daysBeneathTheGate: [],
@@ -548,7 +584,7 @@ async function gatePass(
     .not('executions_truncated_at', 'is', null)
   if (stampedRead.error) {
     const detail = `the stamped days could not be read: ${formatErr(stampedRead.error)}`
-    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY)
+    await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, [detail], env.IDEMPOTENCY, ARCHIVE_GATE_UNREADABLE_REMEDY)
     return {
       cost: costNow(0),
       daysConsidered: candidates.length, daysAvailable: available.length, runId: null, daysStamped: 0,
@@ -665,7 +701,7 @@ async function gatePass(
   }
   const cost = costNow(measured.length)
   errors.push(...costWarnings(cost, measured.length))
-  await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY)
+  await notifyExportFailure(supabase, ARCHIVE_GATE_JOB, errors, env.IDEMPOTENCY, ARCHIVE_GATE_REMEDY)
 
   const detail =
     `measured ${measured.length} of ${candidates.length} candidate days ` +

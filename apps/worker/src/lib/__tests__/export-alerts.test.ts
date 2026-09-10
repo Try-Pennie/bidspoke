@@ -42,6 +42,51 @@ function makeKv(initial: Record<string, string> = {}) {
 describe('notifyExportFailure', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  // THE GUARD (2026-09-10). Omitting the remedy is what produced an alert about
+  // a line of code telling the reader to check Snowflake. The parameter is now
+  // REQUIRED and a genuine export job says so explicitly, so a new check cannot
+  // inherit export wording by saying nothing: `tsc` refuses the omission. A rule
+  // each call site must opt into cannot be enforced by a scan (L621), so the
+  // type carries it. These two assert the sentinel still means what it says.
+  it('classifies the message as an export error when the caller says export-job', async () => {
+    await notifyExportFailure(makeSupabase(['org-1']), 'an-export', ['Snowflake 401 unauthorized'], makeKv(), 'export-job')
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.fixHint).toContain('credential')
+    expect(payload.headlineVerb).toBeUndefined()
+  })
+
+  it('does not classify the message when the caller supplied its own wording', async () => {
+    await notifyExportFailure(makeSupabase(['org-1']), 'a-check', ['Snowflake 401 unauthorized'], makeKv(), {
+      consequence: 'two settings disagree.',
+      fixHint: 'change one of them.',
+    })
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.fixHint).toBe('change one of them.')
+    expect(payload.consequence).toBe('two settings disagree.')
+  })
+
+  it('carries the caller\'s headline verb and item noun through to the alert', async () => {
+    await notifyExportFailure(makeSupabase(['org-1']), 'a-check', ['one finding'], makeKv(), {
+      consequence: 'c',
+      fixHint: 'f',
+      headlineVerb: 'found something to look at',
+      itemNoun: { one: 'finding', many: 'findings' },
+    })
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.headlineVerb).toBe('found something to look at')
+    expect(payload.itemNoun).toEqual({ one: 'finding', many: 'findings' })
+  })
+
+  it('leaves the headline and noun unset when the caller says nothing, so the failure wording stands', async () => {
+    // Deliberately NOT a transient message: a lone transient failure is held
+    // back by the grace and sends nothing, so the assertion would read no call
+    // as a passing default (L98).
+    await notifyExportFailure(makeSupabase(['org-1']), 'an-export', ['an unrecognised problem'], makeKv(), 'export-job')
+    const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
+    expect(payload.headlineVerb).toBeUndefined()
+    expect(payload.itemNoun).toBeUndefined()
+  })
+
   it('carries a remedy the caller supplies instead of classifying the message as an export error', async () => {
     // Every scheduled check borrows this alerter, and one whose message the
     // classifier does not recognise used to be told "rows were not exported,
@@ -64,14 +109,14 @@ describe('notifyExportFailure', () => {
 
   it('does nothing (no Slack lookup) when there are no errors', async () => {
     const from = vi.fn()
-    await notifyExportFailure({ from } as never, 'Lead sightings export', [])
+    await notifyExportFailure({ from } as never, 'Lead sightings export', [], undefined, 'export-job')
     expect(from).not.toHaveBeenCalled()
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
   })
 
   it('alerts each Slack-connected org when an export reports errors', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
-    await notifyExportFailure(makeSupabase(['org-1', 'org-2']), 'Lead sightings export', ['Snowflake 503'])
+    await notifyExportFailure(makeSupabase(['org-1', 'org-2']), 'Lead sightings export', ['Snowflake 503'], undefined, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(2)
     const [, orgId, channel, payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
     expect(orgId).toBe('org-1')
@@ -83,7 +128,7 @@ describe('notifyExportFailure', () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', [
       'sightings export: canceling statement due to statement timeout (57014)',
-    ])
+    ], undefined, 'export-job')
     const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
     // A DB congestion error must not tell the reader to go look at Snowflake.
     expect(payload.fixHint).toBeDefined()
@@ -93,14 +138,14 @@ describe('notifyExportFailure', () => {
 
   it('de-duplicates org ids', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
-    await notifyExportFailure(makeSupabase(['org-1', 'org-1']), 'x', ['boom'])
+    await notifyExportFailure(makeSupabase(['org-1', 'org-1']), 'x', ['boom'], undefined, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
   })
 
   it('suppresses repeat alerts for the same job while cooldown state is set', async () => {
     const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
     const from = vi.fn()
-    await notifyExportFailure({ from } as never, 'Lead sightings export', ['still broken'], kv)
+    await notifyExportFailure({ from } as never, 'Lead sightings export', ['still broken'], kv, 'export-job')
     expect(from).not.toHaveBeenCalled()
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
   })
@@ -113,6 +158,7 @@ describe('notifyExportFailure', () => {
       'Lead sightings export',
       ['sightings export: permission denied for table lead_sightings (42501)'],
       kv,
+      'export-job',
     )
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
     expect(kv.put).toHaveBeenCalledWith(
@@ -125,14 +171,14 @@ describe('notifyExportFailure', () => {
   it('does not set cooldown state when the alert failed to deliver', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(false)
     const kv = makeKv()
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['boom nobody recognises'], kv)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['boom nobody recognises'], kv, 'export-job')
     expect(kv.put).not.toHaveBeenCalled()
   })
 
   it('clears cooldown state on a successful run when kv is provided', async () => {
     const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
     const from = vi.fn()
-    await notifyExportFailure({ from } as never, 'Lead sightings export', [], kv)
+    await notifyExportFailure({ from } as never, 'Lead sightings export', [], kv, 'export-job')
     expect(from).not.toHaveBeenCalled()
     expect(kv.delete).toHaveBeenCalledWith('export-alert-state:Lead sightings export')
   })
@@ -154,7 +200,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
   it('stays silent on the first transient failure and records a pending marker', async () => {
     const kv = makeKv()
     const from = vi.fn()
-    await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv)
+    await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
     expect(from).not.toHaveBeenCalled()
     expect(kv.put).toHaveBeenCalledWith(
@@ -167,7 +213,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
   it('alerts on the second consecutive transient failure and says when the failures started', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-07-24T11:48:00.000Z' })
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, kv)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
     const [, , , payload] = vi.mocked(sendExportFailureAlert).mock.calls[0]
     expect(payload).toMatchObject({ jobName: 'Lead sightings purge', failingSince: '2026-07-24T11:48:00.000Z' })
@@ -179,7 +225,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
     // keep pointing at the first failure, not the latest one.
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv({ [PENDING_KEY]: '2026-07-24T11:48:00.000Z' })
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, kv)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(kv.put).toHaveBeenCalledWith(
       PENDING_KEY,
       '2026-07-24T11:48:00.000Z',
@@ -189,7 +235,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
 
   it('clears the pending marker on a successful run, so blip-then-recovery never pages', async () => {
     const kv = makeKv({ [PENDING_KEY]: '2026-07-24T11:48:00.000Z' })
-    await notifyExportFailure({ from: vi.fn() } as never, 'Lead sightings purge', [], kv)
+    await notifyExportFailure({ from: vi.fn() } as never, 'Lead sightings purge', [], kv, 'export-job')
     expect(kv.delete).toHaveBeenCalledWith(PENDING_KEY)
   })
 
@@ -201,6 +247,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
       'Lead sightings purge',
       ['sightings purge: permission denied for table lead_sightings (42501)'],
       kv,
+      'export-job',
     )
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
   })
@@ -213,6 +260,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
       'Lead sightings purge',
       ['sightings purge: error code: 522', 'sightings purge: permission denied for table lead_sightings (42501)'],
       kv,
+      'export-job',
     )
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
   })
@@ -220,13 +268,13 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
   it('alerts immediately on an unrecognised error (fail loud when we cannot tell)', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv()
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', ['something nobody has seen'], kv)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', ['something nobody has seen'], kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
   })
 
   it('alerts immediately when no KV is available (no store to hold the grace state)', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT)
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings purge', TRANSIENT, undefined, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
   })
 
@@ -236,7 +284,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
       'export-alert-state:Lead sightings purge': '1',
     })
     const from = vi.fn()
-    await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv)
+    await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv, 'export-job')
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
     expect(kv.put).toHaveBeenCalledWith(
       PENDING_KEY,
@@ -258,7 +306,7 @@ describe('the consequence sentence travels with the classification (#1180)', () 
     // alert renderer, the sentence is chosen by job name alone and says rows were
     // not exported for a job that exports nothing.
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
-    await notifyExportFailure(makeSupabase(['org-1']), 'execution-archive-killed', [KILLED])
+    await notifyExportFailure(makeSupabase(['org-1']), 'execution-archive-killed', [KILLED], undefined, 'export-job')
 
     const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
     expect(payload.consequence).toBeDefined()
@@ -268,7 +316,7 @@ describe('the consequence sentence travels with the classification (#1180)', () 
 
   it('hands no consequence for an ordinary export failure, so the renderer keeps its default', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
-    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['Snowflake 401: JWT token is invalid'])
+    await notifyExportFailure(makeSupabase(['org-1']), 'Lead sightings export', ['Snowflake 401: JWT token is invalid'], undefined, 'export-job')
 
     const payload = vi.mocked(sendExportFailureAlert).mock.calls[0][3]
     expect(payload.consequence).toBeUndefined()

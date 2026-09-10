@@ -46,14 +46,35 @@ export interface AlertRemedy {
   consequence: string
   /** The "How to fix" line. */
   fixHint: string
+  /**
+   * What the job DID, for the header, when "failed" is untrue. A check that ran
+   * correctly and found something has not failed, and on 2026-09-10 one such
+   * finding arrived headlined "code-node-payload-prints failed".
+   */
+  headlineVerb?: string
+  /** What the listed items ARE, when "error" is untrue (a finding, a difference). */
+  itemNoun?: { one: string; many: string }
 }
+
+/**
+ * What a GENUINE export or purge job passes, saying so out loud.
+ *
+ * The remedy is required (2026-09-10) rather than optional, because an optional
+ * one is a rule every call site has to remember and eleven checks did not, so
+ * each of them inherited wording about un-exported rows and Snowflake for
+ * conditions that involve neither. A rule each site must opt into cannot be
+ * enforced by a scan (L621), so the type enforces it: omitting this argument is
+ * now a compile error, and inheriting the export wording is a deliberate word
+ * in the source rather than a silence.
+ */
+export type ExportJobWording = 'export-job'
 
 export async function notifyExportFailure(
   supabase: SupabaseClient,
   jobName: string,
   errors: string[],
-  kv?: KvLike,
-  remedy?: AlertRemedy,
+  kv: KvLike | undefined,
+  remedy: AlertRemedy | ExportJobWording,
 ): Promise<void> {
   const stateKey = `export-alert-state:${jobName}`
   const pendingKey = `export-alert-pending:${jobName}`
@@ -99,13 +120,25 @@ export async function notifyExportFailure(
   // Classify once, not per org: the same errors produce the same advice. The
   // consequence sentence comes from the same classification (#1180), so the
   // alert's second sentence and its remedy cannot disagree about what happened.
-  const fixHint = remedy?.fixHint ?? buildFixHint(errors)
-  const consequence = remedy?.consequence ?? buildConsequence(errors)
+  // 'export-job' means "classify my message text as an export error", which is
+  // right for the export and purge jobs the classifier was built from and wrong
+  // for everything else (#542, #1166).
+  const own = remedy === 'export-job' ? undefined : remedy
+  const fixHint = own?.fixHint ?? buildFixHint(errors)
+  const consequence = own?.consequence ?? buildConsequence(errors)
 
   let delivered = false
   for (const orgId of orgIds) {
     try {
-      if (await sendExportFailureAlert(supabase, orgId, null, { jobName, errors, fixHint, consequence, failingSince })) delivered = true
+      if (await sendExportFailureAlert(supabase, orgId, null, {
+        jobName,
+        errors,
+        fixHint,
+        consequence,
+        failingSince,
+        headlineVerb: own?.headlineVerb,
+        itemNoun: own?.itemNoun,
+      })) delivered = true
     } catch (err) {
       console.error(`[export-alerts] alert failed for org ${orgId}:`, err)
     }

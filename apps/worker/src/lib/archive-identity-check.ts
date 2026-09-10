@@ -18,7 +18,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, SnowflakeStatementError, type SnowflakeStatementResponse } from './snowflake'
 import {
   archiveConfig,
@@ -35,6 +35,24 @@ import {
   type IdentityName,
 } from '../archive/identity-permissions'
 import type { Env } from '../index'
+
+/**
+ * The three Snowflake archive identities are not split as declared, or could not
+ * be checked. This is about GRANTS, not about data moving anywhere.
+ */
+export const ARCHIVE_IDENTITY_REMEDY: AlertRemedy = {
+  consequence:
+    'The least privilege split between the three archive identities is not in force, or could not be ' +
+    'verified. Nothing was sent anywhere and no data is missing: what is wrong is who is able to do ' +
+    'what to thirteen months of unredacted identity data:',
+  fixHint:
+    'Act in Snowflake. Revoke DELETE on the archive table from the writer and reader, grant it to the ' +
+    'eraser, and clear default secondary roles on any identity that has them active. If a line says an ' +
+    'identity could not be verified, the named secret is the fix: wrangler secret put <NAME> --name ' +
+    'bidspoke-worker.',
+  headlineVerb: 'found a permission problem',
+  itemNoun: { one: 'finding', many: 'findings' },
+}
 
 export const ARCHIVE_IDENTITY_JOB = 'execution-archive-identities'
 
@@ -220,6 +238,7 @@ export async function checkArchiveIdentities(
     ARCHIVE_IDENTITY_JOB,
     findings.map((f) => f.message),
     env.IDEMPOTENCY,
+    ARCHIVE_IDENTITY_REMEDY,
   )
 
   console.log(

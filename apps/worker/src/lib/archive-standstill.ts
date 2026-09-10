@@ -13,10 +13,27 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { heartbeatKey } from './cron-heartbeat'
 import { ARCHIVE_STREAM } from './execution-archive'
 import { evaluateStandstill, STANDSTILL_MS, type StandstillVerdict } from '../archive/standstill'
+
+/**
+ * The archive is running and its watermark is not moving. Every other signal
+ * reads healthy, which is exactly why this exists.
+ */
+export const ARCHIVE_STANDSTILL_REMEDY: AlertRemedy = {
+  consequence:
+    'The archive is running and completing, and it is not actually moving forward. Nothing else reports ' +
+    'this, because every run is honestly successful. While it stands, closed hours have no backup and ' +
+    'the deletion gate cannot clear their day:',
+  fixHint:
+    'Read the execution_archive_progress row for the executions stream and check its watermark hour and ' +
+    'when it was last updated, then the [execution-archive] worker logs for the hourly run. The message ' +
+    'below says which of the three cases this is.',
+  headlineVerb: 'is not moving',
+  itemNoun: { one: 'reading', many: 'readings' },
+}
 
 export const ARCHIVE_STANDSTILL_JOB = 'execution-archive-standstill'
 
@@ -141,10 +158,10 @@ async function raise(supabase: SupabaseClient, kv: KvLike, verdict: StandstillVe
     // Safe to do on every quiet check here, unlike the archive run's own alerts:
     // 'healthy' already means the watermark moved inside the last
     // STANDSTILL_MS, so it is a sustained recovery rather than one good sample.
-    await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [], kv)
+    await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [], kv, ARCHIVE_STANDSTILL_REMEDY)
     return false
   }
-  await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [message], kv)
+  await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [message], kv, ARCHIVE_STANDSTILL_REMEDY)
   return true
 }
 

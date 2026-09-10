@@ -248,11 +248,11 @@ export default {
         runAchieveExport(supabase, env)
           .then((s) => {
             console.log('[achieve-export]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Achieve export', s.errors, env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Achieve export', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
             console.error('[achieve-export] failed:', e)
-            return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Achieve export', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           })
       )
     } else if (event.cron === '15 8 * * *') {
@@ -445,11 +445,11 @@ export default {
         runSightingsExport(supabase, env)
           .then((s) => {
             console.log('[sightings-export]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Lead sightings export', s.errors, env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sightings export', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
             console.error('[sightings-export] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sightings export', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           }),
         'sightings-export',
       ))
@@ -470,11 +470,11 @@ export default {
         runSightingsPurge(supabase, Date.now, undefined, ['lead_sightings'])
           .then((s) => {
             console.log('[sightings-purge]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Lead sightings purge', s.errors, env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sightings purge', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
             console.error('[sightings-purge] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sightings purge', [formatErr(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sightings purge', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           }),
         'sightings-purge',
       ))
@@ -489,11 +489,11 @@ export default {
         runSightingsPurge(supabase, Date.now, undefined, ['lead_sighting_bids'])
           .then((s) => {
             console.log('[sighting-bids-purge]', JSON.stringify(s))
-            return notifyExportFailure(supabase, 'Lead sighting bids purge', s.errors, env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sighting bids purge', s.errors, env.IDEMPOTENCY, 'export-job')
           })
           .catch((e) => {
             console.error('[sighting-bids-purge] failed:', e)
-            return notifyExportFailure(supabase, 'Lead sighting bids purge', [formatErr(e)], env.IDEMPOTENCY)
+            return notifyExportFailure(supabase, 'Lead sighting bids purge', [formatErr(e)], env.IDEMPOTENCY, 'export-job')
           }),
         'sighting-bids-purge',
       ))
