@@ -93,7 +93,7 @@ export const PROBE_SAMPLE_SIZE = 60
  * only recorded.
  *
  * Every refusal is written to `execution_archive_days` regardless. But a day one
- * day old that refuses for `incomplete-rows` is NORMAL: the amend pass has a
+ * day old that refuses for `incomplete-rows` needs a re-archive; nothing has a
  * three day floor, so recently archived days routinely carry non-terminal rows
  * that resolve on their own. Alerting on those daily would train everyone to
  * ignore the alert, and would be loudest for the days with the most slack.
@@ -269,12 +269,28 @@ function toNumber(cell: unknown, what: string): number {
  * recovery had touched. `MAX(step_count)` per execution also picks the good copy
  * when a truncated one sits beside it.
  */
-function countsStatement(day: string): string {
+export function countsStatement(day: string): string {
+  // INCOMPLETENESS COMES FROM THE LATEST ROW, not from MAX across the copies.
+  //
+  // This is the one place the duplicate-tolerant design bites (#1023). Taking
+  // MAX for `step_count` is right: it picks the good copy when a truncated one
+  // sits beside it. Taking MAX for `archived_incomplete` picks the WORST copy,
+  // which meant a day could never be cleared: re-archiving it wrote a new,
+  // complete row, the old incomplete one stayed, MAX stayed 1, and the day
+  // refused for ever. That made the remedy the refusal names ineffective, on
+  // the one refusal nothing else resolves (#871).
+  //
+  // `bundlesStatement` below already reads the newest row per execution, so
+  // before this the probe and the count disagreed about which copy was real.
+  // They now read the same one.
   return (
     'SELECT COUNT(*), COALESCE(SUM(step_count), 0), COALESCE(SUM(incomplete), 0) FROM (' +
     '  SELECT execution_id, MAX(step_count) AS step_count,' +
-    '         MAX(CASE WHEN archived_incomplete THEN 1 ELSE 0 END) AS incomplete' +
-    `  FROM ${QUALIFIED_TABLE} WHERE archive_day = '${escapeSqlLiteral(day)}'::DATE` +
+    '         MAX(CASE WHEN rn = 1 AND archived_incomplete THEN 1 ELSE 0 END) AS incomplete' +
+    '  FROM (' +
+    '    SELECT execution_id, step_count, archived_incomplete,' +
+    '           ROW_NUMBER() OVER (PARTITION BY execution_id ORDER BY archived_at_utc DESC) AS rn' +
+    `    FROM ${QUALIFIED_TABLE} WHERE archive_day = '${escapeSqlLiteral(day)}'::DATE)` +
     '  GROUP BY execution_id)'
   )
 }
@@ -641,18 +657,25 @@ async function gatePass(
   const deletableDays = measured.filter((r) => r.refusals.length === 0)
 
   // Recorded for every day, alerted only for the days close enough to deletion
-  // that somebody has to act. A day one day old refusing for incomplete-rows is
-  // normal: the amend pass has a three day floor.
-  // A refusal that CLEARS ITSELF waits for the runway rule: a day refusing for
-  // incomplete-rows one day after it ends is normal, because the amend pass has
-  // a three day floor, and saying so with a fortnight left is noise.
+  // that somebody has to act. A refusal that CLEARS ITSELF can wait for that
+  // runway rule, because saying so with a fortnight left is noise.
   //
-  // `never-archived` clears itself never. The hourly walk does not go back for a
-  // day it has passed, so the day stays uncovered until somebody re-archives it,
-  // and it is recoverable only until its partition is purged (#1016). Waiting
-  // for the last three days to mention it spends the runway that makes it
+  // TWO REFUSALS CLEAR THEMSELVES NEVER, and both are reported at once instead.
+  //
+  // `never-archived`: the hourly walk does not go back for a day it has passed,
+  // so the day stays uncovered until somebody re-archives it, and it is
+  // recoverable only until its partition is purged (#1016).
+  //
+  // `incomplete-rows`: this list used to exclude it, on the reasoning that the
+  // amend pass had a three day floor and would catch up. There is no amend
+  // pass. #932 closed that question on two measurements over 1.4 million
+  // executions, and nothing else revisits an archived hour, so an incomplete
+  // row stays incomplete until the day is re-archived (#871). Waiting for the
+  // last three days to mention either one spends the runway that makes it
   // fixable, which is the whole point of reporting it at all.
-  const alwaysReport = (r: GateDayResult): boolean => r.refusals.some((x) => x.code === 'never-archived')
+  const CLEARS_ITSELF_NEVER = ['never-archived', 'incomplete-rows']
+  const alwaysReport = (r: GateDayResult): boolean =>
+    r.refusals.some((x) => CLEARS_ITSELF_NEVER.includes(x.code))
   const urgent = results.filter(
     (r) =>
       (r.daysLeft <= ALERT_WHEN_DAYS_LEFT && (r.refusals.length > 0 || r.error !== null)) || alwaysReport(r),
@@ -660,7 +683,7 @@ async function gatePass(
   const errors = urgent.map((r) => {
     const why = r.error !== null ? r.error : r.refusals.map((x) => x.message).join('; ')
     // Three situations, three sentences, because each asks for something
-    // different (L11): a day with runway can wait for the amend pass; a day due
+    // different (L11): a day with runway can wait; a day due
     // tonight needs a re-archive or a resolved refusal today; a day PAST
     // retention means last night's purge ran and left its rows behind, which is
     // the schedule failing to enforce retention at all, and it stayed silent for
