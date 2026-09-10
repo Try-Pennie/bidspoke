@@ -778,6 +778,13 @@ export default function ExecutionDetailPage() {
             )}
 
             {/* Replay lineage */}
+            {execution.child_executions_unavailable && (
+              <p className="text-sm text-gray-700">
+                Whether this run was replayed or resumed could not be looked up, because the archive did not
+                answer. It may have been.
+              </p>
+            )}
+
             {(execution.parent_execution_id || (execution.child_executions?.length ?? 0) > 0) && (
               <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-gray-200 bg-beige px-4 py-3 text-xs text-gray-600">
                 {execution.parent_execution_id && (

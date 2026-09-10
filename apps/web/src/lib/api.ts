@@ -661,6 +661,13 @@ export const api = {
         archive_day?: string
         /** The run was still going when the archive took it, so its record is partial. */
         archived_incomplete?: boolean
+        /**
+         * The replay and resume runs could not be looked up (#874). Distinct
+         * from an empty list, which means there genuinely are none: this means
+         * we could not tell, and the page has to say so rather than show
+         * nothing and imply the first.
+         */
+        child_executions_unavailable?: boolean
         steps: Array<{
           id: string
           step_namespace: string

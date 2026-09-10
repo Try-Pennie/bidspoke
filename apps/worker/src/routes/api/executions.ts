@@ -7,7 +7,12 @@ import { executeWorkflow } from '../../engine/index'
 import { suggestionFloorMs, suggestionFloorReason } from '../../lib/timeout-floor'
 import { SAMPLE_CONFIDENT, suggestedTimeoutMs } from '../../lib/timeout-suggestion'
 import { isIsoTimestamp, isUuid } from '../../lib/query-validators'
-import { readArchivedExecution } from '../../lib/archive-read'
+import {
+  findArchivedStep,
+  readArchivedChildren,
+  readArchivedExecution,
+  readArchivedParentSteps,
+} from '../../lib/archive-read'
 
 type Variables = AuthVariables
 
@@ -348,14 +353,31 @@ executions.get('/:id', async (c) => {
         })
       : archived.steps
 
+    // A replay or resume can be created any day the parent is still readable,
+    // so it lands on its own archive day and the parent's own narrow window
+    // never finds it.
+    //
+    // An unreachable read does NOT fail the whole page: the execution itself is
+    // already in hand, and refusing it because a secondary lookup failed would
+    // withhold what the person asked for. But it must not answer with an empty
+    // list either, because an empty list says "nothing was ever re-run from
+    // this", which is a claim this read never established (L10, L11). It says
+    // it could not tell, and the page says so too.
+    const archivedChildren = await readArchivedChildren(c.env, {
+      parentExecutionId: id,
+      parentDay: archived.archiveDay,
+      orgId,
+    })
+
     return c.json(
       {
         ...archived.execution,
         steps: archivedSteps,
-        // Child runs and per-lead economics are not in this slice. Empty and
-        // null are what the live path already answers when there are none, so
-        // the page needs no new branch for them.
-        child_executions: [],
+        child_executions: archivedChildren.kind === 'ok' ? archivedChildren.children : [],
+        ...(archivedChildren.kind === 'ok' ? {} : { child_executions_unavailable: true as const }),
+        // Per-lead economics live on the sighting, which is kept for about two
+        // days, so an archived run never has one. Null is "not recorded",
+        // which is exactly right here.
         lead_economics: null,
         archived: true,
         archive_day: archived.archiveDay,
@@ -432,7 +454,24 @@ executions.get('/:id', async (c) => {
       .eq('status', 'completed')
       .lt('started_at', execStartedAt)
       .order('step_order', { ascending: true })
-    const inherited = ((parentSteps ?? []) as unknown as StepRow[])
+    let inheritable = (parentSteps ?? []) as unknown as StepRow[]
+
+    // The parent may have aged into the archive while this child is still
+    // live, and then Postgres holds none of its steps. Without this the child
+    // renders with its upstream steps absent, which reads as "those steps
+    // never ran" rather than "they ran, on the run this resumed from" (#874).
+    if (inheritable.length === 0) {
+      const fromArchive = await readArchivedParentSteps(c.env, supabase, {
+        parentExecutionId: execution.resumed_from_execution_id,
+        orgId,
+        readBy: userId,
+      })
+      if (fromArchive.kind === 'ok') {
+        inheritable = fromArchive.steps as unknown as StepRow[]
+      }
+    }
+
+    const inherited = inheritable
       .filter((s) => !presentNamespaces.has(s.step_namespace))
       .map((s) => ({ ...s, inherited_from_execution_id: execution.resumed_from_execution_id }))
     steps = [...inherited, ...steps].sort((a, b) => a.step_order - b.step_order)
@@ -478,8 +517,9 @@ executions.get('/:id', async (c) => {
 // not the :id path param. This lets resumed executions lazy-load inherited
 // steps (whose row lives on the parent execution) without a separate route.
 executions.get('/:id/steps/:stepId', async (c) => {
-  const { orgId } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const stepId = c.req.param('stepId')
+  const executionId = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   const { data: step, error: stepError } = await supabase
@@ -489,7 +529,40 @@ executions.get('/:id/steps/:stepId', async (c) => {
     .single()
   const stepBlocked = dbErrorUnlessNotFound(c, stepError)
   if (stepBlocked) return stepBlocked
-  if (!step) return c.json({ error: 'Step not found' }, 404)
+
+  // Not in Postgres means the step may be in the archive, on this execution's
+  // own bundle or on the bundle of the run it resumed from (#874).
+  //
+  // This route deliberately ignores `:id` when reading from Postgres, so that
+  // a resumed run can lazy-load a step whose row lives on its parent. The
+  // archive fallback has to honour the same thing: resolve this execution's
+  // bundle first, and when the step is not in it, follow
+  // resumed_from_execution_id to the parent's. Without that, clicking an
+  // inherited step on an archived resume answers "Step not found" on a page
+  // that has just rendered that step as completed.
+  if (!step) {
+    const archivedStep = await findArchivedStep(c.env, supabase, {
+      executionId,
+      stepId,
+      orgId,
+      readBy: userId,
+    })
+    if (archivedStep.kind === 'unavailable') {
+      // Distinct from "no such step": the step may well exist on a parent we
+      // could not reach, and saying it does not exist would be a claim this
+      // read never established.
+      return c.json(
+        {
+          error: 'Archive temporarily unavailable',
+          waiting_for: archivedStep.waitingFor,
+          detail: archivedStep.detail,
+        },
+        503,
+      )
+    }
+    if (archivedStep.kind === 'found') return c.json(archivedStep.step)
+    return c.json({ error: 'Step not found' }, 404)
+  }
 
   const { data: execution, error: execError } = await supabase
     .from('workflow_executions')
