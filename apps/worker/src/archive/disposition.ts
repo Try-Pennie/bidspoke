@@ -4,6 +4,7 @@
  * Three answers, and the differences between them are the point: archive it,
  * archive it as it stands and say so, or refuse it by id.
  */
+import { isUuidV7 } from '@bidspoke/uuidv7'
 import { SETTLE_WINDOW_MS } from './clock'
 
 /**
@@ -120,6 +121,32 @@ export function dispositionFor(
       reason: `execution ${id} belongs to workflow ${workflowId || '(none)'}, which maps to no organization`,
     }
   }
+
+  // EVERY ARCHIVED ROW IS BORN V7, and this refuses rather than excusing it.
+  //
+  // The read path derives the UTC day from the id to prune a lookup to one day
+  // of micro-partitions, so a non-v7 id is a row the archive can only find by
+  // scanning. The plan rested on the claim that after the seven day soak every
+  // execution the archive will ever hold is v7, and that is now measured rather
+  // than assumed: on 2026-09-10 all 704,709 executions in the full retained
+  // window were v7, none were not, and exactly two paths mint an id.
+  //
+  // Refused rather than carried as a legacy-excuse branch, because a branch that
+  // excuses a transitional state becomes the only branch once that state ends
+  // and nothing reports that it is still there. If this ever fires, find the
+  // caller that minted it before relaxing this: a writer refusing an id the
+  // system still mints would stall the archive rather than protect it, which is
+  // why it took a measurement rather than a decision.
+  if (!isUuidV7(id)) {
+    return {
+      action: 'refuse',
+      incomplete: false,
+      reason:
+        `execution ${id} is not a v7 id, so the archive cannot derive the day its lookup prunes on. ` +
+        'Find the caller that minted it before allowing this through',
+    }
+  }
+
   if (organization.slug !== EXPECTED_ORGANIZATION_SLUG) {
     return {
       action: 'refuse',

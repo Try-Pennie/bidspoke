@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { A_V4_EXECUTION_ID, A_V7_EXECUTION_ID } from './_ids'
 import {
   dispositionFor,
   ARCHIVE_DEADLINE_MS,
@@ -17,7 +18,7 @@ const pastDeadline = new Date(Date.parse(HOUR_START) + SETTLE_WINDOW_MS + ARCHIV
 // The measured vocabulary lives in ../fixtures/execution-statuses.json and is
 // enforced by ./execution-status-vocabulary.test.ts.
 const execution = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
-  id: 'e1',
+  id: A_V7_EXECUTION_ID,
   workflow_id: 'wf-live',
   status: 'completed',
   started_at: HOUR_START,
@@ -99,5 +100,74 @@ describe('dispositionFor', () => {
     // up on is one that job has already given up on too.
     expect(ARCHIVE_DEADLINE_MS).toBe(24 * 60 * 60 * 1000)
     expect(ARCHIVE_DEADLINE_MS + SETTLE_WINDOW_MS).toBe(26 * 60 * 60 * 1000)
+  })
+})
+
+/**
+ * A non-v7 execution id is refused rather than archived (#905).
+ *
+ * The archive's read path derives the UTC day from the id to prune a lookup to
+ * one day of micro-partitions, so a stray v4 costs an unpruned scan. The
+ * stronger claim the plan rests on is that every row the archive will ever hold
+ * is born v7, and that is now measured rather than assumed: on 2026-09-10 all
+ * 704,709 executions in the full retained window were v7, none were not, and
+ * exactly two code paths mint an id (the engine and the canvas test runner).
+ *
+ * So this refuses instead of carrying a legacy-excuse branch. A branch that
+ * excuses a transitional state becomes the only branch once that state ends,
+ * and nothing ever reports that it is still there.
+ */
+describe('an execution id that is not v7', () => {
+  const v7 = A_V7_EXECUTION_ID
+  const v4 = A_V4_EXECUTION_ID
+
+  const context = () => ({
+    now: new Date('2026-09-10T12:00:00.000Z'),
+    organizationOf: new Map([['wf-1', { id: 'org-1', slug: EXPECTED_ORGANIZATION_SLUG }]]),
+  })
+  const execution = (id: string) => ({
+    id,
+    workflow_id: 'wf-1',
+    status: 'completed',
+    started_at: '2026-09-10T09:00:00.000Z',
+  })
+
+  it('archives a v7 id normally', () => {
+    expect(dispositionFor(execution(v7), context()).action).toBe('archive')
+  })
+
+  it('refuses a v4 id, naming it', () => {
+    const disposition = dispositionFor(execution(v4), context())
+
+    expect(disposition.action).toBe('refuse')
+    expect(disposition.reason).toContain(v4)
+    expect(disposition.reason).toMatch(/not a v7/i)
+  })
+
+  it('refuses rather than archiving it incomplete, whatever the deadline says', () => {
+    // Archiving it "as it stands" would put a row in the archive whose day the
+    // read path cannot derive, which is the outcome the refusal exists to stop.
+    const stale = {
+      ...execution(v4),
+      status: 'running',
+      started_at: '2026-09-01T00:00:00.000Z',
+    }
+
+    const disposition = dispositionFor(stale, context())
+
+    expect(disposition.action).toBe('refuse')
+    expect(disposition.incomplete).toBe(false)
+  })
+
+  it('still refuses a foreign tenant ahead of the id, because that one is worse', () => {
+    const foreign = {
+      ...execution(v4),
+      workflow_id: 'wf-unknown',
+    }
+
+    const disposition = dispositionFor(foreign, context())
+
+    expect(disposition.action).toBe('refuse')
+    expect(disposition.reason).toMatch(/no organization/)
   })
 })

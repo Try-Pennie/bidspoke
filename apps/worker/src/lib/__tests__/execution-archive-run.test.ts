@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { A_V7_EXECUTION_ID } from '../../archive/__tests__/_ids'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'
@@ -273,7 +274,7 @@ describe('an execution the archive table could not accept', () => {
   const bundle = (over: Record<string, unknown> = {}) => ({
     executionId: 'e1',
     execution: {
-      id: 'e1',
+      id: A_V7_EXECUTION_ID,
       workflow_id: 'wf-live',
       status: 'completed',
       started_at: HOUR,

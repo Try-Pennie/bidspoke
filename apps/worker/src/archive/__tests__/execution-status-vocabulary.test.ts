@@ -17,6 +17,7 @@
  * must be indistinguishable from nothing.
  */
 import { describe, it, expect } from 'vitest'
+import { A_V7_EXECUTION_ID } from './_ids'
 import {
   classifyExecutionStatus,
   dispositionFor,
@@ -43,7 +44,7 @@ const pastDeadline = new Date(Date.parse(HOUR_START) + SETTLE_WINDOW_MS + ARCHIV
 
 const orgs = new Map([['wf-live', { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG }]])
 const execution = (status: string) => ({
-  id: 'e1',
+  id: A_V7_EXECUTION_ID,
   workflow_id: 'wf-live',
   status,
   started_at: HOUR_START,
