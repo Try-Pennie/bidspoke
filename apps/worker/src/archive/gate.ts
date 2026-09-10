@@ -262,14 +262,23 @@ export function refusalsFor(measurement: DayMeasurement | null, ctx: GateContext
 
   if (measurement.incompleteCount > 0) {
     // A real row, but not the finished story of that lead: archived at the
-    // deadline while still non-terminal, and the amend pass has not caught up.
-    // Deleting the Postgres copy would freeze it that way permanently.
+    // deadline while it was still non-terminal. Deleting the Postgres copy
+    // would freeze it that way permanently.
+    //
+    // NOTHING CLEARS THIS ON ITS OWN. The comments here used to say the amend
+    // pass had not caught up yet; there is no amend pass, and #932 closed the
+    // question after two measurements over 1.4 million executions found
+    // nothing that would trigger one. The hourly walk never revisits an hour it
+    // has passed either. So the only thing that resolves this is re-archiving
+    // the day, and the message says so rather than implying a wait (L11, L111).
     const one = measurement.incompleteCount === 1
     refusals.push({
       code: 'incomplete-rows',
       message:
         `${n(measurement.incompleteCount)} execution${one ? '' : 's'} archived incomplete on ` +
-        `${ctx.archiveDay}, so ${one ? 'its' : 'their'} final state is not in the archive yet`,
+        `${ctx.archiveDay}, so ${one ? 'its' : 'their'} final state is not in the archive. ` +
+        `Nothing resolves this on its own: re-archive ${ctx.archiveDay} to pick up the finished ` +
+        `${one ? 'run' : 'runs'}`,
     })
   }
 

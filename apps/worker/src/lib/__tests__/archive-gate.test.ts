@@ -345,13 +345,19 @@ describe('a day whose counts do not reconcile', () => {
   })
 
   it('records the refusal but stays quiet for a day with plenty of runway', async () => {
-    // A day one day old refusing for incomplete-rows is normal: the amend pass
-    // has a three day floor. Alerting on those daily is how an alert becomes
-    // noise, and it would be loudest for the days with the most slack (L112).
+    // The runway rule, on a refusal that genuinely DOES clear itself. A day
+    // partway through being archived is short some hours, and the hourly walk
+    // fills them in on its own, so alerting daily on that is how an alert
+    // becomes noise, loudest for the days with the most slack (L112).
+    //
+    // It used to use incomplete-rows for this, which was wrong: nothing clears
+    // that one, so it is now reported at once instead (#871).
     const recent = '2026-08-21'
-    const { summary } = await run({ perDay: { [recent]: facts({ incomplete: 2 }) } })
+    const { summary } = await run({
+      perDay: { [recent]: facts({ hoursRecorded: 20, hoursExecutions: 3 }) },
+    })
 
-    expect(resultFor(summary, recent).refusals.map((r) => r.code)).toEqual(['incomplete-rows'])
+    expect(resultFor(summary, recent).refusals.map((r) => r.code)).toEqual(['hours-missing'])
     expect(resultFor(summary, recent).daysLeft).toBeGreaterThan(ALERT_WHEN_DAYS_LEFT)
     expect(alerted()).toEqual([])
   })
@@ -901,10 +907,27 @@ describe('a day with no archived hour at all is reported at once', () => {
     expect(said).toMatch(/days? left/)
   })
 
-  it('leaves a refusal that clears itself to the existing runway rule', async () => {
-    // incomplete-rows resolves when the amend pass catches up, so alerting on it
-    // with a fortnight left is noise, and noise is how a panel gets ignored.
+  it('reports incomplete rows while there is still runway to re-archive them', async () => {
+    // REVERSED DELIBERATELY (#871). This used to assert silence, on the
+    // reasoning that incomplete-rows clears itself once the amend pass catches
+    // up. There is no amend pass: #932 closed that question after measuring
+    // 1.4 million executions across two windows and finding nothing that would
+    // trigger one. So an incomplete row clears only when somebody re-archives
+    // the day, which makes it exactly like never-archived: it does not clear
+    // itself, and staying quiet until the partition is due spends the runway
+    // that makes it fixable.
     await run({ perDay: { [NOT_URGENT]: facts({ incomplete: 2 }) } })
-    expect(alerts().filter((m) => m.includes(NOT_URGENT))).toEqual([])
+
+    const said = alerts().filter((m) => m.includes(NOT_URGENT))
+    expect(said, `nothing was said about ${NOT_URGENT}`).toHaveLength(1)
+    expect(said[0]).toMatch(/re-archive/i)
+    expect(said[0]).toMatch(/days? left/)
+  })
+
+  it('does not tell anybody to wait for a repair that does not exist', async () => {
+    await run({ perDay: { [NOT_URGENT]: facts({ incomplete: 2 }) } })
+    // Naming a mechanism nobody built is worse than saying nothing: it reads as
+    // "this will sort itself out" and the day then refuses for ever (L11).
+    expect(alerts().join(' ')).not.toMatch(/amend pass/i)
   })
 })
