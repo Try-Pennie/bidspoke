@@ -678,7 +678,7 @@ export default {
           .catch((e) => console.error('[prewarm] failed:', e))
       )
       ctx.waitUntil(
-        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL)
+        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, env.SECRET_ENCRYPTION_KEY)
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       ctx.waitUntil(

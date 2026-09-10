@@ -17,9 +17,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
-import { getSlackConnection, postMessage } from './slack'
+import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from './slack'
 import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
+import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { decryptSecret, encryptSecret } from './secret-crypto'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const ALERT_THRESHOLD_PCT = 25
@@ -40,11 +42,95 @@ export const RECENT_WINDOW_MINUTES = 4     // [-4, -1]
 export const DEFAULT_SELF_CHECK_URL = 'https://hook.trypennie.dev/'
 const SELF_CHECK_TIMEOUT_MS = 5000
 
+export interface DatabaseProbeResult {
+  ok: boolean
+  latency_ms: number
+  error: string | null
+}
+
 export interface SelfCheckResult {
   ok: boolean
   status: number | null
   latency_ms: number
   error: string | null
+  /** The database probe run beside the worker probe (#1297). */
+  database: DatabaseProbeResult
+}
+
+// ── Speaking while the database is down (#1297) ──────────────────────────────
+//
+// This check counts executions in the database, and every alert path looks the
+// Slack token up there too. On 2026-09-10 Supabase was unresponsive for ten
+// minutes: the check could not count, could not post, and only spoke once the
+// database was back, when it blamed the caller. So every healthy tick writes an
+// ENCRYPTED last-good copy of the Slack connections to KV (the token is a
+// secret and KV is not the place for plaintext, #491), and a tick whose reads
+// fail posts from that copy instead of returning quietly. The copy is one key,
+// rewritten once a minute, well inside KV's one write a second per key.
+export const SLACK_CONNS_LASTGOOD_KEY = 'slack-conns-lastgood'
+export const DB_UNREACHABLE_PREFIX = 'db-unreachable'
+export const DB_UNREACHABLE_COOLDOWN_SECONDS = 15 * 60
+const dbUnreachableCooldownKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}-cooldown:${orgId}`
+
+async function rememberSlackConnections(
+  kv: KvLike,
+  secretEncryptionKey: string,
+  connections: Map<string, SlackConnection>,
+): Promise<void> {
+  try {
+    const blob = await encryptSecret(JSON.stringify(Object.fromEntries(connections)), secretEncryptionKey)
+    await kv.put(SLACK_CONNS_LASTGOOD_KEY, blob)
+  } catch (e) {
+    // The check itself must not fail because the safety copy could not be written.
+    console.error(`[volume-cliff] last-good Slack connections write failed: ${formatErr(e)}`)
+  }
+}
+
+async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: string): Promise<Map<string, SlackConnection>> {
+  const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
+  if (!blob) return new Map()
+  try {
+    const parsed = JSON.parse(await decryptSecret(blob, secretEncryptionKey)) as Record<string, unknown>
+    const out = new Map<string, SlackConnection>()
+    for (const [orgId, cfg] of Object.entries(parsed)) {
+      const conn = parseSlackConnection(cfg)
+      if (conn) out.set(orgId, conn)
+    }
+    return out
+  } catch (e) {
+    // A blob written under a rotated key is a miss, not a crash.
+    console.error(`[volume-cliff] last-good Slack connections unreadable: ${formatErr(e)}`)
+    return new Map()
+  }
+}
+
+/**
+ * A read this check depends on failed. Say so in Slack from the last-good copy,
+ * once per cooldown per org, and stamp the incident so the next healthy tick can
+ * announce the all-clear. This is the one alert that must not need the database.
+ */
+async function reportDatabaseUnreachable(
+  kv: KvLike,
+  secretEncryptionKey: string,
+  what: string,
+  error: unknown,
+  appUrl: string,
+): Promise<void> {
+  const connections = await readLastGoodSlackConnections(kv, secretEncryptionKey)
+  if (connections.size === 0) {
+    console.error(`[volume-cliff] ${what} read failed and there is no last-good Slack connection in KV, so nobody can be told: ${formatErr(error)}`)
+    return
+  }
+  for (const [orgId, conn] of connections) {
+    if (!conn.volume_alerts_enabled) continue
+    await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId)
+    if (await kv.get(dbUnreachableCooldownKey(orgId))) continue
+    const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl })
+    if (ts) {
+      await kv.put(dbUnreachableCooldownKey(orgId), '1', { expirationTtl: DB_UNREACHABLE_COOLDOWN_SECONDS })
+      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId)
+    }
+  }
 }
 
 export interface CliffDetection {
@@ -96,13 +182,25 @@ export async function runVolumeCliffCheck(
   supabase: SupabaseClient,
   kv: KvLike,
   appUrl: string,
-  selfCheckUrl: string = DEFAULT_SELF_CHECK_URL
+  selfCheckUrl: string = DEFAULT_SELF_CHECK_URL,
+  secretEncryptionKey: string,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await supabase
     .from('service_connections')
-    .select('organization_id')
+    .select('organization_id, config')
     .eq('service_type', 'slack')
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
+  if (slackOrgsError) {
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'slack connections', slackOrgsError, appUrl)
+    return
+  }
+
+  const connections = new Map<string, SlackConnection>()
+  for (const row of slackOrgs ?? []) {
+    const conn = parseSlackConnection((row as { config?: unknown }).config)
+    if (conn) connections.set(row.organization_id as string, conn)
+  }
+  if (connections.size > 0) await rememberSlackConnections(kv, secretEncryptionKey, connections)
 
   const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
   if (slackOrgIds.length === 0) return
@@ -114,6 +212,10 @@ export async function runVolumeCliffCheck(
     .eq('is_active', true)
     .is('deleted_at', null)
   logReadFailure('volume-cliff', 'workflows', workflowsError)
+  if (workflowsError) {
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'workflows', workflowsError, appUrl)
+    return
+  }
 
   if (!workflows?.length) return
 
@@ -138,7 +240,19 @@ export async function runVolumeCliffCheck(
   })
   if (countsError) {
     console.error(`[volume-cliff] execution_counts_per_minute failed: ${countsError.message}`)
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'execution counts', countsError, appUrl)
     return
+  }
+
+  // Every read succeeded, so if we paged that the database was unreachable, this
+  // is the tick that can say it is over (the same re-arm rules as the cliff).
+  for (const [orgId, conn] of connections) {
+    await announceRecovery(kv, DB_UNREACHABLE_PREFIX, orgId, dbUnreachableCooldownKey(orgId), async (alertedAt, endedAt) => {
+      if (!conn.volume_alerts_enabled) return false
+      return sendRecoveryAlert(conn, conn.default_channel, {
+        signal: 'database unreachable', subject: 'Bidspoke', alertedAt, endedAt, url: `${appUrl}/dashboard`,
+      })
+    })
   }
   const rows = (counts ?? []) as { workflow_id: string; minute: string; cnt: number | string }[]
   console.log(`[volume-cliff] fetched ${rows.length} minute-buckets across ${workflows.length} workflows`)
@@ -158,7 +272,7 @@ export async function runVolumeCliffCheck(
   let cachedSelfCheck: SelfCheckResult | null = null
   const getSelfCheck = async (): Promise<SelfCheckResult> => {
     if (cachedSelfCheck) return cachedSelfCheck
-    cachedSelfCheck = await runSelfCheck(selfCheckUrl)
+    cachedSelfCheck = await runSelfCheck(selfCheckUrl, supabase)
     return cachedSelfCheck
   }
 
@@ -229,7 +343,12 @@ export async function runVolumeCliffCheck(
   }
 }
 
-async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
+async function runSelfCheck(selfCheckUrl: string, supabase: SupabaseClient): Promise<SelfCheckResult> {
+  const [worker, database] = await Promise.all([probeWorker(selfCheckUrl), probeDatabase(supabase)])
+  return { ...worker, database }
+}
+
+async function probeWorker(selfCheckUrl: string): Promise<Omit<SelfCheckResult, 'database'>> {
   const start = Date.now()
   try {
     const ctrl = new AbortController()
@@ -241,7 +360,7 @@ async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
     console.log(`[volume-cliff] self-check status=${res.status} latency=${latency}ms cf-ray=${cfRay} url=${selfCheckUrl}`)
     // Any HTTP response (including 4xx) proves the worker is reachable. Only
     // network/timeout errors below mean unreachable. 5xx is the one ambiguous
-    // case — treat it as errored (worker up but failing).
+    // case: treat it as errored (worker up but failing).
     return { ok: res.status < 500, status: res.status, latency_ms: latency, error: null }
   } catch (e) {
     const latency = Date.now() - start
@@ -250,6 +369,57 @@ async function runSelfCheck(selfCheckUrl: string): Promise<SelfCheckResult> {
     console.error(`[volume-cliff] self-check FAILED type=${errName} message=${errMsg} latency=${latency}ms url=${selfCheckUrl}`)
     return { ok: false, status: null, latency_ms: latency, error: `${errName}: ${errMsg}` }
   }
+}
+
+// The cheapest read that proves the database answers: one row of a tiny table,
+// under the same deadline as the worker probe (#1297).
+async function probeDatabase(supabase: SupabaseClient): Promise<DatabaseProbeResult> {
+  const start = Date.now()
+  try {
+    const ctrl = new AbortController()
+    const timeout = setTimeout(() => ctrl.abort(), SELF_CHECK_TIMEOUT_MS)
+    const { error } = await supabase
+      .from('service_connections')
+      .select('organization_id')
+      .limit(1)
+      .abortSignal(ctrl.signal)
+    clearTimeout(timeout)
+    const latency = Date.now() - start
+    if (error) {
+      console.error(`[volume-cliff] database probe FAILED latency=${latency}ms: ${error.message}`)
+      return { ok: false, latency_ms: latency, error: error.message }
+    }
+    return { ok: true, latency_ms: latency, error: null }
+  } catch (e) {
+    const latency = Date.now() - start
+    console.error(`[volume-cliff] database probe FAILED latency=${latency}ms: ${formatErr(e)}`)
+    return { ok: false, latency_ms: latency, error: formatErr(e) }
+  }
+}
+
+/**
+ * The alert's diagnosis line says exactly what the two probes measured and no
+ * more (#1297, L11). Before this it read a 4xx from the worker as proof the
+ * caller had stopped sending, which on 2026-09-10 pointed everyone at the wrong
+ * system for ten minutes.
+ */
+export function describeSelfCheck(selfCheck: SelfCheckResult): string {
+  const worker = selfCheck.error
+    ? `*Worker self-check FAILED:* ${selfCheck.error} after ${selfCheck.latency_ms}ms.`
+    : selfCheck.ok
+      ? `*Worker reachable* (HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms).`
+      : `*Worker responded but errored* (HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms).`
+  const db = selfCheck.database.ok
+    ? `*Database readable* (${selfCheck.database.latency_ms}ms).`
+    : `*Database read FAILED:* ${selfCheck.database.error} after ${selfCheck.database.latency_ms}ms.`
+  const conclusion = selfCheck.error
+    ? 'The worker may be unreachable. Investigate Cloudflare (DNS, route, TLS) first.'
+    : !selfCheck.database.ok
+      ? 'The worker is up but cannot read the database, so it has been refusing leads. Investigate Supabase first.'
+      : !selfCheck.ok
+        ? 'Investigate worker health.'
+        : 'Both ends we control answer now. The missing runs either did not arrive or arrived while one of them was down; check the caller and any database alert above.'
+  return `${worker} ${db} ${conclusion}`
 }
 
 // Returns the message ts on success, or null if the alert was not delivered
@@ -265,11 +435,7 @@ export async function sendCliffAlert(
   const ratePct = expected > 0 ? Math.round((cliff.recent_count / expected) * 100) : 0
   const workflowUrl = `${appUrl}/workflows/${cliff.workflow_id}`
 
-  const checkLine = selfCheck.error
-    ? `*Self-check FAILED:* ${selfCheck.error} after ${selfCheck.latency_ms}ms. *Worker may be unreachable.* Investigate Cloudflare (DNS, route, TLS) first.`
-    : selfCheck.ok
-      ? `*Self-check:* HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms. Worker is reachable. The upstream caller isn't sending.`
-      : `*Self-check:* HTTP ${selfCheck.status} in ${selfCheck.latency_ms}ms. Worker responded but errored. Investigate worker health.`
+  const checkLine = describeSelfCheck(selfCheck)
 
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Workflow Volume Cliff', emoji: false } },
