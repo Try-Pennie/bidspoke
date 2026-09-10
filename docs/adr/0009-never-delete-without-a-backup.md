@@ -40,6 +40,23 @@ is not deleted until the question it asks has been answered (see Unresolved).
 All from prod on 2026-08-19 via `apps/worker/scripts/measure-bundle.ts`. Sample:
 60 executions from the UTC day 2026-08-16, 716 step rows, untruncated.
 
+> **These figures are from ONE day and 60 executions, and they have moved
+> (#891).** A dated number in a document is trusted more, not less, as it ages,
+> so this says how to re-take each one rather than asking a reader to believe
+> the date. Re-measured 2026-09-10 across 851 executions in four five-minute
+> windows on four different days: raw bundle p50 34.2 KB (was 41.2), p95 242.2
+> KB (was 233.8), p99 381.5 KB (was 492.0), **mean 77.2 KB** (never recorded),
+> at 94,964 executions/day and 10.7 steps/execution (was ~105,000 and 11.9).
+>
+> **The mean is the one that was missing and it changes a conclusion.** See the
+> storage note below.
+>
+> Re-run the volume and shape figures with the queries in
+> `supabase/tests/measure-bundle-shape.sql`. They are pure reads and cost
+> nothing. Anything derived from the ARCHIVE side (compression, wire size,
+> credits) still needs the Worker's Snowflake credentials and cannot be taken
+> from a SQL session.
+
 ### Bundle size
 
 | | p50 | p95 | p99 |
@@ -56,6 +73,34 @@ bundles is 4.0x at p50. This was the stop-and-re-decide condition. It clears.
 Consequence: at ~105,000 executions/day the archive grows about **1.1 GB/day
 compressed**, so 13 months is roughly **435 GB**, not the ~1.1 TB the planning
 estimate used. The estimate was of uncompressed volume.
+
+> **CORRECTION, 2026-09-10 (#886, #891). That total was computed from a p50 as
+> if it were a mean.** 1.1 GB over 105,000 executions is 10.5 KB each, which is
+> the p50 wire size above rather than the average one. This distribution is
+> heavily skewed, mean raw 77.2 KB against a p50 of 34.2 KB, so more than half
+> the bytes are in the tail and a p50 based total understates it.
+>
+> Recomputed from the mean, at 94,964 executions/day and base64's 33%, the
+> answer is a RANGE rather than a number, because the one input it turns on was
+> never measured:
+>
+> | mean compression | wire/day | 13 months |
+> |---|---|---|
+> | 4.0x (the measured p50 ratio) | 2.32 GB | **918 GB** |
+> | 6.0x | 1.55 GB | **612 GB** |
+> | 8.0x | 1.16 GB | **459 GB** |
+>
+> Only p50 (4.0x), p95 (11x) and p99 (14x) were ever measured, and that spread
+> says larger bundles compress considerably better, so the MEAN ratio is
+> somewhere above 4.0x and the answer sits in the middle of that table. The
+> recorded 435 GB is at or below its most optimistic row.
+>
+> **Measuring the mean compression ratio is the single cheapest thing that would
+> settle this**, and it needs the archive side rather than a SQL session.
+>
+> The two decisions this figure justified, no declared clustering key and a
+> single warehouse, both get STRONGER at a larger table rather than weaker, so
+> neither is affected. What it changes is the retention question in #886.
 
 Note gzip ENLARGES payloads under about 1 kB. It is a saving on real executions
 only, which is why the compression assertion in the test suite is made against a
