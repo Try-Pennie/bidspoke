@@ -23,6 +23,7 @@ import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { sendCircuitAlert } from '../../lib/slack'
 import { parseJson } from '../../lib/json'
 import { formatErr } from '../../lib/format-error'
+import { isNotFoundError } from '../../lib/api-error'
 import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { log } from '../../lib/logger'
 import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
@@ -66,6 +67,7 @@ interface PartnerConfig {
   circuit_cooldown_seconds: number
   circuit_enabled: boolean
   is_active: boolean
+  updated_at?: string | null
 }
 
 type SkipReason = 'partner_inactive' | 'circuit_open' | 'cap_exceeded' | 'cap_check_error' | 'duplicate' | 'bid_below_min' | 'rejected' | 'shadow'
@@ -121,7 +123,44 @@ const PARTNER_SELECT =
   'bid_mode, bid_comparison_source, extra_extraction, ' +
   'dedup_endpoint, response_classification, alert_config, ' +
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
-  'circuit_enabled, is_active'
+  'circuit_enabled, is_active, updated_at'
+
+// ── Last-good partner config (#1296) ──────────────────────────────────────────
+//
+// The config is read from the database on every attempt so an edit (a cap, a
+// formula, disabling a partner) applies to the very next lead. That read had no
+// fallback, so on 2026-09-10, with Supabase unresponsive for ten minutes, every
+// attempt that reached this node threw "Partner config not found" and no lead
+// could bid. A copy of the last row we read is kept in KV with no TTL and served
+// only when the read FAILS (never when the row is genuinely missing). KV allows
+// one write a second per key, so the copy is rewritten only when updated_at
+// moves, tracked per isolate; a fresh isolate writes once and then goes quiet.
+const lastGoodKey = (partnerId: string) => `partner-lastgood:${partnerId}`
+const lastGoodWritten = new Map<string, string>()
+
+async function rememberLastGood(kv: KVNamespace | undefined, partner: PartnerConfig): Promise<void> {
+  if (!kv) return
+  const stamp = partner.updated_at ?? ''
+  if (lastGoodWritten.get(partner.id) === stamp) return
+  try {
+    await kv.put(lastGoodKey(partner.id), JSON.stringify(partner))
+    lastGoodWritten.set(partner.id, stamp)
+  } catch (e) {
+    // The bid must not fail because the safety copy could not be written.
+    console.error(`[partner-bid] last-good write failed for ${partner.id}: ${formatErr(e)}`)
+  }
+}
+
+async function readLastGood(kv: KVNamespace | undefined, partnerId: string): Promise<PartnerConfig | null> {
+  if (!kv) return null
+  const raw = await kv.get(lastGoodKey(partnerId))
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as PartnerConfig
+  } catch {
+    return null
+  }
+}
 
 // Record a circuit-breaker outcome with a bounded retry so a transient
 // Durable Object blip (network hiccup, brief overload) doesn't silently drop
@@ -228,18 +267,26 @@ export async function executePartnerBidNode(
     throw new Error('Partner Bid node is missing required config: partner_id')
   }
 
-  // 1. Load partner config
+  // 1. Load partner config. A failed READ falls back to the last-good copy
+  // (#1296); a row that is genuinely absent does not.
   const { data: partner, error } = await supabase
     .from('partner_configs')
     .select(PARTNER_SELECT)
     .eq('id', config.partner_id)
     .single()
 
-  if (error || !partner) {
-    throw new Error(`Partner config not found: ${config.partner_id}`)
+  let p: PartnerConfig
+  if (!error && partner) {
+    p = partner as unknown as PartnerConfig
+    await rememberLastGood(env.WORKFLOW_CACHE, p)
+  } else {
+    const stale = error && !isNotFoundError(error) ? await readLastGood(env.WORKFLOW_CACHE, config.partner_id) : null
+    if (!stale) {
+      throw new Error(`Partner config not found: ${config.partner_id}`)
+    }
+    console.error(`[partner-bid] partner_configs read failed; using last-good copy for ${config.partner_id}: ${formatErr(error)}`)
+    p = stale
   }
-
-  const p = partner as unknown as PartnerConfig
 
   // Built once and merged onto every return/throw path so the Results panel
   // surfaces both the partner config the author set up and the resolved values

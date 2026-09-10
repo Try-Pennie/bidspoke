@@ -8,6 +8,15 @@
  * Endpoint records are cached in WORKFLOW_CACHE KV (prefix 'ep:') with a
  * 60-second TTL to avoid a Supabase lookup on every inbound request.
  *
+ * A second, durable copy (prefix 'ep-lastgood:', no TTL) is written on every
+ * successful lookup and served when the lookup itself fails (#1296). On
+ * 2026-09-10 Supabase was unresponsive for ten minutes: the 60 second copy
+ * expired within a minute and every Engine lead was answered 503 while the
+ * workflow definition and env vars sat in KV the whole time. The endpoint
+ * record changes rarely, so a stale copy is the right answer to a lead that
+ * would otherwise be refused. A genuinely missing endpoint (no rows) still
+ * answers 404 and never consults the durable copy.
+ *
  * To test locally, pass a spoofed Host header:
  *   curl -X POST http://localhost:8787/tripoint/bidding -H "Host: hook.trypennie.dev" -d '{}'
  */
@@ -45,6 +54,17 @@ function normalizePath(raw: string): string {
   return stripped === '' ? '/' : '/' + stripped
 }
 
+// The durable copy is read only on a failed lookup. A corrupt entry is a miss.
+async function readLastGood(kv: KVNamespace, key: string): Promise<CachedEndpoint | null> {
+  const raw = await kv.get(key)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as CachedEndpoint
+  } catch {
+    return null
+  }
+}
+
 export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promise<Response> {
   if (c.req.method === 'GET') {
     // Health-check for partners to verify their endpoint is live
@@ -63,6 +83,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
   const partner = segments[0]
   const path = normalizePath('/' + segments.slice(1).join('/'))
   const cacheKey = `ep:${partner}:${path}`
+  const lastGoodKey = `ep-lastgood:${partner}:${path}`
 
   // --- KV cache lookup ---
   let endpoint: CachedEndpoint | null = null
@@ -96,25 +117,33 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
     // source the endpoint is gone, so it stops retrying and the lead is dropped.
     // Return 503 (retryable) instead. Real error logged, not leaked (#107, #303).
     if (error && !isNotFoundError(error)) {
-      console.error('[custom-endpoint] endpoint lookup failed:', error)
-      return c.json({ error: 'Temporarily unavailable' }, 503)
-    }
-    if (!data) {
+      // Serve the durable copy from the last successful lookup (#1296). Only when
+      // there has never been one is the lead refused.
+      const stale = await readLastGood(c.env.WORKFLOW_CACHE, lastGoodKey)
+      if (stale) {
+        console.error(`[custom-endpoint] endpoint lookup failed; serving last-good record for ${partner}${path}:`, error)
+        endpoint = stale
+      } else {
+        console.error('[custom-endpoint] endpoint lookup failed and no last-good record exists:', error)
+        return c.json({ error: 'Temporarily unavailable' }, 503)
+      }
+    } else if (!data) {
       return c.json({ error: 'Endpoint not found' }, 404)
+    } else {
+      const triggerAuth = data.workflows?.definition?.trigger?.config?.auth_method
+      endpoint = {
+        id: data.id,
+        workflow_id: data.workflow_id,
+        source_name: data.source_name,
+        is_active: data.is_active,
+        auth_method: triggerAuth === 'none' ? 'none' : 'api_key',
+      }
+      const serialized = JSON.stringify(endpoint)
+      // Cache even if inactive: inactive endpoints just return 404 quickly.
+      // The hot copy expires; the last-good copy does not (#1296).
+      await c.env.WORKFLOW_CACHE.put(cacheKey, serialized, { expirationTtl: CACHE_TTL })
+      await c.env.WORKFLOW_CACHE.put(lastGoodKey, serialized)
     }
-
-    const triggerAuth = data.workflows?.definition?.trigger?.config?.auth_method
-    endpoint = {
-      id: data.id,
-      workflow_id: data.workflow_id,
-      source_name: data.source_name,
-      is_active: data.is_active,
-      auth_method: triggerAuth === 'none' ? 'none' : 'api_key',
-    }
-    // Cache even if inactive — inactive endpoints just return 404 quickly
-    await c.env.WORKFLOW_CACHE.put(cacheKey, JSON.stringify(endpoint), {
-      expirationTtl: CACHE_TTL,
-    })
   }
 
   if (!endpoint.is_active) {
