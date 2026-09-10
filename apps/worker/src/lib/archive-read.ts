@@ -192,6 +192,19 @@ export async function readArchivedExecution(
   }
 
   const day_ = String(archiveDay)
+  // AUDIT IS BEST EFFORT, AND THAT IS A DECISION, not an oversight.
+  //
+  // Dan, 2026-09-10, asked directly: the read still succeeds when its access
+  // record cannot be written. The alternative considered and rejected was
+  // refusing the read, on the reasoning that no record means no access. It was
+  // rejected because an audit outage would then make thirteen months of history
+  // unreachable at exactly the moment somebody is investigating a dispute, and
+  // because every other audited action in Bidspoke already behaves this way.
+  //
+  // So do NOT "harden" this into a fail closed check without asking again.
+  // `writeAuditLog` spends its own retry ladder and logs once after it, and
+  // making the gap visible rather than merely logged is #1272's neighbour, not
+  // a reason to block the read.
   await writeAudit(
     supabase,
     opts.orgId,
