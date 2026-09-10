@@ -31,7 +31,7 @@ export const ARCHIVE_STANDSTILL_REMEDY: AlertRemedy = {
     'Read the execution_archive_progress row for the executions stream and check its watermark hour and ' +
     'when it was last updated, then the [execution-archive] worker logs for the hourly run. The message ' +
     'below says which of the three cases this is.',
-  headlineVerb: 'is not moving',
+  headlineVerb: 'reports the archive is not moving',
   itemNoun: { one: 'reading', many: 'readings' },
 }
 

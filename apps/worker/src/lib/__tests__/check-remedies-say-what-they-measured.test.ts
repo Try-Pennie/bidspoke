@@ -67,6 +67,18 @@ describe('every check says what it measured', () => {
   // which worker-guards-placement.test.ts enforces:
   // apps/web/src/lib/__guards__/worker/every-check-remedy-is-reviewed.test.ts
 
+  // The header is the job name followed by the verb, so a verb written about the
+  // subject the job name already implies can name the wrong thing. The standstill
+  // job is called execution-archive-standstill, and "is not moving" then read as
+  // the CHECK being stuck rather than the archive it watches. Asserted on the
+  // property that matters, that the header names what is actually stuck, rather
+  // than on the whole sentence, which would break on any legitimate rewording
+  // (L103, #523).
+  it('the standstill header names the archive, not the check watching it', () => {
+    expect(ARCHIVE_STANDSTILL_REMEDY.headlineVerb).toBeDefined()
+    expect(ARCHIVE_STANDSTILL_REMEDY.headlineVerb?.toLowerCase()).toContain('archive')
+  })
+
   for (const [name, remedy] of REMEDIES) {
     it(`${name} does not borrow the export wording`, () => {
       const words = `${remedy.consequence} ${remedy.fixHint}`.toLowerCase()
