@@ -124,7 +124,37 @@ export type BacklogOutcome =
   | { kind: 'set-aside'; attempts: number; eligibleAgainAtMs: number }
 
 /**
+ * Counts an attempt BEFORE the work is done (#1039).
+ *
+ * The count used to be written only after `reArchiveDay` returned, so an
+ * invocation KILLED during the archive work wrote nothing at all. That is not a
+ * corner: the case the set-aside exists for is a day the walk cannot finish, and
+ * the likeliest reason a day cannot be finished is that its hours are too large
+ * for one invocation, which shows up as the invocation being KILLED rather than
+ * as a run that completes having gained nothing. Two runs on 2026-08-23 took the
+ * lock and never closed their row.
+ *
+ * So a day that kills every run accrued zero counts, was never set aside, and
+ * blocked every day behind it: exactly the behaviour the set-aside exists to
+ * prevent, in exactly the case it was built for.
+ *
+ * It only ever INCREMENTS. It deliberately cannot set a day aside, because a day
+ * must be tried before it is passed over, and a begin that could set aside would
+ * skip a day on the strength of previous runs without attempting this one.
+ * `recordAttempt` still owns that decision, after the work.
+ */
+export function beginAttempt(state: BacklogState, day: string): BacklogState {
+  return {
+    noProgress: { ...state.noProgress, [day]: (state.noProgress[day] ?? 0) + 1 },
+    setAsideUntil: { ...state.setAsideUntil },
+  }
+}
+
+/**
  * Folds one run's result into the state, and says what that result MEANS.
+ *
+ * Called AFTER `beginAttempt` has already counted this run, so it judges the
+ * count as it stands rather than adding to it (#1039).
  *
  * Keyed on hours GAINED rather than on the run reporting failure, because the
  * failure mode this exists for answered success on every call while making no
@@ -149,7 +179,10 @@ export function recordAttempt(
     return { state: { noProgress, setAsideUntil }, outcome: { kind: 'progressed' } }
   }
 
-  const attempts = (noProgress[day] ?? 0) + 1
+  // Already counted by beginAttempt, so this reads the count rather than adding
+  // to it. Defaulting to 1 keeps a caller that did not call beginAttempt
+  // behaving as before rather than recording a run as never having happened.
+  const attempts = noProgress[day] ?? 1
   if (attempts < MAX_NO_PROGRESS_ATTEMPTS) {
     noProgress[day] = attempts
     return { state: { noProgress, setAsideUntil }, outcome: { kind: 'no-progress', attempts } }

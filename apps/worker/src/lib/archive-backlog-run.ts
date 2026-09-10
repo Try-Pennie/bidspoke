@@ -23,6 +23,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
+  beginAttempt,
   nextBacklogDay,
   HOURS_PER_DAY,
   daysSetAside,
@@ -183,6 +184,19 @@ async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
   // The specific hours, straight from the records. Never derived from the count.
   const alreadyRecorded = new Set(recordedBefore[day] ?? [])
 
+  // COUNTED, AND PERSISTED, BEFORE THE WORK (#1039). If this invocation is
+  // killed inside reArchiveDay, nothing below here runs, and before this that
+  // meant a killed run wrote no count at all. The case the set-aside exists for
+  // is a day the walk cannot finish, and the likeliest reason is that its hours
+  // are too large for one invocation, which shows up as the invocation being
+  // KILLED rather than as a run that completes having gained nothing. So a day
+  // that killed every run accrued zero counts and was never set aside.
+  //
+  // beginAttempt only increments and can never set a day aside: a day has to be
+  // tried before it is passed over.
+  const attemptedState = beginAttempt(state, day)
+  await deps.writeState(attemptedState)
+
   const result = await deps.reArchiveDay(day, alreadyRecorded)
   const after = ((await deps.recordedHoursByDay())[day] ?? []).length
   const progressed = after > before
@@ -190,7 +204,8 @@ async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
   // Judged on hours GAINED, never on the run not failing. The observed failure mode
   // answered success on every call while making no progress at all, so a check on
   // `failed` would have stayed quiet through the whole thing (#1019).
-  const { state: nextState, outcome } = recordAttempt(state, day, progressed, nowMs)
+  // Judges the count beginAttempt already wrote, rather than adding to it.
+  const { state: nextState, outcome } = recordAttempt(attemptedState, day, progressed, nowMs)
   await deps.writeState(nextState)
 
   if (outcome.kind === 'set-aside') {

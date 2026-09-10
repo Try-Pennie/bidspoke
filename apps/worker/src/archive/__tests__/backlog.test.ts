@@ -9,6 +9,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
+  beginAttempt,
   nextBacklogDay,
   MAX_NO_PROGRESS_ATTEMPTS,
   SET_ASIDE_MS,
@@ -171,7 +172,10 @@ describe('recordAttempt', () => {
   })
 
   it('sets the day aside on the attempt that reaches the limit', () => {
-    const state: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    // The real pair, in the order the walk uses it: begin counts this run
+    // BEFORE the work, record judges it after (#1039).
+    const earlier: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    const state = beginAttempt(earlier, '2026-08-16')
     const r = recordAttempt(state, '2026-08-16', false, NOW)
 
     expect(r.outcome).toEqual({
@@ -185,8 +189,8 @@ describe('recordAttempt', () => {
   it('starts the count over after a set-aside, so the next window needs its own failures', () => {
     // Otherwise one historic bad patch would set the day aside again on its first
     // retry forever, which is abandoning it under another name.
-    const state: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
-    const afterSetAside = recordAttempt(state, '2026-08-16', false, NOW).state
+    const earlier: BacklogState = { noProgress: { '2026-08-16': MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    const afterSetAside = recordAttempt(beginAttempt(earlier, '2026-08-16'), '2026-08-16', false, NOW).state
     const retry = recordAttempt(afterSetAside, '2026-08-16', false, NOW + SET_ASIDE_MS + 1)
 
     expect(retry.outcome).toEqual({ kind: 'no-progress', attempts: 1 })
@@ -280,5 +284,66 @@ describe('parseBacklogState', () => {
     const { state } = parseBacklogState({ setAsideUntil: { '2026-08-16': 'soon' } })
 
     expect(daysSetAside(state, NOW)).toEqual([])
+  })
+})
+
+/**
+ * A run the platform KILLS still counts against the day (#1039).
+ *
+ * The count used to be written only after the archive work returned, so an
+ * invocation killed during it wrote nothing. That is not a corner: the case the
+ * set-aside exists for is a day the walk cannot finish, and the likeliest reason
+ * is that its hours are too large for one invocation, which shows up as the
+ * invocation being killed. Two runs on 2026-08-23 took the lock and never closed
+ * their row.
+ */
+describe('beginAttempt', () => {
+  const DAY = '2026-08-16'
+
+  it('counts the run before any work is done, so a killed run leaves a mark', () => {
+    const state = beginAttempt({ noProgress: {}, setAsideUntil: {} }, DAY)
+    expect(state.noProgress[DAY]).toBe(1)
+  })
+
+  it('accumulates across runs that are each killed', () => {
+    let state: BacklogState = { noProgress: {}, setAsideUntil: {} }
+    // Nothing after beginAttempt runs, because each invocation dies there.
+    for (let i = 0; i < MAX_NO_PROGRESS_ATTEMPTS - 1; i++) state = beginAttempt(state, DAY)
+
+    expect(state.noProgress[DAY]).toBe(MAX_NO_PROGRESS_ATTEMPTS - 1)
+
+    // The next run begins, is killed too, and the run after it finds the day at
+    // the limit. Before this, a day that killed every run accrued zero counts
+    // and was never set aside.
+    state = beginAttempt(state, DAY)
+    expect(recordAttempt(state, DAY, false, NOW).outcome.kind).toBe('set-aside')
+  })
+
+  it('cannot set a day aside on its own, so a day is always tried before it is passed over', () => {
+    let state: BacklogState = { noProgress: { [DAY]: MAX_NO_PROGRESS_ATTEMPTS - 1 }, setAsideUntil: {} }
+    state = beginAttempt(state, DAY)
+
+    // Counted to the limit, but NOT set aside: that decision belongs after the
+    // work, or a day would be skipped on the strength of previous runs without
+    // this one ever attempting it.
+    expect(state.noProgress[DAY]).toBe(MAX_NO_PROGRESS_ATTEMPTS)
+    expect(state.setAsideUntil[DAY]).toBeUndefined()
+  })
+
+  it('is undone by a run that actually gains hours', () => {
+    let state: BacklogState = { noProgress: {}, setAsideUntil: {} }
+    state = beginAttempt(state, DAY)
+    const after = recordAttempt(state, DAY, true, NOW)
+
+    // Progress releases the day in both senses, so a run counted on the way in
+    // does not hold against a day that then succeeded.
+    expect(after.state.noProgress[DAY]).toBeUndefined()
+    expect(after.outcome).toEqual({ kind: 'progressed' })
+  })
+
+  it('leaves other days untouched', () => {
+    const state = beginAttempt({ noProgress: { other: 2 }, setAsideUntil: { other: 99 } }, DAY)
+    expect(state.noProgress.other).toBe(2)
+    expect(state.setAsideUntil.other).toBe(99)
   })
 })
