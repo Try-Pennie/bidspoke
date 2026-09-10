@@ -102,12 +102,41 @@ export interface RunBudget {
  * The run loop now RESERVES room for the hour it is about to start, sized from
  * the slowest hour that run has already completed (#953), so a run cannot
  * overshoot and the margin no longer has to absorb one. 13 minutes leaves 2
- * minutes to the ceiling, and three worst-case hours (771 seconds) fit inside
- * it, so the cap is reachable and remains a real control.
+ * minutes to the platform's ceiling.
  *
- * The effect on catch-up: three hours per hourly run is two hours of ground per
- * hour of real time, against one before. A day of backlog drains in about
- * twelve hours rather than never.
+ * WHAT AN HOUR COSTS, and why the cap and the budget each govern half the day.
+ * Measured over 163 single-hour production runs in the 7 days to 2026-09-10, an
+ * hour costs 48.4 ms per execution at the mean and 60.8 at the p95, and the
+ * cost correlates with the hour's execution count at 0.937. So an hour is not a
+ * fixed price: the quietest hour of the day holds about 1,080 executions and
+ * costs 53 seconds, the busiest holds 9,716 and costs up to 414.
+ *
+ * That means the two limits bind at different times, which is the design
+ * working rather than a compromise:
+ *
+ *   quiet half of the day  three hours fit easily, so the CAP is the control
+ *   busy half              two fit, sometimes one, so the WALL BUDGET is
+ *
+ * An earlier version of this comment claimed three worst-case hours fit inside
+ * the budget. They do not, and no budget could make them: three of the busiest
+ * hour is about 1,772 seconds against a 900 second cron ceiling. The figure it
+ * used, 257 seconds an hour, came from a single recovery run in August and the
+ * business has grown past it. A number measured once is trusted more as it
+ * ages, so both it and its successors are re-takeable with
+ * supabase/tests/measure-archive-hour-cost.sql (L316, L354).
+ *
+ * The effect on catch-up: 36 hours of ground per real day, against roughly 18
+ * before, so a full day of backlog drains in about 16 hours rather than never.
+ * Ground is gained overnight and barely at all at peak, which is worth knowing
+ * before promising a drain time for a backlog that forms in the afternoon.
+ *
+ * THE LIMIT TO WATCH is not the cap. It is that the busiest hour must still fit
+ * in one run: the reserve refuses to start an hour it cannot finish, so an hour
+ * too expensive to fit means zero hours archived, and a run that archives
+ * nothing looks exactly like a run with nothing to do (L98). At the p95 rate
+ * the busiest measured hour costs about 591 seconds against 780, roughly 32%
+ * growth headroom, and a test in execution-archive.test.ts fails when that
+ * closes.
  */
 export const CRON_RUN_BUDGET: RunBudget = { wallMs: 13 * 60 * 1000, maxHours: 3 }
 
