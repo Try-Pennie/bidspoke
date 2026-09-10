@@ -15,6 +15,11 @@
 #   not present, or wrong args   -> HTTP 404, code PGRST202
 #   anon may execute it          -> HTTP 2xx
 #
+# An entry may also expect `absent`, which asserts the object is NOT there. That
+# is the guard a DROP needs in order to outlive the migration that performed it:
+# a scan of migration text cannot see a routine recreated by hand in the database
+# (#1145).
+#
 # Each object's ARGUMENT SHAPE comes from the manifest and matches what the app
 # actually sends. That is not cosmetic: probed with an empty body,
 # auth_user_with_allowlist returns PGRST202, which is indistinguishable from the
@@ -115,6 +120,10 @@ for i in $(seq 0 $((COUNT - 1))); do
       echo "::error::$NAME is executable by anon over /rest/v1/rpc, which the manifest says it must not be. Postgres grants EXECUTE to PUBLIC on every new function, so the fix is an explicit REVOKE in a migration."
       FAILURES=$((FAILURES + 1))
       ;;
+    still_present)
+      echo "::error::$NAME answered a probe, and the manifest says it must not exist at all. It was dropped deliberately; something has recreated it. Check the manifest's note for why it was removed before restoring anything."
+      FAILURES=$((FAILURES + 1))
+      ;;
     probe_rejected)
       echo "::error::the probe of $NAME did not reach the question (http=$HTTP pg=$PG). Either the anon key is wrong or a grant the manifest expects is absent."
       FAILURES=$((FAILURES + 1))
@@ -132,4 +141,9 @@ if [ "$TOTAL" -gt 0 ]; then
   exit 1
 fi
 
-echo "All $COUNT required database objects exist and carry the expected grants."
+ABSENT=$(jq '[.[] | select(.anon == "absent")] | length' "$MANIFEST")
+if [ "$ABSENT" -gt 0 ]; then
+  echo "All $COUNT manifest entries check out: $((COUNT - ABSENT)) present with the expected grants, $ABSENT confirmed absent."
+else
+  echo "All $COUNT required database objects exist and carry the expected grants."
+fi

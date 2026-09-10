@@ -73,6 +73,47 @@ describe('db-object-decision: the object exists and carries the expected grant (
   })
 })
 
+describe('db-object-decision: an object that must be GONE (#1145)', () => {
+  /**
+   * The inverse assertion. `20260910220000` dropped three ungated expiry
+   * routines, each of which deleted a day of execution history without asking
+   * the archive gate whether that day was backed up.
+   *
+   * A DROP needs a guard that outlives the migration performing it. There is
+   * already a scan over migration TEXT, and it cannot see a routine somebody
+   * recreates by hand in the database, which is the likelier way one comes back:
+   * under a name that reads like the right one, recorded in no file (L29, L346).
+   * This half watches the live database instead.
+   */
+  it('passes when the dropped function is not there', () => {
+    expect(decide('404', 'PGRST202', 'absent')).toBe('ok')
+  })
+
+  it('fails when a dropped function answers, even with a privilege error', () => {
+    // 42501 proves the object EXISTS. Everywhere else that is the reassurance;
+    // here it is the whole finding, and it is the likelier of the two answers
+    // because anything recreated arrives with the same REVOKEs around it.
+    expect(decide('401', '42501', 'absent')).toBe('still_present')
+  })
+
+  it('fails when a dropped function is back AND anon can run it', () => {
+    expect(decide('200', '', 'absent')).toBe('still_present')
+  })
+
+  it('still reports unreachable rather than a pass when it cannot ask', () => {
+    // The direction that matters most for an absence claim: a probe that never
+    // reached the database has measured nothing, and reporting `ok` would turn
+    // every outage into proof the object is gone (L98, L345).
+    expect(decide('', '', 'absent')).toBe('unreachable')
+    expect(decide('000', '', 'absent')).toBe('unreachable')
+    expect(decide('503', '', 'absent')).toBe('unreachable')
+  })
+
+  it('does not treat an unrecognised answer as absence', () => {
+    expect(decide('401', 'PGRST301', 'absent')).toBe('probe_rejected')
+  })
+})
+
 describe('db-object-decision: an unreadable probe is its own outcome (#764)', () => {
   it('reports unreachable rather than ok when there is no HTTP status', () => {
     // Finding nothing must never read as success (LESSONS L98). This job runs
@@ -104,10 +145,10 @@ describe('db-object-decision: an unreadable probe is its own outcome (#764)', ()
   })
 
   it('prints exactly one word', () => {
-    for (const args of [['401', '42501', 'denied'], ['200', '', 'denied'], ['', '', 'allowed']]) {
+    for (const args of [['401', '42501', 'denied'], ['200', '', 'denied'], ['', '', 'allowed'], ['401', '42501', 'absent'], ['404', 'PGRST202', 'absent']]) {
       const out = execFileSync('bash', [scriptPath, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
       expect(out.trim().split('\n')).toHaveLength(1)
-      expect(['ok', 'missing', 'anon_can_execute', 'unreachable', 'probe_rejected']).toContain(out.trim())
+      expect(['ok', 'missing', 'anon_can_execute', 'still_present', 'unreachable', 'probe_rejected']).toContain(out.trim())
     }
   })
 })
@@ -117,8 +158,9 @@ describe('db-object-decision: an unreadable probe is its own outcome (#764)', ()
 interface ManifestEntry {
   name: string
   args: Record<string, unknown>
-  anon: 'denied' | 'allowed'
+  anon: 'denied' | 'allowed' | 'absent'
   reason?: string
+  note?: string
 }
 
 function manifest(): ManifestEntry[] {
@@ -165,6 +207,16 @@ describe('the required-objects manifest is derived, not remembered (#764)', () =
     expect(missing, `these RPCs are called but not in ${path.basename(MANIFEST)}`).toEqual([])
   })
 
+  it('never asserts an object is absent while the app still calls it', () => {
+    // The two halves of the manifest can contradict each other, and this is the
+    // shape it takes: a routine dropped as unsafe, then reached for again by
+    // name from shipping code. The deploy would report it absent, which is true
+    // and reads as a database fault rather than as the caller being wrong.
+    const called = rpcsCalledByTheApp()
+    const contradictions = manifest().filter((e) => e.anon === 'absent' && called.has(e.name))
+    expect(contradictions.map((e) => e.name), 'the manifest says these must not exist, but the app calls them').toEqual([])
+  })
+
   it('carries an argument shape for every entry, since an empty body reads as missing', () => {
     for (const e of manifest()) {
       expect(e.args, `${e.name} has no args object`).toBeDefined()
@@ -180,9 +232,30 @@ describe('the required-objects manifest is derived, not remembered (#764)', () =
     }
   })
 
-  it('only uses the two anon expectations the decision script understands', () => {
+  it('only uses the expectations the decision script understands', () => {
+    // Derived from the script rather than retyped here, because a vocabulary
+    // maintained by hand beside its source drifts silently and the drift lands
+    // in `probe_rejected`, which reads as a database problem (L41).
+    const script = readFileSync(path.join(REPO_ROOT, '.github/scripts/db-object-decision.sh'), 'utf8')
+    const understood = new Set(
+      [...script.matchAll(/EXPECTED_ANON"\s*=\s*"([a-z_]+)"/g)].map((m) => m[1]),
+    )
+    expect(understood, 'the script stopped naming its expectations the way this reads them').toEqual(
+      new Set(['denied', 'allowed', 'absent']),
+    )
     for (const e of manifest()) {
-      expect(['denied', 'allowed']).toContain(e.anon)
+      expect([...understood], `${e.name} expects ${e.anon}`).toContain(e.anon)
+    }
+  })
+
+  it('states why, for every entry asserted to be absent', () => {
+    // An entry saying an object must NOT exist is a decision somebody will one
+    // day want to reverse, and a bare name gives them nothing to weigh. Same
+    // rule as the anon-allowed exemptions above (L65, L233).
+    const absent = manifest().filter((e) => e.anon === 'absent')
+    expect(absent.length, 'no absence assertions at all, so this check covers nothing').toBeGreaterThan(0)
+    for (const e of absent) {
+      expect(e.note?.length ?? 0, `${e.name} is asserted absent with no note saying why`).toBeGreaterThan(40)
     }
   })
 })
