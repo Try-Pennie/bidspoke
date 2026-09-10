@@ -65,9 +65,20 @@ new_classes = ["DailyCapObject", "CircuitBreakerObject"]
 tag = "v2"
 new_classes = ["BulkheadObject"]
 
+# Alert claims (#1298). One post per alert per cooldown, decided by a strongly
+# consistent object, because two cron ticks released together both pass a KV
+# cooldown and post twice.
+[[durable_objects.bindings]]
+name = "ALERT_CLAIM"
+class_name = "AlertClaimObject"
+
 [[migrations]]
 tag = "v3"
 new_classes = ["LatencyMarkObject"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["AlertClaimObject"]
 
 # Dynamic Workers — code node sandboxing via Workers for Platforms
 [[dispatch_namespaces]]

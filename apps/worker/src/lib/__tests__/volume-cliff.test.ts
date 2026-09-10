@@ -16,6 +16,7 @@ import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUT
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret, decryptSecret } from '../secret-crypto'
 import { recoveryKey } from '../alert-recovery'
+import type { AlertClaims } from '../alert-claim'
 
 // A real 32 byte key so the last-good copy is exercised through the real cipher.
 const TEST_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
@@ -456,5 +457,132 @@ describe('the cliff alert reports what the self-check measured (#1297)', () => {
     })
     expect(text()).toContain('Database readable')
     expect(text()).toContain('Worker reachable')
+  })
+})
+
+// ── One post per alert, however many ticks arrive together (#1298) ───────────
+//
+// The KV cooldown is a get and, after the post, a put. Two ticks released at the
+// same instant both read nothing and both post: every cliff alert on 2026-09-10
+// arrived twice. The claim is asked between the cooldown and the post, and only
+// the tick it answers yes to may post.
+describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
+  const ORG = 'org-1'
+  const WF = 'wf-1'
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
+
+  function fakeKv() {
+    const store = new Map<string, string>()
+    return {
+      store,
+      get: (k: string) => Promise.resolve(store.get(k) ?? null),
+      put: (k: string, v: string) => { store.set(k, v); return Promise.resolve() },
+      delete: (k: string) => { store.delete(k); return Promise.resolve() },
+    }
+  }
+
+  /** A claim ledger: the first caller per key wins until released. */
+  function fakeClaims() {
+    const held = new Set<string>()
+    const calls: string[] = []
+    const claims: AlertClaims = {
+      claim: async (key) => { calls.push(`claim ${key}`); if (held.has(key)) return false; held.add(key); return true },
+      release: async (key) => { calls.push(`release ${key}`); held.delete(key) },
+    }
+    return { claims, calls, held }
+  }
+
+  function cliffSupabase() {
+    const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
+    const minutes = Array.from({ length: 60 }, (_, i) => ({
+      minute: new Date(base + i * 60000).toISOString(),
+      cnt: i < BASELINE_WINDOW_MINUTES ? 50 : 0,
+    }))
+    const from = (table: string) => {
+      const rows =
+        table === 'service_connections'
+          ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
+          : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
+      const builder: Record<string, unknown> = {
+        select: () => builder, eq: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
+      }
+      return builder
+    }
+    return {
+      from,
+      rpc: () => Promise.resolve({ data: minutes.map((m) => ({ workflow_id: WF, ...m })), error: null }),
+    } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
+  }
+
+  function allDownSupabase() {
+    const chain: unknown = new Proxy({}, {
+      get(_t, prop) {
+        if (prop === 'then') {
+          return (res: (v: unknown) => unknown) =>
+            Promise.resolve({ data: null, error: { message: 'connection refused', code: '08006' } }).then(res)
+        }
+        return () => chain
+      },
+    })
+    return {
+      from: () => chain,
+      rpc: () => Promise.resolve({ data: null, error: { message: 'connection refused', code: '08006' } }),
+    } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
+  }
+
+  // The post resolves on the next macrotask, so both ticks reach the cooldown
+  // gate before either has written the cooldown key. That is the 22:40 shape:
+  // two checks released by the database returning at the same instant.
+  const slowPost = <T,>(value: T) => () => new Promise<T>((resolve) => setTimeout(() => resolve(value), 0))
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 403 })))
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(postMessage).mockReset().mockImplementation(slowPost('ts-1'))
+    vi.mocked(sendDatabaseUnreachableAlert).mockReset().mockImplementation(slowPost('ts-db'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  it('control: without a claim the same two ticks post twice, so the fixture really races', async () => {
+    const kv = fakeKv()
+    await Promise.all([
+      runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY),
+      runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY),
+    ])
+    expect(postMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('posts the cliff once when two ticks pass the cooldown together', async () => {
+    const kv = fakeKv()
+    const { claims } = fakeClaims()
+    await Promise.all([
+      runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims),
+      runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims),
+    ])
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(true)
+  })
+
+  it('releases the claim when Slack refuses the post, so the next tick can retry', async () => {
+    vi.mocked(postMessage).mockResolvedValue(null)
+    const kv = fakeKv()
+    const { claims, calls, held } = fakeClaims()
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims)
+    expect(calls).toEqual(['claim volume-cliff:wf-1', 'release volume-cliff:wf-1'])
+    expect(held.size).toBe(0)
+    expect(kv.store.has('volume-cliff-cooldown:wf-1')).toBe(false)
+  })
+
+  it('posts the database unreachable alert once when two ticks find the database down together', async () => {
+    const kv = fakeKv()
+    kv.store.set(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify({ [ORG]: CONN }), TEST_KEY))
+    const { claims } = fakeClaims()
+    await Promise.all([
+      runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims),
+      runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, claims),
+    ])
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
   })
 })

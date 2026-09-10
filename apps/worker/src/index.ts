@@ -9,6 +9,7 @@ import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
@@ -37,6 +38,7 @@ export { DailyCapObject } from './durable-objects/daily-cap'
 export { CircuitBreakerObject } from './durable-objects/circuit-breaker'
 export { BulkheadObject } from './durable-objects/bulkhead'
 export { LatencyMarkObject } from './durable-objects/latency-mark'
+export { AlertClaimObject } from './durable-objects/alert-claim'
 
 export interface Env {
   // KV namespaces
@@ -53,6 +55,8 @@ export interface Env {
   // in different colos, and KV's propagation delay made a fast confirmation look
   // like a missing mark, which the gate rejects.
   LATENCY_MARK: DurableObjectNamespace
+  // Alert claims (#1298): exactly one cron tick posts a given alert per cooldown.
+  ALERT_CLAIM: DurableObjectNamespace
 
   // Max simultaneous in-flight Salesforce calls (string env var; default 20,
   // kept below SF's ~25-slot concurrency governor). Optional.
@@ -678,7 +682,7 @@ export default {
           .catch((e) => console.error('[prewarm] failed:', e))
       )
       ctx.waitUntil(
-        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, env.SECRET_ENCRYPTION_KEY)
+        runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, env.SECRET_ENCRYPTION_KEY, makeAlertClaims(env.ALERT_CLAIM))
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       ctx.waitUntil(

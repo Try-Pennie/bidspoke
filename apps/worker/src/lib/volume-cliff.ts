@@ -22,8 +22,15 @@ import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from '.
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { decryptSecret, encryptSecret } from './secret-crypto'
+import type { AlertClaims } from './alert-claim'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
+// How long a claim (#1298) holds. It only has to outlast the race it exists
+// for, ticks released within seconds of each other, plus KV's propagation of
+// the cooldown key the winner writes. Kept far shorter than the cooldown so a
+// tick that claims and then dies before posting suppresses the alert for two
+// minutes, not thirty.
+export const ALERT_CLAIM_TTL_SECONDS = 2 * 60
 export const ALERT_THRESHOLD_PCT = 25
 export const MIN_BASELINE_PER_MIN = 10
 export const BASELINE_WINDOW_MINUTES = 55  // indices 0-54, minutes [-59, -5]
@@ -115,6 +122,7 @@ async function reportDatabaseUnreachable(
   what: string,
   error: unknown,
   appUrl: string,
+  claims: AlertClaims | undefined,
 ): Promise<void> {
   const connections = await readLastGoodSlackConnections(kv, secretEncryptionKey)
   if (connections.size === 0) {
@@ -125,10 +133,17 @@ async function reportDatabaseUnreachable(
     if (!conn.volume_alerts_enabled) continue
     await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId)
     if (await kv.get(dbUnreachableCooldownKey(orgId))) continue
+    const claimKey = `${DB_UNREACHABLE_PREFIX}:${orgId}`
+    if (claims && !(await claims.claim(claimKey, ALERT_CLAIM_TTL_SECONDS))) {
+      console.log(`[volume-cliff] database unreachable alert claimed by another tick org=${orgId}`)
+      continue
+    }
     const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what, error: formatErr(error), appUrl })
     if (ts) {
       await kv.put(dbUnreachableCooldownKey(orgId), '1', { expirationTtl: DB_UNREACHABLE_COOLDOWN_SECONDS })
       await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId)
+    } else if (claims) {
+      await claims.release(claimKey)
     }
   }
 }
@@ -184,6 +199,11 @@ export async function runVolumeCliffCheck(
   appUrl: string,
   selfCheckUrl: string = DEFAULT_SELF_CHECK_URL,
   secretEncryptionKey: string,
+  // The claim that decides which of several simultaneous ticks posts (#1298).
+  // Optional only so the pure detection tests need not build one; production
+  // always passes it, and without it two ticks that pass the cooldown together
+  // both post.
+  claims?: AlertClaims,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await supabase
     .from('service_connections')
@@ -191,7 +211,7 @@ export async function runVolumeCliffCheck(
     .eq('service_type', 'slack')
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
   if (slackOrgsError) {
-    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'slack connections', slackOrgsError, appUrl)
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'slack connections', slackOrgsError, appUrl, claims)
     return
   }
 
@@ -213,7 +233,7 @@ export async function runVolumeCliffCheck(
     .is('deleted_at', null)
   logReadFailure('volume-cliff', 'workflows', workflowsError)
   if (workflowsError) {
-    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'workflows', workflowsError, appUrl)
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'workflows', workflowsError, appUrl, claims)
     return
   }
 
@@ -240,7 +260,7 @@ export async function runVolumeCliffCheck(
   })
   if (countsError) {
     console.error(`[volume-cliff] execution_counts_per_minute failed: ${countsError.message}`)
-    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'execution counts', countsError, appUrl)
+    await reportDatabaseUnreachable(kv, secretEncryptionKey, 'execution counts', countsError, appUrl, claims)
     return
   }
 
@@ -318,6 +338,14 @@ export async function runVolumeCliffCheck(
       continue
     }
 
+    // Between the cooldown read and the post, ask the claim which tick posts
+    // (#1298). Two ticks that reach here together both saw no cooldown key.
+    const claimKey = `volume-cliff:${wfId}`
+    if (claims && !(await claims.claim(claimKey, ALERT_CLAIM_TTL_SECONDS))) {
+      console.log(`[volume-cliff] alert claimed by another tick workflow_id=${wfId}`)
+      continue
+    }
+
     const selfCheck = await getSelfCheck()
 
     // Honor the per-workflow channel override, like every other alert path;
@@ -339,6 +367,10 @@ export async function runVolumeCliffCheck(
       // Separate marker, longer TTL: a cliff lasting past the 30 minute cooldown
       // would otherwise leave nothing to say it had ever been broken (#253).
       await markAlerted(kv, 'volume-cliff', wfId)
+    } else if (claims) {
+      // Slack refused: free the claim so the next tick can retry, the same way
+      // the cooldown is only written on delivery.
+      await claims.release(claimKey)
     }
   }
 }
