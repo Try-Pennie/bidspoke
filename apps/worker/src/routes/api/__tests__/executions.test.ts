@@ -18,7 +18,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
-import { readArchivedExecution, readArchivedChildren, readArchivedParentSteps } from '../../../lib/archive-read'
+import { readArchivedExecution, readArchivedChildren, readArchivedParentSteps, searchArchive } from '../../../lib/archive-read'
 import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
@@ -643,5 +643,69 @@ describe('archived lineage on the detail route (#874)', () => {
     // But it must SAY it could not tell. An empty list alone would read as
     // "nothing was ever re-run from this", which nothing established.
     expect(body.child_executions_unavailable).toBe(true)
+  })
+})
+
+describe('GET /executions/archive-search (#874)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    // Cleared, because one assertion here is that the DETAIL route did not
+    // handle this path, and a call recorded by an earlier test would answer
+    // that question with another test's history (L205).
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload as never)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser } }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    app = await makeApp()
+  })
+
+  it('is not mistaken for an execution id', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({
+      kind: 'ok', results: [], coverage: { complete: true, blindWorkflows: [], note: null },
+    })
+
+    const res = await request(app, 'GET', '/executions/archive-search?trace_id=abc')
+
+    expect(res.status).toBe(200)
+    // The detail route must not have handled it; the search did.
+    expect(vi.mocked(searchArchive)).toHaveBeenCalled()
+    expect(vi.mocked(readArchivedExecution)).not.toHaveBeenCalled()
+  })
+
+  it('returns the coverage caveat alongside the results', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({
+      kind: 'ok',
+      results: [{ execution_id: 'exec-1' }],
+      coverage: { complete: false, blindWorkflows: ['Main Flow'], note: 'Main Flow does not record them.' },
+    })
+
+    const res = await request(app, 'GET', '/executions/archive-search?ssn=123-45-6789')
+    const body = await res.json() as { results: unknown[]; coverage: { complete: boolean; note: string } }
+
+    expect(body.results).toHaveLength(1)
+    expect(body.coverage.complete).toBe(false)
+    expect(body.coverage.note).toContain('Main Flow')
+  })
+
+  it('refuses a search with no term', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({
+      kind: 'refused', reason: 'a trace id or an SSN is required',
+    })
+
+    const res = await request(app, 'GET', '/executions/archive-search')
+    expect(res.status).toBe(400)
+  })
+
+  it('answers 503, not an empty result list, when the archive cannot be reached', async () => {
+    vi.mocked(searchArchive).mockResolvedValue({
+      kind: 'unavailable', waitingFor: 'the execution archive', detail: 'no answer',
+    })
+
+    const res = await request(app, 'GET', '/executions/archive-search?trace_id=abc')
+
+    // An empty 200 would read as "this person was never seen".
+    expect(res.status).toBe(503)
   })
 })

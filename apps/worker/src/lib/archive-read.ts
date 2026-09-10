@@ -415,3 +415,185 @@ function stepById(steps: unknown[], stepId: string): Record<string, unknown> | n
   }
   return null
 }
+
+/**
+ * Finding an archived run when nobody has the link (#874).
+ *
+ * `GET /api/executions` is Postgres only and has no identity filter, so past
+ * the retention window somebody holding a lead and no URL has no starting
+ * point at all. Two ways in:
+ *
+ *  - a trace id, matched against the archive directly, which every archived
+ *    run carries, so its coverage is complete;
+ *  - an SSN, resolved through LEAD_SIGHTINGS, which already holds both the ssn
+ *    and the execution_id.
+ *
+ * THE COVERAGE IS PART OF THE ANSWER. A workflow with `capture_sightings`
+ * false writes no sighting, so the SSN route cannot see its runs at all.
+ * Measured on production 2026-09-10: two of ten live workflows, and one of
+ * them is Main Flow, the flow carrying the Equifax credit report. An SSN
+ * search that answers "nothing" for one of those leads is saying something
+ * false, and it is loudest in the empty case, which is where somebody
+ * concludes the product never handled the person (L92, L98).
+ *
+ * So the blind list is DERIVED from the same column the engine reads, at
+ * search time, rather than written here as a list somebody has to remember to
+ * update (L41).
+ */
+export type ArchiveSearchResult =
+  | {
+      kind: 'ok'
+      results: Array<Record<string, unknown>>
+      coverage: { complete: boolean; blindWorkflows: string[]; note: string | null }
+    }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'unavailable'; waitingFor: string; detail: string }
+
+const SEARCH_COLUMNS =
+  'execution_id, workflow_id, archive_day, started_at_utc, status, outcome, source'
+
+/** How many runs one search may return, so a common trace id cannot pull the world. */
+export const ARCHIVE_SEARCH_LIMIT = 200
+
+export async function searchArchive(
+  env: Env,
+  supabase: SupabaseClient,
+  opts: { traceId?: string; ssn?: string; orgId: string; readBy: string; deadlineMs?: number },
+  deps: ArchiveReadDeps = {},
+): Promise<ArchiveSearchResult> {
+  const execute = deps.execute ?? executeStatement
+  const sleep = deps.sleep ?? defaultSleep
+  const writeAudit = deps.writeAudit ?? writeAuditLog
+  const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
+
+  const traceId = opts.traceId?.trim()
+  const ssn = opts.ssn?.trim()
+  if (!traceId && !ssn) {
+    // Refused, never "everything". A search tool handed no term must not
+    // quietly become an export of the archive (L320).
+    return { kind: 'refused', reason: 'a trace id or an SSN is required' }
+  }
+  if (traceId && ssn) {
+    return { kind: 'refused', reason: 'search by a trace id or an SSN, not both' }
+  }
+
+  const run = async (statement: string, bindings: unknown[]) => {
+    const raced = await Promise.race([
+      execute(archiveConfig(env, 'reader'), statement, bindings).then(
+        (r) => ({ timedOut: false as const, response: r }),
+      ),
+      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
+    ])
+    if (raced.timedOut) throw new Error(`the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`)
+    return raced.response
+  }
+
+  try {
+    let rows: unknown[][]
+
+    if (traceId) {
+      const response = await run(
+        `SELECT ${SEARCH_COLUMNS} FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+          `WHERE trace_id = ? AND organization_id = ? ` +
+          `ORDER BY started_at_utc DESC LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+        [traceId, opts.orgId],
+      )
+      rows = response.data ?? []
+    } else {
+      // Two statements rather than a join, because the sightings table lives in
+      // a different schema with its own grants, and a failure in either half
+      // should be reportable on its own.
+      const resolved = await run(
+        `SELECT DISTINCT execution_id FROM ${ARCHIVE_DATABASE}.PUBLIC.LEAD_SIGHTINGS ` +
+          `WHERE ssn = ? LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+        [ssn as string],
+      )
+      const ids = (resolved.data ?? [])
+        .map((row) => textCell(row[0]))
+        .filter((id): id is string => id !== null && id.length > 0)
+
+      if (ids.length === 0) {
+        rows = []
+      } else {
+        const placeholders = ids.map(() => '?').join(', ')
+        const response = await run(
+          `SELECT ${SEARCH_COLUMNS} FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+            `WHERE execution_id IN (${placeholders}) AND organization_id = ? ` +
+            `ORDER BY started_at_utc DESC LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+          [...ids, opts.orgId],
+        )
+        rows = response.data ?? []
+      }
+    }
+
+    const results = rows.map((row) => ({
+      execution_id: textCell(row[0]) ?? '',
+      workflow_id: textCell(row[1]),
+      archive_day: textCell(row[2]),
+      started_at: textCell(row[3]),
+      status: textCell(row[4]),
+      outcome: textCell(row[5]),
+      source: textCell(row[6]),
+    }))
+
+    const blindWorkflows = ssn ? await workflowsWithoutSightings(supabase, opts.orgId) : []
+
+    // The audit row records that a search HAPPENED and by which kind of term.
+    // The term itself is deliberately absent: writing an SSN here would copy
+    // the identity into a second store with its own, longer, retention.
+    await writeAudit(
+      supabase,
+      opts.orgId,
+      'execution_archive',
+      opts.orgId,
+      'archive_searched',
+      opts.readBy,
+      { by: ssn ? 'ssn' : 'trace_id', matched: results.length },
+    )
+
+    return {
+      kind: 'ok',
+      results,
+      coverage: {
+        complete: blindWorkflows.length === 0,
+        blindWorkflows,
+        note:
+          blindWorkflows.length === 0
+            ? null
+            : `This search finds a person through their recorded lead sightings. ` +
+              `${blindWorkflows.join(' and ')} ${blindWorkflows.length === 1 ? 'does' : 'do'} not record them, ` +
+              `so runs from ${blindWorkflows.length === 1 ? 'it' : 'those'} cannot be found this way, ` +
+              `whether or not anything is listed above. Search by trace id to reach them.`,
+      },
+    }
+  } catch (err) {
+    return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
+  }
+}
+
+/**
+ * The workflows whose runs an SSN search cannot see, read from the same column
+ * the engine consults when deciding whether to write a sighting.
+ *
+ * Derived rather than listed, because a hand kept list is exempt from the very
+ * change it exists to track: the day somebody turns the flag off on another
+ * workflow, a literal here would go on naming the old two and the new one
+ * would be invisible (L41, L96).
+ */
+async function workflowsWithoutSightings(
+  supabase: SupabaseClient,
+  orgId: string,
+): Promise<string[]> {
+  // paginate-ok: one organization's workflows, tens of rows
+  const { data } = await supabase
+    .from('workflows')
+    .select('name')
+    .eq('organization_id', orgId)
+    .eq('capture_sightings', false)
+    .eq('is_active', true)
+    .is('deleted_at', null)
+    .order('name', { ascending: true })
+  return ((data ?? []) as Array<{ name: unknown }>)
+    .map((row) => (typeof row.name === 'string' ? row.name : null))
+    .filter((name): name is string => name !== null)
+}
