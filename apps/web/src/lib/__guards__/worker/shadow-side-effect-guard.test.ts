@@ -114,14 +114,15 @@ describe('every side-effecting node executor is shadow-mode aware (#230)', () =>
     ).toEqual([])
   })
 
-  // The two Achieve screening helpers were added to SHADOW_EXEMPT_NODES on 2026-08-17. They are
-  // helpers rather than executors: both only READ the execution context (the lead payload and
-  // the credit report already pulled upstream) and reach nothing outside the isolate, so a
-  // shadow dry-run may run them freely. This asserts the claim that earned them the exemption,
-  // against the real files, so the exemption cannot quietly become a licence to add a call.
-  it('holds the Achieve screening helpers to the pure claim that exempted them', () => {
+  // The Achieve screening helpers were added to SHADOW_EXEMPT_NODES on 2026-08-17 and the FFN
+  // identity helper on 2026-09-10. They are helpers rather than executors: they only READ (the
+  // lead payload, the credit report already pulled upstream, an env value) and reach nothing
+  // outside the isolate, so a shadow dry-run may run them freely. This asserts the claim that
+  // earned them the exemption, against the real files, so the exemption cannot quietly become a
+  // licence to add a call.
+  it('holds the exempt helpers to the pure claim that exempted them', () => {
     const files = listNodeFiles()
-    for (const name of ['achieve-credit-report', 'achieve-screen', 'achieve-endpoint']) {
+    for (const name of ['achieve-credit-report', 'achieve-screen', 'achieve-endpoint', 'ffn-identity']) {
       const file = files.find((f) => f.name === name)
       expect(file, `${name} is no longer a node file`).toBeDefined()
       expect(SHADOW_EXEMPT_NODES).toContain(name)
