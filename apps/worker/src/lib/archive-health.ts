@@ -60,6 +60,15 @@ export interface ArchiveHealth {
   backlog: ArchiveBacklog | { error: string }
   days: DayCoverage[] | { error: string }
   purgeLastRun: { rows: Array<Record<string, unknown>> } | { error: string }
+  /**
+   * Step partitions held back only because the day before them refuses (#1249).
+   *
+   * The two authorised day lists legitimately differ, so a bare length
+   * comparison cannot report this: one of the differences it would see is the
+   * expected oldest-day edge. These are the ones that are NOT expected, and
+   * each is real disk that nothing else would mention.
+   */
+  strandedStepPartitions: { rows: Array<Record<string, unknown>> } | { error: string }
 }
 
 export interface HealthDeps {
@@ -84,7 +93,7 @@ export async function archiveHealth(
 
   // Read in parallel: this is what somebody runs while an incident is running,
   // and seven serial round trips is a wait they do not need.
-  const [jobs, lock, watermarkRead, coverageRead, purgeLastRun] = await Promise.all([
+  const [jobs, lock, watermarkRead, coverageRead, purgeLastRun, strandedStepPartitions] = await Promise.all([
     section(async () => ({ rows: await lastRunPerJob(supabase) })),
     section(async () => {
       const value = await env.IDEMPOTENCY.get(RUN_LOCK_KEY)
@@ -93,6 +102,7 @@ export async function archiveHealth(
     section(() => readWatermark(supabase, now)),
     section(() => readCoverage(supabase, now)),
     section(async () => ({ rows: await lastPurgeRun(supabase) })),
+    section(async () => ({ rows: await strandedSteps(supabase) })),
   ])
 
   const days = 'error' in coverageRead ? coverageRead : coverageRead.coverage
@@ -107,7 +117,25 @@ export async function archiveHealth(
     backlog,
     days,
     purgeLastRun,
+    strandedStepPartitions,
   }
+}
+
+/**
+ * Step partitions that exist, are themselves verified, and are held back only
+ * by the day before them (#1249).
+ *
+ * The oldest verified day is deliberately not among these: its predecessor is
+ * older than anything the gate measures and its partition is already gone, so
+ * reporting it would be an alarm that fires every healthy day (L112).
+ */
+async function strandedSteps(supabase: SupabaseClient): Promise<Array<Record<string, unknown>>> {
+  // paginate-ok: at most one row per retained day
+  const { data, error } = await supabase.rpc('stranded_step_partitions', {
+    p_retention_days: RETENTION_DAYS,
+  })
+  if (error) throw new Error(`reading stranded step partitions: ${formatErr(error)}`)
+  return (data ?? []) as Array<Record<string, unknown>>
 }
 
 async function lastRunPerJob(supabase: SupabaseClient): Promise<JobLastRun[]> {

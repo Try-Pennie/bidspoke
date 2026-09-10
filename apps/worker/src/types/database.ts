@@ -2258,6 +2258,19 @@ export type Database = {
           sample_size: number
         }[]
       }
+      stranded_step_partitions: {
+        Args: {
+          p_max_measurement_age?: string
+          p_now?: string
+          p_retention_days: number
+        }
+        Returns: {
+          archive_day: string
+          blocked_by: string
+          blocked_by_refusal: string
+          partition_name: string
+        }[]
+      }
       unpaginated_big_tables: {
         Args: { p_min_rows?: number }
         Returns: {
@@ -2266,25 +2279,46 @@ export type Database = {
         }[]
       }
       user_org_id: { Args: never; Returns: string }
-      verified_day_refusal: {
-        Args: {
-          p_erased_execution_count: number
-          p_hours_execution_count: number
-          p_hours_recorded: number
-          p_incomplete_count: number
-          p_max_measurement_age: string
-          p_measured_at: string
-          p_now: string
-          p_orphan_execution_count: number
-          p_pg_execution_count: number
-          p_pg_step_count: number
-          p_probe_ok: boolean
-          p_probe_sampled: number
-          p_sf_execution_count: number
-          p_sf_step_count: number
-        }
-        Returns: string
-      }
+      verified_day_refusal:
+        | {
+            Args: {
+              p_erased_execution_count: number
+              p_hours_execution_count: number
+              p_hours_recorded: number
+              p_incomplete_count: number
+              p_max_measurement_age: string
+              p_measured_at: string
+              p_now: string
+              p_orphan_execution_count: number
+              p_pg_execution_count: number
+              p_pg_step_count: number
+              p_probe_ok: boolean
+              p_probe_sampled: number
+              p_sf_execution_count: number
+              p_sf_step_count: number
+            }
+            Returns: string
+          }
+        | {
+            Args: {
+              p_erased_execution_count: number
+              p_hours_execution_count: number
+              p_hours_recorded: number
+              p_incomplete_count: number
+              p_max_measurement_age: string
+              p_measured_at: string
+              p_now: string
+              p_orphan_execution_count: number
+              p_partition_empty?: boolean
+              p_pg_execution_count: number
+              p_pg_step_count: number
+              p_probe_ok: boolean
+              p_probe_sampled: number
+              p_sf_execution_count: number
+              p_sf_step_count: number
+            }
+            Returns: string
+          }
       verified_purgeable_days: {
         Args: {
           p_max_measurement_age?: string
