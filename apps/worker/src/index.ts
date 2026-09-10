@@ -352,6 +352,20 @@ export default {
           if (r.alerted) console.error(`[archive-identities] ${r.findings.length} findings`)
         })().catch((e) => console.error('[archive-identities] failed:', e))
       )
+      // The index the archive READS by, read back (#1044). Without it the
+      // peak-hour count takes 7.1 seconds warm and times out under load, which
+      // is the failure #1040 fixed. An index is a performance property, so
+      // nothing reports its absence until a run fails, and by then the archive
+      // has already stopped moving. Two ways it goes: a migration drops it, or
+      // a partition ATTACHed rather than created does not inherit it and leaves
+      // the parent index invalid.
+      track(
+        (async () => {
+          const { checkArchiveIndex } = await import('./lib/archive-index-check')
+          const r = await checkArchiveIndex(supabase, env.IDEMPOTENCY)
+          if (r.alerted) console.error(`[archive-index] ${r.findings.length} findings`)
+        })().catch((e) => console.error('[archive-index] failed:', e))
+      )
       // The archive's Snowflake settings, read back (#980). The
       // never-delete-without-a-backup guarantee rests on settings applied BY
       // HAND in Snowflake, and nothing read any of them back: the undo window

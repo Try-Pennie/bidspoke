@@ -2085,6 +2085,16 @@ export type Database = {
           trace_id: string
         }[]
       }
+      archive_index_health: {
+        Args: { p_index?: string; p_parent?: string }
+        Returns: {
+          attached: number
+          index_name: string
+          index_present: boolean
+          index_valid: boolean
+          partitions: number
+        }[]
+      }
       auth_user_with_allowlist: {
         Args: { p_user_id: string }
         Returns: {
