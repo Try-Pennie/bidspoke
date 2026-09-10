@@ -18,6 +18,7 @@
  * only the value would be satisfied by whichever string somebody pasted in next.
  */
 import { describe, it, expect } from 'vitest'
+import { A_V7_EXECUTION_ID } from './_ids'
 import { dispositionFor, EXPECTED_ORGANIZATION_SLUG } from '../disposition'
 import { SETTLE_WINDOW_MS } from '../clock'
 import orgs from '../fixtures/organizations.json'
@@ -51,7 +52,7 @@ describe('the tenancy check against the real organizations', () => {
     orgs.organizations.map((o) => [`wf-${o.slug}`, { id: o.id, slug: o.slug }]),
   )
   const execution = (workflowId: string) => ({
-    id: 'e1',
+    id: A_V7_EXECUTION_ID,
     workflow_id: workflowId,
     status: 'completed',
     started_at: HOUR_START,

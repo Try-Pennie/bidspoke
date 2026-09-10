@@ -18,6 +18,7 @@
  * permanent low-level alert stream about nothing (L36).
  */
 import { describe, it, expect } from 'vitest'
+import { A_V7_EXECUTION_ID } from './_ids'
 import { dispositionFor, EXPECTED_ORGANIZATION_SLUG, ARCHIVE_DEADLINE_MS } from '../disposition'
 import { scalarsFor } from '../scalars'
 import { SETTLE_WINDOW_MS } from '../clock'
@@ -28,7 +29,7 @@ const settled = new Date(Date.parse(HOUR_START) + SETTLE_WINDOW_MS + 60_000)
 const orgs = new Map([['wf-live', { id: 'org-live', slug: EXPECTED_ORGANIZATION_SLUG }]])
 
 const execution = (over: Record<string, unknown> = {}) => ({
-  id: 'e1',
+  id: A_V7_EXECUTION_ID,
   workflow_id: 'wf-live',
   status: 'failed',
   started_at: HOUR_START,
