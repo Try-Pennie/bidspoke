@@ -29,7 +29,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { executeStatement, type SnowflakeStatementResponse } from './snowflake'
 import {
   archiveConfig,
@@ -41,6 +41,25 @@ import {
 import { insertColumns } from './execution-archive-send'
 import { settingsDifferences, type ObservedSettings } from '../archive/settings-drift'
 import type { Env } from '../index'
+
+/**
+ * The archive table's live Snowflake settings differ from what this repo
+ * declares. Two settings disagree; no rows are involved.
+ */
+export const ARCHIVE_SETTINGS_REMEDY: AlertRemedy = {
+  consequence:
+    "The archive table's settings in Snowflake and the settings this repo declares disagree, or a " +
+    'setting could not be read. This is about configuration, not data: nothing was sent anywhere and ' +
+    'nothing is missing. Until one side changes, what we say about undoing an accidental deletion is ' +
+    'wrong:',
+  fixHint:
+    'Decide which side is right, then either alter the table in Snowflake to match, or change the ' +
+    'declared value in this repo and the matching architecture decision record. A missing column has to ' +
+    'be added in Snowflake before any send succeeds. Re-run on demand with POST ' +
+    '/api/admin/archive-settings-check.',
+  headlineVerb: 'found a setting that disagrees',
+  itemNoun: { one: 'difference', many: 'differences' },
+}
 
 export const ARCHIVE_SETTINGS_JOB = 'execution-archive-settings'
 
@@ -197,6 +216,7 @@ export async function checkArchiveSettings(
     ARCHIVE_SETTINGS_JOB,
     differences.map((d) => d.message),
     env.IDEMPOTENCY,
+    ARCHIVE_SETTINGS_REMEDY,
   )
 
   const surrounding = observed.surroundingRetentionDays

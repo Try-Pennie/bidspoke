@@ -150,6 +150,8 @@ describe('scheduled purge dispatch', () => {
       'Lead sightings purge',
       ['sightings purge: canceling statement due to statement timeout (57014)'],
       undefined,
+      // A real purge job, so it says so and keeps the classified export wording.
+      'export-job',
     )
   })
 
@@ -165,6 +167,7 @@ describe('scheduled purge dispatch', () => {
       'Lead sighting bids purge',
       ['bids purge: deleted 0 rows while purgeable rows remain'],
       undefined,
+      'export-job',
     )
   })
 })

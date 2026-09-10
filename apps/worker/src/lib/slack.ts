@@ -1557,7 +1557,17 @@ export async function sendExportFailureAlert(
   supabase: SupabaseClient,
   orgId: string,
   channelOverride: string | null,
-  payload: { jobName: string; errors: string[]; fixHint?: string; consequence?: string; failingSince?: string },
+  payload: {
+    jobName: string
+    errors: string[]
+    fixHint?: string
+    consequence?: string
+    failingSince?: string
+    /** What the job DID, when "failed" is untrue (a check that ran and found something). */
+    headlineVerb?: string
+    /** What the listed items ARE, when "error" is untrue (a finding, a difference). */
+    itemNoun?: { one: string; many: string }
+  },
 ): Promise<boolean> {
   if (payload.errors.length === 0) return false
   const connection = await getSlackConnection(supabase, orgId)
@@ -1577,13 +1587,20 @@ export async function sendExportFailureAlert(
     (isPurge
       ? 'The affected rows are already exported to Snowflake, so analytics are fine; only the Supabase cleanup is behind, and it retries on the next run. Watch Supabase disk if this persists:'
       : 'The affected rows were not exported and will retry on the next run, but analytics in Snowflake are missing them until it succeeds:')
+  // A check that ran correctly and found something has not failed, and what it
+  // found is not an error (2026-09-10). Both default to the failure wording, so
+  // every existing caller is unchanged and only one that KNOWS better differs.
+  const headlineVerb = payload.headlineVerb ?? 'failed'
+  const noun = payload.errors.length === 1
+    ? (payload.itemNoun?.one ?? 'error')
+    : (payload.itemNoun?.many ?? 'errors')
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: `${payload.jobName} failed`, emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `${payload.jobName} ${headlineVerb}`, emoji: false } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${payload.jobName}* reported ${payload.errors.length} error${payload.errors.length === 1 ? '' : 's'}. ${consequence}\n${lines}`,
+        text: `*${payload.jobName}* reported ${payload.errors.length} ${noun}. ${consequence}\n${lines}`,
       },
     },
   ]

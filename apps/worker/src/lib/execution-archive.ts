@@ -13,7 +13,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure } from './export-alerts'
-import { alertsFor, ARCHIVE_JOB_NAMES } from '../archive/alerts'
+import { alertsFor, ARCHIVE_JOB_NAMES, ARCHIVE_KILLED_REMEDY, ARCHIVE_MISCONFIGURED_REMEDY } from '../archive/alerts'
 import { dispositionFor, type WorkflowOrganization } from '../archive/disposition'
 import { scalarsFor, type ArchiveScalars } from '../archive/scalars'
 import { archiveDay, SETTLE_WINDOW_MS } from '../archive/clock'
@@ -252,7 +252,10 @@ export async function runExecutionArchive(
   if (typeof pepper !== 'string' || pepper.length === 0) {
     const detail = 'SSN_HASH_PEPPER is not set, so the archive cannot write the person resolver'
     for (const alert of alertsFor({ ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail })) {
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY)
+      // The refusal wording, not the run-stopped wording. Same job name, because
+      // the cooldown is the same condition, but a missing secret is fixed by
+      // setting it rather than by reading a stop reason.
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, ARCHIVE_MISCONFIGURED_REMEDY)
     }
     return { ...EMPTY_RUN, stop: 'misconfigured', failed: true, detail }
   }
@@ -292,6 +295,7 @@ export async function runExecutionArchive(
         ARCHIVE_JOB_NAMES.killed,
         [`${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived.`],
         env.IDEMPOTENCY,
+        ARCHIVE_KILLED_REMEDY,
       )
     } catch (err) {
       // The report must not be able to stop the work it reports on (L71). This
@@ -533,7 +537,7 @@ export async function runExecutionArchive(
     // Each condition under its own name, and nothing at all for a healthy run:
     // notifyExportFailure clears its grace marker when called with no errors.
     for (const alert of alertsFor(result)) {
-      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY)
+      await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
     }
 
     console.log(

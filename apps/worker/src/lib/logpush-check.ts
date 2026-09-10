@@ -1,7 +1,25 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logpushDifferences, type ObservedLogpush, type ObservedLogpushJob } from '../archive/logpush-drift'
 import { EXPECTED_LOGPUSH_JOBS } from './logpush-expectation'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
+
+/**
+ * The account's live Logpush jobs no longer match what this repo expects. The
+ * account is shared, so someone outside this repo can redirect these logs.
+ */
+export const LOGPUSH_CHECK_REMEDY: AlertRemedy = {
+  consequence:
+    "The Cloudflare account's Logpush jobs no longer match what this repo expects, or the list could not " +
+    'be read. Where a line names personal data, consumer information is leaving Pennie right now to the ' +
+    'destination it names:',
+  fixHint:
+    'Act in the Cloudflare dashboard for the shared Pennie account, under Logs and then Logpush: remove ' +
+    'the unexpected job, remove the added fields, restore the destination, or re-enable a job that is ' +
+    'delivering nothing. If the change was intended, update the expected job list in this repo, and note ' +
+    'that adding a field carrying personal data is an architecture decision rather than an edit.',
+  headlineVerb: 'found a destination change',
+  itemNoun: { one: 'difference', many: 'differences' },
+}
 
 export const LOGPUSH_CHECK_JOB = 'logpush-destinations'
 
@@ -119,6 +137,7 @@ export async function checkLogpush(
     LOGPUSH_CHECK_JOB,
     differences,
     env.IDEMPOTENCY as never,
+    LOGPUSH_CHECK_REMEDY,
   )
 
   console.log(

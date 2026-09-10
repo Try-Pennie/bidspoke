@@ -533,6 +533,45 @@ describe('sendExportFailureAlert (#412)', () => {
     expect(body.blocks[0].text.text).toBe('Lead sightings purge failed')
   })
 
+  // A check that RAN CORRECTLY and found something has not failed, and what it
+  // found is not an error. On 2026-09-10 the code node log scan's first real
+  // finding arrived headlined "code-node-payload-prints failed" and counted as
+  // "1 error", so an alert about a line of code read as a broken job. A caller
+  // that knows better says so; every existing caller keeps the failure wording
+  // (L11: a message may claim only what its check measured).
+  it('lets a caller say the job found something rather than failed', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'code-node-payload-prints',
+      errors: ['A / b prints c to the log.'],
+      headlineVerb: 'found something to look at',
+      itemNoun: { one: 'finding', many: 'findings' },
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.blocks[0].text.text).toBe('code-node-payload-prints found something to look at')
+    expect(JSON.stringify(body.blocks)).toContain('reported 1 finding.')
+    expect(JSON.stringify(body.blocks)).not.toContain('1 error')
+  })
+
+  it('pluralises the caller-supplied noun', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'code-node-payload-prints',
+      errors: ['one', 'two'],
+      headlineVerb: 'found something to look at',
+      itemNoun: { one: 'finding', many: 'findings' },
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(JSON.stringify(body.blocks)).toContain('reported 2 findings.')
+  })
+
+  it('still says failed and errors when the caller supplies neither', async () => {
+    await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
+      jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body.blocks[0].text.text).toBe('Lead sightings export failed')
+    expect(JSON.stringify(body.blocks)).toContain('reported 1 error.')
+  })
+
   it('does not claim stale Snowflake analytics for a purge failure', async () => {
     // A failed purge means the rows are ALREADY in Snowflake and only the
     // Supabase cleanup is behind. Saying analytics are stale is false alarm copy.

@@ -22,10 +22,30 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { RETENTION_DAYS } from '../archive/candidate-days'
 import { retentionDifferences, type ObservedPurgeJob, type RetentionDifference } from '../archive/retention-drift'
 import type { Env } from '../index'
+
+/**
+ * The live purge jobs' retention window disagrees with the one this repo
+ * declares. Both jobs had been edited by hand in the database, where no check in
+ * the repository can see them.
+ */
+export const RETENTION_CHECK_REMEDY: AlertRemedy = {
+  consequence:
+    'The window the database purge jobs actually destroy execution data on, and the window this repo ' +
+    'declares, disagree. Nothing failed and nothing is missing. What is wrong is that the deletion gate ' +
+    'is quoting a deadline that is not the real one, or, where a job is disabled, that retention is not ' +
+    'being enforced at all:',
+  fixHint:
+    'Decide which side is right, then either re-align the scheduled purge jobs in Postgres with the ' +
+    'declared value, or change the declared value in this repo and its guard test. A disabled job has to ' +
+    'be re-enabled. If a line says the jobs could not be read, the check itself needs attention rather ' +
+    'than the schedule.',
+  headlineVerb: 'found the purge window disagrees',
+  itemNoun: { one: 'difference', many: 'differences' },
+}
 
 export const RETENTION_CHECK_JOB = 'execution-retention-drift'
 
@@ -99,7 +119,7 @@ export async function checkExecutionRetention(
  */
 async function alertQuietly(supabase: SupabaseClient, env: Env, messages: string[]): Promise<void> {
   try {
-    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY)
+    await notifyExportFailure(supabase, RETENTION_CHECK_JOB, messages, env.IDEMPOTENCY, RETENTION_CHECK_REMEDY)
   } catch (err) {
     console.error('[retention-check] could not send its alert:', formatErr(err))
   }
