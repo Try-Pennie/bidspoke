@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
+import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, getSlackConnection } from '../slack'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1280,6 +1280,31 @@ describe('sendRecoveryAlert on a windowed check', () => {
     expect(text).toMatch(/hour/)
   })
 
+  // #1268. The 2026-09-10 LendSwift outage: the ping API failed from 5:36 to
+  // 6:52 AM EDT, the only failing tick was 6:01, and the notice said the field
+  // was "clearing at 6:01 AM EDT", the very moment the alert fired, while the
+  // failures ran another 51 minutes. A single-tick incident has NO observed end:
+  // the check knows the field was still missing at the alert tick and back at
+  // the next one, and must say exactly that (L11, L440).
+  it('names the tick it was still missing on and the tick it was back on, never a clearing time, for a single-tick incident', async () => {
+    await sendRecoveryAlert(
+      slack,
+      'C1',
+      {
+        signal: 'output field stopped',
+        subject: 'RML - Bidding Workflow (LendSwift) ping_lendswift.data.data',
+        alertedAt: '2026-09-10T10:01:15Z',
+        endedAt: '2026-09-10T10:01:15Z',
+        measuredWindowMinutes: 60,
+      },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    const text = textOf()
+    expect(text).not.toContain('clearing at')
+    expect(text).toContain('6:01 AM EDT')
+    expect(text).toContain('7:00 AM EDT')
+  })
+
   // The control. A genuinely long incident was OBSERVED failing at both ends, so
   // its span is a real measurement and must still be reported.
   it('still reports a span longer than one window as a duration', async () => {
@@ -1312,6 +1337,64 @@ describe('sendRecoveryAlert on a windowed check', () => {
       Date.parse('2026-09-02T14:00:00Z'),
     )
     expect(textOf()).toMatch(/20 minutes/)
+  })
+})
+
+/**
+ * #1267. The field presence alert is one message per channel (#1120), but its
+ * all-clear was still one message per field, so the 2026-09-10 LendSwift outage
+ * produced one page and four Recovered messages saying the same sentence with
+ * a different field name each time.
+ */
+describe('sendGroupedRecoveryAlert', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const slack = { bot_token: 'xoxb-test-token' }
+  const items = [
+    {
+      subject: 'RML - Bidding Workflow (LendSwift) ping_lendswift.data.data',
+      alertedAt: '2026-09-10T10:01:15Z',
+      endedAt: '2026-09-10T10:01:15Z',
+      url: 'https://app/workflows/wf-1',
+    },
+    {
+      subject: 'RML - Bidding Workflow (LendSwift) ping_lendswift.data.data.status',
+      alertedAt: '2026-09-10T10:01:15Z',
+      endedAt: '2026-09-10T10:01:15Z',
+      url: 'https://app/workflows/wf-1',
+    },
+  ]
+
+  it('posts ONE message naming every recovered subject', async () => {
+    const ok = await sendGroupedRecoveryAlert(
+      slack,
+      'C1',
+      { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    expect(ok).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    expect(text).toContain('ping_lendswift.data.data.status')
+    expect(text).toContain('ping_lendswift.data.data*')
+    // One header, not one per field.
+    expect(text.match(/"Recovered"/g)?.length).toBe(1)
+  })
+
+  it('reports a delivery failure so the caller keeps every incident open', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
+    const ok = await sendGroupedRecoveryAlert(
+      slack,
+      'C1',
+      { signal: 'output field stopped', measuredWindowMinutes: 60, items },
+      Date.parse('2026-09-10T11:00:05Z'),
+    )
+    expect(ok).toBe(false)
   })
 })
 

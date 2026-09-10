@@ -6,6 +6,8 @@ import {
   markAlerted,
   markSpikeSeen,
   recoveryKey,
+  recoveryDue,
+  settleRecovery,
 } from '../alert-recovery'
 
 /**
@@ -267,5 +269,52 @@ describe('announceRecovery re-arm window (#814)', () => {
 
   it('defaults the window to at least the alert cooldown', () => {
     expect(RECOVERY_REARM_MINUTES).toBeGreaterThanOrEqual(30)
+  })
+})
+
+/**
+ * #1267. A check that sends ONE all-clear for several ids needs the decision
+ * ("is this id's recovery due, and what does it say") apart from the settlement
+ * ("that message delivered, close these incidents"). Both halves are the same
+ * rules `announceRecovery` applies for a single id, so they are its parts rather
+ * than a second copy of them.
+ */
+describe('recoveryDue and settleRecovery (#1267)', () => {
+  const START = '2026-09-10T10:01:15.000Z'
+  const seeded = () =>
+    fakeKv({
+      'field-presence-drought-recovery:wf-1 f': START,
+      'field-presence-drought-active:wf-1 f': START,
+      'field-presence-drought-cooldown:wf-1 f': '1',
+    })
+
+  it('answers null when nothing was ever paged', async () => {
+    expect(await recoveryDue(fakeKv(), 'field-presence-drought', 'wf-1 f')).toBeNull()
+  })
+
+  it('HOLDS inside the re-arm window, like announceRecovery', async () => {
+    const due = await recoveryDue(seeded(), 'field-presence-drought', 'wf-1 f', {
+      now: Date.parse('2026-09-10T10:20:00.000Z'),
+    })
+    expect(due).toBeNull()
+  })
+
+  it('answers the first page and the last observed failure once the window has elapsed', async () => {
+    const due = await recoveryDue(seeded(), 'field-presence-drought', 'wf-1 f', {
+      now: Date.parse('2026-09-10T11:00:05.000Z'),
+    })
+    expect(due).toEqual({ alertedAt: START, endedAt: START })
+  })
+
+  it('does not touch any key on its own, because nothing has been delivered yet', async () => {
+    const kv = seeded()
+    await recoveryDue(kv, 'field-presence-drought', 'wf-1 f', { now: Date.parse('2026-09-10T11:00:05.000Z') })
+    expect(kv.store.size).toBe(3)
+  })
+
+  it('settleRecovery clears the marker, the running end and the cooldown', async () => {
+    const kv = seeded()
+    await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f')
+    expect(kv.store.size).toBe(0)
   })
 })

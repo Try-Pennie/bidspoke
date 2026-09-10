@@ -4,8 +4,9 @@ vi.mock('../slack', () => ({
   getSlackConnection: vi.fn(),
   postMessage: vi.fn(),
   sendRecoveryAlert: vi.fn(),
+  sendGroupedRecoveryAlert: vi.fn(),
 }))
-import { getSlackConnection, postMessage, sendRecoveryAlert } from '../slack'
+import { getSlackConnection, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert } from '../slack'
 import type { PresenceRow, RecentPresence } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
@@ -675,6 +676,7 @@ describe('field-presence alerting', () => {
     vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
     vi.mocked(postMessage).mockResolvedValue('ts-1')
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    vi.mocked(sendGroupedRecoveryAlert).mockResolvedValue(true)
   })
 
   it('pages once for a collapsed field and names the field and both rates', async () => {
@@ -915,10 +917,61 @@ describe('field-presence alerting', () => {
     kv.store.set('field-presence-drought-active:wf-1 scout.final', new Date(Date.now() - 3600_000).toISOString())
     const fixed = makeSupabase(collapsedWindow('scout.final', 500, 500, today))
     await runFieldPresenceDroughtCheck(fixed as never, kv, APP_URL)
-    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({
-      subject: 'Main Flow scout.final',
-    })
+    expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2].items).toMatchObject([
+      { subject: 'Main Flow scout.final' },
+    ])
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
+  })
+
+  /**
+   * #1267. The page is one message per channel (#1120); the all-clear was still
+   * one per field. On 2026-09-10 four fields under `ping_lendswift.data.data`
+   * recovered on the same tick and produced four Recovered messages.
+   */
+  function twoFieldsWindow(present: number) {
+    const a = collapsedWindow('ping.data', 500, present, today)
+    const b = collapsedWindow('ping.data.status', 500, present, today)
+    return { rollup: [...a.rollup, ...b.rollup], window: [...a.window, ...b.window] }
+  }
+  const ageOut = (kv: ReturnType<typeof makeKv>) => {
+    for (const f of ['ping.data', 'ping.data.status']) {
+      kv.store.set(`field-presence-drought-active:wf-1 ${f}`, new Date(Date.now() - 3600_000).toISOString())
+    }
+  }
+
+  it('announces ONE all-clear per channel when several fields recover on the same tick', async () => {
+    const kv = makeKv()
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(0)) as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    ageOut(kv)
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(500)) as never, kv, APP_URL)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
+    const subjects = vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2].items.map((i) => i.subject)
+    expect(subjects.sort()).toEqual(['Main Flow ping.data', 'Main Flow ping.data.status'])
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 ping.data')).toBe(false)
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 ping.data.status')).toBe(false)
+  })
+
+  it('keeps EVERY field\'s incident open when the grouped all-clear did not deliver', async () => {
+    const kv = makeKv()
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(0)) as never, kv, APP_URL)
+    ageOut(kv)
+    vi.mocked(sendGroupedRecoveryAlert).mockResolvedValue(false)
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(500)) as never, kv, APP_URL)
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 ping.data')).toBe(true)
+    expect(kv.store.has('field-presence-drought-recovery:wf-1 ping.data.status')).toBe(true)
+    expect(kv.store.has('field-presence-drought-cooldown:wf-1 ping.data')).toBe(true)
+  })
+
+  it('sends the grouped all-clear to the per-workflow channel override', async () => {
+    const kv = makeKv()
+    const wfs = [{ ...WF, slack_channel: 'C-override' }]
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(0), [], wfs) as never, kv, APP_URL)
+    ageOut(kv)
+    await runFieldPresenceDroughtCheck(makeSupabase(twoFieldsWindow(500), [], wfs) as never, kv, APP_URL)
+    expect(vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][1]).toBe('C-override')
   })
 
   it('does NOT announce an all-clear just after UTC midnight while the field is still dead', async () => {

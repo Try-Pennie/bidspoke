@@ -8,8 +8,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
-import { getSlackConnection, postMessage, sendRecoveryAlert } from './slack'
-import { announceRecovery, markAlerted, markSpikeSeen, type RecoveryKv } from './alert-recovery'
+import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
+import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
+import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, type RecoveryDue, type RecoveryKv } from './alert-recovery'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
 
@@ -749,7 +750,7 @@ export async function sendFieldDroughtAlert(
         emoji: false,
       },
     },
-    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length) } },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length, MAX_LISTED_LINES) } },
     {
       type: 'section',
       text: {
@@ -768,24 +769,6 @@ export async function sendFieldDroughtAlert(
   return postMessage(slack.bot_token, channel, blocks, summary)
 }
 
-/**
- * How many fields a grouped message lists before it says "and N more".
- *
- * Slack hard rejects any section block over 3,000 characters, and a grouped
- * alert is exactly the message that gets long on the worst day. Uncapped, a mass
- * failure would be refused, no cooldown would be recorded, and every later run
- * would rebuild the same oversized message: silent during the one incident it
- * exists to report. Twenty matches the cap the other grouped alerts in
- * `slack.ts` already use, and at roughly 120 characters a line leaves well over
- * half the block spare.
- */
-const MAX_LISTED_FIELDS = 20
-
-/** Renders the capped list plus a tail naming what it left out. */
-function listWithOverflow(lines: string[], total: number): string {
-  if (total <= MAX_LISTED_FIELDS) return lines.join('\n')
-  return `${lines.slice(0, MAX_LISTED_FIELDS).join('\n')}\n_and ${total - MAX_LISTED_FIELDS} more_`
-}
 
 /** One entry in a grouped alert: which workflow, and the verdict for one field. */
 export interface GroupedField {
@@ -835,7 +818,7 @@ export async function sendFieldDeadAlert(
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: heading } },
-    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length) } },
+    { type: 'section', text: { type: 'mrkdwn', text: listWithOverflow(lines, fields.length, MAX_LISTED_LINES) } },
     {
       type: 'section',
       text: {
@@ -920,6 +903,7 @@ async function alertOnStates(
   // off in silence. The run's own summary line carries the number.
   const unwatchable = [...watched.values()].filter((set) => set === null).length
   const pageable: Pageable[] = []
+  const recoverable: (Pageable & { due: RecoveryDue })[] = []
   let paged = 0
   let recovered = 0
 
@@ -943,22 +927,10 @@ async function alertOnStates(
     if (stillWatched && !stillWatched.has(state.field_path)) continue
 
     if (state.verdict === 'healthy') {
-      const did = await announceRecovery(kv, cfg.prefix, id, cooldownKey, async (alertedAt, endedAt) => {
-        const slack = await getSlackConnection(supabase, wf.organization_id)
-        if (!slack || !slack.volume_alerts_enabled) return false
-        return sendRecoveryAlert(slack, wf.slack_channel ?? slack.default_channel, {
-          signal: cfg.signal,
-          subject: `${wf.name} ${state.field_path}`,
-          alertedAt,
-          endedAt,
-          url: `${appUrl}/workflows/${wf.id}`,
-          // Declared so the all-clear cannot report the gap between hourly ticks
-          // as the length of the incident (#1101). Tier-2 judges whole days and
-          // passes its own window for the same reason.
-          measuredWindowMinutes: cfg.measuredWindowMinutes,
-        })
-      })
-      if (did) recovered++
+      // Decided per field, announced per channel below (#1267): the page is one
+      // message per channel, and its all-clear has to be the same shape.
+      const due = await recoveryDue(kv, cfg.prefix, id)
+      if (due) recoverable.push({ wf, state, id, cooldownKey, due })
       continue
     }
 
@@ -975,23 +947,26 @@ async function alertOnStates(
   // still runs per field, so a silenced, cooled-down or no-longer-read field is
   // absent from the group entirely rather than listed and then suppressed.
   const connections = new Map<string, SlackConnection | null>()
-  const groups = new Map<string, { slack: SlackConnection; channel: string; items: Pageable[] }>()
-  for (const item of pageable) {
-    const org = item.wf.organization_id
-    if (!connections.has(org)) connections.set(org, await getSlackConnection(supabase, org))
-    const slack = connections.get(org) ?? null
-    if (!slack || !slack.volume_alerts_enabled) {
-      console.log(`[${cfg.prefix}] no Slack or opted-out org=${org} field=${item.id}`)
-      continue
+  async function byChannel<T extends Pageable>(items: T[]) {
+    const groups = new Map<string, { slack: SlackConnection; channel: string; items: T[] }>()
+    for (const item of items) {
+      const org = item.wf.organization_id
+      if (!connections.has(org)) connections.set(org, await getSlackConnection(supabase, org))
+      const slack = connections.get(org) ?? null
+      if (!slack || !slack.volume_alerts_enabled) {
+        console.log(`[${cfg.prefix}] no Slack or opted-out org=${org} field=${item.id}`)
+        continue
+      }
+      const channel = item.wf.slack_channel ?? slack.default_channel
+      const key = `${org}:${channel}`
+      const group = groups.get(key)
+      if (group) group.items.push(item)
+      else groups.set(key, { slack, channel, items: [item] })
     }
-    const channel = item.wf.slack_channel ?? slack.default_channel
-    const key = `${org}:${channel}`
-    const group = groups.get(key)
-    if (group) group.items.push(item)
-    else groups.set(key, { slack, channel, items: [item] })
+    return groups.values()
   }
 
-  for (const group of groups.values()) {
+  for (const group of await byChannel(pageable)) {
     const fields: GroupedField[] = group.items.map((i) => ({
       workflowName: i.wf.name,
       workflowId: i.wf.id,
@@ -1006,6 +981,30 @@ async function alertOnStates(
       await kv.put(item.cooldownKey, '1', { expirationTtl: FIELD_COOLDOWN_TTL_SECONDS })
       await markAlerted(kv, cfg.prefix, item.id)
       paged++
+    }
+  }
+
+  // The all-clear, grouped the same way (#1267). Settled all or nothing per
+  // group for the same reason the cooldowns are: one message covers them all,
+  // so a failed send leaves every incident in it open for the next tick.
+  for (const group of await byChannel(recoverable)) {
+    const sent = await sendGroupedRecoveryAlert(group.slack, group.channel, {
+      signal: cfg.signal,
+      // Declared so the all-clear cannot report the gap between hourly ticks as
+      // the length of the incident (#1101). Tier-2 judges whole days and passes
+      // its own window for the same reason.
+      measuredWindowMinutes: cfg.measuredWindowMinutes,
+      items: group.items.map((i) => ({
+        subject: `${i.wf.name} ${i.state.field_path}`,
+        alertedAt: i.due.alertedAt,
+        endedAt: i.due.endedAt,
+        url: `${appUrl}/workflows/${i.wf.id}`,
+      })),
+    })
+    if (!sent) continue
+    for (const item of group.items) {
+      await settleRecovery(kv, cfg.prefix, item.id, item.cooldownKey)
+      recovered++
     }
   }
   return { paged, recovered, unwatchable }
