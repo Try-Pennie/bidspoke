@@ -62,6 +62,18 @@ export const ARCHIVE_SETTINGS_REMEDY: AlertRemedy = {
   itemNoun: { one: 'difference', many: 'differences' },
 }
 
+/**
+ * The Snowflake account the archive setup was applied to (ADR 0009, measured
+ * 2026-08-20).
+ *
+ * A constant rather than an env var on purpose: the env var is the thing being
+ * checked, so reading the expectation from it would let both sides come from
+ * one lookup and prove only that the lookup is consistent with itself (L70).
+ * If the account legitimately changes, this changes with a deliberate edit and
+ * the ADR changes with it.
+ */
+export const DECLARED_SNOWFLAKE_ACCOUNT = 'JYC55588'
+
 export const ARCHIVE_SETTINGS_JOB = 'execution-archive-settings'
 
 /**
@@ -173,6 +185,7 @@ async function settingsPass(
     retentionDays: null,
     surroundingRetentionDays: [],
     columns: null,
+    account: null,
     unreadable: [],
   }
 
@@ -230,8 +243,24 @@ async function settingsPass(
     observed.unreadable.push(`the archive table's columns could not be read: ${formatErr(err)}`)
   }
 
+  // WHICH ACCOUNT these readings came from (#1052). Read last so a failure here
+  // cannot cost the readings above, and compared first in the drift rules, so a
+  // wrong account is reported ahead of the settings it would invalidate.
+  try {
+    const response = await query('SELECT CURRENT_ACCOUNT()')
+    const value = response.data?.[0]?.[0]
+    if (typeof value === 'string' || typeof value === 'number') {
+      observed.account = String(value)
+    } else {
+      observed.unreadable.push('the Snowflake account name came back in a shape this could not read')
+    }
+  } catch (err) {
+    observed.unreadable.push(`the Snowflake account name could not be read: ${formatErr(err)}`)
+  }
+
   const differences = settingsDifferences(observed, {
     retentionDays: ARCHIVE_UNDO_WINDOW_DAYS,
+    account: DECLARED_SNOWFLAKE_ACCOUNT,
     requiredColumns: insertColumns,
     expectedExtraColumns: EXPECTED_EXTRA_COLUMNS,
   })
