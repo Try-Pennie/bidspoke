@@ -127,6 +127,14 @@
     "note": "Read daily by the Worker (#1044) to confirm the index the archive's per-hour count reads by is present, valid, and attached to every execution_steps partition. Without it that count takes 7.1 seconds warm and times out under load, and an index is a performance property so nothing else reports its absence until a run fails. Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default (#762), and this discloses the partition layout. Takes defaults, so it probes the real index."
   },
   {
+    "name": "stranded_step_partitions",
+    "args": {
+      "p_retention_days": 7
+    },
+    "anon": "denied",
+    "note": "Read by the Worker's archive health report (#1249) to name step partitions that exist, are themselves verified, and are held back only because the day before them refuses. The two authorised day lists legitimately differ, so a length comparison cannot report this. Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default (#762), and this discloses the partition layout."
+  },
+  {
     "name": "archive_day_measurements",
     "args": {
       "p_day": "1970-01-01"

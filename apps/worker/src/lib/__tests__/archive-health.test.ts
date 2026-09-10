@@ -24,9 +24,10 @@ interface TableData {
 }
 
 /** Records every write attempt, so "writes nothing" is asserted rather than assumed. */
-function supabaseDouble(tables: Record<string, TableData>) {
+function supabaseDouble(tables: Record<string, TableData>, rpcError?: { message: string }) {
   const writes: string[] = []
   const client = {
+    rpc: async () => ({ data: rpcError ? null : [], error: rpcError ?? null }),
     from(table: string) {
       const answer = () =>
         Promise.resolve({
@@ -137,6 +138,25 @@ describe('archiveHealth', () => {
 
     const free = await archiveHealth(envWith(null), supabaseDouble(HEALTHY).client, { now: () => NOW })
     expect(free.lock).toEqual({ held: false, value: null })
+  })
+
+  it('reports step partitions held back only by the day before them', async () => {
+    // The two authorised day lists legitimately differ, so a length comparison
+    // cannot report this. These are the differences that are NOT expected, and
+    // each one is real disk nothing else would mention (#1249).
+    const db = supabaseDouble(HEALTHY)
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    expect('error' in health.strandedStepPartitions).toBe(false)
+  })
+
+  it('says the stranded lookup could not be read rather than reporting none', async () => {
+    // None stranded and could not tell are different answers, and only one of
+    // them is a reason to stop worrying (L215).
+    const db = supabaseDouble(HEALTHY, { message: 'permission denied' })
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    expect('error' in health.strandedStepPartitions).toBe(true)
   })
 
   it('says a source could not be read rather than reporting it as empty', async () => {

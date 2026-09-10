@@ -109,7 +109,10 @@ CREATE OR REPLACE FUNCTION pg_temp.refusal(
   p_incomplete_count       BIGINT      DEFAULT 0,
   p_measured_at            TIMESTAMPTZ DEFAULT '2026-09-03T11:00:00Z',
   p_now                    TIMESTAMPTZ DEFAULT '2026-09-03T12:00:00Z',
-  p_max_measurement_age    INTERVAL    DEFAULT '36 hours'
+  p_max_measurement_age    INTERVAL    DEFAULT '36 hours',
+  -- #1249. Defaults FALSE, which is what a caller that cannot establish
+  -- emptiness passes, so every existing case is judged exactly as before.
+  p_partition_empty        BOOLEAN     DEFAULT FALSE
 ) RETURNS TEXT LANGUAGE sql AS $wrap$
   SELECT public.verified_day_refusal(
     p_pg_execution_count     => p_pg_execution_count,
@@ -125,7 +128,8 @@ CREATE OR REPLACE FUNCTION pg_temp.refusal(
     p_incomplete_count       => p_incomplete_count,
     p_measured_at            => p_measured_at,
     p_now                    => p_now,
-    p_max_measurement_age    => p_max_measurement_age
+    p_max_measurement_age    => p_max_measurement_age,
+    p_partition_empty        => p_partition_empty
   );
 $wrap$;
 
@@ -206,6 +210,53 @@ BEGIN
   v_ran := v_ran + 1;
   v_got := pg_temp.refusal(p_sf_execution_count => 90, p_measured_at => v_stale);
   IF v_got IS DISTINCT FROM 'stale-measurement' THEN v_fail := array_append(v_fail, format('case 13: staleness outranks a stale disagreement, got %L', v_got)); END IF;
+
+  -- ----------------------------------------------------------------
+  -- #1249. An empty day proved empty NOW is exempt from the age rule.
+  --
+  -- 2026-08-14 and 2026-08-15 refused stale-measurement for ever, with zero
+  -- hours and zero executions and readings 147 and 128 hours old, and each held
+  -- back the following day's step partition. The gate only measures days inside
+  -- its candidate window, so a day that leaves it unverified is never measured
+  -- again and its reading only gets older.
+  --
+  -- Age matters because a reading may no longer describe the world. A day with
+  -- nothing in it has nothing to describe and nothing to lose.
+  -- ----------------------------------------------------------------
+
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(
+    p_measured_at => v_stale, p_partition_empty => TRUE,
+    p_pg_execution_count => 0, p_hours_recorded => 0, p_hours_execution_count => 0,
+    p_sf_execution_count => 0, p_pg_step_count => 0, p_sf_step_count => 0,
+    p_probe_sampled => 0
+  );
+  IF v_got IS NOT NULL THEN v_fail := array_append(v_fail, format('case 1249a: an empty day proved empty now must not refuse on age, got %L', v_got)); END IF;
+
+  -- The exemption is NOT taken on the strength of the stale reading alone.
+  -- A caller that could not establish emptiness passes false, and the day goes
+  -- on refusing, which is the fail-safe direction.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(
+    p_measured_at => v_stale, p_partition_empty => FALSE,
+    p_pg_execution_count => 0, p_hours_recorded => 0, p_hours_execution_count => 0,
+    p_sf_execution_count => 0, p_pg_step_count => 0, p_sf_step_count => 0,
+    p_probe_sampled => 0
+  );
+  IF v_got IS DISTINCT FROM 'stale-measurement' THEN v_fail := array_append(v_fail, format('case 1249b: without live proof of emptiness the age rule still applies, got %L', v_got)); END IF;
+
+  -- A partition that is empty NOW but whose reading says the day HAD executions
+  -- is not an empty day: its rows were removed by something other than this
+  -- gate, and reading that as verified would vouch for data nobody archived.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_measured_at => v_stale, p_partition_empty => TRUE);
+  IF v_got IS DISTINCT FROM 'stale-measurement' THEN v_fail := array_append(v_fail, format('case 1249c: an emptied partition whose reading had executions must still refuse, got %L', v_got)); END IF;
+
+  -- The exemption does not leak into a FRESH day: a day with executions is
+  -- judged on its numbers whatever its partition currently holds.
+  v_ran := v_ran + 1;
+  v_got := pg_temp.refusal(p_partition_empty => TRUE, p_sf_execution_count => 90);
+  IF v_got IS DISTINCT FROM 'executions-disagree' THEN v_fail := array_append(v_fail, format('case 1249d: emptiness must not excuse a real disagreement, got %L', v_got)); END IF;
 
   -- ----------------------------------------------------------------
   -- #1143. The three conditions the reporter had and this did not.
