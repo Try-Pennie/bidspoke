@@ -2123,10 +2123,6 @@ export type Database = {
         Returns: number
       }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
-      drop_expired_execution_partitions: {
-        Args: { p_retention_days?: number }
-        Returns: number
-      }
       email_drop_counts_by_source: {
         Args: { p_org_id: string; p_since: string }
         Returns: {
