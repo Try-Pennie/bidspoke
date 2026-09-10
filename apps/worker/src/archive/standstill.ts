@@ -27,12 +27,26 @@ const HOUR_MS = 60 * 60 * 1000
  * How long the archive may make no progress, while settled hours are waiting,
  * before it is a standstill.
  *
- * Derived from the cadence and the per-run cap, not picked. The cron is hourly
- * and a run archives at most MAX_HOURS_PER_RUN (2) hours, so the archive gains
- * ground every hour it runs and one slow or skipped run is normal. Three hours
- * is three cadences: long enough that a single missed run does not speak, short
- * enough to be far inside the 7 day retention of the partitions this protects.
- * A threshold near that retention would report the loss rather than prevent it.
+ * Derived from the CADENCE, not from the per-run cap. This comment used to name
+ * the per-run cap and then restate its value in parentheses beside it, and that
+ * copy went stale the moment #953 moved the cap, which is how a value
+ * maintained by hand beside its source always ends (L41). Nothing here depends
+ * on it: three hours is three cadences whatever the cap is. The guard that now
+ * refuses that shape is budget-values-not-copied-into-prose.test.ts, and it is
+ * why the old sentence is described here rather than quoted: it cannot tell a
+ * line demonstrating the mistake from a line making it.
+ *
+ * The cron is hourly, so one slow or skipped run is normal. Three cadences is
+ * long enough that a single missed run does not speak, and short enough to be
+ * far inside the 7 day retention of the partitions this protects. A threshold
+ * near that retention would report the loss rather than prevent it.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT CATCH, so nobody reads it as wider than it
+ * is: an archive HOLDING STATION. At peak volume a run gets through about one
+ * hour per hourly run, so the watermark keeps moving and this stays healthy
+ * while a backlog sits there not shrinking. That is the honest reading, since
+ * progress really is being made, and the quantity that would report it is
+ * `hoursBehind` rather than the watermark's age.
  */
 export const STANDSTILL_MS = 3 * HOUR_MS
 
