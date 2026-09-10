@@ -663,7 +663,7 @@ describe('GET /executions/archive-search (#874)', () => {
 
   it('is not mistaken for an execution id', async () => {
     vi.mocked(searchArchive).mockResolvedValue({
-      kind: 'ok', results: [], coverage: { complete: true, blindWorkflows: [], note: null },
+      kind: 'ok', results: [], coverage: { complete: true, completeFrom: null, note: null },
     })
 
     const res = await request(app, 'GET', '/executions/archive-search?trace_id=abc')
@@ -678,7 +678,7 @@ describe('GET /executions/archive-search (#874)', () => {
     vi.mocked(searchArchive).mockResolvedValue({
       kind: 'ok',
       results: [{ execution_id: 'exec-1' }],
-      coverage: { complete: false, blindWorkflows: ['Main Flow'], note: 'Main Flow does not record them.' },
+      coverage: { complete: false, completeFrom: '2026-08-20', note: 'Runs before 2026-08-20 may be missing.' },
     })
 
     const res = await request(app, 'GET', '/executions/archive-search?ssn=123-45-6789')
@@ -686,7 +686,7 @@ describe('GET /executions/archive-search (#874)', () => {
 
     expect(body.results).toHaveLength(1)
     expect(body.coverage.complete).toBe(false)
-    expect(body.coverage.note).toContain('Main Flow')
+    expect(body.coverage.note).toContain('2026-08-20')
   })
 
   it('refuses a search with no term', async () => {

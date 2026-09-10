@@ -3,10 +3,16 @@
  * discoverability).
  *
  * THE COVERAGE IS THE FEATURE, not a footnote. The SSN route resolves through
- * LEAD_SIGHTINGS, and a measured two of ten live workflows write no sighting
- * at all, Main Flow among them, which is the flow carrying the Equifax credit
- * report. So an SSN search can return nothing for a person the product
- * certainly handled.
+ * LEAD_SIGHTINGS, and until 2026-08-19 a workflow could opt out of recording
+ * them; Main Flow, which carries the Equifax credit report, was opted out. The
+ * archive holds thirteen months, so a large part of it predates the fix and an
+ * SSN cannot reach those runs at all.
+ *
+ * The caveat names a DATE, never a list of workflows. The per-workflow opt-out
+ * is retired and survives only as an inert column holding stale values, so
+ * naming workflows from it would resurrect it and accuse flows that do record
+ * sightings today. `capture-sightings-unwritable.test.ts` in the web guards is
+ * what enforces that nothing reads the column; it is not repeated here.
  *
  * "No results" and "no results, and here is what this search cannot see" are
  * different answers, and only the second one is true (L92, L98). Every test
@@ -15,7 +21,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { searchArchive, type ArchiveReadDeps } from '../archive-read'
+import { searchArchive, SIGHTINGS_COMPLETE_FROM, type ArchiveReadDeps } from '../archive-read'
 import type { Env } from '../../index'
 import type { SnowflakeStatementResponse } from '../snowflake'
 
@@ -102,10 +108,10 @@ describe('searchArchive by trace id', () => {
 
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
-    // A blind workflow for the SSN route is NOT blind here, so naming it would
-    // be a warning about nothing.
+    // A trace id is on every archived row, so this search has no blind spot and
+    // a caveat here would be a warning about nothing.
     expect(result.coverage.complete).toBe(true)
-    expect(result.coverage.blindWorkflows).toEqual([])
+    expect(result.coverage.note).toBeNull()
   })
 
   it('binds the trace id and scopes to the organization', async () => {
@@ -135,24 +141,18 @@ describe('searchArchive by SSN', () => {
     expect(statements[0].bindings[0]).toBe('123-45-6789')
   })
 
-  it('states what it cannot see, naming the workflows that record no sighting', async () => {
+  it('states the date its coverage begins, because older runs may record nothing', async () => {
     const { deps } = makeDeps([[['exec-1']], [ROW]])
 
     const result = await searchArchive(
-      env,
-      supabaseDouble(['Main Flow', 'Delegate Gmail Access for Offboarded Agents']),
-      { ssn: '123-45-6789', orgId: ORG, readBy: READER },
-      deps
+      env, supabaseDouble([]), { ssn: '123-45-6789', orgId: ORG, readBy: READER }, deps
     )
 
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
     expect(result.coverage.complete).toBe(false)
-    expect(result.coverage.blindWorkflows).toEqual([
-      'Main Flow',
-      'Delegate Gmail Access for Offboarded Agents',
-    ])
-    expect(result.coverage.note).toContain('Main Flow')
+    expect(result.coverage.completeFrom).toBe(SIGHTINGS_COMPLETE_FROM)
+    expect(result.coverage.note).toContain(SIGHTINGS_COMPLETE_FROM)
   })
 
   it('states the gap even when it finds nothing, which is where it matters most', async () => {
@@ -168,19 +168,7 @@ describe('searchArchive by SSN', () => {
     if (result.kind !== 'ok') return
     expect(result.results).toEqual([])
     expect(result.coverage.complete).toBe(false)
-    expect(result.coverage.blindWorkflows).toContain('Main Flow')
-  })
-
-  it('reports complete coverage when every workflow does record sightings', async () => {
-    const { deps } = makeDeps([[]])
-
-    const result = await searchArchive(
-      env, supabaseDouble([]), { ssn: '123-45-6789', orgId: ORG, readBy: READER }, deps
-    )
-
-    expect(result.kind).toBe('ok')
-    if (result.kind !== 'ok') return
-    expect(result.coverage.complete).toBe(true)
+    expect(result.coverage.note).toContain(SIGHTINGS_COMPLETE_FROM)
   })
 
   it('never puts the SSN itself in the audit row', async () => {
@@ -196,24 +184,6 @@ describe('searchArchive by SSN', () => {
     // identity into it would copy the PII into a second, longer lived place.
     expect(JSON.stringify(audits[0])).not.toContain('123-45-6789')
     expect(audits[0].changes?.by).toBe('ssn')
-  })
-})
-
-describe('searchArchive when it cannot establish its own coverage', () => {
-  it('does not claim complete coverage when the blind-workflow lookup fails', async () => {
-    const { deps } = makeDeps([[]])
-
-    const result = await searchArchive(
-      env, supabaseDouble([], true), { ssn: '123-45-6789', orgId: ORG, readBy: READER }, deps
-    )
-
-    expect(result.kind).toBe('ok')
-    if (result.kind !== 'ok') return
-    // An empty blind list from a FAILED read looks identical to a genuinely
-    // empty one, and treating it as empty flips the caveat off in the one
-    // direction that makes the search overstate what it knows (L215).
-    expect(result.coverage.complete).toBe(false)
-    expect(result.coverage.note).toContain('could not be checked')
   })
 })
 

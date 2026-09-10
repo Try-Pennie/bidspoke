@@ -428,29 +428,43 @@ function stepById(steps: unknown[], stepId: string): Record<string, unknown> | n
  *  - an SSN, resolved through LEAD_SIGHTINGS, which already holds both the ssn
  *    and the execution_id.
  *
- * THE COVERAGE IS PART OF THE ANSWER. A workflow with `capture_sightings`
- * false writes no sighting, so the SSN route cannot see its runs at all.
- * Measured on production 2026-09-10: two of ten live workflows, and one of
- * them is Main Flow, the flow carrying the Equifax credit report. An SSN
- * search that answers "nothing" for one of those leads is saying something
- * false, and it is loudest in the empty case, which is where somebody
- * concludes the product never handled the person (L92, L98).
+ * THE COVERAGE IS PART OF THE ANSWER. Until 2026-08-19 a workflow could opt
+ * out of recording sightings, and Main Flow, the flow carrying the Equifax
+ * credit report, was opted out. #882 removed the switch so every workflow
+ * always records, but the archive holds thirteen months, so a large part of it
+ * predates that and an SSN cannot reach those runs at all.
  *
- * So the blind list is DERIVED from the same column the engine reads, at
- * search time, rather than written here as a list somebody has to remember to
- * update (L41).
+ * An SSN search answering "nothing" for one of them is saying something false,
+ * and it is loudest in the EMPTY case, which is exactly where somebody
+ * concludes the product never handled the person (L92, L98). So every SSN
+ * response carries the date its coverage begins, the empty ones included.
+ *
+ * The caveat is stated as a DATE rather than a list of workflows deliberately.
+ * The per-workflow flag still exists as an inert column with stale values in
+ * it, and reading it would resurrect a retired opt-out and name workflows that
+ * do record sightings today.
  */
 export type ArchiveSearchResult =
   | {
       kind: 'ok'
       results: Array<Record<string, unknown>>
-      coverage: { complete: boolean; blindWorkflows: string[]; note: string | null }
+      coverage: { complete: boolean; completeFrom: string | null; note: string | null }
     }
   | { kind: 'refused'; reason: string }
   | { kind: 'unavailable'; waitingFor: string; detail: string }
 
 const SEARCH_COLUMNS =
   'execution_id, workflow_id, archive_day, started_at_utc, status, outcome, source'
+
+/**
+ * The first UTC day on which every workflow recorded a lead sighting.
+ *
+ * #882 removed the per-workflow opt-out on 2026-08-19, so runs from the next
+ * day forward are all reachable by SSN. Before it, a workflow could record
+ * none, and Main Flow did. Archived runs older than this cannot be found by
+ * SSN however complete the archive itself is.
+ */
+export const SIGHTINGS_COMPLETE_FROM = '2026-08-20'
 
 /** How many runs one search may return, so a common trace id cannot pull the world. */
 export const ARCHIVE_SEARCH_LIMIT = 200
@@ -536,13 +550,6 @@ export async function searchArchive(
       source: textCell(row[6]),
     }))
 
-    // A trace id reaches every archived run, so nothing is blind to it and the
-    // lookup is not even made.
-    const blind = ssn
-      ? await workflowsWithoutSightings(supabase, opts.orgId)
-      : { names: [], measured: true }
-    const blindWorkflows = blind.names
-
     // The audit row records that a search HAPPENED and by which kind of term.
     // The term itself is deliberately absent: writing an SSN here would copy
     // the identity into a second store with its own, longer, retention.
@@ -556,58 +563,25 @@ export async function searchArchive(
       { by: ssn ? 'ssn' : 'trace_id', matched: results.length },
     )
 
+    // A trace id is on every archived row, so that search has no blind spot at
+    // all and says nothing. An SSN goes through the sightings, which not every
+    // run has, so it always states where its coverage starts.
     return {
       kind: 'ok',
       results,
-      coverage: {
-        complete: blind.measured && blindWorkflows.length === 0,
-        blindWorkflows,
-        note: !blind.measured
-          ? `Which workflows this search cannot see could not be checked, so treat an empty ` +
-            `result as undecided rather than as this person never being seen.`
-          : blindWorkflows.length === 0
-            ? null
-            : `This search finds a person through their recorded lead sightings. ` +
-              `${blindWorkflows.join(' and ')} ${blindWorkflows.length === 1 ? 'does' : 'do'} not record them, ` +
-              `so runs from ${blindWorkflows.length === 1 ? 'it' : 'those'} cannot be found this way, ` +
-              `whether or not anything is listed above. Search by trace id to reach them.`,
-      },
+      coverage: ssn
+        ? {
+            complete: false,
+            completeFrom: SIGHTINGS_COMPLETE_FROM,
+            note:
+              `This finds a person through their recorded lead sightings. Every workflow has recorded ` +
+              `them since ${SIGHTINGS_COMPLETE_FROM}, but some did not before that, so runs older than ` +
+              `that date may be missing here whether or not anything is listed above. Search by trace id ` +
+              `to reach them.`,
+          }
+        : { complete: true, completeFrom: null, note: null },
     }
   } catch (err) {
     return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
   }
-}
-
-/**
- * The workflows whose runs an SSN search cannot see, read from the same column
- * the engine consults when deciding whether to write a sighting.
- *
- * Derived rather than listed, because a hand kept list is exempt from the very
- * change it exists to track: the day somebody turns the flag off on another
- * workflow, a literal here would go on naming the old two and the new one
- * would be invisible (L41, L96).
- */
-async function workflowsWithoutSightings(
-  supabase: SupabaseClient,
-  orgId: string,
-): Promise<{ names: string[]; measured: boolean }> {
-  // paginate-ok: one organization's workflows, tens of rows
-  const { data, error } = await supabase
-    .from('workflows')
-    .select('name')
-    .eq('organization_id', orgId)
-    .eq('capture_sightings', false)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-    .order('name', { ascending: true })
-  // A FAILED read is not "no blind workflows". Returning an empty list here
-  // would flip the caveat off, and off is the direction that makes the search
-  // claim a completeness nothing established (L215, L11). The caller reports
-  // that it could not tell instead.
-  if (error) return { names: [], measured: false }
-
-  const names = ((data ?? []) as Array<{ name: unknown }>)
-    .map((row) => (typeof row.name === 'string' ? row.name : null))
-    .filter((name): name is string => name !== null)
-  return { names, measured: true }
 }
