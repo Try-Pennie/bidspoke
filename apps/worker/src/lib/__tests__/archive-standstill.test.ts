@@ -36,13 +36,32 @@ function kvDouble(seed: Record<string, string> = {}) {
   }
 }
 
-function supabaseDouble(answer: { data: unknown; error: unknown }) {
-  const chain: Record<string, unknown> = {
-    select: () => chain,
-    eq: () => chain,
+function supabaseDouble(
+  answer: { data: unknown; error: unknown },
+  runs?: Array<Record<string, unknown>>,
+) {
+  const progress: Record<string, unknown> = {
+    select: () => progress,
+    eq: () => progress,
     maybeSingle: () => Promise.resolve(answer),
   }
-  return { from: () => chain } as unknown as SupabaseClient
+  const jobRuns: Record<string, unknown> = {
+    select: () => jobRuns,
+    eq: () => jobRuns,
+    order: () => jobRuns,
+    limit: () => Promise.resolve({ data: runs ?? [], error: null }),
+  }
+  return {
+    from: (table: string) => (table === 'job_runs' ? jobRuns : progress),
+  } as unknown as SupabaseClient
+}
+
+/** The advice actually sent, which is the half the reader acts on. */
+function adviceGiven(): string[] {
+  return vi
+    .mocked(notifyExportFailure)
+    .mock.calls.filter((c) => c[1] === ARCHIVE_STANDSTILL_JOB)
+    .map((c) => (c[4] as { fixHint?: string } | undefined)?.fixHint ?? '')
 }
 
 /** What actually reached the alerting layer, rather than which function ran. */
@@ -171,5 +190,80 @@ describe('checkArchiveStandstill', () => {
 
     expect(result.verdict.status).toBe('healthy')
     expect(raised()).toEqual([])
+  })
+})
+
+/**
+ * The alert says WHY, drawn from what the runs actually did (#1028).
+ *
+ * On 2026-08-23 this fired with "Check Snowflake availability and the export
+ * credentials" while Snowflake was fine, the credentials were fine, and every
+ * run was being skipped on a lock held by the archive's own repair. Three
+ * healthy systems named, and a reader who followed the advice would have found
+ * nothing wrong in any of them.
+ */
+describe('the standstill alert names the cause it measured', () => {
+  const stalled = { watermark_hour: '2026-08-21T20:00:00.000Z', updated_at: ago(12 * HOUR) }
+  const kvRunning = () => kvDouble({ [heartbeatKey('execution-archive')]: ago(20 * 60 * 1000) })
+  const settled = (outcome: string) => ({
+    outcome,
+    started_at: ago(30 * 60 * 1000),
+    finished_at: ago(29 * 60 * 1000),
+  })
+
+  it('names the lock, and clears Snowflake, when every run was skipped', async () => {
+    const supabase = supabaseDouble({ data: stalled, error: null }, [
+      settled('skipped-locked'),
+      settled('skipped-locked'),
+    ])
+
+    await checkArchiveStandstill(supabase, kvRunning(), NOW)
+
+    expect(raised()[0]).toMatch(/skipped because the archive lock was already held/)
+    expect(adviceGiven()[0]).toMatch(/holding the lock/)
+    expect(adviceGiven()[0]).toMatch(/nothing is wrong with Snowflake/)
+  })
+
+  it('keeps the Snowflake advice when the runs are actually failing', async () => {
+    const supabase = supabaseDouble({ data: stalled, error: null }, [settled('send-failed')])
+
+    await checkArchiveStandstill(supabase, kvRunning(), NOW)
+
+    expect(raised()[0]).toMatch(/failed, on send-failed/)
+    expect(adviceGiven()[0]).toMatch(/Snowflake/)
+  })
+
+  it('says the runs completed and archived nothing, without naming a system', async () => {
+    const supabase = supabaseDouble({ data: stalled, error: null }, [settled('caught-up')])
+
+    await checkArchiveStandstill(supabase, kvRunning(), NOW)
+
+    expect(raised()[0]).toMatch(/completed cleanly and archived nothing/)
+    expect(adviceGiven()[0]).not.toMatch(/Snowflake/)
+  })
+
+  it('falls back to the general advice when the runs themselves cannot be read', async () => {
+    // A failed read must not become "no run has been recorded", which is one of
+    // the causes and has its own advice (L215).
+    const brokenRuns: Record<string, unknown> = {
+      select: () => brokenRuns,
+      eq: () => brokenRuns,
+      order: () => brokenRuns,
+      limit: () => Promise.resolve({ data: null, error: { message: 'permission denied' } }),
+    }
+    const progress: Record<string, unknown> = {
+      select: () => progress,
+      eq: () => progress,
+      maybeSingle: () => Promise.resolve({ data: stalled, error: null }),
+    }
+    const supabase = {
+      from: (t: string) => (t === 'job_runs' ? brokenRuns : progress),
+    } as unknown as SupabaseClient
+
+    const result = await checkArchiveStandstill(supabase, kvRunning(), NOW)
+
+    expect(result.alerted).toBe(true)
+    expect(raised()[0]).not.toMatch(/No run has been recorded/)
+    expect(adviceGiven()[0]).toMatch(/execution_archive_progress/)
   })
 })

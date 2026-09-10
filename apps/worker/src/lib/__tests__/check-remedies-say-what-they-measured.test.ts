@@ -18,6 +18,8 @@ import { describe, it, expect } from 'vitest'
 import type { AlertRemedy } from '../export-alerts'
 import {
   ARCHIVE_INGEST_REMEDY,
+  ARCHIVE_READ_FAILED_REMEDY,
+  ARCHIVE_SEND_FAILED_REMEDY,
   ARCHIVE_MISCONFIGURED_REMEDY,
   ARCHIVE_REFUSAL_REMEDY,
   ARCHIVE_LAG_REMEDY,
@@ -36,6 +38,8 @@ import { TRIPOINT_PRICING_REMEDY } from '../tripoint-pricing-check'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive ingest', ARCHIVE_INGEST_REMEDY],
+  ['archive read failed', ARCHIVE_READ_FAILED_REMEDY],
+  ['archive send failed', ARCHIVE_SEND_FAILED_REMEDY],
   ['archive misconfigured', ARCHIVE_MISCONFIGURED_REMEDY],
   ['archive refusal', ARCHIVE_REFUSAL_REMEDY],
   ['archive lag', ARCHIVE_LAG_REMEDY],
