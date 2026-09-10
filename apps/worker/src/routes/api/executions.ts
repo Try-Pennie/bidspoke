@@ -12,6 +12,7 @@ import {
   readArchivedChildren,
   readArchivedExecution,
   readArchivedParentSteps,
+  searchArchive,
 } from '../../lib/archive-read'
 
 type Variables = AuthVariables
@@ -299,6 +300,43 @@ function subtypeRequired(nodeType: string): boolean {
 // input/output via /:id/steps/:stepId when a node is clicked. Heavy step
 // payloads (Equifax response, SF blobs) added up to multi-MB responses on
 // every click before this — see TODO 4.x notes.
+// GET /api/executions/archive-search?trace_id=... | ?ssn=...
+//
+// The way back to a run when nobody has the link (#874). The list endpoint is
+// Postgres only and has no identity filter, so past the retention window an
+// operator holding a lead and no URL has no starting point at all.
+//
+// Registered ahead of `/:id` deliberately: Hono matches in order, and
+// "archive-search" would otherwise be read as an execution id.
+executions.get('/archive-search', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+
+  const result = await searchArchive(c.env, supabase, {
+    traceId: c.req.query('trace_id'),
+    ssn: c.req.query('ssn'),
+    orgId,
+    readBy: userId,
+  })
+
+  if (result.kind === 'refused') return c.json({ error: result.reason }, 400)
+  if (result.kind === 'unavailable') {
+    return c.json(
+      {
+        error: 'Archive temporarily unavailable',
+        waiting_for: result.waitingFor,
+        detail: result.detail,
+      },
+      503,
+    )
+  }
+
+  // The coverage travels WITH the results, in the same response, because it is
+  // part of the answer rather than a note beside it. An SSN search that finds
+  // nothing is only truthful when it also says what it could not look at.
+  return c.json({ results: result.results, coverage: result.coverage })
+})
+
 executions.get('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
   const id = c.req.param('id')

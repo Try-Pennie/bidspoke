@@ -415,3 +415,173 @@ function stepById(steps: unknown[], stepId: string): Record<string, unknown> | n
   }
   return null
 }
+
+/**
+ * Finding an archived run when nobody has the link (#874).
+ *
+ * `GET /api/executions` is Postgres only and has no identity filter, so past
+ * the retention window somebody holding a lead and no URL has no starting
+ * point at all. Two ways in:
+ *
+ *  - a trace id, matched against the archive directly, which every archived
+ *    run carries, so its coverage is complete;
+ *  - an SSN, resolved through LEAD_SIGHTINGS, which already holds both the ssn
+ *    and the execution_id.
+ *
+ * THE COVERAGE IS PART OF THE ANSWER. Until 2026-08-19 a workflow could opt
+ * out of recording sightings, and Main Flow, the flow carrying the Equifax
+ * credit report, was opted out. #882 removed the switch so every workflow
+ * always records, but the archive holds thirteen months, so a large part of it
+ * predates that and an SSN cannot reach those runs at all.
+ *
+ * An SSN search answering "nothing" for one of them is saying something false,
+ * and it is loudest in the EMPTY case, which is exactly where somebody
+ * concludes the product never handled the person (L92, L98). So every SSN
+ * response carries the date its coverage begins, the empty ones included.
+ *
+ * The caveat is stated as a DATE rather than a list of workflows deliberately.
+ * The per-workflow flag still exists as an inert column with stale values in
+ * it, and reading it would resurrect a retired opt-out and name workflows that
+ * do record sightings today.
+ */
+export type ArchiveSearchResult =
+  | {
+      kind: 'ok'
+      results: Array<Record<string, unknown>>
+      coverage: { complete: boolean; completeFrom: string | null; note: string | null }
+    }
+  | { kind: 'refused'; reason: string }
+  | { kind: 'unavailable'; waitingFor: string; detail: string }
+
+const SEARCH_COLUMNS =
+  'execution_id, workflow_id, archive_day, started_at_utc, status, outcome, source'
+
+/**
+ * The first UTC day on which every workflow recorded a lead sighting.
+ *
+ * #882 removed the per-workflow opt-out on 2026-08-19, so runs from the next
+ * day forward are all reachable by SSN. Before it, a workflow could record
+ * none, and Main Flow did. Archived runs older than this cannot be found by
+ * SSN however complete the archive itself is.
+ */
+export const SIGHTINGS_COMPLETE_FROM = '2026-08-20'
+
+/** How many runs one search may return, so a common trace id cannot pull the world. */
+export const ARCHIVE_SEARCH_LIMIT = 200
+
+export async function searchArchive(
+  env: Env,
+  supabase: SupabaseClient,
+  opts: { traceId?: string; ssn?: string; orgId: string; readBy: string; deadlineMs?: number },
+  deps: ArchiveReadDeps = {},
+): Promise<ArchiveSearchResult> {
+  const execute = deps.execute ?? executeStatement
+  const sleep = deps.sleep ?? defaultSleep
+  const writeAudit = deps.writeAudit ?? writeAuditLog
+  const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
+
+  const traceId = opts.traceId?.trim()
+  const ssn = opts.ssn?.trim()
+  if (!traceId && !ssn) {
+    // Refused, never "everything". A search tool handed no term must not
+    // quietly become an export of the archive (L320).
+    return { kind: 'refused', reason: 'a trace id or an SSN is required' }
+  }
+  if (traceId && ssn) {
+    return { kind: 'refused', reason: 'search by a trace id or an SSN, not both' }
+  }
+
+  const run = async (statement: string, bindings: unknown[]) => {
+    const raced = await Promise.race([
+      execute(archiveConfig(env, 'reader'), statement, bindings).then(
+        (r) => ({ timedOut: false as const, response: r }),
+      ),
+      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
+    ])
+    if (raced.timedOut) throw new Error(`the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`)
+    return raced.response
+  }
+
+  try {
+    let rows: unknown[][]
+
+    if (traceId) {
+      const response = await run(
+        `SELECT ${SEARCH_COLUMNS} FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+          `WHERE trace_id = ? AND organization_id = ? ` +
+          `ORDER BY started_at_utc DESC LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+        [traceId, opts.orgId],
+      )
+      rows = response.data ?? []
+    } else {
+      // Two statements rather than a join, because the sightings table lives in
+      // a different schema with its own grants, and a failure in either half
+      // should be reportable on its own.
+      const resolved = await run(
+        `SELECT DISTINCT execution_id FROM ${ARCHIVE_DATABASE}.PUBLIC.LEAD_SIGHTINGS ` +
+          `WHERE ssn = ? LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+        [ssn as string],
+      )
+      const ids = (resolved.data ?? [])
+        .map((row) => textCell(row[0]))
+        .filter((id): id is string => id !== null && id.length > 0)
+
+      if (ids.length === 0) {
+        rows = []
+      } else {
+        const placeholders = ids.map(() => '?').join(', ')
+        const response = await run(
+          `SELECT ${SEARCH_COLUMNS} FROM ${ARCHIVE_DATABASE}.${ARCHIVE_SCHEMA}.${ARCHIVE_TABLE} ` +
+            `WHERE execution_id IN (${placeholders}) AND organization_id = ? ` +
+            `ORDER BY started_at_utc DESC LIMIT ${ARCHIVE_SEARCH_LIMIT}`,
+          [...ids, opts.orgId],
+        )
+        rows = response.data ?? []
+      }
+    }
+
+    const results = rows.map((row) => ({
+      execution_id: textCell(row[0]) ?? '',
+      workflow_id: textCell(row[1]),
+      archive_day: textCell(row[2]),
+      started_at: textCell(row[3]),
+      status: textCell(row[4]),
+      outcome: textCell(row[5]),
+      source: textCell(row[6]),
+    }))
+
+    // The audit row records that a search HAPPENED and by which kind of term.
+    // The term itself is deliberately absent: writing an SSN here would copy
+    // the identity into a second store with its own, longer, retention.
+    await writeAudit(
+      supabase,
+      opts.orgId,
+      'execution_archive',
+      opts.orgId,
+      'archive_searched',
+      opts.readBy,
+      { by: ssn ? 'ssn' : 'trace_id', matched: results.length },
+    )
+
+    // A trace id is on every archived row, so that search has no blind spot at
+    // all and says nothing. An SSN goes through the sightings, which not every
+    // run has, so it always states where its coverage starts.
+    return {
+      kind: 'ok',
+      results,
+      coverage: ssn
+        ? {
+            complete: false,
+            completeFrom: SIGHTINGS_COMPLETE_FROM,
+            note:
+              `This finds a person through their recorded lead sightings. Every workflow has recorded ` +
+              `them since ${SIGHTINGS_COMPLETE_FROM}, but some did not before that, so runs older than ` +
+              `that date may be missing here whether or not anything is listed above. Search by trace id ` +
+              `to reach them.`,
+          }
+        : { complete: true, completeFrom: null, note: null },
+    }
+  } catch (err) {
+    return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
+  }
+}

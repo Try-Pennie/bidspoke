@@ -40,6 +40,10 @@ export type AuditAction =
   // removed, and a reader must not take one for the other (#823).
   | 'subject_erasure_previewed'
   | 'archived_execution_read'
+  // A search of the archive by trace id or SSN (#874). The term is deliberately
+  // not recorded: an SSN written here would be the identity copied into a
+  // second store with its own retention.
+  | 'archive_searched'
 
 /**
  * How long to wait between audit-write attempts (#277).
