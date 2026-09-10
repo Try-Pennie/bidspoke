@@ -25,6 +25,7 @@ import { runArchiveGate } from '../../lib/archive-gate'
 import { checkTripointPricing } from '../../lib/tripoint-pricing-check'
 import { sendArchiveBatch } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
+import { archiveHealth } from '../../lib/archive-health'
 import { canonicalHourStart } from '../../archive/clock'
 import { eraseSubject } from '../../lib/archive-erasure'
 import { hashSsn } from '../../engine/persons-crypto'
@@ -476,6 +477,23 @@ admin.post('/re-archive', async (c) => {
  * trust a green, so a caller that reads only the status code must not be able to
  * mistake a reported difference for a verified setting (L98).
  */
+/**
+ * GET, not POST, and that is the whole contract (#959).
+ *
+ * Every other archive route here runs something. This one only looks, so it is
+ * a GET: a reader who tries it to find out what is going on cannot start a job
+ * by accident, and the method says so before anybody reads the handler (L206).
+ *
+ * It answers 200 whatever it finds. A degraded archive is a successful reading
+ * of a degraded archive, and returning 500 for it would make "the archive is
+ * unwell" and "the health check itself is broken" the same response to whoever
+ * is trying to tell them apart.
+ */
+admin.get('/archive-health', async (c) => {
+  const supabase = createSupabaseClient(c.env)
+  return c.json(await archiveHealth(c.env, supabase))
+})
+
 admin.post('/archive-settings-check', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const result = await checkArchiveSettings(c.env, supabase)
