@@ -103,8 +103,8 @@
     "args": {
       "p_retention_days": 99999
     },
-    "anon": "denied",
-    "note": "Drops partitions, and DROP needs table ownership which anon lacks, so this was reachable over REST but not exploitable. Revoked anyway. A huge retention keeps the probe a no-op. NOTE this is the FUNCTION overload; its _safe PROCEDURE sibling cannot be probed this way, see the limitation recorded in the assertion script."
+    "anon": "absent",
+    "note": "DROPPED by migration 20260910220000, and this entry is now the guard that it stays dropped (#1145). It deleted a day of execution history without consulting the archive gate, which is why it went. The reason it is worth asserting LIVE rather than only in migration text: being inert is how a routine like this survives, and the next person looking for the procedure that drops expired partitions finds a name that reads like the right one. A migration scan cannot see one recreated by hand in the database. Probed with p_retention_days so the shape still matches the overload that existed, because a probe with the wrong args answers PGRST202 too and would report absence it never measured. The gated replacements are truncate_verified_execution_partitions and drop_verified_execution_partitions, both PROCEDUREs and so unprobeable here."
   },
   {
     "name": "drain_lead_sightings_purge",
