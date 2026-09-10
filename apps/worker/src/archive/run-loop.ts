@@ -263,6 +263,10 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     }
   }
 
+  // The longest hour THIS run has completed, in ms. Zero until one finishes,
+  // which is what makes the first hour unreserved.
+  let longestHourMs = 0
+
   for (;;) {
     if (result.hoursArchived + result.hoursEmpty >= deps.budget.maxHours) {
       result.stop = 'max-hours'
@@ -270,9 +274,33 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       result.hoursBehind = await measureLag()
       return result
     }
-    if (deps.now().getTime() >= deps.budget.deadlineAt) {
+    // THE BUDGET RESERVES ROOM FOR THE HOUR IT IS ABOUT TO START (#953).
+    //
+    // This check used to be `now >= deadline`, which stops a run only once the
+    // budget is already gone. An hour runs to completion once begun, so a run
+    // at 590 seconds of a 600 second budget started another hour and overshot
+    // by that hour's entire cost. Measured over 14 days of run records: the
+    // three runs that archived two hours took 372, 578 and 646 seconds against
+    // a 600 second budget, so the overshoot is real and it is large.
+    //
+    // Overshooting is not a tidiness problem. The margin between the budget and
+    // the platform's 15 minute cron ceiling is what stops the isolate being
+    // KILLED, and a killed run writes no record, closes nothing and sends no
+    // alert (L98).
+    //
+    // The estimate is THIS RUN'S OWN worst hour, which is the best predictor
+    // available: hours vary with how busy they were, and the run has just
+    // measured the ones next to it. The first hour is never reserved against,
+    // because a run that cannot afford one hour has nothing to offer.
+    const elapsedNow = deps.now().getTime()
+    const reserve = longestHourMs
+    if (elapsedNow >= deps.budget.deadlineAt || (reserve > 0 && elapsedNow + reserve > deps.budget.deadlineAt)) {
       result.stop = 'wall-time'
-      result.detail = `stopped on the wall-time budget after ${result.hoursArchived} hours`
+      result.detail =
+        reserve > 0 && elapsedNow < deps.budget.deadlineAt
+          ? `stopped after ${result.hoursArchived} hours with ${Math.round((deps.budget.deadlineAt - elapsedNow) / 1000)}s left, ` +
+            `which is less than the ${Math.round(reserve / 1000)}s this run's slowest hour took`
+          : `stopped on the wall-time budget after ${result.hoursArchived} hours`
       result.hoursBehind = await measureLag()
       return result
     }
@@ -292,7 +320,11 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       return result
     }
 
+    const hourStartedAt = deps.now().getTime()
     const outcome = await archiveHour(deps, next.hourStart, next.hourEnd)
+    // Measured per hour rather than averaged over the run, because the reserve
+    // has to cover the WORST case it has seen, not the typical one.
+    longestHourMs = Math.max(longestHourMs, deps.now().getTime() - hourStartedAt)
     result.executionsArchived += outcome.kind === 'empty' ? 0 : outcome.executionsArchived ?? 0
     result.executionsRefused += outcome.kind === 'empty' ? 0 : outcome.executionsRefused ?? 0
 

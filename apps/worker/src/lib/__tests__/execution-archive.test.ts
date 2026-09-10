@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { toRow, initialWatermark, MAX_HOURS_PER_RUN, WALL_TIME_BUDGET_MS } from '../execution-archive'
+import { CRON_RUN_BUDGET, REQUEST_RUN_BUDGET } from '../../archive/deadline'
+import { HOURS_GAINED_PER_HOUR } from '../../archive/health'
 import { SLICE_SIZE } from '../../archive/stream-hour'
 import { nextHourToArchive } from '../../archive/clock'
 import type { EncodedForSend } from '../../archive/run-loop'
@@ -238,6 +240,42 @@ describe('run budgets', () => {
   it('gains ground every run, so a backlog drains rather than persisting', () => {
     // Anything less than 2 would never catch up on an hourly cadence.
     expect(MAX_HOURS_PER_RUN).toBeGreaterThan(1)
+  })
+
+  it('gains MORE than the hour that elapsed, so it can recover rather than hold station', () => {
+    // At a cap of 2 the archive gained exactly one hour per hour of real time:
+    // it kept up and could never close a gap. Recovering from an outage needs
+    // the cap above 2, and the rate the health report projects with has to be
+    // the same number (#1041).
+    expect(MAX_HOURS_PER_RUN).toBeGreaterThan(2)
+    expect(HOURS_GAINED_PER_HOUR).toBe(MAX_HOURS_PER_RUN - 1)
+    expect(HOURS_GAINED_PER_HOUR).toBeGreaterThan(1)
+  })
+
+  it('keeps one source for the cap and the budget, not two copies', () => {
+    // These names are the derived reading. Two constants for one meaning leave
+    // every reader of the older one answering a superseded question (L428),
+    // and the catch-up rate above was exactly such a reader.
+    expect(MAX_HOURS_PER_RUN).toBe(CRON_RUN_BUDGET.maxHours)
+    expect(WALL_TIME_BUDGET_MS).toBe(CRON_RUN_BUDGET.wallMs)
+  })
+
+  it('leaves the platform real margin, which is what the reserve protects', () => {
+    // The cron ceiling is 15 minutes. The margin used to absorb an OVERSHOOT,
+    // because the deadline was checked before an hour began and an hour runs to
+    // completion once begun. The run loop now reserves room for the hour it is
+    // about to start, so the margin only has to cover the platform rather than
+    // a whole extra hour, and the budget can use more of the ceiling.
+    const ceilingMs = 15 * 60 * 1000
+    expect(WALL_TIME_BUDGET_MS).toBeLessThan(ceilingMs)
+    expect(ceilingMs - WALL_TIME_BUDGET_MS).toBeGreaterThanOrEqual(60_000)
+  })
+
+  it('runs a request-context archive to a smaller budget than a cron one', () => {
+    // Same run, far less room (#1048), and the two must not drift into being
+    // the same number.
+    expect(REQUEST_RUN_BUDGET.wallMs).toBeLessThan(CRON_RUN_BUDGET.wallMs)
+    expect(REQUEST_RUN_BUDGET.maxHours).toBeLessThan(CRON_RUN_BUDGET.maxHours)
   })
 
   it('leaves the platform room after the wall-time budget', () => {
