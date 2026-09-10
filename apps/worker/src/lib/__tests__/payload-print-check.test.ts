@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest'
-import { checkPayloadPrints } from '../payload-print-check'
+import { checkPayloadPrints, PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
+import type { AlertRemedy } from '../export-alerts'
 
 const supabase = {} as never
 
 /** Records what the check would have sent, so the messages are assertable. */
 function recordingNotify() {
   const sent: string[][] = []
-  return { sent, notify: async (m: string[]) => { sent.push(m) } }
+  const remedies: Array<AlertRemedy | undefined> = []
+  return {
+    sent,
+    remedies,
+    notify: async (m: string[], remedy?: AlertRemedy) => { sent.push(m); remedies.push(remedy) },
+  }
 }
 
 const codeNode = (script: string, namespace = 'scout') => ({
@@ -144,6 +150,38 @@ describe('the accepted baseline', () => {
     expect(rec.sent.flat().join(' ')).not.toContain('pennie_or_eligibility')
   })
 
+  // Added 2026-09-10 after the check's first live alert. This one is accepted on
+  // DIFFERENT grounds from the other nine: it prints one named scalar field off
+  // the partner payload (financialInformation.employmentStatus), not a record,
+  // and the branch it sits in runs only when that field is absent or not a
+  // string. Named here so the reason is testable rather than only asserted in a
+  // comment (L407).
+  it('does not alert on the accepted LendSwift employment status line', async () => {
+    const rec = recordingNotify()
+    const r = await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => [
+        {
+          id: 'w2',
+          name: 'RML - Bidding Workflow (LendSwift)',
+          definition: {
+            nodes: [
+              {
+                id: 'n1',
+                namespace: 'validate_bidding_and_state',
+                type: 'code',
+                config: { script: 'console.log(`Rejected due to missing employment status: ${JSON.stringify(employmentStatus)}`);' },
+              },
+            ],
+          },
+        },
+      ],
+      notify: rec.notify,
+    })
+    expect(r.findings).toHaveLength(1)
+    expect(r.newFindings).toEqual([])
+    expect(rec.sent.flat()).toEqual([])
+  })
+
   it('alerts when the same node starts printing a DIFFERENT value', async () => {
     const rec = recordingNotify()
     const changed = {
@@ -156,6 +194,53 @@ describe('the accepted baseline', () => {
     }
     const r = await checkPayloadPrints({}, supabase, { readWorkflows: async () => [changed], notify: rec.notify })
     expect(r.newFindings).toHaveLength(1)
+  })
+})
+
+// #1166 gave the shared alerter a remedy parameter precisely so a check that is
+// not about exported rows stops borrowing the export wording. This check is
+// about a workflow definition: nothing was exported, nothing is missing from
+// Snowflake, and no credential is involved. Asserted on the words the reader
+// would actually see, not on the parameter being non-empty (L440).
+describe('the alert says what this check measured', () => {
+  it('supplies its own consequence and fix line rather than the export default', async () => {
+    const rec = recordingNotify()
+    await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => [
+        { id: 'w1', name: 'A', definition: codeNode('console.log(JSON.stringify(applicant));') },
+      ],
+      notify: rec.notify,
+    })
+    // Asserted defined FIRST: without it the comparison passes when BOTH sides
+    // are undefined, which is the exact state this test exists to fail on (L1).
+    expect(rec.remedies[0]).toBeDefined()
+    expect(rec.remedies[0]).toEqual(PAYLOAD_PRINT_REMEDY)
+  })
+
+  it('never sends a remedy that talks about exported rows, Snowflake or credentials', () => {
+    const words = `${PAYLOAD_PRINT_REMEDY.consequence} ${PAYLOAD_PRINT_REMEDY.fixHint}`.toLowerCase()
+    for (const wrong of ['snowflake', 'exported', 'export', 'credential', 'supabase disk', 'retry']) {
+      expect(words).not.toContain(wrong)
+    }
+  })
+
+  it('says where the reader acts, which is the canvas, not a data pipeline', () => {
+    const words = `${PAYLOAD_PRINT_REMEDY.consequence} ${PAYLOAD_PRINT_REMEDY.fixHint}`.toLowerCase()
+    expect(words).toContain('canvas')
+  })
+
+  // The unreadable case is a different event from a finding, and the remedy has
+  // to be true of both, because one alert can carry either (L11).
+  it('supplies the same remedy when the scan could not run at all', async () => {
+    const rec = recordingNotify()
+    await checkPayloadPrints({}, supabase, {
+      readWorkflows: async () => { throw new Error('permission denied') },
+      notify: rec.notify,
+    })
+    // Asserted defined FIRST: without it the comparison passes when BOTH sides
+    // are undefined, which is the exact state this test exists to fail on (L1).
+    expect(rec.remedies[0]).toBeDefined()
+    expect(rec.remedies[0]).toEqual(PAYLOAD_PRINT_REMEDY)
   })
 })
 })

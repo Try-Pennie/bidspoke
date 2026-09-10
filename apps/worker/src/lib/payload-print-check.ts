@@ -1,10 +1,35 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findPayloadPrints, type PayloadPrint } from './payload-print-scan'
-import { notifyExportFailure } from './export-alerts'
+import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
 import { isAccepted } from './payload-print-baseline'
 
 export const PAYLOAD_PRINT_JOB = 'code-node-payload-prints'
+
+/**
+ * What the alert says, in the vocabulary of the place the reader will act
+ * (L399). Without this the shared alerter classifies the message text, fails to
+ * recognise it, and falls back to its export wording: on 2026-09-10 the first
+ * real finding this check produced was delivered under "the affected rows were
+ * not exported ... check Snowflake availability and the export credentials",
+ * about a line of code in a workflow. Nothing here is exported, nothing is
+ * missing from Snowflake, no credential is involved, and nothing failed.
+ *
+ * The remedy parameter exists precisely for a borrowing check (#1166); this one
+ * shipped without using it. True for BOTH events this check can send, a finding
+ * and an unreadable scan, because each line below it names which it is.
+ */
+export const PAYLOAD_PRINT_REMEDY: AlertRemedy = {
+  consequence:
+    'A code node was found writing a value into the log stream, or the scan could not run. ' +
+    'This is about a line of code in a workflow, not about data in transit: nothing failed and ' +
+    'nothing is missing. The lines below say which case this is:',
+  fixHint:
+    'For a reported node: open that workflow on the canvas, find the named step, and either stop ' +
+    'logging the value or log only the specific fields you need. If the line is deliberate and the ' +
+    'value is safe, add it to ACCEPTED_PRINT_SITES in payload-print-baseline.ts so it stops being ' +
+    'reported. For a scan that could not run: the check itself needs attention, not any workflow.',
+}
 
 export interface PayloadPrintFinding extends PayloadPrint {
   workflowId: string
@@ -24,7 +49,7 @@ export interface PayloadPrintCheckResult {
 export interface PayloadPrintCheckDeps {
   readWorkflows?: () => Promise<Array<{ id: string; name: string; definition: unknown }>>
   /** Injected so a test asserts WHAT would be sent, not just that nothing threw. */
-  notify?: (messages: string[]) => Promise<void>
+  notify?: (messages: string[], remedy?: AlertRemedy) => Promise<void>
 }
 
 /**
@@ -97,8 +122,9 @@ export async function checkPayloadPrints(
 
   const notify =
     deps.notify ??
-    ((m: string[]) => notifyExportFailure(supabase, PAYLOAD_PRINT_JOB, m, env.IDEMPOTENCY as never))
-  await notify(messages)
+    ((m: string[], remedy?: AlertRemedy) =>
+      notifyExportFailure(supabase, PAYLOAD_PRINT_JOB, m, env.IDEMPOTENCY as never, remedy))
+  await notify(messages, PAYLOAD_PRINT_REMEDY)
 
   // Both counts are logged: the accepted ones going quiet in Slack must not also
   // go quiet here, or the debt becomes invisible rather than deferred.

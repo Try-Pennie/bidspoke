@@ -1,5 +1,5 @@
 /**
- * Code node print sites that existed when the scan shipped (#1230, #1214).
+ * Code node print sites accepted by decision (#1230, #1214).
  *
  * These are ACCEPTED BY DECISION, and the decision is not to fix them (Dan,
  * 2026-09-09, on #1214). Read that before treating this list as a to-do.
@@ -39,6 +39,15 @@ export const ACCEPTED_PRINT_SITES: readonly AcceptedPrintSite[] = [
   { workflow: 'Main Flow (v2)', namespace: 'fallback_invalid_state', identifier: 'sanitizedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'parsedBody' },
   { workflow: 'Main Flow (v2)', namespace: 'pennie_or_eligibility', identifier: 'result' },
+  // Added 2026-09-10, on different grounds from the nine above. This prints ONE
+  // named scalar field, `financialInformation.employmentStatus`, not a record,
+  // and only on the branch that runs when that field is absent or not a string.
+  // Verified against the live definition on 2026-09-10: version 20 of the
+  // workflow, saved 2026-09-09 19:18 UTC, is the first to carry the line.
+  // It is here because the detector cannot tell a scalar from a record at scan
+  // time (both are just an identifier in the source), so the distinction has to
+  // be made by a person once, here. See #1255.
+  { workflow: 'RML - Bidding Workflow (LendSwift)', namespace: 'validate_bidding_and_state', identifier: 'employmentStatus' },
 ]
 
 /** Keyed on all three, so the same node printing a DIFFERENT value is new. */
