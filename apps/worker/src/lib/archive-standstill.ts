@@ -17,6 +17,8 @@ import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { heartbeatKey } from './cron-heartbeat'
 import { ARCHIVE_STREAM } from './execution-archive'
 import { evaluateStandstill, STANDSTILL_MS, type StandstillVerdict } from '../archive/standstill'
+import { standstillCause, type RecentRun, type StandstillCause } from '../archive/standstill-cause'
+import { ARCHIVE_JOB_RUN } from './job-run-record'
 
 /**
  * The archive is running and its watermark is not moving. Every other signal
@@ -151,6 +153,38 @@ export async function checkArchiveStandstill(
   return { verdict, alerted: await raise(supabase, kv, verdict) }
 }
 
+/**
+ * The archive's recent run records, newest first, for naming WHY it is stuck.
+ *
+ * Read only when something is actually wrong: a healthy check must not spend a
+ * query per minute establishing the cause of a standstill that is not
+ * happening.
+ *
+ * A failure to read them is NOT an empty list. Empty means "nothing has run",
+ * which is one of the causes and has its own advice, so answering it from a
+ * failed read would state a cause nothing measured (L215, L11).
+ */
+async function recentRuns(supabase: SupabaseClient): Promise<RecentRun[] | null> {
+  try {
+    // paginate-ok: the handful of runs the standstill window covers
+    const { data, error } = await supabase
+      .from('job_runs')
+      .select('outcome, started_at, finished_at')
+      .eq('job', ARCHIVE_JOB_RUN)
+      .order('started_at', { ascending: false })
+      .limit(6)
+    if (error) throw new Error(formatErr(error))
+    return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      outcome: typeof row.outcome === 'string' ? row.outcome : null,
+      startedAt: typeof row.started_at === 'string' ? row.started_at : null,
+      finishedAt: typeof row.finished_at === 'string' ? row.finished_at : null,
+    }))
+  } catch (err) {
+    console.error(`[archive-standstill] could not read the recent runs: ${formatErr(err)}`)
+    return null
+  }
+}
+
 async function raise(supabase: SupabaseClient, kv: KvLike, verdict: StandstillVerdict): Promise<boolean> {
   const message = alertFor(verdict)
   if (message === null) {
@@ -161,8 +195,35 @@ async function raise(supabase: SupabaseClient, kv: KvLike, verdict: StandstillVe
     await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [], kv, ARCHIVE_STANDSTILL_REMEDY)
     return false
   }
-  await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [message], kv, ARCHIVE_STANDSTILL_REMEDY)
+  // WHAT the runs were doing, added to the message and to the advice (#1028).
+  // The old wording asserted a cause the check had never looked at, and on
+  // 2026-08-23 sent a reader to three healthy systems.
+  const runs = await recentRuns(supabase)
+  const cause = runs === null ? null : standstillCause(runs)
+  const withCause = cause === null ? message : `${message} ${describeCause(cause)}`
+
+  await notifyExportFailure(supabase, ARCHIVE_STANDSTILL_JOB, [withCause], kv, {
+    ...ARCHIVE_STANDSTILL_REMEDY,
+    fixHint: cause === null ? ARCHIVE_STANDSTILL_REMEDY.fixHint : cause.advice,
+  })
   return true
+}
+
+/** One sentence naming what the recent runs did, in the reader's terms. */
+function describeCause(cause: StandstillCause): string {
+  const n = (count: number, noun: string) => `${count} recent ${noun}${count === 1 ? '' : 's'}`
+  switch (cause.kind) {
+    case 'skipped-locked':
+      return `All ${n(cause.runs, 'run')} were skipped because the archive lock was already held.`
+    case 'runs-failing':
+      return `${n(cause.runs, 'run')} failed, on ${cause.outcomes.join(' and ')}.`
+    case 'runs-killed':
+      return `All ${n(cause.runs, 'run')} started and recorded no ending, so they were terminated.`
+    case 'archiving-nothing':
+      return `${n(cause.runs, 'run')} completed cleanly and archived nothing.`
+    case 'no-recent-runs':
+      return 'No run has been recorded at all in this window.'
+  }
 }
 
 export { STANDSTILL_MS }

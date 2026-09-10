@@ -15,7 +15,7 @@
  * never reach the second consecutive failure that pages. So a healthy run
  * produces no call at all rather than a call with nothing in it.
  */
-import type { RunResult } from './run-loop'
+import type { RunResult, RunStop } from './run-loop'
 import type { AlertRemedy } from '../lib/export-alerts'
 
 export const ARCHIVE_JOB_NAMES = {
@@ -62,6 +62,53 @@ export const ARCHIVE_INGEST_REMEDY: AlertRemedy = {
     'Read the stop reason and the [execution-archive] worker logs for that run. If a whole day is at ' +
     'risk of being purged before it is archived, re-archive it with POST /api/admin/re-archive and a ' +
     'day of YYYY-MM-DD.',
+}
+
+/**
+ * Where a read failure actually points (#1042).
+ *
+ * Its own remedy, because on 2026-08-24 the cause was a Postgres statement
+ * timeout on our own unindexed count and the one fixed remedy named Snowflake,
+ * the export credentials and Supabase disk. Three wrong places, none of which a
+ * reader would have found anything wrong in.
+ */
+export const ARCHIVE_READ_FAILED_REMEDY: AlertRemedy = {
+  consequence:
+    'The archive could not READ the executions it was going to archive, so it stopped before sending ' +
+    'anything. This is Postgres, not Snowflake. The hours it did not reach have no backup until the ' +
+    'loop returns to them:',
+  fixHint:
+    'The failure below names the query. A statement timeout on a count usually means a partition without ' +
+    'the index the archive reads by. Snowflake and the archive credentials are not implicated by this ' +
+    'stop reason.',
+}
+
+/** Where a send failure points, which is the one case Snowflake belongs in. */
+export const ARCHIVE_SEND_FAILED_REMEDY: AlertRemedy = {
+  consequence:
+    'The archive read its executions and could not SEND them to Snowflake, so the run stopped with those ' +
+    'hours unarchived. They are archived when the loop returns to them, which is a problem only if their ' +
+    'Postgres partition is purged first:',
+  fixHint:
+    'Check Snowflake availability and the archive writer credentials. If it stays down, watch Supabase ' +
+    'disk: the un-purged rows accumulate until a run succeeds.',
+}
+
+/**
+ * The remedy for a failed run, chosen from the stop reason the run already
+ * classified (#1042).
+ *
+ * A remedy identical for every failure carries no information, and a wrong one
+ * is worse than none because it costs a diagnosis (L11, L111). The stop reason
+ * is already decided in `run-loop.ts`, so this reads it rather than guessing.
+ */
+export function ingestRemedyFor(stop: RunStop): AlertRemedy {
+  if (stop === 'read-failed') return ARCHIVE_READ_FAILED_REMEDY
+  if (stop === 'send-failed') return ARCHIVE_SEND_FAILED_REMEDY
+  if (stop === 'misconfigured') return ARCHIVE_MISCONFIGURED_REMEDY
+  // Everything else stopped for a budget reason rather than a fault, so the
+  // generic wording is the honest one: it says to read the stop reason.
+  return ARCHIVE_INGEST_REMEDY
 }
 
 export const ARCHIVE_MISCONFIGURED_REMEDY: AlertRemedy = {
@@ -125,7 +172,7 @@ export function alertsFor(result: RunResult): ArchiveAlert[] {
     alerts.push({
       jobName: ARCHIVE_JOB_NAMES.ingest,
       errors: [`archive run stopped on ${result.stop}: ${result.detail}`],
-      remedy: ARCHIVE_INGEST_REMEDY,
+      remedy: ingestRemedyFor(result.stop),
     })
   }
 

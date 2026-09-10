@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { alertsFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
+import { alertsFor, ingestRemedyFor, ARCHIVE_JOB_NAMES, LAG_ALERT_HOURS } from '../alerts'
 import type { RunResult } from '../run-loop'
 
 const base: RunResult = {
@@ -103,5 +103,72 @@ describe('alertsFor', () => {
         expect(alert.errors.length, `${alert.jobName} produced an empty errors array`).toBeGreaterThan(0)
       }
     }
+  })
+})
+
+/**
+ * The remedy is chosen from what actually stopped the run (#1042).
+ *
+ * One fixed remedy fired for every failure. On 2026-08-24 the cause was a
+ * Postgres statement timeout on our own unindexed count, and the advice named
+ * Snowflake, the export credentials and Supabase disk. Three wrong places.
+ */
+describe('ingestRemedyFor', () => {
+  it('points a read failure at Postgres, and says Snowflake is not implicated', () => {
+    const remedy = ingestRemedyFor('read-failed')
+
+    expect(remedy.consequence).toMatch(/This is Postgres, not Snowflake/)
+    expect(remedy.fixHint).toMatch(/not implicated/)
+  })
+
+  it('points a send failure at Snowflake, which is the case it belongs to', () => {
+    const remedy = ingestRemedyFor('send-failed')
+
+    expect(remedy.fixHint).toMatch(/Check Snowflake availability/)
+  })
+
+  it('points a misconfiguration at the secret that is unset', () => {
+    expect(ingestRemedyFor('misconfigured').fixHint).toMatch(/wrangler secret put/)
+  })
+
+  it('gives every fault its own distinct advice', () => {
+    // The defect was that these were all the same sentence. A test that only
+    // checked each one said something would have passed throughout.
+    const hints = (['read-failed', 'send-failed', 'misconfigured'] as const).map(
+      (stop) => ingestRemedyFor(stop).fixHint,
+    )
+    expect(new Set(hints).size).toBe(3)
+  })
+
+  it('is what alertsFor actually attaches, not just a function beside it', () => {
+    // Built is not wired (L3). Every test above passed with alertsFor still
+    // handing the one generic remedy to every failure, which is the defect.
+    const failed = (stop: 'read-failed' | 'send-failed'): RunResult =>
+      ({
+        failed: true,
+        stop,
+        detail: 'something went wrong',
+        executionsArchived: 0,
+        executionsRefused: 0,
+        hoursArchived: 0,
+        hoursEmpty: 0,
+        hoursBehind: 0,
+      }) as unknown as RunResult
+
+    const readAlert = alertsFor(failed('read-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
+    const sendAlert = alertsFor(failed('send-failed')).find((a) => a.jobName === ARCHIVE_JOB_NAMES.ingest)
+
+    expect(readAlert?.remedy.fixHint).toBe(ingestRemedyFor('read-failed').fixHint)
+    expect(sendAlert?.remedy.fixHint).toBe(ingestRemedyFor('send-failed').fixHint)
+    expect(readAlert?.remedy.fixHint).not.toBe(sendAlert?.remedy.fixHint)
+  })
+
+  it('keeps the generic wording for a run that stopped on a budget rather than a fault', () => {
+    // wall-time is not a failure of anything, so naming a system to go and
+    // check would be inventing a cause (L11).
+    const remedy = ingestRemedyFor('wall-time')
+
+    expect(remedy.fixHint).toMatch(/Read the stop reason/)
+    expect(remedy.fixHint).not.toMatch(/Check Snowflake availability/)
   })
 })
