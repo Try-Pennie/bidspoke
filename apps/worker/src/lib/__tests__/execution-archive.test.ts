@@ -221,20 +221,70 @@ describe('run budgets', () => {
     expect(MAX_HOURS_PER_RUN * measuredCpuMsPerHour).toBeLessThan(30_000 / 2)
   })
 
-  // MEASURED IN PRODUCTION on the 2026-08-22 recovery run, from the watermark's
-  // own timestamps: the run began at 20:23:00Z, finished the 13:00 hour at
-  // 20:26:22Z and the 14:00 hour at 20:30:39Z. So an hour of real data costs
-  // between 202 and 257 seconds end to end, far more than the 48 s the local
-  // rehearsal suggested, because the rehearsal does not pay the Worker's
-  // per-request latency or the Snowflake send.
-  const MEASURED_WORST_MS_PER_HOUR = 257_000
+  // WHAT AN HOUR COSTS, measured over 163 single-hour production runs in the 7
+  // days to 2026-09-10, not over one recovery run.
+  //
+  // THE UNIT IS PER EXECUTION, and that is the correction. This block used to
+  // hold a flat 257,000 ms per hour, taken from the 2026-08-22 recovery run. An
+  // hour's cost is not a property of the archive, it is a property of how much
+  // traffic that hour held: measured across the day the cost runs from 53 s to
+  // 336 s, a six-fold spread, and it correlates with the execution count at
+  // 0.937. A constant in the wrong unit drifts GREEN as the business grows,
+  // which is the direction nobody checks (L323, L354).
+  //
+  // Re-take all four numbers with supabase/tests/measure-archive-hour-cost.sql.
+  const MEASURED_MEAN_MS_PER_EXECUTION = 48.4
+  const MEASURED_P95_MS_PER_EXECUTION = 60.8
+  /** The busiest single hour seen in those 7 days. Grows with the business. */
+  const MEASURED_BUSIEST_HOUR_EXECUTIONS = 9_716
+  /** The mean hour, which is what an ordinary catch-up run actually meets. */
+  const MEASURED_MEAN_HOUR_EXECUTIONS = 3_900
+
+  const hourCostMs = (executions: number, msEach: number) => executions * msEach
 
   // A cap the clock stops before it can ever be reached is not a cap. It reads
   // as the control and can never fire, which is worse than no number at all
-  // because whoever reads it believes it (L109). This fails if the hour cap is
-  // raised without the wall budget, or the wall budget lowered without the cap.
-  it('can actually reach its hour cap inside its own wall-time budget', () => {
-    expect(MAX_HOURS_PER_RUN * MEASURED_WORST_MS_PER_HOUR).toBeLessThanOrEqual(WALL_TIME_BUDGET_MS)
+  // because whoever reads it believes it (L109).
+  //
+  // Judged at the ORDINARY hour, deliberately. The old form asserted the cap was
+  // reachable at the worst hour, and that is not true and cannot be made true:
+  // three of the busiest hour costs about 1,772 s against a platform cron
+  // ceiling of 900 s, so no wall budget inside the ceiling could reach the cap
+  // at peak. Requiring it there would have forced the cap down to 1, which is
+  // the number that cannot catch up at all. The cap governs the quiet half of
+  // the day, where a backlog is actually drained, and the reserve governs the
+  // busy half. This fails if the cap is raised without the wall budget, or the
+  // budget lowered without the cap.
+  it('can actually reach its hour cap on an ordinary hour, inside its wall budget', () => {
+    const cost = hourCostMs(MEASURED_MEAN_HOUR_EXECUTIONS, MEASURED_P95_MS_PER_EXECUTION)
+    expect(MAX_HOURS_PER_RUN * cost).toBeLessThanOrEqual(WALL_TIME_BUDGET_MS)
+  })
+
+  // THE LIMIT THAT ACTUALLY BINDS, and the one worth watching. A run must be
+  // able to finish the BUSIEST hour, or the archive stops advancing at peak
+  // entirely: the reserve refuses to start an hour it cannot finish, so a
+  // busiest hour that no longer fits means zero hours archived, an outcome that
+  // reads as a healthy short run rather than as a stall (L98).
+  //
+  // Cost is linear in volume, so this is a growth budget. At the p95 rate the
+  // busiest measured hour costs about 591 s against 780 s, which is roughly 32%
+  // headroom. When traffic grows past that this goes red, which is the point:
+  // the alternative is finding out from a backlog nobody can explain.
+  it('can finish the busiest hour ever measured, with stated room to grow', () => {
+    const worstHourMs = hourCostMs(MEASURED_BUSIEST_HOUR_EXECUTIONS, MEASURED_P95_MS_PER_EXECUTION)
+
+    expect(worstHourMs).toBeLessThan(WALL_TIME_BUDGET_MS)
+    // Stated as a ratio rather than a spare-seconds figure, so it keeps its
+    // meaning when either side moves.
+    const headroom = WALL_TIME_BUDGET_MS / worstHourMs
+    expect(headroom, 'the busiest hour no longer leaves 25% growth room').toBeGreaterThan(1.25)
+  })
+
+  // The mean rate is the one every projection uses, so it must not quietly
+  // become the p95's equal: if it does, the distribution has changed shape and
+  // every figure derived from the mean is describing a different system.
+  it('keeps the mean and the tail distinguishable, since projections use the mean', () => {
+    expect(MEASURED_MEAN_MS_PER_EXECUTION).toBeLessThan(MEASURED_P95_MS_PER_EXECUTION)
   })
 
   it('gains ground every run, so a backlog drains rather than persisting', () => {
