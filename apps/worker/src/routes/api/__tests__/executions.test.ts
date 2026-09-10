@@ -11,12 +11,14 @@ vi.mock('../../../lib/supabase')
 vi.mock('../../../engine/definition-loader')
 vi.mock('../../../lib/audit')
 vi.mock('../../../engine/index')
+vi.mock('../../../lib/archive-read')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { invalidateWorkflowCache } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
+import { readArchivedExecution } from '../../../lib/archive-read'
 import { makeSupabase } from './_supabase-mock'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
@@ -71,6 +73,7 @@ describe('GET /executions', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
   })
 
@@ -199,10 +202,14 @@ describe('GET /executions/:id', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
   })
 
-  it('returns 404 when execution does not exist', async () => {
+  // Since #874 a miss in Postgres is not the answer on its own: past the seven
+  // day retention the row is gone from Postgres and may still be in the
+  // archive. 404 now means neither holds it.
+  it('returns 404 when neither Postgres nor the archive holds the execution', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
@@ -211,9 +218,77 @@ describe('GET /executions/:id', () => {
     )
     const res = await request(app, 'GET', '/executions/exec-ghost')
     expect(res.status).toBe(404)
+    expect(vi.mocked(readArchivedExecution)).toHaveBeenCalled()
   })
 
-  it('returns 404 when execution belongs to another org', async () => {
+  it('returns the archived execution when Postgres has dropped it', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue({
+      kind: 'found',
+      execution: { id: 'exec-old', workflow_id: 'wf-1', status: 'completed' },
+      steps: [{ id: 'step-1', step_namespace: 'validate', input: { a: 1 }, output: { b: 2 } }],
+      archiveDay: '2026-03-04',
+      archivedIncomplete: false,
+    })
+    const res = await request(app, 'GET', '/executions/exec-old')
+    expect(res.status).toBe(200)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.archived).toBe(true)
+    expect(body.archive_day).toBe('2026-03-04')
+    expect(body.id).toBe('exec-old')
+    expect(body.steps).toHaveLength(1)
+  })
+
+  it('strips heavy step payloads from an archived execution under ?summary=1', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue({
+      kind: 'found',
+      execution: { id: 'exec-old', workflow_id: 'wf-1', status: 'completed' },
+      steps: [{ id: 'step-1', step_namespace: 'validate', input: { a: 1 }, output: { b: 2 }, logs: ['x'] }],
+      archiveDay: '2026-03-04',
+      archivedIncomplete: false,
+    })
+    const res = await request(app, 'GET', '/executions/exec-old?summary=1')
+    const body = await res.json() as { steps: Array<Record<string, unknown>> }
+    expect(body.steps[0]).not.toHaveProperty('input')
+    expect(body.steps[0]).not.toHaveProperty('output')
+    expect(body.steps[0]).not.toHaveProperty('logs')
+    expect(body.steps[0].step_namespace).toBe('validate')
+  })
+
+  // The whole reason the archive read reports three outcomes rather than two.
+  // A 404 here would tell an operator a lead never ran when the only thing that
+  // happened is that the warehouse was asleep.
+  it('returns 503, not 404, when the archive cannot be reached', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        workflow_executions: { single: null },
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    vi.mocked(readArchivedExecution).mockResolvedValue({
+      kind: 'unavailable',
+      waitingFor: 'the execution archive',
+      detail: 'the archive did not answer within 20 seconds',
+    })
+    const res = await request(app, 'GET', '/executions/exec-old')
+    expect(res.status).toBe(503)
+    const body = await res.json() as Record<string, unknown>
+    expect(body.waiting_for).toBe('the execution archive')
+    expect(body.detail).toContain('20 seconds')
+  })
+
+  it('returns 404 when execution belongs to another org, in Postgres and in the archive', async () => {
     // Ownership check is now an inner join on workflows.organization_id —
     // when the org doesn't match, PostgREST returns no row for the parent.
     vi.mocked(createSupabaseClient).mockReturnValue(
@@ -349,6 +424,7 @@ describe('POST /executions/:id/replay', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
   })
 
@@ -416,6 +492,7 @@ describe('POST /executions/:id/resume', () => {
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(readArchivedExecution).mockResolvedValue({ kind: 'not-found' })
     app = await makeApp()
   })
 

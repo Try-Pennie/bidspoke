@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import { isNotFoundError } from '@/lib/execution-retention'
+import { archiveUnavailableFrom, isNotFoundError } from '@/lib/execution-retention'
 import { isRunningStatus } from '@/lib/execution-status'
 
 type Execution = Awaited<ReturnType<typeof api.executions.get>>
@@ -19,6 +19,14 @@ interface UseExecutionResult {
   loading: boolean
   error: string | null
   notFound: boolean
+  /**
+   * Set when the archive could not be reached (#874). Distinct from notFound,
+   * because "we could not look" and "it never existed" are different answers
+   * and only one of them is worth retrying.
+   */
+  archiveUnavailable: { waitingFor: string; detail: string } | null
+  /** Retries the load. The archive-unavailable state is the one worth offering it on. */
+  reload: () => void
 }
 
 /**
@@ -36,6 +44,9 @@ export function useExecution(executionId: string): UseExecutionResult {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notFound, setNotFound] = useState(false)
+  const [archiveUnavailable, setArchiveUnavailable] =
+    useState<{ waitingFor: string; detail: string } | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -44,6 +55,7 @@ export function useExecution(executionId: string): UseExecutionResult {
     setExecution(null)
     setError(null)
     setNotFound(false)
+    setArchiveUnavailable(null)
     setLoading(true)
 
     const load = () => {
@@ -53,6 +65,7 @@ export function useExecution(executionId: string): UseExecutionResult {
           setExecution(e)
           setError(null)
           setNotFound(false)
+          setArchiveUnavailable(null)
           // Keep polling only while the run is still in progress.
           if (isRunningStatus(e.status)) {
             timer = setTimeout(load, POLL_INTERVAL_MS)
@@ -62,6 +75,7 @@ export function useExecution(executionId: string): UseExecutionResult {
           if (cancelled) return
           setError(e.message)
           setNotFound(isNotFoundError(e))
+          setArchiveUnavailable(archiveUnavailableFrom(e))
           // Stop polling on error — an errored fetch (incl. not-found) is terminal
           // for this view; the user can reload if they want to retry.
         })
@@ -74,7 +88,14 @@ export function useExecution(executionId: string): UseExecutionResult {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [executionId])
+  }, [executionId, attempt])
 
-  return { execution, loading, error, notFound }
+  return {
+    execution,
+    loading,
+    error,
+    notFound,
+    archiveUnavailable,
+    reload: () => setAttempt((n) => n + 1),
+  }
 }

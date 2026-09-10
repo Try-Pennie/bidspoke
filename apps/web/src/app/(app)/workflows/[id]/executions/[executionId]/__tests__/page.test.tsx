@@ -30,7 +30,19 @@ import { useExecution } from '@/hooks/useExecution'
  * test is about what a person and a screen reader actually get.
  */
 const state = (over: Record<string, unknown> = {}) =>
-  ({ execution: null, loading: false, error: null, notFound: false, ...over })
+  ({
+    execution: null,
+    loading: false,
+    error: null,
+    notFound: false,
+    // Present, not omitted. Leaving these out meant every run in this file
+    // looked archived to the page, which is how the `!== null` bug in #874 was
+    // found: a fixture short of a field is a caller the component was not
+    // written for (L550).
+    archiveUnavailable: null,
+    reload: () => {},
+    ...over,
+  })
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -210,5 +222,60 @@ describe('bid attempt rows are keyboard accessible (#497)', () => {
     const toggle = screen.getByRole('button', { name: /details for m1/i })
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+})
+
+describe('an archived run hides the canvas (#874)', () => {
+  const archived = {
+    id: 'exec-1',
+    workflow_id: 'wf-1',
+    status: 'completed',
+    started_at: '2026-03-04T09:14:02.000Z',
+    steps: [],
+    child_executions: [],
+    lead_economics: null,
+    archived: true,
+    archive_day: '2026-03-04',
+  }
+
+  it('hides "View on canvas", because the canvas would draw it against today’s graph', () => {
+    vi.mocked(useExecution).mockReturnValue(state({ execution: archived }) as never)
+    render(<ExecutionDetailPage />)
+
+    // Hidden, not disabled: the banner says why, so its absence is a decision.
+    expect(screen.queryByRole('link', { name: /view on canvas/i })).toBeNull()
+    expect(screen.getByText(/canvas is not available for archived runs/i)).toBeInTheDocument()
+  })
+
+  it('sends "Back to workflow" to the workflow itself, not to the canvas overlay', () => {
+    vi.mocked(useExecution).mockReturnValue(state({ execution: archived }) as never)
+    render(<ExecutionDetailPage />)
+
+    expect(screen.getByRole('link', { name: /back to workflow/i })).toHaveAttribute(
+      'href',
+      '/workflows/wf-1'
+    )
+  })
+
+  it('names the archive day, so the reader knows which record they are looking at', () => {
+    vi.mocked(useExecution).mockReturnValue(state({ execution: archived }) as never)
+    render(<ExecutionDetailPage />)
+
+    expect(screen.getByText(/2026-03-04/)).toBeInTheDocument()
+  })
+
+  it('offers a retry, and does not claim the run never happened, when the archive is unreachable', () => {
+    vi.mocked(useExecution).mockReturnValue(
+      state({
+        error: 'Archive temporarily unavailable',
+        archiveUnavailable: { waitingFor: 'the execution archive', detail: 'did not answer' },
+      }) as never
+    )
+    render(<ExecutionDetailPage />)
+
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+    expect(screen.getByText(/does not mean the run never happened/i)).toBeInTheDocument()
+    // The not-found screen must not also be on the page saying the opposite.
+    expect(screen.queryByText(/No record of this execution/i)).toBeNull()
   })
 })

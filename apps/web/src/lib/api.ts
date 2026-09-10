@@ -426,8 +426,20 @@ async function req<T>(path: string, init?: ReqInit): Promise<T> {
       const trimmed = body.trim()
       if (trimmed && trimmed.length <= 200 && !trimmed.startsWith('<')) message = trimmed
     }
-    const err = new Error(message || `API ${res.status}`) as Error & { status?: number }
+    const err = new Error(message || `API ${res.status}`) as Error & {
+      status?: number
+      body?: unknown
+    }
     err.status = res.status
+    // The parsed body, kept alongside the message. A rejection routinely carries
+    // fields the sentence cannot (which archive a read was waiting for, how long
+    // it waited), and without this every caller that needs one has to re-parse a
+    // message that was written for a person to read (#874).
+    try {
+      err.body = JSON.parse(body)
+    } catch {
+      // Not JSON. The message already holds whatever the server said.
+    }
     throw err
   }
   return res.json() as Promise<T>
@@ -638,6 +650,17 @@ export const api = {
           margin_cents: number | null
           winning_partner_slug: string | null
         } | null
+        /**
+         * Set only when this came from the execution archive rather than
+         * Postgres (#874), which is every run older than the seven day
+         * retention. Absent, not false, on a live one, so a reader that forgets
+         * to check cannot silently treat a live run as archived.
+         */
+        archived?: true
+        /** The archive day the run was found on, shown on the archived banner. */
+        archive_day?: string
+        /** The run was still going when the archive took it, so its record is partial. */
+        archived_incomplete?: boolean
         steps: Array<{
           id: string
           step_namespace: string

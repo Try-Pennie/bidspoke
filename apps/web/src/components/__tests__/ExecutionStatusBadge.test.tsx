@@ -41,3 +41,20 @@ describe('ExecutionStatusBadge (#477)', () => {
     expect(screen.queryByText('Running')).not.toBeInTheDocument()
   })
 })
+
+describe('an archived run shows no clock (#874)', () => {
+  it('does not render a growing elapsed time for a run that was still going when archived', () => {
+    // Six months ago. With a live clock this renders "Stalled, 274075m", a
+    // number that grows for ever and tells the reader nothing about the run.
+    const longAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString()
+    render(<ExecutionStatusBadge status="running" startedAt={longAgo} live={false} />)
+
+    expect(screen.queryByText(/\d+m \d+s/)).toBeNull()
+    expect(screen.queryByText(/·/)).toBeNull()
+  })
+
+  it('still shows the live clock for a run that is genuinely running now', () => {
+    render(<ExecutionStatusBadge status="running" startedAt={new Date().toISOString()} />)
+    expect(screen.getByText(/Running/)).toBeInTheDocument()
+  })
+})

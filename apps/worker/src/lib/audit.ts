@@ -19,6 +19,10 @@ export type AuditEntityType =
   | 'field_presence_silence'
   // A subject erasure across the archive and both sightings tables (#875).
   | 'archive_erasure'
+  // One archived execution read back out of Snowflake (#874). Every archived
+  // read is audited, because the archive holds full fidelity PII for thirteen
+  // months and a read of it is the access that has to be accountable.
+  | 'execution_archive'
 
 export type AuditAction =
   | 'created'
@@ -35,6 +39,7 @@ export type AuditAction =
   // A dry run of an erasure. Distinct from subject_erased because nothing was
   // removed, and a reader must not take one for the other (#823).
   | 'subject_erasure_previewed'
+  | 'archived_execution_read'
 
 /**
  * How long to wait between audit-write attempts (#277).
