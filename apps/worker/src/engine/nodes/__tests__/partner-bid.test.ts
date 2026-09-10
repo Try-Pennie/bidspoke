@@ -728,3 +728,71 @@ describe('recordBreakerOutcome (#129)', () => {
     expect(String(failures[0].error_message)).toContain('DO down')
   })
 })
+
+// The partner config is read from the database on every attempt, so a database
+// outage failed every bid even when the lead had reached the bid step (#1296).
+// A last-good copy in KV, written when the row changes, is served when the
+// read fails; a read that fails with no copy still refuses.
+describe('partner config last-good fallback during a DB outage (#1296)', () => {
+  function makeDbDownSupabase() {
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'single') return () => Promise.resolve({ data: null, error: { code: '57P01', message: 'db connection lost' } })
+        return () => chain
+      },
+    })
+    return { from: () => chain }
+  }
+  function recordingKv(seed: Record<string, string> = {}) {
+    const store = new Map(Object.entries(seed))
+    const puts: { key: string; value: string; opts?: { expirationTtl?: number } }[] = []
+    return {
+      puts,
+      kv: {
+        get: async (k: string) => store.get(k) ?? null,
+        put: async (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); puts.push({ key: k, value: v, opts }) },
+        delete: async (k: string) => { store.delete(k) },
+      },
+    }
+  }
+  const partner = makePartner({ updated_at: '2026-09-10T20:00:00Z' })
+
+  it('bids from the last-good copy when the partner_configs read fails', async () => {
+    const { kv } = recordingKv({ 'partner-lastgood:partner-1': JSON.stringify(partner) })
+    const result = await executePartnerBidNode(
+      makeNode({ partner_id: 'partner-1' }),
+      makeCtx({ debt_amount: 10000 }),
+      makeEnv({ WORKFLOW_CACHE: kv }),
+      makeDbDownSupabase() as never,
+    )
+    const out = result.output as PartnerBidOutput
+    expect(out.partner).toBe('tripoint')
+    expect(out.bid).toBe(6500)
+  })
+
+  it('still refuses when the read fails and there is no last-good copy', async () => {
+    const { kv } = recordingKv()
+    await expect(executePartnerBidNode(
+      makeNode({ partner_id: 'partner-1' }),
+      makeCtx({ debt_amount: 10000 }),
+      makeEnv({ WORKFLOW_CACHE: kv }),
+      makeDbDownSupabase() as never,
+    )).rejects.toThrow('Partner config not found')
+  })
+
+  it('writes the last-good copy when the row changes, and not again while it is unchanged', async () => {
+    const { kv, puts } = recordingKv()
+    const env = makeEnv({ WORKFLOW_CACHE: kv })
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-1' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(partner) as never)
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-1' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(partner) as never)
+    const writes = puts.filter((p) => p.key === 'partner-lastgood:partner-1')
+    expect(writes).toHaveLength(1)
+    expect(writes[0].opts?.expirationTtl).toBeUndefined()
+    expect(JSON.parse(writes[0].value)).toMatchObject({ id: 'partner-1', slug: 'tripoint' })
+
+    const edited = makePartner({ updated_at: '2026-09-10T21:00:00Z', bid_formula: 'debt_amount * 0.5' })
+    await executePartnerBidNode(makeNode({ partner_id: 'partner-1' }), makeCtx({ debt_amount: 10000 }), env, makeSupabase(edited) as never)
+    expect(puts.filter((p) => p.key === 'partner-lastgood:partner-1')).toHaveLength(2)
+  })
+})

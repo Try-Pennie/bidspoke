@@ -205,3 +205,89 @@ describe('custom endpoint cache + gate handling (#316)', () => {
     expect(executeWorkflow).not.toHaveBeenCalled()
   })
 })
+
+// A database outage must not refuse leads whose endpoint record we have already
+// seen (#1296). On 2026-09-10 Supabase was unresponsive for ten minutes; the
+// 60 second cache expired within a minute and every Engine lead got a 503 while
+// the workflow definition and env vars were sitting in KV the whole time.
+describe('custom endpoint serves the last-good record during a DB outage (#1296)', () => {
+  const dbDown = { data: null, error: { code: '57P01', message: 'db connection lost' } }
+  const activeEndpoint = {
+    data: {
+      id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true,
+      workflows: { definition: { trigger: { config: { auth_method: 'none' } } } },
+    },
+    error: null,
+  }
+
+  // A KV double that records every put, including its options, so the test can
+  // assert which key carried a TTL and which did not.
+  function recordingKv(seed: Record<string, string> = {}) {
+    const store = new Map(Object.entries(seed))
+    const puts: { key: string; value: string; opts?: { expirationTtl?: number } }[] = []
+    return {
+      puts,
+      kv: {
+        get: async (k: string) => store.get(k) ?? null,
+        put: async (k: string, v: string, opts?: { expirationTtl?: number }) => { store.set(k, v); puts.push({ key: k, value: v, opts }) },
+        delete: async (k: string) => { store.delete(k) },
+      },
+    }
+  }
+  function postWith(kv: unknown) {
+    const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+    return makeApp().request(
+      'http://hook.trypennie.dev/tripoint/bidding',
+      { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } },
+      { WORKFLOW_CACHE: kv, API_KEY_MAP: '{}' } as unknown as Env,
+      executionCtx as unknown as ExecutionContext
+    )
+  }
+  const lastGood = JSON.stringify({ id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true, auth_method: 'none' })
+
+  it('executes the workflow from the last-good record when the DB lookup fails', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(dbDown))
+    vi.mocked(executeWorkflow).mockResolvedValue({
+      executionId: 'x', response: { ok: true }, status: 200, traceId: 't', idempotentReplay: false,
+    } as Awaited<ReturnType<typeof executeWorkflow>>)
+    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': lastGood })
+    const res = await postWith(kv)
+    expect(res.status).toBe(200)
+    expect(executeWorkflow).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(executeWorkflow).mock.calls[0][0]).toMatchObject({ workflowId: 'wf-1', source: 'tripoint' })
+  })
+
+  it('still answers 503 when the DB lookup fails and there is no last-good record', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(dbDown))
+    const { kv } = recordingKv()
+    const res = await postWith(kv)
+    expect(res.status).toBe(503)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('does not serve a last-good record for a genuinely missing endpoint (PGRST116 stays 404)', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabaseReturning({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    )
+    const { kv } = recordingKv({ 'ep-lastgood:tripoint:/bidding': lastGood })
+    const res = await postWith(kv)
+    expect(res.status).toBe(404)
+    expect(executeWorkflow).not.toHaveBeenCalled()
+  })
+
+  it('writes the last-good copy without a TTL on every successful DB lookup, beside the 60s hot copy', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabaseReturning(activeEndpoint))
+    vi.mocked(executeWorkflow).mockResolvedValue({
+      executionId: 'x', response: { ok: true }, status: 200, traceId: 't', idempotentReplay: false,
+    } as Awaited<ReturnType<typeof executeWorkflow>>)
+    const { kv, puts } = recordingKv()
+    const res = await postWith(kv)
+    expect(res.status).toBe(200)
+    const hot = puts.find((p) => p.key === 'ep:tripoint:/bidding')
+    const durable = puts.find((p) => p.key === 'ep-lastgood:tripoint:/bidding')
+    expect(hot?.opts?.expirationTtl).toBe(60)
+    expect(durable).toBeDefined()
+    expect(durable?.opts?.expirationTtl).toBeUndefined()
+    expect(JSON.parse(durable!.value)).toMatchObject({ workflow_id: 'wf-1', source_name: 'tripoint', is_active: true })
+  })
+})
