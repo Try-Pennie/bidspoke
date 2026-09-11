@@ -81,6 +81,15 @@ ORDER BY run_hour_utc;
 -- ---------------------------------------------------------------------------
 -- 3. The limit that actually binds: can a run still finish the busiest hour?
 -- ---------------------------------------------------------------------------
+-- THIS IS NOW THE SECOND READING OF THIS MEASUREMENT (#1294). The archive
+-- health report computes the same figures live, in
+-- apps/worker/src/archive/headroom.ts, from the same population: single-hour
+-- runs of the last 7 days holding more than 200 executions. It reports the
+-- busiest hour's executions, the p95 ms per execution, the cost, the wall
+-- budget and the ratio, in those units, so if the two disagree the inputs say
+-- where rather than leaving two numbers and no way to place the difference
+-- (L58). Keep the window, the floor and the single-hour filter below in step
+-- with that file: they are what make the two about the same thing.
 -- Headroom is stated as a RATIO rather than spare seconds, so it keeps its
 -- meaning when either side moves. Below about 1.25 the guard in
 -- execution-archive.test.ts fails, deliberately, while there is still room to

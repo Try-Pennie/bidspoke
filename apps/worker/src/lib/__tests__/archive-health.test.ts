@@ -39,6 +39,11 @@ function supabaseDouble(tables: Record<string, TableData>, rpcError?: { message:
         eq() { return chain },
         gte() { return chain },
         lt() { return chain },
+        // PostgREST spells "column IS NOT NULL" as .not(col, 'is', null), and
+        // the headroom read uses it (#1294). A double missing it does not answer
+        // wrongly, it THROWS, and the section's own catch turns that into an
+        // error nobody wrote, which reads as the reading having failed (L52).
+        not() { return chain },
         order() { return chain },
         limit() { return chain },
         maybeSingle() {
@@ -100,6 +105,79 @@ describe('archiveHealth', () => {
     // Named rather than counted, because a count passes when one job is
     // silently swapped for another (L63).
     expect(health.jobs.rows.map((r) => r.job)).toEqual([...ARCHIVE_JOBS])
+  })
+
+  it('reports the headroom before the busiest hour no longer fits (#1294)', async () => {
+    // Built from run records the way production's are, so what is exercised is
+    // the reading, not a hand-made HeadroomReading.
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      job: 'execution-archive',
+      started_at: new Date(NOW.getTime() - (i + 1) * 3_600_000).toISOString(),
+      finished_at: new Date(NOW.getTime() - (i + 1) * 3_600_000 + 40_000).toISOString(),
+      outcome: 'caught-up',
+      detail: null,
+      summary: { hoursArchived: 1, executionsArchived: 1_000 },
+    }))
+    const db = supabaseDouble({ ...HEALTHY, job_runs: { rows } })
+
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    expect('error' in health.headroom).toBe(false)
+    if ('error' in health.headroom) return
+    expect(health.headroom.kind).toBe('measured')
+  })
+
+  it('says it cannot measure the headroom rather than reporting a flattering one', async () => {
+    // No usable runs must not read as infinite room. A check with no data
+    // reporting the healthiest possible answer is the shape of L98.
+    const db = supabaseDouble({ ...HEALTHY, job_runs: { rows: [] } })
+
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    if ('error' in health.headroom) throw new Error('headroom failed to read')
+    expect(health.headroom.kind).toBe('too-few-runs')
+  })
+
+  it('reports the headroom read failing as an error, never as room', async () => {
+    // The section catches, so a failed read becomes an error object. What must
+    // not happen is it becoming a cheerful reading: an error state and an empty
+    // state are different screens (L10), and here the empty one reads as the
+    // archive having all the room in the world.
+    const db = supabaseDouble({ ...HEALTHY, job_runs: { rows: [], error: { message: 'statement timeout' } } })
+
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    expect('error' in health.headroom).toBe(true)
+    if (!('error' in health.headroom)) return
+    expect(health.headroom.error).toContain('statement timeout')
+  })
+
+  it('skips a run record it cannot read rather than failing the whole reading', async () => {
+    // Run records written before the summary carried these fields, or by a run
+    // that was killed mid-stamp, are real and will be in this window. One of
+    // them must not take the headroom section down with it.
+    const usable = Array.from({ length: 6 }, (_, i) => ({
+      job: 'execution-archive',
+      started_at: new Date(NOW.getTime() - (i + 1) * 3_600_000).toISOString(),
+      finished_at: new Date(NOW.getTime() - (i + 1) * 3_600_000 + 40_000).toISOString(),
+      outcome: 'caught-up',
+      detail: null,
+      summary: { hoursArchived: 1, executionsArchived: 1_000 },
+    }))
+    const rows = [
+      { job: 'execution-archive', started_at: null, finished_at: null, outcome: null, detail: null, summary: null },
+      { job: 'execution-archive', started_at: 'not a date', finished_at: 'nor this', outcome: null, detail: null, summary: { hoursArchived: 1, executionsArchived: 'many' } },
+      ...usable,
+    ]
+    const db = supabaseDouble({ ...HEALTHY, job_runs: { rows } })
+
+    const health = await archiveHealth(envWith(null), db.client, { now: () => NOW })
+
+    if ('error' in health.headroom) throw new Error('headroom failed to read')
+    expect(health.headroom.kind).toBe('measured')
+    if (health.headroom.kind !== 'measured') return
+    // The six usable ones, and neither of the two unreadable rows counted.
+    expect(health.headroom.runsMeasured).toBe(6)
   })
 
   it('marks a run with a start and no ending as looking killed', async () => {
