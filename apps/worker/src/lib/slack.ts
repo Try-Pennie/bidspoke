@@ -1149,7 +1149,7 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* read this run's own outcome in Cloudflare Workers Logs for bidspoke-worker, filtered to \`$workers.eventType = scheduled\`. Each cron invocation there carries \`outcome\`, \`wallTimeMs\` and \`cpuTimeMs\`, and the outcome is what says which remedy applies: a resource kill means the work needs bounding or splitting, while a plain \`canceled\` means the platform dropped an invocation that was inside every limit. The next scheduled run tries again on its own, and this one may have completed part of its work before it stopped.`,
+          text: `*How to fix:* read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used. That outcome is what says which remedy applies, and only it can: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here. The next scheduled run tries again on its own, and this one may have completed part of its work before it stopped.`,
         },
       },
     ]

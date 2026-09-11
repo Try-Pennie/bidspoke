@@ -74,10 +74,9 @@ describe('sendCronHeartbeatAlert', () => {
     const text = textOf(post)
     expect(text).toContain('~90 minutes ago')
     expect(text).toContain(job.dependents)
-    // The outcome lives per invocation in Workers Logs, which is the only place
-    // that distinguishes the four ways a run can end.
-    expect(text).toContain('Workers Logs')
-    expect(text).toContain('eventType')
+    // The outcome, recorded per invocation, is the fact that decides the remedy.
+    expect(text).toContain("this run's own outcome")
+    expect(text).toContain('Cloudflare records for each invocation')
     expect(text).toContain('next scheduled run tries again on its own')
     // The remedy for a dark trigger would send the reader to the wrong place.
     expect(text).not.toContain('is dark')
@@ -97,6 +96,18 @@ describe('sendCronHeartbeatAlert', () => {
     const text = textOf(lastPost())
     for (const guess of ['exceededMemory', 'exceededCpu', 'out of memory', 'most likely']) {
       expect(text).not.toContain(guess)
+    }
+  })
+
+  // A remedy that prescribes a click path is only as good as the console it was
+  // written against, and nothing re-checks it when that console changes. Name
+  // the fact to find and let the reader find it (Dan, 2026-09-11).
+  it('names the fact to look for, not a route through the Cloudflare console', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+
+    const text = textOf(lastPost())
+    for (const route of ['Workers Logs', 'Settings >', 'Metrics', 'eventType', '$workers']) {
+      expect(text).not.toContain(route)
     }
   })
 
@@ -120,7 +131,7 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).toContain('has not run in ~3h')
     expect(text).toContain('wrangler.toml')
     expect(text).not.toContain('never finished')
-    expect(text).not.toContain('Workers Logs')
+    expect(text).not.toContain("this run's own outcome")
   })
 
   it('says a never-ran job has not run since it was first observed', async () => {
