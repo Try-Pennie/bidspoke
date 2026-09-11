@@ -31,6 +31,7 @@ import { ARCHIVE_IDENTITY_REMEDY } from '../archive-identity-check'
 import { ARCHIVE_INDEX_REMEDY } from '../archive-index-check'
 import { ARCHIVE_SETTINGS_REMEDY } from '../archive-settings-check'
 import { ARCHIVE_STANDSTILL_REMEDY } from '../archive-standstill'
+import { ARCHIVE_READ_REMEDY } from '../archive-read-health'
 import { LOGPUSH_CHECK_REMEDY } from '../logpush-check'
 import { RETENTION_CHECK_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
@@ -52,6 +53,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive identities', ARCHIVE_IDENTITY_REMEDY],
   ['archive settings', ARCHIVE_SETTINGS_REMEDY],
   ['archive standstill', ARCHIVE_STANDSTILL_REMEDY],
+  ['archived reads failing', ARCHIVE_READ_REMEDY],
   ['logpush destinations', LOGPUSH_CHECK_REMEDY],
   ['execution retention', RETENTION_CHECK_REMEDY],
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],

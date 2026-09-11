@@ -64,7 +64,7 @@ describe('readArchivedChildren', () => {
     ])
 
     const result = await readArchivedChildren(
-      env, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
+      env, supabase, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
     )
 
     expect(result.kind).toBe('ok')
@@ -83,7 +83,7 @@ describe('readArchivedChildren', () => {
     const { deps } = makeDeps([['child-1', { nested: true }, 'completed', null, 'replay']])
 
     const result = await readArchivedChildren(
-      env, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
+      env, supabase, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
     )
 
     expect(result.kind).toBe('ok')
@@ -96,7 +96,7 @@ describe('readArchivedChildren', () => {
     const { deps, statements } = makeDeps([])
 
     await readArchivedChildren(
-      env, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
+      env, supabase, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
     )
 
     // Derived from the shared retention constant, not written as a literal, so
@@ -112,7 +112,7 @@ describe('readArchivedChildren', () => {
   it('scopes to the caller’s organization in the query itself', async () => {
     const { deps, statements } = makeDeps([])
     await readArchivedChildren(
-      env, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
+      env, supabase, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
     )
     expect(statements[0].sql).toContain('organization_id = ?')
     expect(statements[0].bindings).toContain(ORG)
@@ -126,7 +126,7 @@ describe('readArchivedChildren', () => {
     }
 
     const result = await readArchivedChildren(
-      env, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
+      env, supabase, { parentExecutionId: PARENT_ID, parentDay: PARENT_DAY, orgId: ORG }, deps
     )
 
     // An empty list would say "nothing was ever re-run from this", which is a

@@ -401,7 +401,7 @@ executions.get('/:id', async (c) => {
     // list either, because an empty list says "nothing was ever re-run from
     // this", which is a claim this read never established (L10, L11). It says
     // it could not tell, and the page says so too.
-    const archivedChildren = await readArchivedChildren(c.env, {
+    const archivedChildren = await readArchivedChildren(c.env, supabase, {
       parentExecutionId: id,
       parentDay: archived.archiveDay,
       orgId,
