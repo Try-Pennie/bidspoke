@@ -12,7 +12,9 @@ vi.mock('../sightings-export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../sightings-export')>()
   return {
     ...actual,
-    readSnowflakeConfig: () => ({}),
+    // Carries a schema because reconcileColumns needs one to locate the table, and the real
+    // reader returns the configured value here.
+    readSnowflakeConfig: () => ({ schema: 'PUBLIC' }),
     exportTable: mocks.exportTable,
     purgeOldExported: mocks.purgeOldExported,
   }
@@ -42,9 +44,11 @@ describe('reconcileColumns', () => {
     data: names.map((n) => [n]),
   })
 
+  const CONFIG = { schema: 'PUBLIC' } as never
+
   const run = async (existing: string[]) => {
     const query = vi.fn().mockResolvedValue(listing(existing))
-    await reconcileColumns({} as never, 'achieve_evaluations', COLS, query)
+    await reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
     return query.mock.calls.map((c) => String(c[1]))
   }
 
@@ -58,6 +62,24 @@ describe('reconcileColumns', () => {
 
   // Snowflake upper cases unquoted identifiers, so a case sensitive comparison would report
   // every existing column as missing and try to add all of them.
+  // information_schema.columns holds every schema in the database, so without this filter a
+  // same named table in another schema would answer for this one: its columns would read as
+  // present and the ones actually missing would never be added. The failure would surface
+  // as the write naming an unknown column, which is the thing this exists to prevent.
+  it('asks only about the configured schema', async () => {
+    const statements = await run(['ID', 'ACHIEVE_REQUEST_ID', 'CF_RAY'])
+    const listingStatement = statements.find((st) => st.includes('information_schema.columns'))
+    expect(listingStatement).toContain("table_schema = 'PUBLIC'")
+  })
+
+  it('refuses when no schema is configured, rather than raising a type error', async () => {
+    const query = vi.fn()
+    await expect(
+      reconcileColumns({} as never, 'achieve_evaluations', COLS, query)
+    ).rejects.toThrow(/no Snowflake schema configured/)
+    expect(query).not.toHaveBeenCalled()
+  })
+
   it('matches existing columns regardless of case', async () => {
     const statements = await run(['id', 'achieve_request_id', 'cf_ray'])
     expect(statements.filter((st) => st.startsWith('ALTER TABLE'))).toHaveLength(0)
@@ -69,7 +91,7 @@ describe('reconcileColumns', () => {
   it('refuses rather than assuming an unreadable table needs every column', async () => {
     const query = vi.fn().mockResolvedValue(listing([]))
     await expect(
-      reconcileColumns({} as never, 'achieve_evaluations', COLS, query)
+      reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
     ).rejects.toThrow(/achieve_evaluations/)
     expect(query.mock.calls.filter((c) => String(c[1]).startsWith('ALTER TABLE'))).toHaveLength(0)
   })
@@ -82,7 +104,7 @@ describe('reconcileColumns', () => {
       .mockResolvedValueOnce(listing(['ID']))
       .mockRejectedValueOnce(new Error('insufficient privileges'))
     await expect(
-      reconcileColumns({} as never, 'achieve_evaluations', COLS, query)
+      reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
     ).rejects.toThrow(/insufficient privileges/)
   })
 })

@@ -93,9 +93,24 @@ export async function reconcileColumns(
   // Injected so the tests drive the real logic rather than a reimplementation of it.
   query: (config: SnowflakeConfig, statement: string) => Promise<SnowflakeStatementResponse> = executeStatement
 ): Promise<string[]> {
+  // readSnowflakeConfig passes its env through without validating, so an unset
+  // SNOWFLAKE_SCHEMA arrives here as undefined. Refusing by name beats the TypeError that
+  // .toUpperCase() would otherwise raise, which would surface as a nightly export failure
+  // naming nothing (L11).
+  if (!config.schema) {
+    throw new Error('reconcileColumns: no Snowflake schema configured, so the table could not be located')
+  }
+
+  // Filtered by schema as well as table name: information_schema.columns spans every schema
+  // in the database, so a same named table elsewhere would answer for this one. Its columns
+  // would read as present, the genuinely missing ones would never be added, and the failure
+  // would surface later as the write naming a column that does not exist, which is exactly
+  // what this exists to prevent.
   const listing = await query(
     config,
-    `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapeSqlLiteral(table.toUpperCase())}'`
+    'SELECT column_name FROM information_schema.columns' +
+      ` WHERE table_schema = '${escapeSqlLiteral(config.schema.toUpperCase())}'` +
+      ` AND table_name = '${escapeSqlLiteral(table.toUpperCase())}'`
   )
 
   const nameAt = (listing.resultSetMetaData?.rowType ?? []).findIndex(
