@@ -26,6 +26,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { utcDayFromUuidV7 } from '@bidspoke/uuidv7'
 import { RETENTION_DAYS } from '../archive/candidate-days'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
+import { recordArchiveReadOutcome } from './archive-read-health'
 import { executeStatement, type SnowflakeStatementResponse, type SnowflakeConfig } from './snowflake'
 import { decodeBundle } from '../archive/bundle'
 import { writeAuditLog } from './audit'
@@ -69,6 +70,84 @@ export interface ArchiveReadDeps {
   /** Injected so the deadline case is instant rather than a real wait (L524). */
   sleep?: (ms: number) => Promise<void>
   writeAudit?: typeof writeAuditLog
+  /** Injected so a test can see the outcome without KV or Slack (#1272). */
+  recordOutcome?: typeof recordArchiveReadOutcome
+}
+
+/**
+ * One archive query's result, said in a shape the caller cannot ignore.
+ *
+ * A discriminated value rather than a thrown error, so a caller's `catch` keeps
+ * covering only what it was written for: on the read path a decode failure and
+ * an unreachable warehouse are different conditions with different answers, and
+ * folding them into one try would report a corrupt row as an outage.
+ */
+type ArchiveQueryResult =
+  | { ok: true; response: SnowflakeStatementResponse }
+  | { ok: false; detail: string }
+
+/**
+ * THE ONE PLACE AN ARCHIVE QUERY IS MADE, and therefore the one place that
+ * knows whether the archive answered (#1272).
+ *
+ * Every read used to build its own deadline race, its own catch and its own
+ * `unavailable`, three times over. Counting the failures would then have been a
+ * rule each call site had to remember, which is not a rule at all (L621), and
+ * the fourth read function written next year would have been exempt from it
+ * while looking perfectly correct.
+ *
+ * Recording is best effort on purpose: this sits between a person and thirteen
+ * months of history, so a KV or Slack problem must never turn a read that
+ * worked into one that did not.
+ */
+async function runArchiveQuery(
+  env: Env,
+  supabase: SupabaseClient,
+  statement: string,
+  bindings: unknown[],
+  deadlineMs: number,
+  deps: ArchiveReadDeps,
+): Promise<ArchiveQueryResult> {
+  const execute = deps.execute ?? executeStatement
+  const sleep = deps.sleep ?? defaultSleep
+  const record = deps.recordOutcome ?? recordArchiveReadOutcome
+  const kv = (env as unknown as { IDEMPOTENCY?: KVNamespace }).IDEMPOTENCY
+
+  const report = async (outcome: Parameters<typeof recordArchiveReadOutcome>[2]) => {
+    try {
+      await record(supabase, kv, outcome)
+    } catch (err) {
+      console.error('[archive-read] could not record the read outcome:', formatErr(err))
+    }
+  }
+
+  let result: ArchiveQueryResult
+  try {
+    const raced = await Promise.race([
+      execute(archiveConfig(env, 'reader'), statement, bindings).then(
+        (r) => ({ timedOut: false as const, response: r }),
+      ),
+      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
+    ])
+    result = raced.timedOut
+      ? {
+          ok: false,
+          // Seconds, not milliseconds: this sentence is rendered to an operator
+          // on the execution page, not to a log reader.
+          detail: `the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`,
+        }
+      : { ok: true, response: raced.response }
+  } catch (err) {
+    result = { ok: false, detail: formatErr(err) }
+  }
+
+  await report(result.ok ? { kind: 'ok' } : { kind: 'unavailable', detail: result.detail })
+  return result
+}
+
+/** The answer every read gives when the archive could not be reached. */
+function unavailable(detail: string) {
+  return { kind: 'unavailable' as const, waitingFor: ARCHIVE_READ_WAITING_FOR, detail }
 }
 
 /** The columns this read selects, in the order the row returns them. */
@@ -129,8 +208,6 @@ export async function readArchivedExecution(
   opts: { executionId: string; orgId: string; readBy: string; deadlineMs?: number },
   deps: ArchiveReadDeps = {},
 ): Promise<ArchivedExecutionRead> {
-  const execute = deps.execute ?? executeStatement
-  const sleep = deps.sleep ?? defaultSleep
   const writeAudit = deps.writeAudit ?? writeAuditLog
   const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
 
@@ -150,33 +227,10 @@ export async function readArchivedExecution(
         bindings: [opts.executionId],
       }
 
-  let response: SnowflakeStatementResponse
-  try {
-    const raced = await Promise.race([
-      execute(archiveConfig(env, 'reader'), statement, bindings).then(
-        (r) => ({ timedOut: false as const, response: r }),
-      ),
-      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
-    ])
-    if (raced.timedOut) {
-      return {
-        kind: 'unavailable',
-        waitingFor: ARCHIVE_READ_WAITING_FOR,
-        // Seconds, not milliseconds: this sentence is rendered to an operator
-        // on the execution page, not to a log reader.
-        detail: `the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`,
-      }
-    }
-    response = raced.response
-  } catch (err) {
-    return {
-      kind: 'unavailable',
-      waitingFor: ARCHIVE_READ_WAITING_FOR,
-      detail: formatErr(err),
-    }
-  }
+  const queried = await runArchiveQuery(env, supabase, statement, bindings, deadlineMs, deps)
+  if (!queried.ok) return unavailable(queried.detail)
 
-  const row = response.data?.[0]
+  const row = queried.response.data?.[0]
   if (!row) return { kind: 'not-found' }
 
   const [organizationId, archiveDay, incomplete, wire] = row
@@ -186,11 +240,7 @@ export async function readArchivedExecution(
   if (String(organizationId) !== opts.orgId) return { kind: 'not-found' }
 
   if (typeof wire !== 'string' || wire.length === 0) {
-    return {
-      kind: 'unavailable',
-      waitingFor: ARCHIVE_READ_WAITING_FOR,
-      detail: 'the archived row carried no bundle',
-    }
+    return unavailable('the archived row carried no bundle')
   }
 
   let bundle
@@ -199,11 +249,7 @@ export async function readArchivedExecution(
   } catch (err) {
     // A row that is present but cannot be decoded is not an execution that
     // never ran, so it must not answer as one.
-    return {
-      kind: 'unavailable',
-      waitingFor: ARCHIVE_READ_WAITING_FOR,
-      detail: `the archived bundle could not be read: ${formatErr(err)}`,
-    }
+    return unavailable(`the archived bundle could not be read: ${formatErr(err)}`)
   }
 
   const day_ = String(archiveDay)
@@ -252,14 +298,15 @@ export async function readArchivedExecution(
  */
 export async function readArchivedChildren(
   env: Env,
+  // Takes the client only so its read reaches the same outcome signal every
+  // other read does (#1272). Nothing here queries Postgres.
+  supabase: SupabaseClient,
   opts: { parentExecutionId: string; parentDay: string; orgId: string; deadlineMs?: number },
   deps: ArchiveReadDeps = {},
 ): Promise<
   | { kind: 'ok'; children: Array<Record<string, unknown>> }
   | { kind: 'unavailable'; waitingFor: string; detail: string }
 > {
-  const execute = deps.execute ?? executeStatement
-  const sleep = deps.sleep ?? defaultSleep
   const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
 
   const at = Date.parse(`${opts.parentDay}T00:00:00.000Z`)
@@ -271,30 +318,17 @@ export async function readArchivedChildren(
     `WHERE parent_execution_id = ? AND archive_day BETWEEN ?::DATE AND ?::DATE ` +
     `AND organization_id = ? ORDER BY started_at_utc ASC`
 
-  let response: SnowflakeStatementResponse
-  try {
-    const raced = await Promise.race([
-      execute(archiveConfig(env, 'reader'), statement, [
-        opts.parentExecutionId,
-        opts.parentDay,
-        lastDay,
-        opts.orgId,
-      ]).then((r) => ({ timedOut: false as const, response: r })),
-      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
-    ])
-    if (raced.timedOut) {
-      return {
-        kind: 'unavailable',
-        waitingFor: ARCHIVE_READ_WAITING_FOR,
-        detail: `the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`,
-      }
-    }
-    response = raced.response
-  } catch (err) {
-    return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
-  }
+  const queried = await runArchiveQuery(
+    env,
+    supabase,
+    statement,
+    [opts.parentExecutionId, opts.parentDay, lastDay, opts.orgId],
+    deadlineMs,
+    deps,
+  )
+  if (!queried.ok) return unavailable(queried.detail)
 
-  const children = (response.data ?? []).map((row) => ({
+  const children = (queried.response.data ?? []).map((row) => ({
     id: textCell(row[0]) ?? '',
     started_at: textCell(row[1]),
     status: textCell(row[2]),
@@ -475,8 +509,6 @@ export async function searchArchive(
   opts: { traceId?: string; ssn?: string; orgId: string; readBy: string; deadlineMs?: number },
   deps: ArchiveReadDeps = {},
 ): Promise<ArchiveSearchResult> {
-  const execute = deps.execute ?? executeStatement
-  const sleep = deps.sleep ?? defaultSleep
   const writeAudit = deps.writeAudit ?? writeAuditLog
   const deadlineMs = opts.deadlineMs ?? DEFAULT_ARCHIVE_READ_DEADLINE_MS
 
@@ -491,15 +523,12 @@ export async function searchArchive(
     return { kind: 'refused', reason: 'search by a trace id or an SSN, not both' }
   }
 
+  // Throws so the two statements below read as a sequence rather than a ladder
+  // of checks, and the one outer catch turns it back into the caller's answer.
   const run = async (statement: string, bindings: unknown[]) => {
-    const raced = await Promise.race([
-      execute(archiveConfig(env, 'reader'), statement, bindings).then(
-        (r) => ({ timedOut: false as const, response: r }),
-      ),
-      sleep(deadlineMs).then(() => ({ timedOut: true as const })),
-    ])
-    if (raced.timedOut) throw new Error(`the archive did not answer within ${Math.round(deadlineMs / 1000)} seconds`)
-    return raced.response
+    const queried = await runArchiveQuery(env, supabase, statement, bindings, deadlineMs, deps)
+    if (!queried.ok) throw new Error(queried.detail)
+    return queried.response
   }
 
   try {
@@ -582,6 +611,6 @@ export async function searchArchive(
         : { complete: true, completeFrom: null, note: null },
     }
   } catch (err) {
-    return { kind: 'unavailable', waitingFor: ARCHIVE_READ_WAITING_FOR, detail: formatErr(err) }
+    return unavailable(formatErr(err))
   }
 }
