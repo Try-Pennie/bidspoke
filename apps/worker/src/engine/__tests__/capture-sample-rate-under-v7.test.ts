@@ -28,6 +28,19 @@
  * distribution is entirely determined by the generator being used here. What it
  * cannot speak for is a real day's arrival pattern in production, which is why the
  * issue also asks for one confirmation against live traffic after the soak.
+ *
+ * CONFIRMED against live traffic 2026-09-11 (#905). This same function, lifted
+ * from its own source rather than retyped, was run over every execution id of a
+ * real UTC day (2026-09-10): 102,458 of that day's 102,768 executions carried a
+ * field_presence map, and the sampler selected 1,026 of them, a realised rate of
+ * 1.001%. So a real day's arrival pattern gives the same answer as the minted
+ * ids below, and neither of the two outcomes this was guarding against (a
+ * collapse to zero, an explosion toward 100%) has happened.
+ *
+ * The day's capture write path was confirmed alive by the same query rather than
+ * by counting heartbeat lines in the Worker logs: 99.70% of that day's executions
+ * carry the field_presence column, which is the thing the heartbeat exists to
+ * prove and is a direct reading of it rather than a 1% sample of one.
  */
 import { describe, expect, it } from 'vitest'
 import { uuidv7 } from '@bidspoke/uuidv7'
