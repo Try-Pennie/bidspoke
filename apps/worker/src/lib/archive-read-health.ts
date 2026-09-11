@@ -120,7 +120,7 @@ export async function recordArchiveReadOutcome(
     return true
   }
 
-  const streak = Number((await kv.get(streakKey)) ?? '0') + 1
+  const streak = countFailure(await kv.get(streakKey))
   await kv.put(streakKey, String(streak), { expirationTtl: ARCHIVE_READ_STREAK_TTL_SECONDS })
 
   if (streak < ARCHIVE_READ_FAILURE_THRESHOLD) {
@@ -138,6 +138,24 @@ export async function recordArchiveReadOutcome(
 }
 
 /**
+ * This failure's position in the streak, from whatever the last one stored.
+ *
+ * A value that cannot be read is treated as already AT the threshold, so the
+ * failure speaks. It is written as a decision rather than left to arithmetic:
+ * the first version compared `Number(stored) + 1` directly, and a corrupt entry
+ * gave NaN, which is less than nothing, so it alerted by accident and then wrote
+ * "NaN" back and could never be read again (L50).
+ *
+ * Absent is different from unreadable and is the ordinary case: no entry means
+ * this is the first failure.
+ */
+function countFailure(stored: string | null): number {
+  if (stored === null) return 1
+  const n = Number(stored)
+  return Number.isInteger(n) && n >= 0 ? n + 1 : ARCHIVE_READ_FAILURE_THRESHOLD
+}
+
+/**
  * Deliver through the shared archive alerter, passing it NO KV on purpose.
  *
  * `notifyExportFailure` holds a first failure and pages on the second, which is
@@ -147,6 +165,13 @@ export async function recordArchiveReadOutcome(
  * unpredictably on top of the holding this module has already done. Handing it
  * no KV turns that off, and it is written here rather than left as an omission
  * so it cannot be "fixed" back in by somebody passing the binding through.
+ *
+ * WHAT THE COOLDOWN ACTUALLY MEASURES. It starts on the ATTEMPT, not on
+ * confirmed delivery, because `notifyExportFailure` returns nothing and cannot
+ * say whether Slack took the message. So a Slack outage at the same moment
+ * costs half an hour of silence about the archive. Every archive check that
+ * borrows this alerter has the same property; naming it here rather than
+ * leaving it to be discovered during an incident.
  */
 async function post(
   notify: typeof notifyExportFailure,

@@ -231,3 +231,25 @@ describe('every archive read feeds the outcome signal', () => {
     expect(recorded).toEqual([{ kind: 'ok' }])
   })
 })
+
+describe('a streak counter that cannot be read', () => {
+  /**
+   * L50: a value parsed from storage must not feed a comparison directly. The
+   * first version did `Number(stored) + 1` and compared that, so a corrupt entry
+   * gave NaN, `NaN < 2` is false, and it alerted by accident rather than by
+   * decision, then wrote "NaN" back and stayed unreadable for good.
+   */
+  it('speaks rather than going quiet, and repairs the counter', async () => {
+    const kv = makeKv()
+    kv.store.set('archive-read-failures:execution-archive-reads', 'not a number')
+    const { posted, notify } = makeNotify()
+
+    const alerted = await recordArchiveReadOutcome(supabase, kv, fail(), { notify })
+
+    expect(alerted).toBe(true)
+    expect(posted).toHaveLength(1)
+    // Repaired, so the next read counts from a number rather than from wreckage.
+    const stored = kv.store.get('archive-read-failures:execution-archive-reads')
+    expect(Number.isFinite(Number(stored))).toBe(true)
+  })
+})
