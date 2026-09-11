@@ -25,6 +25,13 @@ export interface AchieveEvaluationInsert {
   offers: unknown
   is_test: boolean
   is_sandbox: boolean
+  /** Achieve's own request id from the response headers, null when the call never
+   *  happened or the header was absent. Their decline responses carry no detail, so this
+   *  is what lets their support find a specific call. */
+  achieve_request_id: string | null
+  /** Cloudflare's ray id from the proxy in front of Achieve's API, for edge questions
+   *  such as the firewall block in #1265. */
+  cf_ray: string | null
 }
 
 interface AchieveStepOutput {
@@ -37,6 +44,8 @@ interface AchieveStepOutput {
   request?: Record<string, unknown>
   response?: unknown
   offers?: unknown
+  achieve_request_id?: string | null
+  cf_ray?: string | null
 }
 
 function isAchieveOutput(output: unknown): output is AchieveStepOutput {
@@ -106,6 +115,8 @@ export function extractAchieveEvaluations(
       // old sandbox row than real production data, and a false negative here silently poisons
       // the analysis with offers made to Achieve's seeded fake identity.
       is_sandbox: output.sandbox !== false,
+      achieve_request_id: output.achieve_request_id ?? null,
+      cf_ray: output.cf_ray ?? null,
     })
   }
   return rows

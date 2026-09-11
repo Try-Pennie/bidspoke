@@ -202,6 +202,8 @@ The node builds the Achieve request from the standard lead payload shape:
 | `tracking.ip_address`, `tracking.user_agent` | `sessionInformation` |
 | `tracking.utm_adgroup` | `traffic_source` on the payload, omitted when absent |
 
+Every call records the two identifiers Achieve's edge returns, in `achieve_evaluations.achieve_request_id` (their `x-request-id`) and `achieve_evaluations.cf_ray` (Cloudflare's ray id from the proxy in front of their API). Both are stamped on every response including failures, so they are present exactly when something needs chasing. Achieve's decline responses carry no reason beyond one sentence, so quoting their own request id is the way to have their support find a specific call. Both columns are null on rows written before 2026-09-11, and on any path that never made a call.
+
 The node sends no `trusted_form_cert`. #1081 was closed as not planned on 2026-09-04: the TrustedForm script is not going on the Pennie form, so no certificate can ever be minted for one of these leads. Achieve confirmed on 2026-09-10 that the field is a nice to have rather than a requirement, provided consent is captured and attested, which `consents.tcpa` and `consents.fcra` do.
 
 Achieve requires email, phone, first and last name, mailing state, and either `unsecured_debt` or `loan_amount`. When any of these are missing the node skips the call and records which fields were absent.

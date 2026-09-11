@@ -46,6 +46,34 @@ const achieveOutput = {
   offers: [{ provider: 'fdr', amount: 32787 }, { provider: 'fdr', amount: 30000 }],
 }
 
+describe('extractAchieveEvaluations response identifiers', () => {
+  // Achieve's decline responses carry no detail beyond one sentence, so their own request
+  // id is what lets support find a call. It is worth nothing unless it reaches the row.
+  it('carries both identifiers from the step output onto the row', () => {
+    const queue = [
+      makeEntry({
+        output: {
+          ...achieveOutput,
+          achieve_request_id: 'fb455718-1770-40fd-ac81-67df5c5b49b1',
+          cf_ray: 'a397a44589f60c9b-EWR',
+        },
+      }),
+    ]
+    const [row] = extractAchieveEvaluations(queue, meta)
+    expect(row.achieve_request_id).toBe('fb455718-1770-40fd-ac81-67df5c5b49b1')
+    expect(row.cf_ray).toBe('a397a44589f60c9b-EWR')
+  })
+
+  // Rows written before this shipped, and any path that never made a call, carry neither
+  // key. Null keeps "nothing was captured" distinguishable from a value, where an absent
+  // key would leave the column silently unset.
+  it('writes null for an output that carries neither identifier', () => {
+    const [row] = extractAchieveEvaluations([makeEntry({ output: achieveOutput })], meta)
+    expect(row.achieve_request_id).toBeNull()
+    expect(row.cf_ray).toBeNull()
+  })
+})
+
 describe('extractAchieveEvaluations', () => {
   it('returns empty array when no step carries the marker', () => {
     const queue = [

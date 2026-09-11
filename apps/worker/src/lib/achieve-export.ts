@@ -16,7 +16,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { executeStatement, type SnowflakeConfig } from './snowflake'
-import { exportTable, purgeOldExported, purgeBatched, readSnowflakeConfig, type ColSpec } from './sightings-export'
+import {
+  exportTable,
+  purgeOldExported,
+  purgeBatched,
+  readSnowflakeConfig,
+  reconcileColumns,
+  type ColSpec,
+} from './sightings-export'
 import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
 import { formatErr } from './format-error'
 
@@ -43,6 +50,11 @@ export const ACHIEVE_COLS: ColSpec[] = [
   { name: 'response_body', type: 'variant' },
   { name: 'offers', type: 'variant' },
   { name: 'trades', type: 'variant' },
+  // Achieve's own request id and the Cloudflare ray from the proxy in front of them, both
+  // stamped on every response. Their decline responses carry no detail beyond one sentence,
+  // so the request id is what lets support find a specific call (#1310 follow-up).
+  { name: 'achieve_request_id', type: 'varchar' },
+  { name: 'cf_ray', type: 'varchar' },
 ]
 
 // Self-creating so there is no manual Snowflake step to forget. Idempotent;
@@ -64,7 +76,9 @@ CREATE TABLE IF NOT EXISTS achieve_evaluations (
   request_payload VARIANT,
   response_body VARIANT,
   offers VARIANT,
-  trades VARIANT
+  trades VARIANT,
+  achieve_request_id VARCHAR,
+  cf_ray VARCHAR
 )
 `.trim()
 
@@ -220,6 +234,13 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
 
   try {
     await executeStatement(config, CREATE_TABLE_SQL)
+    // CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so the DDL
+    // above cannot deliver a newly added column to the live table. Without this, adding one
+    // to ACHIEVE_COLS makes every subsequent run write a statement naming a column
+    // Snowflake does not have (#428). Runs before the export rather than after, so a column
+    // that cannot be added stops the run instead of failing it halfway through writing.
+    const added = await reconcileColumns(config, 'achieve_evaluations', ACHIEVE_COLS)
+    if (added.length > 0) console.log(`[achieve-export] added Snowflake columns: ${added.join(', ')}`)
     summary.evaluations_exported = await exportTable(
       supabase,
       config,

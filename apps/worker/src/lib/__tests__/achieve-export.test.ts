@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { matchTradesToEvaluations, ACHIEVE_COLS, runAchieveExport, purgeSandboxEvaluations } from '../achieve-export'
-import { buildMergeSql, formatValue } from '../sightings-export'
+import { buildMergeSql, formatValue, reconcileColumns } from '../sightings-export'
 
 const mocks = vi.hoisted(() => ({
   exportTable: vi.fn(),
@@ -12,7 +12,9 @@ vi.mock('../sightings-export', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../sightings-export')>()
   return {
     ...actual,
-    readSnowflakeConfig: () => ({}),
+    // Carries a schema because reconcileColumns needs one to locate the table, and the real
+    // reader returns the configured value here.
+    readSnowflakeConfig: () => ({ schema: 'PUBLIC' }),
     exportTable: mocks.exportTable,
     purgeOldExported: mocks.purgeOldExported,
   }
@@ -22,6 +24,101 @@ vi.mock('../snowflake', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../snowflake')>()
   return { ...actual, executeStatement: mocks.executeStatement }
 })
+
+// The Snowflake table is created with CREATE TABLE IF NOT EXISTS, which cannot evolve one
+// that already exists, so adding a column to a ColSpec used to mean the nightly export
+// started naming a column Snowflake did not have and failed every night until somebody ran
+// DDL by hand (#428). reconcileColumns closes that: it reads what the table actually has
+// and adds what is missing, before anything is written.
+describe('reconcileColumns', () => {
+  const COLS = [
+    { name: 'id', type: 'varchar' as const },
+    { name: 'achieve_request_id', type: 'varchar' as const },
+    { name: 'cf_ray', type: 'varchar' as const },
+  ]
+
+  // Read by column NAME rather than by position: the shape of an information_schema result
+  // is Snowflake's to change, and an index would silently read a different column (L237).
+  const listing = (names: string[]) => ({
+    resultSetMetaData: { rowType: [{ name: 'COLUMN_NAME', type: 'text' }] },
+    data: names.map((n) => [n]),
+  })
+
+  const CONFIG = { schema: 'PUBLIC' } as never
+
+  const run = async (existing: string[]) => {
+    const query = vi.fn().mockResolvedValue(listing(existing))
+    await reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
+    return query.mock.calls.map((c) => String(c[1]))
+  }
+
+  it('adds only the column the table is missing', async () => {
+    const statements = await run(['ID', 'ACHIEVE_REQUEST_ID'])
+    const alters = statements.filter((st) => st.startsWith('ALTER TABLE'))
+    expect(alters).toHaveLength(1)
+    expect(alters[0]).toContain('cf_ray')
+    expect(alters[0]).toContain('VARCHAR')
+  })
+
+  // Snowflake upper cases unquoted identifiers, so a case sensitive comparison would report
+  // every existing column as missing and try to add all of them.
+  // information_schema.columns holds every schema in the database, so without this filter a
+  // same named table in another schema would answer for this one: its columns would read as
+  // present and the ones actually missing would never be added. The failure would surface
+  // as the write naming an unknown column, which is the thing this exists to prevent.
+  it('asks only about the configured schema', async () => {
+    const statements = await run(['ID', 'ACHIEVE_REQUEST_ID', 'CF_RAY'])
+    const listingStatement = statements.find((st) => st.includes('information_schema.columns'))
+    expect(listingStatement).toContain("table_schema = 'PUBLIC'")
+  })
+
+  it('refuses when no schema is configured, rather than raising a type error', async () => {
+    const query = vi.fn()
+    await expect(
+      reconcileColumns({} as never, 'achieve_evaluations', COLS, query)
+    ).rejects.toThrow(/no Snowflake schema configured/)
+    expect(query).not.toHaveBeenCalled()
+  })
+
+  it('matches existing columns regardless of case', async () => {
+    const statements = await run(['id', 'achieve_request_id', 'cf_ray'])
+    expect(statements.filter((st) => st.startsWith('ALTER TABLE'))).toHaveLength(0)
+  })
+
+  // An empty listing means the table could not be read, not that it has no columns. Adding
+  // every column would fail anyway, and treating it as "nothing to do" would let the write
+  // that follows fail with a confusing error instead of this one (L98).
+  it('refuses rather than assuming an unreadable table needs every column', async () => {
+    const query = vi.fn().mockResolvedValue(listing([]))
+    await expect(
+      reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
+    ).rejects.toThrow(/achieve_evaluations/)
+    expect(query.mock.calls.filter((c) => String(c[1]).startsWith('ALTER TABLE'))).toHaveLength(0)
+  })
+
+  // The failure path: a refused ALTER must surface, not be swallowed into a run that then
+  // writes a statement naming a column that still does not exist.
+  it('propagates a refused ALTER', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce(listing(['ID']))
+      .mockRejectedValueOnce(new Error('insufficient privileges'))
+    await expect(
+      reconcileColumns(CONFIG, 'achieve_evaluations', COLS, query)
+    ).rejects.toThrow(/insufficient privileges/)
+  })
+})
+
+// The export now asks Snowflake which columns its table has before writing (reconcileColumns),
+// so the double has to answer that, not just swallow statements. Answering with the full
+// ACHIEVE_COLS listing makes the reconcile a no-op in suites that are about something else,
+// while the reconcileColumns suite above drives the interesting cases directly.
+function snowflakeAnswersFullListing() {
+  return {
+    resultSetMetaData: { rowType: [{ name: 'COLUMN_NAME', type: 'text' }] },
+    data: ACHIEVE_COLS.map((c) => [c.name.toUpperCase()]),
+  }
+}
 
 // Thenable query builder: awaiting it anywhere in the chain resolves to `result`.
 // `lt`/`lte`/`delete` are here because the real builder has them and the sandbox purge
@@ -70,7 +167,7 @@ describe('runAchieveExport trades-backfill failure', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
     mocks.purgeOldExported.mockReset().mockResolvedValue(0)
-    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+    mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
   it('defers trades-null rows from the export when the backfill throws', async () => {
@@ -118,6 +215,24 @@ describe('runAchieveExport trades-backfill failure', () => {
     const { b, calls } = makeRecordingBuilder()
     applyFilter(b)
     expect(calls).toContainEqual({ method: 'eq', args: ['is_sandbox', false] })
+  })
+
+  // Wiring, not logic: reconcileColumns is tested on its own above, and this asserts the
+  // export actually calls it, and calls it BEFORE writing. Deleting the call would leave
+  // every other test in this file green while restoring the failure it exists to prevent.
+  it('reconciles the Snowflake columns before it writes anything', async () => {
+    const supabase = {
+      from: vi.fn(() => makeThenableBuilder({ data: [], error: null })),
+    }
+    await runAchieveExport(supabase as never, {} as never)
+
+    const listingCall = mocks.executeStatement.mock.calls.findIndex((c) =>
+      String(c[1]).includes('information_schema.columns')
+    )
+    expect(listingCall).toBeGreaterThanOrEqual(0)
+    expect(mocks.executeStatement.mock.invocationCallOrder[listingCall]).toBeLessThan(
+      mocks.exportTable.mock.invocationCallOrder[0]
+    )
   })
 })
 
@@ -180,7 +295,7 @@ describe('runAchieveExport trades-backfill: zero-row update (#583)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
     mocks.purgeOldExported.mockReset().mockResolvedValue(0)
-    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+    mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
   // One evaluation, one matching trades step, and an UPDATE that reports
@@ -230,7 +345,7 @@ describe('runAchieveExport trades-backfill: partition-key bound (#589)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
     mocks.purgeOldExported.mockReset().mockResolvedValue(0)
-    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+    mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
   // Records the eq() filters applied to the achieve_evaluations UPDATE chain.
@@ -354,7 +469,7 @@ describe('runAchieveExport sandbox purge wiring (#644)', () => {
   beforeEach(() => {
     mocks.exportTable.mockReset().mockResolvedValue(0)
     mocks.purgeOldExported.mockReset().mockResolvedValue(0)
-    mocks.executeStatement.mockReset().mockResolvedValue(undefined)
+    mocks.executeStatement.mockReset().mockResolvedValue(snowflakeAnswersFullListing())
   })
 
   it('reports how many sandbox rows it reclaimed', async () => {
