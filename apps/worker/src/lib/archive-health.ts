@@ -20,6 +20,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { headroomFrom, type HeadroomReading, type HourRun } from '../archive/headroom'
+import { CRON_RUN_BUDGET } from '../archive/deadline'
 import { RETENTION_DAYS } from '../archive/candidate-days'
 import { daysHeldInPostgres } from '../archive/days-held'
 import { backlogFrom, coverageFor, type ArchiveBacklog, type DayCoverage } from '../archive/health'
@@ -69,6 +71,16 @@ export interface ArchiveHealth {
    * each is real disk that nothing else would mention.
    */
   strandedStepPartitions: { rows: Array<Record<string, unknown>> } | { error: string }
+  /**
+   * Room left before the busiest hour no longer fits one run (#1294).
+   *
+   * Read live rather than held as a constant, because the direction this will
+   * come from is traffic growing, which touches no file and turns nothing red.
+   * Once it is gone the run archives zero hours while completing cleanly, which
+   * is indistinguishable from a run with nothing to do until the standstill
+   * detector speaks three cadences later.
+   */
+  headroom: HeadroomReading | { error: string }
 }
 
 export interface HealthDeps {
@@ -93,7 +105,7 @@ export async function archiveHealth(
 
   // Read in parallel: this is what somebody runs while an incident is running,
   // and seven serial round trips is a wait they do not need.
-  const [jobs, lock, watermarkRead, coverageRead, purgeLastRun, strandedStepPartitions] = await Promise.all([
+  const [jobs, lock, watermarkRead, coverageRead, purgeLastRun, strandedStepPartitions, headroom] = await Promise.all([
     section(async () => ({ rows: await lastRunPerJob(supabase) })),
     section(async () => {
       const value = await env.IDEMPOTENCY.get(RUN_LOCK_KEY)
@@ -103,6 +115,7 @@ export async function archiveHealth(
     section(() => readCoverage(supabase, now)),
     section(async () => ({ rows: await lastPurgeRun(supabase) })),
     section(async () => ({ rows: await strandedSteps(supabase) })),
+    section(async () => headroomFrom(await recentHourRuns(supabase, now), CRON_RUN_BUDGET.wallMs)),
   ])
 
   const days = 'error' in coverageRead ? coverageRead : coverageRead.coverage
@@ -118,6 +131,7 @@ export async function archiveHealth(
     days,
     purgeLastRun,
     strandedStepPartitions,
+    headroom,
   }
 }
 
@@ -136,6 +150,45 @@ async function strandedSteps(supabase: SupabaseClient): Promise<Array<Record<str
   })
   if (error) throw new Error(`reading stranded step partitions: ${formatErr(error)}`)
   return (data ?? []) as Array<Record<string, unknown>>
+}
+
+/**
+ * The single-hour archive runs of the last week, which is what an hour costs.
+ *
+ * Single-hour only, so the duration divides by a known number of hours. The same
+ * window and the same shape as query 3 in
+ * `supabase/tests/measure-archive-hour-cost.sql`, so the live reading and the
+ * manual one are about the same population (L58).
+ */
+export async function recentHourRuns(supabase: SupabaseClient, now: Date): Promise<HourRun[]> {
+  const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  // paginate-ok: a week of single-hour archive runs is about 160 rows
+  const { data, error } = await supabase
+    .from('job_runs')
+    .select('started_at, finished_at, summary')
+    .eq('job', 'execution-archive')
+    .not('finished_at', 'is', null)
+    .gte('started_at', since)
+    .order('started_at', { ascending: false })
+    .limit(1000)
+  if (error) throw new Error(`reading recent archive runs: ${formatErr(error)}`)
+
+  const runs: HourRun[] = []
+  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+    const summary = row.summary
+    if (summary === null || typeof summary !== 'object' || Array.isArray(summary)) continue
+    const s = summary as Record<string, unknown>
+    // Single-hour runs only. A run that archived two hours cannot say what
+    // either of them cost, and averaging them understates the busier one.
+    if (s.hoursArchived !== 1) continue
+    const executionsArchived = s.executionsArchived
+    if (typeof executionsArchived !== 'number') continue
+    const started = Date.parse(String(row.started_at))
+    const finished = Date.parse(String(row.finished_at))
+    if (!Number.isFinite(started) || !Number.isFinite(finished) || finished <= started) continue
+    runs.push({ executionsArchived, durationMs: finished - started })
+  }
+  return runs
 }
 
 async function lastRunPerJob(supabase: SupabaseClient): Promise<JobLastRun[]> {
