@@ -35,6 +35,11 @@ export const ARCHIVE_JOBS = [
   'execution-archive-backlog',
   'execution-archive-settings',
   'execution-archive-identities',
+  // The 13 month expiry (#875). Listed here as well as in the cron heartbeat
+  // because this report is what somebody opens during an incident, and a
+  // retention job that has stopped is not visible in anything else they would
+  // look at.
+  'execution-archive-expiry',
 ] as const
 
 export interface JobLastRun {

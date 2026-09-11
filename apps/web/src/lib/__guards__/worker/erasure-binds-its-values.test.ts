@@ -31,7 +31,7 @@ const WORKER_LIB = path.join(REPO_ROOT, 'apps/worker/src/lib')
 const ESCAPER = ['escape', 'Sql', 'Literal'].join('')
 
 /** Every archive-path file that must bind, each named so none is lost silently. */
-const BOUND = ['archive-erasure.ts', 'archive-gate.ts', 'archive-read.ts', 'archive-identity-check.ts']
+const BOUND = ['archive-erasure.ts', 'archive-gate.ts', 'archive-read.ts', 'archive-identity-check.ts', 'archive-expiry.ts']
 
 /** Something each file must contain, so a renamed or emptied file cannot pass. */
 const PROOF_OF_LIFE: Record<string, string> = {
@@ -39,6 +39,7 @@ const PROOF_OF_LIFE: Record<string, string> = {
   'archive-gate.ts': 'countsStatement',
   'archive-read.ts': 'readArchivedExecution',
   'archive-identity-check.ts': 'deleteProbeStatement',
+  'archive-expiry.ts': 'expireArchivedDays',
 }
 
 describe.each(BOUND)('%s binds its values', (file) => {

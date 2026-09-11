@@ -383,6 +383,35 @@ export default {
           if (r.alerted) console.error(`[archive-settings] ${r.differences.length} differences`)
         })().catch((e) => console.error('[archive-settings] failed:', e))
       )
+      // The 13 month retention, actually enforced (#875). Until this existed
+      // nothing deleted an archived row on age, so the window in which an
+      // applicant's SSN sits in one queryable place had no upper bound and the
+      // stated retention was aspirational. Runs as the eraser, which is the only
+      // identity in the account holding DELETE on that table.
+      track(
+        (async () => {
+          const { expireArchivedDays, ARCHIVE_EXPIRY_JOB } = await import('./lib/archive-expiry')
+          const { withJobRun } = await import('./lib/job-run-record')
+          const r = await withJobRun(
+            supabase,
+            ARCHIVE_EXPIRY_JOB,
+            () => expireArchivedDays(env, supabase),
+            (result) => ({
+              // A run that deleted nothing gets its own outcome, so "there was
+              // nothing old enough" is never filed as the same event as a run
+              // that did work (L98).
+              outcome: result.failed ? 'failed' : result.daysExpired.length === 0 ? 'nothing-expired' : 'expired',
+              detail: result.detail,
+              summary: {
+                cutoff: result.cutoff,
+                daysExpired: result.daysExpired,
+                rowsDeleted: result.rowsDeleted,
+              },
+            }),
+          )
+          console.log(`[archive-expiry] ${r.detail}`)
+        })().catch((e) => console.error('[archive-expiry] failed:', e))
+      )
       // Room left before the archive's busiest hour no longer fits one run
       // (#1294). At the limit a run archives nothing while completing cleanly,
       // which reads as a run with nothing to do until the standstill detector

@@ -403,6 +403,47 @@ a copy for up to eight days, rather than reporting a bare row count. Any clone o
 share taken before the delete keeps it indefinitely, which is a separate question
 A7 still has to answer.
 
+### How much of the archive can be erased by SSN: measured, not estimated
+
+The plan recorded a **3.5% blind spot**, framed as Main Flow executions being
+unresolvable because the archive's person resolver reads one payload path
+(`personalInformation.ssn`, through `extractPersonFields`, which is the same
+extraction the live sightings path uses). A7 was explicit that the number had to
+be named rather than left as "test runs and a couple of workflows", because the
+population it described was the highest value traffic we carry.
+
+**Measured 2026-09-11 against production, over 7 days and 628,886 executions:**
+
+| Workflow | Executions | Unresolvable |
+|---|---|---|
+| Engine Bidding Workflow | 438,817 | 0 |
+| RML Bidding Workflow (LendSwift) | 109,290 | 0 |
+| Lead Economy Bidding Workflow | 34,067 | 0 |
+| RML Bidding Workflow (GigFi) | 24,713 | 0 |
+| **Main Flow** | **21,998** | **0** |
+| Delegate Gmail Access for Offboarded Agents | 1 | 1 |
+
+So the blind spot is **0.0002% and it is one internal admin run**, not 3.5% and
+not Main Flow. Main Flow resolves on the same path as everything else. Re-take it
+with the query in this section's commit; it is a pure read and it returns counts
+only, never values.
+
+**Decision (Dan, 2026-09-11): no second resolver is built.** A7 offered two
+branches, a workflow-scoped `ssn_hash` index or naming the number, and the
+measurement removes the case for the first: it would cover a population of zero
+while resting a compliance guarantee on `engine/pii-redactor.ts`, a key-name
+matcher that has still never executed against a real payload. Naming the number
+is the answer, and the number is zero.
+
+**What this reading cannot say.** Postgres retains 7 days, so this is a present
+tense measurement and it cannot be extended backwards. If Main Flow's payload
+shape changed at some point after the archive began on 2026-08-20, rows archived
+before that change would sit in Snowflake with a null resolver, and a
+forward-only resolver would never have reached them anyway (L389). That is a
+bounded historical population and a different remedy, tracked separately rather
+than folded in here, because a present tense reading standing in for a historical
+one is exactly the substitution this section exists to stop.
+
 The three roles and three service users were confirmed present the same day, and
 two things in that output are worth keeping. `TYPE = SERVICE` is supported on this
 account, so none of the three can sign in to Snowsight interactively. And all

@@ -124,6 +124,19 @@ export const CRON_JOBS: CronJob[] = [
       'workflow_executions and execution_steps are no longer being copied to Snowflake, so the 7-day purge would delete rows with no backup',
   },
   {
+    id: 'execution-archive-expiry',
+    label: 'Execution archive 13 month expiry',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // It deletes at most ten days per run and each is one statement, so the
+    // work is small; the allowance is for Snowflake being slow rather than for
+    // the job being long.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'archived executions are no longer being deleted once they pass 13 months, so unredacted SSNs, dates of birth, addresses and credit reports accumulate in Snowflake with no upper bound',
+  },
+  {
     id: 'sighting-bids-purge',
     label: 'Lead sighting bids purge',
     triggerCron: '47 0-22/2 * * *',
