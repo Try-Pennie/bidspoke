@@ -201,9 +201,13 @@ function snowflakeDouble(
   const statements: string[] = []
   return {
     statements,
-    query: async (statement: string): Promise<unknown[][]> => {
+    query: async (statement: string, bindings?: unknown[]): Promise<unknown[][]> => {
       statements.push(statement)
-      const day = /archive_day = '(\d{4}-\d{2}-\d{2})'/.exec(statement)?.[1] ?? ''
+      // The day is BOUND now, not written into the SQL (#1006), so the double
+      // reads it from the bindings. Taking it from the statement would find
+      // nothing and quietly answer for the wrong day, which is how a fixture
+      // starts deciding the test (L143).
+      const day = typeof bindings?.[0] === 'string' ? bindings[0] : ''
       const f = factsFor(day)
       if (statement.includes('COALESCE(SUM(step_count)')) {
         return [[String(f.sfExecutions), String(f.sfSteps), String(f.incomplete)]]

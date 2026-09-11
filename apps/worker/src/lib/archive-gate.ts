@@ -19,7 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
-import { executeStatement, escapeSqlLiteral } from './snowflake'
+import { executeStatement } from './snowflake'
 import { archiveConfig, ARCHIVE_DATABASE, ARCHIVE_SCHEMA, ARCHIVE_TABLE } from './archive-snowflake'
 import { ARCHIVE_STREAM, SUBREQUEST_BUDGET } from './execution-archive'
 import { decodeBundle } from '../archive/bundle'
@@ -201,7 +201,7 @@ export interface GateRunSummary {
 
 export interface GateDeps {
   /** Returns the statement's rows. Injected so a test drives the real logic against real shapes. */
-  querySnowflake?: (statement: string) => Promise<unknown[][]>
+  querySnowflake?: (statement: string, bindings?: unknown[]) => Promise<unknown[][]>
   now?: () => Date
   /**
    * Narrow the pass to a slice of the candidate days (#1129).
@@ -269,7 +269,13 @@ function toNumber(cell: unknown, what: string): number {
  * recovery had touched. `MAX(step_count)` per execution also picks the good copy
  * when a truncated one sits beside it.
  */
-export function countsStatement(day: string): string {
+/** A statement and the values it binds, never a statement with values in it. */
+export interface ArchiveQuery {
+  statement: string
+  bindings: unknown[]
+}
+
+export function countsStatement(day: string): ArchiveQuery {
   // INCOMPLETENESS COMES FROM THE LATEST ROW, not from MAX across the copies.
   //
   // This is the one place the duplicate-tolerant design bites (#1023). Taking
@@ -283,28 +289,44 @@ export function countsStatement(day: string): string {
   // `bundlesStatement` below already reads the newest row per execution, so
   // before this the probe and the count disagreed about which copy was real.
   // They now read the same one.
-  return (
+  return {
+    statement:
     'SELECT COUNT(*), COALESCE(SUM(step_count), 0), COALESCE(SUM(incomplete), 0) FROM (' +
     '  SELECT execution_id, MAX(step_count) AS step_count,' +
     '         MAX(CASE WHEN rn = 1 AND archived_incomplete THEN 1 ELSE 0 END) AS incomplete' +
     '  FROM (' +
     '    SELECT execution_id, step_count, archived_incomplete,' +
     '           ROW_NUMBER() OVER (PARTITION BY execution_id ORDER BY archived_at_utc DESC) AS rn' +
-    `    FROM ${QUALIFIED_TABLE} WHERE archive_day = '${escapeSqlLiteral(day)}'::DATE)` +
-    '  GROUP BY execution_id)'
-  )
+    `    FROM ${QUALIFIED_TABLE} WHERE archive_day = ?::DATE)` +
+    '  GROUP BY execution_id)',
+    bindings: [day],
+  }
 }
 
-function bundlesStatement(day: string, executionIds: string[]): string {
-  const list = executionIds.map((id) => `'${escapeSqlLiteral(id)}'`).join(',')
-  return (
-    'SELECT execution_id, trace_id, bundle_gz_b64 FROM (' +
-    '  SELECT execution_id, trace_id, bundle_gz_b64,' +
-    '         ROW_NUMBER() OVER (PARTITION BY execution_id ORDER BY archived_at_utc DESC) AS rn' +
-    `  FROM ${QUALIFIED_TABLE}` +
-    `  WHERE archive_day = '${escapeSqlLiteral(day)}'::DATE AND execution_id IN (${list})` +
-    ') WHERE rn = 1'
-  )
+/**
+ * The sampled bundles for one day, bound rather than interpolated (#1006).
+ *
+ * An EMPTY id list becomes `WHERE FALSE` rather than an empty `IN ()`, which is
+ * a syntax error, and rather than dropping the clause, which would ask for the
+ * whole day (L320). The caller only reaches here with a sample, so this is the
+ * shape that stops a future caller getting a different answer than it asked for.
+ */
+export function bundlesStatement(day: string, executionIds: string[]): ArchiveQuery {
+  if (executionIds.length === 0) {
+    return { statement: `SELECT execution_id, trace_id, bundle_gz_b64 FROM ${QUALIFIED_TABLE} WHERE FALSE`, bindings: [] }
+  }
+  // One placeholder per id, derived from the list, so the two can never differ.
+  const list = executionIds.map(() => '?').join(',')
+  return {
+    statement:
+      'SELECT execution_id, trace_id, bundle_gz_b64 FROM (' +
+      '  SELECT execution_id, trace_id, bundle_gz_b64,' +
+      '         ROW_NUMBER() OVER (PARTITION BY execution_id ORDER BY archived_at_utc DESC) AS rn' +
+      `  FROM ${QUALIFIED_TABLE}` +
+      `  WHERE archive_day = ?::DATE AND execution_id IN (${list})` +
+      ') WHERE rn = 1',
+    bindings: [day, ...executionIds],
+  }
 }
 
 interface ProbeRow {
@@ -323,7 +345,7 @@ interface ProbeRow {
 async function runProbe(
   day: string,
   sample: ProbeRow[],
-  query: (statement: string) => Promise<unknown[][]>,
+  query: (q: ArchiveQuery) => Promise<unknown[][]>,
 ): Promise<{ sampled: number; ok: boolean; reason: string | null }> {
   if (sample.length === 0) return { sampled: 0, ok: true, reason: null }
 
@@ -412,7 +434,7 @@ async function measureDay(
   countPostgres: () => void,
   supabase: SupabaseClient,
   day: string,
-  query: (statement: string) => Promise<unknown[][]>,
+  query: (q: ArchiveQuery) => Promise<unknown[][]>,
   now: Date,
 ): Promise<DayMeasurement> {
   countPostgres()
@@ -534,13 +556,13 @@ async function gatePass(
   const used = { snowflake: 0, postgres: 0 }
   const rawQuery =
     deps.querySnowflake ??
-    (async (statement: string) => {
-      const response = await executeStatement(archiveConfig(env, 'reader'), statement)
+    (async (statement: string, bindings?: unknown[]) => {
+      const response = await executeStatement(archiveConfig(env, 'reader'), statement, bindings)
       return response.data ?? []
     })
-  const query = async (statement: string): Promise<unknown[][]> => {
+  const query = async ({ statement, bindings }: ArchiveQuery): Promise<unknown[][]> => {
     used.snowflake += 1
-    return rawQuery(statement)
+    return rawQuery(statement, bindings)
   }
   const costNow = (daysMeasured: number): GateRunCost => {
     const subrequests = used.snowflake + used.postgres
