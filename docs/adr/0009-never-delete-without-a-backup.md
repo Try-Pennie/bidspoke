@@ -444,6 +444,47 @@ bounded historical population and a different remedy, tracked separately rather
 than folded in here, because a present tense reading standing in for a historical
 one is exactly the substitution this section exists to stop.
 
+#### And the historical population, measured in Snowflake (#1323)
+
+The paragraph above was right to insist on this. The archive holds **21,308 rows
+with no person resolver**, which the Postgres reading could not have seen.
+
+They are not what they look like. Measured 2026-09-11 over all 2,688,112
+archived rows and 2,534,282 distinct executions:
+
+| | |
+|---|---|
+| executions with no resolver on ANY copy | **6** |
+| executions with a stale null copy and a good one | 21,301 |
+| executions with more than one archived copy | 133,950 |
+
+**The six are the same internal Gmail offboarding workflow the Postgres reading
+found, on five different days. It carries no person at all, so it has nothing to
+resolve. No real lead is unerasable, then or now.**
+
+The 21,301 are stale duplicate copies. The archive INSERTs and never MERGEs, so
+a re-archived day leaves more than one row per execution, and each of these has a
+later copy carrying a resolver. They are still reachable by an erasure: the
+erasure resolves to a set of `execution_id` and deletes `WHERE execution_id IN
+(...)`, so every copy of a resolved execution goes, including the ones that carry
+no hash of their own.
+
+**The cause is confirmed rather than inferred.** The resolver writer shipped on
+2026-08-22 (#927, PR #975), and the rows of that day split on it cleanly, with no
+overlap at all:
+
+| bucket | rows | first written | last written |
+|---|---|---|---|
+| no resolver | 21,301 | 2026-08-22 05:24:58 | 2026-08-22 15:31:00 |
+| has resolver | 126,837 | 2026-08-22 20:23:26 | 2026-08-26 15:04:48 |
+
+That is L389 exactly: a writer that only fills records going forward never
+reaches what already existed when it shipped. What saved it here was the
+re-archive, which was done for an unrelated reason and happened to give every
+affected execution a second copy. Nothing planned that, and nothing would have
+noticed if it had not happened, which is why the detection is worth having
+rather than the reassurance.
+
 The three roles and three service users were confirmed present the same day, and
 two things in that output are worth keeping. `TYPE = SERVICE` is supported on this
 account, so none of the three can sign in to Snowsight interactively. And all
@@ -569,9 +610,52 @@ rather than described.
 2. ~~**Snowflake per-statement text limit.**~~ **ANSWERED 2026-08-20**, see "The
    statement ceiling is not the constraint" above. Snowflake accepted 50 MB, so it
    is not what A3 sizes batches against; the Worker's 128 MB isolate is.
-3. **Cold-warehouse read latency.** Unmeasured. Sets the read deadline in A6.
-4. **Snowflake credit cost.** Unmeasured. Must be checked against the real bill
-   before A5 repoints either destructive job.
+3. ~~**Cold-warehouse read latency.**~~ **ANSWERED 2026-09-11 (#1314)**, from
+   `SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY` over 30 days, which measures cold
+   starts that really happened rather than one forced for the test. 629 SELECTs
+   against `ARCHIVE_WH`, 25 of them cold.
+
+   | | |
+   |---|---|
+   | worst warehouse resume | 0.9 s |
+   | mean resume, over the cold ones | 0.2 s |
+   | worst total, reader role | 4.7 s |
+   | p95 total | 1.9 s |
+
+   So resuming the warehouse costs about a second, not the tens of seconds the
+   deadline was sized against blind. `DEFAULT_ARCHIVE_READ_DEADLINE_MS` stays at
+   20 seconds and is now held for a measured reason: roughly four times the
+   slowest read ever observed. The 13.5 second worst case in the same window was
+   a WRITER query, which is the archiving path and not what the deadline governs.
+
+   Re-take it with section 2 of `docs/snowflake-archive-open-questions.sql`. If
+   `cold_starts` comes back 0 the answer is "not measurable in this window",
+   never "fast".
+4. ~~**Snowflake credit cost.**~~ **ANSWERED 2026-09-11 (#886).**
+
+   **Storage.** `EXECUTION_ARCHIVE` holds 25.43 GB active and 34.53 GB of Time
+   Travel, over 26 archived days. That is **0.98 GB per day**, against the 1.1
+   GB/day this ADR revised to and the roughly 4.2 GB/day the original
+   uncompressed 1.1 TB figure implied. Thirteen months at the measured rate is
+   about **387 GB active**, plus roughly 29 GB of Time Travel at steady state,
+   so **around 416 GB**: close to the 435 GB revision and about a third of what
+   the retention was originally priced on.
+
+   Time Travel currently exceeds active because of the re-archiving described
+   above, and will fall back as those versions age out. Fail-safe reads 0, which
+   is expected rather than alarming: nothing has aged out of the 30 day Time
+   Travel window yet, because the archive is 22 days old.
+
+   **Compute.** `ARCHIVE_WH` used **62.29 credits in 30 days**, 2.08 a day. It is
+   the second heaviest warehouse on this shared account, behind Airbyte at 91.62.
+
+   **What that settles.** At any credit price and any storage rate, compute costs
+   an order of magnitude more than storage here, and compute does not change with
+   retention: it is the cost of archiving each hour once. A further month of
+   retention adds about 30 GB, which is single-digit dollars. **So the cost
+   argument for capping at 13 months is negligible, and the cap should be held on
+   consumer-data grounds, which this ADR already calls the stronger argument, or
+   revisited on those grounds alone.**
 
 Item 2 above (the per-statement text limit) is still open, and A3's batch sizing
 depends on it. It is now answerable, since the account is reachable by hand: send

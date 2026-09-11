@@ -47,6 +47,17 @@ export const ARCHIVE_READ_WAITING_FOR = 'the execution archive'
  * this has to survive; a wait with no deadline cannot fail, only hang, and a
  * hang is indistinguishable from slowness to whoever is looking at the page
  * (L110).
+ *
+ * MEASURED 2026-09-11 (#1314), because 20 seconds was chosen rather than
+ * measured and the number it had to survive was the cold one. Over 30 days of
+ * `ARCHIVE_WH` history, 629 SELECTs with 25 cold starts: the worst warehouse
+ * resume was 0.9s, the worst total for the reader role 4.7s, the p95 1.9s. So
+ * this stands at roughly four times the slowest read ever observed. It matters
+ * that the reading came from cold starts that really happened: the warehouse
+ * suspends when idle and archived reads are rare, so the first read of a day is
+ * nearly always cold, and a warm measurement would have said nothing about the
+ * case the deadline exists for. Re-take it with section 2 of
+ * `docs/snowflake-archive-open-questions.sql`.
  */
 export const DEFAULT_ARCHIVE_READ_DEADLINE_MS = 20_000
 
