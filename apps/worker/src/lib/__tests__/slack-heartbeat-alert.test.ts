@@ -7,10 +7,15 @@ import { sendCronHeartbeatAlert } from '../slack'
  * Three verdicts, three messages. A trigger that stopped firing (stale), a job
  * that has never fired since it was first seen (never_ran), and a run that
  * started and never finished (vanished) send the reader to different places:
- * the first two to the trigger configuration, the third to the platform's
- * termination reasons. Saying "is dark" about a run the platform killed sends
- * the reader to check triggers that are fine while the same run keeps dying
- * (LESSONS L11).
+ * the first two to the trigger configuration, the third to the per invocation
+ * record of how that run ended. Saying "is dark" about a run the platform killed
+ * sends the reader to check triggers that are fine while the same run keeps
+ * dying (LESSONS L11).
+ *
+ * The vanished message states what the check measured and nothing more (#1308).
+ * It measures one thing, a started stamp with no completion inside the
+ * allowance, so it cannot name a cause, and naming one sent a reader hunting
+ * for two statuses the platform had not recorded.
  */
 function makeSupabase(connection: Record<string, string> | null) {
   const chain: unknown = new Proxy(
@@ -60,7 +65,7 @@ describe('sendCronHeartbeatAlert', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('says a vanished run started and never finished, and points at the platform termination reasons', async () => {
+  it('says a vanished run started and never finished, and sends the reader to where the outcome is recorded', async () => {
     const sent = await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
     expect(sent).toBe(true)
@@ -69,12 +74,52 @@ describe('sendCronHeartbeatAlert', () => {
     const text = textOf(post)
     expect(text).toContain('~90 minutes ago')
     expect(text).toContain(job.dependents)
-    expect(text).toContain('Trigger Events')
-    expect(text).toContain('exceededMemory')
+    // The outcome, recorded per invocation, is the fact that decides the remedy.
+    expect(text).toContain("this run's own outcome")
+    expect(text).toContain('Cloudflare records for each invocation')
+    expect(text).toContain('next scheduled run tries again on its own')
     // The remedy for a dark trigger would send the reader to the wrong place.
     expect(text).not.toContain('is dark')
     expect(text).not.toContain('wrangler.toml')
     expect(post.text).toContain('vanished')
+  })
+
+  // #1308. The check measures one thing: a started stamp with no completion
+  // inside the allowance. It cannot see WHY, so every word about the cause is a
+  // guess. On the first real firing (2026-09-11, the sightings export) it guessed
+  // memory or CPU and the platform had recorded `canceled` after 16.8s with 69ms
+  // of CPU, so a reader following the remedy went looking for two statuses that
+  // were not there (L11, L440).
+  it('names no likely cause, and no resource outcome, for a vanished run', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+
+    const text = textOf(lastPost())
+    for (const guess of ['exceededMemory', 'exceededCpu', 'out of memory', 'most likely']) {
+      expect(text).not.toContain(guess)
+    }
+  })
+
+  // A remedy that prescribes a click path is only as good as the console it was
+  // written against, and nothing re-checks it when that console changes. Name
+  // the fact to find and let the reader find it (Dan, 2026-09-11).
+  it('names the fact to look for, not a route through the Cloudflare console', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+
+    const text = textOf(lastPost())
+    for (const route of ['Workers Logs', 'Settings >', 'Metrics', 'eventType', '$workers']) {
+      expect(text).not.toContain(route)
+    }
+  })
+
+  // The same run can have done real work before it died: the export that
+  // triggered #1308 had copied 800 rows. Telling the reader nothing happened
+  // is a claim about progress the check never measured either.
+  it('does not claim a vanished run accomplished nothing', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+
+    const text = textOf(lastPost())
+    expect(text).not.toContain('nothing it was meant to do')
+    expect(text).toContain('may have completed part of its work')
   })
 
   it('says a stale job is dark and points at the trigger configuration, not at termination reasons', async () => {
@@ -86,7 +131,7 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).toContain('has not run in ~3h')
     expect(text).toContain('wrangler.toml')
     expect(text).not.toContain('never finished')
-    expect(text).not.toContain('exceededMemory')
+    expect(text).not.toContain("this run's own outcome")
   })
 
   it('says a never-ran job has not run since it was first observed', async () => {
