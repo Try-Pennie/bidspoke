@@ -151,9 +151,12 @@ is now empty, so the design has to change.
 the gating exists in the workflow, but there is no record tying each pull to the
 purpose that permitted it.
 
-**The Achieve consent gap is open.** The Achieve documentation says
-`trusted_form_cert` is required and we hold no TrustedForm certificates. This has
-been open with Geoff since the node was built.
+**The Achieve consent gap is closed.** Achieve's documentation lists
+`trusted_form_cert` as required, and Pennie holds no TrustedForm certificates. Their
+engineering team confirmed on 2026-09-10 that it is a nice to have rather than a hard
+requirement while consent is captured and attested on our side, which the verbatim TCPA
+and FCRA text sent with every lead does. Pennie is not adding the TrustedForm script to
+the site (Geoff, 2026-09-04), so the node sends no certificate. See #1081.
 
 ## Retention at a glance
 

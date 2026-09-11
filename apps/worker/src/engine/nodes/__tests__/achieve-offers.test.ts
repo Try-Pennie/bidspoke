@@ -438,10 +438,9 @@ describe('executeAchieveOffersNode', () => {
     expect(body.tracking.utm_source).toBe('pennie_main')
   })
 
-  // Achieve's payload review (Tony, 2026-08-27, #1080) asked for three tracking fields the node
-  // never sent: utm_campaign, utm_adgroup (traffic source, when the lead carries one), and a
-  // per-lead trusted_form_cert. A TrustedForm cert is minted per form fill, so the payload is
-  // the only place a real one can come from; the env var stays as a test-send fallback only.
+  // Achieve's payload review (Tony, 2026-08-27, #1080) asked for tracking fields the node never
+  // sent: utm_campaign and utm_adgroup (traffic source, when the lead carries one). It also asked
+  // for a per-lead trusted_form_cert, which is no longer sent at all: see the guard below.
   describe('tracking fields for Achieve (#1080)', () => {
     const trackingSent = async (payload: unknown, env: Record<string, string>, config: Record<string, unknown> = {}) => {
       const fetchMock = mockFetchOnce(200, acceptedResponse(1))
@@ -473,26 +472,19 @@ describe('executeAchieveOffersNode', () => {
       expect(without).not.toHaveProperty('utm_adgroup')
     })
 
-    it('sends trusted_form_cert from the payload, beating the env fallback', async () => {
+    // #1081 was closed NOT PLANNED on 2026-09-04: the TrustedForm script is not going on the
+    // site, so no certificate can ever be minted for a Pennie lead, and Achieve confirmed on
+    // 2026-09-10 that it is not a requirement while consent is captured and attested. The field
+    // is therefore never sent. Asserted against every route a cert used to arrive by, because a
+    // reinstated lookup on any one of them would be silent: Achieve accepts the payload either
+    // way, so nothing downstream would report the field coming back.
+    it('never sends trusted_form_cert, whatever the payload or env offers', async () => {
       const cert = 'https://cert.trustedform.com/abc123'
-      const fromPayload = await trackingSent(
-        { ...fullPayload(), trusted_form_cert: cert },
+      const offered = await trackingSent(
+        { ...fullPayload(), trusted_form_cert: cert, xxTrustedFormCertUrl: cert },
         { ...PROD_ENV, ACHIEVE_TRUSTED_FORM_CERT: 'placeholder' }
       )
-      expect(fromPayload.trusted_form_cert).toBe(cert)
-    })
-
-    it('reads the cert from the TrustedForm hidden-field spelling too', async () => {
-      const cert = 'https://cert.trustedform.com/def456'
-      const tracking = await trackingSent({ ...fullPayload(), xxTrustedFormCertUrl: cert }, PROD_ENV)
-      expect(tracking.trusted_form_cert).toBe(cert)
-    })
-
-    it('falls back to the env cert and omits the field when neither exists', async () => {
-      const viaEnv = await trackingSent(fullPayload(), { ...PROD_ENV, ACHIEVE_TRUSTED_FORM_CERT: 'placeholder' })
-      expect(viaEnv.trusted_form_cert).toBe('placeholder')
-      const absent = await trackingSent(fullPayload(), PROD_ENV)
-      expect(absent).not.toHaveProperty('trusted_form_cert')
+      expect(offered).not.toHaveProperty('trusted_form_cert')
     })
   })
 

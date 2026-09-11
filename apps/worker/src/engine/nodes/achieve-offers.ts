@@ -32,8 +32,6 @@
  *   ACHIEVE_API_URL                      Legacy explicit host, still honoured. ACHIEVE_ENV wins
  *   ACHIEVE_UTM_SOURCE                   optional utm_source fallback
  *   ACHIEVE_UTM_CAMPAIGN                 optional utm_campaign fallback (default '_achieve_pl')
- *   ACHIEVE_TRUSTED_FORM_CERT            test-send fallback for tracking.trusted_form_cert;
- *                                        a real cert is per-lead and comes from the payload
  *
  * The fetch is aborted internally at 12s so a hung Achieve API can never trip
  * the engine-level node timeout (which WOULD fail the step). Recommended node
@@ -158,11 +156,6 @@ interface LeadPayload {
   sessionInformation?: { ipAddress?: string; userAgent?: string }
   /** Traffic source for tracking.utm_adgroup, when the lead carries one. */
   traffic_source?: string
-  /** Per-lead TrustedForm cert URL (#1081). xxTrustedFormCertUrl is the field name
-   *  the TrustedForm script itself injects into a form, so a form that forwards its
-   *  fields verbatim already sends that spelling. */
-  trusted_form_cert?: string
-  xxTrustedFormCertUrl?: string
 }
 
 /** A non-empty string or nothing: tracking fields are omitted rather than sent blank. */
@@ -374,12 +367,10 @@ function buildRequest(
       utm_adgroup: nonEmpty(payload.traffic_source),
       ip_address: si.ipAddress || undefined,
       user_agent: si.userAgent || undefined,
-      // A TrustedForm cert is minted per form fill, so the payload is the only place a real
-      // one can come from; the env var is a placeholder for test sends only (#1080/#1081).
-      trusted_form_cert:
-        nonEmpty(payload.trusted_form_cert) ??
-        nonEmpty(payload.xxTrustedFormCertUrl) ??
-        (ctx.env.ACHIEVE_TRUSTED_FORM_CERT || undefined),
+      // No trusted_form_cert. #1081 was closed NOT PLANNED on 2026-09-04: the TrustedForm
+      // script is not going on the site, so no certificate can ever be minted for a Pennie
+      // lead, and Achieve confirmed on 2026-09-10 that it is not required while consent is
+      // captured and attested, which the consents block below does.
     },
     // No targeted_products: Achieve drives product selection server-side and asked us to
     // drop the field. Sending it is ignored at best, and misleading at worst.
