@@ -46,7 +46,6 @@ offers-out so we can analyze potential volume and lead types, then join trades d
    | `ACHIEVE_PASSWORD` | from Achieve | yes |
    | `ACHIEVE_API_URL` | `https://api-stg.freedomfinancialnet.com` (flip to `https://api.freedomfinancialnet.com` after sandbox validation) | no |
    | `ACHIEVE_UTM_SOURCE` | value from Achieve BizDev (defaults to `pennie`) | no |
-   | `ACHIEVE_TRUSTED_FORM_CERT` | only if Achieve requires it for us (see open questions) | no |
 
 2. Drag an **Achieve Offers** node from the palette (defaults: FDR only, wait for
    offers on, timeout 15000 ms, retries 0 - retrying a transport failure risks
@@ -208,10 +207,12 @@ every execution reaches the trades step. `submission_id` still joins out to Sale
 
 ## Open questions (for Geoff / Achieve)
 
-1. **`trusted_form_cert`** - marked Required in the tracking object, but these leads
-   don't carry TrustedForm certs. The script omits it unless
-   `ACHIEVE_TRUSTED_FORM_CERT` is set. Ask Achieve whether it's waived for
-   server-to-server partners (sandbox will tell us quickly via a 422).
+1. ~~**`trusted_form_cert`**~~ - RESOLVED 2026-09-10. Not a requirement. Achieve's
+   engineering team confirmed via Tony that the certificate is a nice to have, not a hard
+   requirement, as long as consent is captured and attested on our side, which the
+   `consents` block does. Pennie is not adding the TrustedForm script to the site
+   (Geoff, 2026-09-04), so no certificate can be minted for these leads and the node no
+   longer sends the field at all. See #1081, closed as not planned.
 2. **`utm_source` / tracking values** - doc says "work with Achieve BizDev to determine
    appropriate values". Currently `pennie`.
 3. ~~**Consents**~~ - RESOLVED 2026-07-13. Required (not optional, whatever the doc says);

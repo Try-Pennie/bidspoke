@@ -43,7 +43,6 @@ Credentials live on the Environment Variables page, not in node config:
 | `ACHIEVE_API_URL` | No | Legacy explicit host, still honoured so nothing broke when `ACHIEVE_ENV` shipped. `ACHIEVE_ENV` wins over it, and only an exact match on the production host counts as production. |
 | `ACHIEVE_UTM_SOURCE` | No | Fallback for `tracking.utm_source`. |
 | `ACHIEVE_UTM_CAMPAIGN` | No | Fallback for `tracking.utm_campaign` (default `_achieve_pl`). |
-| `ACHIEVE_TRUSTED_FORM_CERT` | No | Test-send fallback for `tracking.trusted_form_cert`. A real cert is minted per form fill by the TrustedForm script, so it comes from the lead payload (`trusted_form_cert` or `xxTrustedFormCertUrl`), which always wins over this var (#1080, #1081). |
 | `ACHIEVE_CONSENT_TCPA` | Yes | Verbatim TCPA text shown on the form. Sent as `consents.tcpa`. |
 | `ACHIEVE_CONSENT_FCRA` | Yes | Verbatim credit-authorization text shown on the form. Sent as `consents.fcra`. |
 | `ACHIEVE_CONSENT_ESIGN` | No | Verbatim Electronic Consent Agreement text. Sent as `consents.e_sign`. |
@@ -202,7 +201,8 @@ The node builds the Achieve request from the standard lead payload shape:
 | `tracking.unique_identifier`, `partner_lead_id` | `Submission__c`, falling back to the trace id |
 | `tracking.ip_address`, `tracking.user_agent` | `sessionInformation` |
 | `tracking.utm_adgroup` | `traffic_source` on the payload, omitted when absent |
-| `tracking.trusted_form_cert` | `trusted_form_cert` or `xxTrustedFormCertUrl` on the payload, then env `ACHIEVE_TRUSTED_FORM_CERT`, omitted when none |
+
+The node sends no `trusted_form_cert`. #1081 was closed as not planned on 2026-09-04: the TrustedForm script is not going on the Pennie form, so no certificate can ever be minted for one of these leads. Achieve confirmed on 2026-09-10 that the field is a nice to have rather than a requirement, provided consent is captured and attested, which `consents.tcpa` and `consents.fcra` do.
 
 Achieve requires email, phone, first and last name, mailing state, and either `unsecured_debt` or `loan_amount`. When any of these are missing the node skips the call and records which fields were absent.
 
