@@ -383,6 +383,18 @@ export default {
           if (r.alerted) console.error(`[archive-settings] ${r.differences.length} differences`)
         })().catch((e) => console.error('[archive-settings] failed:', e))
       )
+      // Room left before the archive's busiest hour no longer fits one run
+      // (#1294). At the limit a run archives nothing while completing cleanly,
+      // which reads as a run with nothing to do until the standstill detector
+      // speaks hours later about a stall, which is true and is not the finding.
+      // Daily, because this moves at the speed the business grows.
+      track(
+        (async () => {
+          const { checkArchiveHeadroom } = await import('./lib/archive-headroom-check')
+          const r = await checkArchiveHeadroom(env, supabase)
+          console.log(`[archive-headroom] ${r.reading.kind} alerted=${r.alerted}`)
+        })().catch((e) => console.error('[archive-headroom] failed:', e))
+      )
       // Where do this account's production logs actually go (#1010)? The
       // account is SHARED with other Pennie projects, so a destination can be
       // added by somebody who has never heard of Bidspoke, and one was: an

@@ -160,7 +160,7 @@ async function strandedSteps(supabase: SupabaseClient): Promise<Array<Record<str
  * `supabase/tests/measure-archive-hour-cost.sql`, so the live reading and the
  * manual one are about the same population (L58).
  */
-async function recentHourRuns(supabase: SupabaseClient, now: Date): Promise<HourRun[]> {
+export async function recentHourRuns(supabase: SupabaseClient, now: Date): Promise<HourRun[]> {
   const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
   // paginate-ok: a week of single-hour archive runs is about 160 rows
   const { data, error } = await supabase
