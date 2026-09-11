@@ -66,11 +66,15 @@ function acceptedResponse(offerCount = 2) {
   }
 }
 
-function mockFetchOnce(status: number, body: unknown) {
+function mockFetchOnce(status: number, body: unknown, headers: Record<string, string> = {}) {
+  // Header lookup is case insensitive in the real Headers object, and the production
+  // response spells them lower case, so the double lower cases the name rather than
+  // matching what a test happened to type.
   const fn = vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
     json: () => Promise.resolve(body),
+    headers: { get: (name: string) => headers[name.toLowerCase()] ?? null },
   })
   vi.stubGlobal('fetch', fn)
   return fn
@@ -485,6 +489,60 @@ describe('executeAchieveOffersNode', () => {
         { ...PROD_ENV, ACHIEVE_TRUSTED_FORM_CERT: 'placeholder' }
       )
       expect(offered).not.toHaveProperty('trusted_form_cert')
+    })
+  })
+
+  // Achieve stamps its own request id on every response and Cloudflare adds a ray id in
+  // front of it. Measured 2026-09-11 against an unauthenticated call: both are present on a
+  // 401, so they do not depend on the call succeeding. They are captured because Achieve's
+  // decline responses carry no detail at all beyond one sentence, so quoting their own
+  // request id is the only way to have support find a specific call without describing it.
+  describe('response identifiers', () => {
+    const IDS = {
+      'x-request-id': 'fb455718-1770-40fd-ac81-67df5c5b49b1',
+      'cf-ray': 'a397a44589f60c9b-EWR',
+    }
+
+    const runWith = async (status: number, body: unknown, headers: Record<string, string>) => {
+      mockFetchOnce(status, body, headers)
+      const { output } = await executeAchieveOffersNode(
+        makeNode(),
+        makeCtx({ payload: fullPayload(), env: PROD_ENV })
+      )
+      return output as Record<string, unknown>
+    }
+
+    it('captures both ids on an accepted lead', async () => {
+      const out = await runWith(200, acceptedResponse(1), IDS)
+      expect(out.achieve_request_id).toBe('fb455718-1770-40fd-ac81-67df5c5b49b1')
+      expect(out.cf_ray).toBe('a397a44589f60c9b-EWR')
+    })
+
+    // The declined lead is the case the ids exist for, and it takes a different branch from
+    // the accepted one, so asserting only the happy path would leave the branch that matters
+    // uncovered.
+    it('captures both ids on a declined lead', async () => {
+      const out = await runWith(200, { response: 'rejected', response_reason: 'Lead 1 didn\'t qualify for offers' }, IDS)
+      expect(out.response_status).toBe('rejected')
+      expect(out.achieve_request_id).toBe('fb455718-1770-40fd-ac81-67df5c5b49b1')
+      expect(out.cf_ray).toBe('a397a44589f60c9b-EWR')
+    })
+
+    // A failing call is when somebody most wants to quote an id, and it returns through a
+    // third branch that never reaches the success path.
+    it('captures both ids on an error response', async () => {
+      const out = await runWith(500, { message: 'upstream boom' }, IDS)
+      expect(out.ok).toBe(false)
+      expect(out.achieve_request_id).toBe('fb455718-1770-40fd-ac81-67df5c5b49b1')
+      expect(out.cf_ray).toBe('a397a44589f60c9b-EWR')
+    })
+
+    // Null rather than undefined: undefined is dropped from a JSON payload entirely, so the
+    // stored row could not tell a header we failed to read from one Achieve never sent.
+    it('records null when the headers are absent', async () => {
+      const out = await runWith(200, acceptedResponse(1), {})
+      expect(out.achieve_request_id).toBeNull()
+      expect(out.cf_ray).toBeNull()
     })
   })
 

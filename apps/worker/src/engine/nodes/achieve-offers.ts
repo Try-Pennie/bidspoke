@@ -281,7 +281,7 @@ export async function executeAchieveOffersNode(
       const reason =
         responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
       return {
-        output: result(false, res.status, 'error', reason, request, responseBody, !production),
+        output: result(false, res.status, 'error', reason, request, responseBody, !production, responseIds(res)),
         resolvedInput,
       }
     }
@@ -298,7 +298,8 @@ export async function executeAchieveOffersNode(
         responseBody?.response_reason ?? null,
         request,
         responseBody,
-        !production
+        !production,
+        responseIds(res)
       ),
       resolvedInput,
     }
@@ -475,7 +476,11 @@ function result(
   // the accept/decline describe a FAKE person. The achieve-log hook persists this as
   // achieve_evaluations.is_sandbox so the analysis can exclude the fake offer signal while
   // keeping the real volume signal.
-  sandbox: boolean
+  sandbox: boolean,
+  // Both ids are always emitted, as null where no call was made or the headers were
+  // absent. An undefined would be dropped from the stored JSON entirely, leaving a header
+  // we failed to read indistinguishable from one Achieve never sent.
+  ids: ResponseIds = NO_RESPONSE_IDS
 ) {
   const offers = (response as { offers?: unknown[] } | null)?.offers
   const offersArray = Array.isArray(offers) ? offers : null
@@ -490,5 +495,34 @@ function result(
     offers: offersArray,
     request,
     response: response ?? null,
+    achieve_request_id: ids.achieve_request_id,
+    cf_ray: ids.cf_ray,
+  }
+}
+
+/**
+ * The two identifiers Achieve's edge stamps on every response: their own application
+ * request id, and Cloudflare's ray id from the proxy in front of them. Measured
+ * 2026-09-11 against an unauthenticated call, where both were present on the 401, so
+ * they do not depend on the request being accepted.
+ *
+ * They are captured because Achieve's decline responses carry nothing but one sentence
+ * ("Lead N didn't qualify for offers"), so their own request id is the only way to have
+ * support look up a specific call without describing it by timestamp and reference.
+ */
+interface ResponseIds {
+  achieve_request_id: string | null
+  cf_ray: string | null
+}
+
+const NO_RESPONSE_IDS: ResponseIds = { achieve_request_id: null, cf_ray: null }
+
+function responseIds(res: { headers?: { get(name: string): string | null } }): ResponseIds {
+  // Optional chaining rather than a direct read: a test double or a runtime that hands
+  // back a response without headers would otherwise throw here, turning a missing
+  // diagnostic into a failed lead.
+  return {
+    achieve_request_id: res.headers?.get('x-request-id') ?? null,
+    cf_ray: res.headers?.get('cf-ray') ?? null,
   }
 }

@@ -19,7 +19,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { coerceString } from './coerce'
 import { partitionKeyFor } from './partitioned-tables'
 import type { Env } from '../index'
-import { executeStatement, escapeSqlLiteral, type SnowflakeConfig } from './snowflake'
+import {
+  executeStatement,
+  escapeSqlLiteral,
+  type SnowflakeConfig,
+  type SnowflakeStatementResponse,
+} from './snowflake'
 import { requireRowsAffected, toThrowable, toDbError } from './db-retry'
 import { formatErr } from './format-error'
 
@@ -51,6 +56,78 @@ export type ColType = 'varchar' | 'number' | 'boolean' | 'timestamp_tz' | 'times
 export interface ColSpec {
   name: string
   type: ColType
+}
+
+/** The Snowflake DDL type for a ColSpec, used by both CREATE and ALTER. */
+const SNOWFLAKE_TYPE: Record<ColType, string> = {
+  varchar: 'VARCHAR',
+  number: 'NUMBER',
+  boolean: 'BOOLEAN',
+  timestamp_tz: 'TIMESTAMP_TZ',
+  timestamp_ntz: 'TIMESTAMP_NTZ',
+  variant: 'VARIANT',
+}
+
+/**
+ * Adds any column an export's ColSpec declares that the Snowflake table does not have.
+ *
+ * The tables are created with CREATE TABLE IF NOT EXISTS, which does nothing to a table
+ * that already exists, so a new entry in a ColSpec used to mean the next run wrote a
+ * statement naming a column Snowflake had never heard of. That fails every night until a
+ * person runs the DDL by hand, which is #428's shape, and it fails AFTER the export has
+ * already done its reading, so the cost is a whole missed night each time.
+ *
+ * It reads what the table actually has rather than relying on ADD COLUMN IF NOT EXISTS,
+ * whose support cannot be tested from here (L82: measure the platform guarantee rather
+ * than trusting the documentation).
+ *
+ * Only the Achieve export calls this today. The sightings export shares the same exposure
+ * but runs against a budget that has already been starved once by work added to it
+ * (#1078), so it is left alone deliberately rather than by oversight; adding the call is
+ * one line when somebody wants it.
+ */
+export async function reconcileColumns(
+  config: SnowflakeConfig,
+  table: string,
+  cols: ColSpec[],
+  // Injected so the tests drive the real logic rather than a reimplementation of it.
+  query: (config: SnowflakeConfig, statement: string) => Promise<SnowflakeStatementResponse> = executeStatement
+): Promise<string[]> {
+  const listing = await query(
+    config,
+    `SELECT column_name FROM information_schema.columns WHERE table_name = '${escapeSqlLiteral(table.toUpperCase())}'`
+  )
+
+  const nameAt = (listing.resultSetMetaData?.rowType ?? []).findIndex(
+    (c) => c.name.toLowerCase() === 'column_name'
+  )
+  const rows = listing.data ?? []
+  // Snowflake upper cases unquoted identifiers, so the comparison is case insensitive in
+  // both directions rather than trusting either side's spelling.
+  const existing = new Set(
+    rows
+      .map((r) => (nameAt >= 0 ? r[nameAt] : r[0]))
+      .filter((v): v is string => typeof v === 'string')
+      .map((v) => v.toLowerCase())
+  )
+
+  // An empty listing means the table could not be read, never that it has no columns: the
+  // caller has just run CREATE TABLE IF NOT EXISTS against it. Adding every column would
+  // fail anyway, and carrying on would let the write that follows fail with an error about
+  // something else entirely (L98: finding nothing is not the same as finding nothing wrong).
+  if (existing.size === 0) {
+    throw new Error(
+      `reconcileColumns: no columns found for ${table}, so its schema could not be read`
+    )
+  }
+
+  const added: string[] = []
+  for (const col of cols) {
+    if (existing.has(col.name.toLowerCase())) continue
+    await query(config, `ALTER TABLE ${table} ADD COLUMN ${col.name} ${SNOWFLAKE_TYPE[col.type]}`)
+    added.push(col.name)
+  }
+  return added
 }
 
 // Both tables are partitioned monthly on a timestamp, and `id` is not the

@@ -18,6 +18,8 @@ export type Database = {
     Tables: {
       achieve_evaluations: {
         Row: {
+          achieve_request_id: string | null
+          cf_ray: string | null
           created_at: string
           duration_ms: number | null
           execution_id: string
@@ -40,6 +42,8 @@ export type Database = {
           workflow_id: string
         }
         Insert: {
+          achieve_request_id?: string | null
+          cf_ray?: string | null
           created_at?: string
           duration_ms?: number | null
           execution_id: string
@@ -62,6 +66,8 @@ export type Database = {
           workflow_id: string
         }
         Update: {
+          achieve_request_id?: string | null
+          cf_ray?: string | null
           created_at?: string
           duration_ms?: number | null
           execution_id?: string
