@@ -25,17 +25,21 @@ const WRAPPER = ['with', 'Job', 'Run'].join('')
 const OWNER = path.join(WORKER_SRC, 'lib/job-run-record.ts')
 
 /**
- * The one job that still opens its own record, and why.
+ * `execution-archive` was the one stated exception until #1277 converted it.
  *
- * `execution-archive` closes its record in a `finally` that ALSO releases the
- * run lock, in that order, and the order is deliberate: the record is closed
- * while the lock is still held. Moving it into the wrapper would invert that,
- * because an inner `finally` runs before an outer one, and this is the job that
- * matters most. So it is exempt for a stated reason rather than because nobody
- * looked (L233), it is checked below against the rule the wrapper exists to
- * enforce rather than merely excused, and #1277 tracks converting it.
+ * It was exempt because its `finally` closes the record and then releases the
+ * run lock, in that order, and the reasoning was that moving the close into the
+ * wrapper would invert it. It does not: putting the wrapper INSIDE the try whose
+ * finally releases the lock keeps the order, because an inner finally runs
+ * first.
+ *
+ * That ordering is guarded, but NOT here. The worker's
+ * `archive-record-closes-before-lock.test.ts` drives a real run and asserts the
+ * order the two writes reach the outside world, which a source scan cannot see:
+ * the nesting can be rearranged without any of the words in this file changing,
+ * and a scan keyed on how the call happens to be wrapped across lines breaks on
+ * the first reformat while proving nothing (L103).
  */
-const EXEMPT = path.join(WORKER_SRC, 'lib/execution-archive.ts')
 
 function workerSources(): string[] {
   return listFiles(WORKER_SRC)
@@ -52,24 +56,16 @@ describe('archive run records go through one wrapper', () => {
     expect(files.some((f) => f === OWNER)).toBe(true)
   })
 
-  it('has only the wrapper and the one stated exception calling the opener directly', () => {
+  it('has only the wrapper calling the opener directly', () => {
     const callers = workerSources().filter((f) => readFileSync(f, 'utf8').includes(`${OPENER}(`))
 
     expect(
       callers.map((f) => path.relative(REPO_ROOT, f)).sort(),
       'only the wrapper may open a run record; every job uses the wrapper so the ending cannot be left off the failure path',
-    ).toEqual([OWNER, EXEMPT].map((f) => path.relative(REPO_ROOT, f)).sort())
+    ).toEqual([path.relative(REPO_ROOT, OWNER)])
   })
 
-  it('holds the exempt job to the rule the wrapper exists to enforce', () => {
-    // An exemption that stops checking anything is just a hole. This one still
-    // has to close its record in a `finally`, which is the whole property.
-    const source = readFileSync(EXEMPT, 'utf8')
-    const finallyBlock = source.slice(source.lastIndexOf('} finally {'))
-    expect(finallyBlock, 'the exempt job must still close its record in a finally').toContain('finishJobRun(')
-  })
-
-  it('has all four archive jobs going through the wrapper', () => {
+  it('has all five archive jobs going through the wrapper', () => {
     // Named individually rather than counted, because a count passes when one
     // job is swapped for another (L63).
     const expected = [
@@ -77,6 +73,7 @@ describe('archive run records go through one wrapper', () => {
       'lib/archive-settings-check.ts',
       'lib/archive-identity-check.ts',
       'lib/archive-backlog-run.ts',
+      'lib/execution-archive.ts',
     ]
     for (const rel of expected) {
       const source = readFileSync(path.join(WORKER_SRC, rel), 'utf8')

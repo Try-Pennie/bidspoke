@@ -33,9 +33,9 @@ import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buff
 import { decideLock, lockValue } from '../archive/run-lock'
 import { CRON_RUN_BUDGET, type RunBudget } from '../archive/deadline'
 import {
-  startJobRun,
-  finishJobRun,
+  withJobRun,
   ARCHIVE_JOB_RUN,
+  type JobRunHandle,
   stampJobRunProgress,
   readLastUnfinishedRun,
   type LastUnfinishedRun,
@@ -373,10 +373,14 @@ export async function runExecutionArchive(
     // Recorded, closed immediately. A run that looked and found the lock held is
     // a run that happened, and leaving no row would make it indistinguishable
     // from an invocation that never fired (L98).
-    await finishJobRun(supabase, await startJobRun(supabase, ARCHIVE_JOB_RUN), {
-      outcome: 'skipped-locked',
-      detail,
-    })
+    await withJobRun(
+      supabase,
+      ARCHIVE_JOB_RUN,
+      // No work: the row exists so a run that looked and found the lock held is
+      // distinguishable from an invocation that never fired (L98).
+      () => Promise.resolve(undefined),
+      () => ({ outcome: 'skipped-locked', detail }),
+    )
     return { ...EMPTY_RUN, skipped: 'locked', detail }
   }
   if (lock.action === 'take-over') {
@@ -420,15 +424,6 @@ export async function runExecutionArchive(
     expirationTtl: RUN_LOCK_TTL_SECONDS,
   })
 
-  // Opened AFTER the lock, so a skipped run is not recorded as a run that did
-  // work, and BEFORE anything else, so a run killed at any point from here on
-  // leaves a row with no ending. That absence is the evidence (#960).
-  const runRecord = await startJobRun(supabase, ARCHIVE_JOB_RUN)
-  let ending: { outcome: string; detail?: string; summary?: Record<string, unknown> } = {
-    outcome: 'threw',
-    detail: 'the run threw before it could report an outcome',
-  }
-
   /**
    * Every consumer of the budget, counted where the request is issued.
    *
@@ -456,7 +451,15 @@ export async function runExecutionArchive(
     },
   })
 
-  try {
+  /**
+   * The run itself, named so the wrapper can own the record around it (#1277).
+   *
+   * Opened AFTER the lock, so a skipped run is not recorded as a run that did
+   * work, and its ending written in the wrapper's `finally`, so a run killed at
+   * any point from here on leaves a row with no ending at all. That absence is
+   * the evidence (#960).
+   */
+  const runWithRecord = async (runRecord: JobRunHandle): Promise<ArchiveRunSummary> => {
     // One small read per run, cached for the run. workflow_executions carries no
     // organization_id and there are ten live workflows, so this is never joined
     // per execution.
@@ -666,20 +669,39 @@ export async function runExecutionArchive(
         `subrequests=${totalUsed()}/${SUBREQUEST_BUDGET} ` +
         `(read=${used.read} send=${used.send} record=${used.record} refusal=${used.refusal})`,
     )
-    ending = {
-      outcome: result.stop,
-      detail: result.detail,
-      summary: {
-        failed: result.failed,
-        hoursArchived: result.hoursArchived,
-        hoursEmpty: result.hoursEmpty,
-        executionsArchived: result.executionsArchived,
-        executionsRefused: result.executionsRefused,
-        hoursBehind: result.hoursBehind,
-        subrequestsUsed: { ...used, total: totalUsed() },
-      },
-    }
     return { ...result, subrequestsUsed: { ...used, total: totalUsed() } }
+  }
+
+  // THE NESTING IS THE ORDERING (#1277). `withJobRun`'s own `finally` closes the
+  // run record, and it is INSIDE this `try`, so the record is closed before the
+  // lock is released below. The other order leaves a window where the lock is
+  // free while this run's record is still open, and the next invocation starting
+  // in that window reads that row and reports a healthy predecessor as killed
+  // (#1034). That ordering is asserted as behaviour in
+  // `archive-record-closes-before-lock.test.ts`, not left to the nesting reading
+  // correctly.
+  try {
+    return await withJobRun(
+      supabase,
+      ARCHIVE_JOB_RUN,
+      runWithRecord,
+      // Derived from the FINISHED summary rather than from a variable set part
+      // way through the body, so the record cannot describe a state the run
+      // never returned (L78).
+      (summary) => ({
+        outcome: summary.stop,
+        detail: summary.detail,
+        summary: {
+          failed: summary.failed,
+          hoursArchived: summary.hoursArchived,
+          hoursEmpty: summary.hoursEmpty,
+          executionsArchived: summary.executionsArchived,
+          executionsRefused: summary.executionsRefused,
+          hoursBehind: summary.hoursBehind,
+          subrequestsUsed: summary.subrequestsUsed,
+        },
+      }),
+    )
   } finally {
     // Named rather than swallowed. Reaching here with rows still buffered means
     // the run threw before they could be written, and the count says how many
@@ -690,11 +712,6 @@ export async function runExecutionArchive(
         `[execution-archive] ${refusals.buffered} refusals were never written, so the refusal ledger is short by that many`,
       )
     }
-    // Closed in the finally so a run that THREW is still distinguishable from
-    // one that was killed: the first has an ending saying it threw, the second
-    // has none at all. Neither can fail the run, because a bookkeeping write
-    // must not replace the error already unwinding.
-    await finishJobRun(supabase, runRecord, ending)
     await env.IDEMPOTENCY.delete(RUN_LOCK_KEY)
   }
 }
