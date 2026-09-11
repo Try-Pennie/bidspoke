@@ -1142,14 +1142,14 @@ export async function sendCronHeartbeatAlert(
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `The ${job.label} cron (\`${job.triggerCron}\`) started a run ~${minutes} minutes ago and has not completed it. The platform most likely killed the invocation (out of memory or CPU) or it is hung. Until a run completes: ${job.dependents}.`,
+          text: `The ${job.label} cron (\`${job.triggerCron}\`) started a run ~${minutes} minutes ago and has not completed it. That is all this check can see: the run stamped its start and never stamped a completion inside its allowance, so whether the platform killed it, and for which reason, is not visible from here. Until a run completes: ${job.dependents}.`,
         },
       },
       {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*How to fix:* read the termination reason in Cloudflare: Workers and Pages > bidspoke-worker > Settings > Trigger Events, and the invocation statuses under Metrics (exceededMemory, exceededCpu). The next scheduled run tries again on its own; if the same run keeps vanishing, its work needs bounding or splitting, and nothing it was meant to do has happened since the time above.`,
+          text: `*How to fix:* read this run's own outcome in Cloudflare Workers Logs for bidspoke-worker, filtered to \`$workers.eventType = scheduled\`. Each cron invocation there carries \`outcome\`, \`wallTimeMs\` and \`cpuTimeMs\`, and the outcome is what says which remedy applies: a resource kill means the work needs bounding or splitting, while a plain \`canceled\` means the platform dropped an invocation that was inside every limit. The next scheduled run tries again on its own, and this one may have completed part of its work before it stopped.`,
         },
       },
     ]
