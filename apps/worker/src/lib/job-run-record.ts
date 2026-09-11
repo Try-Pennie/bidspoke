@@ -95,6 +95,112 @@ export async function finishJobRun(
   }
 }
 
+/**
+ * Keeps the OPEN row current, without closing it (#1034).
+ *
+ * A run the platform kills cannot run its `finally`, so it writes no ending, and
+ * that missing ending is how a kill is detected. What it leaves behind, though,
+ * is a row saying only that a run began: out of memory, out of wall time, out of
+ * subrequests and a platform blip are indistinguishable in it, and they are
+ * different fixes (2026-08-23, two such rows).
+ *
+ * So the row is kept current as the work proceeds, and the last stamp is what
+ * the killed run leaves. It deliberately writes ONLY `summary`: setting
+ * `finished_at` or `outcome` here would make every stamped run look finished and
+ * destroy the one distinction this record exists to carry.
+ *
+ * Never throws, for the same reason `startJobRun` does not. A stamp that could
+ * fail the run would manufacture the very condition it exists to explain.
+ */
+export async function stampJobRunProgress(
+  supabase: SupabaseClient,
+  handle: JobRunHandle,
+  progress: Record<string, unknown>,
+): Promise<void> {
+  if (handle.id === null) return
+  try {
+    const { error } = await requireRowsAffected(
+      `job_runs progress ${handle.id}`,
+      () =>
+        supabase
+          .from('job_runs')
+          .update({ summary: progress })
+          .eq('id', handle.id as string)
+          .select('id'),
+    )
+    if (error) throw new Error(formatErr(error))
+  } catch (err) {
+    console.error(`[job-runs] could not stamp progress on run ${handle.id}: ${formatErr(err)}`)
+  }
+}
+
+/** What a run that never closed had reached, as far as it managed to say. */
+export interface UnfinishedRun {
+  id: string
+  startedAt: string
+  /** Null means it was killed before it finished anything, which is its own fact. */
+  summary: Record<string, unknown> | null
+}
+
+/**
+ * Three answers, because they are three different facts (L11).
+ *
+ * `found` is a predecessor, whether or not it managed to stamp anything.
+ * `none` is a lookup that ran and found no unfinished run. `unreadable` is a
+ * lookup that FAILED, which is not the same as finding nothing: something may
+ * well be recorded and we could not see it. Collapsing the last two into one
+ * null let a caller say "nothing is recorded" about a row it never managed to
+ * read, which is a claim the check did not measure.
+ */
+export type LastUnfinishedRun =
+  | { kind: 'found'; run: UnfinishedRun }
+  | { kind: 'none' }
+  | { kind: 'unreadable'; detail: string }
+
+/** The most recent run of this job that opened a row and never closed it. */
+export async function readLastUnfinishedRun(
+  supabase: SupabaseClient,
+  job: string,
+): Promise<LastUnfinishedRun> {
+  try {
+    const { data, error } = await supabase
+      .from('job_runs')
+      .select('id, started_at, summary')
+      .eq('job', job)
+      .is('finished_at', null)
+      .order('started_at', { ascending: false })
+      .limit(1)
+    if (error) throw new Error(formatErr(error))
+    const row = (data as Array<Record<string, unknown>> | null)?.[0]
+    if (!row) return { kind: 'none' }
+    // A row whose own identity or start cannot be read is not a record of
+    // anything, and rendering it anyway is how an alert reaches somebody saying
+    // "started at undefined". Reported as unreadable, which is what it is.
+    if (typeof row.id !== 'string' || typeof row.started_at !== 'string') {
+      return { kind: 'unreadable', detail: 'the unfinished run row carried no readable id or start time' }
+    }
+    const summary = row.summary
+    return {
+      kind: 'found',
+      run: {
+        id: row.id,
+        startedAt: row.started_at,
+        // Only a plain object counts. Anything else is not a stamp this can
+        // read, and treating it as one is how a field ends up rendered as
+        // "[object Object]" inside an alert somebody is meant to act on.
+        summary:
+          summary !== null && typeof summary === 'object' && !Array.isArray(summary)
+            ? (summary as Record<string, unknown>)
+            : null,
+      },
+    }
+  } catch (err) {
+    const detail = formatErr(err)
+    console.error(`[job-runs] could not read the last unfinished ${job} run: ${detail}`)
+    return { kind: 'unreadable', detail }
+  }
+}
+
 export const ARCHIVE_JOB_RUN = 'execution-archive'
 
 /**

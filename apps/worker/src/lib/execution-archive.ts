@@ -32,7 +32,14 @@ import {
 import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
 import { decideLock, lockValue } from '../archive/run-lock'
 import { CRON_RUN_BUDGET, type RunBudget } from '../archive/deadline'
-import { startJobRun, finishJobRun, ARCHIVE_JOB_RUN } from './job-run-record'
+import {
+  startJobRun,
+  finishJobRun,
+  ARCHIVE_JOB_RUN,
+  stampJobRunProgress,
+  readLastUnfinishedRun,
+  type LastUnfinishedRun,
+} from './job-run-record'
 import type { Env } from '../index'
 
 const HOUR_MS = 60 * 60 * 1000
@@ -257,6 +264,69 @@ const EMPTY_RUN: ArchiveRunSummary = {
   subrequestsUsed: { read: 0, send: 0, record: 0, refusal: 0, total: 0 },
 }
 
+/**
+ * Reads one field of a stamp, or answers that it is not there to be read.
+ *
+ * Every field is optional by construction: a stamp written by an older deploy
+ * carries fewer of them, and the alert has to stay printable rather than saying
+ * "undefined" or "NaN" at somebody in the middle of an incident. Typed one by
+ * one rather than coerced, because coercing a value of the wrong type is how a
+ * field renders as "[object Object]" or as a NaN nobody can act on.
+ */
+const numberField = (s: Record<string, unknown>, key: string): number | null => {
+  const v = s[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+const textField = (s: Record<string, unknown>, key: string): string | null => {
+  const v = s[key]
+  return typeof v === 'string' && v.length > 0 ? v : null
+}
+
+/**
+ * What the killed run had reached, in the alert's own words.
+ *
+ * Four outcomes, worded apart on purpose (L11). A predecessor that stamped
+ * progress names the hour it died after and what it had spent. One that opened a
+ * row and stamped nothing died before finishing a single hour, which points at
+ * the first hour rather than at the run length. No row at all means this cannot
+ * say, and claiming the predecessor reached nothing would be a statement nobody
+ * measured. And a lookup that FAILED is its own answer again: something may well
+ * be recorded and we could not see it, so it names the read problem rather than
+ * reporting an empty backlog of evidence.
+ */
+export function describePredecessor(read: LastUnfinishedRun): string {
+  if (read.kind === 'unreadable') {
+    return `How far the killed run had got could not be read (${read.detail}), so its cause is not established here.`
+  }
+  if (read.kind === 'none') {
+    return 'No record of the run that was killed was found, so its cause is not established here.'
+  }
+  const { run } = read
+  if (run.summary === null) {
+    return (
+      `The killed run started at ${run.startedAt} and finished no hour at all, so whatever stopped it ` +
+      `stopped it inside its first one.`
+    )
+  }
+  const reached = textField(run.summary, 'detail')
+  const parts = [
+    `The killed run started at ${run.startedAt} and had reached: ${reached ?? 'an unrecorded point'}`,
+  ]
+  const archived = numberField(run.summary, 'hoursArchived')
+  const empty = numberField(run.summary, 'hoursEmpty')
+  if (archived !== null || empty !== null) {
+    parts.push(`${archived ?? 0} hours archived and ${empty ?? 0} empty`)
+  }
+  const elapsedMs = numberField(run.summary, 'elapsedMs')
+  if (elapsedMs !== null) parts.push(`${Math.round(elapsedMs / 1000)}s elapsed`)
+  const used = run.summary.subrequestsUsed
+  if (used !== null && typeof used === 'object' && !Array.isArray(used)) {
+    const total = numberField(used as Record<string, unknown>, 'total')
+    if (total !== null) parts.push(`${total} subrequests used`)
+  }
+  return `${parts.join(', ')}.`
+}
+
 export async function runExecutionArchive(
   env: Env,
   supabase: SupabaseClient,
@@ -316,10 +386,20 @@ export async function runExecutionArchive(
     // moment anything can say it happened (L98).
     console.warn(`[execution-archive] taking over a stale run lock: ${lock.reason}`)
     try {
+      // What the dead run had REACHED, not just that it stopped (#1034). Out of
+      // memory, out of wall time, out of subrequests and a platform blip all
+      // leave the same missing ending, and they are different fixes: an hour too
+      // large to finish in one invocation can never be archived however often it
+      // retries (#953), while a blip clears on the next run. The stamp is the
+      // only thing that separates them.
+      const predecessor = await readLastUnfinishedRun(supabase, ARCHIVE_JOB_RUN)
       await notifyExportFailure(
         supabase,
         ARCHIVE_JOB_NAMES.killed,
-        [`${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived.`],
+        [
+          `${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived. ` +
+            describePredecessor(predecessor),
+        ],
         env.IDEMPOTENCY,
         ARCHIVE_KILLED_REMEDY,
       )
@@ -535,6 +615,19 @@ export async function runExecutionArchive(
       },
       recordRefusal: async (executionId, reason) => {
         await refusals.add(refusalRow(executionId, dayById.get(executionId) ?? '', reason, now()))
+      },
+      // Kept current on the row this run already opened, so a run the platform
+      // kills leaves the hour it had reached and what it had spent, rather than
+      // a row that says only that something began (#1034). Counted against the
+      // record budget like every other write, because a consumer that does not
+      // decrement is exactly the silent overspend #965 was about.
+      recordProgress: async (progress) => {
+        used.record++
+        await stampJobRunProgress(supabase, runRecord, {
+          ...progress,
+          elapsedMs: now().getTime() - startedAt.getTime(),
+          subrequestsUsed: { ...used, total: totalUsed() },
+        })
       },
       budget: {
         maxHours: budget.maxHours,

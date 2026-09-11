@@ -93,7 +93,44 @@ export interface RunDeps {
   send: (batch: EncodedForSend[]) => Promise<void>
   recordArchived: (executionIds: string[]) => Promise<void>
   recordRefusal: (executionId: string, reason: string) => Promise<void>
+  /**
+   * Stamps how far the run has got, after every hour it finishes (#1034).
+   *
+   * A run the platform kills cannot run its `finally`, so it closes no run
+   * record, and the missing ending is the only evidence it was killed. That
+   * evidence says nothing about the CAUSE: out of memory, out of wall time, out
+   * of subrequests and a platform blip all leave the identical trace, and they
+   * are different fixes. An hour too large to finish in one invocation can never
+   * be archived however often it retries (#953); a blip clears by itself.
+   *
+   * So the open record is kept current instead. What the killed run leaves is
+   * the last stamp, which names the last hour it completed and what it had spent
+   * getting there.
+   *
+   * REQUIRED rather than optional, because a caller that could omit it is a
+   * caller whose killed runs are unexplainable, and nothing would say so
+   * (L621). A caller with nowhere to stamp passes one that says why.
+   *
+   * Its failures are swallowed by the loop: bookkeeping must not be able to stop
+   * the work it describes (L71).
+   */
+  recordProgress: (progress: RunProgress) => Promise<void>
   budget: RunBudget
+}
+
+/**
+ * What a run had reached when it was last able to say so.
+ *
+ * The same growing counters `RunResult` carries, so a partial record and a
+ * finished one are read the same way and a reader needs no second vocabulary.
+ */
+export interface RunProgress {
+  hoursArchived: number
+  hoursEmpty: number
+  executionsArchived: number
+  executionsRefused: number
+  /** The hour just finished, which is where a killed run died. */
+  detail: string
 }
 
 export interface RunResult {
@@ -362,6 +399,7 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
       await deps.advanceWatermark(next.hourStart)
       result.hoursEmpty++
       result.detail = `hour ${next.hourStart} contained no executions`
+      await stamp(deps, progressOf(result))
       continue
     }
 
@@ -372,6 +410,29 @@ export async function runArchive(deps: RunDeps): Promise<RunResult> {
     await deps.advanceWatermark(next.hourStart)
     result.hoursArchived++
     result.detail = `archived the hour beginning ${next.hourStart}`
+    await stamp(deps, progressOf(result))
+  }
+}
+
+/**
+ * Write the progress stamp, and never let it stop the run.
+ *
+ * The whole point of the stamp is to explain a run that died, so a stamp that
+ * can itself kill the run would manufacture the condition it exists to describe.
+ */
+const progressOf = (result: RunResult): RunProgress => ({
+  hoursArchived: result.hoursArchived,
+  hoursEmpty: result.hoursEmpty,
+  executionsArchived: result.executionsArchived,
+  executionsRefused: result.executionsRefused,
+  detail: result.detail,
+})
+
+async function stamp(deps: Pick<RunDeps, 'recordProgress'>, progress: RunProgress): Promise<void> {
+  try {
+    await deps.recordProgress(progress)
+  } catch (err) {
+    console.error(`[archive] could not stamp progress after ${progress.detail}: ${formatErr(err)}`)
   }
 }
 
@@ -416,7 +477,7 @@ export interface ReArchiveResult {
   alreadyDone: string[]
 }
 
-export type ReArchiveDeps = HourDeps & Pick<RunDeps, 'recordHour' | 'now'> & { budget: RunBudget }
+export type ReArchiveDeps = HourDeps & Pick<RunDeps, 'recordHour' | 'now' | 'recordProgress'> & { budget: RunBudget }
 
 export interface ReArchiveOptions {
   /**
@@ -505,6 +566,16 @@ export async function reArchiveHours(
       stepCount: outcome.stepCount,
     })
     result.hoursArchived++
+    // A re-archive can be killed exactly as the forward run can, and it runs on
+    // the hours somebody already knows are a problem, so where it got to is
+    // worth at least as much (#1034).
+    await stamp(deps, {
+      hoursArchived: result.hoursArchived,
+      hoursEmpty: 0,
+      executionsArchived: result.executionsArchived,
+      executionsRefused: result.executionsRefused,
+      detail: `re-archived the hour beginning ${hourStart}`,
+    })
   }
 
   return result

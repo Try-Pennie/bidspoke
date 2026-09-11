@@ -118,6 +118,12 @@ export function makeArchiveDouble(opts: {
         gte() { return chain },
         lt() { return chain },
         gt() { return chain },
+        // PostgREST spells "column IS NULL" as `.is()`, and the takeover's
+        // lookup for an unfinished run uses it (#1034). A double missing it
+        // does not answer wrongly, it THROWS, and the caller's catch then
+        // reports a read failure that only the fixture had, which would have
+        // been asserted as behaviour (L52).
+        is() { return chain },
         order() { return chain },
         limit() { return chain },
         maybeSingle() { return Promise.resolve(resolve()) },
@@ -153,7 +159,14 @@ export function makeArchiveDouble(opts: {
             // The insert reads back its id, so the run has a row to close, and
             // the close reads back the row it touched, because a zero-row UPDATE
             // reports error null and would otherwise pass (#583).
-            return counting ? { count: 1, error: null } : { data: [{ id: 'run-1' }], error: null }
+            //
+            // Carries the columns the takeover's lookup selects as well as the
+            // id the insert reads back (#1034), so a row that reaches the alert
+            // is a row shaped like a real one. A double answering only `id` made
+            // the alert print "started at undefined".
+            return counting
+              ? { count: 1, error: null }
+              : { data: [{ id: 'run-1', started_at: '2026-08-23T14:00:40.000Z', summary: null }], error: null }
           default:
             // Writes answer with no error. A write that silently failed would
             // make every assertion below pass while nothing landed.
