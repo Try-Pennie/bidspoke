@@ -72,6 +72,20 @@ describe('a lock left behind by a killed run (#954)', () => {
     expect(String((killed as unknown[])[2])).toMatch(/killed rather than still working/)
   })
 
+  it('carries what the dead run had reached, not just that it stopped (#1034)', async () => {
+    const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
+    await runWithLock(stale)
+
+    const killed = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_JOB_NAMES.killed)
+    // The double hands back an unfinished row that stamped nothing, which is a
+    // real outcome and the one that points at the first hour rather than at the
+    // run length. What matters is that the alert SAYS something about the
+    // predecessor: one that stayed silent reads as a predecessor that did
+    // nothing, which is the confusion #1034 exists to end.
+    expect(String((killed as unknown[])[2])).toMatch(/finished no hour at all/)
+    expect(String((killed as unknown[])[2])).not.toMatch(/undefined/)
+  })
+
   it('replaces the stale value with its own, so the next run is not told the same thing twice', async () => {
     const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
     const { kv } = await runWithLock(stale)
@@ -164,11 +178,32 @@ describe('the durable record of a run (#960)', () => {
     const { writes } = await runWithLock(null)
     const runs = writes.filter((w) => w.table === 'job_runs')
 
-    expect(runs).toHaveLength(2)
+    // Opened first, closed last. The writes between are progress stamps (#1034),
+    // and their count follows how many hours this fixture archives, so it is the
+    // OPEN and the CLOSE that are asserted rather than a total that would have to
+    // be edited every time the fixture's volume moved.
+    expect(runs.length).toBeGreaterThanOrEqual(2)
     expect((runs[0].rows[0] as Record<string, unknown>).job).toBe('execution-archive')
-    const ending = runs[1].rows[0] as Record<string, unknown>
+    const ending = runs[runs.length - 1].rows[0] as Record<string, unknown>
     expect(typeof ending.finished_at).toBe('string')
     expect(ending.outcome).toBe('caught-up')
+  })
+
+  it('stamps progress without ever closing the row (#1034)', async () => {
+    // The distinction the whole record rests on: a killed run is told from a
+    // finished one by whether an ending exists. A stamp that set finished_at
+    // would make every stamped run look finished and destroy it.
+    const { writes } = await runWithLock(null)
+    const runs = writes.filter((w) => w.table === 'job_runs')
+    const between = runs.slice(1, -1)
+
+    expect(between.length).toBeGreaterThan(0)
+    for (const write of between) {
+      const row = write.rows[0] as Record<string, unknown>
+      expect(row).not.toHaveProperty('finished_at')
+      expect(row).not.toHaveProperty('outcome')
+      expect(row.summary).toBeTruthy()
+    }
   })
 
   it('records a run that skipped on the lock, closed immediately', async () => {

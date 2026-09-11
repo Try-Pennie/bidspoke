@@ -109,6 +109,7 @@ async function drain(opts: {
         watermark = hourStart
       },
       recordHour: async () => {},
+      recordProgress: async () => {},
       streamHour: async (hourStart, _hourEnd, onSlice) => {
         const utcHour = new Date(Date.parse(hourStart)).getUTCHours()
         const executions = EXECUTIONS_BY_UTC_HOUR[utcHour]
