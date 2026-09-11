@@ -570,11 +570,18 @@ export default {
           const { runArchiveBacklog, backlogDeps, hoursOfDay } = await import('./lib/archive-backlog-run')
           const { runExecutionArchive } = await import('./lib/execution-archive')
           const { sendArchiveBatch } = await import('./lib/execution-archive-send')
-          const deps = backlogDeps(env, supabase, async (day, alreadyRecorded) => {
+          const { CRON_RUN_BUDGET } = await import('./archive/deadline')
+          const deps = backlogDeps(env, supabase, async (day, alreadyRecorded, wallMs) => {
             const summary = await runExecutionArchive(env, supabase, {
               sendBatch: (rows) => sendArchiveBatch(env, rows),
               hours: hoursOfDay(day),
               alreadyRecorded,
+              // What the WALK says is left of this invocation, never more than a
+              // normal run would take anyway (#1184). Without this the repair
+              // budgets 13 minutes from its own start, the walk's reads are on
+              // top, and the pair reached the platform's 900 second kill on
+              // 2026-08-25.
+              budget: { wallMs: Math.min(wallMs, CRON_RUN_BUDGET.wallMs), maxHours: CRON_RUN_BUDGET.maxHours },
             })
             return { hoursArchived: summary.hoursArchived, failed: summary.failed, detail: summary.detail }
           })
