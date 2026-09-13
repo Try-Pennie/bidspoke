@@ -388,28 +388,44 @@ export default {
       // applicant's SSN sits in one queryable place had no upper bound and the
       // stated retention was aspirational. Runs as the eraser, which is the only
       // identity in the account holding DELETE on that table.
+      // It is watched by the dead-man switch, so it has to stamp. #1324
+      // registered it in CRON_JOBS and added no stamp, so it ran and finished
+      // for two days while the switch reported it had never run and pointed the
+      // reader at cron triggers that were correct (#1332).
       track(
         (async () => {
           const { expireArchivedDays, ARCHIVE_EXPIRY_JOB } = await import('./lib/archive-expiry')
           const { withJobRun } = await import('./lib/job-run-record')
-          const r = await withJobRun(
-            supabase,
-            ARCHIVE_EXPIRY_JOB,
-            () => expireArchivedDays(env, supabase),
-            (result) => ({
-              // A run that deleted nothing gets its own outcome, so "there was
-              // nothing old enough" is never filed as the same event as a run
-              // that did work (L98).
-              outcome: result.failed ? 'failed' : result.daysExpired.length === 0 ? 'nothing-expired' : 'expired',
-              detail: result.detail,
-              summary: {
-                cutoff: result.cutoff,
-                daysExpired: result.daysExpired,
-                rowsDeleted: result.rowsDeleted,
-              },
-            }),
+          await writeHeartbeat(env.IDEMPOTENCY, ARCHIVE_EXPIRY_JOB).catch((e) =>
+            console.error('[cron-heartbeat] archive-expiry write failed:', e)
           )
-          console.log(`[archive-expiry] ${r.detail}`)
+          try {
+            const r = await withJobRun(
+              supabase,
+              ARCHIVE_EXPIRY_JOB,
+              () => expireArchivedDays(env, supabase),
+              (result) => ({
+                // A run that deleted nothing gets its own outcome, so "there was
+                // nothing old enough" is never filed as the same event as a run
+                // that did work (L98).
+                outcome: result.failed ? 'failed' : result.daysExpired.length === 0 ? 'nothing-expired' : 'expired',
+                detail: result.detail,
+                summary: {
+                  cutoff: result.cutoff,
+                  daysExpired: result.daysExpired,
+                  rowsDeleted: result.rowsDeleted,
+                },
+              }),
+            )
+            console.log(`[archive-expiry] ${r.detail}`)
+          } finally {
+            // A handled failure is a finished run; only a killed or hung one
+            // leaves no completion, which is the distinction the stamp carries
+            // (#985). So it is written on every exit path (L514).
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, ARCHIVE_EXPIRY_JOB).catch((e) =>
+              console.error('[cron-heartbeat] archive-expiry completed write failed:', e)
+            )
+          }
         })().catch((e) => console.error('[archive-expiry] failed:', e))
       )
       // Room left before the archive's busiest hour no longer fits one run

@@ -40,6 +40,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert } from './slack'
+import { clearCondition, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
 const MIN = 60 * 1000
 const H = 60 * MIN
@@ -160,11 +161,13 @@ export const completedKey = (id: string) => `cron-heartbeat:${id}:completed`
 /** When the check first looked for this job's completed stamp and found none. */
 export const completedWatchKey = (id: string) => `cron-heartbeat:${id}:completed-watch`
 export const firstSeenKey = (id: string) => `cron-heartbeat:${id}:first-seen`
-const cooldownKey = (id: string) => `cron-heartbeat:${id}:alerted`
+/**
+ * The key the backoff records this job's standing condition under. The condition
+ * and cooldown keys hang off it, so one job's reminder schedule is one subtree.
+ */
+export const backoffKey = (id: string) => `cron-heartbeat:${id}`
 
-const COOLDOWN_TTL_SECONDS = 6 * 60 * 60
-
-export type HeartbeatStatus = 'healthy' | 'stale' | 'never_ran' | 'pending' | 'vanished'
+export type HeartbeatStatus = 'healthy' | 'stale' | 'never_ran' | 'pending' | 'vanished' | 'unstamped'
 
 export interface HeartbeatVerdict {
   status: HeartbeatStatus
@@ -243,6 +246,42 @@ export interface HeartbeatCheckResult {
   ageMs: number | null
 }
 
+/**
+ * When this job last FINISHED a run according to `job_runs`, or null when there
+ * is no evidence either way (#1332).
+ *
+ * This is the second, independent record that a scheduled job ran: `withJobRun`
+ * writes a row with a start, a finish and an outcome, and unlike the KV stamp it
+ * is written by the job's own work rather than by a line at the dispatch site.
+ * So the two can disagree, and when they do the database is the one that saw the
+ * work. On 2026-09-11 they disagreed for two days and nothing looked.
+ *
+ * NULL MEANS NO EVIDENCE, NEVER "IT DID NOT RUN". Most watched jobs do not use
+ * `withJobRun` at all, and a failed read answers the same way, so an empty
+ * result may only ever leave the original verdict standing (L98, L345). It is
+ * therefore consulted ONLY to WITHDRAW an accusation, never to make one.
+ */
+export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from('job_runs')
+      .select('finished_at')
+      .eq('job', jobId)
+      .not('finished_at', 'is', null)
+      .order('finished_at', { ascending: false })
+      .limit(1)
+    if (error) {
+      logReadFailure('cron-heartbeat', `job_runs for ${jobId}`, error)
+      return null
+    }
+    const finished = (data as { finished_at?: unknown }[] | null | undefined)?.[0]?.finished_at
+    return typeof finished === 'string' ? finished : null
+  } catch (e) {
+    console.error(`[cron-heartbeat] job_runs read for ${jobId} threw:`, e)
+    return null
+  }
+}
+
 /** Evaluate one job's freshness, seed its first-seen marker, alert on cooldown. */
 async function checkJob(
   supabase: SupabaseClient,
@@ -262,26 +301,47 @@ async function checkJob(
     await kv.put(completedWatchKey(job.id), watchingSince)
   }
   const verdict = evaluateHeartbeat(lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs, watchingSince)
+  const key = backoffKey(job.id)
 
   if (verdict.status === 'pending') {
     if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
     return { jobId: job.id, status: 'pending', alerted: false, ageMs: verdict.ageMs }
   }
   if (verdict.status === 'healthy') {
+    // Recovery resets the reminder schedule, so the next occurrence of this
+    // condition is reported at once rather than throttled by its history. Only
+    // when there is something to clear: this runs every minute for every job,
+    // and an unconditional delete would be two KV WRITES a minute per job for
+    // the healthy case, which is almost all of them almost all of the time.
+    if (await readCondition(kv, key)) await clearCondition(kv, key)
     return { jobId: job.id, status: 'healthy', alerted: false, ageMs: verdict.ageMs }
   }
 
-  // stale, never_ran or vanished -- alert once per per-job cooldown window.
-  if (await kv.get(cooldownKey(job.id))) {
-    return { jobId: job.id, status: verdict.status, alerted: false, ageMs: verdict.ageMs }
+  // Before accusing a job of being dark, ask the one source that would know
+  // otherwise (#1332). A job that is demonstrably finishing runs while its stamp
+  // is absent has a different problem, with a different remedy, and saying "it
+  // has never run" about it is simply false (L11).
+  let status = verdict.status
+  if (status === 'stale' || status === 'never_ran') {
+    const finished = await lastFinishedRun(supabase, job.id)
+    const finishedMs = finished ? Date.parse(finished) : NaN
+    if (Number.isFinite(finishedMs) && nowMs - finishedMs <= job.staleMs) status = 'unstamped'
   }
 
+  // Alert once per interval, and the interval GROWS while the condition stands.
+  if (await inCooldown(kv, key)) {
+    return { jobId: job.id, status, alerted: false, ageMs: verdict.ageMs }
+  }
+
+  const standing = await readCondition(kv, key)
   let alerted = false
   for (const orgId of orgIds) {
-    if (await sendCronHeartbeatAlert(supabase, orgId, job, verdict.status, verdict.ageMs)) alerted = true
+    if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, standing)) alerted = true
   }
-  if (alerted) await kv.put(cooldownKey(job.id), '1', { expirationTtl: COOLDOWN_TTL_SECONDS })
-  return { jobId: job.id, status: verdict.status, alerted, ageMs: verdict.ageMs }
+  // Only arm the next interval once something actually delivered, so a Slack
+  // outage does not silence the condition for a day.
+  if (alerted) await recordAlert(kv, key, standing, nowMs)
+  return { jobId: job.id, status, alerted, ageMs: verdict.ageMs }
 }
 
 /**
