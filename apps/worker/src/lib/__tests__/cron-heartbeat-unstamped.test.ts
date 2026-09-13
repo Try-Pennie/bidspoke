@@ -151,6 +151,22 @@ describe('a registered job with no heartbeat stamp', () => {
     expect(results.find((r) => r.jobId === JOB)?.status).toBe('never_ran')
   })
 
+  it('still reports dark when the recorded finish time cannot be parsed (L50)', async () => {
+    // A value read out of the database goes straight into a comparison against
+    // the staleness threshold, and an unparseable one compares false against
+    // every number. It has to land on the side that keeps the accusation, not
+    // the side that withdraws it.
+    const kv = fakeKv({
+      ...allFreshExcept(JOB, NOW),
+      [firstSeenKey(JOB)]: iso(NOW - 48 * H),
+    })
+    const supabase = fakeSupabase({ [JOB]: 'yesterday afternoon' })
+
+    const results = await runHeartbeatChecks(supabase, kv, NOW)
+
+    expect(results.find((r) => r.jobId === JOB)?.status).toBe('never_ran')
+  })
+
   it('does not consult job_runs for a healthy job, so the common path costs nothing', async () => {
     const consulted: string[] = []
     const supabase = {
