@@ -121,6 +121,22 @@ export const DEAD_MIN_DAYS = 3
 export const RECOVERY_MIN_DAY_RUNS = DEAD_MIN_RUNS
 
 /**
+ * How many of the most recent judgeable days a resolution may fall in.
+ *
+ * TWO, because the newest row is always a PART day and a part day can be
+ * genuinely alive while showing nothing yet. The check runs at 13:00 UTC:
+ * measured over the week to 2026-09-13, this field resolved after 13:00 on
+ * 2026-09-10, so at check time that day read as zero while the field had in
+ * fact recovered. Reading only the newest day pages on a morning like that, and
+ * one morning in four in that sample had no hit yet by 13:00.
+ *
+ * Not three or more. The cost of each extra day is a day of delay in FINDING a
+ * field that has just died, since yesterday's hits keep answering for today.
+ * Two buys the part day its complete predecessor and nothing else.
+ */
+export const RECOVERY_LOOKBACK_DAYS = 2
+
+/**
  * How the dead tier names itself, in the alert and in its own all-clear.
  *
  * One constant because the recovery notice repeats the signal name back to the
@@ -287,16 +303,15 @@ export function hasRecentResolution(
     acc.present += r.present_count
     byDay.set(r.day, acc)
   }
-  let newest: string | null = null
-  for (const [day, acc] of byDay) {
-    if (acc.ran < t.recoveryMinDayRuns) continue
-    if (newest === null || day > newest) newest = day
-  }
+  const judgeable = [...byDay.entries()]
+    .filter(([, acc]) => acc.ran >= t.recoveryMinDayRuns)
+    .sort(([a], [b]) => b.localeCompare(a))
+    .slice(0, RECOVERY_LOOKBACK_DAYS)
   // No day carried enough traffic to say anything. Not established, so the
   // field keeps whatever verdict the window gave it: an unjudgeable day must
   // never be the thing that stands an alert down (L98).
-  if (newest === null) return false
-  return (byDay.get(newest) as { present: number }).present > 0
+  if (judgeable.length === 0) return false
+  return judgeable.some(([, acc]) => acc.present > 0)
 }
 
 export interface PresenceRow {
