@@ -638,6 +638,19 @@ describe('classifyDead stands a recovered field down at once (#1336)', () => {
   it('still calls a genuinely never-resolving field dead', () => {
     expect(verdictFor(week([0, 0, 0, 0, 0, 0, 0]), 'f')).toBe('alerting')
   })
+
+  it('is not fooled by a partial newest day that has not seen its hit yet', () => {
+    // The check runs at 13:00 UTC, so the newest row is always a part day.
+    // Measured on 2026-09-10 this field's only resolution landed AFTER 13:00,
+    // so at check time the newest day read as zero while the field was alive.
+    // Reading only the newest day pages on a morning like that.
+    expect(verdictFor(week([0, 0, 0, 0, 0, 2, 0]), 'f')).toBe('healthy')
+  })
+
+  it('does not reach back further than the partial day and the one before it', () => {
+    // Two days, not three: an outage that began yesterday must still be found.
+    expect(verdictFor(week([0, 0, 0, 0, 2, 0, 0]), 'f')).toBe('alerting')
+  })
 })
 
 // The message has to be true of the very numbers printed inside it (L11). The
