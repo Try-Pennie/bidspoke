@@ -13,7 +13,7 @@ import {
   findDroughts, findDayOneDead, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
-  sendFieldDeadAlert,
+  sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -1014,6 +1014,39 @@ describe('field-presence alerting', () => {
       { subject: 'Main Flow scout.final' },
     ])
     expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
+  })
+
+  it('stands the dead tier down in its own words once the field resolves (#1336)', async () => {
+    // Until #1336 this path had effectively never run in production: a dead
+    // field could only recover by the whole seven day window flipping, which is
+    // the very lag the issue is about. So it ships newly live and has to be
+    // driven, not assumed (L535, L3).
+    const kv = makeKv()
+    const dead = deadDays('wf-1', 'equifax.links', 25000, 0)
+    await runFieldPresenceDeadCheck(makeSupabase(dead) as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+
+    // The same window, with the NEWEST day now resolving. The window total is
+    // still far below the dead rate, which is the whole point: it stands down
+    // on the recent day, not on the total.
+    const recovered = dead.map((r, i) =>
+      i === dead.length - 1 ? { ...r, present_count: 1 } : r,
+    )
+    kv.store.set(
+      'field-presence-dead-active:wf-1 equifax.links',
+      new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
+    )
+    await runFieldPresenceDeadCheck(makeSupabase(recovered) as never, kv, APP_URL)
+
+    expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
+    const payload = vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2]
+    expect(payload.items).toMatchObject([{ subject: 'Main Flow equifax.links' }])
+    // The wiring, not just the constants: a recovery notice that fell back to
+    // the shared default would tell the reader the field is "back within normal
+    // range", which its seven day rate flatly is not.
+    expect(payload.recoveredPhrase).toBe(DEAD_RECOVERED_PHRASE)
+    expect(payload.signal).toBe(DEAD_SIGNAL)
+    expect(payload.signal).not.toContain('never')
   })
 
   /**

@@ -1849,6 +1849,16 @@ export interface RecoveryWording {
    * reporting their span unchanged.
    */
   measuredWindowMinutes?: number
+  /**
+   * What the subject is said to be doing again, when "back within normal range"
+   * would claim more than the check measured (#1336).
+   *
+   * The dead field tier stands an incident down on a single resolution, which
+   * does not put its seven day rate back over the line, so the default sentence
+   * would assert a recovery nobody observed (L11). Optional, and every check
+   * that really does judge a range keeps the default unchanged.
+   */
+  recoveredPhrase?: string
 }
 
 /**
@@ -1892,7 +1902,8 @@ function recoverySentence(item: RecoveredSubject, wording: RecoveryWording, now:
       : '.'
 
   const link = item.url ? `  <${item.url}|open>` : ''
-  return `*${item.subject}* is back within normal range. The ${wording.signal} alert fired at ${etTime(started)}${howLong}${link}`
+  const recovered = wording.recoveredPhrase ?? 'is back within normal range'
+  return `*${item.subject}* ${recovered}. The ${wording.signal} alert fired at ${etTime(started)}${howLong}${link}`
 }
 
 /**

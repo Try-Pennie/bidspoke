@@ -120,6 +120,24 @@ export const DEAD_MIN_DAYS = 3
  */
 export const RECOVERY_MIN_DAY_RUNS = DEAD_MIN_RUNS
 
+/**
+ * How the dead tier names itself, in the alert and in its own all-clear.
+ *
+ * One constant because the recovery notice repeats the signal name back to the
+ * reader: left as "output field never resolves" it would restate, inside the
+ * all-clear, the exact claim the alert stopped making in #1336.
+ */
+export const DEAD_SIGNAL = 'output field not resolving'
+
+/**
+ * What the dead tier's all-clear says the field is doing again.
+ *
+ * Not "back within normal range", which is the shared default: a single
+ * resolution stands the incident down and does not put the seven day rate back
+ * over the line, so the default would claim more than this check measured (L11).
+ */
+export const DEAD_RECOVERED_PHRASE = 'is carrying values again'
+
 export function dailyRate(ran: number, present: number): number {
   return ran > 0 ? present / ran : 0
 }
@@ -940,6 +958,12 @@ interface TierConfig {
    * that can notice a missing field on a new tier.
    */
   measuredWindowMinutes: number
+  /**
+   * What this tier's all-clear says the subject is doing again, when the shared
+   * "back within normal range" would overclaim (#1336). Optional: a tier that
+   * omits it keeps the default.
+   */
+  recoveredPhrase?: string
   /** Sends ONE message covering every field in a channel's group (#1120). */
   send: (
     slack: { bot_token: string },
@@ -1075,6 +1099,7 @@ async function alertOnStates(
   for (const group of await byChannel(recoverable)) {
     const sent = await sendGroupedRecoveryAlert(group.slack, group.channel, {
       signal: cfg.signal,
+      recoveredPhrase: cfg.recoveredPhrase,
       // Declared so the all-clear cannot report the gap between hourly ticks as
       // the length of the incident (#1101). Tier-2 judges whole days and passes
       // its own window for the same reason.
@@ -1167,7 +1192,8 @@ export async function runFieldPresenceDeadCheck(
   )
   const { paged, recovered, unwatchable } = await alertOnStates(supabase, kv, appUrl, workflows, states, silenced, {
     prefix: 'field-presence-dead',
-    signal: 'output field never resolves',
+    signal: DEAD_SIGNAL,
+    recoveredPhrase: DEAD_RECOVERED_PHRASE,
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
     send: (slack, channel, fields, url) => sendFieldDeadAlert(slack, channel, fields, url),
   })
