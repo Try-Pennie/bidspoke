@@ -12,6 +12,7 @@ import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError } from './db-
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
 import { GENERIC_FIX_HINT } from './export-error-hints'
 import { truncateErrorForAlert } from './format-error'
+import { describeRepeat, type StandingCondition } from './alert-backoff'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
@@ -1125,19 +1126,59 @@ export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
   job: { label: string; triggerCron: string; dependents: string },
-  status: 'stale' | 'never_ran' | 'vanished',
+  status: 'stale' | 'never_ran' | 'vanished' | 'unstamped',
   ageMs: number | null,
+  standing: StandingCondition | null = null,
+  nowMs: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
   const hours = ageMs === null ? null : Math.round(ageMs / 3_600_000)
   const minutes = ageMs === null ? null : Math.round(ageMs / 60_000)
+  // A reminder that reads as a fresh discovery is the whole complaint behind
+  // #1334: three identical messages, each looking like a new incident. Every
+  // shape below carries this sentence, and the header says "still" (#1334).
+  const repeat = describeRepeat(standing, nowMs)
+  const again = repeat ? ' still' : ''
+  const withRepeat = (blocks: object[]): object[] =>
+    repeat ? [...blocks, { type: 'section', text: { type: 'mrkdwn', text: repeat } }] : blocks
+  // A job that is demonstrably finishing runs while its heartbeat stamp is
+  // missing is not dark, and telling anyone to go and check its cron triggers
+  // sends them to confirm the one thing that is not wrong (#1332).
+  if (status === 'unstamped') {
+    const blocks = withRepeat([
+      {
+        type: 'header',
+        text: { type: 'plain_text', text: `${job.label} is${again} running without a heartbeat`, emoji: false },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `The ${job.label} cron (\`${job.triggerCron}\`) has no heartbeat stamp, but \`job_runs\` shows it finishing runs, so the job itself is working and this watch is blind to it. Nothing is currently broken for: ${job.dependents}. What IS broken is the ability to notice when that changes.`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*How to fix:* the job is registered in \`CRON_JOBS\` (apps/worker/src/lib/cron-heartbeat.ts) but nothing calls \`writeHeartbeat\` for it in the scheduled handler. Add the stamp where the job dispatches, next to the other watched jobs in apps/worker/src/index.ts.`,
+        },
+      },
+    ])
+    return (await postMessage(
+      connection.bot_token,
+      connection.default_channel,
+      blocks,
+      `${job.label} is running without a heartbeat`,
+    )) !== null
+  }
   // A run that started and never finished is a different failure from a
   // trigger that never fired, with a different place to look (#985), so it
   // gets its own header, sentence and remedy rather than the "is dark" ones.
   if (status === 'vanished') {
-    const blocks = [
-      { type: 'header', text: { type: 'plain_text', text: `${job.label} started and never finished`, emoji: false } },
+    const blocks = withRepeat([
+      { type: 'header', text: { type: 'plain_text', text: `${job.label}${again} started and never finished`, emoji: false } },
       {
         type: 'section',
         text: {
@@ -1152,7 +1193,7 @@ export async function sendCronHeartbeatAlert(
           text: `*How to fix:* read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used. That outcome is what says which remedy applies, and only it can: a run stopped for exceeding a resource limit needs its work bounded or split, while one the platform simply cancelled was inside every limit and needs no change to anything here. The next scheduled run tries again on its own, and this one may have completed part of its work before it stopped.`,
         },
       },
-    ]
+    ])
     return (await postMessage(
       connection.bot_token,
       connection.default_channel,
@@ -1164,8 +1205,8 @@ export async function sendCronHeartbeatAlert(
     status === 'never_ran'
       ? `has not run since it was first observed${hours === null ? '' : ` ~${hours}h ago`}`
       : `has not run in ~${hours}h`
-  const blocks = [
-    { type: 'header', text: { type: 'plain_text', text: `${job.label} is dark`, emoji: false } },
+  const blocks = withRepeat([
+    { type: 'header', text: { type: 'plain_text', text: `${job.label} is${again} dark`, emoji: false } },
     {
       type: 'section',
       text: {
@@ -1180,12 +1221,12 @@ export async function sendCronHeartbeatAlert(
         text: `*How to fix:* confirm the worker deployed with its cron triggers (wrangler.toml \`[triggers]\` must include \`${job.triggerCron}\`) and that the scheduled handler is not throwing before dispatch. Check the Cloudflare dashboard: Workers and Pages > bidspoke-worker > Settings > Triggers, and the worker logs for the \`${job.triggerCron}\` run.`,
       },
     },
-  ]
+  ])
   return (await postMessage(
     connection.bot_token,
     connection.default_channel,
     blocks,
-    `${job.label} is dark (${status})`,
+    `${job.label} is${again} dark (${status})`,
   )) !== null
 }
 
@@ -1538,6 +1579,13 @@ export async function sendExportFailureAlert(
     fixHint?: string
     consequence?: string
     failingSince?: string
+    /**
+     * Present only on a REMINDER, saying which one it is and how long the
+     * condition has stood (#1334). Absent on a first report, so a message
+     * carrying it is visibly the same incident as the one before rather than a
+     * fresh discovery.
+     */
+    repeat?: string
     /** What the job DID, when "failed" is untrue (a check that ran and found something). */
     headlineVerb?: string
     /** What the listed items ARE, when "error" is untrue (a finding, a difference). */
@@ -1569,8 +1617,9 @@ export async function sendExportFailureAlert(
   const noun = payload.errors.length === 1
     ? (payload.itemNoun?.one ?? 'error')
     : (payload.itemNoun?.many ?? 'errors')
+  const again = payload.repeat ? ' still' : ''
   const blocks: unknown[] = [
-    { type: 'header', text: { type: 'plain_text', text: `${payload.jobName} ${headlineVerb}`, emoji: false } },
+    { type: 'header', text: { type: 'plain_text', text: `${payload.jobName}${again} ${headlineVerb}`, emoji: false } },
     {
       type: 'section',
       text: {
@@ -1600,8 +1649,9 @@ export async function sendExportFailureAlert(
       text: `*How to fix:* ${payload.fixHint ?? GENERIC_FIX_HINT}`,
     },
   })
+  if (payload.repeat) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } })
   const channel = channelOverride || connection.default_channel
-  return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName} failed: ${payload.errors.length} error(s)`)) !== null
+  return (await postMessage(connection.bot_token, channel, blocks, `${payload.jobName}${again} ${headlineVerb}: ${payload.errors.length} ${noun}`)) !== null
 }
 
 /**

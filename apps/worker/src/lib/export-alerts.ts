@@ -12,6 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
+import { clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -19,9 +20,14 @@ interface KvLike {
   delete(key: string): Promise<void>
 }
 
-// Backstop so a genuinely persistent outage still gets a reminder page rather
-// than going silent forever if it never recovers.
-export const EXPORT_ALERT_BACKSTOP_TTL_SECONDS = 8 * 60 * 60
+// The reminder gap used to be a flat eight hours, which meant a failure that
+// stood for a week arrived three times a day, every day, each message identical
+// to the last (#1334). It now comes from the shared escalating schedule in
+// alert-backoff, which lengthens to a day and resets on the first clean run, so
+// a flapping job is still paged every time it breaks. The old
+// `export-alert-state:` key is superseded by that module's own; an export that
+// is failing across the deploy pages once more and then follows the new
+// schedule, which is the safe direction for a key change to be wrong in.
 
 // How long a held-back first transient failure stays armed. Must outlive one
 // full cycle of the slowest job (the daily Achieve export) so its "next run"
@@ -75,13 +81,15 @@ export async function notifyExportFailure(
   errors: string[],
   kv: KvLike | undefined,
   remedy: AlertRemedy | ExportJobWording,
+  nowMs: number = Date.now(),
 ): Promise<void> {
-  const stateKey = `export-alert-state:${jobName}`
   const pendingKey = `export-alert-pending:${jobName}`
+  // The reminder schedule for this job's standing failure (#1334).
+  const backoff = `export-alert:${jobName}`
 
   if (errors.length === 0) {
     if (kv) {
-      await kv.delete(stateKey)
+      await clearCondition(kv, backoff)
       await kv.delete(pendingKey)
     }
     return
@@ -107,8 +115,12 @@ export async function notifyExportFailure(
   }
 
   // Already paged for this ongoing issue; stay quiet until it recovers (the
-  // key is cleared above) or the backstop TTL expires.
-  if (kv && (await kv.get(stateKey))) return
+  // condition is cleared above) or the current interval expires. The interval
+  // grows while the failure stands, so a long outage is still reported and does
+  // not arrive at the volume that teaches people to skip the channel.
+  if (kv && (await inCooldown(kv, backoff))) return
+  const standing = kv ? await readCondition(kv, backoff) : null
+  const repeat = describeRepeat(standing, nowMs) ?? undefined
 
   const { data: conns, error: connsError } = await supabase
     .from('service_connections')
@@ -136,6 +148,7 @@ export async function notifyExportFailure(
         fixHint,
         consequence,
         failingSince,
+        repeat,
         headlineVerb: own?.headlineVerb,
         itemNoun: own?.itemNoun,
       })) delivered = true
@@ -146,5 +159,5 @@ export async function notifyExportFailure(
 
   // Only start the cooldown once something actually delivered -- otherwise a
   // Slack outage would suppress retries for hours while nobody got paged.
-  if (kv && delivered) await kv.put(stateKey, '1', { expirationTtl: EXPORT_ALERT_BACKSTOP_TTL_SECONDS })
+  if (kv && delivered) await recordAlert(kv, backoff, standing, nowMs)
 }

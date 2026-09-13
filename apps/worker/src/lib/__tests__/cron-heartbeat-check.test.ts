@@ -28,12 +28,29 @@ function fakeKv(initial: Record<string, string> = {}) {
     store,
     get: vi.fn(async (k: string) => store.get(k) ?? null),
     put: vi.fn(async (k: string, v: string) => { store.set(k, v) }),
+    delete: vi.fn(async (k: string) => { store.delete(k) }),
   } as unknown as KVNamespace & { store: Map<string, string> }
 }
 
+/**
+ * Answers both reads the check makes: the Slack org list, and the `job_runs`
+ * cross-check it consults before accusing a job of being dark (#1332). The
+ * job_runs answer is EMPTY here, which is the no-evidence case, so every
+ * expectation in this file is about a job with nothing to vouch for it.
+ */
 function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
+  const runs = {
+    select: () => runs,
+    eq: () => runs,
+    not: () => runs,
+    order: () => runs,
+    limit: () => Promise.resolve({ data: [], error: null }),
+  }
   return {
-    from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: orgRows, error: null }) }) }),
+    from: (table: string) =>
+      table === 'job_runs'
+        ? runs
+        : { select: () => ({ eq: () => Promise.resolve({ data: orgRows, error: null }) }) },
   } as unknown as SupabaseClient
 }
 
@@ -173,7 +190,13 @@ describe('runHeartbeatChecks: a run that started and never finished (#985)', () 
     expect(r.status).toBe('vanished')
     expect(r.alerted).toBe(true)
     expect(vi.mocked(sendCronHeartbeatAlert)).toHaveBeenCalledWith(
-      expect.anything(), 'org-1', expect.objectContaining({ id: archive.id }), 'vanished', expect.any(Number),
+      expect.anything(),
+      'org-1',
+      expect.objectContaining({ id: archive.id }),
+      'vanished',
+      expect.any(Number),
+      // No standing condition on the first report: this is not a reminder (#1334).
+      null,
     )
     expect(results.filter((x) => x.jobId !== archive.id).every((x) => x.status === 'healthy')).toBe(true)
   })

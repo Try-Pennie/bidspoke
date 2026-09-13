@@ -8,7 +8,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../slack', () => ({ sendExportFailureAlert: vi.fn() }))
 
-import { notifyExportFailure, EXPORT_ALERT_BACKSTOP_TTL_SECONDS, EXPORT_ALERT_PENDING_TTL_SECONDS } from '../export-alerts'
+import { notifyExportFailure, EXPORT_ALERT_PENDING_TTL_SECONDS } from '../export-alerts'
+import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import { sendExportFailureAlert } from '../slack'
 
 function makeSupabase(orgIds: string[]) {
@@ -143,14 +144,14 @@ describe('notifyExportFailure', () => {
   })
 
   it('suppresses repeat alerts for the same job while cooldown state is set', async () => {
-    const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
+    const kv = makeKv({ 'export-alert:Lead sightings export:cooldown': '1' })
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings export', ['still broken'], kv, 'export-job')
     expect(from).not.toHaveBeenCalled()
     expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
   })
 
-  it('alerts and sets an 8h cooldown state on the first PERMANENT failure when kv is provided', async () => {
+  it('alerts and sets the first backoff interval on the first PERMANENT failure when kv is provided', async () => {
     vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
     const kv = makeKv()
     await notifyExportFailure(
@@ -161,10 +162,12 @@ describe('notifyExportFailure', () => {
       'export-job',
     )
     expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    // The gap lengthens on each reminder while the failure stands (#1334); this
+    // is the first, so it is the shortest step.
     expect(kv.put).toHaveBeenCalledWith(
-      'export-alert-state:Lead sightings export',
+      'export-alert:Lead sightings export:cooldown',
       '1',
-      { expirationTtl: EXPORT_ALERT_BACKSTOP_TTL_SECONDS },
+      { expirationTtl: BACKOFF_STEPS_SECONDS[0] },
     )
   })
 
@@ -176,11 +179,14 @@ describe('notifyExportFailure', () => {
   })
 
   it('clears cooldown state on a successful run when kv is provided', async () => {
-    const kv = makeKv({ 'export-alert-state:Lead sightings export': '1' })
+    const kv = makeKv({ 'export-alert:Lead sightings export:cooldown': '1' })
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings export', [], kv, 'export-job')
     expect(from).not.toHaveBeenCalled()
-    expect(kv.delete).toHaveBeenCalledWith('export-alert-state:Lead sightings export')
+    // Both halves: a cooldown left behind without its condition would restart
+    // the reminder schedule mid-way through the next occurrence.
+    expect(kv.delete).toHaveBeenCalledWith('export-alert:Lead sightings export:cooldown')
+    expect(kv.delete).toHaveBeenCalledWith('export-alert:Lead sightings export:condition')
   })
 })
 
@@ -281,7 +287,7 @@ describe('notifyExportFailure transient grace (alert only on two consecutive fai
   it('stays quiet during the post-alert cooldown but keeps the pending marker fresh', async () => {
     const kv = makeKv({
       [PENDING_KEY]: '2026-07-24T11:48:00.000Z',
-      'export-alert-state:Lead sightings purge': '1',
+      'export-alert:Lead sightings purge:cooldown': '1',
     })
     const from = vi.fn()
     await notifyExportFailure({ from } as never, 'Lead sightings purge', TRANSIENT, kv, 'export-job')
