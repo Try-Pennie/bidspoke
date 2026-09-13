@@ -13,6 +13,7 @@ import {
   findDroughts, findDayOneDead, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
   runFieldPresenceDroughtCheck, runFieldPresenceDeadCheck,
   classifyDrought, classifyDead, WINDOW_COLLAPSE_FLOOR, COLLAPSE_FLOOR,
+  sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -592,6 +593,97 @@ describe('classifyDead', () => {
   })
 })
 
+// #1336. The window total lags a recovery by up to DEAD_WINDOW_DAYS, so a field
+// whose upstream came back yesterday still totals to a dead rate and pages every
+// morning until the zeros age out. These drive the real fixture shape from the
+// incident that produced the issue: Scout dead 2026-09-05 to 09-09, back on the
+// 10th, still paging on the 12th and 13th.
+describe('classifyDead stands a recovered field down at once (#1336)', () => {
+  const verdictFor = (rows: PresenceRow[], field: string) =>
+    classifyDead(rows).find((s) => s.field_path === field)?.verdict
+
+  // Seven days of `ran` runs each, `present` given newest-LAST so the fixture
+  // reads in the same order as the incident table in the issue.
+  const week = (present: number[], ran: number[] | number = 3000): PresenceRow[] => {
+    const days = ['09-07', '09-08', '09-09', '09-10', '09-11', '09-12', '09-13']
+    return present.map((p, i) =>
+      row('wf1', 'f', `2026-${days[i]}`, Array.isArray(ran) ? ran[i] : ran, p),
+    )
+  }
+
+  it('is healthy when the most recent judgeable day resolved, though the window total is still dead', () => {
+    const rows = week([0, 0, 0, 0, 0, 0, 1])
+    // The window rate is 1/21000, far below DEAD_MAX_RATE, so the total alone
+    // still says dead. The most recent day is what changes the verdict.
+    expect(verdictFor(rows, 'f')).toBe('healthy')
+  })
+
+  it('stays alerting when only OLDER days in the window resolved', () => {
+    // The 2026-09-09 shape exactly: hits on the 7th and 8th are still inside the
+    // window while the field has been dead for days. Reading "has it resolved at
+    // all in the window" instead of "did the most recent day resolve" would have
+    // stopped this outage ever paging.
+    expect(verdictFor(week([1, 4, 0, 0, 0, 0, 0]), 'f')).toBe('alerting')
+  })
+
+  it('ignores a most-recent day too small to judge, and reads the last real one', () => {
+    // A partial day carrying one stray hit must not clear a live outage, and a
+    // partial day carrying none must not be read as evidence of death either.
+    const tinyDayResolved = week([0, 0, 0, 0, 0, 0, 1], [3000, 3000, 3000, 3000, 3000, 3000, 5])
+    expect(verdictFor(tinyDayResolved, 'f')).toBe('alerting')
+    const tinyDayBlank = week([0, 0, 0, 0, 0, 1, 0], [3000, 3000, 3000, 3000, 3000, 3000, 5])
+    expect(verdictFor(tinyDayBlank, 'f')).toBe('healthy')
+  })
+
+  it('still calls a genuinely never-resolving field dead', () => {
+    expect(verdictFor(week([0, 0, 0, 0, 0, 0, 0]), 'f')).toBe('alerting')
+  })
+})
+
+// The message has to be true of the very numbers printed inside it (L11). The
+// 2026-09-13 alert read "3 fields are read but have never carried a value over
+// the last 7 days" directly above three lines each saying the field "carried a
+// value on 7 of 21254 runs". Both sentences came from this one function.
+describe('the dead alert does not contradict its own numbers (#1336)', () => {
+  const render = async (present: number, ran: number): Promise<string> => {
+    vi.mocked(postMessage).mockClear()
+    vi.mocked(postMessage).mockResolvedValue('ts-1')
+    await sendFieldDeadAlert({ bot_token: 't' }, 'C1', [{
+      workflowName: 'Main Flow',
+      workflowId: 'wf1',
+      state: {
+        workflow_id: 'wf1',
+        field_path: 'pennie_or_eligibility.eligibility',
+        verdict: 'alerting',
+        dead: {
+          workflow_id: 'wf1',
+          field_path: 'pennie_or_eligibility.eligibility',
+          window_ran: ran,
+          window_present: present,
+        },
+      },
+    }], 'https://app.example')
+    const blocks = vi.mocked(postMessage).mock.calls[0][2] as Array<{
+      text?: { text?: string }
+    }>
+    return blocks.map((b) => b.text?.text ?? '').join('\n')
+  }
+
+  it('does not claim a field never resolved while printing the times it did', async () => {
+    const text = await render(7, 21254)
+    expect(text).toContain('7 of 21254')
+    expect(text.toLowerCase()).not.toContain('never carried a value')
+  })
+
+  it('states the ceiling and the recency it actually measured', async () => {
+    const text = await render(7, 21254)
+    // The claim the check can support: at or under the dead rate across the
+    // window, and nothing at all on the most recent judgeable day.
+    expect(text).toContain('0.1%')
+    expect(text).toContain('most recent day')
+  })
+})
+
 // Phase 4 (#423): the alerting itself. Everything below drives the real runner
 // against doubles, because the rules that matter here (dedupe, cooldown only on
 // delivery, the org gate, silence, and never announcing a recovery this run
@@ -924,6 +1016,39 @@ describe('field-presence alerting', () => {
     expect(kv.store.has('field-presence-drought-recovery:wf-1 scout.final')).toBe(false)
   })
 
+  it('stands the dead tier down in its own words once the field resolves (#1336)', async () => {
+    // Until #1336 this path had effectively never run in production: a dead
+    // field could only recover by the whole seven day window flipping, which is
+    // the very lag the issue is about. So it ships newly live and has to be
+    // driven, not assumed (L535, L3).
+    const kv = makeKv()
+    const dead = deadDays('wf-1', 'equifax.links', 25000, 0)
+    await runFieldPresenceDeadCheck(makeSupabase(dead) as never, kv, APP_URL)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+
+    // The same window, with the NEWEST day now resolving. The window total is
+    // still far below the dead rate, which is the whole point: it stands down
+    // on the recent day, not on the total.
+    const recovered = dead.map((r, i) =>
+      i === dead.length - 1 ? { ...r, present_count: 1 } : r,
+    )
+    kv.store.set(
+      'field-presence-dead-active:wf-1 equifax.links',
+      new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
+    )
+    await runFieldPresenceDeadCheck(makeSupabase(recovered) as never, kv, APP_URL)
+
+    expect(sendGroupedRecoveryAlert).toHaveBeenCalledTimes(1)
+    const payload = vi.mocked(sendGroupedRecoveryAlert).mock.calls[0][2]
+    expect(payload.items).toMatchObject([{ subject: 'Main Flow equifax.links' }])
+    // The wiring, not just the constants: a recovery notice that fell back to
+    // the shared default would tell the reader the field is "back within normal
+    // range", which its seven day rate flatly is not.
+    expect(payload.recoveredPhrase).toBe(DEAD_RECOVERED_PHRASE)
+    expect(payload.signal).toBe(DEAD_SIGNAL)
+    expect(payload.signal).not.toContain('never')
+  })
+
   /**
    * #1267. The page is one message per channel (#1120); the all-clear was still
    * one per field. On 2026-09-10 four fields under `ping_lendswift.data.data`
@@ -998,7 +1123,13 @@ describe('field-presence alerting', () => {
     expect(postMessage).toHaveBeenCalledTimes(1)
     const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
     expect(text).toContain('equifax.links')
-    expect(text).toContain('never resolved')
+    // The point of this assertion is that the dead tier says something the
+    // drought tier does not, so the reader can tell "this has all but stopped"
+    // from "this collapsed today". The phrase moved in #1336 (it used to claim
+    // the field had never resolved, which its own numbers contradicted); what
+    // is being defended is the distinction, not the old words.
+    expect(text).toContain('all but stopped resolving')
+    expect(text).not.toContain('Something downstream reads this')
   })
 
   it('keeps the two tiers on separate incident markers', async () => {
