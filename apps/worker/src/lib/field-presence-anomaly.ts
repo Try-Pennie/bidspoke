@@ -99,6 +99,27 @@ export const DEAD_MAX_RATE = 0.001
  */
 export const DEAD_MIN_DAYS = 3
 
+/**
+ * Runs a single day needs before its resolutions (or lack of them) can settle
+ * whether a field has recovered (#1336).
+ *
+ * The dead verdict is one sum over DEAD_WINDOW_DAYS, so it cannot clear until
+ * the zeros age out: measured 2026-09-13, Main Flow's
+ * `pennie_or_eligibility.eligibility` went dead for five days when FFN's
+ * firewall blocked the Worker's egress, Eligibility Scout came back on 09-10,
+ * and the field resolved on the 10th, 11th, 12th and 13th while the alert went
+ * on paging every morning because the window still totalled to a dead rate. It
+ * would have paged eight mornings about a condition that ended on the fourth.
+ *
+ * The floor exists so a PARTIAL day cannot decide it in either direction. The
+ * check runs at 13:00 UTC, so the newest row is always a part-day: a handful of
+ * runs carrying one stray hit must not stand down a live outage, and a handful
+ * carrying none is not evidence of death either. 200 is DEAD_MIN_RUNS, the same
+ * traffic the window as a whole needs before it may be judged at all, so one
+ * number governs "enough runs to say anything" everywhere in this tier.
+ */
+export const RECOVERY_MIN_DAY_RUNS = DEAD_MIN_RUNS
+
 export function dailyRate(ran: number, present: number): number {
   return ran > 0 ? present / ran : 0
 }
@@ -135,6 +156,7 @@ export interface PresenceThresholds {
   deadMinRuns?: number
   deadMaxRate?: number
   deadMinDays?: number
+  recoveryMinDayRuns?: number
 }
 
 interface ResolvedThresholds {
@@ -147,6 +169,7 @@ interface ResolvedThresholds {
   deadMinRuns: number
   deadMaxRate: number
   deadMinDays: number
+  recoveryMinDayRuns: number
 }
 
 function resolve(t: PresenceThresholds = {}): ResolvedThresholds {
@@ -162,6 +185,7 @@ function resolve(t: PresenceThresholds = {}): ResolvedThresholds {
     deadMinRuns: t.deadMinRuns ?? DEAD_MIN_RUNS,
     deadMaxRate: t.deadMaxRate ?? DEAD_MAX_RATE,
     deadMinDays: t.deadMinDays ?? DEAD_MIN_DAYS,
+    recoveryMinDayRuns: t.recoveryMinDayRuns ?? RECOVERY_MIN_DAY_RUNS,
   }
 }
 
@@ -210,6 +234,51 @@ export function detectDayOneDead(
   if (windowRan < t.deadMinRuns) return false
   if (everHealthy) return false
   return dailyRate(windowRan, windowPresent) <= t.deadMaxRate
+}
+
+/**
+ * Whether a field is carrying values again NOW, which the window total cannot
+ * see for up to DEAD_WINDOW_DAYS after the upstream comes back (#1336).
+ *
+ * Read as THE MOST RECENT judgeable day, never "any day in the window". The
+ * difference is the whole check: on 2026-09-09, five days into the Scout
+ * outage, the window still held the 4 hits of 09-03 and the 1 of 09-04, so an
+ * "any day" reading would have called the field healthy throughout the outage
+ * and it would never have paged at all.
+ *
+ * One resolution on that day is enough, which is Dan's call of 2026-09-13 taken
+ * with the measurement in front of him: over 36 judgeable days this field had
+ * six days with no resolution, five of them the outage itself, so a healthy day
+ * essentially always resolves at least once. It is a weaker re-arm than L160
+ * asks for, and what pays for that is the daily cadence: if the field is dead
+ * again tomorrow, tomorrow has no resolution and the check pages the next
+ * morning. The cost of clearing early is one alert cycle, not a missed outage.
+ *
+ * Days are aggregated before being read, because the rollup can hold more than
+ * one row for a day and two rows are still one day of evidence.
+ */
+export function hasRecentResolution(
+  rows: PresenceRow[],
+  thresholds?: PresenceThresholds,
+): boolean {
+  const t = resolve(thresholds)
+  const byDay = new Map<string, { ran: number; present: number }>()
+  for (const r of rows) {
+    const acc = byDay.get(r.day) ?? { ran: 0, present: 0 }
+    acc.ran += r.ran_count
+    acc.present += r.present_count
+    byDay.set(r.day, acc)
+  }
+  let newest: string | null = null
+  for (const [day, acc] of byDay) {
+    if (acc.ran < t.recoveryMinDayRuns) continue
+    if (newest === null || day > newest) newest = day
+  }
+  // No day carried enough traffic to say anything. Not established, so the
+  // field keeps whatever verdict the window gave it: an unjudgeable day must
+  // never be the thing that stands an alert down (L98).
+  if (newest === null) return false
+  return (byDay.get(newest) as { present: number }).present > 0
 }
 
 export interface PresenceRow {
@@ -316,7 +385,13 @@ export function findDayOneDead(rows: PresenceRow[], thresholds?: PresenceThresho
         everHealthy = true
       }
     }
-    if (detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds)) {
+    // Both call sites consult ONE predicate (#1336). The manifest this feeds and
+    // the alert classifyDead feeds have to answer the same question, or the API
+    // reports a field as dead while Slack has already stood it down.
+    if (
+      detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds) &&
+      !hasRecentResolution(bucket, thresholds)
+    ) {
       hits.push({
         workflow_id: bucket[0].workflow_id,
         field_path: bucket[0].field_path,
@@ -470,7 +545,10 @@ export function classifyDead(
       out.push({ ...base, verdict: 'insufficient' })
       continue
     }
-    if (detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds)) {
+    if (
+      detectDayOneDead(windowRan, windowPresent, everHealthy, thresholds) &&
+      !hasRecentResolution(bucket, thresholds)
+    ) {
       out.push({
         ...base,
         verdict: 'alerting',
@@ -803,17 +881,24 @@ export async function sendFieldDeadAlert(
       `*${hit.window_present} of ${hit.window_ran}* runs  <${appUrl}/workflows/${f.workflowId}|open>`
     )
   })
+  // Say only what the check measured (L11, #1336). The old wording claimed the
+  // fields had "never carried a value" directly above lines reporting the runs
+  // on which they had, because the rate ceiling is deliberately just above zero
+  // rather than at it. Both halves came from here, so both are fixed here.
+  const ceiling = `${DEAD_MAX_RATE * 100}%`
+  const what =
+    `resolved on at most ${ceiling} of runs over the last ${DEAD_WINDOW_DAYS} days, ` +
+    'and not at all on the most recent day.'
   const heading =
     fields.length === 1
-      ? 'One field is read but has never carried a value over the last ' + `${DEAD_WINDOW_DAYS} days.`
-      : `${fields.length} fields are read but have never carried a value over the last ` +
-        `${DEAD_WINDOW_DAYS} days.`
+      ? `One field is read but has all but stopped resolving. It ${what}`
+      : `${fields.length} fields are read but have all but stopped resolving. Each ${what}`
   const blocks = [
     {
       type: 'header',
       text: {
         type: 'plain_text',
-        text: fields.length === 1 ? 'Output Field Never Resolves' : 'Output Fields Never Resolve',
+        text: fields.length === 1 ? 'Output Field Not Resolving' : 'Output Fields Not Resolving',
         emoji: false,
       },
     },
@@ -824,17 +909,17 @@ export async function sendFieldDeadAlert(
       text: {
         type: 'mrkdwn',
         text:
-          'A field that has never resolved usually means the reference path is wrong or has ' +
-          'gone obsolete, rather than an upstream being down. Either correct the path or remove ' +
-          'the reference. If the field is legitimately allowed to be empty, silence it with a ' +
-          'reason so this stops asking.',
+          'This usually means the reference path is wrong or has gone obsolete, rather than ' +
+          'an upstream being down. Either correct the path or remove the reference. If an ' +
+          'upstream was down, no action is needed: this stands down by itself on the first day ' +
+          'the field resolves again.',
       },
     },
   ]
   const summary =
     fields.length === 1
-      ? `Output field never resolves: ${fields[0].workflowName} ${fields[0].state.field_path}`
-      : `${fields.length} output fields never resolve`
+      ? `Output field not resolving: ${fields[0].workflowName} ${fields[0].state.field_path}`
+      : `${fields.length} output fields not resolving`
   return postMessage(slack.bot_token, channel, blocks, summary)
 }
 
