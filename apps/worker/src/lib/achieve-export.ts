@@ -26,12 +26,20 @@ import {
 } from './sightings-export'
 import { isNoRowMatchedError, requireRowsAffected, toThrowable } from './db-retry'
 import { formatErr } from './format-error'
+import { parseJson } from './json'
+import { resolveSalesforceCredentialOrg, requireSalesforceCreds } from './salesforce-creds'
+import { getSalesforceToken } from '../engine/nodes/salesforce'
+import { readSubmissionView, type SubmissionView } from './achieve-enrollment-view'
 
 // The Main Flow step whose output carries the trades data (a salesforce node;
 // output = { status, body } with the trades response in body).
 export const TRADES_STEP_NAMESPACE = 'trades_request'
 
 const BACKFILL_BATCH = 100
+
+/** The enrichment's slice of the invocation. Small on purpose: it is a second lens, and the
+ *  export and the purge behind it need the rest. */
+const ENROLLMENT_BUDGET_MS = 90 * 1000
 
 export const ACHIEVE_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
@@ -58,6 +66,10 @@ export const ACHIEVE_COLS: ColSpec[] = [
   // The credit figures behind their decline reasons, derived at send time. The reconcile
   // above adds this column to Snowflake by itself, so no DDL is run by hand for it.
   { name: 'credit_metrics', type: 'variant' },
+  // Geoff's Equifax figures from Salesforce: the ENROLLMENT view, stored beside ours rather
+  // than instead of them. The two count different sets of accounts and answer different
+  // questions (#1350).
+  { name: 'enrollment_view', type: 'variant' },
 ]
 
 // Self-creating so there is no manual Snowflake step to forget. Idempotent;
@@ -82,12 +94,17 @@ CREATE TABLE IF NOT EXISTS achieve_evaluations (
   trades VARIANT,
   achieve_request_id VARCHAR,
   cf_ray VARCHAR,
-  credit_metrics VARIANT
+  credit_metrics VARIANT,
+  enrollment_view VARIANT
 )
 `.trim()
 
 export interface AchieveExportSummary {
   trades_backfilled: number
+  enrollment_view_filled: number
+  /** Rows left unfilled because the enrichment ran out of time. They export and purge without
+   *  it, so a persistently non-zero number means the budget no longer covers the volume. */
+  enrollment_view_skipped: number
   evaluations_exported: number
   evaluations_purged: number
   sandbox_purged: number
@@ -145,6 +162,113 @@ export function matchTradesToEvaluations(
   return evals
     .filter((e) => byExecution.has(e.execution_id))
     .map((e) => ({ id: e.id, trades: byExecution.get(e.execution_id) }))
+}
+
+/**
+ * Fills `enrollment_view` from the Salesforce Submission record each evaluation names.
+ *
+ * Read here rather than at send time: the values live durably in Salesforce keyed by an id
+ * every row already carries, nothing needs them in real time, and doing it here keeps
+ * Salesforce off the live lead path entirely. It also means the column can be filled for rows
+ * already collected, which a send-time read could never do.
+ */
+export async function backfillEnrollmentView(
+  supabase: SupabaseClient,
+  env: Env,
+  // Its own slice of the invocation, not the whole of it. This job shares its wall clock with
+  // the export and the purge behind it, and that budget has already been eaten once by work
+  // added to it, after which the purge silently deleted nothing. Salesforce round trips are
+  // exactly that kind of work, so this stops itself rather than being stopped by the platform.
+  deadline: number = Date.now() + ENROLLMENT_BUDGET_MS,
+  now: () => number = Date.now,
+): Promise<{ filled: number; skipped: number }> {
+  const { orgId, error: orgError } = await resolveSalesforceCredentialOrg(supabase)
+  if (!orgId) throw new Error(orgError ?? 'no organization holds Salesforce credentials')
+
+  const { instanceUrl, clientId, clientSecret } = await requireSalesforceCreds(
+    env,
+    supabase,
+    orgId,
+    'the Achieve enrollment view',
+  )
+  const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
+
+  const query = async (soql: string): Promise<SubmissionView[]> => {
+    const res = await fetch(`${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      throw new Error(`Salesforce query failed (${res.status}): ${(await res.text()).slice(0, 300)}`)
+    }
+    const body = await parseJson<{ records?: SubmissionView[] }>(res)
+    return body.records ?? []
+  }
+
+  let total = 0
+  let skipped = 0
+  while (true) {
+    if (now() >= deadline) {
+      // Counted rather than shrugged off: a row not filled here is exported and purged
+      // without the enrichment and never gets another chance, so the shortfall has to be
+      // visible instead of looking like there was nothing to do.
+      const { count } = await supabase
+        .from('achieve_evaluations')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_test', false)
+        .is('exported_at', null)
+        .is('enrollment_view', null)
+      skipped = count ?? 0
+      break
+    }
+    const { data: rows, error } = await supabase
+      .from('achieve_evaluations')
+      .select('id, requested_at_utc, request_payload')
+      .eq('is_test', false)
+      .is('exported_at', null)
+      .is('enrollment_view', null)
+      .limit(BACKFILL_BATCH)
+    if (error) throw error
+    if (!rows || rows.length === 0) break
+
+    // requested_at_utc is the partition key, carried alongside so the update below can name
+    // it. Matching id alone scans every monthly partition, including drained ones that still
+    // carry their bloat.
+    const byId = new Map<string, { submissionId: string; requestedAt: string }>()
+    for (const row of rows) {
+      const submissionId = (row.request_payload as { partner_lead_id?: unknown } | null)?.partner_lead_id
+      if (typeof submissionId === 'string' && submissionId) {
+        byId.set(String(row.id), { submissionId, requestedAt: String(row.requested_at_utc) })
+      }
+    }
+    // Nothing to look up in this batch, and the rows would be re-selected forever if we
+    // looped again: a row with no submission id can never be filled.
+    if (byId.size === 0) break
+
+    const views = await readSubmissionView([...new Set([...byId.values()].map((v) => v.submissionId))], query)
+
+    for (const [rowId, { submissionId, requestedAt }] of byId) {
+      const view = views.get(submissionId)
+      if (!view) continue
+      // Counted by rows actually touched, never by the attempt: supabase-js reports a
+      // zero-row UPDATE as a success with error null, so a row purged between the select and
+      // the update would otherwise be counted as filled.
+      const { rows: touched, error: updateError } = await requireRowsAffected(
+        'achieve_evaluations.enrollment_view',
+        () =>
+          supabase
+            .from('achieve_evaluations')
+            .update({ enrollment_view: view })
+            .eq('id', rowId)
+            .eq('requested_at_utc', requestedAt)
+            .select('id'),
+      )
+      if (updateError && !isNoRowMatchedError(updateError)) throw toThrowable(updateError)
+      total += touched.length
+    }
+
+    if (rows.length < BACKFILL_BATCH) break
+  }
+  return { filled: total, skipped }
 }
 
 async function backfillTrades(supabase: SupabaseClient): Promise<number> {
@@ -219,6 +343,8 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
   const config: SnowflakeConfig = readSnowflakeConfig(env)
   const summary: AchieveExportSummary = {
     trades_backfilled: 0,
+    enrollment_view_filled: 0,
+    enrollment_view_skipped: 0,
     evaluations_exported: 0,
     evaluations_purged: 0,
     sandbox_purged: 0,
@@ -234,6 +360,18 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
     // the export filter below (#484).
     backfillOk = false
     summary.errors.push(`trades backfill: ${formatErr(e)}`)
+  }
+
+  // Best effort, and deliberately NOT gating the export the way the trades backfill does. This
+  // is a second lens on the same lead rather than the analysis payload, so a Salesforce outage
+  // must not hold up rows that are otherwise complete. A failure leaves the column null and
+  // says why in summary.errors, which notifyExportFailure already surfaces.
+  try {
+    const enrollment = await backfillEnrollmentView(supabase, env)
+    summary.enrollment_view_filled = enrollment.filled
+    summary.enrollment_view_skipped = enrollment.skipped
+  } catch (e) {
+    summary.errors.push(`enrollment view backfill: ${formatErr(e)}`)
   }
 
   try {
