@@ -23,6 +23,7 @@ export type Database = {
           created_at: string
           credit_metrics: Json | null
           duration_ms: number | null
+          enrollment_view: Json | null
           execution_id: string
           exported_at: string | null
           http_status: number | null
@@ -48,6 +49,7 @@ export type Database = {
           created_at?: string
           credit_metrics?: Json | null
           duration_ms?: number | null
+          enrollment_view?: Json | null
           execution_id: string
           exported_at?: string | null
           http_status?: number | null
@@ -73,6 +75,7 @@ export type Database = {
           created_at?: string
           credit_metrics?: Json | null
           duration_ms?: number | null
+          enrollment_view?: Json | null
           execution_id?: string
           exported_at?: string | null
           http_status?: number | null
