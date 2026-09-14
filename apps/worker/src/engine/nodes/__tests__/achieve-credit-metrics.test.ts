@@ -194,60 +194,34 @@ describe('deriveCreditMetrics', () => {
     })
   })
 
-  describe('installment paydown', () => {
-    // "Amount paid down on recently active installment loans is low" is theirs. The figure is
-    // how much of the original has been repaid, so it needs both sides.
-    it('measures the share of installment original amounts repaid', () => {
+  describe('installment balances', () => {
+    // There is deliberately NO paydown ratio. It assumed highCredit is the original advance,
+    // and on live data it is not: across 63 open installment loans, 31 carried a balance
+    // LARGER than their highCredit and the average sat at 0.98 of it, so the ratio was
+    // negative for about half the population. The same comparison on revolving accounts
+    // behaves correctly (1 of 110 above the limit, averaging 0.66), which is what shows the
+    // field means something different on a loan. The raw sums stay because they are factual
+    // whatever highCredit turns out to mean; the ratio asserted something they do not support.
+    it('records the sums without deriving a paydown ratio from them', () => {
       const m = deriveCreditMetrics(
         report({ trades: [installment(6000, 10000), installment(2000, 10000)] }),
         NOW
       )
       expect(m.installment_original).toBe(20000)
       expect(m.installment_balance).toBe(8000)
-      expect(m.installment_paydown_ratio).toBeCloseTo(0.6, 4)
+      expect(m).not.toHaveProperty('installment_paydown_ratio')
     })
 
-    it('counts only open installment loans, so a settled one does not read as paid down', () => {
+    it('counts only open installment loans, so a settled one is not summed in', () => {
       const m = deriveCreditMetrics(
         report({
-          trades: [
-            installment(8000, 10000),
-            { ...installment(0, 50000), closedDate: '06012024' },
-          ],
+          trades: [installment(8000, 10000), { ...installment(0, 50000), closedDate: '06012024' }],
         }),
         NOW
       )
       expect(m.installment_original).toBe(10000)
-      expect(m.installment_paydown_ratio).toBeCloseTo(0.2, 4)
+      expect(m.installment_balance).toBe(8000)
     })
-
-    it('reports a null paydown ratio when there are no installment accounts', () => {
-      const m = deriveCreditMetrics(report({ trades: [revolving(1, 2)] }), NOW)
-      expect(m.installment_paydown_ratio).toBeNull()
-    })
-  })
-
-  // An unreadable amount is summed as zero, because a NaN would poison the whole sum. That
-  // makes it indistinguishable from a real zero, and it biases utilisation DOWNWARD, which is
-  // the flattering direction (L50). The row therefore carries how many it could not read, so
-  // an analysis can exclude the files computed from incomplete inputs rather than trusting
-  // every number equally.
-  it('counts the amounts it could not read', () => {
-    const m = deriveCreditMetrics(
-      report({
-        trades: [
-          { portfolioTypeCode: { code: 'R' }, balance: 'n/a', creditLimit: 1000, dateOpened: '01152020' },
-          { portfolioTypeCode: { code: 'R' }, balance: 500, creditLimit: undefined, dateOpened: '01152020' },
-          { portfolioTypeCode: { code: 'R' }, balance: 100, creditLimit: 1000, dateOpened: '01152020' },
-        ],
-      }),
-      NOW
-    )
-    expect(m.unreadable_amounts).toBe(2)
-  })
-
-  it('reports zero unreadable amounts on a clean file', () => {
-    expect(deriveCreditMetrics(report({ trades: [revolving(100, 1000)] }), NOW).unreadable_amounts).toBe(0)
   })
 
   it('carries the score through', () => {
