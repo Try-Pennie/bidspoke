@@ -256,8 +256,22 @@ export async function executeAchieveOffersNode(
   // Derived once, before the call, so every outcome carries the same figures: an accept, a
   // decline and a timeout are all comparable afterwards. Null when no report could be read,
   // which is a different thing from a report showing nothing.
-  const report = findEquifaxReport(ctx)
-  const metrics = report ? deriveCreditMetrics(report, new Date()) : null
+  //
+  // Wrapped because this runs OUTSIDE the try below, and the node's whole contract is that it
+  // never fails the flow: it is a pass-through bolted to the tail of Main Flow, after the lead
+  // has already been answered. Nothing in the derivation throws on today's data, which is luck
+  // rather than design, and a diagnostic must never cost the thing it is diagnosing. Null on
+  // failure, which is the same value used when there is no report, because both mean the same
+  // thing to a reader: nothing was measured.
+  let metrics: CreditMetrics | null = null
+  try {
+    const report = findEquifaxReport(ctx)
+    metrics = report ? deriveCreditMetrics(report, new Date()) : null
+  } catch (err) {
+    // Logged rather than swallowed silently: a derivation that throws on real reports is a
+    // defect worth seeing, even though it must not stop the send.
+    console.error(`[achieve-offers] credit metrics derivation failed: ${formatErr(err)}`)
+  }
 
   // Own controller so the internal 12s timeout AND the step-level timeout (#66)
   // can both cancel the call.
