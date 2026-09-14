@@ -224,6 +224,51 @@ describe('deriveCreditMetrics', () => {
     })
   })
 
+  // These three were lost once already: the paydown removal in #1345 spliced between two text
+  // anchors and took them with it, and the suite went 19 tests to 16 while reading as green.
+  describe('amounts it could not read', () => {
+    // An absent or unparseable amount is summed as zero, because a NaN would poison the whole
+    // sum. That makes it indistinguishable from a real zero and skews the ratios in the
+    // flattering direction (L50), so the row says how many it could not read.
+    it('counts the amounts it could not read', () => {
+      const m = deriveCreditMetrics(
+        report({
+          trades: [
+            { portfolioTypeCode: { code: 'R' }, balance: 'n/a', creditLimit: 1000, dateOpened: '01152020' },
+            { portfolioTypeCode: { code: 'R' }, balance: 500, dateOpened: '01152020' },
+            revolving(100, 1000),
+          ],
+        }),
+        NOW
+      )
+      expect(m.unreadable_amounts).toBe(2)
+    })
+
+    it('reports zero unreadable amounts on a clean file', () => {
+      expect(deriveCreditMetrics(report({ trades: [revolving(100, 1000)] }), NOW).unreadable_amounts).toBe(0)
+    })
+
+    // It must count only amounts that FEED a metric. A closed card and a mortgage contribute
+    // to nothing, so a missing balance on either leaves every figure in the row complete.
+    // Seen on a live lead on 2026-09-14: 28 accounts, 11 of them closed revolving, every ratio
+    // correct, and the flag fired on 1. A flag that fires on healthy rows is one an analyst
+    // learns to ignore, which is the outcome it exists to prevent.
+    it('ignores amounts on accounts that feed no metric', () => {
+      const m = deriveCreditMetrics(
+        report({
+          trades: [
+            revolving(500, 1000),
+            { portfolioTypeCode: { code: 'R' }, creditLimit: 9000, dateOpened: '01152020', closedDate: '06012024' },
+            { portfolioTypeCode: { code: 'M' }, dateOpened: '01152020' },
+          ],
+        }),
+        NOW
+      )
+      expect(m.revolving_utilisation).toBeCloseTo(0.5, 4)
+      expect(m.unreadable_amounts).toBe(0)
+    })
+  })
+
   it('carries the score through', () => {
     expect(deriveCreditMetrics(report({ score: 645 }), NOW).vantage_score).toBe(645)
   })
