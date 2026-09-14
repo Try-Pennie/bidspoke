@@ -37,6 +37,10 @@ export const TRADES_STEP_NAMESPACE = 'trades_request'
 
 const BACKFILL_BATCH = 100
 
+/** The enrichment's slice of the invocation. Small on purpose: it is a second lens, and the
+ *  export and the purge behind it need the rest. */
+const ENROLLMENT_BUDGET_MS = 90 * 1000
+
 export const ACHIEVE_COLS: ColSpec[] = [
   { name: 'id', type: 'varchar' },
   { name: 'trace_id', type: 'varchar' },
@@ -98,6 +102,9 @@ CREATE TABLE IF NOT EXISTS achieve_evaluations (
 export interface AchieveExportSummary {
   trades_backfilled: number
   enrollment_view_filled: number
+  /** Rows left unfilled because the enrichment ran out of time. They export and purge without
+   *  it, so a persistently non-zero number means the budget no longer covers the volume. */
+  enrollment_view_skipped: number
   evaluations_exported: number
   evaluations_purged: number
   sandbox_purged: number
@@ -165,7 +172,16 @@ export function matchTradesToEvaluations(
  * Salesforce off the live lead path entirely. It also means the column can be filled for rows
  * already collected, which a send-time read could never do.
  */
-async function backfillEnrollmentView(supabase: SupabaseClient, env: Env): Promise<number> {
+export async function backfillEnrollmentView(
+  supabase: SupabaseClient,
+  env: Env,
+  // Its own slice of the invocation, not the whole of it. This job shares its wall clock with
+  // the export and the purge behind it, and that budget has already been eaten once by work
+  // added to it, after which the purge silently deleted nothing. Salesforce round trips are
+  // exactly that kind of work, so this stops itself rather than being stopped by the platform.
+  deadline: number = Date.now() + ENROLLMENT_BUDGET_MS,
+  now: () => number = Date.now,
+): Promise<{ filled: number; skipped: number }> {
   const { orgId, error: orgError } = await resolveSalesforceCredentialOrg(supabase)
   if (!orgId) throw new Error(orgError ?? 'no organization holds Salesforce credentials')
 
@@ -189,7 +205,21 @@ async function backfillEnrollmentView(supabase: SupabaseClient, env: Env): Promi
   }
 
   let total = 0
+  let skipped = 0
   while (true) {
+    if (now() >= deadline) {
+      // Counted rather than shrugged off: a row not filled here is exported and purged
+      // without the enrichment and never gets another chance, so the shortfall has to be
+      // visible instead of looking like there was nothing to do.
+      const { count } = await supabase
+        .from('achieve_evaluations')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_test', false)
+        .is('exported_at', null)
+        .is('enrollment_view', null)
+      skipped = count ?? 0
+      break
+    }
     const { data: rows, error } = await supabase
       .from('achieve_evaluations')
       .select('id, requested_at_utc, request_payload')
@@ -238,7 +268,7 @@ async function backfillEnrollmentView(supabase: SupabaseClient, env: Env): Promi
 
     if (rows.length < BACKFILL_BATCH) break
   }
-  return total
+  return { filled: total, skipped }
 }
 
 async function backfillTrades(supabase: SupabaseClient): Promise<number> {
@@ -314,6 +344,7 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
   const summary: AchieveExportSummary = {
     trades_backfilled: 0,
     enrollment_view_filled: 0,
+    enrollment_view_skipped: 0,
     evaluations_exported: 0,
     evaluations_purged: 0,
     sandbox_purged: 0,
@@ -336,7 +367,9 @@ export async function runAchieveExport(supabase: SupabaseClient, env: Env): Prom
   // must not hold up rows that are otherwise complete. A failure leaves the column null and
   // says why in summary.errors, which notifyExportFailure already surfaces.
   try {
-    summary.enrollment_view_filled = await backfillEnrollmentView(supabase, env)
+    const enrollment = await backfillEnrollmentView(supabase, env)
+    summary.enrollment_view_filled = enrollment.filled
+    summary.enrollment_view_skipped = enrollment.skipped
   } catch (e) {
     summary.errors.push(`enrollment view backfill: ${formatErr(e)}`)
   }

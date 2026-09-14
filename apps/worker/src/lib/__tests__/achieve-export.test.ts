@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { matchTradesToEvaluations, ACHIEVE_COLS, runAchieveExport, purgeSandboxEvaluations } from '../achieve-export'
+import {
+  matchTradesToEvaluations,
+  ACHIEVE_COLS,
+  runAchieveExport,
+  purgeSandboxEvaluations,
+  backfillEnrollmentView,
+} from '../achieve-export'
 import { buildMergeSql, formatValue, reconcileColumns } from '../sightings-export'
 
 const mocks = vi.hoisted(() => ({
@@ -136,7 +142,7 @@ function snowflakeAnswersFullListing() {
 // `lt`/`lte`/`delete` are here because the real builder has them and the sandbox purge
 // (#644) uses them; without them it would throw inside these fixtures and every test
 // asserting a clean `errors: []` would fail for a reason that has nothing to do with it.
-function makeThenableBuilder(result: { data: unknown; error: unknown }) {
+function makeThenableBuilder(result: { data: unknown; error: unknown; count?: number }) {
   const b: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'is', 'limit', 'in', 'gte', 'update', 'not', 'lt', 'lte', 'delete']) {
     b[m] = vi.fn(() => b)
@@ -227,6 +233,31 @@ describe('runAchieveExport trades-backfill failure', () => {
     const { b, calls } = makeRecordingBuilder()
     applyFilter(b)
     expect(calls).toContainEqual({ method: 'eq', args: ['is_sandbox', false] })
+  })
+
+  // The budget matters more than it looks. This job shares its wall clock with the export and
+  // the purge behind it, and that budget has been eaten once before by work added to it, after
+  // which the purge silently deleted nothing for days. Salesforce round trips per batch are
+  // exactly that kind of work, so the clock is injected and the deadline is asserted directly
+  // rather than through a default that no test would ever reach.
+  it('stops on its own deadline without reaching Salesforce, and counts what it left', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const supabase = {
+      from: vi.fn(() => makeThenableBuilder({ data: [], error: null, count: 42 })),
+    }
+
+    const result = await backfillEnrollmentView(
+      supabase as never,
+      {} as never,
+      1_000, // deadline
+      () => 2_000, // already past it
+    )
+
+    vi.unstubAllGlobals()
+    expect(result.filled).toBe(0)
+    expect(result.skipped).toBe(42)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   // The enrollment view is a second lens on the same lead, not the analysis payload, so it is
