@@ -32,6 +32,9 @@ export interface AchieveEvaluationInsert {
   /** Cloudflare's ray id from the proxy in front of Achieve's API, for edge questions
    *  such as the firewall block in #1265. */
   cf_ray: string | null
+  /** The credit figures behind Achieve's decline reasons, derived at send time. Null where no
+   *  report could be read, which differs from a report showing nothing. */
+  credit_metrics: unknown
 }
 
 interface AchieveStepOutput {
@@ -46,6 +49,7 @@ interface AchieveStepOutput {
   offers?: unknown
   achieve_request_id?: string | null
   cf_ray?: string | null
+  credit_metrics?: unknown
 }
 
 function isAchieveOutput(output: unknown): output is AchieveStepOutput {
@@ -117,6 +121,7 @@ export function extractAchieveEvaluations(
       is_sandbox: output.sandbox !== false,
       achieve_request_id: output.achieve_request_id ?? null,
       cf_ray: output.cf_ray ?? null,
+      credit_metrics: output.credit_metrics ?? null,
     })
   }
   return rows

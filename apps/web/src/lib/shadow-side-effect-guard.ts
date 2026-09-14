@@ -25,6 +25,9 @@ export const SHADOW_EXEMPT_NODES = [
   // exemption is still checked both ways: the guard fails if either ever starts performing an
   // outbound call, which is what would make a shadow guard necessary.
   'achieve-credit-report',
+  // Pure derivation over the report already pulled upstream: takes a report and a clock,
+  // returns numbers, reaches nothing outside the isolate (2026-09-14).
+  'achieve-credit-metrics',
   'achieve-screen',
   'achieve-endpoint',
   // Same shape: builds the two headers that identify us to Achieve's firewall from an env

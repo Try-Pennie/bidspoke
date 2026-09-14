@@ -55,6 +55,9 @@ export const ACHIEVE_COLS: ColSpec[] = [
   // so the request id is what lets support find a specific call (#1310 follow-up).
   { name: 'achieve_request_id', type: 'varchar' },
   { name: 'cf_ray', type: 'varchar' },
+  // The credit figures behind their decline reasons, derived at send time. The reconcile
+  // above adds this column to Snowflake by itself, so no DDL is run by hand for it.
+  { name: 'credit_metrics', type: 'variant' },
 ]
 
 // Self-creating so there is no manual Snowflake step to forget. Idempotent;
@@ -78,7 +81,8 @@ CREATE TABLE IF NOT EXISTS achieve_evaluations (
   offers VARIANT,
   trades VARIANT,
   achieve_request_id VARCHAR,
-  cf_ray VARCHAR
+  cf_ray VARCHAR,
+  credit_metrics VARIANT
 )
 `.trim()
 

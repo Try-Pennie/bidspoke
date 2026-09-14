@@ -48,6 +48,8 @@ import { parseJsonSafe } from '../../lib/json'
 import { screenLead } from './achieve-screen'
 import { resolveAchieveEndpoint } from './achieve-endpoint'
 import { achieveIdentityHeaders } from './achieve-identity'
+import { findEquifaxReport } from './achieve-credit-report'
+import { deriveCreditMetrics, type CreditMetrics } from './achieve-credit-metrics'
 
 export interface AchieveOffersConfig {
   wait_for_offers?: boolean
@@ -251,6 +253,12 @@ export async function executeAchieveOffersNode(
     }
   }
 
+  // Derived once, before the call, so every outcome carries the same figures: an accept, a
+  // decline and a timeout are all comparable afterwards. Null when no report could be read,
+  // which is a different thing from a report showing nothing.
+  const report = findEquifaxReport(ctx)
+  const metrics = report ? deriveCreditMetrics(report, new Date()) : null
+
   // Own controller so the internal 12s timeout AND the step-level timeout (#66)
   // can both cancel the call.
   const controller = new AbortController()
@@ -281,7 +289,7 @@ export async function executeAchieveOffersNode(
       const reason =
         responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
       return {
-        output: result(false, res.status, 'error', reason, request, responseBody, !production, responseIds(res)),
+        output: result(false, res.status, 'error', reason, request, responseBody, !production, responseIds(res), metrics),
         resolvedInput,
       }
     }
@@ -299,7 +307,8 @@ export async function executeAchieveOffersNode(
         request,
         responseBody,
         !production,
-        responseIds(res)
+        responseIds(res),
+        metrics
       ),
       resolvedInput,
     }
@@ -309,7 +318,7 @@ export async function executeAchieveOffersNode(
     const reason = message.includes('timed out') || name === 'TimeoutError' || name === 'AbortError'
       ? `Achieve API timed out after ${FETCH_TIMEOUT_MS}ms`
       : message
-    return { output: result(false, 0, 'error', reason, request, null, !production), resolvedInput }
+    return { output: result(false, 0, 'error', reason, request, null, !production, NO_RESPONSE_IDS, metrics), resolvedInput }
   } finally {
     clearTimeout(timer)
   }
@@ -480,7 +489,10 @@ function result(
   // Both ids are always emitted, as null where no call was made or the headers were
   // absent. An undefined would be dropped from the stored JSON entirely, leaving a header
   // we failed to read indistinguishable from one Achieve never sent.
-  ids: ResponseIds = NO_RESPONSE_IDS
+  ids: ResponseIds = NO_RESPONSE_IDS,
+  // Null where no report could be read, so a send with nothing to measure stays
+  // distinguishable from one measured on a consumer who genuinely had nothing.
+  metrics: CreditMetrics | null = null
 ) {
   const offers = (response as { offers?: unknown[] } | null)?.offers
   const offersArray = Array.isArray(offers) ? offers : null
@@ -497,6 +509,7 @@ function result(
     response: response ?? null,
     achieve_request_id: ids.achieve_request_id,
     cf_ray: ids.cf_ray,
+    credit_metrics: metrics,
   }
 }
 

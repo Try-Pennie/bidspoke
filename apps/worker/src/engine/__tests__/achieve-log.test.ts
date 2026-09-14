@@ -46,6 +46,24 @@ const achieveOutput = {
   offers: [{ provider: 'fdr', amount: 32787 }, { provider: 'fdr', amount: 30000 }],
 }
 
+describe('extractAchieveEvaluations credit metrics', () => {
+  it('carries the derived credit metrics onto the row', () => {
+    const metrics = { vantage_score: 645, revolving_utilisation: 0.82, collections: 2 }
+    const [row] = extractAchieveEvaluations(
+      [makeEntry({ output: { ...achieveOutput, credit_metrics: metrics } })],
+      meta
+    )
+    expect(row.credit_metrics).toEqual(metrics)
+  })
+
+  // Null, not undefined: undefined is dropped from the insert entirely, which would leave the
+  // column unset and indistinguishable from a row written before this shipped.
+  it('writes null when the output carries no metrics', () => {
+    const [row] = extractAchieveEvaluations([makeEntry({ output: achieveOutput })], meta)
+    expect(row.credit_metrics).toBeNull()
+  })
+})
+
 describe('extractAchieveEvaluations response identifiers', () => {
   // Achieve's decline responses carry no detail beyond one sentence, so their own request
   // id is what lets support find a call. It is worth nothing unless it reaches the row.
