@@ -28,6 +28,25 @@ describe('the enrollment view read from Salesforce', () => {
     expect(() => buildSubmissionViewSoql(["a04' OR Id != '"])).toThrow(/Salesforce id/)
   })
 
+  // The list is what Salesforce actually fills at this stage. Measured 2026-09-14 across 8,209
+  // submissions created in two days: every exclusion field was populated on ZERO of them, while
+  // the six kept sat between roughly 6,000 and 6,800. Asking for the empty ones would have made
+  // the stored column 10 parts null out of 16, where null already means the record could not be
+  // read, and would have stopped meaning anything.
+  it('asks for nothing that Salesforce leaves empty at submission stage', () => {
+    const soql = buildSubmissionViewSoql(['a04Ui00000MSNppIAH'])
+    for (const empty of [
+      'EquifaxDebt__c',
+      'EquifaxEnrollableBalance__c',
+      'EquifaxCreditUnionBalance__c',
+      'EquifaxStudentLoanExclusionBalance__c',
+      'EquifaxExcludedCreditorBalance__c',
+      'EligibleCollectionTotalBalance__c',
+    ]) {
+      expect(soql).not.toContain(empty)
+    }
+  })
+
   it('returns a view per submission, keyed by id', async () => {
     const query = vi.fn().mockResolvedValue([
       { Id: 'a04Ui00000MSNppIAH', RevolvingTotalBalance__c: 6370, RevolvingUtilization__c: 50.36 },
