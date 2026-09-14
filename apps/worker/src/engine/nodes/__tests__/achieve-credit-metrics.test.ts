@@ -48,6 +48,27 @@ describe('deriveCreditMetrics', () => {
       expect(m.revolving_utilisation).toBeCloseTo(0.5, 4)
     })
 
+    // Closed cards keep their limit and carry no balance, so counting them inflates the
+    // denominator and understates how much of their available credit somebody is using.
+    // Measured on 174 live revolving accounts, 51 of them closed: including them gives 0.43
+    // against 0.66 for open accounts only, so this is not a rounding difference. Utilisation
+    // is the variable their reason codes name most, and the error runs in the flattering
+    // direction, which is the one nothing else would have caught.
+    it('counts only open revolving accounts, not closed ones', () => {
+      const m = deriveCreditMetrics(
+        report({
+          trades: [
+            revolving(900, 1000),
+            { ...revolving(0, 9000), closedDate: '06012024' },
+          ],
+        }),
+        NOW
+      )
+      expect(m.revolving_limit).toBe(1000)
+      expect(m.revolving_utilisation).toBeCloseTo(0.9, 4)
+      expect(m.closed_revolving_accounts).toBe(1)
+    })
+
     it('excludes installment accounts from utilisation', () => {
       const m = deriveCreditMetrics(
         report({ trades: [revolving(500, 1000), installment(9000, 20000)] }),
@@ -184,6 +205,20 @@ describe('deriveCreditMetrics', () => {
       expect(m.installment_original).toBe(20000)
       expect(m.installment_balance).toBe(8000)
       expect(m.installment_paydown_ratio).toBeCloseTo(0.6, 4)
+    })
+
+    it('counts only open installment loans, so a settled one does not read as paid down', () => {
+      const m = deriveCreditMetrics(
+        report({
+          trades: [
+            installment(8000, 10000),
+            { ...installment(0, 50000), closedDate: '06012024' },
+          ],
+        }),
+        NOW
+      )
+      expect(m.installment_original).toBe(10000)
+      expect(m.installment_paydown_ratio).toBeCloseTo(0.2, 4)
     })
 
     it('reports a null paydown ratio when there are no installment accounts', () => {

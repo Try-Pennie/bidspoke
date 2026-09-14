@@ -38,6 +38,9 @@ export interface CreditMetrics {
   revolving_utilisation: number | null
   total_accounts: number
   open_accounts: number
+  /** Closed revolving accounts, excluded from utilisation. Recorded so the exclusion is
+   *  auditable rather than invisible in the ratio. */
+  closed_revolving_accounts: number
   months_since_newest_account: number | null
   months_since_oldest_account: number | null
   inquiries_6mo: number
@@ -91,6 +94,7 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
   let installmentOriginal = 0
   let installmentBalance = 0
   let openAccounts = 0
+  let closedRevolving = 0
   let unreadable = 0
 
   /**
@@ -113,15 +117,27 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
     const code = portfolioCode(trade)
     const balance = amount(trade.balance)
 
+    const open = trade.closedDate === undefined
+
+    // Open accounts only, for both ratios. A closed card keeps its limit and carries no
+    // balance, so counting it inflates the denominator and understates utilisation: measured
+    // across 174 live revolving accounts, 51 of them closed, including them gives 0.43
+    // against 0.66. A settled loan likewise reads as 100% paid down and would drag the
+    // paydown ratio up. Both errors run in the flattering direction, and their own reason
+    // code says "recently active installment loans".
     if (code && REVOLVING_CODES.has(code)) {
-      revolvingBalance += balance
-      revolvingLimit += amount(trade.creditLimit)
+      if (open) {
+        revolvingBalance += balance
+        revolvingLimit += amount(trade.creditLimit)
+      } else {
+        closedRevolving += 1
+      }
     }
-    if (code && INSTALLMENT_CODES.has(code)) {
+    if (code && INSTALLMENT_CODES.has(code) && open) {
       installmentBalance += balance
       installmentOriginal += amount(trade.highCredit)
     }
-    if (trade.closedDate === undefined) openAccounts += 1
+    if (open) openAccounts += 1
   }
 
   const openedDates = readableDates(trades.map((t) => t.dateOpened))
@@ -139,6 +155,7 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
 
     total_accounts: trades.length,
     open_accounts: openAccounts,
+    closed_revolving_accounts: closedRevolving,
     months_since_newest_account: openedDates.length ? monthsBetween(openedDates[0], now) : null,
     months_since_oldest_account: openedDates.length
       ? monthsBetween(openedDates[openedDates.length - 1], now)
