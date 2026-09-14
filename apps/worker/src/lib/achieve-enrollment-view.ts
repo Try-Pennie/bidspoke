@@ -1,11 +1,14 @@
 /**
  * Geoff's Equifax figures from Salesforce, stored BESIDE our own rather than instead of them.
  *
- * The two are both correct and answer different questions. Ours, in achieve-credit-metrics.ts,
- * describe the consumer's credit profile, which is what Achieve underwrite against: their
- * reason code says "ratio of balance to limit on bank revolving or other rev accts". Geoff's
- * describe what Pennie could enrol, after excluding credit unions, student loans, cross
- * collateralised accounts and excluded creditors.
+ * Ours, in achieve-credit-metrics.ts, describe the consumer's credit profile, which is what
+ * Achieve underwrite against: their reason code says "ratio of balance to limit on bank
+ * revolving or other rev accts". Salesforce's count a DIFFERENT SET of accounts, which is
+ * measured below rather than inferred. WHY they differ is not established: the exclusion
+ * fields on the same object (credit union, student loan, cross collateral, excluded creditor)
+ * are empty on every submission at this stage, so they cannot be the explanation, even though
+ * their names suggest it. Treat the difference as real and unexplained rather than as
+ * enrollment exclusions, which is what an earlier version of this comment claimed.
  *
  * Measured 2026-09-14 across the 12 leads sent to Achieve that day, the two disagreed on 9.
  * On the starkest, the credit report held three open revolving accounts totalling 6,370 of
@@ -27,23 +30,25 @@ const SALESFORCE_ID = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/
  * The fields read into the stored view. This list IS the contract with the column, so a test
  * asserts the query asks for every one of them: a field added to one and not the other would
  * otherwise be silently absent from the data.
+ *
+ * DELIBERATELY EXCLUDED, measured across 8,209 submissions created in two days on 2026-09-14,
+ * each populated on ZERO of them: EquifaxDebt__c, EquifaxEnrollableBalance__c,
+ * EquifaxExcludedCreditorBalance__c, EquifaxCreditUnionBalance__c,
+ * EquifaxStudentLoanExclusionBalance__c, EquifaxCrossCollExclusionBal__c,
+ * EquifaxAutoDeficiencyBalance__c, EquifaxJointEligibleBalance__c,
+ * EquifaxIneligibleDueToBalance__c and EligibleCollectionTotalBalance__c. They appear to fill
+ * later in the enrollment lifecycle, for leads that get that far, and a lead sent to Achieve
+ * has not. Storing them would have made the column 10 parts null out of 16, where null already
+ * means "the record could not be read" and would have stopped meaning anything.
+ *
+ * The six kept are populated on roughly 6,000 to 6,800 of those 8,209.
  */
 export const SUBMISSION_VIEW_FIELDS = [
-  'EquifaxDebt__c',
-  'EquifaxEnrollableBalance__c',
-  'EquifaxExcludedCreditorBalance__c',
-  'EquifaxCreditUnionBalance__c',
-  'EquifaxStudentLoanExclusionBalance__c',
-  'EquifaxCrossCollExclusionBal__c',
-  'EquifaxAutoDeficiencyBalance__c',
-  'EquifaxJointEligibleBalance__c',
-  'EquifaxIneligibleDueToBalance__c',
   'RevolvingTotalBalance__c',
   'RevolvingCreditLimit__c',
   'RevolvingUtilization__c',
   'RevolvingHighBalance__c',
   'CollectionTotalBalance__c',
-  'EligibleCollectionTotalBalance__c',
   'InstallmentTotalBalance__c',
 ] as const
 
