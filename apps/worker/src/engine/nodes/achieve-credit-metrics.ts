@@ -49,9 +49,17 @@ export interface CreditMetrics {
   collections: number
   bankruptcies: number
   months_since_major_delinquency: number | null
+  /**
+   * Sums over OPEN installment loans. There is no paydown ratio derived from these, and one
+   * should not be added: `highCredit` is not the original advance on an installment trade.
+   * Measured on 63 open loans, 31 carried a balance LARGER than their highCredit, averaging
+   * 0.98 of it, so a (original - balance) / original ratio is negative for about half of
+   * them. The same comparison on revolving accounts behaves as expected (1 of 110 over the
+   * limit, averaging 0.66), which is what shows the field means something else on a loan.
+   * The sums are kept because they are factual whatever it means.
+   */
   installment_original: number
   installment_balance: number
-  installment_paydown_ratio: number | null
   /** Balances and limits that were absent or could not be read as numbers. They are summed as
    *  zero, which is indistinguishable from a real zero and skews utilisation, so a row
    *  computed from less than the whole file has to say so rather than read as clean (L50). */
@@ -173,8 +181,6 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
 
     installment_original: installmentOriginal,
     installment_balance: installmentBalance,
-    installment_paydown_ratio:
-      installmentOriginal > 0 ? (installmentOriginal - installmentBalance) / installmentOriginal : null,
 
     unreadable_amounts: unreadable,
   }
