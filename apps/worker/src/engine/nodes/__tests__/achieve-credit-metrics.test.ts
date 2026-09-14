@@ -192,6 +192,29 @@ describe('deriveCreditMetrics', () => {
     })
   })
 
+  // An unreadable amount is summed as zero, because a NaN would poison the whole sum. That
+  // makes it indistinguishable from a real zero, and it biases utilisation DOWNWARD, which is
+  // the flattering direction (L50). The row therefore carries how many it could not read, so
+  // an analysis can exclude the files computed from incomplete inputs rather than trusting
+  // every number equally.
+  it('counts the amounts it could not read', () => {
+    const m = deriveCreditMetrics(
+      report({
+        trades: [
+          { portfolioTypeCode: { code: 'R' }, balance: 'n/a', creditLimit: 1000, dateOpened: '01152020' },
+          { portfolioTypeCode: { code: 'R' }, balance: 500, creditLimit: undefined, dateOpened: '01152020' },
+          { portfolioTypeCode: { code: 'R' }, balance: 100, creditLimit: 1000, dateOpened: '01152020' },
+        ],
+      }),
+      NOW
+    )
+    expect(m.unreadable_amounts).toBe(2)
+  })
+
+  it('reports zero unreadable amounts on a clean file', () => {
+    expect(deriveCreditMetrics(report({ trades: [revolving(100, 1000)] }), NOW).unreadable_amounts).toBe(0)
+  })
+
   it('carries the score through', () => {
     expect(deriveCreditMetrics(report({ score: 645 }), NOW).vantage_score).toBe(645)
   })

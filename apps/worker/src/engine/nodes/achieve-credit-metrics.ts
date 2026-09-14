@@ -49,6 +49,10 @@ export interface CreditMetrics {
   installment_original: number
   installment_balance: number
   installment_paydown_ratio: number | null
+  /** Balances and limits that were absent or could not be read as numbers. They are summed as
+   *  zero, which is indistinguishable from a real zero and skews utilisation, so a row
+   *  computed from less than the whole file has to say so rather than read as clean (L50). */
+  unreadable_amounts: number
 }
 
 function num(value: unknown): number | null {
@@ -87,18 +91,35 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
   let installmentOriginal = 0
   let installmentBalance = 0
   let openAccounts = 0
+  let unreadable = 0
+
+  /**
+   * Zero for the sum, and counted, so the shortfall is visible rather than silent.
+   *
+   * Absent counts as well as unparseable: a revolving account with no creditLimit is
+   * anomalous (all 62 measured carried one) and it skews utilisation exactly as much as a
+   * value that could not be read. Both leave the ratio computed from less than the file.
+   */
+  const amount = (value: unknown): number => {
+    const n = num(value)
+    if (n === null) {
+      unreadable += 1
+      return 0
+    }
+    return n
+  }
 
   for (const trade of trades) {
     const code = portfolioCode(trade)
-    const balance = num(trade.balance) ?? 0
+    const balance = amount(trade.balance)
 
     if (code && REVOLVING_CODES.has(code)) {
       revolvingBalance += balance
-      revolvingLimit += num(trade.creditLimit) ?? 0
+      revolvingLimit += amount(trade.creditLimit)
     }
     if (code && INSTALLMENT_CODES.has(code)) {
       installmentBalance += balance
-      installmentOriginal += num(trade.highCredit) ?? 0
+      installmentOriginal += amount(trade.highCredit)
     }
     if (trade.closedDate === undefined) openAccounts += 1
   }
@@ -137,5 +158,7 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
     installment_balance: installmentBalance,
     installment_paydown_ratio:
       installmentOriginal > 0 ? (installmentOriginal - installmentBalance) / installmentOriginal : null,
+
+    unreadable_amounts: unreadable,
   }
 }
