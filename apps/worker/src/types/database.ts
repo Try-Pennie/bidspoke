@@ -21,6 +21,7 @@ export type Database = {
           achieve_request_id: string | null
           cf_ray: string | null
           created_at: string
+          credit_metrics: Json | null
           duration_ms: number | null
           execution_id: string
           exported_at: string | null
@@ -45,6 +46,7 @@ export type Database = {
           achieve_request_id?: string | null
           cf_ray?: string | null
           created_at?: string
+          credit_metrics?: Json | null
           duration_ms?: number | null
           execution_id: string
           exported_at?: string | null
@@ -69,6 +71,7 @@ export type Database = {
           achieve_request_id?: string | null
           cf_ray?: string | null
           created_at?: string
+          credit_metrics?: Json | null
           duration_ms?: number | null
           execution_id?: string
           exported_at?: string | null

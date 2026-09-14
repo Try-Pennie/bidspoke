@@ -35,6 +35,19 @@ export interface EquifaxTrade {
   rate?: { code?: number | string }
   scheduledPaymentAmount?: unknown
   balance?: unknown
+  /**
+   * An OBJECT carrying a code, like `rate` and unlike `industryCode`. R is revolving, C a
+   * line of credit, I installment, M mortgage, O open. Measured on 200 live trades: every
+   * R carried a creditLimit and no I did, which is why utilisation needs no fallback.
+   */
+  portfolioTypeCode?: { code?: unknown }
+  creditLimit?: unknown
+  /** The original amount on an installment loan, and the high balance on a revolving one. */
+  highCredit?: unknown
+  dateOpened?: unknown
+  /** Absent on an open account. Present on 89 of 123 installment and 16 of 62 revolving. */
+  closedDate?: unknown
+  dateMajorDelinquencyFirstReported?: unknown
 }
 
 export interface EquifaxInquiry {
@@ -62,6 +75,9 @@ export interface EquifaxReport {
   trades: EquifaxTrade[]
   inquiries: EquifaxInquiry[]
   bankruptcies: EquifaxBankruptcy[]
+  /** Collections, present on 74 of 300 live reports. With bankruptcies this is the whole of
+   *  "derogatory public record or collection filed": there is no public records section. */
+  collections: unknown[]
   score: number | null
 }
 
@@ -120,6 +136,7 @@ export function findEquifaxReport(
     trades: asArray<EquifaxTrade>(report.trades),
     inquiries: asArray<EquifaxInquiry>(report.inquiries),
     bankruptcies: asArray<EquifaxBankruptcy>(report.bankruptcies),
+    collections: asArray<unknown>(report.collections),
     score: Number.isFinite(score) && score > 0 ? score : null,
   }
 }

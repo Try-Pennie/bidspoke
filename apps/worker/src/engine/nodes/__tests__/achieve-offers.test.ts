@@ -546,6 +546,58 @@ describe('executeAchieveOffersNode', () => {
     })
   })
 
+  // Every send records the credit figures behind Achieve's decline reasons, so accepted and
+  // declined leads can be compared later on what their underwriting actually reacts to. They
+  // are derived here rather than in the screen because the screen only reads the report when
+  // a credit threshold happens to be configured, and the record has to be complete either way.
+  describe('credit metrics on the record', () => {
+    // Main Flow nests the report one level deeper than the Engine workflow, so the fixture
+    // uses the nested shape the live flow actually produces.
+    const withReport = () => {
+      const ctx = makeCtx({ payload: fullPayload(), env: PROD_ENV })
+      ;(ctx.steps as Record<string, unknown>).equifax_credit_report = {
+        output: {
+          data: {
+            consumers: {
+              equifaxUSConsumerCreditReport: [
+                {
+                  models: [{ score: 720 }],
+                  trades: [
+                    { portfolioTypeCode: { code: 'R' }, balance: 900, creditLimit: 3000, dateOpened: '01152020' },
+                  ],
+                  inquiries: [{ inquiryDate: '08142026' }],
+                  collections: [{}],
+                },
+              ],
+            },
+          },
+        },
+      }
+      return ctx
+    }
+
+    it('carries the derived metrics on a sent lead', async () => {
+      mockFetchOnce(200, acceptedResponse(1))
+      const { output } = await executeAchieveOffersNode(makeNode(), withReport())
+      const metrics = (output as Record<string, unknown>).credit_metrics as Record<string, unknown>
+      expect(metrics.vantage_score).toBe(720)
+      expect(metrics.revolving_utilisation).toBeCloseTo(0.3, 4)
+      expect(metrics.inquiries_12mo).toBe(1)
+      expect(metrics.collections).toBe(1)
+    })
+
+    // Null rather than an absent key, and asserted against a fixture that DOES produce
+    // metrics in the test above, so this cannot pass merely because the fixture never had a
+    // report to begin with.
+    it('records null metrics when there is no credit report to read', async () => {
+      mockFetchOnce(200, acceptedResponse(1))
+      const ctx = withReport()
+      delete (ctx.steps as Record<string, unknown>).equifax_credit_report
+      const { output } = await executeAchieveOffersNode(makeNode(), ctx)
+      expect((output as Record<string, unknown>).credit_metrics).toBeNull()
+    })
+  })
+
   // Test runs bypass the screen (Dan, 2026-08-31): the screen's score floor doubles as the
   // pause switch for the live pipe, and with it set to an impossible value a canvas test lead
   // could never reach Achieve at all. A test run is a deliberate, person-initiated send of one
