@@ -123,8 +123,6 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
 
   for (const trade of trades) {
     const code = portfolioCode(trade)
-    const balance = amount(trade.balance)
-
     const open = trade.closedDate === undefined
 
     // Open accounts only, for both ratios. A closed card keeps its limit and carries no
@@ -135,14 +133,19 @@ export function deriveCreditMetrics(report: EquifaxReport, now: Date): CreditMet
     // code says "recently active installment loans".
     if (code && REVOLVING_CODES.has(code)) {
       if (open) {
-        revolvingBalance += balance
+        // Read INSIDE the branch that uses them, so the unreadable count reflects amounts that
+        // actually fed a ratio. Counting every trade's balance flagged rows whose figures were
+        // complete, because a closed card or a mortgage contributes to nothing: seen on a live
+        // lead with 28 accounts, 11 of them closed revolving, every ratio correct and the flag
+        // reading 1. A flag that fires on healthy rows is one nobody reads.
+        revolvingBalance += amount(trade.balance)
         revolvingLimit += amount(trade.creditLimit)
       } else {
         closedRevolving += 1
       }
     }
     if (code && INSTALLMENT_CODES.has(code) && open) {
-      installmentBalance += balance
+      installmentBalance += amount(trade.balance)
       installmentOriginal += amount(trade.highCredit)
     }
     if (open) openAccounts += 1
