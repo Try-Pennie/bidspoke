@@ -58,6 +58,17 @@ export const TRIPOINT_PRICING_REMEDY: AlertRemedy = {
     'the Salesforce formula books, or have the formula changed, whichever is the wrong one. A formula that could ' +
     'not be read or recognised: the check itself needs attention (the Worker\'s Salesforce credentials, its Tooling ' +
     'API access, or a rewritten formula); run POST /api/admin/tripoint-pricing-check to see the current answer.',
+  /**
+   * A comparison of two settings that RAN has not failed (#1210), and this one
+   * says so itself, in the words 'nothing was sent anywhere and nothing is
+   * missing'.
+   *
+   * Deliberately not 'found a price that disagrees': this alert also carries the
+   * case where the two could not be compared at all, and a verb claiming a
+   * disagreement would be a statement the check did not measure (L11).
+   */
+  headlineVerb: 'has findings',
+  itemNoun: { one: 'finding', many: 'findings' },
 }
 
 /** The Salesforce field whose formula books Main Flow Tripoint revenue. */

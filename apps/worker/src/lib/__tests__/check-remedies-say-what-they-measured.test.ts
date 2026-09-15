@@ -91,7 +91,29 @@ describe('every check says what it measured', () => {
     expect(ARCHIVE_STANDSTILL_REMEDY.headlineVerb?.toLowerCase()).toContain('archive')
   })
 
+  /**
+   * Phrases in which a remedy says, in its own words, that nothing broke.
+   *
+   * Only explicit denials, never an inference from tone: a check whose body says
+   * "nothing failed" and whose header says "failed" contradicts itself in two
+   * sentences a reader sees together (#1210). On 2026-09-10 the code node log
+   * scan's finding arrived headlined "code-node-payload-prints failed" above a
+   * paragraph beginning "nothing failed and nothing is missing".
+   */
+  const DENIES_FAILURE = ['nothing failed', 'nothing is missing', 'nothing was sent']
+
   for (const [name, remedy] of REMEDIES) {
+    it(`${name} does not headline itself as a failure while denying one`, () => {
+      const says = remedy.consequence.toLowerCase()
+      if (!DENIES_FAILURE.some((p) => says.includes(p))) return
+      // The sender's default verb is "failed" and its default noun is "error", so
+      // a remedy that says nothing broke has to supply both or it wears them.
+      expect(remedy.headlineVerb, `${name} denies a failure, so it must say what it DID instead`).toBeDefined()
+      expect(remedy.headlineVerb?.toLowerCase()).not.toContain('fail')
+      expect(remedy.itemNoun, `${name} lists findings, not errors`).toBeDefined()
+      expect(remedy.itemNoun?.many.toLowerCase()).not.toContain('error')
+    })
+
     it(`${name} does not borrow the export wording`, () => {
       const words = `${remedy.consequence} ${remedy.fixHint}`.toLowerCase()
       for (const wrong of EXPORT_ONLY) expect(words).not.toContain(wrong)

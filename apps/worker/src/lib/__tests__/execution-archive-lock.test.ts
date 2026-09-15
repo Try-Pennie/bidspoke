@@ -31,8 +31,19 @@ import { EXPECTED_ORGANIZATION_SLUG } from '../../archive/disposition'
 import { notifyExportFailure } from '../export-alerts'
 import { makeArchiveDouble, makeKV, rowsFor, NOW } from './_archive-double'
 
-async function runWithLock(stored: string | null) {
-  const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG })
+/**
+ * Kill start times that put the rate above the daily threshold, so the takeover
+ * notice SPEAKS (#1211). Three in the last 24 hours, which no healthy day in
+ * production has ever reached.
+ */
+const UNUSUAL_RATE = [
+  new Date(NOW.getTime() - 1 * 60 * 60 * 1000).toISOString(),
+  new Date(NOW.getTime() - 5 * 60 * 60 * 1000).toISOString(),
+  new Date(NOW.getTime() - 9 * 60 * 60 * 1000).toISOString(),
+]
+
+async function runWithLock(stored: string | null, killedRuns?: string[]) {
+  const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG, killedRuns })
   const kv = makeKV()
   if (stored !== null) await kv.put(RUN_LOCK_KEY, stored)
   const sent: ArchiveRow[] = []
@@ -63,18 +74,41 @@ describe('a lock left behind by a killed run (#954)', () => {
     expect(sent).toHaveLength(1)
   })
 
-  it('says so, rather than taking over quietly', async () => {
+  // REVERSED ON 2026-09-15 (#1211). This pair used to be one test asserting that
+  // every takeover is reported. That was a deliberate decision, and it was
+  // deliberately reversed: the recovery is automatic and complete, the page
+  // arrived with no counterpart because nothing else reports the kill inside the
+  // 50 minute vanished-run allowance, and Dan asked for it to stop. Detection and
+  // the `job_runs` row are untouched; only the routine page is gone. Inverted
+  // rather than deleted, because what the notice SAYS when it does speak is still
+  // worth defending (L252, L430).
+  it('stays quiet on the ordinary rate, because the run recovered the work itself', async () => {
     const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
     await runWithLock(stale)
 
+    expect(alertNames()).not.toContain(ARCHIVE_JOB_NAMES.killed)
+  })
+
+  it('says so when the rate is unusual, and names the rate rather than the one event', async () => {
+    const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
+    await runWithLock(stale, UNUSUAL_RATE)
+
     const killed = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_JOB_NAMES.killed)
-    expect(killed, 'taking over a dead run lock must be reported').toBeDefined()
+    expect(killed, 'an unusual kill rate must still be reported').toBeDefined()
     expect(String((killed as unknown[])[2])).toMatch(/killed rather than still working/)
+    // The rate is what makes this worth reading, and it is what the old
+    // per-occurrence page could never say.
+    expect(String((killed as unknown[])[2])).toMatch(/3 times in the last 24 hours/)
+    // The reason follows the rate as its own sentence. Appended raw it begins
+    // lowercase, and the two run together into one unreadable line.
+    expect(String((killed as unknown[])[2])).not.toMatch(/\. [a-z]/)
   })
 
   it('carries what the dead run had reached, not just that it stopped (#1034)', async () => {
+    // Driven at a rate that speaks, because a notice nobody sends carries
+    // nothing: this asserts what the message says, not whether it is sent.
     const stale = lockValue(new Date(NOW.getTime() - 60 * 60 * 1000), WALL_TIME_BUDGET_MS)
-    await runWithLock(stale)
+    await runWithLock(stale, UNUSUAL_RATE)
 
     const killed = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_JOB_NAMES.killed)
     // The double hands back an unfinished row that stamped nothing, which is a
@@ -243,8 +277,12 @@ describe('a cron retry arriving inside its killed predecessor\'s deadline (#1181
   // minutes of deadline left. The hours then waited for the 01:23 run.
   const SCHEDULED = new Date('2026-09-05T00:23:00.000Z')
 
-  async function runRetry(storedScheduledFor: Date | undefined, ownScheduledFor: Date | undefined) {
-    const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG })
+  async function runRetry(
+    storedScheduledFor: Date | undefined,
+    ownScheduledFor: Date | undefined,
+    killedRuns?: string[],
+  ) {
+    const double = makeArchiveDouble({ organizationSlug: EXPECTED_ORGANIZATION_SLUG, killedRuns })
     const kv = makeKV()
     const killedAt = new Date(NOW.getTime() - 43 * 1000)
     await kv.put(RUN_LOCK_KEY, lockValue(killedAt, WALL_TIME_BUDGET_MS, storedScheduledFor))
@@ -267,7 +305,9 @@ describe('a cron retry arriving inside its killed predecessor\'s deadline (#1181
   })
 
   it('reports the kill, in the retry\'s own words', async () => {
-    await runRetry(SCHEDULED, SCHEDULED)
+    // At a rate that speaks: the retry's own wording is what this defends, and
+    // whether a routine takeover is spoken at all is decided in the pair above.
+    await runRetry(SCHEDULED, SCHEDULED, UNUSUAL_RATE)
 
     const killed = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === ARCHIVE_JOB_NAMES.killed)
     expect(killed, 'a retry taking over its predecessor\'s lock must be reported').toBeDefined()

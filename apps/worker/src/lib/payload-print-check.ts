@@ -29,6 +29,19 @@ export const PAYLOAD_PRINT_REMEDY: AlertRemedy = {
     'logging the value or log only the specific fields you need. If the line is deliberate and the ' +
     'value is safe, add it to ACCEPTED_PRINT_SITES in payload-print-baseline.ts so it stops being ' +
     'reported. For a scan that could not run: the check itself needs attention, not any workflow.',
+  /**
+   * A scan that RAN and found a line of code has not failed, and the line it
+   * found is not an error (#1210). On 2026-09-10 this check's first real
+   * finding arrived headlined 'code-node-payload-prints failed' directly above
+   * its own sentence saying nothing failed and nothing is missing.
+   *
+   * 'has findings' rather than something more specific because this alert
+   * carries two cases, a node that was found and a scan that could not run, and
+   * a verb naming either one is false about the other. What is true of both is
+   * that there are items listed below it.
+   */
+  headlineVerb: 'has findings',
+  itemNoun: { one: 'finding', many: 'findings' },
 }
 
 export interface PayloadPrintFinding extends PayloadPrint {

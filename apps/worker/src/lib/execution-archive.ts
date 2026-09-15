@@ -31,6 +31,7 @@ import {
 } from '../archive/run-loop'
 import { createRefusalBuffer, type RefusalRecord } from '../archive/refusal-buffer'
 import { decideLock, lockValue } from '../archive/run-lock'
+import { decideKillNotice } from '../archive/kill-rate'
 import { CRON_RUN_BUDGET, type RunBudget } from '../archive/deadline'
 import {
   withJobRun,
@@ -38,6 +39,7 @@ import {
   type JobRunHandle,
   stampJobRunProgress,
   readLastUnfinishedRun,
+  countRecentKills,
   type LastUnfinishedRun,
 } from './job-run-record'
 import type { Env } from '../index'
@@ -294,6 +296,11 @@ const textField = (s: Record<string, unknown>, key: string): string | null => {
  * be recorded and we could not see it, so it names the read problem rather than
  * reporting an empty backlog of evidence.
  */
+/** Opens a clause as a sentence, so an appended reason does not read as a run-on. */
+function sentence(text: string): string {
+  return text.length === 0 ? text : text[0].toUpperCase() + text.slice(1)
+}
+
 export function describePredecessor(read: LastUnfinishedRun): string {
   if (read.kind === 'unreadable') {
     return `How far the killed run had got could not be read (${read.detail}), so its cause is not established here.`
@@ -384,29 +391,50 @@ export async function runExecutionArchive(
     return { ...EMPTY_RUN, skipped: 'locked', detail }
   }
   if (lock.action === 'take-over') {
-    // Alerted, not merely logged. A killed run leaves the watermark,
-    // execution_archive_ids and execution_archive_refusals all untouched, which
-    // is indistinguishable from an hour with no work, so the takeover is the one
-    // moment anything can say it happened (L98).
+    // ALWAYS RECORDED, SPOKEN ONLY WHEN THE RATE IS UNUSUAL (#1211). A killed run
+    // leaves the watermark, execution_archive_ids and execution_archive_refusals
+    // all untouched, which is indistinguishable from an hour with no work, so the
+    // takeover is still the one moment anything can NAME this cause (L98). What
+    // changed on 2026-09-15 is who hears about it: the recovery is automatic and
+    // complete, so a page on every occurrence was an alert arguing against its
+    // own delivery, and it arrived with no counterpart because the vanished-run
+    // check waits 50 minutes for a completion that lands in three.
     console.warn(`[execution-archive] taking over a stale run lock: ${lock.reason}`)
     try {
-      // What the dead run had REACHED, not just that it stopped (#1034). Out of
-      // memory, out of wall time, out of subrequests and a platform blip all
-      // leave the same missing ending, and they are different fixes: an hour too
-      // large to finish in one invocation can never be archived however often it
-      // retries (#953), while a blip clears on the next run. The stamp is the
-      // only thing that separates them.
-      const predecessor = await readLastUnfinishedRun(supabase, ARCHIVE_JOB_RUN)
-      await notifyExportFailure(
-        supabase,
-        ARCHIVE_JOB_NAMES.killed,
-        [
-          `${lock.reason}. This run is proceeding; the work its predecessor did not finish is simply unarchived. ` +
-            describePredecessor(predecessor),
-        ],
-        env.IDEMPOTENCY,
-        ARCHIVE_KILLED_REMEDY,
+      const notice = decideKillNotice(
+        await countRecentKills(supabase, ARCHIVE_JOB_RUN, startedAt, startedAt.getTime()),
       )
+      // Logged either way, and BEFORE the branch, so a takeover the gate holds
+      // back still leaves its reasoning where somebody reading this run's logs
+      // will find it. A gate whose quiet decisions are invisible cannot be told
+      // from one that never ran (L331).
+      console.warn(`[execution-archive] killed-run notice: ${notice.reason}`)
+      if (notice.speak) {
+        // What the dead run had REACHED, not just that it stopped (#1034). Out of
+        // memory, out of wall time, out of subrequests and a platform blip all
+        // leave the same missing ending, and they are different fixes: an hour too
+        // large to finish in one invocation can never be archived however often it
+        // retries (#953), while a blip clears on the next run. The stamp is the
+        // only thing that separates them. Read only when it will be said: an
+        // unspoken takeover has nobody to tell, and this costs a subrequest out
+        // of the run's own budget.
+        const predecessor = await readLastUnfinishedRun(supabase, ARCHIVE_JOB_RUN)
+        await notifyExportFailure(
+          supabase,
+          ARCHIVE_JOB_NAMES.killed,
+          [
+            // The rate leads, because when this speaks at all the rate IS the
+            // news. The reason then follows as its own sentence, capitalised:
+            // `decideLock` writes it to begin a clause, so appending it raw puts
+            // a lowercase word after a full stop and the two run together.
+            `${notice.rate} ${sentence(lock.reason)}. This run is proceeding; the work its predecessor ` +
+              `did not finish is simply unarchived. ` +
+              describePredecessor(predecessor),
+          ],
+          env.IDEMPOTENCY,
+          ARCHIVE_KILLED_REMEDY,
+        )
+      }
     } catch (err) {
       // The report must not be able to stop the work it reports on (L71). This
       // alert runs BEFORE any archiving, so an unreachable Slack or a failing
