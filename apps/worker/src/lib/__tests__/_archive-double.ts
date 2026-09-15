@@ -55,9 +55,22 @@ export function makeArchiveDouble(opts: {
    * archive behaves ACROSS a population, rather than on one row, asks for more.
    */
   executions?: number
+  /**
+   * When each recent killed run began, for the kill-rate gate on the takeover
+   * notice (#1211).
+   *
+   * One kill by default, which is the ordinary rate measured in production
+   * (exactly one on each of eight sampled days), so a suite that says nothing
+   * about this gets the routine case and the notice stays quiet. A suite that
+   * wants the notice to SPEAK seeds an unusual rate here.
+   */
+  killedRuns?: string[]
 }) {
   const writes: Recorded[] = []
   const executionCount = opts.executions ?? 1
+  // The default is the ORDINARY rate, one kill, and it keeps the start time the
+  // predecessor lookup has always been given here.
+  const killedRuns = opts.killedRuns ?? ['2026-08-23T14:00:40.000Z']
   const startedAt = '2026-08-22T07:30:00.000Z'
   const executions = Array.from({ length: executionCount }, (_, i) => ({
     id: executionIdAt(i),
@@ -164,9 +177,21 @@ export function makeArchiveDouble(opts: {
             // id the insert reads back (#1034), so a row that reaches the alert
             // is a row shaped like a real one. A double answering only `id` made
             // the alert print "started at undefined".
+            //
+            // Several rows where a suite seeds them, because the kill-rate gate
+            // counts unfinished rows while the takeover's own lookup reads the
+            // first (#1211). Both are served from one list, so a suite cannot
+            // set up a rate the predecessor lookup disagrees with.
             return counting
-              ? { count: 1, error: null }
-              : { data: [{ id: 'run-1', started_at: '2026-08-23T14:00:40.000Z', summary: null }], error: null }
+              ? { count: killedRuns.length, error: null }
+              : {
+                  data: killedRuns.map((startedAt, i) => ({
+                    id: `run-${i + 1}`,
+                    started_at: startedAt,
+                    summary: null,
+                  })),
+                  error: null,
+                }
           default:
             // Writes answer with no error. A write that silently failed would
             // make every assertion below pass while nothing landed.

@@ -21,6 +21,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { requireRowsAffected } from './db-retry'
+import type { KillCounts } from '../archive/kill-rate'
 
 export interface JobRunHandle {
   /** Null when the start could not be recorded, so `finish` knows there is no row to close. */
@@ -202,6 +203,63 @@ export async function readLastUnfinishedRun(
 }
 
 export const ARCHIVE_JOB_RUN = 'execution-archive'
+
+/** How far back the two kill-rate windows reach. */
+const DAY_MS = 24 * 60 * 60 * 1000
+const WEEK_MS = 7 * DAY_MS
+
+/**
+ * How often this job has been killed lately, in the two windows the takeover
+ * notice is decided from (#1211).
+ *
+ * ONE READ, NOT TWO. The rows are fetched once for the week and the day count is
+ * taken from the same array, because this runs on the archive's own subrequest
+ * budget and a kill is rare enough (ten on the worst day ever recorded) that the
+ * payload is negligible. A second count query would spend a subrequest to learn
+ * something the first one already carries.
+ *
+ * `before` is the CALLING run's start, and the bound is deliberate rather than
+ * tidy. Today the archive reclaims the dead lock BEFORE `withJobRun` opens its
+ * own row, so the caller has no unfinished row to count yet and this bound
+ * excludes nothing. It is here because the count must not depend on that
+ * ordering: the archive has three entry points (the hourly cron, the backlog
+ * walk and the admin re-archive route), and a caller whose row is already open
+ * would otherwise count ITSELF as a kill on every takeover, one third of the way
+ * to the daily threshold before anything has gone wrong.
+ */
+export async function countRecentKills(
+  supabase: SupabaseClient,
+  job: string,
+  before: Date,
+  nowMs: number,
+): Promise<KillCounts> {
+  try {
+    const { data, error } = await supabase
+      .from('job_runs')
+      .select('started_at')
+      .eq('job', job)
+      .is('finished_at', null)
+      .gte('started_at', new Date(nowMs - WEEK_MS).toISOString())
+      .lt('started_at', before.toISOString())
+    if (error) throw new Error(formatErr(error))
+    const rows = (data as Array<Record<string, unknown>> | null) ?? []
+    // A row whose start will not parse is not evidence of a kill at any time, and
+    // counting it would put it in every window: NaN fails both comparisons, so
+    // it would be excluded from the day and still counted in the week.
+    const startedMs = rows
+      .map((r) => (typeof r.started_at === 'string' ? Date.parse(r.started_at) : NaN))
+      .filter((ms) => Number.isFinite(ms))
+    return {
+      kind: 'counted',
+      day: startedMs.filter((ms) => ms >= nowMs - DAY_MS).length,
+      week: startedMs.length,
+    }
+  } catch (err) {
+    const detail = formatErr(err)
+    console.error(`[job-runs] could not count recent killed ${job} runs: ${detail}`)
+    return { kind: 'unreadable', detail }
+  }
+}
 
 /**
  * Opens a run record, runs the work, and ALWAYS closes the record (#1251).
