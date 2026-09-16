@@ -408,7 +408,7 @@ function buildRequest(
   if (consents) body.consents = consents
 
   const unsecuredDebt = extractUnsecuredDebt(ctx, config)
-  if (unsecuredDebt != null && unsecuredDebt >= 0) body.unsecured_debt = unsecuredDebt
+  if (unsecuredDebt != null) body.unsecured_debt = unsecuredDebt
 
   const loanAmount = li.loanAmount != null ? Math.round(Number(li.loanAmount)) : null
   if (loanAmount != null && loanAmount > 0) body.loan_amount = loanAmount
@@ -453,15 +453,26 @@ function buildConsents(
 // for workflows with a different payload shape.
 function extractUnsecuredDebt(ctx: ExecutionContext, config: AchieveOffersConfig): number | null {
   if (config.unsecured_debt_ref) {
-    const resolved = resolveValue(config.unsecured_debt_ref, ctx)
-    const n = Number(resolved)
-    return Number.isFinite(n) ? Math.round(n) : null
+    return toSendableDebt(resolveValue(config.unsecured_debt_ref, ctx))
   }
   const elig = ctx.steps.pennie_or_eligibility?.output as
     | { eligibilityData?: { estimated_total_debt?: number | null }; final?: number | null }
     | undefined
-  const debt = elig?.eligibilityData?.estimated_total_debt ?? elig?.final ?? null
-  return debt != null && Number.isFinite(Number(debt)) ? Math.round(Number(debt)) : null
+  return (
+    toSendableDebt(elig?.eligibilityData?.estimated_total_debt) ?? toSendableDebt(elig?.final)
+  )
+}
+
+// A zero or negative figure means we have no usable one, never that the lead owes nothing:
+// Salesforce zeroes Engine Debt when every creditor on the lead is excluded, and Eligibility
+// Scout answers 0 for a lead it judges debt-too-low. Sending it would have Achieve screen on
+// a debt figure nobody measured, so the field is omitted instead.
+function toSendableDebt(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) return null
+  const rounded = Math.round(n)
+  return rounded > 0 ? rounded : null
 }
 
 
