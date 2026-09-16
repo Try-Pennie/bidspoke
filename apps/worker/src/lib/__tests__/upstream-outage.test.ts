@@ -14,6 +14,8 @@ import {
   DEFAULT_OUTAGE_THRESHOLD,
   detectFailureSaturation,
   groupSaturation,
+  topErrorShapes,
+  describeHowToCheck,
 } from '../upstream-outage'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from '../slack'
 
@@ -483,4 +485,112 @@ it('every built-in cause has a key, label, and at least one matcher', () => {
     expect(c.label).toBeTruthy()
     expect(c.matchers.length).toBeGreaterThan(0)
   }
+})
+
+/**
+ * A partner API answering 5xx through a code node (#1361).
+ *
+ * The real message, measured over the 7 days to 2026-09-16: 480 failures across
+ * the GigFi and LendSwift bidding workflows, every one of them this exact shape,
+ * and every one of them paging individually. Nothing else in that window carries
+ * the text at all.
+ *
+ * The matcher deliberately keys on the partner's own words rather than the HTTP
+ * status, because the status on a code node is chosen by the workflow author: a
+ * per-lead business rejection is also returned as a 500, and those must keep
+ * paging per run (L104, and the existing 'reason eq' case below).
+ */
+// The engine joins the status and the upstream body with an em dash
+// (formatCodeErrorMessage). Written as an escape so this file holds no literal
+// one, which the style gate would reject even though the product emits it.
+const EM = '\u2014'
+
+const PARTNER_5XX =
+  'Code returned error response: HTTP 500 ' + EM + ' {"lead_id":"35aa5869-116e-46b4-a010-67315d66307b",' +
+  '"status":"error","reason":"internal server error"}'
+
+describe('partner API 5xx is a shared-upstream outage (#1361)', () => {
+  it('classifies a partner internal server error as the partner_api cause', () => {
+    expect(classifyOutageCause(PARTNER_5XX)?.key).toBe('partner_api')
+  })
+
+  it('leaves a per-lead business rejection carrying the SAME status alone', () => {
+    // The discriminator is the reason text, never the 500, so this must stay
+    // unclassified and keep paging per run.
+    expect(classifyOutageCause('Code returned error response: HTTP 500 ' + EM + ' reason eq')).toBeNull()
+    expect(classifyOutageCause('Code returned error response: HTTP 500 ' + EM + ' {"reason":"in"}')).toBeNull()
+  })
+
+  it('tells the reader to check the partner, not our own recent deploys', () => {
+    const { shapes } = topErrorShapes([PARTNER_5XX])
+    expect(describeHowToCheck('Partner API', shapes)).toMatch(/health/i)
+  })
+})
+
+describe('a per-workflow cause keeps two partners from masking each other (#1361)', () => {
+  const t0 = Date.UTC(2026, 8, 15, 20, 0, 0)
+  const names = new Map([['wf-gigfi', 'RML (GigFi)'], ['wf-lend', 'RML (LendSwift)'], ['wf-2', 'Main Flow']])
+  const at = (workflow_id: string, error_message: string) => ({
+    workflow_id,
+    error_message,
+    completed_at: new Date(t0 + 60_000).toISOString(),
+    failed_step_type: 'code',
+  })
+
+  it('groups a partner outage per workflow, so each partner gets its own page', () => {
+    const groups = groupOutages([at('wf-gigfi', PARTNER_5XX), at('wf-lend', PARTNER_5XX)], names, t0)
+    const partner = groups.filter((g) => g.cause.key === 'partner_api')
+    expect(partner).toHaveLength(2)
+    expect(partner.flatMap((g) => g.workflowNames).sort()).toEqual(['RML (GigFi)', 'RML (LendSwift)'])
+  })
+
+  it('still groups a SHARED upstream across workflows, which is the whole point of the cause', () => {
+    const rows = [
+      at('wf-gigfi', 'Salesforce API error (520)'),
+      at('wf-2', 'Salesforce API error (520)'),
+    ]
+    const groups = groupOutages(rows, names, t0)
+    expect(groups.filter((g) => g.cause.key === 'salesforce')).toHaveLength(1)
+    expect(groups[0].workflowNames.sort()).toEqual(['Main Flow', 'RML (GigFi)'])
+  })
+})
+
+describe('runUpstreamOutageCheck scopes the partner cooldown per workflow (#1361)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const org = { service_connections: [{ organization_id: 'org-1' }] }
+  const twoPartners = [
+    { id: 'wf-gigfi', name: 'RML (GigFi)', organization_id: 'org-1' },
+    { id: 'wf-lend', name: 'RML (LendSwift)', organization_id: 'org-1' },
+  ]
+  const spike = (wf: string) =>
+    Array.from({ length: DEFAULT_OUTAGE_THRESHOLD }, () => failRow(wf, PARTNER_5XX))
+
+  it('keys the cooldown on the workflow, not the cause alone', async () => {
+    const kv = makeKv()
+    const sb = makeSupabase({ ...org, workflows: twoPartners, workflow_executions: spike('wf-gigfi') })
+    await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(1)
+    expect(kv.store.has('upstream-outage-cooldown:org-1:partner_api:wf-gigfi')).toBe(true)
+  })
+
+  it('pages for the second partner while the first partner is still cooling down', async () => {
+    // The Sep 15 shape: both partners degraded on the same day. Under a
+    // cause-only cooldown the second one would have been silent for 30 minutes.
+    const kv = makeKv({ 'upstream-outage-cooldown:org-1:partner_api:wf-gigfi': '1' })
+    const sb = makeSupabase({ ...org, workflows: twoPartners, workflow_executions: spike('wf-lend') })
+    await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendUpstreamOutageAlert).mock.calls[0][2]).toMatchObject({
+      cause_key: 'partner_api',
+      workflow_names: ['RML (LendSwift)'],
+    })
+  })
+
+  it('stays quiet for the SAME partner while its own cooldown holds', async () => {
+    const kv = makeKv({ 'upstream-outage-cooldown:org-1:partner_api:wf-gigfi': '1' })
+    const sb = makeSupabase({ ...org, workflows: twoPartners, workflow_executions: spike('wf-gigfi') })
+    await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
+    expect(sendUpstreamOutageAlert).not.toHaveBeenCalled()
+  })
 })
