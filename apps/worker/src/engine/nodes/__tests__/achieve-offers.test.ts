@@ -225,6 +225,50 @@ describe('executeAchieveOffersNode', () => {
     expect(body.unsecured_debt).toBe(28000)
   })
 
+  // Salesforce zeroes Engine Debt when every creditor is excluded, and Eligibility Scout
+  // answers 0 for a lead it judges debt-too-low, so a zero here means "no usable figure",
+  // never "this lead owes nothing". Sending it would have Achieve screen on a false zero.
+  it.each([
+    ['a zero from Scout', { eligibilityData: { estimated_total_debt: 0 }, final: 0 }],
+    ['a zero .final', { final: 0 }],
+    ['a negative .final', { final: -16456 }],
+  ])('omits unsecured_debt for %s', async (_label, output) => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ steps: { pennie_or_eligibility: { status: 'completed', output } } })
+    )
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).not.toHaveProperty('unsecured_debt')
+  })
+
+  it('falls back to .final when Scout reports a zero beside a real Engine figure', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({
+        steps: {
+          pennie_or_eligibility: {
+            status: 'completed',
+            output: { eligibilityData: { estimated_total_debt: 0 }, final: 28000 },
+          },
+        },
+      })
+    )
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body.unsecured_debt).toBe(28000)
+  })
+
+  it('omits unsecured_debt when a configured reference resolves to zero', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode({ unsecured_debt_ref: '{{steps.other.output.debt}}' }),
+      makeCtx({ steps: { other: { status: 'completed', output: { debt: 0 } } } })
+    )
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).not.toHaveProperty('unsecured_debt')
+  })
+
   it('classifies a rejected lead without failing', async () => {
     mockFetchOnce(200, { response: 'rejected', response_reason: 'DuplicateLead' })
     const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())
