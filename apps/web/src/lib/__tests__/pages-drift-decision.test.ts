@@ -252,15 +252,24 @@ describe('the site drift job samples routes that actually serve a page (#804)', 
 })
 
 describe('the site drift job refuses to scan nothing (#804)', () => {
-  it('fails on an unset SITE_URL instead of defaulting it', () => {
+  it('reports an unset SITE_URL as a failure instead of defaulting it', () => {
     // An unset repository variable arrives as the empty string, not as absent, so
     // a `${SITE_URL:-...}` default would silently accept it (L138) and the job
-    // would scan a URL nobody chose.
+    // would scan a URL nobody chose. Since #1373 the sampling step records it and
+    // the alert step pages and fails, rather than the sampling step ending the job
+    // and skipping the tail worker check after it.
     const drift = readRepoText('.github/workflows/deploy-drift.yml')
     expect(drift).toMatch(/if \[ -z "\$\{SITE_URL:-\}" \]/)
     const guard = drift.slice(drift.indexOf('if [ -z "${SITE_URL:-}" ]'))
-    const body = guard.slice(0, guard.indexOf('fi'))
-    expect(body, 'an unset SITE_URL no longer fails the job').toMatch(/exit 1/)
+    // Cut at the closing `fi` on its own line: a bare 'fi' also occurs inside words.
+    const body = guard.slice(0, guard.search(/\n\s*fi\n/))
+    expect(body, 'an unset SITE_URL is no longer recorded for the alert step').toContain('unconfigured=true')
+
+    const alert = drift.slice(drift.indexOf("if [ '${{ steps.sample.outputs.unconfigured }}' = 'true' ]"))
+    expect(alert.length, 'the site alert step no longer checks for an unset SITE_URL').toBeLessThan(drift.length)
+    const alertBody = alert.slice(0, alert.indexOf('\n          fi\n'))
+    expect(alertBody).toContain('SITE_URL')
+    expect(alertBody, 'an unset SITE_URL no longer fails the run').toMatch(/exit 1/)
   })
 })
 

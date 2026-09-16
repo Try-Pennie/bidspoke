@@ -45,11 +45,12 @@ jobs:
     name: Deploy targets match main
     runs-on: ubuntu-latest
     # measured max 14s per target over 6 runs when healthy. Bounds a HANG, not
-    # slowness (#1062). Twenty rather than ten since #1371: with every target down,
-    # both looks at the site and the tail worker plus the wait between them take
-    # about 15 minutes, and a job killed by its timeout sends no alert at all. A
-    # test derives that worst case from the route list and the fetch script.
-    timeout-minutes: 20
+    # slowness (#1062). Twenty five rather than ten since #1371 and #1373: with
+    # every target down, both looks at the site, the tail worker and the main
+    # worker plus the waits between them take about 20 minutes, and a job killed
+    # by its timeout sends no alert at all. A test derives that worst case from
+    # the route list and the fetch script.
+    timeout-minutes: 25
     permissions:
       contents: read
       # The in-flight gate asks GitHub whether a Deploy is still running, and
@@ -95,11 +96,38 @@ jobs:
       - name: Compare live worker commit to the latest worker-touching commit
         id: compare
         working-directory: head
+        # Its own failure boundary (#1373). This is the first target checked, so
+        # a failure here that ended the job would skip the site and the tail
+        # worker as well, and send no alert for any of them. A crash is reported
+        # by the worker_probe_alert step below instead.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          LIVE_SHA=$(curl -fsS "$WORKER_URL/" | jq -r '.version // "unknown"')
+          # Deliberately not `set -e`: any failing command would end the step
+          # before it records a verdict, which is a silent stop (#1373).
+          set -uo pipefail
+
+          # An unset repository variable arrives as the EMPTY STRING (L138).
+          if [ -z "${WORKER_URL:-}" ]; then
+            echo "::error::The NEXT_PUBLIC_WORKER_URL repository variable is unset, so the worker cannot be checked."
+            echo "verdict=alert-unconfigured" >> "$GITHUB_OUTPUT"
+            echo "confirm=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Through the second look, like the other two targets (#1371, #1373):
+          # one missed answer is a blip, two looks apart is a finding.
+          FETCHED=$(mktemp -d)
+          RESULT=$(bash .github/scripts/second-look-fetch.sh "$FETCHED" "$WORKER_URL/")
+          echo "$RESULT"
+          if [ "$RESULT" != "1 ok" ] && [ "$RESULT" != "1 recovered" ]; then
+            echo "::error::The live worker did not answer at $WORKER_URL/ on either look, so whether it is stranded cannot be determined."
+            echo "verdict=alert-unreachable" >> "$GITHUB_OUTPUT"
+            echo "confirm=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LIVE_SHA=$(jq -r '.version // "unknown"' "$FETCHED/1" 2>/dev/null) || LIVE_SHA="unknown"
           LAST_WORKER_COMMIT=$(git log -1 --format=%H -- apps/worker packages)
           echo "live=$LIVE_SHA last_worker_commit=$LAST_WORKER_COMMIT"
           echo "live_sha=$LIVE_SHA" >> "$GITHUB_OUTPUT"
@@ -110,9 +138,11 @@ jobs:
           # exists to report. Ordering matters: `git cat-file -e unknown^{commit}`
           # fails, so leaving this until later would route an unstamped worker into
           # the "not in this repo's history" skip and silence it.
-          if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ]; then
+          if [ -z "$LIVE_SHA" ] || [ "$LIVE_SHA" = "unknown" ] || [ "$LIVE_SHA" = "null" ]; then
             echo "::error::Live worker reports no deployed commit (version=${LIVE_SHA:-empty}), so stranding cannot be detected. The deploy is not stamping DEPLOYED_SHA."
-            exit 1
+            echo "verdict=alert-unstamped" >> "$GITHUB_OUTPUT"
+            echo "confirm=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if ! git cat-file -e "${LIVE_SHA}^{commit}" 2>/dev/null; then
@@ -152,6 +182,40 @@ jobs:
           else
             echo "confirm=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Alert on a worker that could not be checked
+        id: worker_probe_alert
+        # Its own failure boundary, like every alert step here (#1065, #1373).
+        # The run is still failed, by the gate at the end.
+        continue-on-error: true
+        if: always() && (steps.compare.outcome == 'failure' || steps.compare.outputs.verdict == 'alert-unreachable' || steps.compare.outputs.verdict == 'alert-unstamped' || steps.compare.outputs.verdict == 'alert-unconfigured')
+        run: |
+          set -uo pipefail
+          VERDICT='${{ steps.compare.outputs.verdict }}'
+          if [ '${{ steps.compare.outcome }}' = 'failure' ]; then VERDICT=crashed; fi
+
+          case "$VERDICT" in
+            alert-unreachable)
+              TEXT=$(printf '*The worker did not answer*\n\nIt did not answer on two looks about two minutes apart, so whether it is running current code is unknown.\n\n*How to fix:* open %s in a browser. If it does not load, the worker is down, which is more urgent than this check. If it does, the outage was brief and the next hourly run will clear it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$WORKER_URL" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            alert-unstamped)
+              TEXT=$(printf '*The worker cannot say which build it is running*\n\nIt answered with no deployed commit, so a stranded worker can no longer be detected.\n\n*How to fix:* check the Deploy Worker step in deploy.yml still passes `--var DEPLOYED_SHA`.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            alert-unconfigured)
+              TEXT=$(printf '*The worker drift check has no address to check*\n\nThe `NEXT_PUBLIC_WORKER_URL` repository variable is empty, so the worker is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            *)
+              TEXT=$(printf '*The worker drift check failed before it reached a verdict*\n\nThe step that reads the worker stopped with an error, so whether the worker is stranded is unknown. The site and tail worker were still checked.\n\n*How to fix:* open the run and read the Compare live worker commit step.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+          esac
+
+          echo "::error::worker drift: $VERDICT"
+          if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+            curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
+          fi
+          exit 1
 
       - name: Report the settled state
         if: steps.compare.outputs.confirm != 'true'
@@ -311,8 +375,11 @@ jobs:
           # absent, so this is checked explicitly rather than left to a default
           # that would silently accept it and scan nothing (LESSONS L138).
           if [ -z "${SITE_URL:-}" ]; then
+            # Reported by the alert step, never a stop that skips the tail worker
+            # after it (#1373).
             echo "::error::The SITE_URL repository variable is unset, so there is nothing to scan. Set it to the public site origin."
-            exit 1
+            echo "unconfigured=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # Both prerendered and edge-rendered routes, all public so the gate
@@ -386,6 +453,18 @@ jobs:
           set -uo pipefail
           LAST_WEB_COMMIT='${{ steps.sample.outputs.last_web_commit }}'
           OBSERVATIONS='${{ steps.sample.outputs.observations }}'
+
+          if [ '${{ steps.sample.outputs.unconfigured }}' = 'true' ]; then
+            TEXT=$(printf '*The site drift check has no address to check*\n\nThe `SITE_URL` repository variable is empty, so the site is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+            echo "::error::site drift: SITE_URL is unset"
+            if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+              curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+                -H 'Content-Type: application/json' \
+                --data "$(jq -nc --arg text "$TEXT" '{text: $text}')"
+            fi
+            exit 1
+          fi
 
           # Unquoted on purpose: the observations are one space-separated word per
           # route, and each must arrive as its own argument.
@@ -470,7 +549,8 @@ jobs:
           # would fail to resolve and read like a dead worker (L138).
           if [ -z "${TAIL_URL:-}" ]; then
             echo "::error::The WORKER_TAIL_URL repository variable is unset, so the tail worker cannot be checked."
-            exit 1
+            echo "verdict=alert-unconfigured" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           # Unreachable and unstamped are kept apart from here on. A worker that
@@ -562,6 +642,9 @@ jobs:
             alert-unreachable)
               TEXT=$(printf '*The cost tail worker did not answer*\n\nIt did not answer on two looks about two minutes apart, so whether it is running current code is unknown. It writes per-execution cost, so while this is true the cost figures on the dashboard cannot be vouched for.\n\n*How to fix:* open the worker in Cloudflare. If it is down, redeploy it from the most recent Deploy run on main. If it is healthy, the outage was brief and the next hourly run clears it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
+            alert-unconfigured)
+              TEXT=$(printf '*The cost tail worker check has no address to check*\n\nThe `WORKER_TAIL_URL` repository variable is empty, so the tail worker is not being checked at all.\n\n*How to fix:* set it again under Settings, Secrets and variables, Actions, Variables.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unknown-commit)
               TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
@@ -587,6 +670,7 @@ jobs:
         if: always()
         env:
           WORKER: ${{ steps.worker_alert.outcome }}
+          WORKER_PROBE: ${{ steps.worker_probe_alert.outcome }}
           PAGES: ${{ steps.pages_alert.outcome }}
           TAIL: ${{ steps.tail_alert.outcome }}
         run: |
@@ -596,6 +680,7 @@ jobs:
           # target needs one. Only `failure` counts, so a step that never ran is
           # not read as a pass and not read as a failure either.
           [ "$WORKER" = "failure" ] && failed="${failed} worker"
+          [ "$WORKER_PROBE" = "failure" ] && failed="${failed} worker-unchecked"
           [ "$PAGES" = "failure" ] && failed="${failed} site"
           [ "$TAIL" = "failure" ] && failed="${failed} tail-worker"
           if [ -n "$failed" ]; then

@@ -191,9 +191,10 @@ describe('the drift workflow takes a second look before calling a target unreach
     const perFetch = maxTime * (retries + 1) + retryDelay * retries
     const routes = drift.match(/^\s*ROUTES="([^"]+)"/m)![1].trim().split(/\s+/).length
     const worstSite = routes * perFetch * 2 + delay
-    const worstTail = perFetch * 2 + delay
+    // The tail worker and the main worker are one address each (#1373).
+    const worstSingle = perFetch * 2 + delay
     const timeoutMinutes = Number(drift.match(/timeout-minutes:\s*(\d+)/)?.[1])
     // Five minutes left over for checkout, the worker build and posting alerts.
-    expect(timeoutMinutes * 60).toBeGreaterThanOrEqual(worstSite + worstTail + 300)
+    expect(timeoutMinutes * 60).toBeGreaterThanOrEqual(worstSite + worstSingle * 2 + 300)
   })
 })

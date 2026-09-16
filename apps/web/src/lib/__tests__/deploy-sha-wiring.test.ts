@@ -84,9 +84,19 @@ describe('the deploy-drift check can actually fail (#327)', () => {
       .slice(branch, branch + end + 1)
       .filter((line) => !/^\s*#/.test(line))
       .join('\n')
+    // Since #1373 the branch records the verdict and stops only this step, so the
+    // site and tail worker are still checked; the worker_probe_alert step then pages
+    // and fails the run. What must never happen is the branch skipping without that
+    // verdict, which is the silent success this test exists to prevent.
     expect(
       branchBody,
-      'a missing DEPLOYED_SHA still exits 0, so the drift check cannot report a broken stamp',
-    ).not.toMatch(/exit 0/)
+      'a missing DEPLOYED_SHA no longer records alert-unstamped, so nothing reports the broken stamp',
+    ).toContain('verdict=alert-unstamped')
+    const drift = readWorkflow('deploy-drift.yml')
+    const alertStep = drift.slice(drift.indexOf('id: worker_probe_alert'))
+    expect(alertStep.length, 'there is no worker_probe_alert step to report the broken stamp').toBeLessThan(drift.length)
+    expect(alertStep.slice(0, alertStep.indexOf('\n      - name:')), 'the alert step does not page on an unstamped worker').toMatch(
+      /alert-unstamped\)[\s\S]*exit 1/,
+    )
   })
 })
