@@ -44,9 +44,12 @@ jobs:
   drift:
     name: Deploy targets match main
     runs-on: ubuntu-latest
-    # measured max 14s per target over 6 runs, plus headroom. Bounds a HANG, not
-    # slowness (#1062).
-    timeout-minutes: 10
+    # measured max 14s per target over 6 runs when healthy. Bounds a HANG, not
+    # slowness (#1062). Twenty rather than ten since #1371: with every target down,
+    # both looks at the site and the tail worker plus the wait between them take
+    # about 15 minutes, and a job killed by its timeout sends no alert at all. A
+    # test derives that worst case from the route list and the fetch script.
+    timeout-minutes: 20
     permissions:
       contents: read
       # The in-flight gate asks GitHub whether a Deploy is still running, and
@@ -323,14 +326,29 @@ jobs:
           LAST_WEB_COMMIT=$(git log -1 --format=%H -- apps/web packages pnpm-lock.yaml package.json)
           echo "last_web_commit=$LAST_WEB_COMMIT" >> "$GITHUB_OUTPUT"
 
+          # Every route through the second look (#1371): a route that does not
+          # answer is tried again after a wait, so a blip between the runner and
+          # Cloudflare does not page. The site being genuinely down is a real
+          # finding; one dropped connection is not.
+          URLS=""
+          for ROUTE in $ROUTES; do URLS="$URLS ${SITE_URL}${ROUTE}"; done
+          FETCHED=$(mktemp -d)
+          # shellcheck disable=SC2086
+          RESULTS=$(bash .github/scripts/second-look-fetch.sh "$FETCHED" $URLS)
+          echo "$RESULTS"
+
           OBSERVATIONS=""
+          N=0
           for ROUTE in $ROUTES; do
-            # --retry so a single blip does not page. The site being genuinely
-            # down is a real finding; one dropped connection is not.
-            if ! BODY=$(curl -fsS --max-time 20 --retry 2 --retry-delay 3 "${SITE_URL}${ROUTE}" 2>/dev/null); then
+            N=$((N + 1))
+            STATE=$(printf '%s\n' "$RESULTS" | awk -v n="$N" '$1 == n { print $2 }')
+            if [ "$STATE" != "ok" ] && [ "$STATE" != "recovered" ]; then
+              # Anything but an answer, including a missing line, is unreachable:
+              # a route the script said nothing about was not measured (L98).
               OBSERVATIONS="$OBSERVATIONS ${ROUTE}=unreachable"
               continue
             fi
+            BODY=$(cat "$FETCHED/$N")
 
             SERVED=$(printf '%s' "$BODY" | bash .github/scripts/pages-commit-from-html.sh)
             if [ "$SERVED" = "unstamped" ]; then
@@ -401,7 +419,7 @@ jobs:
               DETAIL=$(printf 'A route named a commit that is not in main history (`%s`), so what is live cannot be placed against the repository. This usually means a deploy went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on the site.' "$OBSERVATIONS") ;;
             alert-unreachable)
               HEADLINE='*The site did not answer*'
-              DETAIL=$(printf 'At least one public route could not be fetched after retries (`%s`).\n\n*How to fix:* open the site. If it loads, this was transient and the next hourly run will clear it; if it does not, the site is down.' "$OBSERVATIONS") ;;
+              DETAIL=$(printf 'At least one public route did not answer on two looks about two minutes apart (`%s`), so this is more than a momentary blip.\n\n*How to fix:* open the site. If it does not load, the site is down. If it does, the outage was brief and the next hourly run will clear it.' "$OBSERVATIONS") ;;
             *)
               # alert-no-samples and alert-malformed. The check itself is broken,
               # which is its own outcome and never a quiet pass: a scan that
@@ -458,12 +476,16 @@ jobs:
           # Unreachable and unstamped are kept apart from here on. A worker that
           # did not answer and a worker whose deploy forgot the stamp need two
           # different actions, and folding them into one message sends the reader
-          # to check the wrong thing (LESSONS L11). --retry absorbs a single blip;
-          # a worker that keeps refusing is a real finding.
-          if BODY=$(curl -fsS --max-time 20 --retry 2 --retry-delay 3 "$TAIL_URL" 2>/dev/null); then
-            TAIL_SHA=$(printf '%s' "$BODY" | jq -r '.version // "unknown"' 2>/dev/null) || TAIL_SHA="unknown"
+          # to check the wrong thing (LESSONS L11). The second look absorbs a blip
+          # that outlasts curl's own retries (#1371); a worker that keeps refusing
+          # is a real finding.
+          FETCHED=$(mktemp -d)
+          RESULT=$(bash .github/scripts/second-look-fetch.sh "$FETCHED" "$TAIL_URL")
+          echo "$RESULT"
+          if [ "$RESULT" = "1 ok" ] || [ "$RESULT" = "1 recovered" ]; then
+            TAIL_SHA=$(jq -r '.version // "unknown"' "$FETCHED/1" 2>/dev/null) || TAIL_SHA="unknown"
           else
-            echo "::error::The live tail worker did not answer at $TAIL_URL after retries, so whether it is stranded cannot be determined."
+            echo "::error::The live tail worker did not answer at $TAIL_URL on either look, so whether it is stranded cannot be determined."
             echo "verdict=alert-unreachable" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -538,7 +560,7 @@ jobs:
               TEXT=$(printf '*The cost tail worker cannot say which build it is running*\n\nIt answered with no deployed commit, so a stranded tail worker can no longer be detected. While this is true, per-execution cost attribution could be running old code and the dashboard would show numbers that look fine.\n\n*How to fix:* check the Deploy Worker Tail step still passes `--var DEPLOYED_SHA`, and that it uses `exec` rather than `run ... --`, which wrangler silently ignores.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unreachable)
-              TEXT=$(printf '*The cost tail worker did not answer*\n\nIt could not be reached after retries, so whether it is running current code is unknown. It writes per-execution cost, so while this is true the cost figures on the dashboard cannot be vouched for.\n\n*How to fix:* open the worker in Cloudflare. If it is healthy this was transient and the next hourly run clears it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
+              TEXT=$(printf '*The cost tail worker did not answer*\n\nIt did not answer on two looks about two minutes apart, so whether it is running current code is unknown. It writes per-execution cost, so while this is true the cost figures on the dashboard cannot be vouched for.\n\n*How to fix:* open the worker in Cloudflare. If it is down, redeploy it from the most recent Deploy run on main. If it is healthy, the outage was brief and the next hourly run clears it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
                 "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID") ;;
             alert-unknown-commit)
               TEXT=$(printf '*The cost tail worker is running a commit this repository does not have*\n\nWhat is live cannot be placed against main, so it cannot be told apart from a stranded deploy. This usually means it went out from a branch or a local build.\n\n*How to fix:* re-run Deploy on main to put a known commit back on it.\n\n<%s/%s/actions/runs/%s|Open this check>' \
