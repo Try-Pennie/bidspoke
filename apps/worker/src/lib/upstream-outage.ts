@@ -19,8 +19,11 @@
  *      page per run.
  *   2. Aggregation — this minute cron counts matching failures across all
  *      active workflows in each Slack org, grouped by cause, and fires ONE
- *      @here alert per (org, cause) when the count crosses the threshold, with
- *      a per-(org, cause) KV cooldown so a sustained outage pages once.
+ *      @here alert per group when the count crosses the threshold, with a KV
+ *      cooldown on the same key so a sustained outage pages once. The group is
+ *      (org, cause) for a shared upstream, and (org, cause, workflow) for a
+ *      cause marked `perWorkflow`, where the upstream belongs to one workflow
+ *      and a shared cooldown would let one partner silence another (#1361).
  *
  * Mirrors the failure-rate.ts / volume-cliff.ts pattern (cron + windowed
  * workflow_executions query + KV cooldown + pure detector). The difference from
@@ -40,6 +43,21 @@ export interface OutageCause {
   label: string
   /** Case-insensitive substrings; the error matches this cause if ANY appears. */
   matchers: string[]
+  /**
+   * Whether this cause is scoped to ONE workflow rather than shared across them
+   * (#1361).
+   *
+   * Every other cause here names a dependency many workflows call at once, so
+   * one page for the org is exactly right. A partner API is the opposite: each
+   * bidding workflow talks to a different partner, the remedy is to contact that
+   * partner, and the cooldown would otherwise let one partner's outage silence
+   * another's for thirty minutes. Measured 2026-09-15, GigFi and LendSwift both
+   * degraded on the same day.
+   *
+   * Set it only when the upstream really is per-workflow: it multiplies the
+   * pages a genuinely shared outage produces.
+   */
+  perWorkflow?: boolean
 }
 
 /**
@@ -80,6 +98,23 @@ export const UPSTREAM_OUTAGE_CAUSES: OutageCause[] = [
     key: 'missing_config',
     label: 'Missing credentials/config',
     matchers: ['env vars'],
+  },
+  {
+    // A partner API answering with a server fault through a code node (#1361).
+    //
+    // Keyed on the partner's OWN words, never the HTTP status. The status on a
+    // code node is chosen by the workflow author, so a per-lead business
+    // rejection is also returned as a 500, and 'Code returned error response:
+    // HTTP 5' would have swept those up and silenced them (L104). Measured over
+    // the 7 days to 2026-09-16: 480 failures carry this text, all of them GigFi
+    // or LendSwift 500s, and nothing else in the window contains it at all.
+    //
+    // Sits AFTER the named upstreams so a Salesforce or Tripoint message that
+    // also happens to say this still reports as that vendor.
+    key: 'partner_api',
+    label: 'Partner API',
+    matchers: ['internal server error'],
+    perWorkflow: true,
   },
   {
     key: 'timeout',
@@ -279,7 +314,18 @@ const OUR_OWN_CODE_SIGNALS = [
 ]
 
 /** Signals that the vendor itself is unwell. */
-const VENDOR_HEALTH_SIGNALS = ['(5', 'service unavailable', 'bad gateway', 'gateway timeout', 'timed out', 'abort']
+const VENDOR_HEALTH_SIGNALS = [
+  '(5',
+  'service unavailable',
+  'bad gateway',
+  'gateway timeout',
+  'timed out',
+  'abort',
+  // A partner naming its own server fault (#1361). Safe to read as vendor health
+  // because the two rules above are tested first, so a Salesforce 500 wrapping
+  // our own Apex still points at our recent deploys rather than their status page.
+  'internal server error',
+]
 
 /**
  * What to actually go and look at, derived from the dominant shape rather than
@@ -366,6 +412,11 @@ export interface OutageGroup {
   cause: OutageCause
   count: number
   workflowNames: string[]
+  /**
+   * The one workflow this group is about, for a `perWorkflow` cause only (#1361).
+   * Undefined for a shared cause, whose group spans every affected workflow.
+   */
+  workflowId?: string
   /** The busiest distinct error shapes behind this cause, busiest first (#834). */
   shapes: ErrorShape[]
   /** Distinct shapes not shown, so the top one does not read as the whole story. */
@@ -385,16 +436,31 @@ export function groupOutages(
 ): OutageGroup[] {
   const byCause = new Map<
     string,
-    { cause: OutageCause; count: number; workflows: Set<string>; messages: (string | null)[] }
+    {
+      cause: OutageCause
+      count: number
+      workflows: Set<string>
+      messages: (string | null)[]
+      workflowId?: string
+    }
   >()
   for (const r of rows) {
     if (!r.completed_at || new Date(r.completed_at).getTime() < windowStartMs) continue
     const cause = attributeOutageCause(r.error_message, r.failed_step_type, causes)
     if (!cause) continue
-    let g = byCause.get(cause.key)
+    // A per-workflow cause gets one group per workflow, so its count, its shapes
+    // and its cooldown are all about the one partner the page names (#1361).
+    const groupKey = cause.perWorkflow ? `${cause.key}|${r.workflow_id}` : cause.key
+    let g = byCause.get(groupKey)
     if (!g) {
-      g = { cause, count: 0, workflows: new Set(), messages: [] }
-      byCause.set(cause.key, g)
+      g = {
+        cause,
+        count: 0,
+        workflows: new Set(),
+        messages: [],
+        workflowId: cause.perWorkflow ? r.workflow_id : undefined,
+      }
+      byCause.set(groupKey, g)
     }
     g.count++
     // Collected from the SAME rows the count is built from, and inside the same
@@ -406,7 +472,14 @@ export function groupOutages(
   return [...byCause.values()]
     .map((g) => {
       const { shapes, otherShapeCount } = topErrorShapes(g.messages)
-      return { cause: g.cause, count: g.count, workflowNames: [...g.workflows], shapes, otherShapeCount }
+      return {
+        cause: g.cause,
+        count: g.count,
+        workflowNames: [...g.workflows],
+        workflowId: g.workflowId,
+        shapes,
+        otherShapeCount,
+      }
     })
     .sort((a, b) => b.count - a.count)
 }
@@ -672,7 +745,11 @@ export async function runUpstreamOutageCheck(
     for (const group of groups) {
       if (!detectOutageSpike(group.count, DEFAULT_OUTAGE_THRESHOLD)) continue
 
-      const cooldownKey = `upstream-outage-cooldown:${orgId}:${group.cause.key}`
+      // A per-workflow cause carries the workflow into its own key, so one
+      // partner's outage cannot silence another's for the cooldown (#1361).
+      const cooldownKey =
+        `upstream-outage-cooldown:${orgId}:${group.cause.key}` +
+        (group.workflowId ? `:${group.workflowId}` : '')
       if (await kv.get(cooldownKey)) continue
 
       console.log(`[upstream-outage] org=${orgId} cause=${group.cause.key} count=${group.count}/${DEFAULT_OUTAGE_THRESHOLD} window=${DEFAULT_OUTAGE_WINDOW_MINUTES}m workflows=${group.workflowNames.length}`)
