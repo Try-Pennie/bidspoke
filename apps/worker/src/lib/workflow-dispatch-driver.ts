@@ -52,9 +52,15 @@ export const DISPATCH_REF = 'main'
  * dispatch that fails is retried on the NEXT tick, so the room a workflow has
  * between `driveAfterMs` and `staleMs` is measured in ticks, not in drive
  * thresholds. Must stay in step with the cron in `wrangler.toml` that calls
- * `runWorkflowDispatchDriver`.
+ * `runWorkflowDispatchDriver`, which workflow-dispatch-cadence.test.ts checks.
+ *
+ * Every 15 minutes since #1368. The driver reads each workflow's history before
+ * it dispatches, and a read GitHub refuses (a request limit used up on the
+ * account that owns the token) leaves that tick doing nothing. Hourly, that cost
+ * a whole hour of Deploy Drift. It does not make anything run more often:
+ * `decideDue` still dispatches only an overdue workflow.
  */
-export const DRIVE_TICK_MS = 60 * 60 * 1000
+export const DRIVE_TICK_MS = 15 * 60 * 1000
 
 export type DueDecision =
   /** Overdue: the worker should fire it. */
