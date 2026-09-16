@@ -682,33 +682,10 @@ export default {
           })
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
       )
-      // Drive the scheduled workflows the worker also watches (#1058). GitHub
-      // stopped delivering this repository's cron events reliably on 2026-08-26
-      // while on-demand triggers kept working, so the worker fires them itself
-      // when they fall behind.
-      //
-      // Runs CONCURRENTLY with the schedule watch below, not before it: two
-      // ctx.waitUntil calls are two promises started at once. That is
-      // deliberate. Making it sequential would let the watch read a frontier
-      // this run had already advanced, but it would also make the watchdog
-      // hostage to the work it watches, and a driver that hangs would then take
-      // the watch down with it silently (L71). The cost of independence is that
-      // on a tick where a workflow is ALREADY past its staleness window, the
-      // watch can alert about the very gap the driver is closing in the same
-      // minute. That alert is not wrong: the check genuinely had not run. In
-      // steady state the driver keeps every workflow well inside its window, so
-      // the two never disagree.
-      //
-      // The work itself lives in workflow-dispatch-run.ts rather than here,
-      // because what matters about it is how it behaves when things go wrong,
-      // and none of that is reachable from a test while it sits inside
-      // scheduled().
-      ctx.waitUntil(
-        (async () => {
-          const { runAndReportDispatch } = await import('./lib/workflow-dispatch-run')
-          await runAndReportDispatch(supabase, env)
-        })().catch((e) => console.error('[workflow-dispatch] driver failed:', e)),
-      )
+      // The workflow dispatcher that drives these same workflows runs on the
+      // 15 minute cron below (#1058, #1368), concurrently with this watch across
+      // ticks for the same reason it once did within one: the watchdog must not
+      // be hostage to the work it watches (L71).
       ctx.waitUntil(
         runWorkflowScheduleWatch(supabase, env.IDEMPOTENCY, env)
           .then((rs) => {
@@ -726,6 +703,28 @@ export default {
           .catch((e) => console.error('[workflow-schedule] check failed:', e))
       )
     } else if (event.cron === '*/15 * * * *') {
+      // Drive the scheduled workflows the worker also watches (#1058). GitHub
+      // stopped delivering this repository's cron events reliably on 2026-08-26
+      // while on-demand triggers kept working, so the worker fires them itself
+      // when they fall behind.
+      //
+      // Every 15 minutes rather than hourly (#1368). The driver reads each
+      // workflow's run history first, and a read GitHub refuses (the token
+      // owner's request limit used up) leaves that tick doing nothing; hourly,
+      // that cost a whole hour of Deploy Drift. It runs nothing more often,
+      // because only an overdue workflow is dispatched, and its alert is held to
+      // once an hour for the same failures.
+      //
+      // Independent of the hourly schedule watch, deliberately: a driver that
+      // hangs must not take the watchdog down with it (L71). The work lives in
+      // workflow-dispatch-run.ts so its failure handling is reachable from a
+      // test.
+      ctx.waitUntil(
+        (async () => {
+          const { runAndReportDispatch } = await import('./lib/workflow-dispatch-run')
+          await runAndReportDispatch(supabase, env, env.IDEMPOTENCY)
+        })().catch((e) => console.error('[workflow-dispatch] driver failed:', e)),
+      )
       // #354: Tripoint's response carries no amount, so its wins had no price at
       // all. The figure comes from Salesforce afterwards, and this runs every 15
       // minutes because bid rows reach Snowflake about 57 minutes after the bid

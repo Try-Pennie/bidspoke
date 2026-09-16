@@ -148,8 +148,8 @@ describe('the registry carries a drive threshold for every workflow', () => {
         `${w.file} would not be driven until its alert had already fired`,
       ).toBeLessThan(w.staleMs)
       // Room for at least two retries before anybody is paged. The driver runs
-      // on the worker's hourly cron, so a failed dispatch is retried an hour
-      // later: the headroom is measured in ticks, not in drive thresholds.
+      // on the worker's 15 minute cron (#1368), so a failed dispatch is retried
+      // one tick later: the headroom is measured in ticks, not in drive thresholds.
       expect(
         w.staleMs - w.driveAfterMs,
         `${w.file} leaves no room for a failed dispatch to be retried before the alert fires`,
