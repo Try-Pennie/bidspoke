@@ -69,6 +69,15 @@ describe('sendWorkflowDispatchAlert', () => {
     expect(text, 'the reason is the whole diagnosis and must not be summarised away').toContain('403')
   })
 
+  it('does not tell the reader to change the token when every refusal was a rate limit (#1365)', async () => {
+    await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
+      { ...attempt('deploy-drift.yml', 'failed', 'GitHub rate limit (403)'), rateLimited: true },
+    ])
+    const text = posts()[0]
+    expect(text).toContain('clears on its own')
+    expect(text).not.toContain('needs Actions read')
+  })
+
   it('reports two failures in a single post rather than one message each', async () => {
     // One shared cause (a token that cannot dispatch) fails every workflow at
     // once, and one message per registry entry makes the registry length decide

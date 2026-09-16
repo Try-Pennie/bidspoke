@@ -16,6 +16,7 @@ import { describeRepeat, type StandingCondition } from './alert-backoff'
 import type { ErrorType } from '../types'
 // Type-only, so this does not create a cycle with the module that calls the
 // alert below: the import is erased at build time.
+import { GITHUB_RATE_LIMIT_FIX } from './github-refusal'
 import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
 import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
@@ -1310,7 +1311,7 @@ export async function sendPgCronAlert(
  */
 export interface WorkflowScheduleAlert {
   /** Set when the check could not read the repository at all. */
-  config: { reason: string; files: string[] } | null
+  config: { reason: string; files: string[]; rateLimited?: boolean } | null
   /** The workflows with a real per-workflow verdict. Empty when config is set. */
   workflows: { workflow: WatchedWorkflow; verdict: ScheduleVerdict }[]
 }
@@ -1351,8 +1352,9 @@ const scheduleSentence = (
   }
 }
 
-/** The fix hints the statuses present in this alert actually call for. */
-const scheduleFixes = (statuses: Set<ScheduleStatus>): string[] => {
+/** The fix hints the verdicts present in this alert actually call for. */
+const scheduleFixes = (verdicts: ScheduleVerdict[]): string[] => {
+  const statuses = new Set(verdicts.map((v) => v.status))
   const fixes: string[] = []
   if (statuses.has('stale') || statuses.has('never_ran')) {
     fixes.push(
@@ -1367,9 +1369,11 @@ const scheduleFixes = (statuses: Set<ScheduleStatus>): string[] => {
       'For a workflow GitHub does not have: either restore the file or remove its entry from `WATCHED_WORKFLOWS` in `apps/worker/src/lib/workflow-schedule-watch.ts`.',
     )
   }
-  if (statuses.has('unreadable')) {
-    fixes.push(SCHEDULE_ACCESS_FIX)
-  }
+  // A rate limit and a credential that cannot see are both unreadable, and need
+  // opposite responses: one waits, one replaces the credential (#1365).
+  const unreadable = verdicts.filter((v) => v.status === 'unreadable')
+  if (unreadable.some((v) => v.rateLimited)) fixes.push(GITHUB_RATE_LIMIT_FIX)
+  if (unreadable.some((v) => !v.rateLimited)) fixes.push(SCHEDULE_ACCESS_FIX)
   return fixes
 }
 
@@ -1438,17 +1442,17 @@ export async function sendWorkflowDispatchAlert(
     })
   }
 
-  blocks.push({
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text:
-        '*How to fix:* This is not a workflow that needs re-enabling in GitHub Actions. The dispatch itself is ' +
-        'being refused, so read the reason above: a 401 or 403 means `GITHUB_ACTIONS_TOKEN` needs Actions read ' +
+  const fixes: string[] = []
+  if (problems.some((p) => p.rateLimited)) fixes.push(GITHUB_RATE_LIMIT_FIX)
+  if (problems.some((p) => !p.rateLimited)) {
+    fixes.push(
+      'This is not a workflow that needs re-enabling in GitHub Actions. The dispatch itself is ' +
+        'being refused, so read the reason above: a 401, or a 403 that is not a rate limit, means `GITHUB_ACTIONS_TOKEN` needs Actions read ' +
         'and write on this repository, a 422 means the workflow is missing its `driver` input, and a missing ' +
         'secret names itself.',
-    },
-  })
+    )
+  }
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${fixes.join(' ')}` } })
 
   const summary = `workflow dispatch failed: ${problems.map((p) => p.file).join(', ')}`
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, summary)) !== null
@@ -1482,7 +1486,8 @@ export async function sendWorkflowScheduleAlert(
         text: `The check that watches this repository's scheduled workflows could not read GitHub's run history: ${alert.config.reason}. Until it can, a workflow that has silently stopped would look exactly like one that is fine, so this is reported rather than passed over. Unwatched meanwhile: ${files}.`,
       },
     })
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${SCHEDULE_ACCESS_FIX}` } })
+    const fix = alert.config.rateLimited ? GITHUB_RATE_LIMIT_FIX : SCHEDULE_ACCESS_FIX
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${fix}` } })
     summary = 'scheduled workflow check: cannot read GitHub'
   } else {
     const many = alert.workflows.length > 1
@@ -1497,7 +1502,7 @@ export async function sendWorkflowScheduleAlert(
         text: { type: 'mrkdwn', text: `${lead}${scheduleSentence(workflow, verdict)}` },
       })
     }
-    const fixes = scheduleFixes(new Set(alert.workflows.map((w) => w.verdict.status)))
+    const fixes = scheduleFixes(alert.workflows.map((w) => w.verdict))
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*How to fix:* ${fixes.join(' ')}` } })
     summary = alert.workflows.map((w) => `${w.workflow.label}: ${w.verdict.status}`).join(', ')
   }

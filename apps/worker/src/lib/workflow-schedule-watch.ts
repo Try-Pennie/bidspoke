@@ -49,6 +49,7 @@
  * fires. The worker's crons are watched by cron-heartbeat.ts, and total worker
  * death still needs an external uptime monitor.
  */
+import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
@@ -152,11 +153,17 @@ export type ScheduleLookup =
        */
       manualPassIso: string | null
     }
-  | { ok: false; reason: string; missing?: boolean }
+  | { ok: false; reason: string; missing?: boolean; rateLimited?: boolean }
 
 export interface ScheduleVerdict {
   status: ScheduleStatus
   ageMs: number | null
+  /**
+   * Set on an unreadable verdict when GitHub refused because the request
+   * allowance was used up (#1365). That clears on its own and needs a different
+   * repair from a credential that cannot see, so the alert has to know which.
+   */
+  rateLimited?: boolean
   /**
    * Why, for the alert body. Empty for a plain healthy reading; a healthy
    * reading that stood down from a failing streak says so here.
@@ -203,7 +210,12 @@ export function evaluateSchedule(
     // Never folded into never_ran. A lookup that could not be completed is not
     // evidence a workflow stopped running, and saying so would be an accusation
     // this check cannot support (L119, L11).
-    return { status: lookup.missing ? 'missing' : 'unreadable', ageMs: null, detail: lookup.reason }
+    return {
+      status: lookup.missing ? 'missing' : 'unreadable',
+      ageMs: null,
+      detail: lookup.reason,
+      ...(lookup.rateLimited ? { rateLimited: true } : {}),
+    }
   }
   if (lookup.lastRunIso === null) {
     return { status: 'never_ran', ageMs: null, detail: 'GitHub has no scheduled runs on record for this workflow' }
@@ -292,7 +304,7 @@ const githubHeaders = (token: string) => ({
   'User-Agent': 'bidspoke-worker',
 })
 
-export type RepoAccess = { ok: true } | { ok: false; reason: string }
+export type RepoAccess = { ok: true } | { ok: false; reason: string; rateLimited?: boolean }
 
 /**
  * Prove the credential can see this repository at all, once per run.
@@ -323,6 +335,15 @@ export async function checkRepoAccess(
     return {
       ok: false,
       reason: `GitHub rejected the credential in ${access.tokenVar} with 401, so it is expired, revoked or malformed`,
+    }
+  }
+  if (response.status === 403 || response.status === 429) {
+    // Read before the permission wording below: a used up allowance also answers
+    // 403, and calling it a credential that cannot see sends the reader to replace
+    // a credential that works (#1365).
+    const refusal = await readGithubRefusal(response)
+    if (refusal.kind === 'rate_limited') {
+      return { ok: false, rateLimited: true, reason: `${describeGithubRefusal(refusal)} while reading ${access.repo}` }
     }
   }
   if (response.status === 403 || response.status === 404) {
@@ -408,7 +429,12 @@ export async function lookupLastScheduledRun(
     }
   }
   if (!response.ok) {
-    return { ok: false, reason: `GitHub returned ${response.status} for ${file}` }
+    const refusal = await readGithubRefusal(response)
+    return {
+      ok: false,
+      reason: `${describeGithubRefusal(refusal)} for ${file}`,
+      ...(refusal.kind === 'rate_limited' ? { rateLimited: true } : {}),
+    }
   }
 
   let body: unknown
@@ -571,10 +597,14 @@ export async function runWorkflowScheduleWatch(
   // per-file 404 meaning nothing (#842, #843).
   const access = resolveGithubAccess(env)
   let configFailure: string | null = access.ok ? null : access.reason
+  let configRateLimited = false
   if (access.ok && configFailure === null) {
     try {
       const repo = await checkRepoAccess(access, fetchImpl)
-      if (!repo.ok) configFailure = repo.reason
+      if (!repo.ok) {
+        configFailure = repo.reason
+        configRateLimited = repo.rateLimited === true
+      }
     } catch (e) {
       configFailure = `the repository check failed: ${formatErr(e)}`
     }
@@ -623,7 +653,14 @@ export async function runWorkflowScheduleWatch(
   if (held) return results
 
   const payload = {
-    config: configFailure === null ? null : { reason: configFailure, files: WATCHED_WORKFLOWS.map((w) => w.file) },
+    config:
+      configFailure === null
+        ? null
+        : {
+            reason: configFailure,
+            files: WATCHED_WORKFLOWS.map((w) => w.file),
+            ...(configRateLimited ? { rateLimited: true } : {}),
+          },
     workflows: problems,
   }
 

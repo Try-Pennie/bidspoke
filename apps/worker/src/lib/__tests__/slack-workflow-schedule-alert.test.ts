@@ -102,6 +102,42 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
     expect(body).not.toContain('has stopped running')
   })
 
+  it('does not send anyone to the credential when the only blindness is a rate limit (#1365)', async () => {
+    await sendWorkflowScheduleAlert(makeSupabase(connection), 'org-1', {
+      config: null,
+      workflows: [
+        { workflow: drift, verdict: { ...verdict('unreadable', 'GitHub rate limit (403)'), rateLimited: true } },
+        { workflow: types, verdict: { ...verdict('unreadable', 'GitHub rate limit (403)'), rateLimited: true } },
+      ],
+    })
+    const body = posts()[0]
+    expect(body).toContain('clears on its own')
+    expect(body).not.toContain('set to a credential')
+  })
+
+  it('gives both repairs when one workflow is rate limited and another is refused (#1365)', async () => {
+    await sendWorkflowScheduleAlert(makeSupabase(connection), 'org-1', {
+      config: null,
+      workflows: [
+        { workflow: drift, verdict: { ...verdict('unreadable', 'GitHub rate limit (403)'), rateLimited: true } },
+        { workflow: types, verdict: verdict('unreadable', 'GitHub returned 403') },
+      ],
+    })
+    const body = posts()[0]
+    expect(body).toContain('clears on its own')
+    expect(body).toContain('set to a credential')
+  })
+
+  it('reports a rate limited repository check as a rate limit, not a credential to replace (#1365)', async () => {
+    await sendWorkflowScheduleAlert(makeSupabase(connection), 'org-1', {
+      config: { reason: 'GitHub rate limit (403)', files: ['deploy-drift.yml'], rateLimited: true },
+      workflows: [],
+    })
+    const body = posts()[0]
+    expect(body).toContain('clears on its own')
+    expect(body).not.toContain('set to a credential')
+  })
+
   it('says nothing at all when there is nothing to report', async () => {
     const delivered = await sendWorkflowScheduleAlert(makeSupabase(connection), 'org-1', {
       config: null,

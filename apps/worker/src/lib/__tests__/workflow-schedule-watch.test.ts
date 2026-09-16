@@ -240,6 +240,19 @@ describe('checkRepoAccess: proving the credential can see this repository (#842)
     expect(verdict.ok === false && verdict.reason).toContain('401')
   })
 
+  it('reports a used up request allowance as a rate limit, not as a credential that cannot see (#1365)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1234567.' }), {
+        status: 403,
+        headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(NOW / 1000 + 600) },
+      }),
+    )
+    const verdict = await checkRepoAccess(access, fetchMock)
+    expect(verdict).toMatchObject({ ok: false, rateLimited: true })
+    expect(verdict.ok === false && verdict.reason).toContain('rate limit')
+    expect(verdict.ok === false && verdict.reason).not.toContain('cannot read')
+  })
+
   it('reports a thrown network error rather than reading it as no access', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('connect ETIMEDOUT'))
     const verdict = await checkRepoAccess(access, fetchMock)
@@ -396,6 +409,28 @@ describe('lookupLastScheduledRun: what it actually asks GitHub', () => {
     const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
     expect(result.ok).toBe(false)
     expect(result.ok === false && result.reason).toContain('403')
+  })
+
+  it('marks a 403 that is a rate limit, so the alert does not send anyone to the credential (#1365)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1234567.' }), {
+        status: 403,
+        headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(NOW / 1000 + 600) },
+      }),
+    )
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result).toMatchObject({ ok: false, rateLimited: true })
+    expect(result.ok === false && result.reason).toContain('rate limit')
+    expect(evaluateSchedule(result, NOW, 4 * HOUR)).toMatchObject({ status: 'unreadable', rateLimited: true })
+  })
+
+  it('carries the message GitHub sent with a 403 that is not a rate limit (#1365)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Resource not accessible by personal access token' }), { status: 403 }),
+    )
+    const result = await lookupLastScheduledRun(access, 'deploy-drift.yml', fetchMock)
+    expect(result.ok === false && result.rateLimited).toBeFalsy()
+    expect(result.ok === false && result.reason).toContain('Resource not accessible by personal access token')
   })
 
   it('marks a 404 as a workflow that is not there, not merely unreadable', async () => {

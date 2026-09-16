@@ -97,6 +97,19 @@ describe('dispatchWorkflow: what it actually asks GitHub to do', () => {
     expect(result.ok === false && result.reason).toContain('GITHUB_ACTIONS_TOKEN')
   })
 
+  it('reports a used up request allowance as a rate limit, not a missing permission (#1365)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'API rate limit exceeded for user ID 1234567.' }), {
+        status: 403,
+        headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': String(NOW / 1000 + 600) },
+      }),
+    )
+    const result = await dispatchWorkflow(access, 'deploy-drift.yml', fetchMock)
+    expect(result).toMatchObject({ ok: false, rateLimited: true })
+    expect(result.ok === false && result.reason).toContain('rate limit')
+    expect(result.ok === false && result.reason).not.toContain('needs Actions')
+  })
+
   it('reports a 422 as its own cause, because that means the workflow takes no dispatch', async () => {
     // GitHub answers 422 when the workflow has no `workflow_dispatch` trigger on
     // the default branch, which is a different repair from a token problem.

@@ -1,4 +1,5 @@
 import { formatErr } from './format-error'
+import { describeGithubRefusal, readGithubRefusal } from './github-refusal'
 import {
   DRIVER_MARKER,
   type GithubAccess,
@@ -93,7 +94,7 @@ export function decideDue(lookup: ScheduleLookup, nowMs: number, driveAfterMs: n
   return { act: 'wait', why: `last qualifying run was ${lookup.lastRunIso}` }
 }
 
-export type DispatchResult = { ok: true } | { ok: false; reason: string }
+export type DispatchResult = { ok: true } | { ok: false; reason: string; rateLimited?: boolean }
 
 /**
  * Ask GitHub to run one workflow now.
@@ -132,6 +133,15 @@ export async function dispatchWorkflow(
   // (L12, report what verifiably happened).
   if (response.status === 204) return { ok: true }
 
+  if (response.status === 403 || response.status === 429) {
+    // A used up request allowance also answers 403. It clears on its own, and
+    // reporting it as a missing permission sends the reader to replace a token
+    // that works (#1365).
+    const refusal = await readGithubRefusal(response)
+    if (refusal.kind === 'rate_limited') {
+      return { ok: false, rateLimited: true, reason: `${describeGithubRefusal(refusal)}, so ${file} was not dispatched` }
+    }
+  }
   if (response.status === 401 || response.status === 403) {
     return {
       ok: false,
@@ -166,6 +176,8 @@ export interface DispatchAttempt {
   outcome: DispatchOutcome
   /** Why, for the run log and the alert. */
   reason: string
+  /** GitHub refused because the request allowance was used up (#1365). */
+  rateLimited?: boolean
 }
 
 /** Did this run leave anything a person needs to act on? */
@@ -225,7 +237,12 @@ export async function runWorkflowDispatchDriver(
       results.push(
         dispatched.ok
           ? { file: workflow.file, outcome: 'dispatched', reason: decision.why }
-          : { file: workflow.file, outcome: 'failed', reason: dispatched.reason },
+          : {
+              file: workflow.file,
+              outcome: 'failed',
+              reason: dispatched.reason,
+              ...(dispatched.rateLimited ? { rateLimited: true } : {}),
+            },
       )
     } catch (e) {
       results.push({ file: workflow.file, outcome: 'failed', reason: `driving this workflow threw: ${formatErr(e)}` })
