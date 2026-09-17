@@ -41,6 +41,41 @@ import { ACHIEVE_HOSTS, achieveIdentityHeaders } from '../engine/nodes/achieve-i
 import { BLOCK_CAPTURE_BODY_HEAD_BYTES } from './code-node-deployer'
 import { sendPartnerBlockAlert, sendPartnerUnreachableAlert, sendProbeControlAlert, sendProbeBrokenAlert, sendGroupedRecoveryAlert } from './slack'
 import { formatErr } from './format-error'
+import type { SupabaseClient } from '@supabase/supabase-js'
+
+/**
+ * Every org's Slack connection, for a worker level check that belongs to no org, the way
+ * the daily secrets check fans out. The database first, the last-good KV copy when it does
+ * not answer (L682): a partner block has nothing to do with Supabase, so this alert must
+ * not go quiet during a database wobble. Never throws: an empty list with the reason
+ * logged is the honest answer, and the runner reports it in its summary.
+ */
+export async function resolveSlackForEveryOrg(deps: {
+  supabase: SupabaseClient
+  getConnection: (supabase: SupabaseClient, orgId: string) => Promise<SlackTarget | null>
+  lastGood: () => Promise<Map<string, SlackTarget>>
+  log: (line: string) => void
+}): Promise<SlackTarget[]> {
+  try {
+    const { data, error } = await deps.supabase.from('service_connections').select('organization_id').eq('service_type', 'slack')
+    if (error) throw new Error(error.message)
+    const orgIds = [...new Set(((data ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id))]
+    const found: SlackTarget[] = []
+    for (const orgId of orgIds) {
+      const conn = await deps.getConnection(deps.supabase, orgId)
+      if (conn) found.push(conn)
+    }
+    if (found.length > 0) return found
+  } catch (e) {
+    deps.log(`[partner-reachability] Slack connections read failed, trying the last-good copy: ${formatErr(e)}`)
+  }
+  try {
+    return [...(await deps.lastGood()).values()]
+  } catch (e) {
+    deps.log(`[partner-reachability] last-good Slack copy unreadable: ${formatErr(e)}`)
+    return []
+  }
+}
 
 export const CONTROL_HOST = 'block-probe.trypennie.dev'
 export const PROBE_USER_AGENT = 'bidspoke-partner-reachability-probe (+https://bidspoke.trypennie.dev)'
@@ -264,7 +299,13 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
   }
 
   const senders = mode === 'alert' ? deps.senders : observeSenders(deps.log)
-  const targetsSlack = await resolveSlackOnce(deps)
+  let targetsSlack: SlackTarget[] = []
+  try {
+    targetsSlack = await deps.resolveSlack()
+  } catch (e) {
+    summary.errors.push(`Slack destinations could not be resolved: ${formatErr(e)}`)
+    deps.log(`[partner-reachability] Slack destinations could not be resolved: ${formatErr(e)}`)
+  }
   const claim = async (key: string): Promise<boolean> => (deps.claims ? deps.claims.claim(key, ALERT_CLAIM_TTL_SECONDS) : true)
   const release = async (key: string): Promise<void> => { if (deps.claims) await deps.claims.release(key) }
 
@@ -396,15 +437,6 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
   }
 
   return summary
-}
-
-async function resolveSlackOnce(deps: ReachabilityDeps): Promise<SlackTarget[]> {
-  try {
-    return await deps.resolveSlack()
-  } catch (e) {
-    deps.log(`[partner-reachability] Slack connections could not be resolved: ${formatErr(e)}`)
-    return []
-  }
 }
 
 /** Deliver one message to every connection; true if any accepted it. */

@@ -10,7 +10,6 @@ import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
 import { getSlackConnection } from './lib/slack'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { makeAlertClaims } from './lib/alert-claim'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
@@ -22,7 +21,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
-import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
+import { runPartnerReachabilityCheck, fetchProbe, liveSenders, resolveSlackForEveryOrg } from './lib/partner-reachability'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
 import { runTimeoutAuditCheck } from './lib/timeout-audit'
@@ -242,34 +241,6 @@ app.route('/shadow', shadow)
 app.route('/api', api)
 
 // Scheduled handler — dispatches on cron string (see wrangler.toml [triggers])
-/**
- * Every org's Slack connection, for a worker level check that belongs to no org
- * (#1274), the way the daily secrets check fans out. The database first, the
- * last-good KV copy when it does not answer (L682): a partner block has nothing
- * to do with Supabase, so this alert must not go quiet during a database wobble.
- */
-async function resolveSlackForEveryOrg(supabase: SupabaseClient, env: Env): Promise<Array<{ bot_token: string; default_channel: string }>> {
-  try {
-    const { data, error } = await supabase.from('service_connections').select('organization_id').eq('service_type', 'slack')
-    if (error) throw error
-    const orgIds = [...new Set(((data ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id))]
-    const found: Array<{ bot_token: string; default_channel: string }> = []
-    for (const orgId of orgIds) {
-      const conn = await getSlackConnection(supabase, orgId)
-      if (conn) found.push(conn)
-    }
-    if (found.length > 0) return found
-  } catch (e) {
-    console.error(`[partner-reachability] Slack connections read failed, trying the last-good copy: ${formatErr(e)}`)
-  }
-  try {
-    return [...(await readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY)).values()]
-  } catch (e) {
-    console.error(`[partner-reachability] last-good Slack copy unreadable: ${formatErr(e)}`)
-    return []
-  }
-}
-
 export default {
   fetch: app.fetch.bind(app),
   scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): void {
@@ -754,7 +725,12 @@ export default {
               claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
               env: env as unknown as Record<string, string | undefined>,
               probe: (target) => fetchProbe(target),
-              resolveSlack: () => resolveSlackForEveryOrg(supabase, env),
+              resolveSlack: () => resolveSlackForEveryOrg({
+                supabase,
+                getConnection: getSlackConnection,
+                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, env.SECRET_ENCRYPTION_KEY),
+                log: (line) => console.error(line),
+              }),
               senders: liveSenders,
               now: Date.now,
               log: (line) => console.log(line),

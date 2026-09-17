@@ -571,3 +571,56 @@ describe('fetchProbe, the one real seam', () => {
     expect(out.error).toMatch(/ECONNREFUSED/)
   })
 })
+
+describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to every one that has Slack', () => {
+  const supabaseWith = (rows: Array<{ organization_id: string }> | null, error: { message: string } | null) => ({
+    from: () => ({ select: () => ({ eq: async () => ({ data: rows, error }) }) }),
+  }) as unknown as import('@supabase/supabase-js').SupabaseClient
+
+  it('returns one connection per org that holds one, deduplicating repeated org rows', async () => {
+    const { resolveSlackForEveryOrg } = await import('../partner-reachability')
+    const asked: string[] = []
+    const found = await resolveSlackForEveryOrg({
+      supabase: supabaseWith([{ organization_id: 'a' }, { organization_id: 'b' }, { organization_id: 'a' }], null),
+      getConnection: async (_s, orgId) => { asked.push(orgId); return orgId === 'a' ? { bot_token: 'ta', default_channel: '#a' } : null },
+      lastGood: async () => new Map(),
+      log: () => {},
+    })
+    expect(asked).toEqual(['a', 'b'])
+    expect(found).toEqual([{ bot_token: 'ta', default_channel: '#a' }])
+  })
+
+  it('falls back to the last-good KV copy when the database does not answer, and says so', async () => {
+    // A partner block has nothing to do with Supabase, so this alert must not go quiet
+    // during a database wobble (L682).
+    const { resolveSlackForEveryOrg } = await import('../partner-reachability')
+    const logs: string[] = []
+    const found = await resolveSlackForEveryOrg({
+      supabase: supabaseWith(null, { message: 'connection refused' }),
+      getConnection: async () => { throw new Error('should not be asked') },
+      lastGood: async () => new Map([['a', { bot_token: 'tk', default_channel: '#k' }]]),
+      log: (l) => { logs.push(l) },
+    })
+    expect(found).toEqual([{ bot_token: 'tk', default_channel: '#k' }])
+    expect(logs.some((l) => l.includes('last-good') && l.includes('connection refused'))).toBe(true)
+  })
+
+  it('returns an empty list, with the reason logged, when both the database and the copy fail', async () => {
+    const { resolveSlackForEveryOrg } = await import('../partner-reachability')
+    const logs: string[] = []
+    const found = await resolveSlackForEveryOrg({
+      supabase: supabaseWith(null, { message: 'down' }),
+      getConnection: async () => null,
+      lastGood: async () => { throw new Error('kv unreadable') },
+      log: (l) => { logs.push(l) },
+    })
+    expect(found).toEqual([])
+    expect(logs.some((l) => l.includes('kv unreadable'))).toBe(true)
+  })
+
+  it('reports an unresolved Slack destination in the run summary, not only in a log line', async () => {
+    const { tick } = makeDeps({ resolveSlack: async () => { throw new Error('slack lookup exploded') } })
+    const s = await tick(healthy())
+    expect(s.errors.some((e) => e.includes('slack lookup exploded'))).toBe(true)
+  })
+})
