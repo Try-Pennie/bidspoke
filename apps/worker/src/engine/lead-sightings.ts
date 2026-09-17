@@ -8,6 +8,7 @@ import { withDbRetry, isDuplicateError, requireRowsAffected, type DbError } from
 import { writeOutcome, type OutcomeAlertDeps } from './durability'
 import { pickBidSummary, deriveCodeNodeBidSummary, bidAttemptsForProjection, payloadCandidates, type ProjectedBidAttempt } from './bid-log'
 import { resolveValue } from './context'
+import { readEquifaxOutputStatus, readEquifaxReportOutput } from './nodes/achieve-credit-report'
 
 // Route a tier-2 outcome write through the durability seam when the caller
 // supplied alert deps (engine hot path → retry + dead-letter), else fall back to
@@ -569,10 +570,12 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
   const sfBody = (sfOut?.body ?? null) as { id?: string } | null
   const prospect_id = sfBody?.id ?? (sfOut as { id?: string } | null)?.id ?? null
 
-  // Equifax code node namespace 'equifax_credit_report' in the live workflow.
-  // The engine workflow's code node returns the raw Equifax JSON, where the
-  // FICO score lives at consumers.equifaxUSConsumerCreditReport[0].models[0].score.
-  // Tolerate flatter shapes (top-level `score` / `fico`) for other workflows.
+  // Equifax code node namespace 'equifax_credit_report' in the live workflow. The score is
+  // models[0].score inside the report, and the report sits at a different depth in Main Flow
+  // than in the Engine workflow, so the shape is resolved by the one locator every reader of
+  // that step shares (#1379). The status is whatever string the output carries; when it
+  // carries none, the step's own status is recorded rather than an invented word, because
+  // 'success' was written for a month on rows whose score had not been found.
   const eqxStep = steps.equifax_credit_report
   let equifax_status: string | null = null
   let equifax_error_type: string | null = null
@@ -580,14 +583,8 @@ export function extractEnrichment(steps: Record<string, StepOutput>): {
 
   if (eqxStep) {
     if (eqxStep.status === 'completed') {
-      const out = (eqxStep.output ?? {}) as Record<string, unknown>
-      const status = typeof out.status === 'string' ? out.status : 'success'
-      equifax_status = status
-      const consumers = (out.consumers ?? null) as { equifaxUSConsumerCreditReport?: Array<{ models?: Array<{ score?: unknown }> }> } | null
-      const nestedScore = consumers?.equifaxUSConsumerCreditReport?.[0]?.models?.[0]?.score
-      const score = (out.score ?? out.fico ?? nestedScore ?? null) as number | string | null
-      equifax_score = typeof score === 'number' ? score : score ? Number(score) : null
-      if (Number.isNaN(equifax_score as number)) equifax_score = null
+      equifax_status = readEquifaxOutputStatus(eqxStep.output) ?? eqxStep.status
+      equifax_score = readEquifaxReportOutput(eqxStep.output)?.score ?? null
     } else if (eqxStep.status === 'failed') {
       equifax_status = 'error'
       equifax_error_type = eqxStep.error_type ?? 'permanent'
