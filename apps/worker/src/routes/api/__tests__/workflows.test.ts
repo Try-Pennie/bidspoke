@@ -1492,3 +1492,85 @@ describe('PATCH /workflows/:id: zero-row update 404 vs real DB error (#595)', ()
     expect(body.is_active).toBe(false)
   })
 })
+
+// ── #1117: code node scripts are stripped of trailing whitespace on every write path ──
+//
+// Pasted scripts arrive padded to a column with trailing spaces, the wrapping editor drew
+// each padded line as a blank row, and nothing trimmed them on save, so once pasted they
+// were permanent. The canvas strips on its own save path; the worker strips again on every
+// path that writes a definition, so restores, API writes and any future importer share the
+// rule. A line inside a template literal is VALUE, not noise, and must survive.
+describe('code node script hygiene on every definition write (#1117)', () => {
+  const padded = 'const a = 1;    \nconst body = `keep   \n`;   \nreturn body;   '
+  const clean = 'const a = 1;\nconst body = `keep   \n`;\nreturn body;'
+  const paddedDefinition = { nodes: [{ id: 'c1', type: 'code', config: { script: padded } }], edges: [] }
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  const scriptsWritten = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
+    (sb.calls[table] ?? [])
+      .filter(([m]) => m === method)
+      .map(([, args]) => ((args[0] as { definition?: { nodes?: Array<{ config?: { script?: string } }> } }).definition?.nodes ?? []).map((n) => n.config?.script))
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(invalidateWorkflowCache).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  it('PUT strips the script in both the version snapshot and the live definition', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: paddedDefinition } })
+    expect(res.status).toBe(200)
+    expect(scriptsWritten(sb, 'workflow_versions', 'insert')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'workflows', 'update')).toEqual([[clean]])
+  })
+
+  it('POST strips the script of a newly created workflow', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', definition: paddedDefinition } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: paddedDefinition } })
+    expect(res.status).toBe(201)
+    expect(scriptsWritten(sb, 'workflows', 'insert')).toEqual([[clean]])
+  })
+
+  it('restore strips the script of the version being restored', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflow_versions: [
+        { single: { id: 'ver-1', definition: paddedDefinition, version_number: 1 } },
+        { single: { version_number: 3 } },
+        { insertResult: { id: 'ver-4', version_number: 4 } },
+      ],
+      workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(200)
+    expect(scriptsWritten(sb, 'workflow_versions', 'insert')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'workflows', 'update')).toEqual([[clean]])
+  })
+
+  it('duplicate strips the script of the clone', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: paddedDefinition, folder_id: null, is_active: true }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG } }],
+      workflow_versions: [{ list: [] }, { insertResult: {} }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(scriptsWritten(sb, 'workflows', 'insert')).toEqual([[clean]])
+  })
+})

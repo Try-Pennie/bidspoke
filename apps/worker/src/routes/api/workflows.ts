@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { isUuidV7 } from '@bidspoke/uuidv7'
+import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
@@ -45,6 +46,18 @@ workflows.get('/', async (c) => {
   return c.json(data)
 })
 
+/**
+ * Every definition this file writes goes through here first (#1117): code node scripts are
+ * stripped of trailing whitespace outside template literals. The canvas already does this
+ * on its own save path; doing it again on every write means a restore, a duplicate, an API
+ * caller or a future importer cannot put the padding back. Anything that is not a definition
+ * shaped object passes through untouched for the existing validation to refuse.
+ */
+function sanitizeDefinition<T>(definition: T): T {
+  if (!definition || typeof definition !== 'object') return definition
+  return sanitizeCodeNodeScripts(definition as T & { nodes?: unknown })
+}
+
 // POST /api/workflows
 workflows.post('/', async (c) => {
   const { orgId, userId } = c.get('user')
@@ -70,7 +83,7 @@ workflows.post('/', async (c) => {
       organization_id: orgId,
       name: body.name,
       description: body.description ?? null,
-      definition: asJson(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } }),
+      definition: asJson(sanitizeDefinition(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } })),
       is_active: true,
       folder_id: body.folder_id ?? null,
       created_by: userId,
@@ -120,7 +133,7 @@ workflows.post('/:id/duplicate', async (c) => {
       organization_id: orgId,
       name: `${source.name} (copy)`,
       description: source.description ?? null,
-      definition: source.definition,
+      definition: sanitizeDefinition(source.definition),
       is_active: source.is_active,
       folder_id: source.folder_id ?? null,
       created_by: userId,
@@ -146,7 +159,7 @@ workflows.post('/:id/duplicate', async (c) => {
     const rows = versions.map((v) => ({
       workflow_id: clone.id,
       version_number: v.version_number,
-      definition: v.definition,
+      definition: sanitizeDefinition(v.definition),
       commit_sha: v.commit_sha,
       created_by: v.created_by,
       created_at: v.created_at,
@@ -281,6 +294,9 @@ workflows.put('/:id', async (c) => {
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null }>()
+  // Before the cycle check and the no-op compare, so a save that only re-pads a clean
+  // script reads as no_changes rather than minting a version row (#1117).
+  if (body.definition !== undefined) body.definition = sanitizeDefinition(body.definition)
 
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
@@ -766,7 +782,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
     workflow_id: id,
     version_number: nextVersion,
-    definition: version.definition,
+    definition: sanitizeDefinition(version.definition),
     created_by: userId,
     message: `Restored from v${version.version_number}`,
   })
@@ -779,7 +795,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const restoreBlocked = await requireRowOr404(c, 'Workflow not found', () =>
     supabase
       .from('workflows')
-      .update({ definition: version.definition, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
+      .update({ definition: sanitizeDefinition(version.definition), updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
       .eq('id', id)
       .eq('organization_id', orgId)
       .select('id')

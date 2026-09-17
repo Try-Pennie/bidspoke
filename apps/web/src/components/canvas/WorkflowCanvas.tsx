@@ -44,6 +44,7 @@ import NodePalette from './NodePalette'
 import ConfigPanel from './ConfigPanel'
 import { api } from '@/lib/api'
 import { layoutWorkflow, findFreePosition, overlapsAny, NODE_W, nodeHeight, nodeWidth, configuredHandleIds, DISCONNECTED_GAP } from '@/lib/layout'
+import { flowToDef } from '@/lib/flow-to-def'
 import type { Workflow, WorkflowDef, NodeType, NodeDef, EdgeDef, CanvasNodeData } from '@/types/workflow'
 import { Save, Undo2, Redo2, Clock, Check, AlertCircle, AlertTriangle, Eye, X, Pencil, RotateCcw, Loader2, FlaskConical, ExternalLink, Trash2, CopyPlus } from 'lucide-react'
 import { validateWorkflow, findWorkflowCycle, findDuplicateOutEdges, type ValidationError } from '@/lib/workflow-validation'
@@ -515,37 +516,6 @@ function defToFlow(definition: WorkflowDef | null | undefined): { nodes: Node[];
   return {
     nodes: defToNodes(m.nodes, m.edges, m.trigger),
     edges: defToEdges(m.edges),
-  }
-}
-
-function flowToDef(
-  nodes: Node[],
-  edges: Edge[],
-  trigger: WorkflowDef['trigger']
-): WorkflowDef {
-  return {
-    trigger,
-    nodes: nodes.filter((n) => n.id !== 'trigger').map((n) => {
-      const d = n.data as unknown as CanvasNodeData
-      return {
-        id: n.id,
-        namespace: d.namespace,
-        label: d.label || undefined,
-        note: d.note || undefined,
-        type: n.type as NodeType,
-        position: n.position,
-        config: d.config,
-        variables: d.variables,
-      }
-    }),
-    edges: edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-      source_handle: e.sourceHandle ?? undefined,
-      condition: (e.data as { condition?: EdgeDef['condition'] })?.condition,
-      ...(e.hidden ? { hidden: true } : {}),
-    })),
   }
 }
 

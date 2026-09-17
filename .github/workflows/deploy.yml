@@ -81,6 +81,7 @@ jobs:
         run: |
           pnpm --filter @bidspoke/references test
           pnpm --filter @bidspoke/uuidv7 test
+          pnpm --filter @bidspoke/script-hygiene test
 
       # `test:unit`, not `test` (#967). The worker's `test` script also boots the
       # web vitest project to run the worker guards, which the web leg below
