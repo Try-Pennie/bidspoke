@@ -44,10 +44,14 @@ import { formatErr } from '../../lib/format-error'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
 import { isShadowDryRun, shadowAchieveStub } from '../shadow'
-import { parseJsonSafe } from '../../lib/json'
+
 import { screenLead } from './achieve-screen'
 import { resolveAchieveEndpoint } from './achieve-endpoint'
-import { achieveIdentityHeaders } from './achieve-identity'
+import { achieveIdentityHeaders, ACHIEVE_HOSTS } from './achieve-identity'
+import { hostOf, noteBlockSighting, sightingFromResponse } from '../block-sightings'
+
+/** The body Achieve's evaluations endpoint answers with, as far as this node reads it. */
+type AchieveResponseBody = { response?: string; response_reason?: string; message?: string }
 import { findEquifaxReport } from './achieve-credit-report'
 import { deriveCreditMetrics, type CreditMetrics } from './achieve-credit-metrics'
 
@@ -293,15 +297,24 @@ export async function executeAchieveOffersNode(
       signal: controller.signal,
     })
 
-    const responseBody = await parseJsonSafe<{
-      response?: string
-      response_reason?: string
-      message?: string
-    }>(res)
+    // Text first, then a tolerant parse: parseJsonSafe discarded the body of a non-JSON
+    // answer, which is how a firewall block page read as a bare "returned 403" (#1265).
+    const responseText = await res.text().catch(() => '')
+    let responseBody: AchieveResponseBody | null = null
+    try {
+      responseBody = responseText ? (JSON.parse(responseText) as AchieveResponseBody) : null
+    } catch {
+      responseBody = null
+    }
+    const block = res.ok
+      ? null
+      : sightingFromResponse(`${baseUrl}/evaluations`, res.status, responseText, res.headers, node.namespace, ACHIEVE_HOSTS.filter((h) => h !== hostOf(baseUrl)))
+    noteBlockSighting(ctx, block)
 
     if (!res.ok) {
-      const reason =
-        responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
+      const reason = block
+        ? `Achieve answered with a ${block.vendor === 'cloudflare' ? 'Cloudflare' : `HTTP ${res.status} HTML`} block page instead of data${block.bodyRayId ? ` (Ray ID ${block.bodyRayId})` : ''}`
+        : responseBody?.response_reason ?? responseBody?.message ?? `Achieve API returned ${res.status}`
       return {
         output: result(false, res.status, 'error', reason, request, responseBody, !production, responseIds(res), metrics),
         resolvedInput,

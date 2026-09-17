@@ -2061,3 +2061,73 @@ export async function postMessage(
   }
   return data.ts ?? null
 }
+
+// ── Partner firewall block page (#1265) ──────────────────────────────────────
+
+export interface PartnerBlockAlertPayload {
+  host: string
+  status: number
+  vendor: 'cloudflare' | 'unknown'
+  bodyRayId: string | null
+  edgeRayId: string | null
+  markers: string[]
+  seenIn: string
+  workflowId: string
+  workflowName: string | null
+  traceId: string
+  appUrl: string
+  /** describeRepeat's sentence while the block stands, null on the first post. */
+  repeat: string | null
+  /** The partner's other hosts with a standing block, so one incident reads as one story. */
+  alsoBlocked: string[]
+  /** The host is one of our own proxy workers, so the edge in front of it is ours. */
+  ownProxy: boolean
+  at: number
+}
+
+/**
+ * The header and the how-to say only what the detector measured (#1265): a Cloudflare block
+ * or challenge page names Cloudflare and tells the reader what to ask the partner for; an
+ * HTML 403 with none of those markers is reported as exactly that, with no firewall wording,
+ * because the check did not measure a firewall.
+ */
+export async function sendPartnerBlockAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: PartnerBlockAlertPayload,
+): Promise<string | null> {
+  const where = payload.ownProxy ? `our own proxy \`${payload.host}\`` : `\`${payload.host}\``
+  const header = payload.vendor === 'cloudflare'
+    ? `Cloudflare is blocking Bidspoke's calls to ${payload.host}`
+    : `${payload.host} answered ${payload.status} with an HTML page instead of data`
+  const workflow = payload.workflowName ? `${payload.workflowName} (${payload.workflowId.slice(0, 8)})` : payload.workflowId
+  const what = payload.vendor === 'cloudflare'
+    ? `A call from ${workflow}, step \`${payload.seenIn}\`, to ${where} came back as HTTP ${payload.status} with a Cloudflare block page (${payload.markers.join(', ')}) instead of the partner's answer. Every request to that host is failing the same way while this lasts.`
+    : `A call from ${workflow}, step \`${payload.seenIn}\`, to ${where} came back as HTTP ${payload.status} with an HTML page where JSON was expected. The page carries none of the markers a Cloudflare block or challenge page has, so what is refusing it was not measured.`
+  const ids = [
+    payload.bodyRayId ? `Ray ID on the page (the one their firewall log holds): \`${payload.bodyRayId}\`` : null,
+    payload.edgeRayId ? `Ray ID of the edge in front of the host${payload.ownProxy ? ', which is ours' : ''}: \`${payload.edgeRayId}\`` : null,
+  ].filter((s): s is string => s !== null)
+  const lines: string[] = [what]
+  if (ids.length > 0) lines.push(ids.join('\n'))
+  if (payload.alsoBlocked.length > 0) lines.push(`Also standing blocked for the same partner: ${payload.alsoBlocked.map((h) => `\`${h}\``).join(', ')}.`)
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+  ]
+  if (payload.vendor === 'cloudflare' && !payload.ownProxy) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          '*How to fix:* quote the Ray ID on the page to the partner. Our calls leave from Cloudflare\'s shared Workers address and from several locations, so ask for an allowlist keyed on our identifying request headers rather than on an address (see achieve-identity.ts for the Achieve precedent). Nothing on our side needs restarting; leads keep flowing to every other partner.',
+      },
+    })
+  }
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/workflows/${payload.workflowId}/executions?trace=${encodeURIComponent(payload.traceId)}|Open the execution>` } })
+  return postMessage(slack.bot_token, channel, blocks, header)
+}

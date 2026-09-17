@@ -37,6 +37,9 @@
  * which is how the block was found in the first place, four days in.
  */
 
+/** The three Achieve hosts behind one firewall, so a block on one names the others (#1265). */
+export const ACHIEVE_HOSTS = ['oauth.prd.ffngcp.com', 'fdrapis-gateway.prd.fdrgcp.com', 'api.freedomfinancialnet.com'] as const
+
 /** Header naming us to their firewall. Not a credential; safe in a log. */
 export const ACHIEVE_CLIENT_HEADER = 'X-Pennie-Client'
 

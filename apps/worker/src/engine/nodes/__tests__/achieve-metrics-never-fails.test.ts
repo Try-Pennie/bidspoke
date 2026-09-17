@@ -72,6 +72,7 @@ beforeEach(() => {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ id: 1, response: 'accepted', offers: [{ amount: 1 }] }),
+      text: () => Promise.resolve(JSON.stringify({ id: 1, response: 'accepted', offers: [{ amount: 1 }] })),
       headers: { get: () => null },
     })
   )
