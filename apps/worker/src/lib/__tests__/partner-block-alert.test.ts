@@ -10,7 +10,8 @@
  * the block stands. The KV fake honours expiry against an injected clock, so nothing sleeps.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { reportPartnerBlock, PARTNER_BLOCK_CONDITION_TTL_SECONDS, POST_RETRY_HOLD_SECONDS, type PartnerBlockDeps, type PartnerBlockRunContext } from '../partner-block-alert'
+import { reportPartnerBlock, PARTNER_BLOCK_CONDITION_TTL_SECONDS, POST_RETRY_HOLD_SECONDS, PARTNER_REACHABILITY_RECOVERY_PREFIX, PROBE_SEEN_IN, type PartnerBlockDeps, type PartnerBlockRunContext } from '../partner-block-alert'
+import { recoveryKey, activeKey } from '../alert-recovery'
 import { ALERT_CLAIM_TTL_SECONDS } from '../volume-cliff'
 import { BACKOFF_STEPS_SECONDS, readCondition } from '../alert-backoff'
 import type { PartnerBlockSighting } from '../../types'
@@ -61,7 +62,7 @@ function makeDeps(overrides: Partial<PartnerBlockDeps> = {}) {
   const logs: string[] = []
   const deps: PartnerBlockDeps = {
     kv, claims,
-    resolveSlack: async () => ({ bot_token: 'xoxb-test', default_channel: '#ops' }),
+    resolveSlack: async () => [{ bot_token: 'xoxb-test', default_channel: '#ops' }],
     send: async (_slack, channel, payload) => { sent.push({ channel, payload }); return '1700000000.000100' },
     now: () => clock.now,
     log: (line) => { logs.push(line) },
@@ -139,7 +140,7 @@ describe('reportPartnerBlock: staying quiet', () => {
   })
 
   it('with no Slack connection it releases the claim and says so', async () => {
-    const { deps, claims, logs } = makeDeps({ resolveSlack: async () => null })
+    const { deps, claims, logs } = makeDeps({ resolveSlack: async () => [] })
     expect(await reportPartnerBlock(deps, run, sighting)).toBe('no_slack')
     expect(claims.released).toEqual(['partner-block:oauth.prd.ffngcp.com'])
     expect(logs.some((l) => l.includes('no Slack connection'))).toBe(true)
@@ -180,5 +181,58 @@ describe('reportPartnerBlock: while the block stands', () => {
     clock.now += (PARTNER_BLOCK_CONDITION_TTL_SECONDS + 1) * 1000
     expect(await reportPartnerBlock(deps, run, sighting)).toBe('posted')
     expect(sent[1].payload.repeat).toBeNull()
+  })
+})
+
+describe('reportPartnerBlock: arming the all-clear for either observer (#1274)', () => {
+  // The probe owns transitions on this key, but a lead usually sees a block first and
+  // its post arms the cooldown, so the probe's own post is suppressed. If only the poster
+  // armed the all-clear, the commonest incident would never get one (L397, L593). So the
+  // reporter itself, at the layer both observers share, records the running end of the
+  // incident on EVERY sighting and keeps the recovery marker alive from the condition's
+  // first-seen time.
+  it('records the last time the block was seen, on every sighting, posted or not', async () => {
+    const { deps, kv, clock } = makeDeps()
+    await reportPartnerBlock(deps, run, sighting)
+    clock.now += 60 * 1000
+    await reportPartnerBlock(deps, run, sighting)
+    expect(kv.store.get(activeKey(PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host))?.value).toBe(new Date(clock.now).toISOString())
+  })
+
+  it('keeps the recovery marker alive from the first sighting, refreshed by every later one, so a five day block still gets its all-clear', async () => {
+    const { deps, kv, clock } = makeDeps()
+    const first = clock.now
+    await reportPartnerBlock(deps, run, sighting)
+    clock.now += 23 * 60 * 60 * 1000
+    await reportPartnerBlock(deps, run, sighting)
+    const marker = kv.store.get(recoveryKey(PARTNER_REACHABILITY_RECOVERY_PREFIX, sighting.host))
+    expect(marker?.value).toBe(new Date(first).toISOString())
+    expect(marker?.expiresAt).toBeGreaterThan(clock.now + 20 * 60 * 60 * 1000)
+  })
+
+  it('refreshes the standing condition so it outlives a long block, keeping its first-seen time', async () => {
+    const { deps, kv, clock } = makeDeps()
+    const first = clock.now
+    await reportPartnerBlock(deps, run, sighting)
+    clock.now += 24 * 60 * 60 * 1000
+    await reportPartnerBlock(deps, run, sighting)
+    const entry = kv.store.get('partner-block:oauth.prd.ffngcp.com:condition')
+    expect(entry?.expiresAt).toBe(clock.now + PARTNER_BLOCK_CONDITION_TTL_SECONDS * 1000)
+    expect((await readCondition(kv, 'partner-block:oauth.prd.ffngcp.com'))?.since).toBe(new Date(first).toISOString())
+  })
+
+  it('posts to every org holding a Slack connection inside the one claim', async () => {
+    const { deps, sent, claims } = makeDeps({ resolveSlack: async () => [{ bot_token: 'a', default_channel: '#a' }, { bot_token: 'b', default_channel: '#b' }] })
+    expect(await reportPartnerBlock(deps, run, sighting)).toBe('posted')
+    expect(sent.map((s) => s.channel).sort()).toEqual(['#a', '#b'])
+    expect(claims.claimed).toHaveLength(1)
+  })
+
+  it('accepts a sighting from the probe, which has no workflow or trace, and logs a dash for them', async () => {
+    const { deps, sent, logs } = makeDeps()
+    const outcome = await reportPartnerBlock(deps, { orgId: 'org-1' }, { ...sighting, seenIn: PROBE_SEEN_IN })
+    expect(outcome).toBe('posted')
+    expect(sent[0].payload.workflowId).toBeUndefined()
+    expect(logs.some((l) => l.includes('workflow=- trace=-') && l.includes(`seen_in=${PROBE_SEEN_IN}`))).toBe(true)
   })
 })

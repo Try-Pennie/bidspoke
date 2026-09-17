@@ -110,8 +110,19 @@ GITHUB_CODE_REPO = "Try-Pennie/bidspoke"
 # External reachability target for the volume-cliff self-check. Stable bidspoke-owned
 # hostname that routes to this worker (GET returns 200). Keep off personal subdomains.
 SELF_CHECK_URL = "https://hook.trypennie.dev/"
+# Partner reachability probe (#1274). "on" posts to Slack; anything else is observe
+# mode, where the probe runs every five minutes and logs what it would have posted.
+# Ships off so the control host's first blocked reading proves the setup before a
+# page can be false. #1396 flips it after one clean day. Changed here, by commit,
+# so the flip has a record.
+PARTNER_PROBE_ALERTS = "off"
 
 # Scheduled cron triggers:
+#   "*/5 * * * *"   every 5 minutes: partner reachability probe (#1274). One GET
+#                                    to each Achieve host and to the control host
+#                                    on our own zone; alerts on a firewall block
+#                                    appearing or lifting. Its own trigger so a
+#                                    slow partner cannot delay the minute jobs.
 #   "0 9 * * *"     daily 09:00 UTC — Achieve export to Snowflake (overnight ET)
 #   "0 13 * * *"    daily 13:00 UTC — volume anomaly check (9am EDT; 8am EST in winter)
 #   "37 */2 * * *"  every 2h at :37 — lead sightings export to Snowflake. Each run
@@ -164,7 +175,7 @@ SELF_CHECK_URL = "https://hook.trypennie.dev/"
 #                                    and one Salesforce query per run.
 
 [triggers]
-crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "* * * * *"]
+crons = ["0 9 * * *", "15 8 * * *", "0 13 * * *", "37 */2 * * *", "47 1-23/2 * * *", "47 0-22/2 * * *", "0 * * * *", "23 * * * *", "*/15 * * * *", "*/5 * * * *", "* * * * *"]
 
 # CPU ceiling, stated explicitly rather than inherited (#871).
 #

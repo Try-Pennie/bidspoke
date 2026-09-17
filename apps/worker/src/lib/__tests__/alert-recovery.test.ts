@@ -3,6 +3,7 @@ import {
   RECOVERY_REARM_MINUTES,
   RECOVERY_TTL_SECONDS,
   announceRecovery,
+  keepAlerted,
   markAlerted,
   markSpikeSeen,
   recoveryKey,
@@ -316,5 +317,26 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
     const kv = seeded()
     await settleRecovery(kv, 'field-presence-drought', 'wf-1 f', 'field-presence-drought-cooldown:wf-1 f')
     expect(kv.store.size).toBe(0)
+  })
+})
+
+describe('keepAlerted (#1274)', () => {
+  // markAlerted never overwrites, which pins the start of an incident, but its marker
+  // expires after a day and a block can last five. keepAlerted re-writes the SAME start
+  // time on every sighting, so the marker outlives the block without moving the start.
+  it('writes the given start time with the recovery TTL, and again on the next call', async () => {
+    const kv = fakeKv()
+    const put = vi.spyOn(kv, 'put')
+    await keepAlerted(kv, 'x', 'host', '2026-09-05T06:00:00.000Z')
+    await keepAlerted(kv, 'x', 'host', '2026-09-05T06:00:00.000Z')
+    expect(kv.store.get(recoveryKey('x', 'host'))).toBe('2026-09-05T06:00:00.000Z')
+    expect(put).toHaveBeenCalledTimes(2)
+    expect(put).toHaveBeenLastCalledWith(recoveryKey('x', 'host'), '2026-09-05T06:00:00.000Z', { expirationTtl: RECOVERY_TTL_SECONDS })
+  })
+
+  it('does not move an existing earlier start forward', async () => {
+    const kv = fakeKv({ [recoveryKey('x', 'host')]: '2026-09-05T06:00:00.000Z' })
+    await keepAlerted(kv, 'x', 'host', '2026-09-06T06:00:00.000Z')
+    expect(kv.store.get(recoveryKey('x', 'host'))).toBe('2026-09-05T06:00:00.000Z')
   })
 })

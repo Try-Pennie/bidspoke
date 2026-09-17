@@ -20,6 +20,8 @@ const HOUR = 60 * MINUTE
 export function cadenceOf(cron: string): number {
   const [minute, hour] = cron.split(' ')
   if (minute === '*') return MINUTE
+  const minuteStep = /^\*\/(\d+)$/.exec(minute)
+  if (minuteStep) return Number(minuteStep[1]) * MINUTE
   if (hour === '*') return HOUR
   const step = /\/(\d+)/.exec(hour)
   if (step) return Number(step[1]) * HOUR
@@ -34,6 +36,9 @@ describe('cadenceOf', () => {
     expect(cadenceOf('37 */2 * * *')).toBe(2 * HOUR)
     expect(cadenceOf('47 1-23/2 * * *')).toBe(2 * HOUR)
     expect(cadenceOf('0 13 * * *')).toBe(24 * HOUR)
+    // A minute step (#1274). Read as hourly, a 15 minute staleness would fail this suite
+    // and the tempting fix would push a five minute job's alert past an hour.
+    expect(cadenceOf('*/5 * * * *')).toBe(5 * MINUTE)
   })
 })
 

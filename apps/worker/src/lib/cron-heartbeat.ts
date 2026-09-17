@@ -148,6 +148,18 @@ export const CRON_JOBS: CronJob[] = [
     dependents:
       'exported lead_sighting_bids rows are no longer being deleted from Supabase, so the backlog grows past its retention window',
   },
+  {
+    id: 'partner-reachability',
+    label: 'Partner reachability probe',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack: a dark probe is noticed within a
+    // quarter of an hour, which is the same window its own control alert uses.
+    staleMs: 15 * MIN,
+    // Four GETs with a 10s deadline each, in parallel, plus KV and Slack.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'a partner firewall block appearing or lifting is no longer noticed between leads, and no all-clear is posted for a standing block (#1274)',
+  },
 ]
 
 export function cronJob(id: string): CronJob {

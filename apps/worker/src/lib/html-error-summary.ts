@@ -76,6 +76,22 @@ const BLOCK_BODY_MARKERS: ReadonlyArray<{ marker: string; test: RegExp }> = [
 
 const RAY_ID_IN_TEXT = /ray id:?\s*([0-9a-f]{16})\b/i
 
+/**
+ * Cloudflare's plain text error form: a non-browser client asking for a blocked or
+ * misrouted host is served the one line `error code: 10xx` rather than the HTML template
+ * (measured 2026-09-17: `403 text/plain "error code: 1014"` to curl). Only that shape, on
+ * a short body, so a JSON answer that happens to mention a code is not read as one.
+ */
+const CLOUDFLARE_TEXT_ERROR = /^\s*error code:?\s*(10\d\d)\b\s*$/i
+const CLOUDFLARE_BLOCK_CODES = new Set([1006, 1007, 1008, 1010, 1012, 1020])
+
+/** The Cloudflare edge error code a plain text body carries, or null when it is not that form. */
+export function cloudflareErrorCode(bodyText: string | null | undefined): number | null {
+  if (typeof bodyText !== 'string' || bodyText.length > 64) return null
+  const m = CLOUDFLARE_TEXT_ERROR.exec(bodyText)
+  return m ? Number(m[1]) : null
+}
+
 function readHeader(headers: HeaderReader | undefined, name: string): string | null {
   if (!headers) return null
   if (typeof (headers as { get?: unknown }).get === 'function') {
@@ -92,7 +108,23 @@ export function detectBlockPage(
   headers?: HeaderReader,
 ): BlockPage | null {
   if (status < 400) return null
-  if (typeof bodyText !== 'string' || bodyText.length === 0 || !containsHtmlDocument(bodyText)) return null
+  if (typeof bodyText !== 'string' || bodyText.length === 0) return null
+
+  // The plain text form (#1274). A firewall code is a block whatever the template; any
+  // other edge code is not a block, and not this function's finding.
+  const textCode = cloudflareErrorCode(bodyText)
+  if (textCode !== null) {
+    if (!CLOUDFLARE_BLOCK_CODES.has(textCode)) return null
+    return {
+      status,
+      vendor: 'cloudflare',
+      bodyRayId: null,
+      edgeRayId: readHeader(headers, 'cf-ray'),
+      markers: [`Cloudflare error code ${textCode} (plain text)`],
+    }
+  }
+
+  if (!containsHtmlDocument(bodyText)) return null
 
   const visible = extractVisibleText(bodyText)
   const markers = BLOCK_BODY_MARKERS.filter(({ test }) => test.test(visible) || test.test(bodyText)).map(({ marker }) => marker)

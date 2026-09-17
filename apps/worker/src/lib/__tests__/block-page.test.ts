@@ -15,6 +15,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { detectBlockPage } from '../html-error-summary'
+import { cloudflareErrorCode } from '../html-error-summary'
 import { classifyHttpErrorWithBody } from '../../engine/error-classifier'
 import { ACHIEVE_CLOUDFLARE_BLOCK_PAGE, ACHIEVE_CLOUDFLARE_BLOCK_PAGE_RAY_ID } from './fixtures/achieve-cloudflare-block-page'
 import { SALESFORCE_EDGE_ERROR_PAGE } from './fixtures/salesforce-edge-error-page'
@@ -123,5 +124,28 @@ describe('detectBlockPage changes no classification', () => {
     expect(classifyHttpErrorWithBody(503, CHALLENGE_PAGE)).toBe('transient')
     expect(classifyHttpErrorWithBody(502, CLOUDFLARE_502_PAGE)).toBe('transient')
     expect(classifyHttpErrorWithBody(403, JSON.stringify({ error: 'forbidden' }))).toBe('permanent')
+  })
+})
+
+describe('the plain text form Cloudflare serves a non-browser client (#1274)', () => {
+  // Measured 2026-09-17 on block-probe.trypennie.dev: `403 text/plain "error code: 1014"`
+  // to curl, with a cf-ray header. The HTML template is what a browser gets; an API client
+  // gets this one line, and a detector that only reads HTML is blind to it.
+  it('reads a firewall code in plain text as a Cloudflare block', () => {
+    const page = detectBlockPage(403, 'error code: 1020', { 'content-type': 'text/plain; charset=UTF-8', 'cf-ray': 'b1c2d3e4f5a6b7c8-EWR' })
+    expect(page?.vendor).toBe('cloudflare')
+    expect(page?.markers.join(' ')).toMatch(/1020/)
+    expect(page?.edgeRayId).toBe('b1c2d3e4f5a6b7c8-EWR')
+  })
+
+  it('does not read an edge error that is not a firewall code as a block', () => {
+    expect(detectBlockPage(403, 'error code: 1014', { 'content-type': 'text/plain' })).toBeNull()
+  })
+
+  it('exposes the code itself so a caller can tell an edge error from a real answer', () => {
+    expect(cloudflareErrorCode('error code: 1014')).toBe(1014)
+    expect(cloudflareErrorCode('error code: 1020')).toBe(1020)
+    expect(cloudflareErrorCode('{"error":"Not Found"}')).toBeNull()
+    expect(cloudflareErrorCode('404 page not found')).toBeNull()
   })
 })
